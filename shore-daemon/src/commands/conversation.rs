@@ -206,6 +206,7 @@ mod tests {
             data_dir,
             active_model: None,
             autonomy_paused: false,
+            session_tokens: Default::default(),
         };
         (ctx, push_rx)
     }

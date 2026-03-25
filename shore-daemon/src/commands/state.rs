@@ -3,7 +3,7 @@ use shore_protocol::error::ErrorCode;
 
 use super::{engine_err, CommandContext, CommandResult};
 
-/// Return system status: character, conversation, model, autonomy state.
+/// Return system status: character, conversation, model, autonomy state, token counts.
 pub fn status(ctx: &CommandContext) -> CommandResult {
     let message_count = ctx.engine.messages().map(|m| m.len()).unwrap_or(0);
 
@@ -13,6 +13,12 @@ pub fn status(ctx: &CommandContext) -> CommandResult {
         "message_count": message_count,
         "active_model": ctx.active_model,
         "autonomy_paused": ctx.autonomy_paused,
+        "tokens": {
+            "input": ctx.session_tokens.input,
+            "output": ctx.session_tokens.output,
+            "cache_read": ctx.session_tokens.cache_read,
+            "cache_write": ctx.session_tokens.cache_write,
+        },
     }))
 }
 
@@ -183,6 +189,7 @@ mod tests {
             data_dir,
             active_model: None,
             autonomy_paused: false,
+            session_tokens: Default::default(),
         };
         (ctx, push_rx)
     }

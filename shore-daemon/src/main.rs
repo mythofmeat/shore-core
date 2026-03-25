@@ -1,16 +1,13 @@
-mod commands;
-mod config;
-mod engine;
-mod llm_client;
-mod server;
-mod supervisor;
-
 use std::path::PathBuf;
 
-use config::load_config;
-use server::registry::{InstanceInfo, Registry};
-use server::{Server, ServerConfig};
-use supervisor::Supervisor;
+use shore_daemon::commands::{CommandContext, SessionTokens};
+use shore_daemon::config::load_config;
+use shore_daemon::engine::ConversationEngine;
+use shore_daemon::handler::MessageHandler;
+use shore_daemon::llm_client::LlmClient;
+use shore_daemon::server::registry::{InstanceInfo, Registry};
+use shore_daemon::server::{Server, ServerConfig};
+use shore_daemon::supervisor::Supervisor;
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
@@ -58,7 +55,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .clone()
         .or_else(|| std::env::var("SHORE_TCP_ADDR").ok());
 
-    let config = ServerConfig {
+    let server_config = ServerConfig {
         socket_path: socket_path.clone(),
         tcp_addr: tcp_addr.clone(),
         server_name: "shore-daemon".into(),
@@ -91,6 +88,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let has_services = !sup.states().is_empty();
     let llm_ready_rx = sup.llm_ready();
 
+    // Determine shore-llm socket path for the LLM client.
+    let llm_socket = loaded
+        .app
+        .services
+        .llm
+        .socket
+        .as_ref()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| loaded.dirs.runtime.join("llm.sock"));
+
     let supervisor_shutdown_rx = shutdown_rx.clone();
     let supervisor_handle = if has_services {
         let handle = tokio::spawn(async move {
@@ -117,11 +124,45 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
+    // ── Create server and message handler ─────────────────────────────
+    let server = Server::new(server_config);
+    let push_tx = server.push_sender();
+    let route_rx = server.take_route_rx();
+
+    // Create conversation engine for the active character.
+    let engine = ConversationEngine::new(
+        loaded.app.character.name.clone(),
+        loaded.dirs.data.clone(),
+        push_tx.clone(),
+    )?;
+
+    let cmd_ctx = CommandContext {
+        engine,
+        config: loaded.clone(),
+        push_tx: push_tx.clone(),
+        data_dir: loaded.dirs.data.clone(),
+        active_model: loaded.app.defaults.model.clone(),
+        autonomy_paused: false,
+        session_tokens: SessionTokens::default(),
+    };
+
+    let mut msg_handler = MessageHandler {
+        cmd_ctx,
+        llm_client: LlmClient::new(llm_socket),
+        push_tx,
+        is_first_after_restart: true,
+    };
+
+    // Spawn message handler as a background task.
+    let handler_handle = tokio::spawn(async move {
+        msg_handler.run(route_rx).await;
+    });
+
     // ── Run server ───────────────────────────────────────────────────
-    let server = Server::new(config);
     let result = server.run(shutdown_rx).await;
 
-    // ── Wait for supervisor to finish ────────────────────────────────
+    // ── Wait for handler and supervisor to finish ─────────────────────
+    let _ = handler_handle.await;
     if let Some(handle) = supervisor_handle {
         let _ = handle.await;
     }
@@ -137,7 +178,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Check if shore-llm is configured as a supervised service.
-fn sup_has_llm(services: &config::app::ServicesConfig) -> bool {
+fn sup_has_llm(services: &shore_daemon::config::app::ServicesConfig) -> bool {
     services.llm.enabled && services.llm.command.is_some()
 }
 

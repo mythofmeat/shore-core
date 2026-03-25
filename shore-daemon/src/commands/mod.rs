@@ -13,6 +13,15 @@ use tracing::info;
 use crate::config::LoadedConfig;
 use crate::engine::{ConversationEngine, EngineError};
 
+/// Cumulative token usage tracked across the daemon session.
+#[derive(Debug, Clone, Default)]
+pub struct SessionTokens {
+    pub input: u32,
+    pub output: u32,
+    pub cache_read: u32,
+    pub cache_write: u32,
+}
+
 /// Shared state for command handlers.
 pub struct CommandContext {
     /// The active conversation engine.
@@ -27,6 +36,8 @@ pub struct CommandContext {
     pub active_model: Option<String>,
     /// Whether autonomy is paused.
     pub autonomy_paused: bool,
+    /// Cumulative token usage for the session.
+    pub session_tokens: SessionTokens,
 }
 
 /// Convenience type for command handler results.
@@ -120,6 +131,7 @@ mod tests {
             data_dir,
             active_model: None,
             autonomy_paused: false,
+            session_tokens: Default::default(),
         };
         (ctx, push_rx)
     }
