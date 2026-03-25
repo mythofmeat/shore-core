@@ -225,7 +225,7 @@ impl ConversationEngine {
     // ── Internal ────────────────────────────────────────────────────────
 
     /// Broadcast the current History snapshot to all connected clients.
-    fn broadcast_history(&self) {
+    pub fn broadcast_history(&self) {
         let messages = self
             .current_messages
             .as_ref()
