@@ -1,6 +1,7 @@
 import type { ServerResponse } from "node:http";
 import type { Provider, ProviderRequest, NormalizedResponse } from "./types.js";
 import * as anthropic from "./anthropic.js";
+import * as gemini from "./gemini.js";
 import * as openai from "./openai.js";
 import * as openrouter from "./openrouter.js";
 import * as zhipuai from "./zhipuai.js";
@@ -64,6 +65,21 @@ export function getProvider(name: string): Provider | null {
       return {
         generate: (req) => zhipuai.generate(req),
         stream: (req, res) => zhipuai.stream(req, res),
+      };
+
+    case "gemini":
+      return {
+        async generate(req: ProviderRequest): Promise<NormalizedResponse> {
+          const client = gemini.createClient(req.api_key);
+          return gemini.generate(client, req);
+        },
+        async stream(
+          req: ProviderRequest,
+          res: ServerResponse,
+        ): Promise<void> {
+          const client = gemini.createClient(req.api_key);
+          return gemini.stream(client, req, res);
+        },
       };
 
     default:

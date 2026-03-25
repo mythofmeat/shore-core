@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.80.0",
+    "@google/generative-ai": "^0.24.1",
     "@types/node": "^25.5.0",
     "openai": "^6.32.0",
     "pino": "^10.3.1"
