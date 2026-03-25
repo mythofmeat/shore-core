@@ -371,17 +371,35 @@ pub struct DiscordConfig {
 #[serde(deny_unknown_fields)]
 pub struct ServicesConfig {
     #[serde(default)]
-    pub llm: LlmServiceConfig,
+    pub llm: ServiceEntry,
+
+    #[serde(default)]
+    pub matrix: Option<ServiceEntry>,
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
+/// Configuration for a supervised service.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct LlmServiceConfig {
-    /// Socket path for shore-llm. Auto-discovered if omitted.
-    pub socket_path: Option<String>,
+pub struct ServiceEntry {
+    /// Command to spawn the service (e.g. "node shore-llm/dist/index.js").
+    pub command: Option<String>,
 
-    /// HTTP base URL for shore-llm (alternative to socket).
-    pub base_url: Option<String>,
+    /// Unix socket path the service listens on.
+    pub socket: Option<String>,
+
+    /// Whether the service is enabled. Defaults to true.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+impl Default for ServiceEntry {
+    fn default() -> Self {
+        Self {
+            command: None,
+            socket: None,
+            enabled: true,
+        }
+    }
 }
 
 // ── [advanced] ──────────────────────────────────────────────────────────
