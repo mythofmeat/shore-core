@@ -1,3 +1,4 @@
+pub mod compaction;
 pub mod db;
 pub mod rag;
 pub mod search;
