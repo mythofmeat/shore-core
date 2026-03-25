@@ -119,21 +119,23 @@ describe("live endpoints reject unsupported provider", () => {
   });
 });
 
-describe("stub endpoints", () => {
-  it("POST /v1/embed returns 501", async () => {
+describe("POST /v1/embed route exists", () => {
+  it("POST /v1/embed does not return 404", async () => {
     const res = await request("POST", "/v1/embed", {
       body: "{}",
       headers: { "Content-Type": "application/json" },
     });
-    expect(res.status).toBe(501);
+    expect(res.status).not.toBe(404);
   });
+});
 
-  it("POST /v1/image/generate returns 501", async () => {
+describe("POST /v1/image/generate route exists", () => {
+  it("POST /v1/image/generate does not return 404", async () => {
     const res = await request("POST", "/v1/image/generate", {
       body: "{}",
       headers: { "Content-Type": "application/json" },
     });
-    expect(res.status).toBe(501);
+    expect(res.status).not.toBe(404);
   });
 });
 

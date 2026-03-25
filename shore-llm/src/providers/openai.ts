@@ -6,6 +6,10 @@ import type {
   NormalizedContentBlock,
   NormalizedUsage,
   StreamEvent,
+  EmbedRequest,
+  EmbedResponse,
+  ImageGenerateRequest,
+  ImageGenerateResponse,
 } from "./types.js";
 
 // ── Client creation ──────────────────────────────────────────────────
@@ -349,4 +353,55 @@ export async function stream(
   });
 
   res.end();
+}
+
+// ── Embed API ───────────────────────────────────────────────────────────
+
+export async function embed(
+  client: OpenAI,
+  req: EmbedRequest,
+): Promise<EmbedResponse> {
+  const start = performance.now();
+  const response = await client.embeddings.create({
+    model: req.model,
+    input: req.input,
+  });
+  const totalMs = performance.now() - start;
+
+  const embeddings = response.data.map((d) => d.embedding);
+  const totalTokens = response.usage?.total_tokens ?? 0;
+
+  return {
+    embeddings,
+    usage: { total_tokens: totalTokens },
+    timing: { total_ms: Math.round(totalMs) },
+  };
+}
+
+// ── Image Generation API ────────────────────────────────────────────────
+
+export async function imageGenerate(
+  client: OpenAI,
+  req: ImageGenerateRequest,
+): Promise<ImageGenerateResponse> {
+  const start = performance.now();
+
+  const params: OpenAI.ImageGenerateParams = {
+    model: req.model,
+    prompt: req.prompt,
+  };
+  if (req.size) params.size = req.size as OpenAI.ImageGenerateParams["size"];
+  if (req.quality)
+    params.quality = req.quality as OpenAI.ImageGenerateParams["quality"];
+
+  const response = await client.images.generate(params);
+  const totalMs = performance.now() - start;
+
+  const image = response.data?.[0];
+
+  return {
+    url: image?.url ?? "",
+    revised_prompt: image?.revised_prompt ?? "",
+    timing: { total_ms: Math.round(totalMs) },
+  };
 }
