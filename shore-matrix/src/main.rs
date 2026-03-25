@@ -4,7 +4,9 @@ mod bot;
 mod bridge;
 mod connection;
 mod crypto;
+pub mod provision;
 mod rooms;
+pub mod synapse;
 
 use std::collections::HashMap;
 
