@@ -425,6 +425,50 @@ impl MemoryDB {
         Ok(())
     }
 
+    /// Get all entities.
+    pub fn get_all_entities(&self) -> SqlResult<Vec<Entity>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT entity_id, name, type, description, created_at, updated_at
+             FROM entities ORDER BY name",
+        )?;
+        let rows = stmt.query_map([], row_to_entity)?;
+        rows.collect()
+    }
+
+    /// Reassign all entry_entities links from one entity to another.
+    pub fn reassign_entity_links(&self, from_id: i64, to_id: i64) -> SqlResult<()> {
+        // First, delete links that would cause duplicates (entry already linked to target).
+        self.conn.execute(
+            "DELETE FROM entry_entities
+             WHERE entity_id = ?1
+               AND entry_id IN (SELECT entry_id FROM entry_entities WHERE entity_id = ?2)",
+            params![from_id, to_id],
+        )?;
+        // Then reassign remaining links.
+        self.conn.execute(
+            "UPDATE entry_entities SET entity_id = ?2 WHERE entity_id = ?1",
+            params![from_id, to_id],
+        )?;
+        Ok(())
+    }
+
+    /// Delete an entity by ID.
+    pub fn delete_entity(&self, entity_id: i64) -> SqlResult<()> {
+        self.conn.execute(
+            "DELETE FROM entry_entities WHERE entity_id = ?1",
+            params![entity_id],
+        )?;
+        self.conn.execute(
+            "DELETE FROM changelog_entities WHERE entity_id = ?1",
+            params![entity_id],
+        )?;
+        self.conn.execute(
+            "DELETE FROM entities WHERE entity_id = ?1",
+            params![entity_id],
+        )?;
+        Ok(())
+    }
+
     /// Get all entities linked to an entry.
     pub fn get_entities_for_entry(&self, entry_id: &str) -> SqlResult<Vec<Entity>> {
         let mut stmt = self.conn.prepare(
