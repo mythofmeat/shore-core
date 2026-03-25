@@ -91,6 +91,7 @@ pub enum CollectorAction {
 }
 
 /// Collects daemon streaming responses and buffered images.
+#[derive(Default)]
 pub struct ResponseCollector {
     images: Vec<PendingImage>,
     streaming: bool,
@@ -98,10 +99,7 @@ pub struct ResponseCollector {
 
 impl ResponseCollector {
     pub fn new() -> Self {
-        Self {
-            images: Vec::new(),
-            streaming: false,
-        }
+        Self::default()
     }
 
     #[allow(dead_code)]

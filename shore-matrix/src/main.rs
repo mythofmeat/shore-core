@@ -1,23 +1,16 @@
 #![recursion_limit = "256"]
 
-mod bot;
-mod bridge;
-mod connection;
-mod crypto;
-pub mod provision;
-mod rooms;
-pub mod synapse;
-
 use std::collections::HashMap;
 
 use clap::Parser;
 use matrix_sdk::ruma::{OwnedRoomId, RoomId};
 use tracing::{error, info};
 
-use crate::bot::{BotConfig, MatrixBot, MatrixEvent};
-use crate::bridge::{input_to_swp, parse_matrix_input, CollectorAction, MatrixInput, ResponseCollector};
-use crate::connection::{spawn_connection, ConnCommand, ConnEvent};
-use crate::rooms::RoomManager;
+use shore_matrix::bot::{BotConfig, MatrixBot, MatrixEvent};
+use shore_matrix::bridge::{input_to_swp, parse_matrix_input, CollectorAction, MatrixInput, ResponseCollector};
+use shore_matrix::connection::{spawn_connection, ConnCommand, ConnEvent};
+use shore_matrix::crypto;
+use shore_matrix::rooms::RoomManager;
 
 #[derive(Parser)]
 #[command(name = "shore-matrix", about = "Matrix bridge for Shore")]
@@ -167,7 +160,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if let Some(ref room_id) = target {
                             let collector = collectors
                                 .entry(room_id.clone())
-                                .or_insert_with(ResponseCollector::new);
+                                .or_default();
                             let action = collector.feed(&msg);
                             dispatch_action(&bot, room_id, action).await;
                         }

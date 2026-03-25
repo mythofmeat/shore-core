@@ -5,6 +5,7 @@ use std::collections::HashMap;
 /// Each character is bound to exactly one room, and each room is bound
 /// to at most one character. Binding a character to a new room unbinds
 /// it from the previous room (and vice versa).
+#[derive(Default)]
 pub struct RoomManager {
     room_to_char: HashMap<String, String>,
     char_to_room: HashMap<String, String>,
@@ -13,10 +14,7 @@ pub struct RoomManager {
 #[allow(dead_code)]
 impl RoomManager {
     pub fn new() -> Self {
-        Self {
-            room_to_char: HashMap::new(),
-            char_to_room: HashMap::new(),
-        }
+        Self::default()
     }
 
     /// Bind a room to a character (1:1 mapping, displaces old bindings).
