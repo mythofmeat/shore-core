@@ -1,7 +1,9 @@
+mod config;
 mod server;
 
 use std::path::PathBuf;
 
+use config::load_config;
 use server::registry::{InstanceInfo, Registry};
 use server::{Server, ServerConfig};
 use tracing::{error, info};
@@ -19,16 +21,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_thread_ids(true)
         .init();
 
+    // ── Load configuration ───────────────────────────────────────────
+    let config_path = std::env::args()
+        .nth(1)
+        .filter(|a| a == "--config")
+        .and_then(|_| std::env::args().nth(2))
+        .map(PathBuf::from);
+
+    let loaded = load_config(config_path.as_deref())?;
+    info!(character = %loaded.app.character.name, "Configuration loaded");
+
     // ── Determine socket path ────────────────────────────────────────
     let instance_id = uuid::Uuid::new_v4().to_string();
-    let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
-        .ok()
+    let socket_path = loaded
+        .app
+        .daemon
+        .socket_path
+        .as_ref()
         .map(PathBuf::from)
-        .or_else(dirs::runtime_dir)
-        .unwrap_or_else(std::env::temp_dir);
-    let socket_path = runtime_dir.join("shore").join(format!("{}.sock", instance_id));
+        .unwrap_or_else(|| {
+            loaded
+                .dirs
+                .runtime
+                .join(format!("{}.sock", instance_id))
+        });
 
-    let tcp_addr = std::env::var("SHORE_TCP_ADDR").ok();
+    let tcp_addr = loaded
+        .app
+        .daemon
+        .tcp_addr
+        .clone()
+        .or_else(|| std::env::var("SHORE_TCP_ADDR").ok());
 
     let config = ServerConfig {
         socket_path: socket_path.clone(),
