@@ -1,0 +1,11 @@
+# Shore V2 — Example Model Configuration
+
+[[models]]
+name = "claude-sonnet"
+provider = "anthropic"
+model_id = "claude-sonnet-4-20250514"
+
+[[models]]
+name = "gpt-4o"
+provider = "openai"
+model_id = "gpt-4o"

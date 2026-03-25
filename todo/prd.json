@@ -1,7 +1,7 @@
 {
   "name": "Shore V2 — Polyglot Rewrite",
-  "branchName": "ralph/shore-v2-rewrite",
   "description": "Complete rewrite of Shore from Python into Rust + TypeScript polyglot architecture with formalized wire protocol (SWP)",
+  "branchName": "ralph/shore-v2-rewrite",
   "userStories": [
     {
       "id": "US-001",
@@ -21,9 +21,10 @@
         "cargo clippy --workspace passes"
       ],
       "priority": 1,
-      "passes": false,
+      "passes": true,
       "notes": "Phase 1: Foundation",
-      "dependsOn": []
+      "dependsOn": [],
+      "completionNotes": "Completed by agent"
     },
     {
       "id": "US-002",
@@ -56,7 +57,9 @@
       "priority": 2,
       "passes": false,
       "notes": "Phase 1: Foundation. Reference docs/SHORE-V2-ARCHITECTURE.md §3 for protocol spec, especially §3.5 Message Object, Streaming, and Push sections.",
-      "dependsOn": ["US-001"]
+      "dependsOn": [
+        "US-001"
+      ]
     },
     {
       "id": "US-003",
@@ -78,7 +81,9 @@
       "priority": 3,
       "passes": false,
       "notes": "Phase 1: Foundation",
-      "dependsOn": ["US-002"]
+      "dependsOn": [
+        "US-002"
+      ]
     },
     {
       "id": "US-004",
@@ -99,7 +104,10 @@
       "priority": 4,
       "passes": false,
       "notes": "Phase 1: Foundation",
-      "dependsOn": ["US-002", "US-003"]
+      "dependsOn": [
+        "US-002",
+        "US-003"
+      ]
     },
     {
       "id": "US-005",
@@ -120,7 +128,9 @@
       "priority": 5,
       "passes": false,
       "notes": "Phase 2: shore-llm + Daemon Core. TypeScript project.",
-      "dependsOn": ["US-001"]
+      "dependsOn": [
+        "US-001"
+      ]
     },
     {
       "id": "US-006",
@@ -140,7 +150,9 @@
       "priority": 6,
       "passes": false,
       "notes": "Phase 2: shore-llm. TypeScript project.",
-      "dependsOn": ["US-005"]
+      "dependsOn": [
+        "US-005"
+      ]
     },
     {
       "id": "US-007",
@@ -160,7 +172,9 @@
       "priority": 7,
       "passes": false,
       "notes": "Phase 2: shore-llm. TypeScript project.",
-      "dependsOn": ["US-005"]
+      "dependsOn": [
+        "US-005"
+      ]
     },
     {
       "id": "US-008",
@@ -178,7 +192,9 @@
       "priority": 8,
       "passes": false,
       "notes": "Phase 2: shore-llm. TypeScript project.",
-      "dependsOn": ["US-005"]
+      "dependsOn": [
+        "US-005"
+      ]
     },
     {
       "id": "US-009",
@@ -196,7 +212,10 @@
       "priority": 9,
       "passes": false,
       "notes": "Phase 2: shore-llm. TypeScript project.",
-      "dependsOn": ["US-006", "US-007"]
+      "dependsOn": [
+        "US-006",
+        "US-007"
+      ]
     },
     {
       "id": "US-010",
@@ -221,7 +240,9 @@
       "priority": 10,
       "passes": false,
       "notes": "Phase 2: Daemon Core",
-      "dependsOn": ["US-002"]
+      "dependsOn": [
+        "US-002"
+      ]
     },
     {
       "id": "US-011",
@@ -247,7 +268,9 @@
       "priority": 11,
       "passes": false,
       "notes": "Phase 2: Daemon Core",
-      "dependsOn": ["US-001"]
+      "dependsOn": [
+        "US-001"
+      ]
     },
     {
       "id": "US-012",
@@ -271,7 +294,10 @@
       "priority": 12,
       "passes": false,
       "notes": "Phase 2: Daemon Core. See §5 of architecture doc.",
-      "dependsOn": ["US-010", "US-005"]
+      "dependsOn": [
+        "US-010",
+        "US-005"
+      ]
     },
     {
       "id": "US-013",
@@ -295,7 +321,10 @@
       "priority": 13,
       "passes": false,
       "notes": "Phase 2: Daemon Core",
-      "dependsOn": ["US-010", "US-011"]
+      "dependsOn": [
+        "US-010",
+        "US-011"
+      ]
     },
     {
       "id": "US-014",
@@ -319,7 +348,9 @@
       "priority": 14,
       "passes": false,
       "notes": "Phase 2: Daemon Core",
-      "dependsOn": ["US-013"]
+      "dependsOn": [
+        "US-013"
+      ]
     },
     {
       "id": "US-015",
@@ -347,7 +378,10 @@
       "priority": 15,
       "passes": false,
       "notes": "Phase 2: Daemon Core",
-      "dependsOn": ["US-013", "US-006"]
+      "dependsOn": [
+        "US-013",
+        "US-006"
+      ]
     },
     {
       "id": "US-016",
@@ -371,7 +405,9 @@
       "priority": 16,
       "passes": false,
       "notes": "Phase 2: Daemon Core",
-      "dependsOn": ["US-015"]
+      "dependsOn": [
+        "US-015"
+      ]
     },
     {
       "id": "US-017",
@@ -396,7 +432,9 @@
       "priority": 17,
       "passes": false,
       "notes": "Phase 2: Daemon Core. See §3.7 for the 18 flat commands.",
-      "dependsOn": ["US-013"]
+      "dependsOn": [
+        "US-013"
+      ]
     },
     {
       "id": "US-018",
@@ -423,7 +461,13 @@
       "priority": 18,
       "passes": false,
       "notes": "Phase 2 MILESTONE: Live integration test with real API calls. Use cheap model (Haiku).",
-      "dependsOn": ["US-012", "US-014", "US-015", "US-016", "US-017"]
+      "dependsOn": [
+        "US-012",
+        "US-014",
+        "US-015",
+        "US-016",
+        "US-017"
+      ]
     },
     {
       "id": "US-019",
@@ -448,7 +492,9 @@
       "priority": 19,
       "passes": false,
       "notes": "Phase 3: Memory & RAG",
-      "dependsOn": ["US-018"]
+      "dependsOn": [
+        "US-018"
+      ]
     },
     {
       "id": "US-020",
@@ -471,7 +517,9 @@
       "priority": 20,
       "passes": false,
       "notes": "Phase 3: Memory & RAG",
-      "dependsOn": ["US-019"]
+      "dependsOn": [
+        "US-019"
+      ]
     },
     {
       "id": "US-021",
@@ -494,7 +542,9 @@
       "priority": 21,
       "passes": false,
       "notes": "Phase 3: Memory & RAG",
-      "dependsOn": ["US-020"]
+      "dependsOn": [
+        "US-020"
+      ]
     },
     {
       "id": "US-022",
@@ -521,7 +571,9 @@
       "priority": 22,
       "passes": false,
       "notes": "Phase 3: Memory & RAG",
-      "dependsOn": ["US-021"]
+      "dependsOn": [
+        "US-021"
+      ]
     },
     {
       "id": "US-023",
@@ -546,7 +598,9 @@
       "priority": 23,
       "passes": false,
       "notes": "Phase 3: Memory & RAG",
-      "dependsOn": ["US-021"]
+      "dependsOn": [
+        "US-021"
+      ]
     },
     {
       "id": "US-024",
@@ -568,7 +622,9 @@
       "priority": 24,
       "passes": false,
       "notes": "Phase 3: Memory & RAG",
-      "dependsOn": ["US-021"]
+      "dependsOn": [
+        "US-021"
+      ]
     },
     {
       "id": "US-025",
@@ -592,7 +648,10 @@
       "priority": 25,
       "passes": false,
       "notes": "Phase 3: Memory & RAG",
-      "dependsOn": ["US-021", "US-024"]
+      "dependsOn": [
+        "US-021",
+        "US-024"
+      ]
     },
     {
       "id": "US-026",
@@ -615,7 +674,12 @@
       "priority": 26,
       "passes": false,
       "notes": "Phase 3 MILESTONE: Live integration test with real API calls. Use cheap model (Haiku).",
-      "dependsOn": ["US-022", "US-023", "US-024", "US-025"]
+      "dependsOn": [
+        "US-022",
+        "US-023",
+        "US-024",
+        "US-025"
+      ]
     },
     {
       "id": "US-027",
@@ -645,7 +709,9 @@
       "priority": 27,
       "passes": false,
       "notes": "Phase 4: Autonomy",
-      "dependsOn": ["US-026"]
+      "dependsOn": [
+        "US-026"
+      ]
     },
     {
       "id": "US-028",
@@ -677,7 +743,9 @@
       "priority": 28,
       "passes": false,
       "notes": "Phase 4: Autonomy. See §13.1 for full state machine spec.",
-      "dependsOn": ["US-027"]
+      "dependsOn": [
+        "US-027"
+      ]
     },
     {
       "id": "US-029",
@@ -698,7 +766,9 @@
       "priority": 29,
       "passes": false,
       "notes": "Phase 4: Autonomy",
-      "dependsOn": ["US-018"]
+      "dependsOn": [
+        "US-018"
+      ]
     },
     {
       "id": "US-030",
@@ -721,7 +791,10 @@
       "priority": 30,
       "passes": false,
       "notes": "Phase 4 MILESTONE: Live integration test with real API calls. Use cheap model (Haiku).",
-      "dependsOn": ["US-028", "US-029"]
+      "dependsOn": [
+        "US-028",
+        "US-029"
+      ]
     },
     {
       "id": "US-031",
@@ -744,7 +817,10 @@
       "priority": 31,
       "passes": false,
       "notes": "Phase 5: CLI + TUI",
-      "dependsOn": ["US-003", "US-018"]
+      "dependsOn": [
+        "US-003",
+        "US-018"
+      ]
     },
     {
       "id": "US-032",
@@ -765,7 +841,9 @@
       "priority": 32,
       "passes": false,
       "notes": "Phase 5: CLI + TUI",
-      "dependsOn": ["US-031"]
+      "dependsOn": [
+        "US-031"
+      ]
     },
     {
       "id": "US-033",
@@ -790,7 +868,10 @@
       "priority": 33,
       "passes": false,
       "notes": "Phase 5: CLI + TUI",
-      "dependsOn": ["US-003", "US-018"]
+      "dependsOn": [
+        "US-003",
+        "US-018"
+      ]
     },
     {
       "id": "US-034",
@@ -815,7 +896,12 @@
       "priority": 34,
       "passes": false,
       "notes": "Phase 5 MILESTONE: Live integration test.",
-      "dependsOn": ["US-031", "US-032", "US-033", "US-030"]
+      "dependsOn": [
+        "US-031",
+        "US-032",
+        "US-033",
+        "US-030"
+      ]
     },
     {
       "id": "US-035",
@@ -840,7 +926,10 @@
       "priority": 35,
       "passes": false,
       "notes": "Phase 6: Matrix Bridge",
-      "dependsOn": ["US-003", "US-018"]
+      "dependsOn": [
+        "US-003",
+        "US-018"
+      ]
     },
     {
       "id": "US-036",
@@ -861,7 +950,9 @@
       "priority": 36,
       "passes": false,
       "notes": "Phase 6: Matrix Bridge",
-      "dependsOn": ["US-035"]
+      "dependsOn": [
+        "US-035"
+      ]
     },
     {
       "id": "US-037",
@@ -885,7 +976,9 @@
       "priority": 37,
       "passes": false,
       "notes": "Phase 6: Matrix Bridge",
-      "dependsOn": ["US-035"]
+      "dependsOn": [
+        "US-035"
+      ]
     },
     {
       "id": "US-038",
@@ -907,7 +1000,10 @@
       "priority": 38,
       "passes": false,
       "notes": "Phase 6 MILESTONE: Live integration test with real Synapse.",
-      "dependsOn": ["US-036", "US-037"]
+      "dependsOn": [
+        "US-036",
+        "US-037"
+      ]
     },
     {
       "id": "US-039",
@@ -929,7 +1025,10 @@
       "priority": 39,
       "passes": false,
       "notes": "Phase 7: Polish & Retire V1",
-      "dependsOn": ["US-026", "US-034"]
+      "dependsOn": [
+        "US-026",
+        "US-034"
+      ]
     },
     {
       "id": "US-040",
@@ -952,7 +1051,9 @@
       "priority": 40,
       "passes": false,
       "notes": "Phase 7: Polish & Retire V1. See §11.1 of architecture doc.",
-      "dependsOn": ["US-018"]
+      "dependsOn": [
+        "US-018"
+      ]
     },
     {
       "id": "US-041",
@@ -975,7 +1076,13 @@
       "priority": 41,
       "passes": false,
       "notes": "Phase 7 MILESTONE: V1 retired, single build produces everything.",
-      "dependsOn": ["US-039", "US-040"]
+      "dependsOn": [
+        "US-039",
+        "US-040"
+      ]
     }
-  ]
+  ],
+  "metadata": {
+    "updatedAt": "2026-03-25T03:52:50.952Z"
+  }
 }

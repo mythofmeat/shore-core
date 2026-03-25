@@ -1,0 +1,24 @@
+# Rust
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# Node / TypeScript
+node_modules/
+dist/
+*.js.map
+*.d.ts
+!shore-llm/tsconfig.json
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Environment
+.env
+.env.*
+!.env.example

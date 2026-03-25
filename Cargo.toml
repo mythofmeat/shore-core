@@ -1,0 +1,10 @@
+[workspace]
+resolver = "2"
+members = [
+    "shore-protocol",
+    "shore-client",
+    "shore-daemon",
+    "shore-cli",
+    "shore-tui",
+    "shore-matrix",
+]

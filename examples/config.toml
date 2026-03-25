@@ -1,0 +1,7 @@
+# Shore V2 — Example Configuration
+
+[daemon]
+socket_path = "/tmp/shore.sock"
+
+[character]
+name = "Shore"

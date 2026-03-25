@@ -1,0 +1,13 @@
+{
+  "id": "fbd8ea7d-b69d-4541-a3d8-02c6b711e23a",
+  "status": "running",
+  "startedAt": "2026-03-25T03:50:51.496Z",
+  "updatedAt": "2026-03-25T03:50:51.497Z",
+  "agentPlugin": "claude",
+  "trackerPlugin": "json",
+  "currentIteration": 0,
+  "maxIterations": 10,
+  "totalTasks": 0,
+  "tasksCompleted": 0,
+  "cwd": "/home/eshen/Development/silvershore"
+}

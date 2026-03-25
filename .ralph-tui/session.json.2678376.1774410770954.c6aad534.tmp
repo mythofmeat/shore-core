@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "sessionId": "fbd8ea7d-b69d-4541-a3d8-02c6b711e23a",
+  "status": "running",
+  "startedAt": "2026-03-25T03:50:51.596Z",
+  "updatedAt": "2026-03-25T03:52:50.953Z",
+  "currentIteration": 0,
+  "maxIterations": 10,
+  "tasksCompleted": 0,
+  "isPaused": false,
+  "agentPlugin": "claude",
+  "trackerState": {
+    "plugin": "json",
+    "totalTasks": 0,
+    "tasks": []
+  },
+  "iterations": [],
+  "skippedTaskIds": [],
+  "cwd": "/home/eshen/Development/silvershore",
+  "activeTaskIds": [],
+  "subagentPanelVisible": false
+}
