@@ -1,0 +1,76 @@
+import type { ServerResponse } from "node:http";
+
+// ── Normalized response types ─────────────────────────────────────────
+
+export interface NormalizedResponse {
+  content: string;
+  content_blocks: NormalizedContentBlock[];
+  finish_reason: string;
+  usage: NormalizedUsage;
+  timing: NormalizedTiming;
+  model: string;
+  provider: string;
+}
+
+export interface NormalizedContentBlock {
+  type: string;
+  text?: string;
+  id?: string;
+  name?: string;
+  input?: unknown;
+  thinking?: string;
+}
+
+export interface NormalizedUsage {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_creation_tokens: number;
+}
+
+export interface NormalizedTiming {
+  total_ms: number;
+  time_to_first_token_ms: number;
+}
+
+// ── Stream event types ─────────────────────────────────────────────────
+
+export type StreamEvent =
+  | { type: "start"; model: string }
+  | { type: "text"; text: string }
+  | { type: "thinking"; text: string }
+  | { type: "tool_use"; id: string; name: string; input: unknown }
+  | {
+      type: "done";
+      content: string;
+      finish_reason: string;
+      usage: NormalizedUsage;
+      timing: NormalizedTiming;
+    };
+
+// ── Generic request type ──────────────────────────────────────────────
+
+export interface ProviderRequest {
+  provider: string;
+  model: string;
+  api_key: string;
+  base_url?: string | null;
+  messages: Array<{ role: string; content: unknown }>;
+  system?: string | null;
+  tools?: Array<{
+    name: string;
+    description: string;
+    input_schema: Record<string, unknown>;
+  }>;
+  max_tokens: number;
+  temperature?: number | null;
+  top_p?: number | null;
+  provider_options?: Record<string, unknown>;
+}
+
+// ── Provider interface ─────────────────────────────────────────────────
+
+export interface Provider {
+  generate(req: ProviderRequest): Promise<NormalizedResponse>;
+  stream(req: ProviderRequest, res: ServerResponse): Promise<void>;
+}

@@ -15,6 +15,9 @@ after each iteration and it's included in prompts for context.
 - `Box<dyn AsyncReadWrite>` unifies Unix/TCP transports; manual `Debug` impl needed since trait objects aren't `Debug`
 - `shore-llm` tests use Unix socket via `node:http` `createServer` + `server.listen(socketPath)` — no external test HTTP client needed
 - `tsconfig.json` excludes `**/*.test.ts` so test files don't compile into `dist/`
+- Provider factory pattern: `getProvider(name)` returns a `Provider` interface; router dispatches via factory, not direct imports
+- OpenAI-compat providers (OpenRouter, ZhipuAI) delegate to `openai.ts` core with custom base URL / headers
+- `vi.hoisted()` is required when `vi.mock()` factory references variables defined in the test file (vitest hoisting issue)
 
 ---
 
@@ -124,5 +127,29 @@ after each iteration and it's included in prompts for context.
   - `MessageDeltaUsage` (from `message_delta` events) has cumulative `output_tokens` — use it to update the running usage total
   - Cache control must be applied per content-block: string content must be converted to `TextBlockParam[]` form to attach `cache_control: { type: "ephemeral" }`
   - Using `Record<string, unknown>` for params building requires `as unknown as` double cast due to strict TypeScript overlap checks
+---
+
+## 2026-03-25 - US-007
+- What was implemented: OpenAI-compatible, OpenRouter, and ZhipuAI providers with provider factory pattern
+- Files changed:
+  - `shore-llm/package.json` — added `openai` dependency
+  - `shore-llm/src/providers/types.ts` — shared types: ProviderRequest, NormalizedResponse, NormalizedContentBlock, NormalizedUsage, NormalizedTiming, StreamEvent, Provider interface
+  - `shore-llm/src/providers/openai.ts` — OpenAI-compat provider: client creation with base_url + defaultHeaders, message translation (Anthropic→OpenAI format including tool_use/tool_result), tool translation, response normalization (finish_reason mapping: stop→end_turn, tool_calls→tool_use, length→max_tokens), streaming with ndjson events and tool call accumulation
+  - `shore-llm/src/providers/openrouter.ts` — thin wrapper over openai.ts: OpenRouter base URL + HTTP-Referer/X-Title custom headers from provider_options
+  - `shore-llm/src/providers/zhipuai.ts` — thin wrapper over openai.ts: ZhipuAI base URL with base_url override support
+  - `shore-llm/src/providers/index.ts` — provider factory: getProvider(name) returns Provider for anthropic, openai, deepseek, xai, openrouter, zhipuai; null for unknown
+  - `shore-llm/src/providers/anthropic.ts` — refactored to import shared types from types.ts instead of defining locally
+  - `shore-llm/src/router.ts` — refactored to use provider factory instead of direct Anthropic imports
+  - `shore-llm/src/router.test.ts` — updated unsupported provider test to use "nonexistent" (since openai is now supported)
+  - `shore-llm/src/providers/openai.test.ts` — 15 unit tests: translateMessages (text, system, tool_use, tool_result), translateTools, generate (text, usage, finish_reason normalization, tool_calls, timing, custom provider name, SDK params), stream (text events, tool_use accumulation, ndjson content-type)
+  - `shore-llm/src/providers/openrouter.test.ts` — 5 unit tests: base URL, custom headers, empty headers, generate provider name, stream provider name
+  - `shore-llm/src/providers/zhipuai.test.ts` — 4 unit tests: base URL, base_url override, generate provider name, stream provider name
+- **Learnings:**
+  - OpenAI SDK `ChatCompletionMessageToolCall` is a union including `ChatCompletionMessageCustomToolCall` — must check `tc.type !== "function"` before accessing `tc.function`
+  - `Record<string, unknown>` to SDK params cast requires double cast (`as unknown as`) due to TypeScript overlap checks
+  - `vi.hoisted()` is required when `vi.mock()` factory references variables defined in the same test file — vitest hoists the mock call above variable declarations
+  - OpenAI streaming tool calls arrive as incremental `delta.tool_calls[i].function.arguments` — accumulate by `tc.index` and emit after stream ends (unlike Anthropic which has explicit `content_block_stop`)
+  - `stream_options: { include_usage: true }` is needed to get usage data in OpenAI streaming responses
+  - OpenRouter and ZhipuAI are thin wrappers: same OpenAI SDK with different base URLs and optional custom headers
 ---
 

@@ -102,7 +102,7 @@ describe("invalid JSON body", () => {
 describe("live endpoints reject unsupported provider", () => {
   it("POST /v1/generate returns 400 for unsupported provider", async () => {
     const res = await request("POST", "/v1/generate", {
-      body: JSON.stringify({ provider: "openai", model: "gpt-4", api_key: "k", max_tokens: 10, messages: [] }),
+      body: JSON.stringify({ provider: "nonexistent", model: "m", api_key: "k", max_tokens: 10, messages: [] }),
       headers: { "Content-Type": "application/json" },
     });
     expect(res.status).toBe(400);
@@ -111,7 +111,7 @@ describe("live endpoints reject unsupported provider", () => {
 
   it("POST /v1/stream returns 400 for unsupported provider", async () => {
     const res = await request("POST", "/v1/stream", {
-      body: JSON.stringify({ provider: "openai", model: "gpt-4", api_key: "k", max_tokens: 10, messages: [] }),
+      body: JSON.stringify({ provider: "nonexistent", model: "m", api_key: "k", max_tokens: 10, messages: [] }),
       headers: { "Content-Type": "application/json" },
     });
     expect(res.status).toBe(400);

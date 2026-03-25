@@ -7,6 +7,13 @@ import type {
   RawMessageStreamEvent,
 } from "@anthropic-ai/sdk/resources/messages/messages.js";
 import type { ServerResponse } from "node:http";
+import type {
+  NormalizedResponse,
+  NormalizedContentBlock,
+  NormalizedUsage,
+  NormalizedTiming,
+  StreamEvent,
+} from "./types.js";
 
 // ── Request types ──────────────────────────────────────────────────────
 
@@ -30,53 +37,8 @@ export interface AnthropicProviderOptions {
   budget_tokens?: number;
 }
 
-// ── Response types ─────────────────────────────────────────────────────
-
-export interface NormalizedResponse {
-  content: string;
-  content_blocks: NormalizedContentBlock[];
-  finish_reason: string;
-  usage: NormalizedUsage;
-  timing: NormalizedTiming;
-  model: string;
-  provider: string;
-}
-
-export interface NormalizedContentBlock {
-  type: string;
-  text?: string;
-  id?: string;
-  name?: string;
-  input?: unknown;
-  thinking?: string;
-}
-
-export interface NormalizedUsage {
-  input_tokens: number;
-  output_tokens: number;
-  cache_read_tokens: number;
-  cache_creation_tokens: number;
-}
-
-export interface NormalizedTiming {
-  total_ms: number;
-  time_to_first_token_ms: number;
-}
-
-// ── Stream event types ─────────────────────────────────────────────────
-
-export type StreamEvent =
-  | { type: "start"; model: string }
-  | { type: "text"; text: string }
-  | { type: "thinking"; text: string }
-  | { type: "tool_use"; id: string; name: string; input: unknown }
-  | {
-      type: "done";
-      content: string;
-      finish_reason: string;
-      usage: NormalizedUsage;
-      timing: NormalizedTiming;
-    };
+// ── Response and stream types (from shared types) ─────────────────────
+// Types imported from ./types.js above
 
 // ── Helpers ────────────────────────────────────────────────────────────
 

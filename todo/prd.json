@@ -175,11 +175,12 @@
         "npm test passes"
       ],
       "priority": 7,
-      "passes": false,
+      "passes": true,
       "notes": "Phase 2: shore-llm. TypeScript project.",
       "dependsOn": [
         "US-005"
-      ]
+      ],
+      "completionNotes": "Completed by agent"
     },
     {
       "id": "US-008",
@@ -1088,6 +1089,6 @@
     }
   ],
   "metadata": {
-    "updatedAt": "2026-03-25T04:13:50.874Z"
+    "updatedAt": "2026-03-25T04:31:51.600Z"
   }
 }

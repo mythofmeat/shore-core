@@ -1,11 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { childWithRid } from "./logger.js";
-import {
-  createClient,
-  generate,
-  stream,
-  type GenerateRequest,
-} from "./providers/anthropic.js";
+import { getProvider, type ProviderRequest } from "./providers/index.js";
 
 type Handler = (
   req: IncomingMessage,
@@ -41,16 +36,16 @@ async function handleGenerate(
   res: ServerResponse,
   body: string,
 ): Promise<void> {
-  const req = JSON.parse(body) as GenerateRequest;
-  if (req.provider !== "anthropic") {
+  const req = JSON.parse(body) as ProviderRequest;
+  const provider = getProvider(req.provider);
+  if (!provider) {
     json(res, 400, {
       error: "unsupported_provider",
       message: `Provider "${req.provider}" is not supported`,
     });
     return;
   }
-  const client = createClient(req.api_key, req.base_url);
-  const result = await generate(client, req);
+  const result = await provider.generate(req);
   json(res, 200, result);
 }
 
@@ -59,16 +54,16 @@ async function handleStream(
   res: ServerResponse,
   body: string,
 ): Promise<void> {
-  const req = JSON.parse(body) as GenerateRequest;
-  if (req.provider !== "anthropic") {
+  const req = JSON.parse(body) as ProviderRequest;
+  const provider = getProvider(req.provider);
+  if (!provider) {
     json(res, 400, {
       error: "unsupported_provider",
       message: `Provider "${req.provider}" is not supported`,
     });
     return;
   }
-  const client = createClient(req.api_key, req.base_url);
-  await stream(client, req, res);
+  await provider.stream(req, res);
 }
 
 const routes: Route[] = [
