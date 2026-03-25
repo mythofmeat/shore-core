@@ -356,7 +356,7 @@ mod tests {
 
     #[test]
     fn error_code_all_variants() {
-        let codes = vec![
+        let codes = [
             ErrorCode::ProtocolError,
             ErrorCode::InvalidRequest,
             ErrorCode::NotFound,
@@ -365,7 +365,7 @@ mod tests {
             ErrorCode::Timeout,
             ErrorCode::InternalError,
         ];
-        let expected = vec![
+        let expected = [
             "protocol_error",
             "invalid_request",
             "not_found",
