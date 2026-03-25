@@ -70,3 +70,21 @@ after each iteration and it's included in prompts for context.
   - All 44 tests pass (16 client + 28 protocol); cargo build, test, clippy all clean
 ---
 
+## 2026-03-25 - US-004
+- What was implemented: Integration test suite with golden-file JSON fixtures for all SWP message types
+- Files changed:
+  - `shore-protocol/tests/golden_json.rs` — 44 integration tests covering:
+    - Golden-file fixtures for every server message type (ServerHello, History, Shutdown, Ping, CommandOutput, Error, StreamStart, StreamChunk, StreamEnd, Phase, NewMessage, ToolCall, ToolResult, SendImage, CacheWarning)
+    - Golden-file fixtures for every client message type (ClientHello, ClientMessageBody, Regen, Command)
+    - Standalone type fixtures (Message, StreamMetadata)
+    - Forward compatibility: unknown fields silently ignored (7 tests)
+    - Missing optional fields → None/default (10 tests)
+    - Protocol version mismatch → ProtocolError (2 tests)
+    - All ErrorCode variants and Role variants golden (2 tests)
+- **Learnings:**
+  - `assert_golden<T>` helper pattern: deserialize fixture, re-serialize, compare JSON values — handles field ordering differences automatically since serde_json::Value equality is order-independent
+  - Serde's default behavior (without `deny_unknown_fields`) already provides forward compatibility — unknown fields are silently ignored during deserialization
+  - `#[serde(tag = "type")]` tagged enums also silently ignore unknown fields in inner structs
+  - `#[serde(flatten)]` with NewMessage works correctly in golden tests — flattened Message fields appear at top level alongside `"type": "new_message"`
+---
+

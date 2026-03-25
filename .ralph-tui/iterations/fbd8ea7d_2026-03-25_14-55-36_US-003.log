@@ -1,0 +1,207 @@
+# Iteration 3 Log
+
+## Metadata
+
+- **Task ID**: US-003
+- **Task Title**: shore-client — SWP client library
+- **Description**: As a developer, I want a reusable SWP client library so that the CLI, TUI, and bridges can connect to the daemon without duplicating connection logic.
+- **Status**: completed
+- **Task Completed**: Yes
+- **Promise Detected**: Yes
+- **Started At**: 2026-03-25T03:55:36.402Z
+- **Ended At**: 2026-03-25T04:00:54.040Z
+- **Duration**: 5m 17s
+- **Input Tokens**: 96
+- **Output Tokens**: 19099
+- **Total Tokens**: 19195
+- **Agent**: claude
+- **Model**: claude-opus-4-6
+- **Sandbox Mode**: auto
+- **Sandbox Network**: Enabled
+--- RAW OUTPUT ---
+
+
+I'll start by studying the existing codebase to understand the project structure, existing patterns, and what's already been implemented.
+[94m[Read][0m [95m/home/eshen/Development/silvershore/.ralph-tui/progress.md[0m
+[94m[Read][0m [95m/home/eshen/Development/silvershore/Cargo.toml[0m
+[94m[Read][0m [95m/home/eshen/Development/silvershore/shore-protocol/src/lib.rs[0m
+[94m[Read][0m [95m/home/eshen/Development/silvershore/shore-client/Cargo.toml[0m
+[94m[Read][0m [95m/home/eshen/Development/silvershore/shore-client/src/lib.rs[0m
+Now let me read all the protocol types to understand the full type system.
+[94m[Read][0m [95m/home/eshen/Development/silvershore/shore-protocol/src/types.rs[0m
+[94m[Read][0m [95m/home/eshen/Development/silvershore/shore-protocol/src/client_msg.rs[0m
+[94m[Read][0m [95m/home/eshen/Development/silvershore/shore-protocol/src/server_msg.rs[0m
+[94m[Read][0m [95m/home/eshen/Development/silvershore/shore-protocol/src/error.rs[0m
+[94m[Read][0m [95m/home/eshen/Development/silvershore/shore-protocol/Cargo.toml[0m
+I have a clear picture of the protocol types. Let me implement the shore-client crate. I'll start with the Cargo.toml and then create all source files.
+[94m[ToolSearch][0m query: [93mselect:TodoWrite[0m
+[94m[TodoWrite][0m
+[94m[Write][0m [95m/home/eshen/Development/silvershore/shore-client/Cargo.toml[0m "[package]
+name = "shore-client"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+shore-protocol = { path = "../shore-protocol" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tok... (361 chars)"
+[94m[TodoWrite][0m
+Now let me implement the core connection module. The SWPConnection needs to handle both Unix sockets and TCP, send/receive JSON-Lines, and implement the handshake protocol.
+[94m[Write][0m [95m/home/eshen/Development/silvershore/shore-client/src/connection.rs[0m "use std::path::Path;
+
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
+use tokio::net::TcpStream;
+#[cfg(unix)]
+use tokio::net::UnixStream;
+
+use shore_protocol::client_msg::{Clien... (8129 chars)"
+[94m[TodoWrite][0m
+[94m[Write][0m [95m/home/eshen/Development/silvershore/shore-client/src/discovery.rs[0m "use std::path::{Path, PathBuf};
+
+use serde::Deserialize;
+
+use crate::connection::ServerAddr;
+use crate::error::{ClientError, Result};
+
+/// One entry in `$XDG_RUNTIME_DIR/shore/instances.json`.
+#[deriv... (3390 chars)"
+[94m[TodoWrite][0m
+[94m[Write][0m [95m/home/eshen/Development/silvershore/shore-client/src/stream.rs[0m "use shore_protocol::server_msg::{ServerMessage, StreamChunk, StreamEnd, StreamStart};
+
+use crate::error::{ClientError, Result};
+
+/// Callbacks invoked during stream consumption.
+///
+/// All callbacks ... (4474 chars)"
+Now let me create the error module and the main lib.rs.
+[94m[Write][0m [95m/home/eshen/Development/silvershore/shore-client/src/error.rs[0m "/// Errors produced by the shore-client library.
+#[derive(Debug, thiserror::Error)]
+pub enum ClientError {
+    #[error("connection failed: {0}")]
+    Connect(String),
+
+    #[error("disconnected from s... (650 chars)"
+[94m[TodoWrite][0m
+[94m[Write][0m [95m/home/eshen/Development/silvershore/shore-client/src/lib.rs[0m "pub mod connection;
+pub mod discovery;
+pub mod error;
+pub mod stream;
+
+pub use connection::{SWPConnection, ServerAddr};
+pub use discovery::{discover, discover_or_default};
+pub use error::{ClientError,... (15924 chars)"
+I need to add the `connect_raw` method used by the tests to connection.rs.
+[94m[Read][0m [95m/home/eshen/Development/silvershore/shore-client/src/connection.rs[0m
+[94m[Edit][0m [95m/home/eshen/Development/silvershore/shore-client/src/connection.rs[0m edit: "/// Build an `SWPConnection` from an already-conne..." → "/// Build an `SWPConnection` from an already-conne..."
+[94m[TodoWrite][0m
+[94m[Bash][0m Build the full workspace $ cargo build --workspace 2>&1
+Build passes. Now let's run tests and clippy.
+[94m[Bash][0m Run all workspace tests $ cargo test --workspace 2>&1
+[94m[Bash][0m Run clippy on workspace $ cargo clippy --workspace 2>&1
+
+[91m[Error: Exit code 101
+   Compiling parking_lot_core v0.9.12
+   Compiling cfg-if v1.0.4
+   Compiling scopeguard v1.2.0
+   Compiling smallvec v1.15.1
+   Compiling errno v0.3.14
+   Compiling shore-protocol v0.1.0 (/home/eshen/Development/silvershore/shore-protocol)
+   Compiling lock_api v0.4.14
+   Compiling signal-hook-registry v1.4.8
+   Compiling parking_lot v0.12.5
+   Compiling tokio v1.50.0
+   Compiling shore-client v0.1.0 (/home/eshen/Development/silvershore/shore-client)
+error[E0277]: `SWPConnection` doesn't implement `Debug`
+   --> shore-client/src/lib.rs:123:26
+    |
+123 |         let err = result.unwrap_err();
+    |                          ^^^^^^^^^^ unsatisfied trait bound
+    |
+help: the trait `Debug` is not implemented for `SWPConnection`
+   --> shore-client/src/connection.rs:31:1
+    |
+ 31 | pub struct SWPConnection {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^
+    = note: add `#[derive(Debug)]` to `SWPConnection` or manually `impl Debug for SWPConnection`
+    = help: the following other types implement trait `Debug`:
+              ()
+              (A, Z, Y, X, W, V, U, T)
+              (B, A, Z, Y, X, W, V, U, T)
+              (C, B, A, Z, Y, X, W, V, U, T)
+              (D, C, B, A, Z, Y, X, W, V, U, T)
+              (E, D, C, B, A, Z, Y, X, W, V, U, T)
+              (T,)
+              (U, T)
+            and 5 others
+    = note: required for `(SWPConnection, shore_protocol::server_msg::ServerHello, shore_protocol::server_msg::History)` to implement `Debug`
+note: required by a bound in `std::result::Result::<T, E>::unwrap_err`
+   --> /rustc/01f6ddf7588f42ae2d7eb0a2f21d44e8e96674cf/library/core/src/result.rs:1324:5
+
+error[E0277]: `SWPConnection` doesn't implement `Debug`
+   --> shore-client/src/lib.rs:143:26
+    |
+143 |         let err = result.unwrap_err();
+    |                          ^^^^^^^^^^ unsatisfied trait bound
+    |
+help: the trait `Debug` is not implemented for `SWPConnection`
+   --> shore-client/src/connection.rs:31:1
+    |
+ 31 | pub struct SWPConnection {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^
+    = note: add `#[derive(Debug)]` to `SWPConnection` or manually `impl Debug for SWPConnection`
+    = help: the following other types implement trait `Debug`:
+              ()
+              (A, Z, Y, X, W, V, U, T)
+              (B, A, Z, Y, X, W, V, U, T)
+              (C, B, A, Z, Y, X, W, V, U, T)
+              (D, C, B, A, Z, Y, X, W, V, U, T)
+              (E, D, C, B, A, Z, Y, X, W, V, U, T)
+              (T,)
+              (U, T)
+            and 5 others
+    = note: required for `(SWPConnection, shore_protocol::server_msg::ServerHello, shore_protocol::server_msg::History)` to implement `Debug`
+note: required by a bound in `std::result::Result::<T, E>::unwrap_err`
+   --> /rustc/01f6ddf7588f42ae2d7eb0a2f21d44e8e96674cf/library/core/src/result.rs:1324:5
+
+warning: unused import: `tokio::io::AsyncWriteExt`
+  --> shore-client/src/lib.rs:28:13
+   |
+28 |         use tokio::io::AsyncWriteExt;
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+For more information about this error, try `rustc --explain E0277`.
+warning: `shore-client` (lib test) generated 1 warning
+error: could not compile `shore-client` (lib test) due to 2 previous errors; 1 warning emitted][0m
+
+[91m[Error: <tool_use_error>Cancelled: parallel tool call Bash(cargo test --workspace 2>&1) errored</tool_use_error>][0m
+Two issues: `SWPConnection` needs `Debug`, and there's an unused import in a test helper. Let me fix both.
+[94m[Read][0m [95m/home/eshen/Development/silvershore/shore-client/src/connection.rs[0m
+[94m[Edit][0m [95m/home/eshen/Development/silvershore/shore-client/src/connection.rs[0m edit: "pub struct SWPConnection {
+    reader: BufReader<B..." → "pub struct SWPConnection {
+    reader: BufReader<B..."
+Now fix the unused import in the test helper:
+[94m[Edit][0m [95m/home/eshen/Development/silvershore/shore-client/src/lib.rs[0m edit: "    async fn write_json_line<W: tokio::io::AsyncWr..." → "    async fn write_json_line<W: tokio::io::AsyncWr..."
+[94m[Bash][0m Run all workspace tests $ cargo test --workspace 2>&1
+All 44 tests pass (16 shore-client + 28 shore-protocol). Now clippy:
+[94m[Bash][0m Run clippy on workspace $ cargo clippy --workspace 2>&1
+Clean — no warnings. Let me update progress.md.
+[94m[TodoWrite][0m
+[94m[Read][0m [95m/home/eshen/Development/silvershore/.ralph-tui/progress.md[0m
+[94m[Edit][0m [95m/home/eshen/Development/silvershore/.ralph-tui/progress.md[0m edit: "- `StreamChunk.content_type` defaults to `"text"` ..." → "- `StreamChunk.content_type` defaults to `"text"` ..."
+[94m[Edit][0m [95m/home/eshen/Development/silvershore/.ralph-tui/progress.md[0m edit: "  - All 28 round-trip tests pass; cargo build, tes..." → "  - All 28 round-trip tests pass; cargo build, tes..."
+[94m[TodoWrite][0m
+All acceptance criteria met:
+
+- **connection.rs** — `SWPConnection` with Unix socket + TCP, JSON-Lines send/recv using shore-protocol types
+- **discovery.rs** — Reads `$XDG_RUNTIME_DIR/shore/instances.json`, finds socket for config path, falls back to default
+- **stream.rs** — `StreamHandler` consumes StreamStart/StreamChunk/StreamEnd, calls user-provided `StreamCallbacks`
+- **Handshake** — `connect()` and `connect_raw()` implement: receive server Hello → send client Hello → receive History
+- **Convenience methods** — `send_message()`, `send_regen()`, `send_command()`
+- **Async (tokio)** with `Send` bounds (connection uses `Box<dyn AsyncReadWrite>` which is `Send`)
+- **16 unit tests** — mock server validates handshake, wrong version, unexpected message, send/recv round-trip, stream assembly, callbacks, error states, discovery
+- **cargo build/test/clippy --workspace** all pass clean (44 total tests)
+
+<promise>COMPLETE</promise>
