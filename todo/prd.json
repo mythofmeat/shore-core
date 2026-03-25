@@ -55,11 +55,12 @@
         "cargo clippy --workspace passes"
       ],
       "priority": 2,
-      "passes": false,
+      "passes": true,
       "notes": "Phase 1: Foundation. Reference docs/SHORE-V2-ARCHITECTURE.md §3 for protocol spec, especially §3.5 Message Object, Streaming, and Push sections.",
       "dependsOn": [
         "US-001"
-      ]
+      ],
+      "completionNotes": "Completed by agent"
     },
     {
       "id": "US-003",
@@ -1083,6 +1084,6 @@
     }
   ],
   "metadata": {
-    "updatedAt": "2026-03-25T03:52:50.952Z"
+    "updatedAt": "2026-03-25T03:55:35.366Z"
   }
 }
