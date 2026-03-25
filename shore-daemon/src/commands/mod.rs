@@ -1,197 +1,180 @@
+pub mod conversation;
+pub mod navigation;
 pub mod state;
 
-use serde_json::Value;
+use std::path::PathBuf;
 
-// ---------------------------------------------------------------------------
-// Command error
-// ---------------------------------------------------------------------------
+use shore_protocol::client_msg::Command;
+use shore_protocol::error::ErrorCode;
+use shore_protocol::server_msg::{CommandOutput, Error, ServerMessage};
+use tokio::sync::broadcast;
+use tracing::info;
 
-#[derive(Debug)]
-pub enum CommandError {
-    UnknownCommand(String),
-    InvalidArgs(String),
-    Db(String),
-    Internal(String),
+use crate::config::LoadedConfig;
+use crate::engine::{ConversationEngine, EngineError};
+
+/// Cumulative token usage tracked across the daemon session.
+#[derive(Debug, Clone, Default)]
+pub struct SessionTokens {
+    pub input: u32,
+    pub output: u32,
+    pub cache_read: u32,
+    pub cache_write: u32,
 }
 
-impl std::fmt::Display for CommandError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            CommandError::UnknownCommand(name) => write!(f, "unknown command: {name}"),
-            CommandError::InvalidArgs(msg) => write!(f, "invalid args: {msg}"),
-            CommandError::Db(e) => write!(f, "db: {e}"),
-            CommandError::Internal(e) => write!(f, "internal: {e}"),
-        }
-    }
+/// Shared state for command handlers.
+pub struct CommandContext {
+    /// The active conversation engine.
+    pub engine: ConversationEngine,
+    /// Loaded configuration.
+    pub config: LoadedConfig,
+    /// Broadcast sender for push messages.
+    pub push_tx: broadcast::Sender<ServerMessage>,
+    /// Data directory (`$XDG_DATA_HOME/shore/`).
+    pub data_dir: PathBuf,
+    /// Currently active model name.
+    pub active_model: Option<String>,
+    /// Whether autonomy is paused.
+    pub autonomy_paused: bool,
+    /// Cumulative token usage for the session.
+    pub session_tokens: SessionTokens,
 }
 
-impl std::error::Error for CommandError {}
+/// Convenience type for command handler results.
+pub type CommandResult = Result<serde_json::Value, (ErrorCode, String)>;
 
-// ---------------------------------------------------------------------------
-// Command result
-// ---------------------------------------------------------------------------
+/// Dispatch a command to the appropriate handler.
+pub fn dispatch(ctx: &mut CommandContext, cmd: &Command) -> ServerMessage {
+    info!(command = %cmd.name, "Dispatching command");
 
-/// The result of a command execution. Maps directly to `CommandOutput` in the
-/// protocol: the `name` field comes from the command dispatch and `data` is
-/// whatever the handler returns.
-#[derive(Debug)]
-pub struct CommandResult {
-    pub data: Value,
-    /// Whether this command triggers a History push (e.g. toggle_private).
-    pub push_history: bool,
-}
+    let result = match cmd.name.as_str() {
+        // Navigation
+        "list_characters" => navigation::list_characters(ctx),
+        "switch_character" => navigation::switch_character(ctx, &cmd.args),
+        "list_chats" => navigation::list_chats(ctx),
+        "switch_chat" => navigation::switch_chat(ctx, &cmd.args),
+        "new_chat" => navigation::new_chat(ctx, &cmd.args),
 
-impl CommandResult {
-    pub fn data(data: Value) -> Self {
-        Self {
+        // Conversation
+        "swipe" => conversation::swipe(ctx, &cmd.args),
+        "log" => conversation::log(ctx, &cmd.args),
+        "edit" => conversation::edit(ctx, &cmd.args),
+        "delete" => conversation::delete(ctx, &cmd.args),
+
+        // State
+        "status" => state::status(ctx),
+        "list_models" => state::list_models(ctx),
+        "switch_model" => state::switch_model(ctx, &cmd.args),
+        "memory" => state::memory(&cmd.args),
+        "toggle_private" => state::toggle_private(ctx),
+        "compact" => state::compact(&cmd.args),
+        "toggle_autonomy" => state::toggle_autonomy(ctx),
+        "config" => state::config(ctx, &cmd.args),
+
+        _ => Err((
+            ErrorCode::InvalidRequest,
+            format!("Unknown command: {}", cmd.name),
+        )),
+    };
+
+    match result {
+        Ok(data) => ServerMessage::CommandOutput(CommandOutput {
+            name: cmd.name.clone(),
             data,
-            push_history: false,
+        }),
+        Err((code, message)) => ServerMessage::Error(Error { code, message }),
+    }
+}
+
+/// Convert an EngineError to a command error tuple.
+pub fn engine_err(e: EngineError) -> (ErrorCode, String) {
+    match &e {
+        EngineError::ConversationNotFound(_) | EngineError::MessageNotFound(_) => {
+            (ErrorCode::NotFound, e.to_string())
         }
-    }
-
-    pub fn with_history_push(data: Value) -> Self {
-        Self {
-            data,
-            push_history: true,
-        }
+        EngineError::NoActiveConversation => (ErrorCode::InvalidRequest, e.to_string()),
+        _ => (ErrorCode::InternalError, e.to_string()),
     }
 }
-
-// ---------------------------------------------------------------------------
-// Command context trait — dependency injection
-// ---------------------------------------------------------------------------
-
-/// Provides access to shared state needed by command handlers.
-/// Not `Send + Sync` because `MemoryDB` (rusqlite) is not `Sync`.
-/// Command handlers run on a per-connection task.
-pub trait CommandContext {
-    fn memory_db(&self) -> &crate::memory::db::MemoryDB;
-    fn is_private(&self) -> bool;
-    fn set_private(&self, private: bool);
-    fn is_autonomy_paused(&self) -> bool;
-    fn set_autonomy_paused(&self, paused: bool);
-    fn effective_config(&self) -> Value;
-    fn autonomy_status(&self) -> Option<crate::autonomy::AutonomyStatus>;
-}
-
-// ---------------------------------------------------------------------------
-// Command dispatch
-// ---------------------------------------------------------------------------
-
-/// Dispatch a command by name to its handler.
-///
-/// Only handles the state commands (memory, compact, toggle_private, config)
-/// that are part of US-025. Navigation and conversation commands are
-/// deferred to their respective user stories.
-pub async fn dispatch(
-    name: &str,
-    args: Value,
-    ctx: &dyn CommandContext,
-) -> Result<CommandResult, CommandError> {
-    match name {
-        "memory" => state::handle_memory(args, ctx).await,
-        "compact" => state::handle_compact(args, ctx).await,
-        "toggle_private" => state::handle_toggle_private(ctx).await,
-        "toggle_autonomy" => state::handle_toggle_autonomy(ctx).await,
-        "config" => state::handle_config(ctx).await,
-        "status" => state::handle_status(ctx).await,
-        _ => Err(CommandError::UnknownCommand(name.to_string())),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::db::MemoryDB;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use shore_protocol::client_msg::Command;
 
-    struct TestCommandCtx {
-        db: MemoryDB,
-        private: AtomicBool,
-        autonomy_paused: AtomicBool,
+    fn make_ctx(tmp: &tempfile::TempDir) -> (CommandContext, broadcast::Receiver<ServerMessage>) {
+        let (push_tx, push_rx) = broadcast::channel(16);
+        let data_dir = tmp.path().to_path_buf();
+        let engine = ConversationEngine::new(
+            "TestChar".to_string(),
+            data_dir.clone(),
+            push_tx.clone(),
+        )
+        .unwrap();
+
+        let config = crate::config::LoadedConfig {
+            app: crate::config::app::AppConfig::default(),
+            models: crate::config::models::ModelsConfig::default(),
+            dirs: crate::config::ShoreDirs {
+                config: tmp.path().join("config"),
+                data: data_dir.clone(),
+                runtime: tmp.path().join("runtime"),
+            },
+            character_definition: None,
+            user_definition: None,
+        };
+
+        let ctx = CommandContext {
+            engine,
+            config,
+            push_tx,
+            data_dir,
+            active_model: None,
+            autonomy_paused: false,
+            session_tokens: Default::default(),
+        };
+        (ctx, push_rx)
     }
 
-    impl TestCommandCtx {
-        fn new() -> Self {
-            Self {
-                db: MemoryDB::open_in_memory().unwrap(),
-                private: AtomicBool::new(false),
-                autonomy_paused: AtomicBool::new(false),
+    #[test]
+    fn unknown_command_returns_invalid_request() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut ctx, _rx) = make_ctx(&tmp);
+
+        let cmd = Command {
+            rid: None,
+            name: "bogus_command".into(),
+            args: serde_json::json!({}),
+        };
+
+        let result = dispatch(&mut ctx, &cmd);
+        match result {
+            ServerMessage::Error(e) => {
+                assert_eq!(e.code, ErrorCode::InvalidRequest);
+                assert!(e.message.contains("bogus_command"));
             }
+            other => panic!("Expected Error, got {:?}", other),
         }
     }
 
-    impl CommandContext for TestCommandCtx {
-        fn memory_db(&self) -> &MemoryDB {
-            &self.db
-        }
-        fn is_private(&self) -> bool {
-            self.private.load(Ordering::SeqCst)
-        }
-        fn set_private(&self, private: bool) {
-            self.private.store(private, Ordering::SeqCst);
-        }
-        fn is_autonomy_paused(&self) -> bool {
-            self.autonomy_paused.load(Ordering::SeqCst)
-        }
-        fn set_autonomy_paused(&self, paused: bool) {
-            self.autonomy_paused.store(paused, Ordering::SeqCst);
-        }
-        fn effective_config(&self) -> Value {
-            serde_json::json!({
-                "model": "claude-sonnet-4-20250514",
-                "memory": { "enabled": true },
-            })
-        }
-        fn autonomy_status(&self) -> Option<crate::autonomy::AutonomyStatus> {
-            None
-        }
-    }
+    #[test]
+    fn dispatch_returns_command_output_with_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut ctx, _rx) = make_ctx(&tmp);
 
-    #[tokio::test]
-    async fn test_dispatch_unknown_command() {
-        let ctx = TestCommandCtx::new();
-        let result = dispatch("nonexistent", serde_json::json!({}), &ctx).await;
-        assert!(matches!(result, Err(CommandError::UnknownCommand(_))));
-    }
+        let cmd = Command {
+            rid: None,
+            name: "status".into(),
+            args: serde_json::json!({}),
+        };
 
-    #[tokio::test]
-    async fn test_dispatch_memory_command() {
-        let ctx = TestCommandCtx::new();
-        let result = dispatch("memory", serde_json::json!({}), &ctx).await;
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_dispatch_toggle_private() {
-        let ctx = TestCommandCtx::new();
-        let result = dispatch("toggle_private", serde_json::json!({}), &ctx).await;
-        assert!(result.is_ok());
-        assert!(result.unwrap().push_history);
-    }
-
-    #[tokio::test]
-    async fn test_dispatch_config() {
-        let ctx = TestCommandCtx::new();
-        let result = dispatch("config", serde_json::json!({}), &ctx).await;
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_dispatch_toggle_autonomy() {
-        let ctx = TestCommandCtx::new();
-        let result = dispatch("toggle_autonomy", serde_json::json!({}), &ctx).await;
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_dispatch_status() {
-        let ctx = TestCommandCtx::new();
-        let result = dispatch("status", serde_json::json!({}), &ctx).await;
-        assert!(result.is_ok());
+        let result = dispatch(&mut ctx, &cmd);
+        match result {
+            ServerMessage::CommandOutput(output) => {
+                assert_eq!(output.name, "status");
+                assert!(output.data.is_object());
+            }
+            other => panic!("Expected CommandOutput, got {:?}", other),
+        }
     }
 }

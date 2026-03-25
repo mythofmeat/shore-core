@@ -5,8 +5,10 @@ import {
   translateTools,
   generate,
   stream,
+  embed,
+  imageGenerate,
 } from "./openai.js";
-import type { ProviderRequest } from "./types.js";
+import type { ProviderRequest, EmbedRequest, ImageGenerateRequest } from "./types.js";
 import type { ServerResponse } from "node:http";
 
 // ── Helpers ────────────────────────────────────────────────────────────
@@ -571,5 +573,164 @@ describe("stream", () => {
     await stream(client, baseRequest(), res);
 
     expect(res.headHeaders["Content-Type"]).toBe("application/x-ndjson");
+  });
+});
+
+// ── Tests: embed ──────────────────────────────────────────────────────
+
+function baseEmbedRequest(overrides?: Partial<EmbedRequest>): EmbedRequest {
+  return {
+    provider: "openai",
+    model: "text-embedding-3-small",
+    api_key: "sk-test",
+    input: ["hello world"],
+    ...overrides,
+  };
+}
+
+function mockEmbedClient(response: Record<string, unknown>): OpenAI {
+  return {
+    embeddings: {
+      create: vi.fn().mockResolvedValue(response),
+    },
+  } as unknown as OpenAI;
+}
+
+describe("embed", () => {
+  it("returns embeddings for single input", async () => {
+    const client = mockEmbedClient({
+      data: [{ embedding: [0.1, -0.2, 0.3], index: 0 }],
+      usage: { total_tokens: 5 },
+    });
+    const result = await embed(client, baseEmbedRequest());
+
+    expect(result.embeddings).toEqual([[0.1, -0.2, 0.3]]);
+    expect(result.usage.total_tokens).toBe(5);
+    expect(result.timing.total_ms).toBeGreaterThanOrEqual(0);
+  });
+
+  it("returns embeddings for multiple inputs", async () => {
+    const client = mockEmbedClient({
+      data: [
+        { embedding: [0.1, 0.2], index: 0 },
+        { embedding: [0.3, 0.4], index: 1 },
+      ],
+      usage: { total_tokens: 10 },
+    });
+    const result = await embed(
+      client,
+      baseEmbedRequest({ input: ["text one", "text two"] }),
+    );
+
+    expect(result.embeddings).toEqual([
+      [0.1, 0.2],
+      [0.3, 0.4],
+    ]);
+    expect(result.usage.total_tokens).toBe(10);
+  });
+
+  it("passes correct params to SDK", async () => {
+    const client = mockEmbedClient({
+      data: [{ embedding: [0.1], index: 0 }],
+      usage: { total_tokens: 3 },
+    });
+    await embed(client, baseEmbedRequest({ model: "text-embedding-3-large" }));
+
+    expect(client.embeddings.create).toHaveBeenCalledWith({
+      model: "text-embedding-3-large",
+      input: ["hello world"],
+    });
+  });
+
+  it("handles missing usage gracefully", async () => {
+    const client = mockEmbedClient({
+      data: [{ embedding: [0.5], index: 0 }],
+      usage: undefined,
+    });
+    const result = await embed(client, baseEmbedRequest());
+
+    expect(result.usage.total_tokens).toBe(0);
+  });
+});
+
+// ── Tests: imageGenerate ──────────────────────────────────────────────
+
+function baseImageRequest(
+  overrides?: Partial<ImageGenerateRequest>,
+): ImageGenerateRequest {
+  return {
+    provider: "openai",
+    model: "dall-e-3",
+    api_key: "sk-test",
+    prompt: "a cat wearing a top hat",
+    ...overrides,
+  };
+}
+
+function mockImageClient(response: Record<string, unknown>): OpenAI {
+  return {
+    images: {
+      generate: vi.fn().mockResolvedValue(response),
+    },
+  } as unknown as OpenAI;
+}
+
+describe("imageGenerate", () => {
+  it("returns url and revised_prompt", async () => {
+    const client = mockImageClient({
+      data: [
+        {
+          url: "https://example.com/image.png",
+          revised_prompt: "a fluffy cat wearing a tall black top hat",
+        },
+      ],
+    });
+    const result = await imageGenerate(client, baseImageRequest());
+
+    expect(result.url).toBe("https://example.com/image.png");
+    expect(result.revised_prompt).toBe(
+      "a fluffy cat wearing a tall black top hat",
+    );
+    expect(result.timing.total_ms).toBeGreaterThanOrEqual(0);
+  });
+
+  it("passes size and quality to SDK", async () => {
+    const client = mockImageClient({
+      data: [{ url: "https://example.com/img.png", revised_prompt: "test" }],
+    });
+    await imageGenerate(
+      client,
+      baseImageRequest({ size: "1024x1024", quality: "hd" }),
+    );
+
+    expect(client.images.generate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        model: "dall-e-3",
+        prompt: "a cat wearing a top hat",
+        size: "1024x1024",
+        quality: "hd",
+      }),
+    );
+  });
+
+  it("omits size and quality when not provided", async () => {
+    const client = mockImageClient({
+      data: [{ url: "https://example.com/img.png", revised_prompt: "test" }],
+    });
+    await imageGenerate(client, baseImageRequest());
+
+    expect(client.images.generate).toHaveBeenCalledWith({
+      model: "dall-e-3",
+      prompt: "a cat wearing a top hat",
+    });
+  });
+
+  it("handles missing revised_prompt", async () => {
+    const client = mockImageClient({
+      data: [{ url: "https://example.com/img.png" }],
+    });
+    const result = await imageGenerate(client, baseImageRequest());
+
+    expect(result.revised_prompt).toBe("");
   });
 });

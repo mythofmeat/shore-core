@@ -1,7 +1,55 @@
 # Shore V2 — Example Configuration
+# All values shown are defaults unless noted otherwise.
 
 [daemon]
-socket_path = "/tmp/shore.sock"
+# socket_path = "/tmp/shore.sock"   # Override Unix socket path (auto-generated if omitted)
+# tcp_addr = "127.0.0.1:7320"       # Optional TCP listener
 
 [character]
 name = "Shore"
+
+[defaults]
+# model = "claude-sonnet"           # Must match a name in models.toml
+stream = true
+
+[behavior.autonomy]
+enabled = false
+personality = 0.5                    # 0.0–1.0
+max_unanswered = 1
+max_deferral_hours = 24.0
+
+[behavior.autonomy.heartbeat]
+session_gap_secs = 1800              # 30 min — idle gap marking session boundary
+session_probe_floor_secs = 180       # 3 min — minimum idle before post-session probe
+dormant_threshold = 8                # Max consecutive unanswered probes
+
+[behavior.autonomy.compaction]
+idle_trigger_minutes = 30
+
+[behavior.autonomy.collation]
+auto_run = true
+
+[behavior.autonomy.cache_keepalive]
+enabled = true
+ttl_minutes = 5
+max_pings = 12
+
+[behavior.tool_use]
+enabled = true
+max_iterations = 10
+
+[memory]
+rag_results = 5
+rag_threshold = 0.3
+
+# [connections.matrix]
+# homeserver = "https://matrix.example.com"
+# user_id = "@shore:example.com"
+# room_id = "!abc123:example.com"
+
+[services.llm]
+# socket_path = "/run/user/1000/shore/llm.sock"
+# base_url = "http://localhost:3000"
+
+[advanced]
+cache_invalidation_warnings = true

@@ -1,465 +1,424 @@
-use super::{CommandContext, CommandError, CommandResult};
-use serde_json::{json, Value};
+use serde_json::json;
+use shore_protocol::error::ErrorCode;
 
-// ---------------------------------------------------------------------------
-// memory command
-// ---------------------------------------------------------------------------
+use super::{engine_err, CommandContext, CommandResult};
 
-/// Handle the `memory` command.
-///
-/// - No args: return memory status (entry counts, entity count, RAG info).
-/// - With `query` arg: search memory entries by text match.
-pub async fn handle_memory(args: Value, ctx: &dyn CommandContext) -> Result<CommandResult, CommandError> {
-    let query = args.get("query").and_then(|v| v.as_str());
+/// Return system status: character, conversation, model, autonomy state, token counts.
+pub fn status(ctx: &CommandContext) -> CommandResult {
+    let message_count = ctx.engine.messages().map(|m| m.len()).unwrap_or(0);
 
-    match query {
-        None => {
-            // Status mode: return counts.
-            let db = ctx.memory_db();
+    Ok(json!({
+        "character": ctx.engine.character_name(),
+        "active_conversation": ctx.engine.active_conversation_id(),
+        "message_count": message_count,
+        "active_model": ctx.active_model,
+        "autonomy_paused": ctx.autonomy_paused,
+        "tokens": {
+            "input": ctx.session_tokens.input,
+            "output": ctx.session_tokens.output,
+            "cache_read": ctx.session_tokens.cache_read,
+            "cache_write": ctx.session_tokens.cache_write,
+        },
+    }))
+}
 
-            let total = db
-                .count_entries()
-                .map_err(|e| CommandError::Db(e.to_string()))?;
-            let active = db
-                .count_entries_by_status("active")
-                .map_err(|e| CommandError::Db(e.to_string()))?;
-            let superseded = db
-                .count_entries_by_status("superseded")
-                .map_err(|e| CommandError::Db(e.to_string()))?;
-            let protected = db
-                .count_entries_by_status("protected")
-                .map_err(|e| CommandError::Db(e.to_string()))?;
-            let entities = db
-                .count_entities()
-                .map_err(|e| CommandError::Db(e.to_string()))?;
+/// List available model profiles from models.toml.
+pub fn list_models(ctx: &CommandContext) -> CommandResult {
+    let models: Vec<_> = ctx
+        .config
+        .models
+        .models
+        .iter()
+        .map(|m| {
+            json!({
+                "name": m.name,
+                "provider": m.provider,
+                "model_id": m.model_id,
+            })
+        })
+        .collect();
 
-            Ok(CommandResult::data(json!({
-                "status": "ok",
-                "entries": {
-                    "total": total,
-                    "active": active,
-                    "superseded": superseded,
-                    "protected": protected,
-                },
-                "entities": entities,
-                "rag": {
-                    "bm25_indexed": true,
-                    "vector_store": true,
-                },
-            })))
-        }
-        Some(q) => {
-            // Search mode: find entries matching query text.
-            let db = ctx.memory_db();
-            let active_entries = db
-                .get_entries_by_status("active")
-                .map_err(|e| CommandError::Db(e.to_string()))?;
+    Ok(json!({
+        "models": models,
+        "active": ctx.active_model,
+    }))
+}
 
-            let query_lower = q.to_lowercase();
-            let matches: Vec<Value> = active_entries
-                .iter()
-                .filter(|e| e.summary_text.to_lowercase().contains(&query_lower))
-                .take(20)
-                .map(|e| {
-                    json!({
-                        "id": e.id,
-                        "type": e.memory_type,
-                        "summary": e.summary_text,
-                        "confidence": e.confidence,
-                        "tags": e.topic_tags,
-                    })
-                })
-                .collect();
+/// Switch model or show current. Validates against models.toml profiles.
+pub fn switch_model(ctx: &mut CommandContext, args: &serde_json::Value) -> CommandResult {
+    let name = args.get("name").and_then(|v| v.as_str());
 
-            Ok(CommandResult::data(json!({
-                "query": q,
-                "results": matches,
-                "count": matches.len(),
-            })))
+    match name {
+        None => Ok(json!({ "active": ctx.active_model })),
+        Some(name) => {
+            if ctx.config.models.find_model(name).is_none() {
+                return Err((
+                    ErrorCode::NotFound,
+                    format!(
+                        "Model not found: {name}. Use list_models to see available models."
+                    ),
+                ));
+            }
+            ctx.active_model = Some(name.to_string());
+            Ok(json!({ "active": name, "changed": true }))
         }
     }
 }
 
-// ---------------------------------------------------------------------------
-// compact command
-// ---------------------------------------------------------------------------
+/// Memory command (stub).
+pub fn memory(args: &serde_json::Value) -> CommandResult {
+    let query = args.get("query").and_then(|v| v.as_str());
+    Ok(json!({
+        "status": "not_implemented",
+        "query": query,
+        "message": "Memory system is not yet implemented",
+    }))
+}
 
-/// Handle the `compact` command.
-///
-/// Triggers compaction of the current conversation. Supports `dry_run` arg.
-/// The actual compaction requires the CompactionManager and LLM dependencies
-/// which are wired in at the engine level. This handler validates args and
-/// returns the appropriate response shape.
-pub async fn handle_compact(args: Value, ctx: &dyn CommandContext) -> Result<CommandResult, CommandError> {
+/// Toggle private mode on the active conversation.
+pub fn toggle_private(ctx: &mut CommandContext) -> CommandResult {
+    let conv_id = ctx
+        .engine
+        .active_conversation_id()
+        .ok_or_else(|| (ErrorCode::InvalidRequest, "No active conversation".into()))?
+        .to_string();
+
+    let current_private = ctx
+        .engine
+        .list_conversations()
+        .iter()
+        .find(|c| c.id == conv_id)
+        .map(|c| c.private)
+        .unwrap_or(false);
+
+    let new_private = !current_private;
+    ctx.engine
+        .set_private(&conv_id, new_private)
+        .map_err(engine_err)?;
+
+    // Trigger history push so clients see the updated private state.
+    ctx.engine.broadcast_history();
+
+    Ok(json!({
+        "conversation_id": conv_id,
+        "private": new_private,
+    }))
+}
+
+/// Compaction command (stub).
+pub fn compact(args: &serde_json::Value) -> CommandResult {
     let dry_run = args
         .get("dry_run")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-
-    if ctx.is_private() {
-        return Ok(CommandResult::data(json!({
-            "error": "compaction skipped: conversation is private",
-            "dry_run": dry_run,
-        })));
-    }
-
-    // Return a response indicating compaction was triggered.
-    // The engine layer will wire this to the actual CompactionManager.
-    Ok(CommandResult::data(json!({
-        "triggered": true,
+    Ok(json!({
+        "status": "not_implemented",
         "dry_run": dry_run,
-        "note": "Compaction scheduled. Results will appear in memory status.",
-    })))
+        "message": "Compaction is not yet implemented",
+    }))
 }
 
-// ---------------------------------------------------------------------------
-// toggle_private command
-// ---------------------------------------------------------------------------
-
-/// Handle the `toggle_private` command.
-///
-/// Toggles the private flag on the current conversation and pushes History
-/// so clients stay in sync.
-pub async fn handle_toggle_private(ctx: &dyn CommandContext) -> Result<CommandResult, CommandError> {
-    let was_private = ctx.is_private();
-    let now_private = !was_private;
-
-    ctx.set_private(now_private);
-
-    Ok(CommandResult::with_history_push(json!({
-        "private": now_private,
-        "was_private": was_private,
-    })))
+/// Toggle autonomy pause/resume (stub).
+pub fn toggle_autonomy(ctx: &mut CommandContext) -> CommandResult {
+    ctx.autonomy_paused = !ctx.autonomy_paused;
+    Ok(json!({
+        "autonomy_paused": ctx.autonomy_paused,
+    }))
 }
 
-// ---------------------------------------------------------------------------
-// toggle_autonomy command
-// ---------------------------------------------------------------------------
+/// Show effective configuration. Optionally filtered by section name.
+pub fn config(ctx: &CommandContext, args: &serde_json::Value) -> CommandResult {
+    let section = args.get("section").and_then(|v| v.as_str());
 
-/// Handle the `toggle_autonomy` command.
-///
-/// Toggles the autonomy paused flag. When paused, the heartbeat scheduler
-/// will not trigger probes or social-need rolls.
-pub async fn handle_toggle_autonomy(
-    ctx: &dyn CommandContext,
-) -> Result<CommandResult, CommandError> {
-    let was_paused = ctx.is_autonomy_paused();
-    let now_paused = !was_paused;
+    let app_json = serde_json::to_value(&ctx.config.app)
+        .map_err(|e| (ErrorCode::InternalError, format!("Failed to serialize config: {e}")))?;
 
-    ctx.set_autonomy_paused(now_paused);
-
-    Ok(CommandResult::data(json!({
-        "autonomy_paused": now_paused,
-        "was_paused": was_paused,
-    })))
-}
-
-// ---------------------------------------------------------------------------
-// status command
-// ---------------------------------------------------------------------------
-
-/// Handle the `status` command.
-///
-/// Returns a snapshot of the autonomy subsystem: heartbeat state, social need
-/// bar level, τ value, cache keepalive state, and pause flag.
-pub async fn handle_status(
-    ctx: &dyn CommandContext,
-) -> Result<CommandResult, CommandError> {
-    match ctx.autonomy_status() {
-        Some(status) => {
-            let data = serde_json::to_value(&status)
-                .map_err(|e| CommandError::Internal(e.to_string()))?;
-            Ok(CommandResult::data(json!({ "autonomy": data })))
-        }
-        None => Ok(CommandResult::data(json!({
-            "autonomy": null,
-            "note": "Autonomy subsystem not active",
-        }))),
+    match section {
+        None => Ok(json!({ "config": app_json })),
+        Some(name) => match app_json.get(name) {
+            Some(data) => Ok(json!({ "section": name, "config": data })),
+            None => Err((
+                ErrorCode::NotFound,
+                format!("Config section not found: {name}"),
+            )),
+        },
     }
 }
-
-// ---------------------------------------------------------------------------
-// config command
-// ---------------------------------------------------------------------------
-
-/// Handle the `config` command.
-///
-/// Renders the effective configuration as JSON (TOML rendering deferred
-/// to the config module when it's implemented).
-pub async fn handle_config(ctx: &dyn CommandContext) -> Result<CommandResult, CommandError> {
-    let config = ctx.effective_config();
-
-    Ok(CommandResult::data(json!({
-        "config": config,
-    })))
-}
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::db::{Entry, MemoryDB};
-    use chrono::Utc;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use crate::commands::CommandContext;
+    use crate::config::models::{ModelProfile, ModelsConfig};
+    use crate::engine::ConversationEngine;
+    use shore_protocol::server_msg::ServerMessage;
+    use shore_protocol::types::{Message, Role};
+    use tempfile::TempDir;
+    use tokio::sync::broadcast;
 
-    struct TestCtx {
-        db: MemoryDB,
-        private: AtomicBool,
-        autonomy_paused: AtomicBool,
-        config: Value,
+    fn make_ctx(tmp: &TempDir) -> (CommandContext, broadcast::Receiver<ServerMessage>) {
+        make_ctx_with_models(tmp, ModelsConfig::default())
     }
 
-    impl TestCtx {
-        fn new() -> Self {
-            Self {
-                db: MemoryDB::open_in_memory().unwrap(),
-                private: AtomicBool::new(false),
-                autonomy_paused: AtomicBool::new(false),
-                config: json!({
-                    "model": "claude-sonnet-4-20250514",
-                    "memory": { "enabled": true },
-                }),
-            }
+    fn make_ctx_with_models(
+        tmp: &TempDir,
+        models: ModelsConfig,
+    ) -> (CommandContext, broadcast::Receiver<ServerMessage>) {
+        let (push_tx, push_rx) = broadcast::channel(16);
+        let data_dir = tmp.path().to_path_buf();
+        let engine =
+            ConversationEngine::new("TestChar".to_string(), data_dir.clone(), push_tx.clone())
+                .unwrap();
+
+        let config = crate::config::LoadedConfig {
+            app: crate::config::app::AppConfig::default(),
+            models,
+            dirs: crate::config::ShoreDirs {
+                config: tmp.path().join("config"),
+                data: data_dir.clone(),
+                runtime: tmp.path().join("runtime"),
+            },
+            character_definition: None,
+            user_definition: None,
+        };
+
+        let ctx = CommandContext {
+            engine,
+            config,
+            push_tx,
+            data_dir,
+            active_model: None,
+            autonomy_paused: false,
+            session_tokens: Default::default(),
+        };
+        (ctx, push_rx)
+    }
+
+    fn sample_models() -> ModelsConfig {
+        ModelsConfig {
+            provider_defaults: Default::default(),
+            models: vec![
+                ModelProfile {
+                    name: "claude-sonnet".into(),
+                    provider: "anthropic".into(),
+                    model_id: "claude-sonnet-4-20250514".into(),
+                    max_context_tokens: None,
+                    max_tokens: None,
+                    temperature: None,
+                    top_p: None,
+                    base_url: None,
+                    api_key_env: None,
+                },
+                ModelProfile {
+                    name: "gpt-4o".into(),
+                    provider: "openai".into(),
+                    model_id: "gpt-4o".into(),
+                    max_context_tokens: None,
+                    max_tokens: None,
+                    temperature: None,
+                    top_p: None,
+                    base_url: None,
+                    api_key_env: None,
+                },
+            ],
         }
     }
 
-    impl CommandContext for TestCtx {
-        fn memory_db(&self) -> &MemoryDB {
-            &self.db
-        }
-        fn is_private(&self) -> bool {
-            self.private.load(Ordering::SeqCst)
-        }
-        fn set_private(&self, private: bool) {
-            self.private.store(private, Ordering::SeqCst);
-        }
-        fn is_autonomy_paused(&self) -> bool {
-            self.autonomy_paused.load(Ordering::SeqCst)
-        }
-        fn set_autonomy_paused(&self, paused: bool) {
-            self.autonomy_paused.store(paused, Ordering::SeqCst);
-        }
-        fn effective_config(&self) -> Value {
-            self.config.clone()
-        }
-        fn autonomy_status(&self) -> Option<crate::autonomy::AutonomyStatus> {
-            None
+    fn make_msg(id: &str, role: Role, content: &str) -> Message {
+        Message {
+            msg_id: id.to_string(),
+            role,
+            content: content.to_string(),
+            images: vec![],
+            alt_index: None,
+            alt_count: None,
+            timestamp: "2026-01-01T00:00:00Z".to_string(),
         }
     }
 
-    fn make_entry(id: &str, summary: &str, status: &str) -> Entry {
-        let now = Utc::now().to_rfc3339();
-        Entry {
-            id: id.to_string(),
-            memory_type: "semantic".to_string(),
-            source: "test".to_string(),
-            reason: "test".to_string(),
-            status: status.to_string(),
-            canonical: false,
-            confidence: 0.9,
-            summary_text: summary.to_string(),
-            topic_tags: "test".to_string(),
-            topic_key: "test".to_string(),
-            start_timestamp: now.clone(),
-            end_timestamp: now.clone(),
-            message_count: 0,
-            source_entry_ids: String::new(),
-            related_entry_ids: String::new(),
-            superseded_by: String::new(),
-            created_at: now.clone(),
-            updated_at: now,
-            entry_type: String::new(),
-            image_path: String::new(),
-        }
+    #[test]
+    fn status_returns_state() {
+        let tmp = TempDir::new().unwrap();
+        let (mut ctx, _rx) = make_ctx(&tmp);
+        ctx.active_model = Some("claude-sonnet".into());
+
+        let result = status(&ctx).unwrap();
+        assert_eq!(result["character"], "TestChar");
+        assert!(result["active_conversation"].is_null());
+        assert_eq!(result["message_count"], 0);
+        assert_eq!(result["active_model"], "claude-sonnet");
+        assert_eq!(result["autonomy_paused"], false);
     }
 
-    // -- memory command tests -------------------------------------------------
+    #[test]
+    fn status_with_active_conversation() {
+        let tmp = TempDir::new().unwrap();
+        let (mut ctx, _rx) = make_ctx(&tmp);
+        ctx.engine.new_conversation("Test").unwrap();
+        ctx.engine
+            .append_message(make_msg("m1", Role::User, "Hi"))
+            .unwrap();
 
-    #[tokio::test]
-    async fn test_memory_status_empty_db() {
-        let ctx = TestCtx::new();
-        let result = handle_memory(json!({}), &ctx).await.unwrap();
-
-        assert_eq!(result.data["entries"]["total"], 0);
-        assert_eq!(result.data["entries"]["active"], 0);
-        assert_eq!(result.data["entities"], 0);
-        assert!(!result.push_history);
+        let result = status(&ctx).unwrap();
+        assert!(result["active_conversation"].is_string());
+        assert_eq!(result["message_count"], 1);
     }
 
-    #[tokio::test]
-    async fn test_memory_status_with_entries() {
-        let ctx = TestCtx::new();
-        ctx.db.create_entry(&make_entry("e1", "fact one", "active")).unwrap();
-        ctx.db.create_entry(&make_entry("e2", "fact two", "active")).unwrap();
-        ctx.db.create_entry(&make_entry("e3", "old fact", "superseded")).unwrap();
+    #[test]
+    fn list_models_empty() {
+        let tmp = TempDir::new().unwrap();
+        let (ctx, _rx) = make_ctx(&tmp);
 
-        let result = handle_memory(json!({}), &ctx).await.unwrap();
-
-        assert_eq!(result.data["entries"]["total"], 3);
-        assert_eq!(result.data["entries"]["active"], 2);
-        assert_eq!(result.data["entries"]["superseded"], 1);
+        let result = list_models(&ctx).unwrap();
+        assert!(result["models"].as_array().unwrap().is_empty());
+        assert!(result["active"].is_null());
     }
 
-    #[tokio::test]
-    async fn test_memory_search() {
-        let ctx = TestCtx::new();
-        ctx.db.create_entry(&make_entry("e1", "Alice likes chocolate", "active")).unwrap();
-        ctx.db.create_entry(&make_entry("e2", "Bob likes vanilla", "active")).unwrap();
-        ctx.db.create_entry(&make_entry("e3", "Alice hates rain", "active")).unwrap();
+    #[test]
+    fn list_models_with_profiles() {
+        let tmp = TempDir::new().unwrap();
+        let (ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
 
-        let result = handle_memory(json!({"query": "Alice"}), &ctx).await.unwrap();
-
-        assert_eq!(result.data["count"], 2);
-        let results = result.data["results"].as_array().unwrap();
-        assert!(results.iter().all(|r| r["summary"].as_str().unwrap().contains("Alice")));
+        let result = list_models(&ctx).unwrap();
+        let models = result["models"].as_array().unwrap();
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0]["name"], "claude-sonnet");
+        assert_eq!(models[1]["name"], "gpt-4o");
     }
 
-    #[tokio::test]
-    async fn test_memory_search_case_insensitive() {
-        let ctx = TestCtx::new();
-        ctx.db.create_entry(&make_entry("e1", "Alice likes CHOCOLATE", "active")).unwrap();
+    #[test]
+    fn switch_model_show_current() {
+        let tmp = TempDir::new().unwrap();
+        let (mut ctx, _rx) = make_ctx(&tmp);
+        ctx.active_model = Some("claude-sonnet".into());
 
-        let result = handle_memory(json!({"query": "chocolate"}), &ctx).await.unwrap();
-        assert_eq!(result.data["count"], 1);
+        let result = switch_model(&mut ctx, &json!({})).unwrap();
+        assert_eq!(result["active"], "claude-sonnet");
     }
 
-    #[tokio::test]
-    async fn test_memory_search_no_results() {
-        let ctx = TestCtx::new();
-        ctx.db.create_entry(&make_entry("e1", "Alice likes chocolate", "active")).unwrap();
+    #[test]
+    fn switch_model_valid() {
+        let tmp = TempDir::new().unwrap();
+        let (mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
 
-        let result = handle_memory(json!({"query": "quantum physics"}), &ctx).await.unwrap();
-        assert_eq!(result.data["count"], 0);
+        let result = switch_model(&mut ctx, &json!({"name": "gpt-4o"})).unwrap();
+        assert_eq!(result["active"], "gpt-4o");
+        assert_eq!(result["changed"], true);
+        assert_eq!(ctx.active_model.as_deref(), Some("gpt-4o"));
     }
 
-    // -- compact command tests ------------------------------------------------
+    #[test]
+    fn switch_model_not_found() {
+        let tmp = TempDir::new().unwrap();
+        let (mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
 
-    #[tokio::test]
-    async fn test_compact_triggered() {
-        let ctx = TestCtx::new();
-        let result = handle_compact(json!({}), &ctx).await.unwrap();
-
-        assert_eq!(result.data["triggered"], true);
-        assert_eq!(result.data["dry_run"], false);
+        let result = switch_model(&mut ctx, &json!({"name": "nonexistent"}));
+        assert!(result.is_err());
+        let (code, _msg) = result.unwrap_err();
+        assert_eq!(code, ErrorCode::NotFound);
     }
 
-    #[tokio::test]
-    async fn test_compact_dry_run() {
-        let ctx = TestCtx::new();
-        let result = handle_compact(json!({"dry_run": true}), &ctx).await.unwrap();
+    #[test]
+    fn memory_stub() {
+        let result = memory(&json!({})).unwrap();
+        assert_eq!(result["status"], "not_implemented");
 
-        assert_eq!(result.data["triggered"], true);
-        assert_eq!(result.data["dry_run"], true);
+        let result = memory(&json!({"query": "test"})).unwrap();
+        assert_eq!(result["query"], "test");
     }
 
-    #[tokio::test]
-    async fn test_compact_private_skipped() {
-        let ctx = TestCtx::new();
-        ctx.private.store(true, Ordering::SeqCst);
+    #[test]
+    fn toggle_private_on_off() {
+        let tmp = TempDir::new().unwrap();
+        let (mut ctx, _rx) = make_ctx(&tmp);
+        ctx.engine.new_conversation("Test").unwrap();
 
-        let result = handle_compact(json!({}), &ctx).await.unwrap();
-        assert!(result.data["error"].as_str().unwrap().contains("private"));
+        // Toggle on.
+        let result = toggle_private(&mut ctx).unwrap();
+        assert_eq!(result["private"], true);
+
+        // Toggle off.
+        let result = toggle_private(&mut ctx).unwrap();
+        assert_eq!(result["private"], false);
     }
 
-    // -- toggle_private command tests -----------------------------------------
+    #[test]
+    fn toggle_private_no_conversation() {
+        let tmp = TempDir::new().unwrap();
+        let (mut ctx, _rx) = make_ctx(&tmp);
 
-    #[tokio::test]
-    async fn test_toggle_private_on() {
-        let ctx = TestCtx::new();
-        assert!(!ctx.is_private());
-
-        let result = handle_toggle_private(&ctx).await.unwrap();
-
-        assert!(ctx.is_private());
-        assert_eq!(result.data["private"], true);
-        assert_eq!(result.data["was_private"], false);
-        assert!(result.push_history);
+        let result = toggle_private(&mut ctx);
+        assert!(result.is_err());
+        let (code, _msg) = result.unwrap_err();
+        assert_eq!(code, ErrorCode::InvalidRequest);
     }
 
-    #[tokio::test]
-    async fn test_toggle_private_off() {
-        let ctx = TestCtx::new();
-        ctx.set_private(true);
+    #[test]
+    fn toggle_private_triggers_history_push() {
+        let tmp = TempDir::new().unwrap();
+        let (mut ctx, mut rx) = make_ctx(&tmp);
+        ctx.engine.new_conversation("Test").unwrap();
+        while rx.try_recv().is_ok() {}
 
-        let result = handle_toggle_private(&ctx).await.unwrap();
+        toggle_private(&mut ctx).unwrap();
 
-        assert!(!ctx.is_private());
-        assert_eq!(result.data["private"], false);
-        assert_eq!(result.data["was_private"], true);
-        assert!(result.push_history);
+        let msg = rx.try_recv().unwrap();
+        assert!(matches!(msg, ServerMessage::History(_)));
     }
 
-    #[tokio::test]
-    async fn test_toggle_private_roundtrip() {
-        let ctx = TestCtx::new();
+    #[test]
+    fn compact_stub() {
+        let result = compact(&json!({})).unwrap();
+        assert_eq!(result["status"], "not_implemented");
+        assert_eq!(result["dry_run"], false);
 
-        handle_toggle_private(&ctx).await.unwrap();
-        assert!(ctx.is_private());
-
-        handle_toggle_private(&ctx).await.unwrap();
-        assert!(!ctx.is_private());
+        let result = compact(&json!({"dry_run": true})).unwrap();
+        assert_eq!(result["dry_run"], true);
     }
 
-    // -- config command tests -------------------------------------------------
+    #[test]
+    fn toggle_autonomy_toggles() {
+        let tmp = TempDir::new().unwrap();
+        let (mut ctx, _rx) = make_ctx(&tmp);
+        assert!(!ctx.autonomy_paused);
 
-    #[tokio::test]
-    async fn test_config_returns_effective_config() {
-        let ctx = TestCtx::new();
-        let result = handle_config(&ctx).await.unwrap();
+        let result = toggle_autonomy(&mut ctx).unwrap();
+        assert_eq!(result["autonomy_paused"], true);
+        assert!(ctx.autonomy_paused);
 
-        let config = &result.data["config"];
-        assert_eq!(config["model"], "claude-sonnet-4-20250514");
-        assert_eq!(config["memory"]["enabled"], true);
-        assert!(!result.push_history);
+        let result = toggle_autonomy(&mut ctx).unwrap();
+        assert_eq!(result["autonomy_paused"], false);
+        assert!(!ctx.autonomy_paused);
     }
 
-    // -- toggle_autonomy command tests ----------------------------------------
+    #[test]
+    fn config_full() {
+        let tmp = TempDir::new().unwrap();
+        let (ctx, _rx) = make_ctx(&tmp);
 
-    #[tokio::test]
-    async fn test_toggle_autonomy_pause() {
-        let ctx = TestCtx::new();
-        assert!(!ctx.is_autonomy_paused());
-
-        let result = handle_toggle_autonomy(&ctx).await.unwrap();
-
-        assert!(ctx.is_autonomy_paused());
-        assert_eq!(result.data["autonomy_paused"], true);
-        assert_eq!(result.data["was_paused"], false);
+        let result = config(&ctx, &json!({})).unwrap();
+        assert!(result["config"].is_object());
+        assert!(result["config"]["character"].is_object());
     }
 
-    #[tokio::test]
-    async fn test_toggle_autonomy_resume() {
-        let ctx = TestCtx::new();
-        ctx.set_autonomy_paused(true);
+    #[test]
+    fn config_section() {
+        let tmp = TempDir::new().unwrap();
+        let (ctx, _rx) = make_ctx(&tmp);
 
-        let result = handle_toggle_autonomy(&ctx).await.unwrap();
-
-        assert!(!ctx.is_autonomy_paused());
-        assert_eq!(result.data["autonomy_paused"], false);
-        assert_eq!(result.data["was_paused"], true);
+        let result = config(&ctx, &json!({"section": "character"})).unwrap();
+        assert_eq!(result["section"], "character");
+        assert!(result["config"]["name"].is_string());
     }
 
-    #[tokio::test]
-    async fn test_toggle_autonomy_roundtrip() {
-        let ctx = TestCtx::new();
+    #[test]
+    fn config_section_not_found() {
+        let tmp = TempDir::new().unwrap();
+        let (ctx, _rx) = make_ctx(&tmp);
 
-        handle_toggle_autonomy(&ctx).await.unwrap();
-        assert!(ctx.is_autonomy_paused());
-
-        handle_toggle_autonomy(&ctx).await.unwrap();
-        assert!(!ctx.is_autonomy_paused());
-    }
-
-    // -- status command tests -------------------------------------------------
-
-    #[tokio::test]
-    async fn test_status_no_autonomy() {
-        let ctx = TestCtx::new();
-        let result = handle_status(&ctx).await.unwrap();
-        assert!(result.data["autonomy"].is_null());
-        assert!(result.data["note"].as_str().unwrap().contains("not active"));
+        let result = config(&ctx, &json!({"section": "nonexistent"}));
+        assert!(result.is_err());
+        let (code, _msg) = result.unwrap_err();
+        assert_eq!(code, ErrorCode::NotFound);
     }
 }

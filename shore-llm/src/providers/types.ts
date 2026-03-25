@@ -68,6 +68,40 @@ export interface ProviderRequest {
   provider_options?: Record<string, unknown>;
 }
 
+// ── Embed types ─────────────────────────────────────────────────────────
+
+export interface EmbedRequest {
+  provider: string;
+  model: string;
+  api_key: string;
+  base_url?: string | null;
+  input: string[];
+}
+
+export interface EmbedResponse {
+  embeddings: number[][];
+  usage: { total_tokens: number };
+  timing: { total_ms: number };
+}
+
+// ── Image generation types ──────────────────────────────────────────────
+
+export interface ImageGenerateRequest {
+  provider: string;
+  model: string;
+  api_key: string;
+  base_url?: string | null;
+  prompt: string;
+  size?: string;
+  quality?: string;
+}
+
+export interface ImageGenerateResponse {
+  url: string;
+  revised_prompt: string;
+  timing: { total_ms: number };
+}
+
 // ── Provider interface ─────────────────────────────────────────────────
 
 export interface Provider {
