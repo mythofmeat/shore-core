@@ -11,6 +11,8 @@ after each iteration and it's included in prompts for context.
 - Protocol types use `#[serde(tag = "type", rename_all = "snake_case")]` for JSON-Lines framing
 - `NewMessage` uses `#[serde(flatten)]` to inline Message fields into the envelope
 - `StreamChunk.content_type` defaults to `"text"` via `#[serde(default = "...")]`
+- `tokio::io::duplex` + `SWPConnection::from_raw_stream()` is the pattern for mock-server tests — no real sockets needed
+- `Box<dyn AsyncReadWrite>` unifies Unix/TCP transports; manual `Debug` impl needed since trait objects aren't `Debug`
 
 ---
 
@@ -48,5 +50,23 @@ after each iteration and it's included in prompts for context.
   - `#[serde(default = "fn_name")]` works well for default string values like content_type
   - `#[serde(skip_serializing_if = "Option::is_none")]` keeps JSON clean for optional fields (alt_index, alt_count, caption, guidance)
   - All 28 round-trip tests pass; cargo build, test, clippy all clean
+---
+
+## 2026-03-25 - US-003
+- What was implemented: Full SWP client library with connection management, daemon discovery, and stream handling
+- Files changed:
+  - `shore-client/Cargo.toml` — added shore-protocol, tokio, serde, serde_json, thiserror dependencies
+  - `shore-client/src/lib.rs` — module declarations, re-exports, 16 unit tests (handshake, send/recv, stream assembly, discovery, callbacks)
+  - `shore-client/src/connection.rs` — SWPConnection struct with Unix socket + TCP transport, JSON-Lines framing, handshake (connect + connect_raw), send_message/send_regen/send_command convenience methods, from_raw_stream for testing
+  - `shore-client/src/discovery.rs` — Read $XDG_RUNTIME_DIR/shore/instances.json, find socket for config path, fallback to default socket
+  - `shore-client/src/stream.rs` — StreamHandler that tracks stream_start/chunk/end sequences, assembles chunks, StreamCallbacks trait for user-provided hooks
+  - `shore-client/src/error.rs` — ClientError enum with Connect, Disconnected, Protocol, Discovery, Serialize, Deserialize, Io variants
+- **Learnings:**
+  - `tokio::io::duplex(8192)` creates a bidirectional in-memory stream perfect for mock-server tests without real sockets
+  - `tokio::io::join(reader, sink())` / `join(empty(), writer)` adapts split halves into `AsyncRead + AsyncWrite` for `Box<dyn>` erasure
+  - `Box<dyn Trait>` for trait objects with `AsyncRead + AsyncWrite + Send + Unpin` requires a manual `Debug` impl since trait objects don't derive Debug
+  - `thiserror v2` works cleanly with `#[source]` for wrapping `io::Error` and `serde_json::Error`
+  - `tokio::io::split()` works on any `AsyncRead + AsyncWrite` — used for `connect_raw` with duplex streams in tests
+  - All 44 tests pass (16 client + 28 protocol); cargo build, test, clippy all clean
 ---
 
