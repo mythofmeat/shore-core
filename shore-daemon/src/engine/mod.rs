@@ -1,5 +1,6 @@
 pub mod conversations;
 pub mod messages;
+pub mod prompt;
 
 use std::path::PathBuf;
 

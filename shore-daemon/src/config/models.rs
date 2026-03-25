@@ -23,6 +23,9 @@ pub struct ModelsConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderDefaults {
+    /// Default max context tokens (total context window size) for this provider.
+    pub max_context_tokens: Option<u32>,
+
     /// Default max tokens for this provider.
     pub max_tokens: Option<u32>,
 
@@ -51,6 +54,9 @@ pub struct ModelProfile {
 
     /// The provider's model identifier.
     pub model_id: String,
+
+    /// Max context tokens (total context window size) override.
+    pub max_context_tokens: Option<u32>,
 
     /// Max tokens override.
     pub max_tokens: Option<u32>,
@@ -83,6 +89,9 @@ impl ModelsConfig {
             name: profile.name.clone(),
             provider: profile.provider.clone(),
             model_id: profile.model_id.clone(),
+            max_context_tokens: profile
+                .max_context_tokens
+                .or(defaults.and_then(|d| d.max_context_tokens)),
             max_tokens: profile
                 .max_tokens
                 .or(defaults.and_then(|d| d.max_tokens)),
@@ -108,6 +117,7 @@ pub struct ResolvedModel {
     pub name: String,
     pub provider: String,
     pub model_id: String,
+    pub max_context_tokens: Option<u32>,
     pub max_tokens: Option<u32>,
     pub temperature: Option<f64>,
     pub top_p: Option<f64>,
