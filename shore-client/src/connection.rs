@@ -297,6 +297,6 @@ fn uuid_v4() -> String {
 }
 
 /// Check whether a path looks like it could be a Unix socket path.
-pub(crate) fn is_unix_path(s: &str) -> bool {
+pub fn is_unix_path(s: &str) -> bool {
     Path::new(s).is_absolute() || s.starts_with("./") || s.starts_with("../") || s.ends_with(".sock")
 }
