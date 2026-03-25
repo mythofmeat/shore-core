@@ -1,6 +1,7 @@
 pub mod conversations;
 pub mod messages;
 pub mod prompt;
+pub mod tools;
 
 use std::path::PathBuf;
 
@@ -126,6 +127,18 @@ impl ConversationEngine {
     /// The active conversation ID.
     pub fn active_conversation_id(&self) -> Option<&str> {
         self.conversations.active_id()
+    }
+
+    /// Check if the active conversation is private.
+    pub fn is_active_private(&self) -> bool {
+        if let Some(active_id) = self.conversations.active_id() {
+            self.conversations
+                .list()
+                .iter()
+                .any(|c| c.id == active_id && c.private)
+        } else {
+            false
+        }
     }
 
     // ── Message CRUD ────────────────────────────────────────────────────
