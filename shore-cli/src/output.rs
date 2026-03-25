@@ -1,7 +1,10 @@
 use std::io::{self, Write};
 
 use crossterm::style::{Attribute, Color, ResetColor, SetAttribute, SetForegroundColor};
-use shore_protocol::server_msg::{CommandOutput, StreamChunk, StreamEnd};
+use shore_protocol::server_msg::{CommandOutput, NewMessage, SendImage, StreamChunk, StreamEnd};
+use shore_protocol::types::ImageRef;
+
+use crate::images;
 
 /// Print a stream chunk to stdout. Thinking chunks are shown dimmed.
 pub fn print_chunk(chunk: &StreamChunk) {
@@ -82,6 +85,32 @@ pub fn print_server_error(code: &str, message: &str) {
     let _ = write!(out, "server error");
     let _ = crossterm::execute!(out, ResetColor);
     let _ = writeln!(out, " [{code}]: {message}");
+}
+
+/// Render an inline image from a SendImage server message.
+pub fn print_send_image(img: &SendImage) {
+    images::render_image(&img.path, img.caption.as_deref());
+}
+
+/// Render inline images from a message's image references.
+pub fn print_image_refs(refs: &[ImageRef]) {
+    for img in refs {
+        images::render_image(&img.path, img.caption.as_deref());
+    }
+}
+
+/// Print a push NewMessage (used in subscribe mode).
+pub fn print_new_message(msg: &NewMessage) {
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+
+    let _ = crossterm::execute!(out, SetForegroundColor(Color::Cyan));
+    let _ = write!(out, "[{:?}]", msg.message.role);
+    let _ = crossterm::execute!(out, ResetColor);
+    let _ = writeln!(out, " {}", msg.message.content);
+
+    // Render any attached images.
+    print_image_refs(&msg.message.images);
 }
 
 /// Print the "thinking..." indicator when streaming starts.

@@ -1,13 +1,21 @@
 mod cli;
+mod images;
+mod notifications;
 mod output;
 mod run;
 
 use std::process::ExitCode;
 
-use cli::Cli;
+use cli::{Cli, CliCommand};
 
 fn main() -> ExitCode {
     let cli = <Cli as clap::Parser>::parse();
+
+    // Handle local-only commands that don't need a daemon connection.
+    if let CliCommand::Completions { shell } = &cli.command {
+        cli::print_completions(*shell);
+        return ExitCode::SUCCESS;
+    }
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()

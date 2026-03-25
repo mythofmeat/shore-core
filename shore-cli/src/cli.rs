@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use clap_complete::Shell;
 
 #[derive(Parser, Debug)]
 #[command(name = "shore", version, about = "Shore chat client")]
@@ -119,6 +120,18 @@ pub enum CliCommand {
         /// Value to set (requires key)
         value: Option<String>,
     },
+
+    /// Generate shell completions
+    Completions {
+        /// Shell to generate completions for
+        shell: Shell,
+    },
+}
+
+/// Generate and print shell completions to stdout.
+pub fn print_completions(shell: Shell) {
+    use clap::CommandFactory;
+    clap_complete::generate(shell, &mut Cli::command(), "shore", &mut std::io::stdout());
 }
 
 /// Map a CLI command to its SWP command name and JSON args.
@@ -128,8 +141,10 @@ pub enum CliCommand {
 pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Value)> {
     use serde_json::json;
     match cmd {
-        // These use dedicated SWP message types, not the command type.
-        CliCommand::Send { .. } | CliCommand::Regen { .. } => None,
+        // These use dedicated SWP message types or are handled locally.
+        CliCommand::Send { .. } | CliCommand::Regen { .. } | CliCommand::Completions { .. } => {
+            None
+        }
 
         CliCommand::Swipe { direction } => {
             Some(("swipe", json!({ "direction": direction })))
@@ -486,6 +501,14 @@ mod tests {
     }
 
     #[test]
+    fn completions_maps_to_none() {
+        let cmd = CliCommand::Completions {
+            shell: clap_complete::Shell::Fish,
+        };
+        assert!(to_swp_command(&cmd).is_none());
+    }
+
+    #[test]
     fn status_maps_to_command() {
         let cmd = CliCommand::Status;
         let (name, args) = to_swp_command(&cmd).unwrap();
@@ -529,6 +552,64 @@ mod tests {
             assert!(
                 to_swp_command(cmd).is_some(),
                 "expected Some for {cmd:?}"
+            );
+        }
+    }
+
+    // ── Completions tests ────────────────────────────────────────────
+
+    #[test]
+    fn parse_completions_fish() {
+        let cli = parse(&["completions", "fish"]);
+        match &cli.command {
+            CliCommand::Completions { shell } => {
+                assert_eq!(*shell, clap_complete::Shell::Fish);
+            }
+            other => panic!("expected Completions, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_completions_bash() {
+        let cli = parse(&["completions", "bash"]);
+        match &cli.command {
+            CliCommand::Completions { shell } => {
+                assert_eq!(*shell, clap_complete::Shell::Bash);
+            }
+            other => panic!("expected Completions, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_completions_zsh() {
+        let cli = parse(&["completions", "zsh"]);
+        match &cli.command {
+            CliCommand::Completions { shell } => {
+                assert_eq!(*shell, clap_complete::Shell::Zsh);
+            }
+            other => panic!("expected Completions, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn completions_generates_output() {
+        // Verify that completion generation produces non-empty output for each shell.
+        use clap::CommandFactory;
+        for shell in [
+            clap_complete::Shell::Fish,
+            clap_complete::Shell::Bash,
+            clap_complete::Shell::Zsh,
+        ] {
+            let mut buf = Vec::new();
+            clap_complete::generate(shell, &mut Cli::command(), "shore", &mut buf);
+            assert!(
+                !buf.is_empty(),
+                "completions for {shell:?} should produce output"
+            );
+            let text = String::from_utf8(buf).expect("completions should be valid UTF-8");
+            assert!(
+                text.contains("shore"),
+                "completions for {shell:?} should reference 'shore'"
             );
         }
     }

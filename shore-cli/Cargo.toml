@@ -7,9 +7,11 @@ edition = "2021"
 shore-protocol = { path = "../shore-protocol" }
 shore-client = { path = "../shore-client" }
 clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 serde_json = "1"
 crossterm = "0.28"
+base64 = "0.22"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }

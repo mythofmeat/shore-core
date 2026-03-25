@@ -66,6 +66,13 @@ async fn recv_streaming_response(
                 );
                 return Err(err.message.clone().into());
             }
+            ServerMessage::SendImage(img) => {
+                output::print_send_image(img);
+            }
+            ServerMessage::NewMessage(msg) => {
+                output::print_new_message(msg);
+                crate::notifications::notify_new_message(msg);
+            }
             ServerMessage::Phase(_) => {
                 // Phase changes are informational during streaming, ignore in CLI
             }
@@ -102,6 +109,13 @@ async fn recv_command_response(
             }
             ServerMessage::History(_) => {
                 // Some commands trigger a history push; we just print and continue
+            }
+            ServerMessage::SendImage(img) => {
+                output::print_send_image(img);
+            }
+            ServerMessage::NewMessage(msg) => {
+                output::print_new_message(msg);
+                crate::notifications::notify_new_message(msg);
             }
             _ => {
                 // Unexpected but not fatal
