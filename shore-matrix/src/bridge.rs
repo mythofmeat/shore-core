@@ -11,6 +11,11 @@ pub enum MatrixInput {
         name: String,
         args: serde_json::Value,
     },
+    /// Image attachment → SWP message with image path.
+    Image {
+        path: String,
+        caption: Option<String>,
+    },
 }
 
 /// Parse a Matrix message into a routing decision.
@@ -49,6 +54,13 @@ pub fn input_to_swp(input: &MatrixInput) -> ClientMessage {
             rid: None,
             name: name.clone(),
             args: args.clone(),
+        }),
+        MatrixInput::Image { path, caption } => ClientMessage::Message(ClientMessageBody {
+            rid: None,
+            text: caption.clone().unwrap_or_default(),
+            stream: true,
+            images: vec![path.clone()],
+            absence_seconds: None,
         }),
     }
 }
@@ -351,6 +363,37 @@ mod tests {
         let mut c = ResponseCollector::new();
         let action = c.feed(&ServerMessage::Ping(Ping {}));
         assert!(matches!(action, CollectorAction::None));
+    }
+
+    #[test]
+    fn image_to_swp_message() {
+        let input = MatrixInput::Image {
+            path: "/tmp/photo.jpg".into(),
+            caption: Some("sunset".into()),
+        };
+        let msg = input_to_swp(&input);
+        if let ClientMessage::Message(body) = msg {
+            assert_eq!(body.text, "sunset");
+            assert_eq!(body.images, vec!["/tmp/photo.jpg"]);
+            assert!(body.stream);
+        } else {
+            panic!("expected Message");
+        }
+    }
+
+    #[test]
+    fn image_to_swp_no_caption() {
+        let input = MatrixInput::Image {
+            path: "/tmp/photo.jpg".into(),
+            caption: None,
+        };
+        let msg = input_to_swp(&input);
+        if let ClientMessage::Message(body) = msg {
+            assert_eq!(body.text, "");
+            assert_eq!(body.images, vec!["/tmp/photo.jpg"]);
+        } else {
+            panic!("expected Message");
+        }
     }
 
     #[test]

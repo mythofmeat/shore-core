@@ -1,5 +1,8 @@
+use std::path::PathBuf;
+
 use matrix_sdk::config::SyncSettings;
 use matrix_sdk::event_handler::Ctx;
+use matrix_sdk::media::{MediaFormat, MediaRequestParameters};
 use matrix_sdk::ruma::events::room::member::StrippedRoomMemberEvent;
 use matrix_sdk::ruma::events::room::message::{
     MessageType, OriginalSyncRoomMessageEvent, RoomMessageEventContent,
@@ -29,6 +32,13 @@ pub enum MatrixEvent {
         room_id: OwnedRoomId,
         sender: OwnedUserId,
         text: String,
+    },
+    /// An image was sent in a room (downloaded to a local temp path).
+    Image {
+        room_id: OwnedRoomId,
+        sender: OwnedUserId,
+        path: String,
+        body: String,
     },
 }
 
@@ -146,6 +156,43 @@ impl MatrixBot {
         }
     }
 
+    /// Upload character avatar and set display name on the Matrix profile.
+    ///
+    /// Looks for `avatar.{png,jpg,jpeg,webp}` in the standard shore data
+    /// directory (`~/.local/share/shore/<character>/`). Always sets the
+    /// display name to the character name.
+    pub async fn sync_avatar(&self, character: &str) {
+        // Set display name to character name
+        if let Err(e) = self.client.account().set_display_name(Some(character)).await {
+            warn!("failed to set display name: {e}");
+        } else {
+            info!("display name set to {character}");
+        }
+
+        // Look for avatar image in standard data directory
+        let data_dir = dirs::data_dir().unwrap_or_else(|| PathBuf::from(".local/share"));
+        let char_dir = data_dir.join("shore").join(character);
+
+        for ext in &["png", "jpg", "jpeg", "webp"] {
+            let path = char_dir.join(format!("avatar.{ext}"));
+            if path.exists() {
+                match tokio::fs::read(&path).await {
+                    Ok(data) => {
+                        let mime = mime_guess::from_path(&path).first_or_octet_stream();
+                        if let Err(e) = self.client.account().upload_avatar(&mime, data).await {
+                            warn!("failed to upload avatar: {e}");
+                        } else {
+                            info!("uploaded avatar for {character} from {}", path.display());
+                        }
+                    }
+                    Err(e) => warn!("failed to read avatar file {}: {e}", path.display()),
+                }
+                return;
+            }
+        }
+        info!("no avatar file found for {character}");
+    }
+
     // --- Event handlers ---
 
     /// Auto-join rooms the bot is invited to.
@@ -158,7 +205,7 @@ impl MatrixBot {
         }
     }
 
-    /// Forward text messages from Matrix users to the bridge.
+    /// Forward text and image messages from Matrix users to the bridge.
     async fn on_room_message(
         ev: OriginalSyncRoomMessageEvent,
         room: Room,
@@ -170,14 +217,46 @@ impl MatrixBot {
             return;
         }
 
-        if let MessageType::Text(text_content) = &ev.content.msgtype {
-            let _ = tx
-                .send(MatrixEvent::Message {
-                    room_id: room.room_id().to_owned(),
-                    sender: ev.sender.clone(),
-                    text: text_content.body.clone(),
-                })
-                .await;
+        match &ev.content.msgtype {
+            MessageType::Text(text_content) => {
+                let _ = tx
+                    .send(MatrixEvent::Message {
+                        room_id: room.room_id().to_owned(),
+                        sender: ev.sender.clone(),
+                        text: text_content.body.clone(),
+                    })
+                    .await;
+            }
+            MessageType::Image(image_content) => {
+                // Download image from Matrix homeserver
+                let request = MediaRequestParameters {
+                    source: image_content.source.clone(),
+                    format: MediaFormat::File,
+                };
+                match client.media().get_media_content(&request, false).await {
+                    Ok(data) => {
+                        let filename = &image_content.body;
+                        let temp_path = std::env::temp_dir()
+                            .join(format!("shore_matrix_{}_{filename}", std::process::id()));
+                        if let Err(e) = tokio::fs::write(&temp_path, &data).await {
+                            warn!("failed to save downloaded image: {e}");
+                            return;
+                        }
+                        let _ = tx
+                            .send(MatrixEvent::Image {
+                                room_id: room.room_id().to_owned(),
+                                sender: ev.sender.clone(),
+                                path: temp_path.to_string_lossy().into_owned(),
+                                body: image_content.body.clone(),
+                            })
+                            .await;
+                    }
+                    Err(e) => {
+                        warn!("failed to download image from Matrix: {e}");
+                    }
+                }
+            }
+            _ => {}
         }
     }
 }
