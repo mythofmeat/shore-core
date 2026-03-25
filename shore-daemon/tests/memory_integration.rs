@@ -356,6 +356,9 @@ impl<'a> CommandContext for IntegrationCommandCtx<'a> {
             "memory": { "enabled": true },
         })
     }
+    fn autonomy_status(&self) -> Option<shore_daemon::autonomy::AutonomyStatus> {
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------

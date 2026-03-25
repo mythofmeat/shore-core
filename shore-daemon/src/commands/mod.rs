@@ -71,6 +71,7 @@ pub trait CommandContext {
     fn is_autonomy_paused(&self) -> bool;
     fn set_autonomy_paused(&self, paused: bool);
     fn effective_config(&self) -> Value;
+    fn autonomy_status(&self) -> Option<crate::autonomy::AutonomyStatus>;
 }
 
 // ---------------------------------------------------------------------------
@@ -93,6 +94,7 @@ pub async fn dispatch(
         "toggle_private" => state::handle_toggle_private(ctx).await,
         "toggle_autonomy" => state::handle_toggle_autonomy(ctx).await,
         "config" => state::handle_config(ctx).await,
+        "status" => state::handle_status(ctx).await,
         _ => Err(CommandError::UnknownCommand(name.to_string())),
     }
 }
@@ -145,6 +147,9 @@ mod tests {
                 "memory": { "enabled": true },
             })
         }
+        fn autonomy_status(&self) -> Option<crate::autonomy::AutonomyStatus> {
+            None
+        }
     }
 
     #[tokio::test]
@@ -180,6 +185,13 @@ mod tests {
     async fn test_dispatch_toggle_autonomy() {
         let ctx = TestCommandCtx::new();
         let result = dispatch("toggle_autonomy", serde_json::json!({}), &ctx).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_status() {
+        let ctx = TestCommandCtx::new();
+        let result = dispatch("status", serde_json::json!({}), &ctx).await;
         assert!(result.is_ok());
     }
 }

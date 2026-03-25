@@ -155,6 +155,30 @@ pub async fn handle_toggle_autonomy(
 }
 
 // ---------------------------------------------------------------------------
+// status command
+// ---------------------------------------------------------------------------
+
+/// Handle the `status` command.
+///
+/// Returns a snapshot of the autonomy subsystem: heartbeat state, social need
+/// bar level, τ value, cache keepalive state, and pause flag.
+pub async fn handle_status(
+    ctx: &dyn CommandContext,
+) -> Result<CommandResult, CommandError> {
+    match ctx.autonomy_status() {
+        Some(status) => {
+            let data = serde_json::to_value(&status)
+                .map_err(|e| CommandError::Internal(e.to_string()))?;
+            Ok(CommandResult::data(json!({ "autonomy": data })))
+        }
+        None => Ok(CommandResult::data(json!({
+            "autonomy": null,
+            "note": "Autonomy subsystem not active",
+        }))),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // config command
 // ---------------------------------------------------------------------------
 
@@ -220,6 +244,9 @@ mod tests {
         }
         fn effective_config(&self) -> Value {
             self.config.clone()
+        }
+        fn autonomy_status(&self) -> Option<crate::autonomy::AutonomyStatus> {
+            None
         }
     }
 
@@ -424,5 +451,15 @@ mod tests {
 
         handle_toggle_autonomy(&ctx).await.unwrap();
         assert!(!ctx.is_autonomy_paused());
+    }
+
+    // -- status command tests -------------------------------------------------
+
+    #[tokio::test]
+    async fn test_status_no_autonomy() {
+        let ctx = TestCtx::new();
+        let result = handle_status(&ctx).await.unwrap();
+        assert!(result.data["autonomy"].is_null());
+        assert!(result.data["note"].as_str().unwrap().contains("not active"));
     }
 }
