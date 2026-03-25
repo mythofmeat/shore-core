@@ -1,0 +1,66 @@
+# Iteration 4 Log
+
+## Metadata
+
+- **Task ID**: US-004
+- **Task Title**: Protocol serialization integration tests
+- **Description**: As a developer, I want integration tests that validate SWP JSON matches the documented protocol spec so that non-Rust clients can rely on the docs.
+- **Status**: completed
+- **Task Completed**: Yes
+- **Promise Detected**: Yes
+- **Started At**: 2026-03-25T04:00:55.088Z
+- **Ended At**: 2026-03-25T04:03:35.565Z
+- **Duration**: 2m 40s
+- **Input Tokens**: 51
+- **Output Tokens**: 12742
+- **Total Tokens**: 12793
+- **Agent**: claude
+- **Model**: claude-opus-4-6
+- **Sandbox Mode**: auto
+- **Sandbox Network**: Enabled
+--- RAW OUTPUT ---
+I'll start by studying the progress file and the existing codebase to understand what's already in place.
+[94m[Read][0m [95m/home/eshen/Development/silvershore/.ralph-tui/progress.md[0m
+[94m[Read][0m [95m/home/eshen/Development/silvershore/Cargo.toml[0m
+[94m[Glob][0m pattern: [96mshore-protocol/**/*.rs[0m
+Let me read the protocol source files to understand the types I need to test.
+[94m[Read][0m [95m/home/eshen/Development/silvershore/shore-protocol/src/lib.rs[0m
+[94m[Read][0m [95m/home/eshen/Development/silvershore/shore-protocol/src/types.rs[0m
+[94m[Read][0m [95m/home/eshen/Development/silvershore/shore-protocol/src/server_msg.rs[0m
+[94m[Read][0m [95m/home/eshen/Development/silvershore/shore-protocol/src/client_msg.rs[0m
+[94m[Read][0m [95m/home/eshen/Development/silvershore/shore-protocol/src/error.rs[0m
+[94m[Read][0m [95m/home/eshen/Development/silvershore/shore-protocol/Cargo.toml[0m
+[94m[Glob][0m pattern: [96mshore-protocol/tests/**/*[0m
+No integration tests yet. I have a full understanding of all the types. Let me create the integration test file.
+[94m[Bash][0m List shore-protocol directory $ ls /home/eshen/Development/silvershore/shore-protocol/
+[94m[Bash][0m Create tests directory $ mkdir -p /home/eshen/Development/silvershore/shore-protocol/tests
+[94m[Write][0m [95m/home/eshen/Development/silvershore/shore-protocol/tests/golden_json.rs[0m "//! Golden-file integration tests for SWP protocol serialization.
+//!
+//! Each test has a hand-written JSON fixture matching the documented protocol
+//! spec. We verify:
+//! - Deserialization: fixture... (30644 chars)"
+Now let me run the tests and check if the types need `deny_unknown_fields` to be absent (they should, since we want forward compat). Let me also check if any structs have `deny_unknown_fields`.
+[94m[Bash][0m Run golden JSON integration tests $ cargo test -p shore-protocol --test golden_json 2>&1
+All 44 tests pass. Now let me run the full workspace checks.
+[94m[Bash][0m Build entire workspace $ cargo build --workspace 2>&1
+[94m[Bash][0m Run all workspace tests $ cargo test --workspace 2>&1
+[94m[Bash][0m Run clippy on workspace $ cargo clippy --workspace 2>&1
+All green: 88 tests pass (28 unit + 16 client + 44 golden integration), build clean, clippy clean.
+
+Now let me update the progress file.
+[94m[Read][0m [95m/home/eshen/Development/silvershore/.ralph-tui/progress.md[0m
+[94m[Edit][0m [95m/home/eshen/Development/silvershore/.ralph-tui/progress.md[0m edit: "  - All 44 tests pass (16 client + 28 protocol); c..." → "  - All 44 tests pass (16 client + 28 protocol); c..."
+All acceptance criteria met:
+
+- **Golden-file JSON fixtures** for every message type in `shore-protocol/tests/golden_json.rs`
+- **Hand-written JSON strings** matching the exact protocol spec format for Message, StreamMetadata, SendImage, CacheWarning, and all other types
+- **Deserialization tests** verify all fields including `msg_id`, `alt_index`, `alt_count`, `content_type`, `ToolCall.input` as JSON object
+- **Serialization tests** verify output matches fixtures (via `assert_golden` helper — `serde_json::Value` equality is order-independent)
+- **Forward compatibility** — 7 tests confirm unknown fields silently ignored
+- **Missing optionals** — 10 tests confirm `None`/default values
+- **Protocol version mismatch** — 2 tests verify `ProtocolError` handling
+- `cargo build --workspace` passes
+- `cargo test --workspace` passes (88 total: 28 unit + 16 client + 44 golden)
+- `cargo clippy --workspace` passes
+
+<promise>COMPLETE</promise>

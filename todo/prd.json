@@ -129,11 +129,12 @@
         "npm test passes"
       ],
       "priority": 5,
-      "passes": false,
+      "passes": true,
       "notes": "Phase 2: shore-llm + Daemon Core. TypeScript project.",
       "dependsOn": [
         "US-001"
-      ]
+      ],
+      "completionNotes": "Completed by agent"
     },
     {
       "id": "US-006",
@@ -1086,6 +1087,6 @@
     }
   ],
   "metadata": {
-    "updatedAt": "2026-03-25T04:03:35.566Z"
+    "updatedAt": "2026-03-25T04:07:13.616Z"
   }
 }

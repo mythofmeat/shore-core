@@ -13,6 +13,8 @@ after each iteration and it's included in prompts for context.
 - `StreamChunk.content_type` defaults to `"text"` via `#[serde(default = "...")]`
 - `tokio::io::duplex` + `SWPConnection::from_raw_stream()` is the pattern for mock-server tests — no real sockets needed
 - `Box<dyn AsyncReadWrite>` unifies Unix/TCP transports; manual `Debug` impl needed since trait objects aren't `Debug`
+- `shore-llm` tests use Unix socket via `node:http` `createServer` + `server.listen(socketPath)` — no external test HTTP client needed
+- `tsconfig.json` excludes `**/*.test.ts` so test files don't compile into `dist/`
 
 ---
 
@@ -86,5 +88,22 @@ after each iteration and it's included in prompts for context.
   - Serde's default behavior (without `deny_unknown_fields`) already provides forward compatibility — unknown fields are silently ignored during deserialization
   - `#[serde(tag = "type")]` tagged enums also silently ignore unknown fields in inner structs
   - `#[serde(flatten)]` with NewMessage works correctly in golden tests — flattened Message fields appear at top level alongside `"type": "new_message"`
+---
+
+## 2026-03-25 - US-005
+- What was implemented: shore-llm HTTP server scaffold with health endpoint, structured logging, and route dispatch
+- Files changed:
+  - `shore-llm/package.json` — added build/start/test scripts, pino + @types/node deps, vitest + typescript + pino-pretty devDeps
+  - `shore-llm/tsconfig.json` — added exclude for test files
+  - `shore-llm/src/index.ts` — HTTP server listening on Unix socket (path via CLI arg or SHORE_LLM_SOCKET env var), graceful shutdown on SIGTERM/SIGINT
+  - `shore-llm/src/router.ts` — route dispatch for /v1/health (200), /v1/generate, /v1/stream, /v1/embed, /v1/image/generate (501 stubs); 404 for unmatched routes; 400 for invalid JSON POST bodies
+  - `shore-llm/src/logger.ts` — pino logger with `service: "shore-llm"` base field, `childWithRid()` for X-Request-ID propagation
+  - `shore-llm/src/router.test.ts` — 10 tests: health endpoint (200 + content-type), 404 handling (unknown path + wrong method), invalid JSON (400), stub endpoints (4x 501), X-Request-ID propagation
+- **Learnings:**
+  - Node.js `http.createServer` + `server.listen(socketPath)` works directly for Unix socket servers — no Express or Fastify needed for simple routing
+  - `vitest run` works out of the box with TypeScript ESM (`"type": "module"`) — no additional config needed
+  - Pino child loggers via `logger.child({ rid })` cleanly propagate request-scoped fields without middleware
+  - `npm run build` requires `typescript` as a devDependency — the scaffold from US-001 didn't include it
+  - `tsconfig.json` `exclude: ["src/**/*.test.ts"]` prevents test files from being compiled into `dist/`
 ---
 
