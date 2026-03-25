@@ -331,6 +331,7 @@ async fn run_rag_pipeline(
 struct IntegrationCommandCtx<'a> {
     db: &'a MemoryDB,
     private: AtomicBool,
+    autonomy_paused: AtomicBool,
 }
 
 impl<'a> CommandContext for IntegrationCommandCtx<'a> {
@@ -342,6 +343,12 @@ impl<'a> CommandContext for IntegrationCommandCtx<'a> {
     }
     fn set_private(&self, private: bool) {
         self.private.store(private, Ordering::SeqCst);
+    }
+    fn is_autonomy_paused(&self) -> bool {
+        self.autonomy_paused.load(Ordering::SeqCst)
+    }
+    fn set_autonomy_paused(&self, paused: bool) {
+        self.autonomy_paused.store(paused, Ordering::SeqCst);
     }
     fn effective_config(&self) -> Value {
         json!({
@@ -899,6 +906,7 @@ async fn test_full_memory_system_e2e() {
     let cmd_ctx = IntegrationCommandCtx {
         db: &db,
         private: AtomicBool::new(false),
+        autonomy_paused: AtomicBool::new(false),
     };
 
     // Status mode (no query)

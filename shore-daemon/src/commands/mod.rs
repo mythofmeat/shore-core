@@ -68,6 +68,8 @@ pub trait CommandContext {
     fn memory_db(&self) -> &crate::memory::db::MemoryDB;
     fn is_private(&self) -> bool;
     fn set_private(&self, private: bool);
+    fn is_autonomy_paused(&self) -> bool;
+    fn set_autonomy_paused(&self, paused: bool);
     fn effective_config(&self) -> Value;
 }
 
@@ -89,6 +91,7 @@ pub async fn dispatch(
         "memory" => state::handle_memory(args, ctx).await,
         "compact" => state::handle_compact(args, ctx).await,
         "toggle_private" => state::handle_toggle_private(ctx).await,
+        "toggle_autonomy" => state::handle_toggle_autonomy(ctx).await,
         "config" => state::handle_config(ctx).await,
         _ => Err(CommandError::UnknownCommand(name.to_string())),
     }
@@ -107,6 +110,7 @@ mod tests {
     struct TestCommandCtx {
         db: MemoryDB,
         private: AtomicBool,
+        autonomy_paused: AtomicBool,
     }
 
     impl TestCommandCtx {
@@ -114,6 +118,7 @@ mod tests {
             Self {
                 db: MemoryDB::open_in_memory().unwrap(),
                 private: AtomicBool::new(false),
+                autonomy_paused: AtomicBool::new(false),
             }
         }
     }
@@ -127,6 +132,12 @@ mod tests {
         }
         fn set_private(&self, private: bool) {
             self.private.store(private, Ordering::SeqCst);
+        }
+        fn is_autonomy_paused(&self) -> bool {
+            self.autonomy_paused.load(Ordering::SeqCst)
+        }
+        fn set_autonomy_paused(&self, paused: bool) {
+            self.autonomy_paused.store(paused, Ordering::SeqCst);
         }
         fn effective_config(&self) -> Value {
             serde_json::json!({
@@ -162,6 +173,13 @@ mod tests {
     async fn test_dispatch_config() {
         let ctx = TestCommandCtx::new();
         let result = dispatch("config", serde_json::json!({}), &ctx).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_toggle_autonomy() {
+        let ctx = TestCommandCtx::new();
+        let result = dispatch("toggle_autonomy", serde_json::json!({}), &ctx).await;
         assert!(result.is_ok());
     }
 }

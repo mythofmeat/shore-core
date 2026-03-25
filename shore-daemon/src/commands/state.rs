@@ -133,6 +133,28 @@ pub async fn handle_toggle_private(ctx: &dyn CommandContext) -> Result<CommandRe
 }
 
 // ---------------------------------------------------------------------------
+// toggle_autonomy command
+// ---------------------------------------------------------------------------
+
+/// Handle the `toggle_autonomy` command.
+///
+/// Toggles the autonomy paused flag. When paused, the heartbeat scheduler
+/// will not trigger probes or social-need rolls.
+pub async fn handle_toggle_autonomy(
+    ctx: &dyn CommandContext,
+) -> Result<CommandResult, CommandError> {
+    let was_paused = ctx.is_autonomy_paused();
+    let now_paused = !was_paused;
+
+    ctx.set_autonomy_paused(now_paused);
+
+    Ok(CommandResult::data(json!({
+        "autonomy_paused": now_paused,
+        "was_paused": was_paused,
+    })))
+}
+
+// ---------------------------------------------------------------------------
 // config command
 // ---------------------------------------------------------------------------
 
@@ -162,6 +184,7 @@ mod tests {
     struct TestCtx {
         db: MemoryDB,
         private: AtomicBool,
+        autonomy_paused: AtomicBool,
         config: Value,
     }
 
@@ -170,6 +193,7 @@ mod tests {
             Self {
                 db: MemoryDB::open_in_memory().unwrap(),
                 private: AtomicBool::new(false),
+                autonomy_paused: AtomicBool::new(false),
                 config: json!({
                     "model": "claude-sonnet-4-20250514",
                     "memory": { "enabled": true },
@@ -187,6 +211,12 @@ mod tests {
         }
         fn set_private(&self, private: bool) {
             self.private.store(private, Ordering::SeqCst);
+        }
+        fn is_autonomy_paused(&self) -> bool {
+            self.autonomy_paused.load(Ordering::SeqCst)
+        }
+        fn set_autonomy_paused(&self, paused: bool) {
+            self.autonomy_paused.store(paused, Ordering::SeqCst);
         }
         fn effective_config(&self) -> Value {
             self.config.clone()
@@ -357,5 +387,42 @@ mod tests {
         assert_eq!(config["model"], "claude-sonnet-4-20250514");
         assert_eq!(config["memory"]["enabled"], true);
         assert!(!result.push_history);
+    }
+
+    // -- toggle_autonomy command tests ----------------------------------------
+
+    #[tokio::test]
+    async fn test_toggle_autonomy_pause() {
+        let ctx = TestCtx::new();
+        assert!(!ctx.is_autonomy_paused());
+
+        let result = handle_toggle_autonomy(&ctx).await.unwrap();
+
+        assert!(ctx.is_autonomy_paused());
+        assert_eq!(result.data["autonomy_paused"], true);
+        assert_eq!(result.data["was_paused"], false);
+    }
+
+    #[tokio::test]
+    async fn test_toggle_autonomy_resume() {
+        let ctx = TestCtx::new();
+        ctx.set_autonomy_paused(true);
+
+        let result = handle_toggle_autonomy(&ctx).await.unwrap();
+
+        assert!(!ctx.is_autonomy_paused());
+        assert_eq!(result.data["autonomy_paused"], false);
+        assert_eq!(result.data["was_paused"], true);
+    }
+
+    #[tokio::test]
+    async fn test_toggle_autonomy_roundtrip() {
+        let ctx = TestCtx::new();
+
+        handle_toggle_autonomy(&ctx).await.unwrap();
+        assert!(ctx.is_autonomy_paused());
+
+        handle_toggle_autonomy(&ctx).await.unwrap();
+        assert!(!ctx.is_autonomy_paused());
     }
 }
