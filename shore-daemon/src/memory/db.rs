@@ -276,6 +276,27 @@ impl MemoryDB {
         rows.collect()
     }
 
+    /// Count entries by status (more efficient than fetching all rows).
+    pub fn count_entries_by_status(&self, status: &str) -> SqlResult<i64> {
+        self.conn.query_row(
+            "SELECT COUNT(*) FROM entries WHERE status = ?1",
+            params![status],
+            |row| row.get(0),
+        )
+    }
+
+    /// Count all entries regardless of status.
+    pub fn count_entries(&self) -> SqlResult<i64> {
+        self.conn
+            .query_row("SELECT COUNT(*) FROM entries", [], |row| row.get(0))
+    }
+
+    /// Count all entities.
+    pub fn count_entities(&self) -> SqlResult<i64> {
+        self.conn
+            .query_row("SELECT COUNT(*) FROM entities", [], |row| row.get(0))
+    }
+
     pub fn get_entries_by_type(&self, memory_type: &str) -> SqlResult<Vec<Entry>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, memory_type, source, reason, status, canonical, confidence,
