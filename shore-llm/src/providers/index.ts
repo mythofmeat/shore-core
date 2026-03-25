@@ -12,6 +12,10 @@ export type {
   NormalizedUsage,
   NormalizedTiming,
   NormalizedContentBlock,
+  EmbedRequest,
+  EmbedResponse,
+  ImageGenerateRequest,
+  ImageGenerateResponse,
 } from "./types.js";
 
 export function getProvider(name: string): Provider | null {

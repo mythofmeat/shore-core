@@ -1,6 +1,12 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { childWithRid } from "./logger.js";
-import { getProvider, type ProviderRequest } from "./providers/index.js";
+import {
+  getProvider,
+  type ProviderRequest,
+  type EmbedRequest,
+  type ImageGenerateRequest,
+} from "./providers/index.js";
+import * as openai from "./providers/openai.js";
 
 type Handler = (
   req: IncomingMessage,
@@ -27,8 +33,26 @@ function handleHealth(_req: IncomingMessage, res: ServerResponse): void {
   json(res, 200, { status: "ok" });
 }
 
-function stubEndpoint(_req: IncomingMessage, res: ServerResponse): void {
-  json(res, 501, { error: "not_implemented", message: "Endpoint not yet implemented" });
+async function handleEmbed(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  body: string,
+): Promise<void> {
+  const req = JSON.parse(body) as EmbedRequest;
+  const client = openai.createClient(req.api_key, req.base_url);
+  const result = await openai.embed(client, req);
+  json(res, 200, result);
+}
+
+async function handleImageGenerate(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  body: string,
+): Promise<void> {
+  const req = JSON.parse(body) as ImageGenerateRequest;
+  const client = openai.createClient(req.api_key, req.base_url);
+  const result = await openai.imageGenerate(client, req);
+  json(res, 200, result);
 }
 
 async function handleGenerate(
@@ -70,8 +94,8 @@ const routes: Route[] = [
   { method: "GET", path: "/v1/health", handler: handleHealth },
   { method: "POST", path: "/v1/generate", handler: handleGenerate },
   { method: "POST", path: "/v1/stream", handler: handleStream },
-  { method: "POST", path: "/v1/embed", handler: stubEndpoint },
-  { method: "POST", path: "/v1/image/generate", handler: stubEndpoint },
+  { method: "POST", path: "/v1/embed", handler: handleEmbed },
+  { method: "POST", path: "/v1/image/generate", handler: handleImageGenerate },
 ];
 
 function readBody(req: IncomingMessage): Promise<string> {
