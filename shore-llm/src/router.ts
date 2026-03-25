@@ -1,5 +1,11 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { childWithRid } from "./logger.js";
+import {
+  createClient,
+  generate,
+  stream,
+  type GenerateRequest,
+} from "./providers/anthropic.js";
 
 type Handler = (
   req: IncomingMessage,
@@ -30,10 +36,45 @@ function stubEndpoint(_req: IncomingMessage, res: ServerResponse): void {
   json(res, 501, { error: "not_implemented", message: "Endpoint not yet implemented" });
 }
 
+async function handleGenerate(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  body: string,
+): Promise<void> {
+  const req = JSON.parse(body) as GenerateRequest;
+  if (req.provider !== "anthropic") {
+    json(res, 400, {
+      error: "unsupported_provider",
+      message: `Provider "${req.provider}" is not supported`,
+    });
+    return;
+  }
+  const client = createClient(req.api_key, req.base_url);
+  const result = await generate(client, req);
+  json(res, 200, result);
+}
+
+async function handleStream(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  body: string,
+): Promise<void> {
+  const req = JSON.parse(body) as GenerateRequest;
+  if (req.provider !== "anthropic") {
+    json(res, 400, {
+      error: "unsupported_provider",
+      message: `Provider "${req.provider}" is not supported`,
+    });
+    return;
+  }
+  const client = createClient(req.api_key, req.base_url);
+  await stream(client, req, res);
+}
+
 const routes: Route[] = [
   { method: "GET", path: "/v1/health", handler: handleHealth },
-  { method: "POST", path: "/v1/generate", handler: stubEndpoint },
-  { method: "POST", path: "/v1/stream", handler: stubEndpoint },
+  { method: "POST", path: "/v1/generate", handler: handleGenerate },
+  { method: "POST", path: "/v1/stream", handler: handleStream },
   { method: "POST", path: "/v1/embed", handler: stubEndpoint },
   { method: "POST", path: "/v1/image/generate", handler: stubEndpoint },
 ];

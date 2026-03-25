@@ -105,5 +105,24 @@ after each iteration and it's included in prompts for context.
   - Pino child loggers via `logger.child({ rid })` cleanly propagate request-scoped fields without middleware
   - `npm run build` requires `typescript` as a devDependency — the scaffold from US-001 didn't include it
   - `tsconfig.json` `exclude: ["src/**/*.test.ts"]` prevents test files from being compiled into `dist/`
+- Anthropic SDK streaming returns `AsyncIterable<RawMessageStreamEvent>` — use `for await` to consume events
+- Tool use JSON accumulates via `input_json_delta` events across `content_block_delta`, then parse on `content_block_stop`
+---
+
+## 2026-03-25 - US-006
+- What was implemented: Anthropic provider for shore-llm with generate and streaming endpoints
+- Files changed:
+  - `shore-llm/package.json` — added `@anthropic-ai/sdk` dependency
+  - `shore-llm/src/providers/anthropic.ts` — full Anthropic provider: request translation (cache_control_depth, thinking/budget_tokens, temperature, top_p, tools, system), response normalization (content, content_blocks, finish_reason, usage with cache tokens, timing), streaming with ndjson events (start, text, thinking, tool_use, done)
+  - `shore-llm/src/router.ts` — wired `/v1/generate` and `/v1/stream` to Anthropic provider (replacing 501 stubs), added unsupported provider validation
+  - `shore-llm/src/router.test.ts` — updated stub tests to reflect live endpoints, added unsupported provider rejection tests
+  - `shore-llm/src/providers/anthropic.test.ts` — 22 unit tests with mocked SDK client covering: buildCreateParams (basic, system, tools, temperature, top_p, thinking, cache_control_depth, stream flag), generate (text, cache tokens, null cache tokens, timing, tool_use, thinking, SDK params), stream (text events, thinking events, tool_use with accumulated JSON, ndjson content-type, cache tokens in done)
+- **Learnings:**
+  - Anthropic SDK's `client.messages.create()` with `stream: true` returns an `AsyncIterable<RawMessageStreamEvent>` — consume with `for await`
+  - Tool use input arrives as incremental `input_json_delta` events with `partial_json` strings that must be concatenated and parsed on `content_block_stop`
+  - `cache_read_input_tokens` and `cache_creation_input_tokens` may be `null` in SDK response — normalize to `0` for the shore-llm response
+  - `MessageDeltaUsage` (from `message_delta` events) has cumulative `output_tokens` — use it to update the running usage total
+  - Cache control must be applied per content-block: string content must be converted to `TextBlockParam[]` form to attach `cache_control: { type: "ephemeral" }`
+  - Using `Record<string, unknown>` for params building requires `as unknown as` double cast due to strict TypeScript overlap checks
 ---
 
