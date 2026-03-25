@@ -17,6 +17,9 @@ dist/
 *.swo
 *~
 .DS_Store
+.ralph-tui
+*.todo.md
+todo/
 
 # Environment
 .env
