@@ -36,6 +36,14 @@ Add items here as decisions are made.
   has tool-use access to memory search. The memory tool (9.3) is the
   correct path for memory retrieval.
 
+## Deferred Indefinitely
+
+- **Telegram bot** (1.1) — Never used. Message routing, typing indicators,
+  image attachments, texting delay simulation. Can re-implement later if needed.
+
+- **Discord bot** (1.2) — Never used. Slash commands, selective character
+  filtering. Can re-implement later if needed.
+
 ## Not Needed
 
 - **Reset subcommand** (5.11) — Not needed. Users can delete or archive

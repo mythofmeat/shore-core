@@ -12,6 +12,13 @@ use cli::{Cli, CliCommand};
 fn main() -> ExitCode {
     let cli = <Cli as clap::Parser>::parse();
 
+    // Initialize color control: --no-color flag or NO_COLOR env var disables color.
+    let no_color = cli.no_color
+        || std::env::var("NO_COLOR")
+            .map(|v| !v.is_empty())
+            .unwrap_or(false);
+    output::set_color_enabled(!no_color);
+
     // Handle local-only commands that don't need a daemon connection.
     if let CliCommand::Completions { shell } = &cli.command {
         cli::print_completions(*shell);

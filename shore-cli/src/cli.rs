@@ -16,6 +16,10 @@ pub struct Cli {
     #[arg(long, short = 'c', global = true, env = "SHORE_CHARACTER")]
     pub character: Option<String>,
 
+    /// Disable colored output (also respects NO_COLOR env var)
+    #[arg(long, global = true)]
+    pub no_color: bool,
+
     #[command(subcommand)]
     pub command: CliCommand,
 }
@@ -40,6 +44,18 @@ pub enum CliCommand {
         /// Number of messages to show
         #[arg(short = 'n', long, default_value = "20")]
         count: u32,
+
+        /// Follow mode: keep listening for new messages
+        #[arg(short = 'f', long)]
+        follow: bool,
+
+        /// Output raw JSON
+        #[arg(long)]
+        json: bool,
+
+        /// Output only message content (no metadata)
+        #[arg(long)]
+        content: bool,
     },
 
     /// Edit a message by ID or relative reference (last, -1, 3, etc.)
@@ -67,10 +83,28 @@ pub enum CliCommand {
         /// Show detailed character info
         #[arg(long)]
         info: bool,
+
+        /// Create a new character scaffold directory
+        #[arg(long)]
+        new: bool,
     },
 
     /// Show daemon and session status
-    Status,
+    Status {
+        /// Show only a specific section (e.g. autonomy, tokens)
+        #[arg(long)]
+        section: Option<String>,
+    },
+
+    /// Get a single message by index or reference
+    Get {
+        /// Message reference (last, -1, -2, 3, etc.)
+        #[arg(allow_hyphen_values = true)]
+        msg_ref: String,
+    },
+
+    /// Show conversation info (message count, timestamps, model)
+    Info,
 
     /// List or switch models (no args = list, with name = switch)
     Model {
@@ -80,12 +114,24 @@ pub enum CliCommand {
         /// Show detailed model info
         #[arg(long)]
         info: bool,
+
+        /// Reset to config default model
+        #[arg(long)]
+        reset: bool,
     },
 
     /// Show or query memory system
     Memory {
         /// Optional query to search memory
         query: Option<String>,
+    },
+
+    /// Show recent memory changelog entries
+    #[command(name = "memory-changelog")]
+    MemoryChangelog {
+        /// Number of entries to show
+        #[arg(short = 'n', long, default_value = "20")]
+        limit: u32,
     },
 
     /// Trigger memory compaction
@@ -105,6 +151,16 @@ pub enum CliCommand {
         /// Print the config directory path
         #[arg(long)]
         path: bool,
+
+        /// Validate configuration and show warnings
+        #[arg(long)]
+        check: bool,
+    },
+
+    /// Pause or resume autonomy
+    Autonomy {
+        #[command(subcommand)]
+        action: AutonomyAction,
     },
 
     /// Generate shell completions
@@ -112,6 +168,14 @@ pub enum CliCommand {
         /// Shell to generate completions for
         shell: Shell,
     },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum AutonomyAction {
+    /// Pause autonomy (heartbeat + cache keepalive)
+    Pause,
+    /// Resume autonomy
+    Resume,
 }
 
 /// Generate and print shell completions to stdout.
@@ -131,19 +195,20 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
         CliCommand::Send { .. }
         | CliCommand::Regen { .. }
         | CliCommand::Completions { .. }
-        | CliCommand::Config { path: true, .. } => None,
+        | CliCommand::Config { path: true, check: false, .. } => None,
 
-        // Character: list/switch handled locally, --info goes to daemon.
-        CliCommand::Character { name, info } => {
+        // Character: list/switch/new handled locally, --info goes to daemon.
+        CliCommand::Character { name, info, .. } => {
             if *info {
                 let n = name.as_deref().unwrap_or("");
                 Some(("character_info", json!({ "name": n })))
             } else {
+                // list, switch, and new are handled in run.rs
                 None
             }
         }
 
-        CliCommand::Log { count } => {
+        CliCommand::Log { count, .. } => {
             Some(("log", json!({ "count": count })))
         }
         CliCommand::Edit { msg_id, content } => {
@@ -152,17 +217,32 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
         CliCommand::Delete { msg_id } => {
             Some(("delete", json!({ "refs": msg_id })))
         }
-        CliCommand::Status => {
+        CliCommand::Status { .. } => {
             Some(("status", json!({})))
         }
-        CliCommand::Model { name, info } => match (name, info) {
-            (Some(name), true) => Some(("model_info", json!({ "name": name }))),
-            (None, true) => Some(("model_info", json!({}))),
-            (None, false) => Some(("list_models", json!({}))),
-            (Some(name), false) => Some(("switch_model", json!({ "name": name }))),
+        CliCommand::Get { msg_ref } => {
+            Some(("get", json!({ "ref": msg_ref })))
+        }
+        CliCommand::Info => {
+            Some(("info", json!({})))
+        }
+        CliCommand::Model { name, info, reset } => {
+            if *reset {
+                Some(("reset_model", json!({})))
+            } else {
+                match (name, info) {
+                    (Some(name), true) => Some(("model_info", json!({ "name": name }))),
+                    (None, true) => Some(("model_info", json!({}))),
+                    (None, false) => Some(("list_models", json!({}))),
+                    (Some(name), false) => Some(("switch_model", json!({ "name": name }))),
+                }
+            }
         }
         CliCommand::Memory { query } => {
             Some(("memory", json!({ "query": query })))
+        }
+        CliCommand::MemoryChangelog { limit } => {
+            Some(("memory_changelog", json!({ "limit": limit })))
         }
         CliCommand::Compact => {
             Some(("compact", json!({})))
@@ -170,8 +250,15 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
         CliCommand::Collate => {
             Some(("collate", json!({})))
         }
+        CliCommand::Config { check: true, .. } => {
+            Some(("config_check", json!({})))
+        }
         CliCommand::Config { key, value, .. } => {
             Some(("config", json!({ "key": key, "value": value })))
+        }
+        CliCommand::Autonomy { action } => match action {
+            AutonomyAction::Pause => Some(("autonomy_pause", json!({}))),
+            AutonomyAction::Resume => Some(("autonomy_resume", json!({}))),
         }
     }
 }
@@ -228,8 +315,11 @@ mod tests {
     fn parse_log_default() {
         let cli = parse(&["log"]);
         match &cli.command {
-            CliCommand::Log { count } => {
+            CliCommand::Log { count, follow, json, content } => {
                 assert_eq!(*count, 20);
+                assert!(!follow);
+                assert!(!json);
+                assert!(!content);
             }
             other => panic!("expected Log, got: {other:?}"),
         }
@@ -239,7 +329,7 @@ mod tests {
     fn parse_log_custom_count() {
         let cli = parse(&["log", "--count", "50"]);
         match &cli.command {
-            CliCommand::Log { count } => {
+            CliCommand::Log { count, .. } => {
                 assert_eq!(*count, 50);
             }
             other => panic!("expected Log, got: {other:?}"),
@@ -308,7 +398,7 @@ mod tests {
     fn parse_character_list() {
         let cli = parse(&["character"]);
         match &cli.command {
-            CliCommand::Character { name, info } => {
+            CliCommand::Character { name, info, .. } => {
                 assert!(name.is_none());
                 assert!(!info);
             }
@@ -320,7 +410,7 @@ mod tests {
     fn parse_character_switch() {
         let cli = parse(&["character", "alice"]);
         match &cli.command {
-            CliCommand::Character { name, info } => {
+            CliCommand::Character { name, info, .. } => {
                 assert_eq!(name.as_deref(), Some("alice"));
                 assert!(!info);
             }
@@ -332,7 +422,7 @@ mod tests {
     fn parse_character_info() {
         let cli = parse(&["character", "alice", "--info"]);
         match &cli.command {
-            CliCommand::Character { name, info } => {
+            CliCommand::Character { name, info, .. } => {
                 assert_eq!(name.as_deref(), Some("alice"));
                 assert!(info);
             }
@@ -343,14 +433,14 @@ mod tests {
     #[test]
     fn parse_status() {
         let cli = parse(&["status"]);
-        assert!(matches!(cli.command, CliCommand::Status));
+        assert!(matches!(cli.command, CliCommand::Status { .. }));
     }
 
     #[test]
     fn parse_model_list() {
         let cli = parse(&["model"]);
         match &cli.command {
-            CliCommand::Model { name, info } => {
+            CliCommand::Model { name, info, .. } => {
                 assert!(name.is_none());
                 assert!(!info);
             }
@@ -362,7 +452,7 @@ mod tests {
     fn parse_model_switch() {
         let cli = parse(&["model", "claude-haiku-4-5-20251001"]);
         match &cli.command {
-            CliCommand::Model { name, info } => {
+            CliCommand::Model { name, info, .. } => {
                 assert_eq!(name.as_deref(), Some("claude-haiku-4-5-20251001"));
                 assert!(!info);
             }
@@ -374,7 +464,7 @@ mod tests {
     fn parse_model_info() {
         let cli = parse(&["model", "opus", "--info"]);
         match &cli.command {
-            CliCommand::Model { name, info } => {
+            CliCommand::Model { name, info, .. } => {
                 assert_eq!(name.as_deref(), Some("opus"));
                 assert!(info);
             }
@@ -420,10 +510,11 @@ mod tests {
     fn parse_config_no_args() {
         let cli = parse(&["config"]);
         match &cli.command {
-            CliCommand::Config { key, value, path } => {
+            CliCommand::Config { key, value, path, check } => {
                 assert!(key.is_none());
                 assert!(value.is_none());
                 assert!(!path);
+                assert!(!check);
             }
             other => panic!("expected Config, got: {other:?}"),
         }
@@ -433,10 +524,9 @@ mod tests {
     fn parse_config_with_key() {
         let cli = parse(&["config", "model"]);
         match &cli.command {
-            CliCommand::Config { key, value, path } => {
+            CliCommand::Config { key, value, .. } => {
                 assert_eq!(key.as_deref(), Some("model"));
                 assert!(value.is_none());
-                assert!(!path);
             }
             other => panic!("expected Config, got: {other:?}"),
         }
@@ -446,10 +536,9 @@ mod tests {
     fn parse_config_with_key_value() {
         let cli = parse(&["config", "model", "claude-haiku-4-5-20251001"]);
         match &cli.command {
-            CliCommand::Config { key, value, path } => {
+            CliCommand::Config { key, value, .. } => {
                 assert_eq!(key.as_deref(), Some("model"));
                 assert_eq!(value.as_deref(), Some("claude-haiku-4-5-20251001"));
-                assert!(!path);
             }
             other => panic!("expected Config, got: {other:?}"),
         }
@@ -470,14 +559,14 @@ mod tests {
     fn parse_global_socket_flag() {
         let cli = parse(&["--socket", "/tmp/shore.sock", "status"]);
         assert_eq!(cli.socket.as_deref(), Some("/tmp/shore.sock"));
-        assert!(matches!(cli.command, CliCommand::Status));
+        assert!(matches!(cli.command, CliCommand::Status { .. }));
     }
 
     #[test]
     fn parse_global_config_flag() {
         let cli = parse(&["--config", "/etc/shore.toml", "status"]);
         assert_eq!(cli.config.as_deref(), Some("/etc/shore.toml"));
-        assert!(matches!(cli.command, CliCommand::Status));
+        assert!(matches!(cli.command, CliCommand::Status { .. }));
     }
 
     // ── SWP mapping tests ────────────────────────────────────────────
@@ -506,7 +595,7 @@ mod tests {
 
     #[test]
     fn status_maps_to_command() {
-        let cmd = CliCommand::Status;
+        let cmd = CliCommand::Status { section: None };
         let (name, args) = to_swp_command(&cmd).unwrap();
         assert_eq!(name, "status");
         assert_eq!(args, serde_json::json!({}));
@@ -514,15 +603,15 @@ mod tests {
 
     #[test]
     fn character_maps_to_none_without_info() {
-        let cmd = CliCommand::Character { name: None, info: false };
+        let cmd = CliCommand::Character { name: None, info: false, new: false };
         assert!(to_swp_command(&cmd).is_none());
-        let cmd = CliCommand::Character { name: Some("alice".into()), info: false };
+        let cmd = CliCommand::Character { name: Some("alice".into()), info: false, new: false };
         assert!(to_swp_command(&cmd).is_none());
     }
 
     #[test]
     fn character_info_maps_to_command() {
-        let cmd = CliCommand::Character { name: Some("alice".into()), info: true };
+        let cmd = CliCommand::Character { name: Some("alice".into()), info: true, new: false };
         let (name, args) = to_swp_command(&cmd).unwrap();
         assert_eq!(name, "character_info");
         assert_eq!(args["name"], "alice");
@@ -530,7 +619,7 @@ mod tests {
 
     #[test]
     fn model_info_maps_to_command() {
-        let cmd = CliCommand::Model { name: Some("opus".into()), info: true };
+        let cmd = CliCommand::Model { name: Some("opus".into()), info: true, reset: false };
         let (name, args) = to_swp_command(&cmd).unwrap();
         assert_eq!(name, "model_info");
         assert_eq!(args["name"], "opus");
@@ -538,7 +627,7 @@ mod tests {
 
     #[test]
     fn config_path_maps_to_none() {
-        let cmd = CliCommand::Config { key: None, value: None, path: true };
+        let cmd = CliCommand::Config { key: None, value: None, path: true, check: false };
         assert!(to_swp_command(&cmd).is_none());
     }
 
@@ -546,18 +635,22 @@ mod tests {
     fn all_non_message_commands_map() {
         // Every variant except Send, Regen, Character (no --info), Config --path, and Completions should produce Some.
         let commands: Vec<CliCommand> = vec![
-            CliCommand::Log { count: 20 },
+            CliCommand::Log { count: 20, follow: false, json: false, content: false },
             CliCommand::Edit { msg_id: "m1".into(), content: vec!["text".into()] },
             CliCommand::Delete { msg_id: "m1".into() },
-            CliCommand::Status,
-            CliCommand::Model { name: None, info: false },
-            CliCommand::Model { name: Some("m".into()), info: false },
-            CliCommand::Model { name: Some("m".into()), info: true },
-            CliCommand::Character { name: Some("c".into()), info: true },
+            CliCommand::Status { section: None },
+            CliCommand::Get { msg_ref: "last".into() },
+            CliCommand::Info,
+            CliCommand::Model { name: None, info: false, reset: false },
+            CliCommand::Model { name: Some("m".into()), info: false, reset: false },
+            CliCommand::Model { name: Some("m".into()), info: true, reset: false },
+            CliCommand::Model { name: None, info: false, reset: true },
+            CliCommand::Character { name: Some("c".into()), info: true, new: false },
             CliCommand::Memory { query: None },
+            CliCommand::MemoryChangelog { limit: 20 },
             CliCommand::Compact,
             CliCommand::Collate,
-            CliCommand::Config { key: None, value: None, path: false },
+            CliCommand::Config { key: None, value: None, path: false, check: false },
         ];
         for cmd in &commands {
             assert!(

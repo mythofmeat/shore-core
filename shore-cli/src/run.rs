@@ -17,10 +17,13 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     let (mut conn, _server_hello, _history) =
         SWPConnection::connect(&addr, "cli", "shore-cli", character.clone()).await?;
 
-    // Config --path is handled locally (no daemon round-trip).
+    // Handle local-only commands that don't need a daemon connection.
     if matches!(&cli.command, CliCommand::Config { path: true, .. }) {
         print_config_path();
         return Ok(());
+    }
+    if let CliCommand::Character { name: Some(name), new: true, .. } = &cli.command {
+        return handle_create_character(name);
     }
 
     match &cli.command {
@@ -42,10 +45,89 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             conn.send_regen(true, guidance.clone()).await?;
             recv_streaming_response(&mut conn).await?;
         }
-        CliCommand::Character { name, info: false } => {
+        CliCommand::Character { name, info: false, new: false } => {
             match name {
                 Some(name) => handle_switch_character(&mut conn, name).await?,
                 None => handle_list_characters(&mut conn).await?,
+            }
+        }
+        CliCommand::Log { count, follow, json, content } => {
+            conn.send_command("log", serde_json::json!({ "count": count })).await?;
+            let data = recv_command_data(&mut conn).await?;
+
+            if *json {
+                println!("{}", serde_json::to_string_pretty(&data)?);
+            } else if *content {
+                if let Some(messages) = data["messages"].as_array() {
+                    for msg in messages {
+                        if let Some(c) = msg["content"].as_str() {
+                            println!("{}", c);
+                        }
+                    }
+                }
+            } else {
+                let char_name = character.as_deref().unwrap_or("Assistant");
+                if let Some(messages) = data["messages"].as_array() {
+                    output::print_log(messages, char_name);
+                }
+            }
+
+            if *follow {
+                let follow_char = character.as_deref().unwrap_or("Assistant");
+                loop {
+                    let msg = conn.recv().await?;
+                    match &msg {
+                        ServerMessage::NewMessage(nm) => {
+                            output::print_new_message(nm, follow_char);
+                        }
+                        ServerMessage::StreamStart(start) => {
+                            if !start.regen {
+                                output::print_follow_stream_start(follow_char);
+                            } else {
+                                output::print_stream_start(start.regen);
+                            }
+                        }
+                        ServerMessage::StreamChunk(chunk) => {
+                            output::print_chunk(chunk);
+                        }
+                        ServerMessage::StreamEnd(end) => {
+                            output::print_stream_end(end);
+                        }
+                        ServerMessage::ToolCall(call) => {
+                            output::print_tool_call(call);
+                        }
+                        ServerMessage::ToolResult(result) => {
+                            output::print_tool_result(result);
+                        }
+                        ServerMessage::Phase(phase) => {
+                            output::print_phase(phase);
+                        }
+                        ServerMessage::Shutdown(_) => break,
+                        ServerMessage::Ping(_) | ServerMessage::History(_) => {}
+                        _ => {}
+                    }
+                }
+            }
+        }
+        CliCommand::Status { section } => {
+            conn.send_command("status", serde_json::json!({})).await?;
+            let data = recv_command_data(&mut conn).await?;
+            match section {
+                Some(s) => {
+                    if let Some(val) = data.get(s.as_str()) {
+                        if let Ok(pretty) = serde_json::to_string_pretty(val) {
+                            println!("{pretty}");
+                        } else {
+                            println!("{val}");
+                        }
+                    } else {
+                        return Err(format!("Unknown status section: {s}").into());
+                    }
+                }
+                None => {
+                    let char_name = character.as_deref().unwrap_or("Assistant");
+                    output::print_status(&data, char_name);
+                }
             }
         }
         other => {
@@ -118,15 +200,39 @@ async fn handle_list_characters(
     Ok(())
 }
 
-/// Print the config directory path and exit.
-fn print_config_path() {
+/// Create a new character scaffold directory.
+fn handle_create_character(name: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let config_dir = config_dir();
+    let char_dir = config_dir.join("characters").join(name);
+    let character_md = char_dir.join("character.md");
+
+    if character_md.exists() {
+        return Err(format!("Character '{}' already exists at {}", name, char_dir.display()).into());
+    }
+
+    std::fs::create_dir_all(&char_dir)?;
+    std::fs::write(
+        &character_md,
+        format!("You are {name}.\n\n<!-- Edit this file to define {name}'s personality and behavior. -->\n"),
+    )?;
+    println!("Created character scaffold: {}", char_dir.display());
+    Ok(())
+}
+
+/// Resolve the Shore config directory.
+fn config_dir() -> std::path::PathBuf {
     let base = std::env::var("XDG_CONFIG_HOME")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| {
             let home = std::env::var("HOME").unwrap_or_else(|_| "~".into());
             std::path::PathBuf::from(home).join(".config")
         });
-    println!("{}", base.join("shore").display());
+    base.join("shore")
+}
+
+/// Print the config directory path and exit.
+fn print_config_path() {
+    println!("{}", config_dir().display());
 }
 
 /// Read all of stdin to a string (for piped input).
@@ -215,11 +321,11 @@ async fn recv_streaming_response(
                 output::print_send_image(img);
             }
             ServerMessage::NewMessage(msg) => {
-                output::print_new_message(msg);
+                output::print_new_message(msg, "Assistant");
                 crate::notifications::notify_new_message(msg);
             }
-            ServerMessage::Phase(_) => {
-                // Phase changes are informational during streaming, ignore in CLI
+            ServerMessage::Phase(phase) => {
+                output::print_phase(phase);
             }
             ServerMessage::Ping(_) => {
                 // Keepalive, ignore
@@ -254,7 +360,7 @@ async fn recv_command_data(
                 output::print_send_image(img);
             }
             ServerMessage::NewMessage(msg) => {
-                output::print_new_message(msg);
+                output::print_new_message(msg, "Assistant");
                 crate::notifications::notify_new_message(msg);
             }
             _ => {}
@@ -286,7 +392,7 @@ async fn recv_command_response(
                 output::print_send_image(img);
             }
             ServerMessage::NewMessage(msg) => {
-                output::print_new_message(msg);
+                output::print_new_message(msg, "Assistant");
                 crate::notifications::notify_new_message(msg);
             }
             _ => {}
@@ -372,6 +478,7 @@ mod tests {
             socket: None,
             config: None,
             character: None,
+            no_color: false,
             command,
         }
     }
@@ -486,7 +593,7 @@ mod tests {
 
     #[tokio::test]
     async fn status_sends_swp_command() {
-        let cli = test_cli(CliCommand::Status);
+        let cli = test_cli(CliCommand::Status { section: None });
         let received = execute_with_mock(cli, command_response("status")).await;
 
         match received {
