@@ -124,7 +124,7 @@ impl Default for ModelEntry {
 // ── Resolved model ──────────────────────────────────────────────────────
 
 /// A fully resolved model profile with all provider defaults merged in.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ResolvedModel {
     /// Short name — the TOML key under the provider (e.g. `"opus"`).
     pub name: String,

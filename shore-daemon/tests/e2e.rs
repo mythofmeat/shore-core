@@ -212,7 +212,6 @@ async fn e2e_conversation_milestone() {
         push_tx: push_tx.clone(),
         data_dir: loaded.dirs.data.clone(),
         active_model: loaded.app.defaults.model.clone(),
-        autonomy_paused: false,
         session_tokens: SessionTokens::default(),
     };
 

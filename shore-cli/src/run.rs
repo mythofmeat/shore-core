@@ -15,6 +15,12 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     let (mut conn, _server_hello, _history) =
         SWPConnection::connect(&addr, "cli", "shore-cli", character.clone()).await?;
 
+    // Config --path is handled locally (no daemon round-trip).
+    if matches!(&cli.command, CliCommand::Config { path: true, .. }) {
+        print_config_path();
+        return Ok(());
+    }
+
     match &cli.command {
         CliCommand::Send { message } => {
             let text = message.join(" ");
@@ -25,7 +31,7 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             conn.send_regen(true, guidance.clone()).await?;
             recv_streaming_response(&mut conn).await?;
         }
-        CliCommand::Character { name } => {
+        CliCommand::Character { name, info: false } => {
             match name {
                 Some(name) => handle_switch_character(&mut conn, name).await?,
                 None => handle_list_characters(&mut conn).await?,
@@ -99,6 +105,17 @@ async fn handle_list_characters(
         }
     }
     Ok(())
+}
+
+/// Print the config directory path and exit.
+fn print_config_path() {
+    let base = std::env::var("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "~".into());
+            std::path::PathBuf::from(home).join(".config")
+        });
+    println!("{}", base.join("shore").display());
 }
 
 /// Resolve the daemon address from CLI flags or discovery.
@@ -423,22 +440,6 @@ mod tests {
 
     // ── Character is handled locally (see state.rs) ───────────────
 
-    // ── TogglePrivate command ────────────────────────────────────────
-
-    #[tokio::test]
-    async fn toggle_private_sends_command() {
-        let cli = test_cli(CliCommand::TogglePrivate);
-        let received =
-            execute_with_mock(cli, command_response("toggle_private")).await;
-
-        match received {
-            ClientMessage::Command(c) => {
-                assert_eq!(c.name, "toggle_private");
-            }
-            other => panic!("expected Command, got: {other:?}"),
-        }
-    }
-
     // ── Compact command ──────────────────────────────────────────────
 
     #[tokio::test]
@@ -467,22 +468,6 @@ mod tests {
             ClientMessage::Command(c) => {
                 assert_eq!(c.name, "memory");
                 assert_eq!(c.args["query"], "recent topics");
-            }
-            other => panic!("expected Command, got: {other:?}"),
-        }
-    }
-
-    // ── ToggleAutonomy command ───────────────────────────────────────
-
-    #[tokio::test]
-    async fn toggle_autonomy_sends_command() {
-        let cli = test_cli(CliCommand::ToggleAutonomy);
-        let received =
-            execute_with_mock(cli, command_response("toggle_autonomy")).await;
-
-        match received {
-            ClientMessage::Command(c) => {
-                assert_eq!(c.name, "toggle_autonomy");
             }
             other => panic!("expected Command, got: {other:?}"),
         }

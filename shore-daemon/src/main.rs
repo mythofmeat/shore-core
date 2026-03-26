@@ -141,7 +141,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         push_tx: push_tx.clone(),
         data_dir: loaded.dirs.data.clone(),
         active_model: loaded.app.defaults.model.clone(),
-        autonomy_paused: false,
         session_tokens: SessionTokens::default(),
     };
 

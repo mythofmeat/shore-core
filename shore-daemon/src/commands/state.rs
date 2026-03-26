@@ -55,6 +55,33 @@ pub fn list_models(ctx: &CommandContext) -> CommandResult {
     }))
 }
 
+/// Show detailed info for a model. If no name given, uses the active model.
+pub fn model_info(ctx: &CommandContext, args: &serde_json::Value) -> CommandResult {
+    let name = args
+        .get("name")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .or(ctx.active_model.as_deref());
+
+    let name = name.ok_or_else(|| {
+        (
+            ErrorCode::InvalidRequest,
+            "No model specified and no active model set".into(),
+        )
+    })?;
+
+    let resolved = ctx
+        .config
+        .models
+        .find_model(name)
+        .map_err(|e| (ErrorCode::NotFound, e.to_string()))?;
+
+    let data = serde_json::to_value(&resolved)
+        .map_err(|e| (ErrorCode::InternalError, format!("Failed to serialize model: {e}")))?;
+
+    Ok(data)
+}
+
 /// Switch model or show current. Validates against model catalog.
 pub fn switch_model(ctx: &mut CommandContext, args: &serde_json::Value) -> CommandResult {
     let name = args.get("name").and_then(|v| v.as_str());
@@ -96,14 +123,6 @@ pub fn compact(args: &serde_json::Value) -> CommandResult {
         "status": "not_implemented",
         "dry_run": dry_run,
         "message": "Compaction is not yet implemented",
-    }))
-}
-
-/// Toggle autonomy pause/resume (stub).
-pub fn toggle_autonomy(ctx: &mut CommandContext) -> CommandResult {
-    ctx.autonomy_paused = !ctx.autonomy_paused;
-    Ok(json!({
-        "autonomy_paused": ctx.autonomy_paused,
     }))
 }
 
@@ -176,7 +195,6 @@ mod tests {
             push_tx,
             data_dir,
             active_model: None,
-            autonomy_paused: false,
             session_tokens: Default::default(),
         };
         (engine, ctx, push_rx)
@@ -285,6 +303,49 @@ model_id = "gpt-4o"
     }
 
     #[test]
+    fn model_info_by_name() {
+        let tmp = TempDir::new().unwrap();
+        let (_engine, ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
+
+        let result = model_info(&ctx, &json!({"name": "claude-sonnet"})).unwrap();
+        assert_eq!(result["name"], "claude-sonnet");
+        assert_eq!(result["model_id"], "claude-sonnet-4-20250514");
+        assert!(result["sdk"].is_string());
+    }
+
+    #[test]
+    fn model_info_uses_active_model() {
+        let tmp = TempDir::new().unwrap();
+        let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
+        ctx.active_model = Some("gpt-4o".into());
+
+        let result = model_info(&ctx, &json!({})).unwrap();
+        assert_eq!(result["name"], "gpt-4o");
+    }
+
+    #[test]
+    fn model_info_no_model() {
+        let tmp = TempDir::new().unwrap();
+        let (_engine, ctx, _rx) = make_ctx(&tmp);
+
+        let result = model_info(&ctx, &json!({}));
+        assert!(result.is_err());
+        let (code, _msg) = result.unwrap_err();
+        assert_eq!(code, ErrorCode::InvalidRequest);
+    }
+
+    #[test]
+    fn model_info_not_found() {
+        let tmp = TempDir::new().unwrap();
+        let (_engine, ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
+
+        let result = model_info(&ctx, &json!({"name": "nonexistent"}));
+        assert!(result.is_err());
+        let (code, _msg) = result.unwrap_err();
+        assert_eq!(code, ErrorCode::NotFound);
+    }
+
+    #[test]
     fn memory_stub() {
         let result = memory(&json!({})).unwrap();
         assert_eq!(result["status"], "not_implemented");
@@ -301,21 +362,6 @@ model_id = "gpt-4o"
 
         let result = compact(&json!({"dry_run": true})).unwrap();
         assert_eq!(result["dry_run"], true);
-    }
-
-    #[test]
-    fn toggle_autonomy_toggles() {
-        let tmp = TempDir::new().unwrap();
-        let (_engine, mut ctx, _rx) = make_ctx(&tmp);
-        assert!(!ctx.autonomy_paused);
-
-        let result = toggle_autonomy(&mut ctx).unwrap();
-        assert_eq!(result["autonomy_paused"], true);
-        assert!(ctx.autonomy_paused);
-
-        let result = toggle_autonomy(&mut ctx).unwrap();
-        assert_eq!(result["autonomy_paused"], false);
-        assert!(!ctx.autonomy_paused);
     }
 
     #[test]

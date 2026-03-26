@@ -32,8 +32,6 @@ pub struct CommandContext {
     pub data_dir: PathBuf,
     /// Currently active model name.
     pub active_model: Option<String>,
-    /// Whether autonomy is paused.
-    pub autonomy_paused: bool,
     /// Cumulative token usage for the session.
     pub session_tokens: SessionTokens,
 }
@@ -53,6 +51,7 @@ pub fn dispatch(
         // Navigation
         "list_characters" => navigation::list_characters(engine, ctx),
         "switch_character" => navigation::switch_character(engine, ctx, &cmd.args),
+        "character_info" => navigation::character_info(engine, ctx, &cmd.args),
         "reset" => navigation::reset(engine),
 
         // Conversation
@@ -63,10 +62,10 @@ pub fn dispatch(
         // State
         "status" => state::status(engine, ctx),
         "list_models" => state::list_models(ctx),
+        "model_info" => state::model_info(ctx, &cmd.args),
         "switch_model" => state::switch_model(ctx, &cmd.args),
         "memory" => state::memory(&cmd.args),
         "compact" => state::compact(&cmd.args),
-        "toggle_autonomy" => state::toggle_autonomy(ctx),
         "config" => state::config(ctx, &cmd.args),
 
         _ => Err((
@@ -130,7 +129,6 @@ mod tests {
             push_tx,
             data_dir,
             active_model: None,
-            autonomy_paused: false,
             session_tokens: Default::default(),
         };
         (engine, ctx, push_rx)

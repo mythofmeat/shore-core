@@ -27,6 +27,71 @@ pub fn list_characters(engine: &ConversationEngine, ctx: &CommandContext) -> Com
     Ok(json!({ "characters": characters }))
 }
 
+/// Show detailed info about a character: definition path, user.md presence,
+/// prompt override files, and a preview of the character definition.
+pub fn character_info(
+    engine: &ConversationEngine,
+    ctx: &CommandContext,
+    args: &serde_json::Value,
+) -> CommandResult {
+    let name = args
+        .get("name")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| engine.character_name());
+
+    let char_dir = ctx.config.dirs.config.join("characters").join(name);
+
+    if !char_dir.exists() && name != engine.character_name() {
+        return Err((
+            ErrorCode::NotFound,
+            format!("Character not found: {name}"),
+        ));
+    }
+
+    let definition_path = char_dir.join("character.md");
+    let has_definition = definition_path.exists();
+    let definition_preview = if has_definition {
+        std::fs::read_to_string(&definition_path)
+            .ok()
+            .map(|s| s.chars().take(500).collect::<String>())
+    } else {
+        None
+    };
+
+    let user_path = char_dir.join("user.md");
+    let has_user_definition = user_path.exists();
+
+    // Scan for prompt override files.
+    let prompts_dir = char_dir.join("prompts");
+    let prompt_overrides: Vec<String> = if prompts_dir.exists() {
+        std::fs::read_dir(&prompts_dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| e.file_type().map(|ft| ft.is_file()).unwrap_or(false))
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect()
+    } else {
+        vec![]
+    };
+
+    let data_dir = ctx.data_dir.join(name);
+    let has_data = data_dir.exists();
+
+    Ok(json!({
+        "name": name,
+        "active": name == engine.character_name(),
+        "config_dir": char_dir.display().to_string(),
+        "has_definition": has_definition,
+        "definition_preview": definition_preview,
+        "has_user_definition": has_user_definition,
+        "prompt_overrides": prompt_overrides,
+        "data_dir": data_dir.display().to_string(),
+        "has_data": has_data,
+    }))
+}
+
 /// Switch to a different character. In multi-character mode, this is handled
 /// by the registry — this command validates the character exists.
 pub fn switch_character(
@@ -106,7 +171,6 @@ mod tests {
             push_tx,
             data_dir,
             active_model: None,
-            autonomy_paused: false,
             session_tokens: SessionTokens::default(),
         };
         (engine, ctx, push_rx)
@@ -198,6 +262,65 @@ mod tests {
         let result = reset(&mut engine).unwrap();
         assert_eq!(result["reset"], true);
         assert_eq!(engine.message_count(), 0);
+    }
+
+    #[test]
+    fn character_info_active() {
+        let tmp = TempDir::new().unwrap();
+        let (engine, ctx, _rx) = make_ctx(&tmp);
+
+        let result = character_info(&engine, &ctx, &json!({})).unwrap();
+        assert_eq!(result["name"], "TestChar");
+        assert_eq!(result["active"], true);
+        assert!(!result["has_definition"].as_bool().unwrap());
+    }
+
+    #[test]
+    fn character_info_with_definition() {
+        let tmp = TempDir::new().unwrap();
+        let (engine, ctx, _rx) = make_ctx(&tmp);
+
+        // Create character definition.
+        let char_dir = tmp.path().join("config").join("characters").join("TestChar");
+        std::fs::create_dir_all(&char_dir).unwrap();
+        std::fs::write(char_dir.join("character.md"), "You are a test character.").unwrap();
+        std::fs::write(char_dir.join("user.md"), "The user likes tests.").unwrap();
+
+        let result = character_info(&engine, &ctx, &json!({})).unwrap();
+        assert!(result["has_definition"].as_bool().unwrap());
+        assert!(result["has_user_definition"].as_bool().unwrap());
+        assert!(result["definition_preview"].as_str().unwrap().contains("test character"));
+    }
+
+    #[test]
+    fn character_info_not_found() {
+        let tmp = TempDir::new().unwrap();
+        let (engine, ctx, _rx) = make_ctx(&tmp);
+
+        let result = character_info(&engine, &ctx, &json!({"name": "Nonexistent"}));
+        assert!(result.is_err());
+        let (code, _msg) = result.unwrap_err();
+        assert_eq!(code, ErrorCode::NotFound);
+    }
+
+    #[test]
+    fn character_info_with_prompt_overrides() {
+        let tmp = TempDir::new().unwrap();
+        let (engine, ctx, _rx) = make_ctx(&tmp);
+
+        let prompts_dir = tmp
+            .path()
+            .join("config")
+            .join("characters")
+            .join("TestChar")
+            .join("prompts");
+        std::fs::create_dir_all(&prompts_dir).unwrap();
+        std::fs::write(prompts_dir.join("system.md"), "override").unwrap();
+
+        let result = character_info(&engine, &ctx, &json!({})).unwrap();
+        let overrides = result["prompt_overrides"].as_array().unwrap();
+        assert_eq!(overrides.len(), 1);
+        assert_eq!(overrides[0], "system.md");
     }
 
     #[test]
