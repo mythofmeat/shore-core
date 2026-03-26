@@ -8,43 +8,45 @@ Features that are fully implemented and working in the V2 (Rust/TypeScript) rewr
 
 ## Autonomy & Interiority
 
-- **Heartbeat system** (5-state, social need, dormancy) — Library complete; needs wiring into engine event loop.
-- **Cache keepalive** (Anthropic TTL refresh) — Full state machine with pause/resume, config hot-reload.
+- **Heartbeat system** (5-state, social need, dormancy) — Library + daemon wired. Per-character tick tasks spawned on first message, event feeding from handler (user/assistant messages), state persisted to disk, configurable dormant threshold (default 1). Action execution (LLM probe calls) not yet wired.
+- **Cache keepalive** (Anthropic TTL refresh) — Library + daemon wired. Per-character tick tasks with idle detection, config derived from resolved model. Ping execution (minimal API calls) not yet wired.
+- **Autonomy state persistence** — Heartbeat state + cache keepalive counters saved to `{data_dir}/{character}/autonomy_state.json`. Restored on daemon restart with edge-case handling (expired deferrals, stale probes).
 - **Auto-compaction** (idle trigger + reactive fallback) — Compactor with idle timer; needs wiring to engine activity signal.
 
 ## Memory System
 
-- **SQLite storage** (WAL mode)
+- **SQLite storage** (WAL mode) + **FTS5 full-text search** (porter stemming, relevance ranking)
 - **LanceDB vector store**
-- **RAG retrieval** (vector + BM25 + deranking) — Library complete. Prompt assembly has RAG injection point but returns None — needs wiring.
+- **RAG retrieval** (vector + BM25 + deranking) — Library complete. Used by image tools for semantic search.
 - **Compaction** (conversation → memory) — Library complete. Daemon compact command is a stub — needs wiring to MemoryDB.
 - **Collation — tidy phase** (split multi-topic entries)
 - **Collation — merge phase** (cluster + deduplicate)
 - **Collation — entity normalization**
 - **Collation — confidence decay**
 - **Entity registry** (case-insensitive, descriptions)
-- **Memory agent — one-shot query** — Pronoun resolution, RAG search, DB lookup.
+- **Memory agent — agentic LLM loop** — 9 inner tools (search_entries, query_db, create_entry, update_entry, supersede_entry, update_entity, merge_entity, create_flag, resolve_flag), max 40 iterations, read/write classification with confirmation flow. Matches V1 `_run_agent_loop()`. CallerIdentity resolves pronoun ambiguity.
+- **Memory researcher** — Cheap-model tier (defaults.tool_model) with `ask_memory_agent` tool, max 15 iterations, refusal fallback. Matches V1 `MemoryResearcher`.
+- **AgentLlm abstraction** — Trait + RealAgentLlm (production, via LlmClient) + MockAgentLlm (tests). Decouples agent loop from transport.
 - **Memory changelog / audit trail** — Changelog table exists in schema, agent writes to it. No CLI command to read it.
 
 ## Tool Use
 
-- **Memory tool** (unified NL search/create/update) — Library handler exists; needs wiring into engine tool dispatch.
+- **Unified tool system** — `dispatch_tool()` + `available_tools()` with privacy filtering (ToolCategory). Replaced legacy ToolRegistry.
+- **Memory tool** (unified NL search/create/update) — Wired into engine tool dispatch. Routes through MemoryResearcher (if tool_model configured) or direct MemoryAgent.ask().
 - **send_image**
 - **list_images** (semantic search)
 - **recall_image**
-- **roll_dice** — Built into engine/tools.rs with full dice notation parser.
-- **check_time** — New in V2 — built-in tool in engine/tools.rs.
+- **roll_dice** — Full dice notation parser (NdS+/-M).
+- **check_time** — Returns ISO 8601 datetime.
 - **Tool loop cap** — Configurable max_iterations (default 10).
 
 ## CLI Commands
 
+- **Memory status** (shore memory) — Returns entry/entity counts from MemoryDB. Handles missing DB gracefully.
+- **Memory query** (shore memory "query") — One-shot MemoryAgent query via CLI. Resolves agent model from config, uses CallerIdentity::User for pronoun resolution.
 - **Send message** (shore send)
 - **Regenerate** (shore regen [--guidance])
-- **Swipe** (prev/next/numeric index) — Daemon-side only; removed from CLI, will be TUI-only.
 - **Log** (--count flag)
-- **List conversations**
-- **New conversation**
-- **Switch conversation**
 - **Edit message**
 - **Delete message** (supports multiple refs)
 - **List characters** (scans config/characters directory)
@@ -52,8 +54,12 @@ Features that are fully implemented and working in the V2 (Rust/TypeScript) rewr
 - **List models**
 - **Switch model** (accepts short or qualified names)
 - **Config get/set**
-- **Status** (character, conversation, model, autonomy, token counts)
+- **Config path** (shore config --path) — Prints config directory, no daemon needed.
+- **Status** (character, conversation, model, autonomy state/tau/keepalive, token counts)
 - **Completions** (fish, bash, zsh)
+- **Send via editor** (shore send with no args opens $EDITOR)
+- **Model info** (shore model <name> --info) — Full ResolvedModel details.
+- **Character info** (shore character <name> --info) — Definition preview, user.md, prompt overrides.
 
 ## Configuration & Architecture
 

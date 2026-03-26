@@ -1,7 +1,7 @@
 use std::io::{self, Write};
 
 use crossterm::style::{Attribute, Color, ResetColor, SetAttribute, SetForegroundColor};
-use shore_protocol::server_msg::{CommandOutput, NewMessage, SendImage, StreamChunk, StreamEnd};
+use shore_protocol::server_msg::{CommandOutput, NewMessage, SendImage, StreamChunk, StreamEnd, ToolCall, ToolResult};
 use shore_protocol::types::ImageRef;
 
 use crate::images;
@@ -111,6 +111,34 @@ pub fn print_new_message(msg: &NewMessage) {
 
     // Render any attached images.
     print_image_refs(&msg.message.images);
+}
+
+/// Print a tool call notification.
+pub fn print_tool_call(call: &ToolCall) {
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+
+    let _ = writeln!(out);
+    let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkYellow));
+    let _ = write!(out, "[tool: {}]", call.tool_name);
+    let _ = crossterm::execute!(out, ResetColor);
+    let _ = writeln!(out);
+}
+
+/// Print a tool result.
+pub fn print_tool_result(result: &ToolResult) {
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+
+    let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+    if result.is_error {
+        let _ = crossterm::execute!(out, SetForegroundColor(Color::Red));
+        let _ = write!(out, "[error: {}]", result.output);
+    } else {
+        let _ = write!(out, "[result: {}]", result.output);
+    }
+    let _ = crossterm::execute!(out, ResetColor);
+    let _ = writeln!(out);
 }
 
 /// Print the "thinking..." indicator when streaming starts.

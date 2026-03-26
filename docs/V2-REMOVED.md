@@ -23,5 +23,29 @@ Add items here as decisions are made.
 
 ## Architecture Decisions
 
-(Add items as they come up — e.g., features that turned out to be unused,
-things that the new architecture handles differently, etc.)
+- **Multi-conversation per character** — V1 had list/switch/new conversation
+  commands. V2 uses single-conversation-per-character via CharacterRegistry.
+  Reset clears the conversation; no need for multiple named conversations.
+
+- **Toggle private mode** — Removed. V2 has no private/public distinction
+  for conversations.
+
+- **RAG injection in prompt assembly** (9.2) — Removed. In V1 this was
+  completely superseded by the agentic memory tool-use loop; passive RAG
+  context injection in the system prompt is redundant when the character
+  has tool-use access to memory search. The memory tool (9.3) is the
+  correct path for memory retrieval.
+
+## Not Needed
+
+- **Reset subcommand** (5.11) — Not needed. Users can delete or archive
+  the conversation file directly for a fresh start.
+
+- **Connection error hints** (7.16) — Not worth the complexity. The error
+  message from the OS is sufficient.
+
+## Failed Concepts (not porting)
+
+- **Interiority — journal writing** (2.4) — Failed concept in V1. Not porting.
+- **Interiority — story writing** (2.5) — Failed concept in V1. Not porting.
+- **Interiority scheduling** (2.6) — Depended on interiority. Not porting.

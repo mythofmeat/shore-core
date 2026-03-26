@@ -23,7 +23,14 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 
     match &cli.command {
         CliCommand::Send { message } => {
-            let text = message.join(" ");
+            let text = if message.is_empty() {
+                edit_message_in_editor()?
+            } else {
+                message.join(" ")
+            };
+            if text.is_empty() {
+                return Ok(());
+            }
             conn.send_message(&text, true).await?;
             recv_streaming_response(&mut conn).await?;
         }
@@ -118,6 +125,36 @@ fn print_config_path() {
     println!("{}", base.join("shore").display());
 }
 
+/// Open `$EDITOR` (or `$VISUAL`) with a temp file and return the composed text.
+/// Returns an empty string if the user saves an empty file or the editor exits non-zero.
+fn edit_message_in_editor() -> Result<String, Box<dyn std::error::Error>> {
+    let editor = std::env::var("VISUAL")
+        .or_else(|_| std::env::var("EDITOR"))
+        .unwrap_or_else(|_| "vi".into());
+
+    let tmp = tempfile::Builder::new()
+        .prefix("shore-")
+        .suffix(".md")
+        .tempfile()?;
+
+    let path = tmp.path().to_path_buf();
+
+    let status = std::process::Command::new(&editor)
+        .arg(&path)
+        .status()?;
+
+    if !status.success() {
+        return Ok(String::new());
+    }
+
+    let content = std::fs::read_to_string(&path)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+
+    Ok(content)
+}
+
 /// Resolve the daemon address from CLI flags or discovery.
 fn resolve_addr(cli: &Cli) -> ServerAddr {
     if let Some(socket) = &cli.socket {
@@ -143,8 +180,18 @@ async fn recv_streaming_response(
                 output::print_chunk(chunk);
             }
             ServerMessage::StreamEnd(end) => {
+                if end.finish_reason == "tool_use" {
+                    // Tool loop: more messages will follow — don't print metadata yet.
+                    continue;
+                }
                 output::print_stream_end(end);
                 return Ok(());
+            }
+            ServerMessage::ToolCall(call) => {
+                output::print_tool_call(call);
+            }
+            ServerMessage::ToolResult(result) => {
+                output::print_tool_result(result);
             }
             ServerMessage::Error(err) => {
                 output::print_server_error(
@@ -376,6 +423,7 @@ mod tests {
                     },
                     model: "test-model".into(),
                 },
+                finish_reason: "end_turn".into(),
             }),
         ]
     }
@@ -486,7 +534,7 @@ mod tests {
         match received {
             ClientMessage::Command(c) => {
                 assert_eq!(c.name, "edit");
-                assert_eq!(c.args["msg_id"], "m1");
+                assert_eq!(c.args["ref"], "m1");
                 assert_eq!(c.args["content"], "new text");
             }
             other => panic!("expected Command, got: {other:?}"),
@@ -522,6 +570,7 @@ mod tests {
                     },
                     model: "test-model".into(),
                 },
+                finish_reason: "end_turn".into(),
             }),
         ];
 

@@ -142,10 +142,10 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
             Some(("log", json!({ "count": count })))
         }
         CliCommand::Edit { msg_id, content } => {
-            Some(("edit", json!({ "msg_id": msg_id, "content": content.join(" ") })))
+            Some(("edit", json!({ "ref": msg_id, "content": content.join(" ") })))
         }
         CliCommand::Delete { msg_id } => {
-            Some(("delete", json!({ "msg_id": msg_id })))
+            Some(("delete", json!({ "refs": msg_id })))
         }
         CliCommand::Status => {
             Some(("status", json!({})))

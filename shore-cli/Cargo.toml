@@ -3,6 +3,10 @@ name = "shore-cli"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name = "shore"
+path = "src/main.rs"
+
 [dependencies]
 shore-protocol = { path = "../shore-protocol" }
 shore-client = { path = "../shore-client" }
@@ -12,6 +16,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 serde_json = "1"
 crossterm = "0.28"
 base64 = "0.22"
+tempfile = "3"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
