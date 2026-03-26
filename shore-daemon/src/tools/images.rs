@@ -199,9 +199,10 @@ pub async fn handle_generate_image(input: Value, _ctx: &dyn ToolContext) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::agent::{
-        AgentError, AgentIndexer, AgentRag, CallerIdentity, MemoryAgent, RagHit,
-    };
+    use crate::config::models::{ResolvedModel, Sdk};
+    use crate::memory::agent::types::{AgentError, AgentIndexer, AgentRag, RagHit};
+    use crate::memory::agent::{CallerIdentity, MemoryAgent};
+    use crate::memory::agent_llm::MockAgentLlm;
     use crate::memory::db::{Entry, MemoryDB};
     use chrono::Utc;
     use std::future::Future;
@@ -222,23 +223,39 @@ mod tests {
         }
     }
 
-    struct MockIndexer;
-
-    impl AgentIndexer for MockIndexer {
-        fn index_entry(
-            &self,
-            _entry_id: &str,
-            _text: &str,
-        ) -> Pin<Box<dyn Future<Output = Result<(), AgentError>> + Send + '_>> {
-            Box::pin(async { Ok(()) })
+    fn test_model() -> ResolvedModel {
+        ResolvedModel {
+            name: "test".into(),
+            qualified_name: "chat.test".into(),
+            category: "chat".into(),
+            provider_key: "anthropic".into(),
+            sdk: Sdk::Anthropic,
+            model_id: "claude-test".into(),
+            api_key_env: Some("TEST_KEY".into()),
+            base_url: None,
+            max_context_tokens: None,
+            max_tokens: Some(4096),
+            temperature: Some(0.7),
+            top_p: None,
+            reasoning_effort: None,
+            budget_tokens: None,
+            cache_ttl: None,
+            cache_control_depth: None,
+            keepalive_enabled: None,
+            openrouter_provider: None,
+            vertex_project: None,
+            vertex_location: None,
+            gemini_generation: None,
+            gemini_web_search: None,
         }
     }
 
     struct TestContext {
         db: MemoryDB,
         agent: MemoryAgent,
+        agent_llm: MockAgentLlm,
+        model: ResolvedModel,
         rag: MockRag,
-        indexer: MockIndexer,
         image_dir: String,
     }
 
@@ -249,11 +266,26 @@ mod tests {
         fn memory_agent(&self) -> &MemoryAgent {
             &self.agent
         }
+        fn agent_llm(&self) -> &dyn crate::memory::agent_llm::AgentLlm {
+            &self.agent_llm
+        }
+        fn agent_model(&self) -> &ResolvedModel {
+            &self.model
+        }
+        fn researcher_llm(&self) -> Option<&dyn crate::memory::agent_llm::AgentLlm> {
+            None
+        }
+        fn researcher_model(&self) -> Option<&ResolvedModel> {
+            None
+        }
+        fn memory_researcher(&self) -> Option<&crate::memory::researcher::MemoryResearcher> {
+            None
+        }
+        fn indexer(&self) -> Option<&dyn AgentIndexer> {
+            None
+        }
         fn rag(&self) -> &dyn AgentRag {
             &self.rag
-        }
-        fn indexer(&self) -> &dyn AgentIndexer {
-            &self.indexer
         }
         fn image_dir(&self) -> &str {
             &self.image_dir
@@ -263,9 +295,10 @@ mod tests {
     fn make_ctx(image_dir: &str) -> TestContext {
         TestContext {
             db: MemoryDB::open_in_memory().unwrap(),
-            agent: MemoryAgent::one_shot(CallerIdentity::Char, "Alice"),
+            agent: MemoryAgent::one_shot(CallerIdentity::Char, "Alice", "Bob"),
+            agent_llm: MockAgentLlm::new(vec![]),
+            model: test_model(),
             rag: MockRag { results: vec![] },
-            indexer: MockIndexer,
             image_dir: image_dir.to_string(),
         }
     }

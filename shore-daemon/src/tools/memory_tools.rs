@@ -27,7 +27,13 @@ pub fn tool_defs() -> Vec<ToolDef> {
 // Handler
 // ---------------------------------------------------------------------------
 
-/// Handle the `memory` tool — search or save via the memory agent.
+/// Handle the `memory` tool — search or save via the memory researcher/agent.
+///
+/// Routing (matching V1):
+/// 1. If researcher available → researcher.research(request, ...)
+/// 2. Else → agent.ask(request, ...)
+///
+/// Returns the synthesis text as the tool result (natural language, same as V1).
 pub async fn handle_memory(input: Value, ctx: &dyn ToolContext) -> Result<Value, ToolError> {
     let request = input
         .get("request")
@@ -35,27 +41,42 @@ pub async fn handle_memory(input: Value, ctx: &dyn ToolContext) -> Result<Value,
         .ok_or_else(|| ToolError::InvalidArgs("missing 'request' field".to_string()))?;
 
     let agent = ctx.memory_agent();
-    let result = agent.query(request, ctx.rag(), ctx.memory_db()).await?;
+    let db = ctx.memory_db();
+    let agent_llm = ctx.agent_llm();
+    let agent_model = ctx.agent_model();
+    let indexer = ctx.indexer();
 
-    let entries: Vec<Value> = result
-        .entries
-        .iter()
-        .map(|e| {
-            json!({
-                "entry_id": e.entry_id,
-                "summary": e.summary_text,
-                "type": e.memory_type,
-                "confidence": e.confidence,
-                "relevance": e.relevance_score,
-            })
-        })
-        .collect();
+    let result_text = if let Some(researcher) = ctx.memory_researcher() {
+        // Tier 2: cheap model drives the inner agent
+        let researcher_llm = ctx
+            .researcher_llm()
+            .ok_or_else(|| ToolError::InvalidArgs("researcher LLM not configured".into()))?;
+        let researcher_model = ctx
+            .researcher_model()
+            .ok_or_else(|| ToolError::InvalidArgs("researcher model not configured".into()))?;
 
-    Ok(json!({
-        "entries": entries,
-        "query": result.query_text,
-        "resolved_query": result.resolved_query,
-    }))
+        researcher
+            .research(
+                request,
+                researcher_llm,
+                researcher_model,
+                agent,
+                agent_llm,
+                agent_model,
+                db,
+                indexer,
+            )
+            .await
+            .map_err(|e| ToolError::Agent(e))?
+    } else {
+        // Direct agent query (no researcher)
+        agent
+            .ask(request, agent_llm, db, indexer, agent_model)
+            .await
+            .map_err(|e| ToolError::Agent(e))?
+    };
+
+    Ok(json!(result_text))
 }
 
 // ---------------------------------------------------------------------------
@@ -65,18 +86,43 @@ pub async fn handle_memory(input: Value, ctx: &dyn ToolContext) -> Result<Value,
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::agent::{
-        AgentError, AgentIndexer, AgentRag, CallerIdentity, MemoryAgent, RagHit,
-    };
-    use crate::memory::db::{Entry, MemoryDB};
-    use chrono::Utc;
-    use serde_json::json;
+    use crate::config::models::{ResolvedModel, Sdk};
+    use crate::llm_client::types::ContentBlock;
+    use crate::memory::agent::types::{AgentError, AgentIndexer, AgentRag, RagHit};
+    use crate::memory::agent::{CallerIdentity, MemoryAgent};
+    use crate::memory::agent_llm::{AgentLlmResponse, MockAgentLlm};
+    use crate::memory::db::MemoryDB;
     use std::future::Future;
     use std::pin::Pin;
 
-    struct MockRag {
-        results: Vec<RagHit>,
+    fn test_model() -> ResolvedModel {
+        ResolvedModel {
+            name: "test".into(),
+            qualified_name: "chat.test".into(),
+            category: "chat".into(),
+            provider_key: "anthropic".into(),
+            sdk: Sdk::Anthropic,
+            model_id: "claude-test".into(),
+            api_key_env: Some("TEST_KEY".into()),
+            base_url: None,
+            max_context_tokens: None,
+            max_tokens: Some(4096),
+            temperature: Some(0.7),
+            top_p: None,
+            reasoning_effort: None,
+            budget_tokens: None,
+            cache_ttl: None,
+            cache_control_depth: None,
+            keepalive_enabled: None,
+            openrouter_provider: None,
+            vertex_project: None,
+            vertex_location: None,
+            gemini_generation: None,
+            gemini_web_search: None,
+        }
     }
+
+    struct MockRag;
 
     impl AgentRag for MockRag {
         fn query(
@@ -84,28 +130,16 @@ mod tests {
             _query: &str,
             _top_k: usize,
         ) -> Pin<Box<dyn Future<Output = Result<Vec<RagHit>, AgentError>> + Send + '_>> {
-            let result = Ok(self.results.clone());
-            Box::pin(async move { result })
-        }
-    }
-
-    struct MockIndexer;
-
-    impl AgentIndexer for MockIndexer {
-        fn index_entry(
-            &self,
-            _entry_id: &str,
-            _text: &str,
-        ) -> Pin<Box<dyn Future<Output = Result<(), AgentError>> + Send + '_>> {
-            Box::pin(async { Ok(()) })
+            Box::pin(async { Ok(vec![]) })
         }
     }
 
     struct TestContext {
         db: MemoryDB,
         agent: MemoryAgent,
+        agent_llm: MockAgentLlm,
+        model: ResolvedModel,
         rag: MockRag,
-        indexer: MockIndexer,
     }
 
     impl ToolContext for TestContext {
@@ -115,40 +149,29 @@ mod tests {
         fn memory_agent(&self) -> &MemoryAgent {
             &self.agent
         }
+        fn agent_llm(&self) -> &dyn crate::memory::agent_llm::AgentLlm {
+            &self.agent_llm
+        }
+        fn agent_model(&self) -> &ResolvedModel {
+            &self.model
+        }
+        fn researcher_llm(&self) -> Option<&dyn crate::memory::agent_llm::AgentLlm> {
+            None
+        }
+        fn researcher_model(&self) -> Option<&ResolvedModel> {
+            None
+        }
+        fn memory_researcher(&self) -> Option<&crate::memory::researcher::MemoryResearcher> {
+            None
+        }
+        fn indexer(&self) -> Option<&dyn AgentIndexer> {
+            None
+        }
         fn rag(&self) -> &dyn AgentRag {
             &self.rag
         }
-        fn indexer(&self) -> &dyn AgentIndexer {
-            &self.indexer
-        }
         fn image_dir(&self) -> &str {
             "/tmp/test_images"
-        }
-    }
-
-    fn make_entry(id: &str, summary: &str) -> Entry {
-        let now = Utc::now().to_rfc3339();
-        Entry {
-            id: id.to_string(),
-            memory_type: "semantic".to_string(),
-            source: "agent".to_string(),
-            reason: "tool_call".to_string(),
-            status: "active".to_string(),
-            canonical: false,
-            confidence: 0.9,
-            summary_text: summary.to_string(),
-            topic_tags: "test".to_string(),
-            topic_key: "test".to_string(),
-            start_timestamp: now.clone(),
-            end_timestamp: now.clone(),
-            message_count: 0,
-            source_entry_ids: String::new(),
-            related_entry_ids: String::new(),
-            superseded_by: String::new(),
-            created_at: now.clone(),
-            updated_at: now,
-            entry_type: String::new(),
-            image_path: String::new(),
         }
     }
 
@@ -161,40 +184,39 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_handle_memory_returns_results() {
-        let db = MemoryDB::open_in_memory().unwrap();
-        let e1 = make_entry("e1", "Alice likes chocolate");
-        db.create_entry(&e1).unwrap();
+    async fn test_handle_memory_returns_text() {
+        let agent_llm = MockAgentLlm::new(vec![AgentLlmResponse {
+            text: "No relevant memories found.".into(),
+            content_blocks: vec![ContentBlock::Text {
+                text: "No relevant memories found.".into(),
+            }],
+            finish_reason: "end_turn".into(),
+        }]);
 
         let ctx = TestContext {
-            db,
-            agent: MemoryAgent::one_shot(CallerIdentity::Char, "Alice"),
-            rag: MockRag {
-                results: vec![RagHit {
-                    entry_id: "e1".to_string(),
-                    score: 0.95,
-                }],
-            },
-            indexer: MockIndexer,
+            db: MemoryDB::open_in_memory().unwrap(),
+            agent: MemoryAgent::one_shot(CallerIdentity::Char, "Alice", "Bob"),
+            agent_llm,
+            model: test_model(),
+            rag: MockRag,
         };
 
         let result = handle_memory(json!({"request": "What do I like?"}), &ctx)
             .await
             .unwrap();
 
-        let entries = result["entries"].as_array().unwrap();
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0]["entry_id"], "e1");
-        assert_eq!(entries[0]["summary"], "Alice likes chocolate");
+        // New handler returns synthesis text, not structured JSON
+        assert_eq!(result.as_str().unwrap(), "No relevant memories found.");
     }
 
     #[tokio::test]
     async fn test_handle_memory_missing_request() {
         let ctx = TestContext {
             db: MemoryDB::open_in_memory().unwrap(),
-            agent: MemoryAgent::one_shot(CallerIdentity::Char, "Alice"),
-            rag: MockRag { results: vec![] },
-            indexer: MockIndexer,
+            agent: MemoryAgent::one_shot(CallerIdentity::Char, "Alice", "Bob"),
+            agent_llm: MockAgentLlm::new(vec![]),
+            model: test_model(),
+            rag: MockRag,
         };
 
         let result = handle_memory(json!({}), &ctx).await;

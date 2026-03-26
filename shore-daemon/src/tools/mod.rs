@@ -1,10 +1,15 @@
 pub mod activity;
+pub mod basic;
 pub mod images;
 pub mod memory_tools;
 pub mod web;
 
-use crate::memory::agent::{AgentError, AgentIndexer, AgentRag, MemoryAgent};
+use crate::config::models::ResolvedModel;
+use crate::memory::agent::types::AgentIndexer;
+use crate::memory::agent::{AgentError, AgentRag, MemoryAgent};
+use crate::memory::agent_llm::AgentLlm;
 use crate::memory::db::MemoryDB;
+use crate::memory::researcher::MemoryResearcher;
 use serde_json::Value;
 use std::future::Future;
 use std::pin::Pin;
@@ -87,13 +92,22 @@ impl From<AgentError> for ToolError {
 // ---------------------------------------------------------------------------
 
 /// Provides access to shared dependencies needed by tool handlers.
-/// Not `Send + Sync` because `MemoryDB` (rusqlite) is not `Sync`.
-pub trait ToolContext {
+///
+/// Requires `Sync` so that `&dyn ToolContext` is `Send`, enabling tool handlers
+/// to hold the reference across `.await` points in `Send` futures.
+pub trait ToolContext: Sync {
     fn memory_db(&self) -> &MemoryDB;
     fn memory_agent(&self) -> &MemoryAgent;
-    fn rag(&self) -> &dyn AgentRag;
-    fn indexer(&self) -> &dyn AgentIndexer;
+    fn agent_llm(&self) -> &dyn AgentLlm;
+    fn agent_model(&self) -> &ResolvedModel;
+    fn researcher_llm(&self) -> Option<&dyn AgentLlm>;
+    fn researcher_model(&self) -> Option<&ResolvedModel>;
+    fn memory_researcher(&self) -> Option<&MemoryResearcher>;
+    fn indexer(&self) -> Option<&dyn AgentIndexer>;
     fn image_dir(&self) -> &str;
+
+    // Legacy RAG — kept for image tools until they're migrated
+    fn rag(&self) -> &dyn AgentRag;
 }
 
 // ---------------------------------------------------------------------------
@@ -107,6 +121,7 @@ pub fn all_tools() -> Vec<ToolDef> {
     tools.extend(images::tool_defs());
     tools.extend(web::tool_defs());
     tools.extend(activity::tool_defs());
+    tools.extend(basic::tool_defs());
     tools
 }
 
@@ -127,14 +142,11 @@ pub fn available_tools(is_private: bool) -> Vec<ToolDef> {
 // ---------------------------------------------------------------------------
 
 /// Dispatch a tool call by name to its handler.
-///
-/// Not `Send` because `MemoryDB` (rusqlite) is not `Sync`. Each connection
-/// task drives its own tool calls sequentially, so this is fine.
 pub fn dispatch_tool<'a>(
     name: &'a str,
     input: Value,
     ctx: &'a dyn ToolContext,
-) -> Pin<Box<dyn Future<Output = Result<Value, ToolError>> + 'a>> {
+) -> Pin<Box<dyn Future<Output = Result<Value, ToolError>> + Send + 'a>> {
     Box::pin(async move {
         match name {
             // Memory tools
@@ -147,6 +159,9 @@ pub fn dispatch_tool<'a>(
             "web_search" => web::handle_web_search(input).await,
             "fetch_url" => web::handle_fetch_url(input).await,
             "research_web" => web::handle_research_web(input).await,
+            // Basic tools
+            "check_time" => basic::handle_check_time(input).await,
+            "roll_dice" => basic::handle_roll_dice(input).await,
             // Other
             "activity_heatmap" => activity::handle_activity_heatmap(input).await,
             _ => Err(ToolError::NotImplemented(name.to_string())),
@@ -165,8 +180,8 @@ mod tests {
     #[test]
     fn test_all_tools_returns_expected_count() {
         let tools = all_tools();
-        // memory(1) + images(4) + web(3) + activity(1) = 9
-        assert_eq!(tools.len(), 9);
+        // memory(1) + images(4) + web(3) + activity(1) + basic(2) = 11
+        assert_eq!(tools.len(), 11);
     }
 
     #[test]
