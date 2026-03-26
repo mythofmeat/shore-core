@@ -488,24 +488,6 @@ mod tests {
         }
     }
 
-    // ── Swipe command ────────────────────────────────────────────────
-
-    #[tokio::test]
-    async fn swipe_sends_command_with_direction() {
-        let cli = test_cli(CliCommand::Swipe {
-            direction: "prev".into(),
-        });
-        let received = execute_with_mock(cli, command_response("swipe")).await;
-
-        match received {
-            ClientMessage::Command(c) => {
-                assert_eq!(c.name, "swipe");
-                assert_eq!(c.args["direction"], "prev");
-            }
-            other => panic!("expected Command, got: {other:?}"),
-        }
-    }
-
     // ── Edit command ─────────────────────────────────────────────────
 
     #[tokio::test]

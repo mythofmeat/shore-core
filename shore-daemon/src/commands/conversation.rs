@@ -208,15 +208,15 @@ mod tests {
             ConversationEngine::new("TestChar".to_string(), data_dir.clone(), push_tx.clone())
                 .unwrap();
 
-        let config = crate::config::LoadedConfig {
-            app: crate::config::app::AppConfig::default(),
-            models: crate::config::models::ModelsConfig::default(),
-            dirs: crate::config::ShoreDirs {
+        let config = crate::config::LoadedConfig::new_for_test(
+            crate::config::app::AppConfig::default(),
+            crate::config::models::ModelCatalog::default(),
+            crate::config::ShoreDirs {
                 config: tmp.path().join("config"),
                 data: data_dir.clone(),
                 runtime: tmp.path().join("runtime"),
             },
-        };
+        );
 
         let ctx = CommandContext {
             config,

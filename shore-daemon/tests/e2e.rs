@@ -22,7 +22,7 @@ use shore_client::connection::{SWPConnection, ServerAddr};
 use shore_daemon::characters::CharacterRegistry;
 use shore_daemon::commands::{CommandContext, SessionTokens};
 use shore_daemon::config::app::{AppConfig, ServiceEntry, ServicesConfig};
-use shore_daemon::config::models::{ModelProfile, ModelsConfig};
+use shore_daemon::config::models::ModelCatalog;
 use shore_daemon::config::{LoadedConfig, ShoreDirs};
 use shore_daemon::handler::MessageHandler;
 use shore_daemon::llm_client::LlmClient;
@@ -124,30 +124,27 @@ fn build_test_config(tmp: &tempfile::TempDir, llm_socket: &PathBuf) -> LoadedCon
         matrix: None,
     };
 
-    let models = ModelsConfig {
-        provider_defaults: Default::default(),
-        models: vec![ModelProfile {
-            name: "haiku".into(),
-            provider: "anthropic".into(),
-            model_id: "claude-haiku-4-5-20251001".into(),
-            max_context_tokens: Some(200000),
-            max_tokens: Some(1024),
-            temperature: Some(0.0),
-            top_p: None,
-            base_url: None,
-            api_key_env: None, // Uses default ANTHROPIC_API_KEY.
-        }],
-    };
+    let models_toml = r#"
+[anthropic]
+max_context_tokens = 200000
 
-    LoadedConfig {
+[anthropic.haiku]
+model_id = "claude-haiku-4-5-20251001"
+max_tokens = 1024
+temperature = 0.0
+"#;
+    let table: toml::Table = models_toml.parse().unwrap();
+    let models = ModelCatalog::from_sections(Some(&table), None, None, None).unwrap();
+
+    LoadedConfig::new_for_test(
         app,
         models,
-        dirs: ShoreDirs {
+        ShoreDirs {
             config: config_dir,
             data: data_dir,
             runtime: runtime_dir,
         },
-    }
+    )
 }
 
 #[tokio::test]

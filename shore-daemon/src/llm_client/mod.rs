@@ -82,15 +82,54 @@ impl LlmClient {
         let api_key_env = model
             .api_key_env
             .as_deref()
-            .unwrap_or(default_api_key_env(&model.provider));
+            .unwrap_or(default_api_key_env(&model.provider_key));
 
         let api_key =
             std::env::var(api_key_env).map_err(|_| LlmError::MissingApiKey {
                 var: api_key_env.to_string(),
             })?;
 
+        // Build provider_options from V1-style fields if not explicitly provided.
+        let opts = provider_options.unwrap_or_else(|| {
+            let mut map = serde_json::Map::new();
+            if let Some(ref effort) = model.reasoning_effort {
+                map.insert("reasoning_effort".into(), serde_json::json!(effort));
+            }
+            if let Some(budget) = model.budget_tokens {
+                map.insert("budget_tokens".into(), serde_json::json!(budget));
+            }
+            if let Some(ref ttl) = model.cache_ttl {
+                map.insert("cache_ttl".into(), serde_json::json!(ttl));
+            }
+            if let Some(depth) = model.cache_control_depth {
+                map.insert("cache_control_depth".into(), serde_json::json!(depth));
+            }
+            if let Some(ref or_provider) = model.openrouter_provider {
+                map.insert("openrouter_provider".into(), serde_json::json!(or_provider.to_string()));
+            }
+            if let Some(ref project) = model.vertex_project {
+                map.insert("vertex_project".into(), serde_json::json!(project));
+            }
+            if let Some(ref location) = model.vertex_location {
+                map.insert("vertex_location".into(), serde_json::json!(location));
+            }
+            if let Some(gen) = model.gemini_generation {
+                map.insert("gemini_generation".into(), serde_json::json!(gen));
+            }
+            if let Some(ws) = model.gemini_web_search {
+                map.insert("gemini_web_search".into(), serde_json::json!(ws));
+            }
+            if map.is_empty() {
+                serde_json::Value::Null
+            } else {
+                serde_json::Value::Object(map)
+            }
+        });
+
+        let provider_options = if opts.is_null() { None } else { Some(opts) };
+
         Ok(LlmRequest {
-            provider: model.provider.clone(),
+            provider: model.sdk.as_provider_str().to_string(),
             model: model.model_id.clone(),
             api_key,
             base_url: model.base_url.clone(),
@@ -228,14 +267,16 @@ impl LlmClient {
     }
 }
 
-/// Return the conventional API key env var name for a provider.
-fn default_api_key_env(provider: &str) -> &str {
-    match provider {
+/// Return the conventional API key env var name for a provider key.
+fn default_api_key_env(provider_key: &str) -> &str {
+    match provider_key {
         "anthropic" => "ANTHROPIC_API_KEY",
         "openai" => "OPENAI_API_KEY",
         "gemini" => "GEMINI_API_KEY",
         "openrouter" => "OPENROUTER_API_KEY",
         "zhipuai" => "ZHIPUAI_API_KEY",
+        "deepseek" => "DEEPSEEK_API_KEY",
+        "xai" => "XAI_API_KEY",
         _ => "LLM_API_KEY",
     }
 }
@@ -287,24 +328,45 @@ async fn read_error_body(reader: &mut BufReader<UnixStream>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::models::ResolvedModel;
+    use crate::config::models::{ResolvedModel, Sdk};
+
+    /// Helper to build a minimal test ResolvedModel.
+    fn test_model(name: &str, provider_key: &str, sdk: Sdk) -> ResolvedModel {
+        ResolvedModel {
+            name: name.into(),
+            qualified_name: format!("chat.{provider_key}.{name}"),
+            category: "chat".into(),
+            provider_key: provider_key.into(),
+            sdk,
+            model_id: "claude-test".into(),
+            api_key_env: None,
+            base_url: None,
+            max_context_tokens: None,
+            max_tokens: None,
+            temperature: None,
+            top_p: None,
+            reasoning_effort: None,
+            budget_tokens: None,
+            cache_ttl: None,
+            cache_control_depth: None,
+            keepalive_enabled: None,
+            openrouter_provider: None,
+            vertex_project: None,
+            vertex_location: None,
+            gemini_generation: None,
+            gemini_web_search: None,
+        }
+    }
 
     #[test]
     fn build_request_resolves_api_key() {
         // Set a test env var.
         std::env::set_var("TEST_API_KEY_015", "sk-test-key");
 
-        let model = ResolvedModel {
-            name: "test-model".into(),
-            provider: "anthropic".into(),
-            model_id: "claude-test".into(),
-            max_context_tokens: None,
-            max_tokens: Some(2048),
-            temperature: Some(0.5),
-            top_p: None,
-            base_url: None,
-            api_key_env: Some("TEST_API_KEY_015".into()),
-        };
+        let mut model = test_model("test-model", "anthropic", Sdk::Anthropic);
+        model.max_tokens = Some(2048);
+        model.temperature = Some(0.5);
+        model.api_key_env = Some("TEST_API_KEY_015".into());
 
         let req = LlmClient::build_request(
             &model,
@@ -329,17 +391,7 @@ mod tests {
     fn build_request_uses_default_api_key_env() {
         std::env::set_var("ANTHROPIC_API_KEY", "sk-ant-test");
 
-        let model = ResolvedModel {
-            name: "test".into(),
-            provider: "anthropic".into(),
-            model_id: "claude-test".into(),
-            max_context_tokens: None,
-            max_tokens: None,
-            temperature: None,
-            top_p: None,
-            base_url: None,
-            api_key_env: None, // Should fall back to ANTHROPIC_API_KEY.
-        };
+        let model = test_model("test", "anthropic", Sdk::Anthropic);
 
         let req = LlmClient::build_request(
             &model,
@@ -360,17 +412,8 @@ mod tests {
     fn build_request_errors_on_missing_api_key() {
         std::env::remove_var("NONEXISTENT_KEY_015");
 
-        let model = ResolvedModel {
-            name: "test".into(),
-            provider: "anthropic".into(),
-            model_id: "claude-test".into(),
-            max_context_tokens: None,
-            max_tokens: None,
-            temperature: None,
-            top_p: None,
-            base_url: None,
-            api_key_env: Some("NONEXISTENT_KEY_015".into()),
-        };
+        let mut model = test_model("test", "anthropic", Sdk::Anthropic);
+        model.api_key_env = Some("NONEXISTENT_KEY_015".into());
 
         let err = LlmClient::build_request(&model, vec![], None, None, None)
             .unwrap_err();
@@ -389,6 +432,8 @@ mod tests {
         assert_eq!(default_api_key_env("gemini"), "GEMINI_API_KEY");
         assert_eq!(default_api_key_env("openrouter"), "OPENROUTER_API_KEY");
         assert_eq!(default_api_key_env("zhipuai"), "ZHIPUAI_API_KEY");
+        assert_eq!(default_api_key_env("deepseek"), "DEEPSEEK_API_KEY");
+        assert_eq!(default_api_key_env("xai"), "XAI_API_KEY");
         assert_eq!(default_api_key_env("unknown"), "LLM_API_KEY");
     }
 

@@ -35,13 +35,6 @@ pub enum CliCommand {
         guidance: Option<String>,
     },
 
-    /// Swipe to the next alternative response
-    Swipe {
-        /// Direction: "next" or "prev"
-        #[arg(default_value = "next")]
-        direction: String,
-    },
-
     /// Show conversation log
     Log {
         /// Number of messages to show
@@ -129,9 +122,6 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
         | CliCommand::Completions { .. }
         | CliCommand::Character { .. } => None,
 
-        CliCommand::Swipe { direction } => {
-            Some(("swipe", json!({ "direction": direction })))
-        }
         CliCommand::Log { count } => {
             Some(("log", json!({ "count": count })))
         }
@@ -211,28 +201,6 @@ mod tests {
                 assert_eq!(guidance.as_deref(), Some("be more concise"));
             }
             other => panic!("expected Regen, got: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_swipe_default_direction() {
-        let cli = parse(&["swipe"]);
-        match &cli.command {
-            CliCommand::Swipe { direction } => {
-                assert_eq!(direction, "next");
-            }
-            other => panic!("expected Swipe, got: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_swipe_prev() {
-        let cli = parse(&["swipe", "prev"]);
-        match &cli.command {
-            CliCommand::Swipe { direction } => {
-                assert_eq!(direction, "prev");
-            }
-            other => panic!("expected Swipe, got: {other:?}"),
         }
     }
 
@@ -465,7 +433,6 @@ mod tests {
     fn all_non_message_commands_map() {
         // Every variant except Send, Regen, Character, and Completions should produce Some.
         let commands: Vec<CliCommand> = vec![
-            CliCommand::Swipe { direction: "next".into() },
             CliCommand::Log { count: 20 },
             CliCommand::Edit { msg_id: "m1".into(), content: vec!["text".into()] },
             CliCommand::Delete { msg_id: "m1".into() },

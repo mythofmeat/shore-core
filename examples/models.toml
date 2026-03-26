@@ -1,34 +1,32 @@
-# Shore V2 — Example Model Configuration
+# Shore V2 — Example Models Include File
 #
-# Provider-level defaults are merged into every model that shares the provider.
-# Model-level values take precedence over provider defaults.
+# This file can be included from config.toml via:
+#   include = ["models.toml"]
+#
+# Or placed in conf.d/ for automatic loading.
 
-[provider_defaults.anthropic]
-max_tokens = 4096
+[chat.anthropic]
+sdk = "anthropic"
 api_key_env = "ANTHROPIC_API_KEY"
 
-[provider_defaults.openai]
-max_tokens = 4096
-api_key_env = "OPENAI_API_KEY"
+[chat.anthropic.claude-sonnet]
+model_id = "claude-sonnet-4-6"
 
-[[models]]
-name = "claude-sonnet"
-provider = "anthropic"
-model_id = "claude-sonnet-4-20250514"
-
-[[models]]
-name = "claude-opus"
-provider = "anthropic"
-model_id = "claude-opus-4-20250514"
+[chat.anthropic.claude-opus]
+model_id = "claude-opus-4-6"
 max_tokens = 8192
 
-[[models]]
-name = "gpt-4o"
-provider = "openai"
+[chat.openai]
+sdk = "openai"
+api_key_env = "OPENAI_API_KEY"
+
+[chat.openai.gpt-4o]
 model_id = "gpt-4o"
 
-[[models]]
-name = "gemini-pro"
-provider = "gemini"
-model_id = "gemini-2.5-pro"
-api_key_env = "GOOGLE_API_KEY"
+[tools.openrouter]
+sdk = "openai"
+api_key_env = "OPENROUTER_API_KEY"
+temperature = 0.5
+
+[tools.openrouter.mistral-small]
+model_id = "mistralai/mistral-small-2603"

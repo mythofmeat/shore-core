@@ -24,21 +24,34 @@ pub fn status(engine: &ConversationEngine, ctx: &CommandContext) -> CommandResul
     }))
 }
 
-/// List available model profiles from models.toml.
+/// List available model profiles from the model catalog.
 pub fn list_models(ctx: &CommandContext) -> CommandResult {
-    let models: Vec<_> = ctx
+    let mut models: Vec<_> = ctx
         .config
         .models
-        .models
-        .iter()
+        .chat
+        .values()
         .map(|m| {
             json!({
                 "name": m.name,
-                "provider": m.provider,
+                "qualified_name": m.qualified_name,
+                "sdk": m.sdk.as_provider_str(),
+                "provider": m.provider_key,
                 "model_id": m.model_id,
             })
         })
         .collect();
+
+    // Also include tool models.
+    for m in ctx.config.models.tools.values() {
+        models.push(json!({
+            "name": m.name,
+            "qualified_name": m.qualified_name,
+            "sdk": m.sdk.as_provider_str(),
+            "provider": m.provider_key,
+            "model_id": m.model_id,
+        }));
+    }
 
     Ok(json!({
         "models": models,
@@ -46,14 +59,14 @@ pub fn list_models(ctx: &CommandContext) -> CommandResult {
     }))
 }
 
-/// Switch model or show current. Validates against models.toml profiles.
+/// Switch model or show current. Validates against model catalog.
 pub fn switch_model(ctx: &mut CommandContext, args: &serde_json::Value) -> CommandResult {
     let name = args.get("name").and_then(|v| v.as_str());
 
     match name {
         None => Ok(json!({ "active": ctx.active_model })),
         Some(name) => {
-            if ctx.config.models.find_model(name).is_none() {
+            if ctx.config.models.find_model(name).is_err() {
                 return Err((
                     ErrorCode::NotFound,
                     format!(
@@ -149,7 +162,7 @@ pub fn config(ctx: &CommandContext, args: &serde_json::Value) -> CommandResult {
 mod tests {
     use super::*;
     use crate::commands::CommandContext;
-    use crate::config::models::{ModelProfile, ModelsConfig};
+    use crate::config::models::ModelCatalog;
     use crate::engine::ConversationEngine;
     use shore_protocol::server_msg::ServerMessage;
     use shore_protocol::types::{Message, Role};
@@ -163,12 +176,12 @@ mod tests {
         CommandContext,
         broadcast::Receiver<ServerMessage>,
     ) {
-        make_ctx_with_models(tmp, ModelsConfig::default())
+        make_ctx_with_models(tmp, ModelCatalog::default())
     }
 
     fn make_ctx_with_models(
         tmp: &TempDir,
-        models: ModelsConfig,
+        models: ModelCatalog,
     ) -> (
         ConversationEngine,
         CommandContext,
@@ -180,15 +193,15 @@ mod tests {
             ConversationEngine::new("TestChar".to_string(), data_dir.clone(), push_tx.clone())
                 .unwrap();
 
-        let config = crate::config::LoadedConfig {
-            app: crate::config::app::AppConfig::default(),
+        let config = crate::config::LoadedConfig::new_for_test(
+            crate::config::app::AppConfig::default(),
             models,
-            dirs: crate::config::ShoreDirs {
+            crate::config::ShoreDirs {
                 config: tmp.path().join("config"),
                 data: data_dir.clone(),
                 runtime: tmp.path().join("runtime"),
             },
-        };
+        );
 
         let ctx = CommandContext {
             config,
@@ -201,34 +214,16 @@ mod tests {
         (engine, ctx, push_rx)
     }
 
-    fn sample_models() -> ModelsConfig {
-        ModelsConfig {
-            provider_defaults: Default::default(),
-            models: vec![
-                ModelProfile {
-                    name: "claude-sonnet".into(),
-                    provider: "anthropic".into(),
-                    model_id: "claude-sonnet-4-20250514".into(),
-                    max_context_tokens: None,
-                    max_tokens: None,
-                    temperature: None,
-                    top_p: None,
-                    base_url: None,
-                    api_key_env: None,
-                },
-                ModelProfile {
-                    name: "gpt-4o".into(),
-                    provider: "openai".into(),
-                    model_id: "gpt-4o".into(),
-                    max_context_tokens: None,
-                    max_tokens: None,
-                    temperature: None,
-                    top_p: None,
-                    base_url: None,
-                    api_key_env: None,
-                },
-            ],
-        }
+    fn sample_models() -> ModelCatalog {
+        let toml_str = r#"
+[anthropic.claude-sonnet]
+model_id = "claude-sonnet-4-20250514"
+
+[openrouter.gpt-4o]
+model_id = "gpt-4o"
+"#;
+        let table: toml::Table = toml_str.parse().unwrap();
+        ModelCatalog::from_sections(Some(&table), None, None, None).unwrap()
     }
 
     fn make_msg(id: &str, role: Role, content: &str) -> Message {

@@ -4,7 +4,7 @@ pub mod models;
 use std::path::{Path, PathBuf};
 
 use app::AppConfig;
-use models::ModelsConfig;
+use models::ModelCatalog;
 use tracing::{info, warn};
 
 /// Errors that can occur during configuration loading.
@@ -19,8 +19,20 @@ pub enum ConfigError {
     #[error("failed to parse config.toml: {0}")]
     ParseApp(#[source] toml::de::Error),
 
-    #[error("failed to parse models.toml: {0}")]
-    ParseModels(#[source] toml::de::Error),
+    #[error("failed to parse include file {path}: {source}")]
+    ParseInclude {
+        path: PathBuf,
+        source: toml::de::Error,
+    },
+
+    #[error("failed to parse conf.d file {path}: {source}")]
+    ConfD {
+        path: PathBuf,
+        source: toml::de::Error,
+    },
+
+    #[error("failed to parse model catalog: {0}")]
+    Catalog(#[from] models::CatalogError),
 
     #[error("validation error: {0}")]
     Validation(String),
@@ -73,8 +85,24 @@ impl ShoreDirs {
 #[derive(Debug, Clone)]
 pub struct LoadedConfig {
     pub app: AppConfig,
-    pub models: ModelsConfig,
+    pub models: ModelCatalog,
     pub dirs: ShoreDirs,
+    /// Raw merged TOML table, retained for character overlay use.
+    raw_table: toml::Table,
+}
+
+impl LoadedConfig {
+    /// Construct a `LoadedConfig` programmatically (no include/conf.d merging).
+    ///
+    /// Primarily useful for tests and integration harnesses.
+    pub fn new_for_test(app: AppConfig, models: ModelCatalog, dirs: ShoreDirs) -> Self {
+        Self {
+            app,
+            models,
+            dirs,
+            raw_table: toml::Table::new(),
+        }
+    }
 }
 
 /// Load and validate daemon configuration.
@@ -84,7 +112,10 @@ pub struct LoadedConfig {
 /// 2. Otherwise, load from `$XDG_CONFIG_HOME/shore/config.toml`.
 /// 3. If the file doesn't exist, use defaults.
 ///
-/// models.toml is always loaded from the same directory as config.toml.
+/// The config is parsed in two phases:
+/// 1. Parse as raw `toml::Table`, process `include` and `conf.d/`.
+/// 2. Extract model sections (`chat`, `tools`, `embedding`, `image_generation`),
+///    then deserialize the remainder into `AppConfig` (preserving `deny_unknown_fields`).
 pub fn load_config(config_path: Option<&Path>) -> Result<LoadedConfig, ConfigError> {
     let dirs = ShoreDirs::resolve();
 
@@ -102,46 +133,149 @@ pub fn load_config(config_path: Option<&Path>) -> Result<LoadedConfig, ConfigErr
         None => config_dir.join("config.toml"),
     };
 
-    // ── Load config.toml ────────────────────────────────────────────
-    let app: AppConfig = if config_file.exists() {
+    // ── Phase 1: Load raw TOML table ──────────────────────────────────
+    let mut table: toml::Table = if config_file.exists() {
         let content = std::fs::read_to_string(&config_file).map_err(|e| ConfigError::ReadFile {
             path: config_file.clone(),
             source: e,
         })?;
         info!(path = %config_file.display(), "Loading config.toml");
-        toml::from_str(&content).map_err(ConfigError::ParseApp)?
+        content
+            .parse::<toml::Table>()
+            .map_err(|e| ConfigError::ParseApp(e))?
     } else {
         info!("No config.toml found, creating default config");
-        let app = AppConfig::default();
         create_default_config(&config_dir);
-        app
+        toml::Table::new()
     };
 
-    // ── Load models.toml ────────────────────────────────────────────
-    let models_file = config_dir.join("models.toml");
-    let models: ModelsConfig = if models_file.exists() {
-        let content =
-            std::fs::read_to_string(&models_file).map_err(|e| ConfigError::ReadFile {
-                path: models_file.clone(),
-                source: e,
-            })?;
-        info!(path = %models_file.display(), "Loading models.toml");
-        toml::from_str(&content).map_err(ConfigError::ParseModels)?
-    } else {
-        info!("No models.toml found, creating default models config");
-        let models = ModelsConfig::default();
-        create_default_models(&config_dir);
-        models
-    };
+    // ── Process `include = [...]` ─────────────────────────────────────
+    if let Some(includes) = table.remove("include") {
+        if let Some(arr) = includes.as_array() {
+            for item in arr {
+                if let Some(rel_path) = item.as_str() {
+                    let include_path = config_dir.join(rel_path);
+                    if include_path.exists() {
+                        let content = std::fs::read_to_string(&include_path)
+                            .map_err(|e| ConfigError::ReadFile {
+                                path: include_path.clone(),
+                                source: e,
+                            })?;
+                        let include_table: toml::Table = content
+                            .parse()
+                            .map_err(|e| ConfigError::ParseInclude {
+                                path: include_path.clone(),
+                                source: e,
+                            })?;
+                        info!(path = %include_path.display(), "Merging include file");
+                        deep_merge(&mut table, &include_table);
+                    } else {
+                        warn!(path = %include_path.display(), "Include file not found, skipping");
+                    }
+                }
+            }
+        }
+    }
 
-    // ── Validate ────────────────────────────────────────────────────
-    validate_config(&app, &models)?;
+    // ── Process conf.d/ ───────────────────────────────────────────────
+    let conf_d = config_dir.join("conf.d");
+    load_conf_d(&conf_d, &mut table)?;
+
+    // ── Phase 2: Extract model sections before AppConfig parse ────────
+    let chat_section = table.remove("chat");
+    let tools_section = table.remove("tools");
+    let embedding_section = table.remove("embedding");
+    let image_generation_section = table.remove("image_generation");
+
+    // Save the full merged table (with model sections) for character overlays.
+    let mut raw_for_storage = table.clone();
+    if let Some(ref v) = chat_section {
+        raw_for_storage.insert("chat".to_string(), v.clone());
+    }
+    if let Some(ref v) = tools_section {
+        raw_for_storage.insert("tools".to_string(), v.clone());
+    }
+    if let Some(ref v) = embedding_section {
+        raw_for_storage.insert("embedding".to_string(), v.clone());
+    }
+    if let Some(ref v) = image_generation_section {
+        raw_for_storage.insert("image_generation".to_string(), v.clone());
+    }
+
+    // Deserialize the remaining table into AppConfig.
+    let app: AppConfig = toml::Value::Table(table)
+        .try_into()
+        .map_err(ConfigError::ParseApp)?;
+
+    // Build model catalog from the extracted sections.
+    let catalog = ModelCatalog::from_sections(
+        chat_section.as_ref().and_then(|v| v.as_table()),
+        tools_section.as_ref().and_then(|v| v.as_table()),
+        embedding_section.as_ref().and_then(|v| v.as_table()),
+        image_generation_section.as_ref().and_then(|v| v.as_table()),
+    )?;
+
+    // ── Validate ──────────────────────────────────────────────────────
+    validate_config(&app, &catalog)?;
 
     Ok(LoadedConfig {
         app,
-        models,
+        models: catalog,
         dirs,
+        raw_table: raw_for_storage,
     })
+}
+
+/// Recursively deep-merge `overlay` into `base`.
+///
+/// For table values, recurse. For all other values, overlay overwrites base.
+pub fn deep_merge(base: &mut toml::Table, overlay: &toml::Table) {
+    for (key, overlay_val) in overlay {
+        match (base.get_mut(key), overlay_val) {
+            (Some(toml::Value::Table(base_sub)), toml::Value::Table(overlay_sub)) => {
+                deep_merge(base_sub, overlay_sub);
+            }
+            _ => {
+                base.insert(key.clone(), overlay_val.clone());
+            }
+        }
+    }
+}
+
+/// Load and merge all `*.toml` files from a `conf.d/` directory, sorted alphabetically.
+fn load_conf_d(dir: &Path, table: &mut toml::Table) -> Result<(), ConfigError> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(_) => return Ok(()), // Directory doesn't exist — that's fine.
+    };
+
+    let mut paths: Vec<PathBuf> = entries
+        .flatten()
+        .filter_map(|e| {
+            let path = e.path();
+            if path.extension().is_some_and(|ext| ext == "toml") {
+                Some(path)
+            } else {
+                None
+            }
+        })
+        .collect();
+    paths.sort();
+
+    for path in paths {
+        let content = std::fs::read_to_string(&path).map_err(|e| ConfigError::ReadFile {
+            path: path.clone(),
+            source: e,
+        })?;
+        let overlay: toml::Table = content.parse().map_err(|e| ConfigError::ConfD {
+            path: path.clone(),
+            source: e,
+        })?;
+        info!(path = %path.display(), "Merging conf.d file");
+        deep_merge(table, &overlay);
+    }
+
+    Ok(())
 }
 
 /// Write a starter config.toml with commented options.
@@ -155,9 +289,22 @@ fn create_default_config(config_dir: &Path) {
 #
 # Characters are discovered from the characters/ directory.
 # Create characters/<name>/character.md to define a character.
+#
+# Models are configured inline under [chat.<provider>.<model>].
+# You can also use `include = ["extra.toml"]` or conf.d/*.toml for modular config.
+
+# include = ["models.toml"]  # optional explicit includes
 
 # [defaults]
-# model = "claude-sonnet"    # must match a name in models.toml
+# model = "opus"              # must match a model key below
+# tool_model = "mistral-small"
+
+# [chat.anthropic]
+# sdk = "anthropic"
+# api_key_env = "ANTHROPIC_API_KEY"
+#
+# [chat.anthropic.sonnet]
+# model_id = "claude-sonnet-4-6"
 
 # [services.llm]
 # command = "node /path/to/shore-llm/dist/index.js"
@@ -169,37 +316,8 @@ fn create_default_config(config_dir: &Path) {
     }
 }
 
-/// Write a starter models.toml with example entries.
-fn create_default_models(config_dir: &Path) {
-    if let Err(e) = std::fs::create_dir_all(config_dir) {
-        warn!(error = %e, "Could not create config directory");
-        return;
-    }
-    let content = r#"# Shore V2 model profiles
-# See examples/models.toml for all available options.
-#
-# Uncomment a provider and set the corresponding API key env var:
-#   ANTHROPIC_API_KEY, OPENAI_API_KEY, etc.
-
-# [[models]]
-# name = "claude-sonnet"
-# provider = "anthropic"
-# model_id = "claude-sonnet-4-6"
-
-# [[models]]
-# name = "gpt-4o"
-# provider = "openai"
-# model_id = "gpt-4o"
-"#;
-    let path = config_dir.join("models.toml");
-    match std::fs::write(&path, content) {
-        Ok(()) => info!(path = %path.display(), "Created default models.toml"),
-        Err(e) => warn!(error = %e, "Could not write default models.toml"),
-    }
-}
-
 /// Validate cross-field config constraints.
-fn validate_config(app: &AppConfig, models: &ModelsConfig) -> Result<(), ConfigError> {
+fn validate_config(app: &AppConfig, catalog: &ModelCatalog) -> Result<(), ConfigError> {
     // Personality must be 0.0–1.0.
     let p = app.behavior.autonomy.personality;
     if !(0.0..=1.0).contains(&p) {
@@ -208,22 +326,20 @@ fn validate_config(app: &AppConfig, models: &ModelsConfig) -> Result<(), ConfigE
         )));
     }
 
-    // If a default model is specified, it must exist in models.toml.
+    // If a default model is specified, it must exist in the catalog.
     if let Some(ref default_model) = app.defaults.model {
-        if models.find_model(default_model).is_none() {
+        if catalog.find_model(default_model).is_err() {
             return Err(ConfigError::Validation(format!(
-                "defaults.model \"{default_model}\" not found in models.toml"
+                "defaults.model \"{default_model}\" not found in model catalog"
             )));
         }
     }
 
-    // Model names must be unique.
-    let mut seen = std::collections::HashSet::new();
-    for model in &models.models {
-        if !seen.insert(&model.name) {
+    // If a default tool_model is specified, it must exist.
+    if let Some(ref tool_model) = app.defaults.tool_model {
+        if catalog.find_model(tool_model).is_err() {
             return Err(ConfigError::Validation(format!(
-                "duplicate model name \"{}\" in models.toml",
-                model.name
+                "defaults.tool_model \"{tool_model}\" not found in model catalog"
             )));
         }
     }
@@ -349,11 +465,10 @@ mod tests {
     }
 
     #[test]
-    fn load_example_config() {
-        let tmp = setup_config_dir(&[
-            (
-                "config.toml",
-                r#"
+    fn load_unified_config() {
+        let tmp = setup_config_dir(&[(
+            "config.toml",
+            r#"
 [daemon]
 socket_path = "/tmp/shore.sock"
 
@@ -364,23 +479,17 @@ max_unanswered = 2
 
 [advanced]
 cache_invalidation_warnings = false
-"#,
-            ),
-            (
-                "models.toml",
-                r#"
-[[models]]
-name = "claude-sonnet"
-provider = "anthropic"
-model_id = "claude-sonnet-4-20250514"
 
-[[models]]
-name = "gpt-4o"
-provider = "openai"
-model_id = "gpt-4o"
+[chat.anthropic]
+api_key_env = "MY_KEY"
+
+[chat.anthropic.sonnet]
+model_id = "claude-sonnet-4-6"
+
+[chat.anthropic.opus]
+model_id = "claude-opus-4-6"
 "#,
-            ),
-        ]);
+        )]);
 
         let config_path = tmp.path().join("config.toml");
         let loaded = load_config(Some(&config_path)).unwrap();
@@ -394,9 +503,9 @@ model_id = "gpt-4o"
         assert_eq!(loaded.app.behavior.autonomy.max_unanswered, 2);
         assert!(!loaded.app.advanced.cache_invalidation_warnings);
 
-        assert_eq!(loaded.models.models.len(), 2);
-        assert!(loaded.models.find_model("claude-sonnet").is_some());
-        assert!(loaded.models.find_model("gpt-4o").is_some());
+        assert_eq!(loaded.models.chat.len(), 2);
+        assert!(loaded.models.find_model("sonnet").is_ok());
+        assert!(loaded.models.find_model("opus").is_ok());
     }
 
     #[test]
@@ -441,6 +550,35 @@ key = "value"
     }
 
     #[test]
+    fn model_sections_dont_trigger_unknown_field_errors() {
+        // This is the key two-phase parse test: model sections are extracted
+        // before AppConfig deserialization, so they don't cause errors.
+        let tmp = setup_config_dir(&[(
+            "config.toml",
+            r#"
+[chat.anthropic.opus]
+model_id = "claude-opus-4-6"
+
+[tools.openrouter.mistral]
+model_id = "mistralai/mistral-small"
+
+[embedding.text-large]
+model_id = "openai/text-embedding-3-large"
+
+[image_generation.gemini-flash]
+model_id = "google/gemini-flash"
+"#,
+        )]);
+
+        let config_path = tmp.path().join("config.toml");
+        let loaded = load_config(Some(&config_path)).unwrap();
+        assert!(loaded.models.find_model("opus").is_ok());
+        assert!(loaded.models.find_model("mistral").is_ok());
+        assert!(loaded.models.embedding.contains_key("text-large"));
+        assert!(loaded.models.image_generation.contains_key("gemini-flash"));
+    }
+
+    #[test]
     fn invalid_personality_range() {
         let tmp = setup_config_dir(&[(
             "config.toml",
@@ -458,16 +596,13 @@ personality = 1.5
 
     #[test]
     fn invalid_default_model_reference() {
-        let tmp = setup_config_dir(&[
-            (
-                "config.toml",
-                r#"
+        let tmp = setup_config_dir(&[(
+            "config.toml",
+            r#"
 [defaults]
 model = "nonexistent-model"
 "#,
-            ),
-            ("models.toml", ""),
-        ]);
+        )]);
 
         let config_path = tmp.path().join("config.toml");
         let err = load_config(Some(&config_path)).unwrap_err();
@@ -479,39 +614,196 @@ model = "nonexistent-model"
     }
 
     #[test]
-    fn duplicate_model_names_rejected() {
-        let tmp = setup_config_dir(&[
-            ("config.toml", ""),
-            (
-                "models.toml",
-                r#"
-[[models]]
-name = "dupe"
-provider = "anthropic"
-model_id = "a"
-
-[[models]]
-name = "dupe"
-provider = "openai"
-model_id = "b"
-"#,
-            ),
-        ]);
-
-        let config_path = tmp.path().join("config.toml");
-        let err = load_config(Some(&config_path)).unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("duplicate"), "Should mention duplicate: {msg}");
-    }
-
-    #[test]
     fn no_config_files_uses_defaults() {
         let tmp = tempfile::tempdir().unwrap();
         let config_path = tmp.path().join("config.toml");
         let loaded = load_config(Some(&config_path)).unwrap();
         assert_eq!(loaded.app, AppConfig::default());
-        assert!(loaded.models.models.is_empty());
+        assert!(loaded.models.chat.is_empty());
     }
+
+    // ── Include tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn include_files_merged() {
+        let tmp = setup_config_dir(&[
+            (
+                "config.toml",
+                r#"
+include = ["models.toml"]
+
+[defaults]
+model = "opus"
+"#,
+            ),
+            (
+                "models.toml",
+                r#"
+[chat.anthropic.opus]
+model_id = "claude-opus-4-6"
+"#,
+            ),
+        ]);
+
+        let config_path = tmp.path().join("config.toml");
+        let loaded = load_config(Some(&config_path)).unwrap();
+        assert!(loaded.models.find_model("opus").is_ok());
+    }
+
+    #[test]
+    fn missing_include_file_is_warning_not_error() {
+        let tmp = setup_config_dir(&[(
+            "config.toml",
+            r#"
+include = ["nonexistent.toml"]
+"#,
+        )]);
+
+        let config_path = tmp.path().join("config.toml");
+        // Should succeed — missing include is a warning, not an error.
+        let loaded = load_config(Some(&config_path)).unwrap();
+        assert!(loaded.models.chat.is_empty());
+    }
+
+    // ── conf.d tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn conf_d_files_merged_alphabetically() {
+        let tmp = setup_config_dir(&[
+            ("config.toml", ""),
+            (
+                "conf.d/01-chat.toml",
+                r#"
+[chat.anthropic.opus]
+model_id = "claude-opus-4-6"
+"#,
+            ),
+            (
+                "conf.d/02-tools.toml",
+                r#"
+[tools.openrouter.mistral]
+model_id = "mistralai/mistral-small"
+"#,
+            ),
+        ]);
+
+        let config_path = tmp.path().join("config.toml");
+        let loaded = load_config(Some(&config_path)).unwrap();
+        assert!(loaded.models.find_model("opus").is_ok());
+        assert!(loaded.models.find_model("mistral").is_ok());
+    }
+
+    #[test]
+    fn conf_d_overrides_base_config() {
+        let tmp = setup_config_dir(&[
+            (
+                "config.toml",
+                r#"
+[chat.anthropic]
+api_key_env = "BASE_KEY"
+
+[chat.anthropic.opus]
+model_id = "claude-opus-4-6"
+"#,
+            ),
+            (
+                "conf.d/override.toml",
+                r#"
+[chat.anthropic]
+api_key_env = "OVERRIDE_KEY"
+"#,
+            ),
+        ]);
+
+        let config_path = tmp.path().join("config.toml");
+        let loaded = load_config(Some(&config_path)).unwrap();
+        let opus = loaded.models.find_model("opus").unwrap();
+        assert_eq!(opus.api_key_env.as_deref(), Some("OVERRIDE_KEY"));
+    }
+
+    #[test]
+    fn conf_d_nonexistent_dir_is_fine() {
+        let tmp = setup_config_dir(&[("config.toml", "")]);
+        // No conf.d/ directory — should not error.
+        let config_path = tmp.path().join("config.toml");
+        let loaded = load_config(Some(&config_path)).unwrap();
+        assert!(loaded.models.chat.is_empty());
+    }
+
+    #[test]
+    fn merge_order_conf_d_over_include_over_base() {
+        let tmp = setup_config_dir(&[
+            (
+                "config.toml",
+                r#"
+include = ["include.toml"]
+
+[chat.anthropic]
+temperature = 0.1
+
+[chat.anthropic.opus]
+model_id = "claude-opus-4-6"
+"#,
+            ),
+            (
+                "include.toml",
+                r#"
+[chat.anthropic]
+temperature = 0.5
+"#,
+            ),
+            (
+                "conf.d/final.toml",
+                r#"
+[chat.anthropic]
+temperature = 0.9
+"#,
+            ),
+        ]);
+
+        let config_path = tmp.path().join("config.toml");
+        let loaded = load_config(Some(&config_path)).unwrap();
+        let opus = loaded.models.find_model("opus").unwrap();
+        // conf.d overrides include which overrides base.
+        assert_eq!(opus.temperature, Some(0.9));
+    }
+
+    // ── Deep merge ────────────────────────────────────────────────────
+
+    #[test]
+    fn deep_merge_scalars_overwritten() {
+        let mut base = r#"key = "a""#.parse::<toml::Table>().unwrap();
+        let overlay = r#"key = "b""#.parse::<toml::Table>().unwrap();
+        deep_merge(&mut base, &overlay);
+        assert_eq!(base["key"].as_str(), Some("b"));
+    }
+
+    #[test]
+    fn deep_merge_tables_recursive() {
+        let mut base = r#"
+[section]
+a = 1
+b = 2
+"#
+        .parse::<toml::Table>()
+        .unwrap();
+
+        let overlay = r#"
+[section]
+b = 3
+c = 4
+"#
+        .parse::<toml::Table>()
+        .unwrap();
+
+        deep_merge(&mut base, &overlay);
+        let section = base["section"].as_table().unwrap();
+        assert_eq!(section["a"].as_integer(), Some(1)); // preserved
+        assert_eq!(section["b"].as_integer(), Some(3)); // overwritten
+        assert_eq!(section["c"].as_integer(), Some(4)); // added
+    }
+
+    // ── Character / prompt tests ──────────────────────────────────────
 
     #[test]
     fn character_definition_loaded() {

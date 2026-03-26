@@ -159,24 +159,20 @@ impl MessageHandler {
             .as_deref()
             .or(self.cmd_ctx.config.app.defaults.model.as_deref());
 
-        let model_name = match model_name {
-            Some(name) => name.to_string(),
+        let resolved = match model_name {
+            Some(name) => self
+                .cmd_ctx
+                .config
+                .models
+                .find_model(name)
+                .map_err(|e| e.to_string())?,
             None => self
                 .cmd_ctx
                 .config
                 .models
-                .models
-                .first()
-                .map(|m| m.name.clone())
-                .ok_or("No model configured in models.toml")?,
+                .first_chat_model()
+                .ok_or("No model configured")?,
         };
-
-        let resolved = self
-            .cmd_ctx
-            .config
-            .models
-            .resolve_model(&model_name)
-            .ok_or_else(|| format!("Model not found: {model_name}"))?;
 
         // 4. Assemble prompt.
         // Load definitions before borrowing engine (avoids borrow conflicts).

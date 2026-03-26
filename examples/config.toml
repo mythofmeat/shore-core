@@ -1,15 +1,21 @@
 # Shore V2 — Example Configuration
 # All values shown are defaults unless noted otherwise.
+#
+# Models are configured inline under [chat.<provider>.<model>].
+# You can also split config with `include = ["extra.toml"]` or conf.d/*.toml.
+
+# include = ["models.toml"]   # Optional explicit includes
+                               # conf.d/*.toml is also auto-loaded
 
 [daemon]
 # socket_path = "/tmp/shore.sock"   # Override Unix socket path (auto-generated if omitted)
 # tcp_addr = "127.0.0.1:7320"       # Optional TCP listener
 
-[character]
-name = "Shore"
-
 [defaults]
-# model = "claude-sonnet"           # Must match a name in models.toml
+# model = "claude-sonnet"           # Must match a model key below
+# tool_model = "mistral-small"      # Default model for tool-use calls
+# embedding = "text-large"          # Default embedding profile
+# image_generation = "gemini-flash" # Default image generation profile
 stream = true
 
 [behavior.autonomy]
@@ -48,8 +54,50 @@ rag_threshold = 0.3
 # room_id = "!abc123:example.com"
 
 [services.llm]
-# socket_path = "/run/user/1000/shore/llm.sock"
-# base_url = "http://localhost:3000"
+# command = "node /path/to/shore-llm/dist/index.js"
+# socket = "/run/user/1000/shore/llm.sock"
 
 [advanced]
 cache_invalidation_warnings = true
+
+# ── Chat models ─────────────────────────────────────────────────────────
+# Provider-level defaults cascade into every model under that provider.
+# Model-level values take precedence.
+#
+# `sdk` selects the wire protocol (anthropic, openai, gemini, deepseek, zhipuai).
+# Known providers (anthropic, openrouter, deepseek, gemini, xai, zhipuai) have
+# hardcoded defaults for sdk, api_key_env, temperature, max_tokens, etc.
+
+[chat.anthropic.claude-sonnet]
+model_id = "claude-sonnet-4-6"
+
+[chat.anthropic.claude-opus]
+model_id = "claude-opus-4-6"
+max_tokens = 8192
+
+[chat.openai.gpt-4o]
+model_id = "gpt-4o"
+
+[chat.gemini.gemini-pro]
+model_id = "gemini-2.5-pro"
+
+# ── Tool models ─────────────────────────────────────────────────────────
+
+# [tools.openrouter]
+# api_key_env = "OPENROUTER_API_KEY"
+# temperature = 0.5
+#
+# [tools.openrouter.mistral-small]
+# model_id = "mistralai/mistral-small-2603"
+
+# ── Embedding ───────────────────────────────────────────────────────────
+
+# [embedding.text-large]
+# api_key_env = "OPENAI_API_KEY"
+# model_id = "text-embedding-3-large"
+
+# ── Image generation ────────────────────────────────────────────────────
+
+# [image_generation.gemini-flash]
+# model_id = "google/gemini-3.1-flash-image-preview"
+# size = "1024x1024"

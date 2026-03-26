@@ -48,8 +48,20 @@ pub struct DaemonConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct DefaultsConfig {
-    /// Default model name (must match a name in models.toml).
+    /// Default chat model name (must match a model in config).
     pub model: Option<String>,
+
+    /// Default tool model name (for tool-use calls).
+    pub tool_model: Option<String>,
+
+    /// Default memory agent model name.
+    pub memory_agent: Option<String>,
+
+    /// Default embedding profile name.
+    pub embedding: Option<String>,
+
+    /// Default image generation profile name.
+    pub image_generation: Option<String>,
 
     /// Whether to stream responses by default.
     #[serde(default = "default_true")]
@@ -60,6 +72,10 @@ impl Default for DefaultsConfig {
     fn default() -> Self {
         Self {
             model: None,
+            tool_model: None,
+            memory_agent: None,
+            embedding: None,
+            image_generation: None,
             stream: true,
         }
     }
