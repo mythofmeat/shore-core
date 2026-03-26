@@ -29,11 +29,6 @@ const BUILTIN_SYSTEM_TEMPLATE: &str = r#"You are {{character_name}}, an AI compa
 {{#if recap}}
 ## Recap
 {{recap}}
-{{/if}}
-
-{{#if memory_context}}
-## Relevant Memories
-{{memory_context}}
 {{/if}}"#;
 
 /// A block of system prompt content with an identifying label.
@@ -117,19 +112,12 @@ pub fn assemble_prompt(params: &PromptParams<'_>) -> AssembledPrompt {
         load_recap(params.character_data_dir)
     };
 
-    let memory_context = if params.is_private {
-        None
-    } else {
-        retrieve_rag_memories(params.character_name)
-    };
-
     let rendered = render_template(
         &template,
         params.character_name,
         params.character_definition,
         params.user_definition,
         recap.as_deref(),
-        memory_context.as_deref(),
     );
 
     // ── 3. Build system blocks ─────────────────────────────────────────
@@ -157,7 +145,6 @@ fn render_template(
     character_definition: Option<&str>,
     user_definition: Option<&str>,
     recap: Option<&str>,
-    memory_context: Option<&str>,
 ) -> String {
     let mut result = template.to_string();
 
@@ -168,7 +155,6 @@ fn render_template(
     result = render_conditional(&result, "character_definition", character_definition);
     result = render_conditional(&result, "user_definition", user_definition);
     result = render_conditional(&result, "recap", recap);
-    result = render_conditional(&result, "memory_context", memory_context);
 
     result
 }
@@ -215,15 +201,6 @@ fn render_conditional(template: &str, name: &str, value: Option<&str>) -> String
 fn load_recap(character_data_dir: &Path) -> Option<String> {
     let path = character_data_dir.join("memory").join("recap.md");
     std::fs::read_to_string(path).ok().filter(|s| !s.is_empty())
-}
-
-/// Stub: retrieve RAG-relevant memory entries for prompt context.
-///
-/// Returns `None` for now. Will be replaced with actual vector search
-/// + BM25 retrieval in a future story.
-fn retrieve_rag_memories(_character_name: &str) -> Option<String> {
-    // TODO(US-???): Implement RAG retrieval pipeline.
-    None
 }
 
 /// Estimate token count from text using a character-based heuristic.
@@ -280,7 +257,7 @@ mod tests {
     #[test]
     fn render_template_substitutes_variables() {
         let template = "Hello, {{character_name}}!";
-        let result = render_template(template, "Shore", None, None, None, None);
+        let result = render_template(template, "Shore", None, None, None);
         assert_eq!(result, "Hello, Shore!");
     }
 
@@ -293,7 +270,6 @@ mod tests {
             Some("A helpful companion"),
             None,
             None,
-            None,
         );
         assert_eq!(result, "Start.\nDef: A helpful companion\nEnd.");
     }
@@ -301,7 +277,7 @@ mod tests {
     #[test]
     fn render_template_conditional_absent() {
         let template = "Start.{{#if character_definition}}\nDef: {{character_definition}}{{/if}}\nEnd.";
-        let result = render_template(template, "Shore", None, None, None, None);
+        let result = render_template(template, "Shore", None, None, None);
         assert_eq!(result, "Start.\nEnd.");
     }
 
@@ -313,13 +289,11 @@ mod tests {
             Some("A test character."),
             Some("The test user."),
             Some("Previously, we discussed tests."),
-            Some("- Memory entry 1\n- Memory entry 2"),
         );
         assert!(result.contains("You are TestChar"));
         assert!(result.contains("A test character."));
         assert!(result.contains("The test user."));
         assert!(result.contains("Previously, we discussed tests."));
-        assert!(result.contains("- Memory entry 1"));
     }
 
     // ── Token estimation ───────────────────────────────────────────────
