@@ -268,6 +268,7 @@ mod tests {
                 },
                 model: "test-model".into(),
             },
+            finish_reason: "end_turn".into(),
         });
         assert!(handler.feed(&end, None).unwrap());
         assert!(!handler.is_active());
@@ -320,6 +321,7 @@ mod tests {
                 },
                 model: "".into(),
             },
+            finish_reason: "end_turn".into(),
         });
         let result = handler.feed(&end, None);
         assert!(result.is_err());
@@ -397,6 +399,7 @@ mod tests {
                 },
                 model: "m".into(),
             },
+            finish_reason: "end_turn".into(),
         });
         handler.feed(&end, Some(&mut cb)).unwrap();
         assert!(*ended.lock().unwrap());
@@ -429,6 +432,7 @@ mod tests {
                 },
                 model: "m".into(),
             },
+            finish_reason: "end_turn".into(),
         });
         handler.feed(&end, None).unwrap();
 

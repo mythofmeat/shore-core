@@ -231,9 +231,9 @@ export async function stream(
   let firstTokenMs: number | null = null;
   const result = await model.generateContentStream({ contents });
 
+  res.chunkedEncoding = false;
   res.writeHead(200, {
     "Content-Type": "application/x-ndjson",
-    "Transfer-Encoding": "chunked",
   });
 
   let textContent = "";

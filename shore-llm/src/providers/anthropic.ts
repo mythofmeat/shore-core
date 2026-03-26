@@ -205,9 +205,9 @@ export async function stream(
 
   const sdkStream = await client.messages.create(params);
 
+  res.chunkedEncoding = false;
   res.writeHead(200, {
     "Content-Type": "application/x-ndjson",
-    "Transfer-Encoding": "chunked",
   });
 
   // Accumulated state

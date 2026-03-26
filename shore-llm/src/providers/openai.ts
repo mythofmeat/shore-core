@@ -238,9 +238,9 @@ export async function stream(
     params as unknown as OpenAI.ChatCompletionCreateParamsStreaming,
   );
 
+  res.chunkedEncoding = false;
   res.writeHead(200, {
     "Content-Type": "application/x-ndjson",
-    "Transfer-Encoding": "chunked",
   });
 
   let textContent = "";

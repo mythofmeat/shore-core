@@ -66,6 +66,9 @@ fn default_content_type() -> String {
 pub struct StreamEnd {
     pub content: String,
     pub metadata: StreamMetadata,
+    /// Why the model stopped: "end_turn", "tool_use", "max_tokens", etc.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub finish_reason: String,
 }
 
 /// Generation phase change.

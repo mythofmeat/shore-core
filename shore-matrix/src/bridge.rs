@@ -251,6 +251,7 @@ mod tests {
                 },
                 model: "test".into(),
             },
+            finish_reason: "end_turn".into(),
         }));
         if let CollectorAction::SendMessage { text, images } = action {
             assert_eq!(text, "hello world");
@@ -291,6 +292,7 @@ mod tests {
                 },
                 model: "test".into(),
             },
+            finish_reason: "end_turn".into(),
         }));
 
         if let CollectorAction::SendMessage { text, images } = action {
@@ -419,6 +421,7 @@ mod tests {
                 },
                 model: "test".into(),
             },
+            finish_reason: "end_turn".into(),
         }));
 
         // Second stream should start clean
@@ -438,6 +441,7 @@ mod tests {
                 },
                 model: "test".into(),
             },
+            finish_reason: "end_turn".into(),
         }));
 
         if let CollectorAction::SendMessage { images, .. } = action {
