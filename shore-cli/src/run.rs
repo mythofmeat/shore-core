@@ -1,3 +1,5 @@
+use std::io::{self, IsTerminal, Read as _};
+
 use shore_client::{SWPConnection, ServerAddr};
 use shore_protocol::server_msg::ServerMessage;
 
@@ -23,10 +25,12 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 
     match &cli.command {
         CliCommand::Send { message } => {
-            let text = if message.is_empty() {
-                edit_message_in_editor()?
-            } else {
+            let text = if !message.is_empty() {
                 message.join(" ")
+            } else if !io::stdin().is_terminal() {
+                read_stdin()?
+            } else {
+                edit_message_in_editor()?
             };
             if text.is_empty() {
                 return Ok(());
@@ -123,6 +127,13 @@ fn print_config_path() {
             std::path::PathBuf::from(home).join(".config")
         });
     println!("{}", base.join("shore").display());
+}
+
+/// Read all of stdin to a string (for piped input).
+fn read_stdin() -> Result<String, Box<dyn std::error::Error>> {
+    let mut buf = String::new();
+    io::stdin().read_to_string(&mut buf)?;
+    Ok(buf.trim().to_string())
 }
 
 /// Open `$EDITOR` (or `$VISUAL`) with a temp file and return the composed text.

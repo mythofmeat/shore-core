@@ -42,18 +42,20 @@ pub enum CliCommand {
         count: u32,
     },
 
-    /// Edit a message by ID
+    /// Edit a message by ID or relative reference (last, -1, 3, etc.)
     Edit {
-        /// Message ID
+        /// Message ID or relative reference (last, -1, -2, 3, etc.)
+        #[arg(allow_hyphen_values = true)]
         msg_id: String,
 
         /// New content
         content: Vec<String>,
     },
 
-    /// Delete a message by ID
+    /// Delete a message by ID or relative reference (last, -1, 3, etc.)
     Delete {
-        /// Message ID
+        /// Message ID or relative reference (last, -1, -2, 3, etc.)
+        #[arg(allow_hyphen_values = true)]
         msg_id: String,
     },
 
@@ -258,6 +260,41 @@ mod tests {
                 assert_eq!(msg_id, "msg_456");
             }
             other => panic!("expected Delete, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_edit_negative_index() {
+        let cli = parse(&["edit", "-1", "new", "text"]);
+        match &cli.command {
+            CliCommand::Edit { msg_id, content } => {
+                assert_eq!(msg_id, "-1");
+                assert_eq!(content, &["new", "text"]);
+            }
+            other => panic!("expected Edit, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_delete_negative_index() {
+        let cli = parse(&["delete", "-1"]);
+        match &cli.command {
+            CliCommand::Delete { msg_id } => {
+                assert_eq!(msg_id, "-1");
+            }
+            other => panic!("expected Delete, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_edit_last() {
+        let cli = parse(&["edit", "last", "updated"]);
+        match &cli.command {
+            CliCommand::Edit { msg_id, content } => {
+                assert_eq!(msg_id, "last");
+                assert_eq!(content, &["updated"]);
+            }
+            other => panic!("expected Edit, got: {other:?}"),
         }
     }
 
