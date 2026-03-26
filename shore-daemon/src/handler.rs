@@ -210,7 +210,7 @@ impl MessageHandler {
                     timestamp: chrono::Utc::now().to_rfc3339(),
                 };
                 engine.append_message(user_msg)?;
-                self.autonomy.notify_user_message(&char_name);
+                self.autonomy.notify_user_message(&char_name, engine.message_count());
             }
         }
 
@@ -445,7 +445,7 @@ impl MessageHandler {
             timestamp: chrono::Utc::now().to_rfc3339(),
         };
         engine.append_message(assistant_msg)?;
-        self.autonomy.notify_assistant_message(&char_name);
+        self.autonomy.notify_assistant_message(&char_name, engine.message_count());
 
         Ok(())
     }

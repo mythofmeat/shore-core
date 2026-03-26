@@ -158,6 +158,15 @@ impl ConversationEngine {
         Ok(())
     }
 
+    /// Reload messages and segments from disk (e.g. after compaction with retention).
+    pub fn reload(&mut self) -> Result<(), EngineError> {
+        self.messages = MessageStore::load(self.character_dir.join("active.jsonl"))?;
+        self.segments = SegmentReader::load(&self.character_dir)?;
+        self.clear_pre_tool_buffer();
+        self.broadcast_history();
+        Ok(())
+    }
+
     // ── Pre-tool text accumulation ──────────────────────────────────────
 
     /// Accumulate pre-tool text. Called when partial text arrives before a

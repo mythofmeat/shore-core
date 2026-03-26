@@ -320,9 +320,19 @@ pub async fn compact(
     let app_compaction = &ctx.config.app.behavior.autonomy.compaction;
     let config = CompactionConfig {
         idle_trigger_minutes: app_compaction.idle_trigger_minutes as u64,
-        message_count_threshold: app_compaction.message_count_threshold,
+        min_messages: app_compaction.min_messages,
+        max_messages: app_compaction.max_messages,
+        keep_recent: app_compaction.keep_recent,
     };
     let mgr = CompactionManager::new(config);
+
+    // Load existing recap for folding.
+    let recap_path = ctx
+        .data_dir
+        .join(&char_name)
+        .join("memory")
+        .join("recap.md");
+    let existing_recap = std::fs::read_to_string(&recap_path).ok();
 
     // Run compaction.
     let outcome = mgr
@@ -331,6 +341,7 @@ pub async fn compact(
             &messages,
             false, // is_private: V2 has no per-conversation privacy flag yet
             &prompt_template,
+            existing_recap.as_deref(),
             &llm,
             &db,
             &indexer,
@@ -343,9 +354,9 @@ pub async fn compact(
     // Build response and handle post-compaction engine state.
     match outcome {
         CompactionOutcome::Compacted(result) => {
-            // Clear the in-memory messages (active.jsonl was already truncated).
+            // Reload retained messages from disk (active.jsonl now has only kept messages).
             engine
-                .reset()
+                .reload()
                 .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
 
             Ok(json!({
@@ -354,6 +365,8 @@ pub async fn compact(
                 "entries_created": result.entries_created.len(),
                 "entry_ids": result.entries_created,
                 "message_count": result.message_count,
+                "retained_count": result.retained_count,
+                "recap_generated": result.recap_generated,
                 "new_conversation_id": result.new_conversation_id,
             }))
         }
@@ -378,6 +391,8 @@ pub async fn compact(
                 "would_create_entries": result.would_create_entries,
                 "entries_preview": previews,
                 "message_count": result.message_count,
+                "retained_count": result.retained_count,
+                "recap_preview": result.recap_preview,
             }))
         }
     }

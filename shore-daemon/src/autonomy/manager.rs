@@ -40,6 +40,8 @@ pub struct AutonomyState {
     last_compaction_activity: Instant,
     /// Whether compaction was already triggered for this idle period.
     compaction_triggered: bool,
+    /// Current number of messages in active.jsonl (updated on each message notification).
+    active_message_count: usize,
 }
 
 impl AutonomyState {
@@ -242,6 +244,7 @@ impl AutonomyManager {
             dirty: false,
             last_compaction_activity: Instant::now(),
             compaction_triggered: false,
+            active_message_count: 0,
         }));
 
         states.insert(character.to_string(), state.clone());
@@ -263,7 +266,7 @@ impl AutonomyManager {
     // -- event notifications from the message handler -------------------------
 
     /// Call after a user message is appended.
-    pub fn notify_user_message(&self, character: &str) {
+    pub fn notify_user_message(&self, character: &str, message_count: usize) {
         let states = self.states.lock().unwrap();
         if let Some(state) = states.get(character) {
             let mut s = state.lock().unwrap();
@@ -272,12 +275,13 @@ impl AutonomyManager {
             s.activity.record_message();
             s.last_compaction_activity = now;
             s.compaction_triggered = false;
+            s.active_message_count = message_count;
             s.mark_dirty();
         }
     }
 
     /// Call after an assistant message is appended.
-    pub fn notify_assistant_message(&self, character: &str) {
+    pub fn notify_assistant_message(&self, character: &str, message_count: usize) {
         let states = self.states.lock().unwrap();
         if let Some(state) = states.get(character) {
             let mut s = state.lock().unwrap();
@@ -286,6 +290,7 @@ impl AutonomyManager {
             s.activity.record_message();
             s.last_compaction_activity = now;
             s.compaction_triggered = false;
+            s.active_message_count = message_count;
         }
     }
 
@@ -499,19 +504,39 @@ fn tick_character(
         }
     }
 
-    // -- compaction idle trigger ------------------------------------------
+    // -- compaction triggers ---------------------------------------------
     if config.enabled && !s.compaction_triggered {
-        let idle_secs = now.duration_since(s.last_compaction_activity).as_secs();
-        let threshold_secs = config.compaction.idle_trigger_minutes as u64 * 60;
-        if threshold_secs > 0 && idle_secs >= threshold_secs {
+        let min_total = config.compaction.min_messages + config.compaction.keep_recent;
+
+        // Force compaction when max_messages is reached.
+        if config.compaction.max_messages > 0
+            && s.active_message_count >= config.compaction.max_messages
+            && s.active_message_count >= min_total
+        {
             s.compaction_triggered = true;
             info!(
                 character = %character,
-                idle_secs,
-                threshold_secs,
-                "Compaction: idle trigger fired"
+                message_count = s.active_message_count,
+                max_messages = config.compaction.max_messages,
+                "Compaction: max messages trigger fired"
             );
             let _ = compaction_tx.try_send(character.to_string());
+        }
+        // Idle trigger: only if we have enough messages.
+        else if s.active_message_count >= min_total {
+            let idle_secs = now.duration_since(s.last_compaction_activity).as_secs();
+            let threshold_secs = config.compaction.idle_trigger_minutes as u64 * 60;
+            if threshold_secs > 0 && idle_secs >= threshold_secs {
+                s.compaction_triggered = true;
+                info!(
+                    character = %character,
+                    idle_secs,
+                    threshold_secs,
+                    message_count = s.active_message_count,
+                    "Compaction: idle trigger fired"
+                );
+                let _ = compaction_tx.try_send(character.to_string());
+            }
         }
     }
 
@@ -595,8 +620,8 @@ mod tests {
         let (_tx, rx) = tokio::sync::watch::channel(());
         let (mgr, _compaction_rx) = AutonomyManager::new(test_config(), tmp.path().to_path_buf(), rx);
         // Should not panic.
-        mgr.notify_user_message("nobody");
-        mgr.notify_assistant_message("nobody");
+        mgr.notify_user_message("nobody", 0);
+        mgr.notify_assistant_message("nobody", 0);
         mgr.notify_api_response("nobody", 100, 200);
     }
 
@@ -643,6 +668,7 @@ mod tests {
             dirty: true,
             last_compaction_activity: Instant::now(),
             compaction_triggered: false,
+            active_message_count: 0,
         };
         save_state(data_dir, "alice", &mut state);
         assert!(!state.dirty);
@@ -726,6 +752,7 @@ mod tests {
             dirty: false,
             last_compaction_activity: Instant::now(),
             compaction_triggered: false,
+            active_message_count: 0,
         }));
 
         // Need at least one message for heartbeat to have timestamps.

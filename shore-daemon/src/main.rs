@@ -321,9 +321,15 @@ async fn run_compaction(
     let app_compaction = &config.app.behavior.autonomy.compaction;
     let mgr_config = CompactionConfig {
         idle_trigger_minutes: app_compaction.idle_trigger_minutes as u64,
-        message_count_threshold: app_compaction.message_count_threshold,
+        min_messages: app_compaction.min_messages,
+        max_messages: app_compaction.max_messages,
+        keep_recent: app_compaction.keep_recent,
     };
     let mgr = CompactionManager::new(mgr_config);
+
+    // Load existing recap for folding.
+    let recap_path = character_dir.join("memory").join("recap.md");
+    let existing_recap = tokio::fs::read_to_string(&recap_path).await.ok();
 
     let outcome = mgr
         .compact(
@@ -331,6 +337,7 @@ async fn run_compaction(
             &messages,
             false,
             &prompt_template,
+            existing_recap.as_deref(),
             &llm,
             &db,
             &indexer,
@@ -345,12 +352,25 @@ async fn run_compaction(
                 character = %character,
                 entries = result.entries_created.len(),
                 messages = result.message_count,
+                retained = result.retained_count,
+                recap = result.recap_generated,
                 "Background compaction completed"
             );
 
-            // Broadcast empty history so connected clients refresh.
+            // Re-read active.jsonl to get retained messages for the broadcast.
+            let retained_messages = match tokio::fs::read_to_string(&active_path).await {
+                Ok(content) => {
+                    content
+                        .lines()
+                        .filter(|l| !l.trim().is_empty())
+                        .filter_map(|l| serde_json::from_str::<shore_protocol::types::Message>(l).ok())
+                        .collect()
+                }
+                Err(_) => vec![],
+            };
+
             let _ = push_tx.send(ServerMessage::History(History {
-                messages: vec![],
+                messages: retained_messages,
                 config: serde_json::json!({}),
             }));
         }

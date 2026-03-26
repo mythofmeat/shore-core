@@ -75,6 +75,8 @@ pub struct CompactionResult {
     pub conversation_id: String,
     pub new_conversation_id: String,
     pub message_count: usize,
+    pub retained_count: usize,
+    pub recap_generated: bool,
 }
 
 /// Result of a dry-run compaction.
@@ -83,6 +85,17 @@ pub struct DryRunResult {
     pub would_create_entries: usize,
     pub entries_preview: Vec<CompactedEntry>,
     pub message_count: usize,
+    pub retained_count: usize,
+    pub recap_preview: Option<String>,
+}
+
+/// Parameters for archiving with message retention.
+#[derive(Debug)]
+pub struct RetentionParams {
+    /// Number of messages to keep from the end of active.jsonl.
+    pub keep_last_n: usize,
+    /// Recap text to write to memory/recap.md (None = leave untouched).
+    pub recap: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -93,6 +106,7 @@ pub struct DryRunResult {
 pub enum CompactionError {
     Llm(String),
     Db(String),
+    Parse(String),
     PrivateConversation,
     InsufficientMessages,
     Indexing(String),
@@ -104,6 +118,7 @@ impl std::fmt::Display for CompactionError {
         match self {
             CompactionError::Llm(e) => write!(f, "llm: {e}"),
             CompactionError::Db(e) => write!(f, "db: {e}"),
+            CompactionError::Parse(e) => write!(f, "parse: {e}"),
             CompactionError::PrivateConversation => write!(f, "private conversation: skipped"),
             CompactionError::InsufficientMessages => write!(f, "insufficient messages"),
             CompactionError::Indexing(e) => write!(f, "indexing: {e}"),
@@ -118,12 +133,15 @@ impl std::error::Error for CompactionError {}
 // Traits for external dependencies
 // ---------------------------------------------------------------------------
 
-/// LLM client for compaction. Takes a rendered prompt, returns extracted entries.
+/// LLM client for compaction. Takes a rendered prompt, returns raw LLM text.
+///
+/// The library owns the prompt format (XML) and handles parsing the response
+/// into recap + entries. The impl just sends text and returns text.
 pub trait CompactionLlm: Send + Sync {
     fn summarize(
         &self,
         prompt: &str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<CompactedEntry>, CompactionError>> + Send + '_>>;
+    ) -> Pin<Box<dyn Future<Output = Result<String, CompactionError>> + Send + '_>>;
 }
 
 /// Vector indexer for newly created entries.
@@ -135,10 +153,13 @@ pub trait VectorIndexer: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Result<(), CompactionError>> + Send + '_>>;
 }
 
-/// Conversation lifecycle management (archive old, create new).
+/// Conversation lifecycle management — archive old messages and retain recent ones.
 pub trait ConversationManager: Send + Sync {
-    fn archive_conversation(&self, conversation_id: &str) -> Result<(), CompactionError>;
-    fn create_conversation(&self) -> Result<String, CompactionError>;
+    fn archive_and_retain(
+        &self,
+        conversation_id: &str,
+        params: RetentionParams,
+    ) -> Result<String, CompactionError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -146,21 +167,141 @@ pub trait ConversationManager: Send + Sync {
 // ---------------------------------------------------------------------------
 
 /// Default compaction prompt template. In production, loaded from `compact.md`.
-/// The `{{conversation}}` placeholder is replaced with formatted messages.
-pub const DEFAULT_COMPACT_PROMPT: &str = r#"Analyze the following conversation and extract key memories that should be preserved.
+///
+/// Placeholders:
+/// - `{{conversation}}` — formatted conversation messages
+/// - `{{#if recap}}...{{/if}}` — conditional block for existing recap
+/// - `{{recap}}` — existing recap text (inside conditional)
+pub const DEFAULT_COMPACT_PROMPT: &str = r#"You are recording what happened in this specific conversation. Write temporal, narrative entries — events, decisions, what was said, emotional shifts — anchored to this conversation. Do not extract timeless facts or stable preferences; those are handled separately.
 
-For each memory, determine:
-- Whether it is episodic (an event or experience) or semantic (a fact or piece of knowledge)
-- A concise but complete summary
-- Relevant topic tags (comma-separated)
-- A primary topic key
-- Your confidence (0.0-1.0) that this memory is worth preserving
+Preserve:
+- Key events and decisions made in this conversation
+- Emotional developments and relationship changes
+- Ongoing threads or unresolved topics
+- Specific details that would be important to remember later
+- If information was corrected or updated, note the change explicitly
 
-Respond with a JSON object:
-{"entries":[{"memory_type":"episodic","summary_text":"...","topic_tags":"tag1,tag2","topic_key":"topic","confidence":0.9}]}
+{{#if recap}}
+Here is the existing recap from previous compactions. Fold it into your new recap — preserve ongoing threads and relationship developments while incorporating new events. Older details should condense naturally but never disappear entirely:
+<previous_recap>
+{{recap}}
+</previous_recap>
+{{/if}}
+
+Your response MUST contain two parts, in this order:
+
+1. A single <recap> block — a flowing narrative (2-4 paragraphs) written **about the assistant in close third person** — not "I" but the assistant's name or "they". Same emotional texture, same interpretive lens, third-person pronouns. Cover what happened, how the assistant felt about it, what matters to them, and where things stand with the user.
+
+<recap>
+[rolling narrative recap, close third person about the assistant]
+</recap>
+
+2. One or more <entry> blocks (one per topic discussed).
+
+Each entry should be **atomic** — focused on exactly one topic or event. Prefer more entries with fewer bullets (2-4 each) over fewer entries with many bullets.
+
+<entry>
+<summary>
+- [key fact or event, one per line]
+- [preserve names, dates, specifics]
+- [include emotional context where relevant]
+</summary>
+<topic_tags>
+[comma separated short tags for this topic]
+</topic_tags>
+<memory_type>
+[episodic or semantic — "episodic" for events, conversations, time-bound happenings; "semantic" for stable facts, preferences, traits, relationships]
+</memory_type>
+</entry>
+
+If the entire conversation covers only one topic, produce a single <entry> block.
 
 Conversation:
 {{conversation}}"#;
+
+// ---------------------------------------------------------------------------
+// XML parsing helpers
+// ---------------------------------------------------------------------------
+
+/// Extract content between `<tag>` and `</tag>` (first occurrence).
+fn extract_xml_tag(text: &str, tag: &str) -> Option<String> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let start = text.find(&open)?;
+    let content_start = start + open.len();
+    let end = text[content_start..].find(&close)?;
+    let content = text[content_start..content_start + end].trim();
+    if content.is_empty() {
+        None
+    } else {
+        Some(content.to_string())
+    }
+}
+
+/// Extract all occurrences of `<tag>...</tag>` in the text.
+fn extract_all_xml_tags(text: &str, tag: &str) -> Vec<String> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let mut results = Vec::new();
+    let mut search_from = 0;
+    while let Some(start) = text[search_from..].find(&open) {
+        let abs_start = search_from + start + open.len();
+        if let Some(end) = text[abs_start..].find(&close) {
+            let content = text[abs_start..abs_start + end].trim();
+            if !content.is_empty() {
+                results.push(content.to_string());
+            }
+            search_from = abs_start + end + close.len();
+        } else {
+            break;
+        }
+    }
+    results
+}
+
+/// Parse raw LLM response into recap + entries.
+///
+/// Expected format: `<recap>...</recap>` followed by one or more `<entry>...</entry>` blocks.
+/// Each entry contains `<summary>`, `<topic_tags>`, and `<memory_type>` sub-tags.
+pub fn parse_compaction_response(
+    raw: &str,
+) -> Result<(Option<String>, Vec<CompactedEntry>), CompactionError> {
+    let recap = extract_xml_tag(raw, "recap");
+
+    let entry_blocks = extract_all_xml_tags(raw, "entry");
+    if entry_blocks.is_empty() {
+        return Err(CompactionError::Parse(
+            "no <entry> blocks found in LLM response".to_string(),
+        ));
+    }
+
+    let mut entries = Vec::new();
+    for block in &entry_blocks {
+        let summary_text = extract_xml_tag(block, "summary").unwrap_or_default();
+        let topic_tags = extract_xml_tag(block, "topic_tags").unwrap_or_default();
+        let memory_type = extract_xml_tag(block, "memory_type")
+            .unwrap_or_else(|| "episodic".to_string());
+
+        // Derive topic_key from the first tag.
+        let topic_key = topic_tags
+            .split(',')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_lowercase()
+            .replace(' ', "_");
+
+        entries.push(CompactedEntry {
+            memory_type: memory_type.trim().to_string(),
+            summary_text,
+            topic_tags,
+            topic_key,
+            confidence: 0.9,
+        });
+    }
+
+    Ok((recap, entries))
+}
 
 // ---------------------------------------------------------------------------
 // CompactionManager
@@ -184,13 +325,27 @@ impl CompactionManager {
         self.activity_notify.notify_one();
     }
 
-    /// Check whether compaction should trigger based on message count.
-    pub fn should_compact_by_count(&self, message_count: usize) -> bool {
-        message_count >= self.config.message_count_threshold
+    /// Check if forced compaction should trigger (max_messages reached).
+    pub fn should_force_compact(&self, message_count: usize) -> bool {
+        self.config.max_messages > 0
+            && message_count >= self.config.max_messages
+            && self.has_enough_messages(message_count)
+    }
+
+    /// Check minimum message gating for any trigger.
+    pub fn has_enough_messages(&self, message_count: usize) -> bool {
+        message_count >= self.config.min_messages + self.config.keep_recent
     }
 
     /// Build a compaction prompt from a template and conversation messages.
-    pub fn build_prompt(template: &str, messages: &[ConversationMessage]) -> String {
+    ///
+    /// Replaces `{{conversation}}` with formatted messages and handles
+    /// the `{{#if recap}}...{{/if}}` conditional block.
+    pub fn build_prompt(
+        template: &str,
+        messages: &[ConversationMessage],
+        existing_recap: Option<&str>,
+    ) -> String {
         let mut conversation_text = String::new();
         for msg in messages {
             conversation_text.push_str(&format!(
@@ -198,7 +353,41 @@ impl CompactionManager {
                 msg.timestamp, msg.role, msg.content
             ));
         }
-        template.replace("{{conversation}}", &conversation_text)
+
+        let mut result = template.replace("{{conversation}}", &conversation_text);
+
+        // Handle {{#if recap}}...{{/if}} conditional block.
+        if let (Some(if_start), Some(endif_pos)) = (
+            result.find("{{#if recap}}"),
+            result.find("{{/if}}"),
+        ) {
+            if let Some(recap) = existing_recap.filter(|r| !r.is_empty()) {
+                // Keep the block content, strip the tags.
+                let block_start = if_start + "{{#if recap}}".len();
+                let block_content = &result[block_start..endif_pos];
+                let rendered_block = block_content.replace("{{recap}}", recap);
+                result = format!(
+                    "{}{}{}",
+                    &result[..if_start],
+                    rendered_block,
+                    &result[endif_pos + "{{/if}}".len()..],
+                );
+            } else {
+                // Remove the entire conditional block.
+                result = format!(
+                    "{}{}",
+                    &result[..if_start],
+                    &result[endif_pos + "{{/if}}".len()..],
+                );
+            }
+        } else {
+            // No conditional block — replace {{recap}} directly if present.
+            if let Some(recap) = existing_recap {
+                result = result.replace("{{recap}}", recap);
+            }
+        }
+
+        result
     }
 
     /// Generate an entry ID in the standard format: YYYYMMDD_HHMMSS_N
@@ -209,8 +398,11 @@ impl CompactionManager {
 
     /// Run compaction on a conversation.
     ///
-    /// If `dry_run` is true, returns what entries would be created without
-    /// writing to the database, indexing, or archiving the conversation.
+    /// Splits messages into a compacted portion (sent to LLM) and a retained
+    /// portion (kept in active.jsonl). The LLM generates both a rolling recap
+    /// and memory entries from the compacted messages.
+    ///
+    /// If `dry_run` is true, returns what would be created without side effects.
     #[allow(clippy::too_many_arguments)]
     pub async fn compact(
         &self,
@@ -218,6 +410,7 @@ impl CompactionManager {
         messages: &[ConversationMessage],
         is_private: bool,
         prompt_template: &str,
+        existing_recap: Option<&str>,
         llm: &dyn CompactionLlm,
         db: &MemoryDB,
         indexer: &dyn VectorIndexer,
@@ -233,25 +426,38 @@ impl CompactionManager {
             return Err(CompactionError::InsufficientMessages);
         }
 
-        // Build and send prompt to LLM.
-        let prompt = Self::build_prompt(prompt_template, messages);
-        let compacted = llm.summarize(&prompt).await?;
+        // Split messages: compact the older portion, retain the recent tail.
+        let keep = self.config.keep_recent.min(messages.len());
+        let split_at = messages.len() - keep;
+        if split_at == 0 {
+            return Err(CompactionError::InsufficientMessages);
+        }
+        let compacted_part = &messages[..split_at];
+
+        // Build and send prompt to LLM (only compacted messages, not retained).
+        let prompt = Self::build_prompt(prompt_template, compacted_part, existing_recap);
+        let raw_response = llm.summarize(&prompt).await?;
+
+        // Parse recap + entries from LLM response.
+        let (recap, compacted) = parse_compaction_response(&raw_response)?;
 
         // Dry run: return preview without side effects.
         if dry_run {
             return Ok(CompactionOutcome::DryRun(DryRunResult {
                 would_create_entries: compacted.len(),
                 entries_preview: compacted,
-                message_count: messages.len(),
+                message_count: split_at,
+                retained_count: keep,
+                recap_preview: recap,
             }));
         }
 
-        // Determine time range from messages.
-        let start_timestamp = messages
+        // Determine time range from compacted messages.
+        let start_timestamp = compacted_part
             .first()
             .map(|m| m.timestamp.clone())
             .unwrap_or_default();
-        let end_timestamp = messages
+        let end_timestamp = compacted_part
             .last()
             .map(|m| m.timestamp.clone())
             .unwrap_or_default();
@@ -275,7 +481,7 @@ impl CompactionManager {
                 topic_key: ce.topic_key.clone(),
                 start_timestamp: start_timestamp.clone(),
                 end_timestamp: end_timestamp.clone(),
-                message_count: messages.len() as i64,
+                message_count: split_at as i64,
                 source_entry_ids: String::new(),
                 related_entry_ids: String::new(),
                 superseded_by: String::new(),
@@ -308,15 +514,22 @@ impl CompactionManager {
             entry_ids.push(entry_id);
         }
 
-        // Archive current conversation, create new one.
-        conversation_mgr.archive_conversation(conversation_id)?;
-        let new_conversation_id = conversation_mgr.create_conversation()?;
+        // Archive compacted messages, retain recent, write recap.
+        let new_conversation_id = conversation_mgr.archive_and_retain(
+            conversation_id,
+            RetentionParams {
+                keep_last_n: keep,
+                recap: recap.clone(),
+            },
+        )?;
 
         Ok(CompactionOutcome::Compacted(CompactionResult {
             entries_created: entry_ids,
             conversation_id: conversation_id.to_string(),
             new_conversation_id,
-            message_count: messages.len(),
+            message_count: split_at,
+            retained_count: keep,
+            recap_generated: recap.is_some(),
         }))
     }
 
@@ -371,15 +584,14 @@ mod tests {
     // -- Mock implementations ------------------------------------------------
 
     struct MockLlm {
-        response: Vec<CompactedEntry>,
+        response: String,
     }
 
     impl CompactionLlm for MockLlm {
         fn summarize(
             &self,
             _prompt: &str,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<CompactedEntry>, CompactionError>> + Send + '_>>
-        {
+        ) -> Pin<Box<dyn Future<Output = Result<String, CompactionError>> + Send + '_>> {
             let result = Ok(self.response.clone());
             Box::pin(async move { result })
         }
@@ -416,7 +628,7 @@ mod tests {
     }
 
     struct MockConversationMgr {
-        archived: StdMutex<Vec<String>>,
+        archived: StdMutex<Vec<(String, usize)>>,
         next_id: String,
     }
 
@@ -428,21 +640,21 @@ mod tests {
             }
         }
 
-        fn archived_conversations(&self) -> Vec<String> {
+        fn archived_calls(&self) -> Vec<(String, usize)> {
             self.archived.lock().unwrap().clone()
         }
     }
 
     impl ConversationManager for MockConversationMgr {
-        fn archive_conversation(&self, conversation_id: &str) -> Result<(), CompactionError> {
+        fn archive_and_retain(
+            &self,
+            conversation_id: &str,
+            params: RetentionParams,
+        ) -> Result<String, CompactionError> {
             self.archived
                 .lock()
                 .unwrap()
-                .push(conversation_id.to_string());
-            Ok(())
-        }
-
-        fn create_conversation(&self) -> Result<String, CompactionError> {
+                .push((conversation_id.to_string(), params.keep_last_n));
             Ok(self.next_id.clone())
         }
     }
@@ -463,36 +675,207 @@ mod tests {
             .collect()
     }
 
-    fn make_compacted_entries() -> Vec<CompactedEntry> {
-        vec![
-            CompactedEntry {
-                memory_type: "episodic".to_string(),
-                summary_text: "User discussed their day".to_string(),
-                topic_tags: "daily,personal".to_string(),
-                topic_key: "daily_life".to_string(),
-                confidence: 0.85,
-            },
-            CompactedEntry {
-                memory_type: "semantic".to_string(),
-                summary_text: "User prefers tea over coffee".to_string(),
-                topic_tags: "preference,food".to_string(),
-                topic_key: "preferences".to_string(),
-                confidence: 0.95,
-            },
-        ]
+    /// Standard XML response matching the new prompt format.
+    fn make_xml_response() -> String {
+        r#"<recap>
+The assistant had a pleasant conversation with the user about their day and preferences.
+They discussed daily activities and the user's beverage preferences.
+</recap>
+
+<entry>
+<summary>
+- User discussed their day
+- They mentioned having a busy morning
+</summary>
+<topic_tags>daily, personal</topic_tags>
+<memory_type>episodic</memory_type>
+</entry>
+
+<entry>
+<summary>
+- User prefers tea over coffee
+- This is a stable preference
+</summary>
+<topic_tags>preference, food</topic_tags>
+<memory_type>semantic</memory_type>
+</entry>"#
+            .to_string()
     }
 
-    // -- Tests: mock LLM compaction, verify entries created -------------------
+    fn make_config_with_keep(keep_recent: usize) -> CompactionConfig {
+        CompactionConfig {
+            keep_recent,
+            ..Default::default()
+        }
+    }
+
+    // -- Tests: XML parsing ---------------------------------------------------
+
+    #[test]
+    fn test_extract_xml_tag() {
+        let text = "before <recap>hello world</recap> after";
+        assert_eq!(extract_xml_tag(text, "recap"), Some("hello world".to_string()));
+    }
+
+    #[test]
+    fn test_extract_xml_tag_not_found() {
+        assert_eq!(extract_xml_tag("no tags here", "recap"), None);
+    }
+
+    #[test]
+    fn test_extract_xml_tag_empty() {
+        assert_eq!(extract_xml_tag("<recap></recap>", "recap"), None);
+    }
+
+    #[test]
+    fn test_extract_xml_tag_with_whitespace() {
+        let text = "<recap>\n  trimmed content  \n</recap>";
+        assert_eq!(extract_xml_tag(text, "recap"), Some("trimmed content".to_string()));
+    }
+
+    #[test]
+    fn test_extract_all_xml_tags() {
+        let text = "<entry>first</entry> middle <entry>second</entry>";
+        let results = extract_all_xml_tags(text, "entry");
+        assert_eq!(results, vec!["first", "second"]);
+    }
+
+    #[test]
+    fn test_parse_compaction_response() {
+        let raw = make_xml_response();
+        let (recap, entries) = parse_compaction_response(&raw).unwrap();
+
+        assert!(recap.is_some());
+        assert!(recap.unwrap().contains("pleasant conversation"));
+        assert_eq!(entries.len(), 2);
+        assert!(entries[0].summary_text.contains("User discussed their day"));
+        assert_eq!(entries[0].memory_type, "episodic");
+        assert_eq!(entries[0].topic_tags, "daily, personal");
+        assert!(entries[1].summary_text.contains("User prefers tea"));
+        assert_eq!(entries[1].memory_type, "semantic");
+    }
+
+    #[test]
+    fn test_parse_compaction_response_no_entries() {
+        let raw = "<recap>Just a recap</recap>";
+        let result = parse_compaction_response(raw);
+        assert!(matches!(result, Err(CompactionError::Parse(_))));
+    }
+
+    #[test]
+    fn test_parse_compaction_response_no_recap() {
+        let raw = r#"<entry>
+<summary>- Something happened</summary>
+<topic_tags>test</topic_tags>
+<memory_type>episodic</memory_type>
+</entry>"#;
+        let (recap, entries) = parse_compaction_response(raw).unwrap();
+        assert!(recap.is_none());
+        assert_eq!(entries.len(), 1);
+    }
+
+    // -- Tests: prompt building -----------------------------------------------
+
+    #[test]
+    fn test_build_prompt_no_recap() {
+        let messages = vec![
+            ConversationMessage {
+                role: "user".to_string(),
+                content: "Hello!".to_string(),
+                timestamp: "2026-03-25T10:00:00Z".to_string(),
+            },
+            ConversationMessage {
+                role: "assistant".to_string(),
+                content: "Hi there!".to_string(),
+                timestamp: "2026-03-25T10:00:01Z".to_string(),
+            },
+        ];
+
+        let prompt =
+            CompactionManager::build_prompt("Template:\n{{conversation}}", &messages, None);
+        assert!(prompt.contains("[2026-03-25T10:00:00Z] user: Hello!"));
+        assert!(prompt.contains("[2026-03-25T10:00:01Z] assistant: Hi there!"));
+        assert!(!prompt.contains("{{conversation}}"));
+    }
+
+    #[test]
+    fn test_build_prompt_with_recap() {
+        let messages = make_messages(2);
+        let template =
+            "Before\n{{#if recap}}RECAP: {{recap}}{{/if}}\nAfter\n{{conversation}}";
+
+        let prompt =
+            CompactionManager::build_prompt(template, &messages, Some("Previous events."));
+        assert!(prompt.contains("RECAP: Previous events."));
+        assert!(!prompt.contains("{{#if recap}}"));
+        assert!(!prompt.contains("{{/if}}"));
+    }
+
+    #[test]
+    fn test_build_prompt_recap_stripped_when_none() {
+        let messages = make_messages(2);
+        let template =
+            "Before\n{{#if recap}}RECAP: {{recap}}{{/if}}\nAfter\n{{conversation}}";
+
+        let prompt = CompactionManager::build_prompt(template, &messages, None);
+        assert!(!prompt.contains("RECAP"));
+        assert!(!prompt.contains("{{#if recap}}"));
+        assert!(prompt.contains("Before"));
+        assert!(prompt.contains("After"));
+    }
+
+    // -- Tests: helper methods ------------------------------------------------
+
+    #[test]
+    fn test_should_force_compact() {
+        let mgr = CompactionManager::new(CompactionConfig {
+            max_messages: 60,
+            min_messages: 20,
+            keep_recent: 4,
+            ..Default::default()
+        });
+
+        assert!(!mgr.should_force_compact(0));
+        assert!(!mgr.should_force_compact(23)); // below min+keep
+        assert!(!mgr.should_force_compact(59)); // below max
+        assert!(mgr.should_force_compact(60));
+        assert!(mgr.should_force_compact(100));
+    }
+
+    #[test]
+    fn test_should_force_compact_disabled() {
+        let mgr = CompactionManager::new(CompactionConfig {
+            max_messages: 0,
+            ..Default::default()
+        });
+        assert!(!mgr.should_force_compact(1000));
+    }
+
+    #[test]
+    fn test_has_enough_messages() {
+        let mgr = CompactionManager::new(CompactionConfig {
+            min_messages: 20,
+            keep_recent: 4,
+            ..Default::default()
+        });
+
+        assert!(!mgr.has_enough_messages(0));
+        assert!(!mgr.has_enough_messages(23));
+        assert!(mgr.has_enough_messages(24));
+        assert!(mgr.has_enough_messages(100));
+    }
+
+    // -- Tests: compaction with retention -------------------------------------
 
     #[tokio::test]
     async fn test_compact_creates_entries() {
         let db = MemoryDB::open_in_memory().unwrap();
         let llm = MockLlm {
-            response: make_compacted_entries(),
+            response: make_xml_response(),
         };
         let indexer = MockIndexer::new();
         let conv_mgr = MockConversationMgr::new("new-conv-1");
-        let mgr = CompactionManager::new(CompactionConfig::default());
+        let mgr = CompactionManager::new(make_config_with_keep(2));
         let messages = make_messages(10);
 
         let result = mgr
@@ -501,6 +884,7 @@ mod tests {
                 &messages,
                 false,
                 DEFAULT_COMPACT_PROMPT,
+                None,
                 &llm,
                 &db,
                 &indexer,
@@ -515,25 +899,17 @@ mod tests {
                 assert_eq!(r.entries_created.len(), 2);
                 assert_eq!(r.conversation_id, "conv-1");
                 assert_eq!(r.new_conversation_id, "new-conv-1");
-                assert_eq!(r.message_count, 10);
+                assert_eq!(r.message_count, 8); // 10 - 2 retained
+                assert_eq!(r.retained_count, 2);
+                assert!(r.recap_generated);
 
-                // Verify entries exist in DB with correct fields.
                 for id in &r.entries_created {
                     let entry = db.get_entry(id).unwrap().unwrap();
                     assert_eq!(entry.reason, "compaction");
                     assert_eq!(entry.source, "summary");
                     assert_eq!(entry.status, "active");
+                    assert_eq!(entry.message_count, 8);
                 }
-
-                let e1 = db.get_entry(&r.entries_created[0]).unwrap().unwrap();
-                assert_eq!(e1.summary_text, "User discussed their day");
-                assert_eq!(e1.memory_type, "episodic");
-                assert_eq!(e1.confidence, 0.85);
-
-                let e2 = db.get_entry(&r.entries_created[1]).unwrap().unwrap();
-                assert_eq!(e2.summary_text, "User prefers tea over coffee");
-                assert_eq!(e2.memory_type, "semantic");
-                assert_eq!(e2.confidence, 0.95);
             }
             _ => panic!("Expected Compacted outcome"),
         }
@@ -543,17 +919,18 @@ mod tests {
     async fn test_compact_indexes_to_vector_store() {
         let db = MemoryDB::open_in_memory().unwrap();
         let llm = MockLlm {
-            response: make_compacted_entries(),
+            response: make_xml_response(),
         };
         let indexer = MockIndexer::new();
         let conv_mgr = MockConversationMgr::new("new-conv-1");
-        let mgr = CompactionManager::new(CompactionConfig::default());
+        let mgr = CompactionManager::new(make_config_with_keep(2));
 
         mgr.compact(
             "conv-1",
             &make_messages(10),
             false,
             DEFAULT_COMPACT_PROMPT,
+            None,
             &llm,
             &db,
             &indexer,
@@ -565,25 +942,26 @@ mod tests {
 
         let indexed = indexer.indexed_entries();
         assert_eq!(indexed.len(), 2);
-        assert_eq!(indexed[0].1, "User discussed their day");
-        assert_eq!(indexed[1].1, "User prefers tea over coffee");
+        assert!(indexed[0].1.contains("User discussed their day"));
+        assert!(indexed[1].1.contains("User prefers tea"));
     }
 
     #[tokio::test]
     async fn test_compact_records_changelog() {
         let db = MemoryDB::open_in_memory().unwrap();
         let llm = MockLlm {
-            response: make_compacted_entries(),
+            response: make_xml_response(),
         };
         let indexer = MockIndexer::new();
         let conv_mgr = MockConversationMgr::new("new-conv-1");
-        let mgr = CompactionManager::new(CompactionConfig::default());
+        let mgr = CompactionManager::new(make_config_with_keep(2));
 
         mgr.compact(
             "conv-1",
             &make_messages(10),
             false,
             DEFAULT_COMPACT_PROMPT,
+            None,
             &llm,
             &db,
             &indexer,
@@ -600,21 +978,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_compact_archives_and_creates_conversation() {
+    async fn test_compact_archives_with_retention() {
         let db = MemoryDB::open_in_memory().unwrap();
         let llm = MockLlm {
-            response: make_compacted_entries(),
+            response: make_xml_response(),
         };
         let indexer = MockIndexer::new();
         let conv_mgr = MockConversationMgr::new("new-conv-2");
-        let mgr = CompactionManager::new(CompactionConfig::default());
+        let mgr = CompactionManager::new(make_config_with_keep(3));
 
         let result = mgr
             .compact(
                 "old-conv",
-                &make_messages(5),
+                &make_messages(10),
                 false,
                 DEFAULT_COMPACT_PROMPT,
+                None,
                 &llm,
                 &db,
                 &indexer,
@@ -627,11 +1006,15 @@ mod tests {
         match result {
             CompactionOutcome::Compacted(r) => {
                 assert_eq!(r.new_conversation_id, "new-conv-2");
+                assert_eq!(r.retained_count, 3);
             }
             _ => panic!("Expected Compacted outcome"),
         }
 
-        assert_eq!(conv_mgr.archived_conversations(), vec!["old-conv"]);
+        let calls = conv_mgr.archived_calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "old-conv");
+        assert_eq!(calls[0].1, 3); // keep_last_n
     }
 
     // -- Tests: private conversation skips compaction -------------------------
@@ -640,7 +1023,7 @@ mod tests {
     async fn test_private_conversation_skips_compaction() {
         let db = MemoryDB::open_in_memory().unwrap();
         let llm = MockLlm {
-            response: make_compacted_entries(),
+            response: make_xml_response(),
         };
         let indexer = MockIndexer::new();
         let conv_mgr = MockConversationMgr::new("new-conv-1");
@@ -652,6 +1035,7 @@ mod tests {
                 &make_messages(10),
                 true,
                 DEFAULT_COMPACT_PROMPT,
+                None,
                 &llm,
                 &db,
                 &indexer,
@@ -665,7 +1049,7 @@ mod tests {
         // No side effects.
         assert!(db.get_entries_by_status("active").unwrap().is_empty());
         assert!(indexer.indexed_entries().is_empty());
-        assert!(conv_mgr.archived_conversations().is_empty());
+        assert!(conv_mgr.archived_calls().is_empty());
     }
 
     // -- Tests: dry run -------------------------------------------------------
@@ -674,11 +1058,11 @@ mod tests {
     async fn test_compact_dry_run() {
         let db = MemoryDB::open_in_memory().unwrap();
         let llm = MockLlm {
-            response: make_compacted_entries(),
+            response: make_xml_response(),
         };
         let indexer = MockIndexer::new();
         let conv_mgr = MockConversationMgr::new("new-conv-1");
-        let mgr = CompactionManager::new(CompactionConfig::default());
+        let mgr = CompactionManager::new(make_config_with_keep(2));
 
         let result = mgr
             .compact(
@@ -686,6 +1070,7 @@ mod tests {
                 &make_messages(10),
                 false,
                 DEFAULT_COMPACT_PROMPT,
+                None,
                 &llm,
                 &db,
                 &indexer,
@@ -698,9 +1083,10 @@ mod tests {
         match result {
             CompactionOutcome::DryRun(r) => {
                 assert_eq!(r.would_create_entries, 2);
-                assert_eq!(r.message_count, 10);
+                assert_eq!(r.message_count, 8);
+                assert_eq!(r.retained_count, 2);
                 assert_eq!(r.entries_preview.len(), 2);
-                assert_eq!(r.entries_preview[0].summary_text, "User discussed their day");
+                assert!(r.recap_preview.is_some());
             }
             _ => panic!("Expected DryRun outcome"),
         }
@@ -708,46 +1094,66 @@ mod tests {
         // No side effects.
         assert!(db.get_entries_by_status("active").unwrap().is_empty());
         assert!(indexer.indexed_entries().is_empty());
-        assert!(conv_mgr.archived_conversations().is_empty());
+        assert!(conv_mgr.archived_calls().is_empty());
     }
 
-    // -- Tests: message count trigger -----------------------------------------
+    // -- Tests: insufficient messages -----------------------------------------
 
-    #[test]
-    fn test_should_compact_by_count() {
-        let mgr = CompactionManager::new(CompactionConfig {
-            message_count_threshold: 50,
-            ..Default::default()
-        });
+    #[tokio::test]
+    async fn test_compact_empty_messages() {
+        let db = MemoryDB::open_in_memory().unwrap();
+        let llm = MockLlm {
+            response: String::new(),
+        };
+        let indexer = MockIndexer::new();
+        let conv_mgr = MockConversationMgr::new("new-conv-1");
+        let mgr = CompactionManager::new(CompactionConfig::default());
 
-        assert!(!mgr.should_compact_by_count(0));
-        assert!(!mgr.should_compact_by_count(49));
-        assert!(mgr.should_compact_by_count(50));
-        assert!(mgr.should_compact_by_count(100));
+        let result = mgr
+            .compact(
+                "conv-1",
+                &[],
+                false,
+                DEFAULT_COMPACT_PROMPT,
+                None,
+                &llm,
+                &db,
+                &indexer,
+                &conv_mgr,
+                false,
+            )
+            .await;
+
+        assert!(matches!(result, Err(CompactionError::InsufficientMessages)));
     }
 
-    // -- Tests: prompt building -----------------------------------------------
+    #[tokio::test]
+    async fn test_compact_fewer_than_keep_recent() {
+        let db = MemoryDB::open_in_memory().unwrap();
+        let llm = MockLlm {
+            response: String::new(),
+        };
+        let indexer = MockIndexer::new();
+        let conv_mgr = MockConversationMgr::new("new-conv-1");
+        let mgr = CompactionManager::new(make_config_with_keep(10));
 
-    #[test]
-    fn test_build_prompt() {
-        let messages = vec![
-            ConversationMessage {
-                role: "user".to_string(),
-                content: "Hello!".to_string(),
-                timestamp: "2026-03-25T10:00:00Z".to_string(),
-            },
-            ConversationMessage {
-                role: "assistant".to_string(),
-                content: "Hi there!".to_string(),
-                timestamp: "2026-03-25T10:00:01Z".to_string(),
-            },
-        ];
+        // Only 5 messages but keep_recent=10 — nothing to compact.
+        let result = mgr
+            .compact(
+                "conv-1",
+                &make_messages(5),
+                false,
+                DEFAULT_COMPACT_PROMPT,
+                None,
+                &llm,
+                &db,
+                &indexer,
+                &conv_mgr,
+                false,
+            )
+            .await;
 
-        let prompt =
-            CompactionManager::build_prompt("Template:\n{{conversation}}", &messages);
-        assert!(prompt.contains("[2026-03-25T10:00:00Z] user: Hello!"));
-        assert!(prompt.contains("[2026-03-25T10:00:01Z] assistant: Hi there!"));
-        assert!(!prompt.contains("{{conversation}}"));
+        assert!(matches!(result, Err(CompactionError::InsufficientMessages)));
     }
 
     // -- Tests: idle timer scheduling logic -----------------------------------
@@ -817,32 +1223,5 @@ mod tests {
         tokio::time::advance(Duration::from_secs(60)).await;
         handle.await.unwrap();
         assert!(fired.load(Ordering::SeqCst));
-    }
-
-    // -- Tests: edge cases ----------------------------------------------------
-
-    #[tokio::test]
-    async fn test_compact_empty_messages() {
-        let db = MemoryDB::open_in_memory().unwrap();
-        let llm = MockLlm { response: vec![] };
-        let indexer = MockIndexer::new();
-        let conv_mgr = MockConversationMgr::new("new-conv-1");
-        let mgr = CompactionManager::new(CompactionConfig::default());
-
-        let result = mgr
-            .compact(
-                "conv-1",
-                &[],
-                false,
-                DEFAULT_COMPACT_PROMPT,
-                &llm,
-                &db,
-                &indexer,
-                &conv_mgr,
-                false,
-            )
-            .await;
-
-        assert!(matches!(result, Err(CompactionError::InsufficientMessages)));
     }
 }

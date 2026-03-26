@@ -1,15 +1,14 @@
 //! Production implementations of the compaction traits.
 //!
-//! `RealCompactionLlm` — sends prompts to shore-llm via `LlmClient`.
+//! `RealCompactionLlm` — sends prompts to shore-llm via `LlmClient`, returns raw text.
 //! `RealVectorIndexer` — embeds text via shore-llm's `/v1/embed` and stores in LanceDB.
-//! `RealConversationManager` — archives conversations to segment files and creates new ones.
+//! `RealConversationManager` — archives with retention and writes recap.
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 
 use chrono::Utc;
-use serde::Deserialize;
 use serde_json::json;
 use uuid::Uuid;
 
@@ -18,7 +17,7 @@ use crate::engine::segments::{CompactionManifest, SegmentEntry};
 use crate::llm_client::types::ContentBlock;
 use crate::llm_client::LlmClient;
 
-use super::compaction::{CompactedEntry, CompactionError, CompactionLlm, ConversationManager, VectorIndexer};
+use super::compaction::{CompactionError, CompactionLlm, ConversationManager, RetentionParams, VectorIndexer};
 use super::vectorstore::VectorStore;
 
 // ---------------------------------------------------------------------------
@@ -115,6 +114,8 @@ pub fn resolve_embed_config(
 // ---------------------------------------------------------------------------
 
 /// Production `CompactionLlm` backed by `LlmClient` (Unix socket to shore-llm).
+///
+/// Returns raw LLM text — the compaction library handles XML parsing.
 pub struct RealCompactionLlm {
     client: LlmClient,
     model: ResolvedModel,
@@ -126,27 +127,11 @@ impl RealCompactionLlm {
     }
 }
 
-/// Parsed JSON response from the compaction LLM call.
-#[derive(Deserialize)]
-struct CompactionResponse {
-    entries: Vec<CompactionResponseEntry>,
-}
-
-#[derive(Deserialize)]
-struct CompactionResponseEntry {
-    memory_type: String,
-    summary_text: String,
-    topic_tags: String,
-    topic_key: String,
-    confidence: f64,
-}
-
 impl CompactionLlm for RealCompactionLlm {
     fn summarize(
         &self,
         prompt: &str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<CompactedEntry>, CompactionError>> + Send + '_>>
-    {
+    ) -> Pin<Box<dyn Future<Output = Result<String, CompactionError>> + Send + '_>> {
         let prompt = prompt.to_string();
         Box::pin(async move {
             let messages = vec![json!({"role": "user", "content": prompt})];
@@ -174,41 +159,9 @@ impl CompactionLlm for RealCompactionLlm {
                     .join("")
             };
 
-            // The LLM may wrap JSON in markdown code fences — strip them.
-            let json_str = extract_json(&text);
-
-            let parsed: CompactionResponse = serde_json::from_str(json_str)
-                .map_err(|e| CompactionError::Llm(format!("failed to parse compaction JSON: {e}")))?;
-
-            Ok(parsed
-                .entries
-                .into_iter()
-                .map(|e| CompactedEntry {
-                    memory_type: e.memory_type,
-                    summary_text: e.summary_text,
-                    topic_tags: e.topic_tags,
-                    topic_key: e.topic_key,
-                    confidence: e.confidence,
-                })
-                .collect())
+            Ok(text)
         })
     }
-}
-
-/// Extract JSON from text that may be wrapped in markdown code fences.
-fn extract_json(text: &str) -> &str {
-    let trimmed = text.trim();
-    if let Some(rest) = trimmed.strip_prefix("```json") {
-        if let Some(json) = rest.strip_suffix("```") {
-            return json.trim();
-        }
-    }
-    if let Some(rest) = trimmed.strip_prefix("```") {
-        if let Some(json) = rest.strip_suffix("```") {
-            return json.trim();
-        }
-    }
-    trimmed
 }
 
 // ---------------------------------------------------------------------------
@@ -274,7 +227,7 @@ impl VectorIndexer for RealVectorIndexer {
 // ---------------------------------------------------------------------------
 
 /// Production `ConversationManager` that archives conversations to segment
-/// files and creates new conversations by clearing `active.jsonl`.
+/// files with message retention and recap writing.
 pub struct RealConversationManager {
     character_dir: PathBuf,
 }
@@ -288,74 +241,110 @@ impl RealConversationManager {
 }
 
 impl ConversationManager for RealConversationManager {
-    fn archive_conversation(&self, _conversation_id: &str) -> Result<(), CompactionError> {
+    fn archive_and_retain(
+        &self,
+        _conversation_id: &str,
+        params: RetentionParams,
+    ) -> Result<String, CompactionError> {
         let active_path = self.character_dir.join("active.jsonl");
         let content = std::fs::read_to_string(&active_path).map_err(|e| {
             CompactionError::ConversationManager(format!("failed to read active.jsonl: {e}"))
         })?;
 
-        // Nothing to archive if active conversation is empty.
-        if content.trim().is_empty() {
-            return Ok(());
-        }
+        // Split lines into archive vs retain portions.
+        let lines: Vec<&str> = content
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .collect();
 
-        // Load or create the compaction manifest.
-        let manifest_path = self.character_dir.join("compaction.json");
-        let mut manifest: CompactionManifest = if manifest_path.exists() {
-            let mf = std::fs::read_to_string(&manifest_path).map_err(|e| {
+        let keep = params.keep_last_n.min(lines.len());
+        let split_at = lines.len() - keep;
+        let archive_lines = &lines[..split_at];
+        let retained_lines = &lines[split_at..];
+
+        // Archive the compacted portion to a segment file.
+        if !archive_lines.is_empty() {
+            let manifest_path = self.character_dir.join("compaction.json");
+            let mut manifest: CompactionManifest = if manifest_path.exists() {
+                let mf = std::fs::read_to_string(&manifest_path).map_err(|e| {
+                    CompactionError::ConversationManager(format!(
+                        "failed to read compaction.json: {e}"
+                    ))
+                })?;
+                serde_json::from_str(&mf).map_err(|e| {
+                    CompactionError::ConversationManager(format!(
+                        "failed to parse compaction.json: {e}"
+                    ))
+                })?
+            } else {
+                CompactionManifest::default()
+            };
+
+            let segment_index = manifest.segments.len() + 1;
+            let segment_file = format!("{:04}.jsonl", segment_index);
+            let segments_dir = self.character_dir.join("segments");
+
+            std::fs::create_dir_all(&segments_dir).map_err(|e| {
                 CompactionError::ConversationManager(format!(
-                    "failed to read compaction.json: {e}"
+                    "failed to create segments dir: {e}"
                 ))
             })?;
-            serde_json::from_str(&mf).map_err(|e| {
+
+            // Write segment (archived messages only).
+            let segment_content = archive_lines.join("\n") + "\n";
+            std::fs::write(segments_dir.join(&segment_file), &segment_content).map_err(|e| {
                 CompactionError::ConversationManager(format!(
-                    "failed to parse compaction.json: {e}"
+                    "failed to write segment file: {e}"
                 ))
-            })?
+            })?;
+
+            manifest.segments.push(SegmentEntry {
+                file: segment_file,
+                message_count: archive_lines.len(),
+                compacted_at: Utc::now().to_rfc3339(),
+            });
+            manifest.total_compacted_messages += archive_lines.len();
+
+            let manifest_json = serde_json::to_string_pretty(&manifest).map_err(|e| {
+                CompactionError::ConversationManager(format!(
+                    "failed to serialize manifest: {e}"
+                ))
+            })?;
+            std::fs::write(&manifest_path, manifest_json).map_err(|e| {
+                CompactionError::ConversationManager(format!(
+                    "failed to write compaction.json: {e}"
+                ))
+            })?;
+        }
+
+        // Write retained messages back to active.jsonl.
+        let retained_content = if retained_lines.is_empty() {
+            String::new()
         } else {
-            CompactionManifest::default()
+            retained_lines.join("\n") + "\n"
         };
-
-        // Determine next segment file name.
-        let segment_index = manifest.segments.len() + 1;
-        let segment_file = format!("{:04}.jsonl", segment_index);
-        let segments_dir = self.character_dir.join("segments");
-
-        std::fs::create_dir_all(&segments_dir).map_err(|e| {
-            CompactionError::ConversationManager(format!("failed to create segments dir: {e}"))
+        std::fs::write(&active_path, &retained_content).map_err(|e| {
+            CompactionError::ConversationManager(format!(
+                "failed to write retained messages: {e}"
+            ))
         })?;
 
-        // Write the segment file.
-        std::fs::write(segments_dir.join(&segment_file), &content).map_err(|e| {
-            CompactionError::ConversationManager(format!("failed to write segment file: {e}"))
-        })?;
+        // Write recap if provided.
+        if let Some(recap) = &params.recap {
+            let memory_dir = self.character_dir.join("memory");
+            std::fs::create_dir_all(&memory_dir).map_err(|e| {
+                CompactionError::ConversationManager(format!(
+                    "failed to create memory dir: {e}"
+                ))
+            })?;
+            std::fs::write(memory_dir.join("recap.md"), recap.trim().to_owned() + "\n")
+                .map_err(|e| {
+                    CompactionError::ConversationManager(format!(
+                        "failed to write recap.md: {e}"
+                    ))
+                })?;
+        }
 
-        // Count messages in the content (one JSON object per non-empty line).
-        let message_count = content.lines().filter(|l| !l.trim().is_empty()).count();
-
-        // Update manifest.
-        manifest.segments.push(SegmentEntry {
-            file: segment_file,
-            message_count,
-            compacted_at: Utc::now().to_rfc3339(),
-        });
-        manifest.total_compacted_messages += message_count;
-
-        let manifest_json = serde_json::to_string_pretty(&manifest).map_err(|e| {
-            CompactionError::ConversationManager(format!("failed to serialize manifest: {e}"))
-        })?;
-        std::fs::write(&manifest_path, manifest_json).map_err(|e| {
-            CompactionError::ConversationManager(format!("failed to write compaction.json: {e}"))
-        })?;
-
-        Ok(())
-    }
-
-    fn create_conversation(&self) -> Result<String, CompactionError> {
-        let active_path = self.character_dir.join("active.jsonl");
-        std::fs::write(&active_path, "").map_err(|e| {
-            CompactionError::ConversationManager(format!("failed to truncate active.jsonl: {e}"))
-        })?;
         Ok(Uuid::new_v4().to_string())
     }
 }
@@ -369,80 +358,129 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    // -- extract_json ---------------------------------------------------------
+    // -- RealConversationManager: archive_and_retain --------------------------
 
     #[test]
-    fn extract_json_plain() {
-        let input = r#"{"entries": []}"#;
-        assert_eq!(extract_json(input), input);
-    }
-
-    #[test]
-    fn extract_json_fenced() {
-        let input = "```json\n{\"entries\": []}\n```";
-        assert_eq!(extract_json(input), "{\"entries\": []}");
-    }
-
-    #[test]
-    fn extract_json_fenced_no_lang() {
-        let input = "```\n{\"entries\": []}\n```";
-        assert_eq!(extract_json(input), "{\"entries\": []}");
-    }
-
-    // -- RealConversationManager ----------------------------------------------
-
-    #[test]
-    fn archive_creates_segment_and_updates_manifest() {
+    fn archive_and_retain_splits_messages() {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
 
-        // Write an active conversation.
-        let msg1 = r#"{"msg_id":"m1","role":"User","content":"hello","images":[],"timestamp":"2026-01-01T00:00:00Z"}"#;
-        let msg2 = r#"{"msg_id":"m2","role":"Assistant","content":"hi","images":[],"timestamp":"2026-01-01T00:00:01Z"}"#;
-        std::fs::write(dir.join("active.jsonl"), format!("{msg1}\n{msg2}\n")).unwrap();
+        let msg1 = r#"{"msg_id":"m1","role":"User","content":"hello","images":[],"timestamp":"t1"}"#;
+        let msg2 = r#"{"msg_id":"m2","role":"Assistant","content":"hi","images":[],"timestamp":"t2"}"#;
+        let msg3 = r#"{"msg_id":"m3","role":"User","content":"bye","images":[],"timestamp":"t3"}"#;
+        std::fs::write(
+            dir.join("active.jsonl"),
+            format!("{msg1}\n{msg2}\n{msg3}\n"),
+        )
+        .unwrap();
 
         let mgr = RealConversationManager::new(dir);
-        mgr.archive_conversation("test-conv").unwrap();
+        let new_id = mgr
+            .archive_and_retain(
+                "test-conv",
+                RetentionParams {
+                    keep_last_n: 1,
+                    recap: None,
+                },
+            )
+            .unwrap();
 
-        // Segment file should exist.
-        let seg_content = std::fs::read_to_string(dir.join("segments/0001.jsonl")).unwrap();
-        assert!(seg_content.contains("m1"));
-        assert!(seg_content.contains("m2"));
+        assert!(!new_id.is_empty());
+
+        // Segment should have the first 2 messages.
+        let seg = std::fs::read_to_string(dir.join("segments/0001.jsonl")).unwrap();
+        assert!(seg.contains("m1"));
+        assert!(seg.contains("m2"));
+        assert!(!seg.contains("m3"));
+
+        // active.jsonl should have only the retained message.
+        let active = std::fs::read_to_string(dir.join("active.jsonl")).unwrap();
+        assert!(!active.contains("m1"));
+        assert!(!active.contains("m2"));
+        assert!(active.contains("m3"));
 
         // Manifest should be updated.
-        let manifest_str = std::fs::read_to_string(dir.join("compaction.json")).unwrap();
-        let manifest: CompactionManifest = serde_json::from_str(&manifest_str).unwrap();
+        let manifest: CompactionManifest = serde_json::from_str(
+            &std::fs::read_to_string(dir.join("compaction.json")).unwrap(),
+        )
+        .unwrap();
         assert_eq!(manifest.segments.len(), 1);
-        assert_eq!(manifest.segments[0].file, "0001.jsonl");
         assert_eq!(manifest.segments[0].message_count, 2);
         assert_eq!(manifest.total_compacted_messages, 2);
     }
 
     #[test]
-    fn archive_empty_active_is_noop() {
+    fn archive_and_retain_writes_recap() {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
 
-        std::fs::write(dir.join("active.jsonl"), "").unwrap();
-        let mgr = RealConversationManager::new(dir);
-        mgr.archive_conversation("test-conv").unwrap();
+        let msg = r#"{"msg_id":"m1","role":"User","content":"hello","images":[],"timestamp":"t1"}"#;
+        std::fs::write(dir.join("active.jsonl"), format!("{msg}\n")).unwrap();
 
-        // No segments dir created.
-        assert!(!dir.join("segments").exists());
+        let mgr = RealConversationManager::new(dir);
+        mgr.archive_and_retain(
+            "conv",
+            RetentionParams {
+                keep_last_n: 0,
+                recap: Some("A recap of events.".to_string()),
+            },
+        )
+        .unwrap();
+
+        let recap = std::fs::read_to_string(dir.join("memory/recap.md")).unwrap();
+        assert_eq!(recap, "A recap of events.\n");
     }
 
     #[test]
-    fn create_conversation_truncates_active() {
+    fn archive_and_retain_no_recap_leaves_file_alone() {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
 
-        std::fs::write(dir.join("active.jsonl"), "some content").unwrap();
-        let mgr = RealConversationManager::new(dir);
-        let new_id = mgr.create_conversation().unwrap();
+        // Pre-existing recap.
+        std::fs::create_dir_all(dir.join("memory")).unwrap();
+        std::fs::write(dir.join("memory/recap.md"), "old recap").unwrap();
 
-        assert!(!new_id.is_empty());
-        let content = std::fs::read_to_string(dir.join("active.jsonl")).unwrap();
-        assert!(content.is_empty());
+        let msg = r#"{"msg_id":"m1","role":"User","content":"hello","images":[],"timestamp":"t1"}"#;
+        std::fs::write(dir.join("active.jsonl"), format!("{msg}\n")).unwrap();
+
+        let mgr = RealConversationManager::new(dir);
+        mgr.archive_and_retain(
+            "conv",
+            RetentionParams {
+                keep_last_n: 0,
+                recap: None,
+            },
+        )
+        .unwrap();
+
+        let recap = std::fs::read_to_string(dir.join("memory/recap.md")).unwrap();
+        assert_eq!(recap, "old recap");
+    }
+
+    #[test]
+    fn archive_and_retain_keep_all() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+
+        let msg1 = r#"{"msg_id":"m1","role":"User","content":"hello","images":[],"timestamp":"t1"}"#;
+        let msg2 = r#"{"msg_id":"m2","role":"User","content":"world","images":[],"timestamp":"t2"}"#;
+        std::fs::write(dir.join("active.jsonl"), format!("{msg1}\n{msg2}\n")).unwrap();
+
+        let mgr = RealConversationManager::new(dir);
+        mgr.archive_and_retain(
+            "conv",
+            RetentionParams {
+                keep_last_n: 5, // more than available
+                recap: None,
+            },
+        )
+        .unwrap();
+
+        // All messages retained, no segment created.
+        let active = std::fs::read_to_string(dir.join("active.jsonl")).unwrap();
+        assert!(active.contains("m1"));
+        assert!(active.contains("m2"));
+        assert!(!dir.join("segments").exists());
     }
 
     #[test]
@@ -464,31 +502,29 @@ mod tests {
             serde_json::to_string_pretty(&manifest).unwrap(),
         )
         .unwrap();
-
-        std::fs::write(dir.join("active.jsonl"), r#"{"msg_id":"m3","role":"User","content":"test","images":[],"timestamp":"2026-01-01T00:00:00Z"}"#).unwrap();
         std::fs::create_dir_all(dir.join("segments")).unwrap();
 
-        let mgr = RealConversationManager::new(dir);
-        mgr.archive_conversation("test-conv").unwrap();
+        let msg = r#"{"msg_id":"m3","role":"User","content":"test","images":[],"timestamp":"t"}"#;
+        std::fs::write(dir.join("active.jsonl"), format!("{msg}\n")).unwrap();
 
-        // Second segment should be 0002.jsonl.
+        let mgr = RealConversationManager::new(dir);
+        mgr.archive_and_retain(
+            "conv",
+            RetentionParams {
+                keep_last_n: 0,
+                recap: None,
+            },
+        )
+        .unwrap();
+
         assert!(dir.join("segments/0002.jsonl").exists());
 
-        let manifest_str = std::fs::read_to_string(dir.join("compaction.json")).unwrap();
-        let manifest: CompactionManifest = serde_json::from_str(&manifest_str).unwrap();
+        let manifest: CompactionManifest = serde_json::from_str(
+            &std::fs::read_to_string(dir.join("compaction.json")).unwrap(),
+        )
+        .unwrap();
         assert_eq!(manifest.segments.len(), 2);
         assert_eq!(manifest.segments[1].file, "0002.jsonl");
         assert_eq!(manifest.total_compacted_messages, 6);
-    }
-
-    // -- CompactionResponse parsing -------------------------------------------
-
-    #[test]
-    fn parse_compaction_response() {
-        let json = r#"{"entries":[{"memory_type":"episodic","summary_text":"User had lunch","topic_tags":"daily,food","topic_key":"daily_life","confidence":0.85}]}"#;
-        let parsed: CompactionResponse = serde_json::from_str(json).unwrap();
-        assert_eq!(parsed.entries.len(), 1);
-        assert_eq!(parsed.entries[0].summary_text, "User had lunch");
-        assert_eq!(parsed.entries[0].confidence, 0.85);
     }
 }
