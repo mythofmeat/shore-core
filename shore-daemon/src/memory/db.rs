@@ -1,5 +1,6 @@
 use chrono::Utc;
 use rusqlite::{params, Connection, Result as SqlResult};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 // ---------------------------------------------------------------------------
@@ -89,6 +90,34 @@ CREATE TABLE IF NOT EXISTS collation_skip (
 );
 ";
 
+/// FTS5 virtual table for full-text search over entries.
+/// Created separately because FTS5 may not be available in all builds.
+const FTS_SCHEMA_SQL: &str = "
+CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(
+    summary_text, topic_tags, topic_key,
+    content=entries, content_rowid=rowid,
+    tokenize='porter unicode61'
+);
+
+-- Triggers to keep FTS index in sync with entries table.
+CREATE TRIGGER IF NOT EXISTS entries_fts_insert AFTER INSERT ON entries BEGIN
+    INSERT INTO entries_fts(rowid, summary_text, topic_tags, topic_key)
+    VALUES (new.rowid, new.summary_text, new.topic_tags, new.topic_key);
+END;
+
+CREATE TRIGGER IF NOT EXISTS entries_fts_update AFTER UPDATE ON entries BEGIN
+    INSERT INTO entries_fts(entries_fts, rowid, summary_text, topic_tags, topic_key)
+    VALUES ('delete', old.rowid, old.summary_text, old.topic_tags, old.topic_key);
+    INSERT INTO entries_fts(rowid, summary_text, topic_tags, topic_key)
+    VALUES (new.rowid, new.summary_text, new.topic_tags, new.topic_key);
+END;
+
+CREATE TRIGGER IF NOT EXISTS entries_fts_delete AFTER DELETE ON entries BEGIN
+    INSERT INTO entries_fts(entries_fts, rowid, summary_text, topic_tags, topic_key)
+    VALUES ('delete', old.rowid, old.summary_text, old.topic_tags, old.topic_key);
+END;
+";
+
 // ---------------------------------------------------------------------------
 // Row types
 // ---------------------------------------------------------------------------
@@ -146,6 +175,20 @@ pub struct Flag {
     pub created_at: String,
 }
 
+/// A single hit from the FTS5 full-text search.
+#[derive(Debug, Clone)]
+pub struct FtsHit {
+    pub entry_id: String,
+    pub rank: f64,
+    pub summary_text: String,
+    pub topic_tags: String,
+    pub topic_key: String,
+    pub status: String,
+    pub confidence: f64,
+    pub memory_type: String,
+    pub created_at: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct CollationSkip {
     pub entry_id: String,
@@ -161,6 +204,14 @@ pub struct MemoryDB {
     conn: Connection,
 }
 
+// SAFETY: MemoryDB (rusqlite::Connection) is Send but not Sync because SQLite
+// connections do not support *concurrent* access from multiple threads. In the
+// shore-daemon, MemoryDB is only ever used from a single tokio task at a time
+// (the message handler processes requests sequentially), so concurrent access
+// never occurs. This impl is needed because &MemoryDB must be Send to cross
+// .await points inside Send futures spawned by tokio::spawn.
+unsafe impl Sync for MemoryDB {}
+
 impl MemoryDB {
     /// Open (or create) the database at the given path and run auto-migration.
     pub fn open(path: &Path) -> SqlResult<Self> {
@@ -175,6 +226,8 @@ impl MemoryDB {
         let conn = Connection::open(path)?;
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
         conn.execute_batch(SCHEMA_SQL)?;
+        // FTS5 is best-effort — don't fail if the extension isn't available.
+        let _ = conn.execute_batch(FTS_SCHEMA_SQL);
         Ok(Self { conn })
     }
 
@@ -183,6 +236,7 @@ impl MemoryDB {
         let conn = Connection::open_in_memory()?;
         conn.execute_batch("PRAGMA foreign_keys=ON;")?;
         conn.execute_batch(SCHEMA_SQL)?;
+        let _ = conn.execute_batch(FTS_SCHEMA_SQL);
         Ok(Self { conn })
     }
 
@@ -193,6 +247,7 @@ impl MemoryDB {
         // V1 schema is identical — no migration needed.
         // We still run CREATE IF NOT EXISTS so missing tables are harmless.
         conn.execute_batch(SCHEMA_SQL)?;
+        let _ = conn.execute_batch(FTS_SCHEMA_SQL);
         Ok(Self { conn })
     }
 
@@ -633,6 +688,150 @@ impl MemoryDB {
         })?;
         rows.collect()
     }
+
+    // ------------------------------------------------------------------
+    // Full-text search (FTS5)
+    // ------------------------------------------------------------------
+
+    /// Full-text search over memory entries using FTS5.
+    ///
+    /// Uses stemming and relevance ranking — better than SQL LIKE for finding
+    /// entries by content, topic, or person name. Returns up to `limit` results.
+    pub fn search_entries_fts(
+        &self,
+        query: &str,
+        status: Option<&str>,
+        limit: usize,
+    ) -> SqlResult<Vec<FtsHit>> {
+        let sql = match status {
+            Some("all") | None => {
+                "SELECT e.id, rank, e.summary_text, e.topic_tags, e.topic_key,
+                        e.status, e.confidence, e.memory_type, e.created_at
+                 FROM entries_fts
+                 JOIN entries e ON e.rowid = entries_fts.rowid
+                 WHERE entries_fts MATCH ?1
+                 ORDER BY rank
+                 LIMIT ?2"
+            }
+            Some(_) => {
+                "SELECT e.id, rank, e.summary_text, e.topic_tags, e.topic_key,
+                        e.status, e.confidence, e.memory_type, e.created_at
+                 FROM entries_fts
+                 JOIN entries e ON e.rowid = entries_fts.rowid
+                 WHERE entries_fts MATCH ?1 AND e.status = ?3
+                 ORDER BY rank
+                 LIMIT ?2"
+            }
+        };
+        let mut stmt = self.conn.prepare(sql)?;
+        let rows = if let Some(s) = status.filter(|s| *s != "all") {
+            stmt.query_map(params![query, limit as i64, s], row_to_fts_hit)?
+        } else {
+            stmt.query_map(params![query, limit as i64], row_to_fts_hit)?
+        };
+        rows.collect()
+    }
+
+    // ------------------------------------------------------------------
+    // Read-only SQL query
+    // ------------------------------------------------------------------
+
+    /// Execute an arbitrary read-only SQL query. Only SELECT statements are
+    /// allowed. Returns up to `max_rows` rows as JSON-friendly maps.
+    pub fn query_db_readonly(
+        &self,
+        sql: &str,
+        max_rows: usize,
+    ) -> SqlResult<Vec<HashMap<String, serde_json::Value>>> {
+        let trimmed = sql.trim();
+        if !trimmed
+            .split_whitespace()
+            .next()
+            .map_or(false, |w| w.eq_ignore_ascii_case("SELECT"))
+        {
+            return Err(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_MISUSE),
+                Some("Only SELECT queries are allowed".to_string()),
+            ));
+        }
+
+        let mut stmt = self.conn.prepare(trimmed)?;
+        let column_names: Vec<String> = stmt
+            .column_names()
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
+        let mut results = Vec::new();
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            if results.len() >= max_rows {
+                break;
+            }
+            let mut map = HashMap::new();
+            for (i, col_name) in column_names.iter().enumerate() {
+                let val = row_value_to_json(row, i);
+                map.insert(col_name.clone(), val);
+            }
+            results.push(map);
+        }
+        Ok(results)
+    }
+
+    // ------------------------------------------------------------------
+    // Additional convenience methods
+    // ------------------------------------------------------------------
+
+    /// Merge one entity into another: reassign all entry links from
+    /// `from_id` to `to_id`, then delete the source entity.
+    /// Returns the count of reassigned entry links.
+    pub fn merge_entity(&self, from_id: i64, to_id: i64) -> SqlResult<usize> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM entry_entities WHERE entity_id = ?1",
+            params![from_id],
+            |row| row.get(0),
+        )?;
+        self.reassign_entity_links(from_id, to_id)?;
+        self.delete_entity(from_id)?;
+        Ok(count as usize)
+    }
+
+    /// Look up a single flag by ID.
+    pub fn get_flag(&self, flag_id: i64) -> SqlResult<Option<Flag>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT flag_id, entry_id, flag_type, reason, resolved_at, resolution, created_at
+             FROM flags WHERE flag_id = ?1",
+        )?;
+        let mut rows = stmt.query_map(params![flag_id], row_to_flag)?;
+        match rows.next() {
+            Some(row) => Ok(Some(row?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Update an entry's confidence score.
+    pub fn set_confidence(&self, entry_id: &str, confidence: f64) -> SqlResult<usize> {
+        let now = Utc::now().to_rfc3339();
+        self.conn.execute(
+            "UPDATE entries SET confidence = ?2, updated_at = ?3 WHERE id = ?1",
+            params![entry_id, confidence, now],
+        )
+    }
+
+    /// Get all entries linked to a specific entity.
+    pub fn get_entries_for_entity(&self, entity_id: i64) -> SqlResult<Vec<Entry>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT e.id, e.memory_type, e.source, e.reason, e.status, e.canonical, e.confidence,
+                    e.summary_text, e.topic_tags, e.topic_key, e.start_timestamp, e.end_timestamp,
+                    e.message_count, e.source_entry_ids, e.related_entry_ids, e.superseded_by,
+                    e.created_at, e.updated_at, e.entry_type, e.image_path
+             FROM entries e
+             JOIN entry_entities ee ON e.id = ee.entry_id
+             WHERE ee.entity_id = ?1",
+        )?;
+        let rows = stmt.query_map(params![entity_id], row_to_entry)?;
+        rows.collect()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -673,6 +872,35 @@ fn row_to_entity(row: &rusqlite::Row<'_>) -> SqlResult<Entity> {
         created_at: row.get(4)?,
         updated_at: row.get(5)?,
     })
+}
+
+fn row_to_fts_hit(row: &rusqlite::Row<'_>) -> SqlResult<FtsHit> {
+    Ok(FtsHit {
+        entry_id: row.get(0)?,
+        rank: row.get(1)?,
+        summary_text: row.get(2)?,
+        topic_tags: row.get(3)?,
+        topic_key: row.get(4)?,
+        status: row.get(5)?,
+        confidence: row.get(6)?,
+        memory_type: row.get(7)?,
+        created_at: row.get(8)?,
+    })
+}
+
+/// Convert a rusqlite row value at column `idx` to a serde_json::Value.
+fn row_value_to_json(row: &rusqlite::Row<'_>, idx: usize) -> serde_json::Value {
+    use rusqlite::types::ValueRef;
+    match row.get_ref(idx) {
+        Ok(ValueRef::Null) => serde_json::Value::Null,
+        Ok(ValueRef::Integer(i)) => serde_json::json!(i),
+        Ok(ValueRef::Real(f)) => serde_json::json!(f),
+        Ok(ValueRef::Text(t)) => {
+            serde_json::Value::String(String::from_utf8_lossy(t).into_owned())
+        }
+        Ok(ValueRef::Blob(b)) => serde_json::json!(format!("<blob {} bytes>", b.len())),
+        Err(_) => serde_json::Value::Null,
+    }
 }
 
 fn row_to_flag(row: &rusqlite::Row<'_>) -> SqlResult<Flag> {
