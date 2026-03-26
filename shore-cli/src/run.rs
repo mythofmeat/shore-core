@@ -3,12 +3,17 @@ use shore_protocol::server_msg::ServerMessage;
 
 use crate::cli::{Cli, CliCommand};
 use crate::output;
+use crate::state;
 
 /// Execute the CLI command by connecting to the daemon and dispatching.
 pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     let addr = resolve_addr(&cli);
+
+    // Character resolution: --character flag > SHORE_CHARACTER env > state file > None (daemon auto-selects).
+    let character = cli.character.clone().or_else(state::read_active_character);
+
     let (mut conn, _server_hello, _history) =
-        SWPConnection::connect(&addr, "cli", "shore-cli").await?;
+        SWPConnection::connect(&addr, "cli", "shore-cli", character.clone()).await?;
 
     match &cli.command {
         CliCommand::Send { message } => {
@@ -20,14 +25,79 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             conn.send_regen(true, guidance.clone()).await?;
             recv_streaming_response(&mut conn).await?;
         }
+        CliCommand::Character { name } => {
+            match name {
+                Some(name) => handle_switch_character(&mut conn, name).await?,
+                None => handle_list_characters(&mut conn).await?,
+            }
+        }
         other => {
             let (name, args) = crate::cli::to_swp_command(other)
-                .expect("non-send/regen command must map to SWP command");
+                .expect("non-send/regen/local command must map to SWP command");
             conn.send_command(name, args).await?;
             recv_command_response(&mut conn).await?;
         }
     }
 
+    Ok(())
+}
+
+/// Handle `switch-character` locally: validate via daemon, write state file.
+async fn handle_switch_character(
+    conn: &mut SWPConnection,
+    name: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Query the daemon for available characters.
+    conn.send_command("list_characters", serde_json::json!({})).await?;
+    let data = recv_command_data(conn).await?;
+
+    let characters = data["characters"]
+        .as_array()
+        .ok_or("invalid list_characters response")?;
+
+    let valid = characters
+        .iter()
+        .any(|c| c["name"].as_str() == Some(name));
+
+    if !valid {
+        let available: Vec<&str> = characters
+            .iter()
+            .filter_map(|c| c["name"].as_str())
+            .collect();
+        return Err(format!(
+            "character '{}' not found (available: {})",
+            name,
+            available.join(", ")
+        )
+        .into());
+    }
+
+    state::write_active_character(name)?;
+    println!("Switched to character: {name}");
+    println!("To override per-terminal: export SHORE_CHARACTER={name}");
+    Ok(())
+}
+
+/// Handle `list-characters`: query daemon, annotate active character.
+async fn handle_list_characters(
+    conn: &mut SWPConnection,
+) -> Result<(), Box<dyn std::error::Error>> {
+    conn.send_command("list_characters", serde_json::json!({})).await?;
+    let data = recv_command_data(conn).await?;
+
+    let active = state::read_active_character();
+
+    if let Some(chars) = data["characters"].as_array() {
+        for ch in chars {
+            if let Some(name) = ch["name"].as_str() {
+                if active.as_deref() == Some(name) {
+                    println!("  * {name} (active)");
+                } else {
+                    println!("    {name}");
+                }
+            }
+        }
+    }
     Ok(())
 }
 
@@ -86,7 +156,38 @@ async fn recv_streaming_response(
     }
 }
 
-/// Receive a command response.
+/// Receive a command response and return the data payload.
+async fn recv_command_data(
+    conn: &mut SWPConnection,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    loop {
+        let msg = conn.recv().await?;
+        match &msg {
+            ServerMessage::CommandOutput(co) => {
+                return Ok(co.data.clone());
+            }
+            ServerMessage::Error(err) => {
+                output::print_server_error(
+                    &serde_json::to_string(&err.code).unwrap_or_default(),
+                    &err.message,
+                );
+                return Err(err.message.clone().into());
+            }
+            ServerMessage::Ping(_)
+            | ServerMessage::History(_) => {}
+            ServerMessage::SendImage(img) => {
+                output::print_send_image(img);
+            }
+            ServerMessage::NewMessage(msg) => {
+                output::print_new_message(msg);
+                crate::notifications::notify_new_message(msg);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Receive a command response and print it.
 async fn recv_command_response(
     conn: &mut SWPConnection,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -104,12 +205,8 @@ async fn recv_command_response(
                 );
                 return Err(err.message.clone().into());
             }
-            ServerMessage::Ping(_) => {
-                // Keepalive, ignore
-            }
-            ServerMessage::History(_) => {
-                // Some commands trigger a history push; we just print and continue
-            }
+            ServerMessage::Ping(_)
+            | ServerMessage::History(_) => {}
             ServerMessage::SendImage(img) => {
                 output::print_send_image(img);
             }
@@ -117,9 +214,7 @@ async fn recv_command_response(
                 output::print_new_message(msg);
                 crate::notifications::notify_new_message(msg);
             }
-            _ => {
-                // Unexpected but not fatal
-            }
+            _ => {}
         }
     }
 }
@@ -201,6 +296,7 @@ mod tests {
         Cli {
             socket: None,
             config: None,
+            character: None,
             command,
         }
     }
@@ -216,7 +312,7 @@ mod tests {
 
         // Connect using the raw stream and run the command logic
         let (mut conn, _hello, _history) =
-            shore_client::SWPConnection::connect_raw(client_stream, "cli", "shore-cli")
+            shore_client::SWPConnection::connect_raw(client_stream, "cli", "shore-cli", cli.character.clone())
                 .await
                 .unwrap();
 
@@ -325,24 +421,7 @@ mod tests {
         }
     }
 
-    // ── SwitchCharacter command ──────────────────────────────────────
-
-    #[tokio::test]
-    async fn switch_character_sends_command_with_args() {
-        let cli = test_cli(CliCommand::SwitchCharacter {
-            name: "alice".into(),
-        });
-        let received =
-            execute_with_mock(cli, command_response("switch_character")).await;
-
-        match received {
-            ClientMessage::Command(c) => {
-                assert_eq!(c.name, "switch_character");
-                assert_eq!(c.args["name"], "alice");
-            }
-            other => panic!("expected Command, got: {other:?}"),
-        }
-    }
+    // ── Character is handled locally (see state.rs) ───────────────
 
     // ── TogglePrivate command ────────────────────────────────────────
 

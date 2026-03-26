@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand};
 use clap_complete::Shell;
 
 #[derive(Parser, Debug)]
-#[command(name = "shore", version, about = "Shore chat client")]
+#[command(name = "shore", version, about = "Shore chat client", disable_help_subcommand = true)]
 pub struct Cli {
     /// Path to daemon Unix socket (overrides discovery)
     #[arg(long, global = true)]
@@ -11,6 +11,10 @@ pub struct Cli {
     /// Path to config file (selects daemon instance)
     #[arg(long, global = true)]
     pub config: Option<String>,
+
+    /// Character to talk to (overrides SHORE_CHARACTER env var)
+    #[arg(long, short = 'c', global = true, env = "SHORE_CHARACTER")]
+    pub character: Option<String>,
 
     #[command(subcommand)]
     pub command: CliCommand,
@@ -41,7 +45,7 @@ pub enum CliCommand {
     /// Show conversation log
     Log {
         /// Number of messages to show
-        #[arg(short, long, default_value = "20")]
+        #[arg(short = 'n', long, default_value = "20")]
         count: u32,
     },
 
@@ -60,41 +64,19 @@ pub enum CliCommand {
         msg_id: String,
     },
 
-    /// List available characters
-    ListCharacters,
-
-    /// Switch to a different character
-    SwitchCharacter {
-        /// Character name
-        name: String,
-    },
-
-    /// List conversations
-    ListChats,
-
-    /// Switch to a different conversation
-    SwitchChat {
-        /// Conversation ID
-        id: String,
-    },
-
-    /// Create a new conversation
-    NewChat {
-        /// Optional title for the new chat
-        #[arg(short, long)]
-        title: Option<String>,
+    /// List or switch characters (no args = list, with name = switch)
+    Character {
+        /// Character name to switch to
+        name: Option<String>,
     },
 
     /// Show daemon and session status
     Status,
 
-    /// List available models
-    ListModels,
-
-    /// Switch to a different model
-    SwitchModel {
-        /// Model name
-        name: String,
+    /// List or switch models (no args = list, with name = switch)
+    Model {
+        /// Model name to switch to
+        name: Option<String>,
     },
 
     /// Show or query memory system
@@ -142,9 +124,10 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
     use serde_json::json;
     match cmd {
         // These use dedicated SWP message types or are handled locally.
-        CliCommand::Send { .. } | CliCommand::Regen { .. } | CliCommand::Completions { .. } => {
-            None
-        }
+        CliCommand::Send { .. }
+        | CliCommand::Regen { .. }
+        | CliCommand::Completions { .. }
+        | CliCommand::Character { .. } => None,
 
         CliCommand::Swipe { direction } => {
             Some(("swipe", json!({ "direction": direction })))
@@ -158,29 +141,12 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
         CliCommand::Delete { msg_id } => {
             Some(("delete", json!({ "msg_id": msg_id })))
         }
-        CliCommand::ListCharacters => {
-            Some(("list_characters", json!({})))
-        }
-        CliCommand::SwitchCharacter { name } => {
-            Some(("switch_character", json!({ "name": name })))
-        }
-        CliCommand::ListChats => {
-            Some(("list_chats", json!({})))
-        }
-        CliCommand::SwitchChat { id } => {
-            Some(("switch_chat", json!({ "id": id })))
-        }
-        CliCommand::NewChat { title } => {
-            Some(("new_chat", json!({ "title": title })))
-        }
         CliCommand::Status => {
             Some(("status", json!({})))
         }
-        CliCommand::ListModels => {
-            Some(("list_models", json!({})))
-        }
-        CliCommand::SwitchModel { name } => {
-            Some(("switch_model", json!({ "name": name })))
+        CliCommand::Model { name } => match name {
+            None => Some(("list_models", json!({}))),
+            Some(name) => Some(("switch_model", json!({ "name": name }))),
         }
         CliCommand::Memory { query } => {
             Some(("memory", json!({ "query": query })))
@@ -316,58 +282,24 @@ mod tests {
     }
 
     #[test]
-    fn parse_list_characters() {
-        let cli = parse(&["list-characters"]);
-        assert!(matches!(cli.command, CliCommand::ListCharacters));
-    }
-
-    #[test]
-    fn parse_switch_character() {
-        let cli = parse(&["switch-character", "alice"]);
+    fn parse_character_list() {
+        let cli = parse(&["character"]);
         match &cli.command {
-            CliCommand::SwitchCharacter { name } => {
-                assert_eq!(name, "alice");
+            CliCommand::Character { name } => {
+                assert!(name.is_none());
             }
-            other => panic!("expected SwitchCharacter, got: {other:?}"),
+            other => panic!("expected Character, got: {other:?}"),
         }
     }
 
     #[test]
-    fn parse_list_chats() {
-        let cli = parse(&["list-chats"]);
-        assert!(matches!(cli.command, CliCommand::ListChats));
-    }
-
-    #[test]
-    fn parse_switch_chat() {
-        let cli = parse(&["switch-chat", "conv_001"]);
+    fn parse_character_switch() {
+        let cli = parse(&["character", "alice"]);
         match &cli.command {
-            CliCommand::SwitchChat { id } => {
-                assert_eq!(id, "conv_001");
+            CliCommand::Character { name } => {
+                assert_eq!(name.as_deref(), Some("alice"));
             }
-            other => panic!("expected SwitchChat, got: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_new_chat() {
-        let cli = parse(&["new-chat"]);
-        match &cli.command {
-            CliCommand::NewChat { title } => {
-                assert!(title.is_none());
-            }
-            other => panic!("expected NewChat, got: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_new_chat_with_title() {
-        let cli = parse(&["new-chat", "--title", "My Chat"]);
-        match &cli.command {
-            CliCommand::NewChat { title } => {
-                assert_eq!(title.as_deref(), Some("My Chat"));
-            }
-            other => panic!("expected NewChat, got: {other:?}"),
+            other => panic!("expected Character, got: {other:?}"),
         }
     }
 
@@ -378,19 +310,24 @@ mod tests {
     }
 
     #[test]
-    fn parse_list_models() {
-        let cli = parse(&["list-models"]);
-        assert!(matches!(cli.command, CliCommand::ListModels));
+    fn parse_model_list() {
+        let cli = parse(&["model"]);
+        match &cli.command {
+            CliCommand::Model { name } => {
+                assert!(name.is_none());
+            }
+            other => panic!("expected Model, got: {other:?}"),
+        }
     }
 
     #[test]
-    fn parse_switch_model() {
-        let cli = parse(&["switch-model", "claude-haiku-4-5-20251001"]);
+    fn parse_model_switch() {
+        let cli = parse(&["model", "claude-haiku-4-5-20251001"]);
         match &cli.command {
-            CliCommand::SwitchModel { name } => {
-                assert_eq!(name, "claude-haiku-4-5-20251001");
+            CliCommand::Model { name } => {
+                assert_eq!(name.as_deref(), Some("claude-haiku-4-5-20251001"));
             }
-            other => panic!("expected SwitchModel, got: {other:?}"),
+            other => panic!("expected Model, got: {other:?}"),
         }
     }
 
@@ -517,31 +454,24 @@ mod tests {
     }
 
     #[test]
-    fn switch_character_maps_to_command() {
-        let cmd = CliCommand::SwitchCharacter {
-            name: "alice".into(),
-        };
-        let (name, args) = to_swp_command(&cmd).unwrap();
-        assert_eq!(name, "switch_character");
-        assert_eq!(args["name"], "alice");
+    fn character_maps_to_none() {
+        let cmd = CliCommand::Character { name: None };
+        assert!(to_swp_command(&cmd).is_none());
+        let cmd = CliCommand::Character { name: Some("alice".into()) };
+        assert!(to_swp_command(&cmd).is_none());
     }
 
     #[test]
     fn all_non_message_commands_map() {
-        // Every variant except Send and Regen should produce Some.
+        // Every variant except Send, Regen, Character, and Completions should produce Some.
         let commands: Vec<CliCommand> = vec![
             CliCommand::Swipe { direction: "next".into() },
             CliCommand::Log { count: 20 },
             CliCommand::Edit { msg_id: "m1".into(), content: vec!["text".into()] },
             CliCommand::Delete { msg_id: "m1".into() },
-            CliCommand::ListCharacters,
-            CliCommand::SwitchCharacter { name: "a".into() },
-            CliCommand::ListChats,
-            CliCommand::SwitchChat { id: "c1".into() },
-            CliCommand::NewChat { title: None },
             CliCommand::Status,
-            CliCommand::ListModels,
-            CliCommand::SwitchModel { name: "m".into() },
+            CliCommand::Model { name: None },
+            CliCommand::Model { name: Some("m".into()) },
             CliCommand::Memory { query: None },
             CliCommand::TogglePrivate,
             CliCommand::Compact,
