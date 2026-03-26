@@ -1,5 +1,6 @@
 use super::{ToolCategory, ToolDef, ToolError};
 use serde_json::{json, Value};
+use std::time::Duration;
 
 // ---------------------------------------------------------------------------
 // Tool definitions
@@ -89,19 +90,149 @@ pub async fn handle_web_search(input: Value) -> Result<Value, ToolError> {
     )))
 }
 
-/// Handle `fetch_url` — fetch a webpage.
-/// Stub: full implementation uses reqwest to GET the URL and extract text.
+/// Maximum content length returned to the model (chars).
+const MAX_CONTENT_CHARS: usize = 50_000;
+
+/// Handle `fetch_url` — fetch a webpage and extract readable text.
 pub async fn handle_fetch_url(input: Value) -> Result<Value, ToolError> {
     let url = input
         .get("url")
         .and_then(|v| v.as_str())
         .ok_or_else(|| ToolError::InvalidArgs("missing 'url' field".to_string()))?;
 
-    // Stub — full implementation fetches via reqwest and extracts readable text.
-    Err(ToolError::NotImplemented(format!(
-        "fetch_url (url={}): requires HTTP client",
-        url
-    )))
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .user_agent("shore/2.0")
+        .redirect(reqwest::redirect::Policy::limited(5))
+        .build()
+        .map_err(|e| ToolError::Http(format!("failed to build HTTP client: {e}")))?;
+
+    let resp = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| ToolError::Http(format!("request failed: {e}")))?;
+
+    let status = resp.status().as_u16();
+    if !resp.status().is_success() {
+        return Err(ToolError::Http(format!(
+            "HTTP {status} for {url}"
+        )));
+    }
+
+    let content_type = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("unknown")
+        .to_string();
+
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| ToolError::Http(format!("failed to read body: {e}")))?;
+
+    let is_html = content_type.contains("html");
+    let content = if is_html {
+        strip_html(&body)
+    } else {
+        body
+    };
+
+    let truncated = content.len() > MAX_CONTENT_CHARS;
+    let content = if truncated {
+        let boundary = content.floor_char_boundary(MAX_CONTENT_CHARS);
+        content[..boundary].to_string()
+    } else {
+        content
+    };
+
+    Ok(json!({
+        "url": url,
+        "content_type": content_type,
+        "content": content,
+        "truncated": truncated,
+    }))
+}
+
+/// Strip HTML tags and extract readable text content.
+///
+/// Removes `<script>`, `<style>`, and `<head>` blocks entirely, strips remaining
+/// tags, decodes common HTML entities, and collapses whitespace.
+fn strip_html(html: &str) -> String {
+    // Phase 1: Remove script, style, and head blocks
+    let mut cleaned = String::with_capacity(html.len());
+    let lower = html.to_lowercase();
+    let lower_bytes = lower.as_bytes();
+    let mut i = 0;
+
+    while i < html.len() {
+        if lower_bytes[i] == b'<' {
+            // Check for blocks we want to skip entirely
+            let remaining = &lower[i..];
+            if let Some(tag) = ["script", "style", "head"]
+                .iter()
+                .find(|t| remaining.starts_with(&format!("<{}", t)))
+            {
+                // Find the closing tag
+                let close = format!("</{tag}");
+                if let Some(end_pos) = lower[i..].find(&close) {
+                    // Skip past the closing tag's '>'
+                    let after_close = i + end_pos + close.len();
+                    if let Some(gt) = lower[after_close..].find('>') {
+                        i = after_close + gt + 1;
+                        continue;
+                    }
+                }
+                // No closing tag found — skip to end
+                break;
+            }
+
+            // Regular tag — skip it but add a space (block elements create breaks)
+            if let Some(gt) = html[i..].find('>') {
+                cleaned.push(' ');
+                i += gt + 1;
+                continue;
+            }
+        }
+
+        // Consume one character
+        if let Some(ch) = html[i..].chars().next() {
+            cleaned.push(ch);
+            i += ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+
+    // Phase 2: Decode common HTML entities
+    let decoded = cleaned
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&apos;", "'")
+        .replace("&nbsp;", " ")
+        .replace("&#x27;", "'")
+        .replace("&#x2F;", "/");
+
+    // Phase 3: Collapse whitespace
+    let mut result = String::with_capacity(decoded.len());
+    let mut prev_whitespace = false;
+    for ch in decoded.chars() {
+        if ch.is_whitespace() {
+            if !prev_whitespace {
+                result.push(' ');
+            }
+            prev_whitespace = true;
+        } else {
+            result.push(ch);
+            prev_whitespace = false;
+        }
+    }
+
+    result.trim().to_string()
 }
 
 /// Handle `research_web` — multi-step web research.
@@ -166,10 +297,42 @@ mod tests {
         assert!(matches!(result, Err(ToolError::InvalidArgs(_))));
     }
 
-    #[tokio::test]
-    async fn test_fetch_url_stub() {
-        let result = handle_fetch_url(json!({"url": "https://example.com"})).await;
-        assert!(matches!(result, Err(ToolError::NotImplemented(_))));
+    #[test]
+    fn test_strip_html_basic() {
+        let html = "<html><body><h1>Hello</h1><p>World</p></body></html>";
+        let text = strip_html(html);
+        assert!(text.contains("Hello"));
+        assert!(text.contains("World"));
+        assert!(!text.contains("<h1>"));
+    }
+
+    #[test]
+    fn test_strip_html_removes_script_and_style() {
+        let html = r#"<html><head><title>T</title></head><body>
+            <script>var x = 1;</script>
+            <style>.foo { color: red; }</style>
+            <p>Visible text</p>
+        </body></html>"#;
+        let text = strip_html(html);
+        assert!(text.contains("Visible text"));
+        assert!(!text.contains("var x"));
+        assert!(!text.contains("color: red"));
+        assert!(!text.contains("<title>"));
+    }
+
+    #[test]
+    fn test_strip_html_decodes_entities() {
+        let html = "<p>A &amp; B &lt; C &gt; D &quot;E&quot;</p>";
+        let text = strip_html(html);
+        assert!(text.contains("A & B < C > D \"E\""));
+    }
+
+    #[test]
+    fn test_strip_html_collapses_whitespace() {
+        let html = "<p>  lots   of    spaces  </p>";
+        let text = strip_html(html);
+        // Should not have runs of multiple spaces
+        assert!(!text.contains("  "));
     }
 
     #[tokio::test]

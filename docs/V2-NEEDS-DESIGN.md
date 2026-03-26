@@ -11,7 +11,7 @@ requires human judgment about how it should work, not just coding.
   Replacing raw JSON output with formatted, colored display for each command.
   Done: `log` (chat transcript with colored headers, timestamps, image badges),
   `status` (dashboard with autonomy state, social need bar, cache info).
-  Remaining: `info`, `get`, `model`, `character --info`, `memory`, `memory-changelog`,
+  Remaining: `get`, `model`, `character --info`, `memory`, `memory-changelog`,
   `config`, `edit`/`delete` confirmations, `compact`/`collate` results.
   **Design pattern:** section headers (`── Title ───`), dim labels with bright values,
   character-colored names via deterministic hash, conditional sections that hide

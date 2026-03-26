@@ -21,6 +21,9 @@ Add items here as decisions are made.
 - **Swipe CLI command** — Removed from CLI; still available daemon-side.
   Will be TUI-only (swipe gestures / keybindings make more sense in TUI context).
 
+- **`shore info` command** (5.14) — Removed. Entirely redundant with `shore status`,
+  which already shows character, model, message count, and more.
+
 ## Architecture Decisions
 
 - **Multi-conversation per character** — V1 had list/switch/new conversation

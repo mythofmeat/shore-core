@@ -122,6 +122,61 @@ pub fn switch_model(ctx: &mut CommandContext, args: &serde_json::Value) -> Comma
     }
 }
 
+/// Reset model to config default.
+pub fn reset_model(ctx: &mut CommandContext) -> CommandResult {
+    let previous = ctx.active_model.take();
+    ctx.active_model = ctx.config.app.defaults.model.clone();
+    Ok(json!({
+        "previous": previous,
+        "active": ctx.active_model,
+        "reset_to": "config default",
+    }))
+}
+
+/// Show recent memory changelog entries.
+pub fn memory_changelog(
+    engine: &ConversationEngine,
+    ctx: &CommandContext,
+    args: &serde_json::Value,
+) -> CommandResult {
+    let limit = args
+        .get("limit")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(20);
+
+    let char_name = engine.character_name();
+    let db_path = ctx
+        .data_dir
+        .join(char_name)
+        .join("memory")
+        .join("memory.db");
+
+    if !db_path.exists() {
+        return Ok(json!({ "changelog": [], "character": char_name }));
+    }
+
+    let db = MemoryDB::open(&db_path)
+        .map_err(|e| (ErrorCode::InternalError, format!("Failed to open memory DB: {e}")))?;
+
+    let records = db
+        .get_recent_changelog(limit)
+        .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
+
+    let entries: Vec<serde_json::Value> = records
+        .iter()
+        .map(|r| {
+            json!({
+                "id": r.changelog_id,
+                "operation": r.operation,
+                "description": r.description,
+                "timestamp": r.timestamp,
+            })
+        })
+        .collect();
+
+    Ok(json!({ "changelog": entries, "character": char_name }))
+}
+
 /// Memory command: status (no query) or agent query (with query).
 pub async fn memory(
     engine: &ConversationEngine,
@@ -487,6 +542,113 @@ fn collation_err(e: CollationError) -> (ErrorCode, String) {
     (ErrorCode::InternalError, e.to_string())
 }
 
+/// Pause autonomy for the current character.
+pub fn autonomy_pause(engine: &ConversationEngine, ctx: &CommandContext) -> CommandResult {
+    let char_name = engine.character_name();
+    let result = ctx.autonomy.set_paused(char_name, true);
+    Ok(json!({
+        "character": char_name,
+        "paused": result.unwrap_or(true),
+    }))
+}
+
+/// Resume autonomy for the current character.
+pub fn autonomy_resume(engine: &ConversationEngine, ctx: &CommandContext) -> CommandResult {
+    let char_name = engine.character_name();
+    let result = ctx.autonomy.set_paused(char_name, false);
+    Ok(json!({
+        "character": char_name,
+        "paused": result.unwrap_or(false),
+    }))
+}
+
+/// Validate configuration and return warnings/info.
+pub fn config_check(ctx: &CommandContext) -> CommandResult {
+    let mut warnings: Vec<String> = Vec::new();
+    let mut info: Vec<String> = Vec::new();
+
+    // Check: any chat models configured?
+    if ctx.config.models.chat.is_empty() {
+        warnings.push("No chat models configured. Add [chat.*] sections to config.".into());
+    } else {
+        info.push(format!("{} chat model(s) configured", ctx.config.models.chat.len()));
+    }
+
+    // Check: default model set?
+    match &ctx.config.app.defaults.model {
+        Some(m) => {
+            if ctx.config.models.find_model(m).is_ok() {
+                info.push(format!("Default model: {m}"));
+            } else {
+                warnings.push(format!("Default model \"{m}\" not found in catalog"));
+            }
+        }
+        None => {
+            if !ctx.config.models.chat.is_empty() {
+                warnings.push("No default model set. First chat model will be used.".into());
+            }
+        }
+    }
+
+    // Check: tool models
+    if ctx.config.models.tools.is_empty() {
+        info.push("No tool models configured (chat models will be used for tools)".into());
+    } else {
+        info.push(format!("{} tool model(s) configured", ctx.config.models.tools.len()));
+    }
+
+    // Check: embedding models
+    if ctx.config.models.embedding.is_empty() {
+        warnings.push("No embedding models configured. Memory vector search will be unavailable.".into());
+    } else {
+        info.push(format!("{} embedding model(s) configured", ctx.config.models.embedding.len()));
+    }
+
+    // Check: default embedding reference
+    if let Some(ref emb) = ctx.config.app.defaults.embedding {
+        if !ctx.config.models.embedding.contains_key(emb.as_str()) {
+            warnings.push(format!("Default embedding \"{emb}\" not found in catalog"));
+        }
+    }
+
+    // Check: memory agent model reference
+    if let Some(ref ma) = ctx.config.app.defaults.memory_agent {
+        if ctx.config.models.find_model(ma).is_err() {
+            warnings.push(format!("Default memory_agent \"{ma}\" not found in catalog"));
+        }
+    }
+
+    // Check: LLM service configured?
+    if ctx.config.app.services.llm.command.is_none() && ctx.config.app.services.llm.socket.is_none() {
+        warnings.push("No LLM service configured. Set [services.llm] command or socket_path.".into());
+    }
+
+    // Check: API key env vars are set for configured providers
+    for model in ctx.config.models.chat.values() {
+        if let Some(ref key_env) = model.api_key_env {
+            if std::env::var(key_env).is_err() {
+                warnings.push(format!(
+                    "API key env var ${} not set (needed by model {})",
+                    key_env, model.qualified_name
+                ));
+            }
+        }
+    }
+
+    let valid = warnings.is_empty();
+
+    Ok(json!({
+        "valid": valid,
+        "warnings": warnings,
+        "info": info,
+        "config_dir": ctx.config.dirs.config.display().to_string(),
+        "data_dir": ctx.config.dirs.data.display().to_string(),
+        "chat_models": ctx.config.models.chat.len(),
+        "tool_models": ctx.config.models.tools.len(),
+        "embedding_models": ctx.config.models.embedding.len(),
+    }))
+}
+
 /// Show effective configuration. Optionally filtered by section name.
 pub fn config(ctx: &CommandContext, args: &serde_json::Value) -> CommandResult {
     let section = args.get("key").and_then(|v| v.as_str());
@@ -800,6 +962,29 @@ model_id = "gpt-4o"
         assert!(result.is_err());
         let (code, _msg) = result.unwrap_err();
         assert_eq!(code, ErrorCode::InternalError);
+    }
+
+    #[test]
+    fn config_check_empty_catalog() {
+        let tmp = TempDir::new().unwrap();
+        let (_engine, ctx, _rx) = make_ctx(&tmp);
+
+        let result = config_check(&ctx).unwrap();
+        assert!(!result["valid"].as_bool().unwrap());
+        let warnings = result["warnings"].as_array().unwrap();
+        assert!(warnings.iter().any(|w| w.as_str().unwrap().contains("No chat models")));
+        assert_eq!(result["chat_models"], 0);
+    }
+
+    #[test]
+    fn config_check_with_models() {
+        let tmp = TempDir::new().unwrap();
+        let (_engine, ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
+
+        let result = config_check(&ctx).unwrap();
+        assert_eq!(result["chat_models"], 2);
+        let info = result["info"].as_array().unwrap();
+        assert!(info.iter().any(|i| i.as_str().unwrap().contains("2 chat model")));
     }
 
     #[test]

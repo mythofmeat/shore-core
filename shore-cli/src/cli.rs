@@ -103,9 +103,6 @@ pub enum CliCommand {
         msg_ref: String,
     },
 
-    /// Show conversation info (message count, timestamps, model)
-    Info,
-
     /// List or switch models (no args = list, with name = switch)
     Model {
         /// Model name to switch to
@@ -222,9 +219,6 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
         }
         CliCommand::Get { msg_ref } => {
             Some(("get", json!({ "ref": msg_ref })))
-        }
-        CliCommand::Info => {
-            Some(("info", json!({})))
         }
         CliCommand::Model { name, info, reset } => {
             if *reset {
@@ -640,7 +634,6 @@ mod tests {
             CliCommand::Delete { msg_id: "m1".into() },
             CliCommand::Status { section: None },
             CliCommand::Get { msg_ref: "last".into() },
-            CliCommand::Info,
             CliCommand::Model { name: None, info: false, reset: false },
             CliCommand::Model { name: Some("m".into()), info: false, reset: false },
             CliCommand::Model { name: Some("m".into()), info: true, reset: false },

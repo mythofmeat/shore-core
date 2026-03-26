@@ -80,6 +80,7 @@ pub fn print_stream_end(end: &StreamEnd) {
         let _ = crossterm::execute!(out, ResetColor);
     }
     let _ = writeln!(out);
+    let _ = writeln!(out); // blank line after metadata
 }
 
 /// Print command output. Formats JSON data in a readable way.
@@ -178,7 +179,6 @@ pub fn print_follow_stream_start(character_name: &str) {
     let width = term_width();
     let time_str = chrono::Local::now().format("%H:%M").to_string();
     let color = character_color(character_name);
-    let _ = writeln!(out); // blank line before new message
     write_header(&mut out, character_name, &time_str, color, width);
 }
 

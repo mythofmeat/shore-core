@@ -61,6 +61,7 @@ pub async fn dispatch(
 
         // Conversation
         "log" => conversation::log(engine, ctx, &cmd.args),
+        "get" => conversation::get(engine, ctx, &cmd.args),
         "edit" => conversation::edit(engine, ctx, &cmd.args),
         "delete" => conversation::delete(engine, ctx, &cmd.args),
 
@@ -69,10 +70,15 @@ pub async fn dispatch(
         "list_models" => state::list_models(ctx),
         "model_info" => state::model_info(ctx, &cmd.args),
         "switch_model" => state::switch_model(ctx, &cmd.args),
+        "reset_model" => state::reset_model(ctx),
+        "memory_changelog" => state::memory_changelog(engine, ctx, &cmd.args),
         "memory" => state::memory(engine, ctx, &cmd.args).await,
         "compact" => state::compact(engine, ctx, &cmd.args).await,
         "collate" => state::collate(engine, ctx, &cmd.args).await,
         "config" => state::config(ctx, &cmd.args),
+        "config_check" => state::config_check(ctx),
+        "autonomy_pause" => state::autonomy_pause(engine, ctx),
+        "autonomy_resume" => state::autonomy_resume(engine, ctx),
 
         _ => Err((
             ErrorCode::InvalidRequest,

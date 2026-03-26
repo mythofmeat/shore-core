@@ -320,9 +320,9 @@ async fn recv_streaming_response(
             ServerMessage::SendImage(img) => {
                 output::print_send_image(img);
             }
-            ServerMessage::NewMessage(msg) => {
-                output::print_new_message(msg, "Assistant");
-                crate::notifications::notify_new_message(msg);
+            ServerMessage::NewMessage(_) => {
+                // Ignore — the sender already knows what they sent.
+                // NewMessage is for follow-mode / other clients.
             }
             ServerMessage::Phase(phase) => {
                 output::print_phase(phase);

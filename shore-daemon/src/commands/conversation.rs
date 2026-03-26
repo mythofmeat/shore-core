@@ -51,6 +51,31 @@ fn resolve_ref(messages: &[Message], reference: &str) -> Result<String, (ErrorCo
     Ok(reference.to_string())
 }
 
+/// Get a single message by index or reference.
+pub fn get(
+    engine: &ConversationEngine,
+    _ctx: &CommandContext,
+    args: &serde_json::Value,
+) -> CommandResult {
+    let raw_ref = args.get("ref").and_then(|v| v.as_str()).ok_or_else(|| {
+        (
+            ErrorCode::InvalidRequest,
+            "Missing required argument: ref".into(),
+        )
+    })?;
+
+    let msg_id = resolve_ref(engine.messages(), raw_ref)?;
+    let msg = engine
+        .messages()
+        .iter()
+        .find(|m| m.msg_id == msg_id)
+        .ok_or_else(|| (ErrorCode::NotFound, format!("Message not found: {msg_id}")))?;
+
+    Ok(serde_json::to_value(msg)
+        .map_err(|e| (ErrorCode::InternalError, e.to_string()))?)
+}
+
+
 /// Show conversation history, optionally limited to the last N messages.
 pub fn log(
     engine: &ConversationEngine,

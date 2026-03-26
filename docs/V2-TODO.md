@@ -49,7 +49,7 @@ These depend on shore-llm implementing the endpoints.
 
 ### Conversation Management
 - 5.13 Search conversations (full-text) — MISSING
-- ~~5.14 Conversation info~~ — DONE (`shore info`)
+- ~~5.14 Conversation info~~ — REMOVED (redundant with `shore status`)
 
 ### Message CRUD
 - ~~5.18 Get message by index~~ — DONE (`shore get <ref>`)
@@ -72,11 +72,15 @@ These depend on shore-llm implementing the endpoints.
 - ~~5.38 Config show (all sections)~~ — DONE (`shore config` returns full config)
 - ~~5.39 Config check (validation)~~ — DONE (`shore config --check`)
 - 5.40 Config reset (clear overrides) — MISSING
+- 5.41 **Config set (runtime)** — MISSING
+  `shore config <key> <value>` should apply runtime config changes to the running daemon.
+  CLI already accepts the value arg but the daemon ignores it. Should subsume
+  `autonomy pause/resume` (removed as standalone command).
 
 
 ## Priority 4: Memory & Autonomy Extras
 
-- ~~2.8 **Autonomy pause/resume**~~ — DONE (`shore autonomy pause/resume`)
+- ~~2.8 **Autonomy pause/resume**~~ — REMOVED (will be via `shore config set` once 5.41 is implemented)
 
 - 3.5 **Consolidation** (write-time dedup via LLM) — UNKNOWN
   Needs verification — may be handled by memory agent create/supersede flow.

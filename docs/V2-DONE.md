@@ -54,7 +54,7 @@ Features that are fully implemented and working in the V2 (Rust/TypeScript) rewr
 - **Switch character** (creates new engine instance, client-side state file)
 - **List models**
 - **Switch model** (accepts short or qualified names)
-- **Config get/set**
+- **Config get** (shore config / shore config <section>)
 - **Config path** (shore config --path) — Prints config directory, no daemon needed.
 - **Status** (character, conversation, model, autonomy state/tau/keepalive, token counts)
 - **Completions** (fish, bash, zsh)
@@ -76,7 +76,7 @@ Features that are fully implemented and working in the V2 (Rust/TypeScript) rewr
 - **TCP / remote daemon access** — Config [daemon].tcp_addr + SHORE_TCP_ADDR env var.
 - **Thin-client mode** (no local config) — CLI --socket flag can point to remote.
 - **Instance registry** — instances.json with file locking, register/unregister/list.
-- **Runtime config overrides**
+- **Runtime config overrides** (model switch, per-character overrides — but no general `config set` pathway yet)
 - **Config auto-sync** (fills missing fields on startup)
 - **Per-character config overrides** — Character definitions, user definitions, prompt templates all resolve per-character.
 - **Process supervision** (shore-llm) — Daemon spawns and supervises shore-llm. Health checks, restart with backoff, SIGTERM/SIGKILL.
