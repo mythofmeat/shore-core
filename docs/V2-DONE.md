@@ -11,18 +11,19 @@ Features that are fully implemented and working in the V2 (Rust/TypeScript) rewr
 - **Heartbeat system** (5-state, social need, dormancy) — Library + daemon wired. Per-character tick tasks spawned on first message, event feeding from handler (user/assistant messages), state persisted to disk, configurable dormant threshold (default 1). Action execution (LLM probe calls) not yet wired.
 - **Cache keepalive** (Anthropic TTL refresh) — Library + daemon wired. Per-character tick tasks with idle detection, config derived from resolved model. Ping execution (minimal API calls) not yet wired.
 - **Autonomy state persistence** — Heartbeat state + cache keepalive counters saved to `{data_dir}/{character}/autonomy_state.json`. Restored on daemon restart with edge-case handling (expired deferrals, stale probes).
-- **Auto-compaction** (idle trigger + reactive fallback) — Compactor with idle timer; needs wiring to engine activity signal.
+- **Auto-compaction** (idle trigger + max-messages) — AutonomyManager per-character tick tasks with idle timer and max-messages trigger. Background compaction task consumes channel and runs full pipeline. Activity notifications from handler reset timers.
 
 ## Memory System
 
 - **SQLite storage** (WAL mode) + **FTS5 full-text search** (porter stemming, relevance ranking)
 - **LanceDB vector store**
 - **RAG retrieval** (vector + BM25 + deranking) — Library complete. Used by image tools for semantic search.
-- **Compaction** (conversation → memory) — Library complete. Daemon compact command is a stub — needs wiring to MemoryDB.
-- **Collation — tidy phase** (split multi-topic entries)
-- **Collation — merge phase** (cluster + deduplicate)
-- **Collation — entity normalization**
-- **Collation — confidence decay**
+- **Compaction** (conversation → memory) — Full pipeline: RealCompactionLlm, RealVectorIndexer, RealConversationManager. Daemon command handler + background auto-trigger. Archives to segments, writes recap, reloads engine.
+- **Collation** (memory refinement) — 4-phase pipeline fully wired. RealCollationLlm (JSON parsing with markdown fence stripping). Auto-runs after compaction when `collation.auto_run = true`. Manual trigger via `shore collate`.
+  - **Tidy phase** (split multi-topic entries)
+  - **Merge phase** (cluster + deduplicate)
+  - **Entity normalization**
+  - **Confidence decay**
 - **Entity registry** (case-insensitive, descriptions)
 - **Memory agent — agentic LLM loop** — 9 inner tools (search_entries, query_db, create_entry, update_entry, supersede_entry, update_entity, merge_entity, create_flag, resolve_flag), max 40 iterations, read/write classification with confirmation flow. Matches V1 `_run_agent_loop()`. CallerIdentity resolves pronoun ambiguity.
 - **Memory researcher** — Cheap-model tier (defaults.tool_model) with `ask_memory_agent` tool, max 15 iterations, refusal fallback. Matches V1 `MemoryResearcher`.
@@ -60,6 +61,10 @@ Features that are fully implemented and working in the V2 (Rust/TypeScript) rewr
 - **Send via editor** (shore send with no args opens $EDITOR)
 - **Model info** (shore model <name> --info) — Full ResolvedModel details.
 - **Character info** (shore character <name> --info) — Definition preview, user.md, prompt overrides.
+- **Compact** (shore compact) — Full compaction pipeline via daemon command.
+- **Collate** (shore collate) — Manual collation trigger via daemon command.
+- **Stdin/pipe support** (echo "hi" | shore send) — Reads stdin when not a terminal.
+- **Relative message refs** (shore edit last, shore delete -1) — Supports `last`, negative indices, positive indices.
 
 ## Configuration & Architecture
 

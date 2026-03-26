@@ -514,6 +514,21 @@ mod tests {
         }
     }
 
+    // ── Collate command ─────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn collate_sends_command() {
+        let cli = test_cli(CliCommand::Collate);
+        let received = execute_with_mock(cli, command_response("collate")).await;
+
+        match received {
+            ClientMessage::Command(c) => {
+                assert_eq!(c.name, "collate");
+            }
+            other => panic!("expected Command, got: {other:?}"),
+        }
+    }
+
     // ── Memory command ───────────────────────────────────────────────
 
     #[tokio::test]

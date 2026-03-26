@@ -71,6 +71,7 @@ pub async fn dispatch(
         "switch_model" => state::switch_model(ctx, &cmd.args),
         "memory" => state::memory(engine, ctx, &cmd.args).await,
         "compact" => state::compact(engine, ctx, &cmd.args).await,
+        "collate" => state::collate(engine, ctx, &cmd.args).await,
         "config" => state::config(ctx, &cmd.args),
 
         _ => Err((

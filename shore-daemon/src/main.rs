@@ -6,6 +6,11 @@ use shore_daemon::commands::{CommandContext, SessionTokens};
 use shore_daemon::config::{load_config, resolve_prompt_template, LoadedConfig};
 use shore_daemon::handler::MessageHandler;
 use shore_daemon::llm_client::LlmClient;
+use shore_daemon::memory::collation::{
+    CollationConfig as LibCollationConfig, CollationManager, DEFAULT_COLLATE_PROMPT,
+    DEFAULT_NORMALIZE_PROMPT, DEFAULT_TIDY_PROMPT,
+};
+use shore_daemon::memory::collation_impls::RealCollationLlm;
 use shore_daemon::memory::compaction::{
     CompactionConfig, CompactionManager, CompactionOutcome, ConversationMessage,
     DEFAULT_COMPACT_PROMPT,
@@ -373,11 +378,87 @@ async fn run_compaction(
                 messages: retained_messages,
                 config: serde_json::json!({}),
             }));
+
+            // Run collation after successful compaction if configured.
+            if config.app.behavior.autonomy.collation.auto_run {
+                info!(character = %character, "Running auto-collation after compaction");
+                if let Err(e) = run_collation(character, config, llm_client, data_dir).await {
+                    warn!(
+                        character = %character,
+                        error = %e,
+                        "Auto-collation failed"
+                    );
+                }
+            }
         }
         CompactionOutcome::DryRun(_) => {
             // Should not happen in background mode, but harmless.
         }
     }
+
+    Ok(())
+}
+
+/// Run the collation pipeline for a single character.
+///
+/// Called after compaction (auto-trigger) or could be invoked independently.
+async fn run_collation(
+    character: &str,
+    config: &LoadedConfig,
+    llm_client: &LlmClient,
+    data_dir: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let character_dir = data_dir.join(character);
+
+    // Open memory DB.
+    let db_path = character_dir.join("memory").join("memory.db");
+    let db = MemoryDB::open(&db_path)
+        .map_err(|e| format!("Failed to open memory DB: {e}"))?;
+
+    // Resolve model.
+    let model = config
+        .app
+        .defaults
+        .memory_agent
+        .as_deref()
+        .and_then(|name| config.models.find_model(name).ok())
+        .or_else(|| {
+            config
+                .app
+                .defaults
+                .model
+                .as_deref()
+                .and_then(|name| config.models.find_model(name).ok())
+        })
+        .or_else(|| config.models.first_chat_model())
+        .ok_or("No model configured")?
+        .clone();
+
+    let llm = RealCollationLlm::new(llm_client.clone(), model);
+
+    // Resolve prompt templates.
+    let tidy_template = resolve_prompt_template(&config.dirs.config, character, "tidy.md")
+        .unwrap_or_else(|| DEFAULT_TIDY_PROMPT.to_string());
+    let collate_template = resolve_prompt_template(&config.dirs.config, character, "collate.md")
+        .unwrap_or_else(|| DEFAULT_COLLATE_PROMPT.to_string());
+    let normalize_template =
+        resolve_prompt_template(&config.dirs.config, character, "normalize.md")
+            .unwrap_or_else(|| DEFAULT_NORMALIZE_PROMPT.to_string());
+
+    let mgr = CollationManager::new(LibCollationConfig::default());
+
+    let outcome = mgr
+        .run(&db, &llm, &tidy_template, &collate_template, &normalize_template)
+        .await?;
+
+    info!(
+        character = %character,
+        tidy_splits = outcome.tidy_splits,
+        collate_merges = outcome.collate_merges,
+        entities_normalized = outcome.entities_normalized,
+        entries_decayed = outcome.entries_decayed,
+        "Auto-collation completed"
+    );
 
     Ok(())
 }

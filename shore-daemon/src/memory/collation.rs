@@ -65,7 +65,7 @@ impl std::error::Error for CollationError {}
 // ---------------------------------------------------------------------------
 
 /// A split produced by Phase 1 (Tidy).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize)]
 pub struct TidySplit {
     /// ID of the original (overly broad) entry.
     pub original_entry_id: String,
@@ -73,7 +73,7 @@ pub struct TidySplit {
     pub replacements: Vec<TidyReplacement>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize)]
 pub struct TidyReplacement {
     pub summary_text: String,
     pub topic_tags: String,
@@ -82,7 +82,7 @@ pub struct TidyReplacement {
 }
 
 /// A merge produced by Phase 2 (Collate).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize)]
 pub struct CollateMerge {
     /// IDs of entries being merged together.
     pub source_entry_ids: Vec<String>,
@@ -94,7 +94,7 @@ pub struct CollateMerge {
 }
 
 /// An entity normalization produced by Phase 3.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize)]
 pub struct EntityNormalization {
     /// The canonical entity name to keep.
     pub canonical_name: String,

@@ -328,6 +328,7 @@ thing, bare verb/noun when unambiguous.
 | `memory` | `query?` | No arg = status; with arg = search memories |
 | `toggle_private` | — | Toggle private mode on active conversation → server re-sends `history` |
 | `compact` | `dry_run?` | Trigger compaction |
+| `collate` | — | Run 4-phase collation pipeline |
 | `toggle_autonomy` | — | Toggle autonomy pause/resume |
 | `config` | `section?` | Show effective configuration |
 
@@ -346,7 +347,7 @@ These commands exist in V1 but are deferred to post-launch. The generic
 | `chat_search` | Nice to have |
 | `msg_insert` | Rare operation |
 | `msg_detach` | Edge case |
-| `memory_collate` | Runs automatically |
+| ~~`memory_collate`~~ | ~~Runs automatically~~ (implemented as `collate` command + auto-trigger) |
 | `memory_reindex` | Maintenance op |
 | `memory_import` | Add later |
 | `memory_shell` | Interactive memory sessions (requires additional protocol messages) |
@@ -421,8 +422,10 @@ shore-daemon/
 │   │   ├── db.rs               # SQLite schema, CRUD, migrations
 │   │   ├── rag.rs              # RAG pipeline (vector + BM25 + scoring)
 │   │   ├── vectorstore.rs      # LanceDB integration
-│   │   ├── compaction.rs       # Conversation → entries
-│   │   ├── collation.rs        # 4-phase dedup pipeline
+│   │   ├── compaction.rs       # Conversation → entries (library)
+│   │   ├── compaction_impls.rs # Production CompactionLlm/VectorIndexer/ConversationManager
+│   │   ├── collation.rs        # 4-phase dedup pipeline (library)
+│   │   ├── collation_impls.rs  # Production CollationLlm (JSON parsing)
 │   │   ├── agent.rs            # Memory agent (with caller identity awareness)
 │   │   ├── search.rs           # Full-text search
 │   │   └── importer.rs         # File import to entries
@@ -443,7 +446,7 @@ shore-daemon/
 │   │   ├── mod.rs              # Command dispatch table (18 flat commands, see §3.7)
 │   │   ├── navigation.rs       # list_characters, switch_character, list_chats, switch_chat, new_chat
 │   │   ├── conversation.rs     # swipe, log, edit, delete
-│   │   └── state.rs            # status, list_models, switch_model, memory, toggle_private, compact, toggle_autonomy, config
+│   │   └── state.rs            # status, list_models, switch_model, memory, toggle_private, compact, collate, toggle_autonomy, config
 │   │
 │   └── types.rs                # Shared daemon-internal types
 ```

@@ -83,9 +83,11 @@ shore-daemon
 In a separate terminal, use the CLI:
 
 ```sh
-shore-cli message "Hello, Shore!"
-shore-cli status
-shore-cli memory search "recent events"
+shore send "Hello, Shore!"
+shore status
+shore memory "recent events"
+shore compact
+shore collate
 ```
 
 Or launch the TUI for an interactive session:

@@ -6,6 +6,11 @@ use crate::config::resolve_prompt_template;
 use crate::engine::ConversationEngine;
 use crate::memory::agent::{CallerIdentity, MemoryAgent};
 use crate::memory::agent_llm::RealAgentLlm;
+use crate::memory::collation::{
+    CollationConfig as LibCollationConfig, CollationError, CollationManager,
+    DEFAULT_COLLATE_PROMPT, DEFAULT_NORMALIZE_PROMPT, DEFAULT_TIDY_PROMPT,
+};
+use crate::memory::collation_impls::RealCollationLlm;
 use crate::memory::compaction::{
     CompactionConfig, CompactionError, CompactionManager, CompactionOutcome,
     ConversationMessage, DEFAULT_COMPACT_PROMPT,
@@ -408,6 +413,80 @@ fn compaction_err(e: CompactionError) -> (ErrorCode, String) {
     }
 }
 
+/// Run the 4-phase collation pipeline on the current character's memory.
+///
+/// Phases: tidy (split broad entries), collate (merge similar), normalize
+/// entities, and confidence decay.
+pub async fn collate(
+    engine: &mut ConversationEngine,
+    ctx: &CommandContext,
+    _args: &serde_json::Value,
+) -> CommandResult {
+    let char_name = engine.character_name().to_string();
+
+    // Open the memory database.
+    let db_path = ctx
+        .data_dir
+        .join(&char_name)
+        .join("memory")
+        .join("memory.db");
+    let db = MemoryDB::open(&db_path)
+        .map_err(|e| (ErrorCode::InternalError, format!("Failed to open memory DB: {e}")))?;
+
+    // Resolve model: memory_agent -> active_model -> first_chat_model.
+    let model = ctx
+        .config
+        .app
+        .defaults
+        .memory_agent
+        .as_deref()
+        .and_then(|name| ctx.config.models.find_model(name).ok())
+        .or_else(|| {
+            ctx.active_model
+                .as_deref()
+                .and_then(|name| ctx.config.models.find_model(name).ok())
+        })
+        .or_else(|| ctx.config.models.first_chat_model())
+        .ok_or_else(|| (ErrorCode::InternalError, "No model configured".to_string()))?
+        .clone();
+
+    let llm = RealCollationLlm::new(ctx.llm_client.clone(), model);
+
+    // Resolve prompt templates.
+    let tidy_template = resolve_prompt_template(&ctx.config.dirs.config, &char_name, "tidy.md")
+        .unwrap_or_else(|| DEFAULT_TIDY_PROMPT.to_string());
+    let collate_template =
+        resolve_prompt_template(&ctx.config.dirs.config, &char_name, "collate.md")
+            .unwrap_or_else(|| DEFAULT_COLLATE_PROMPT.to_string());
+    let normalize_template =
+        resolve_prompt_template(&ctx.config.dirs.config, &char_name, "normalize.md")
+            .unwrap_or_else(|| DEFAULT_NORMALIZE_PROMPT.to_string());
+
+    let mgr = CollationManager::new(LibCollationConfig::default());
+
+    let outcome = mgr
+        .run(&db, &llm, &tidy_template, &collate_template, &normalize_template)
+        .await
+        .map_err(collation_err)?;
+
+    Ok(json!({
+        "status": "collated",
+        "character": char_name,
+        "tidy_splits": outcome.tidy_splits,
+        "tidy_new_entries": outcome.tidy_new_entries,
+        "collate_merges": outcome.collate_merges,
+        "collate_new_entries": outcome.collate_new_entries,
+        "entities_normalized": outcome.entities_normalized,
+        "entries_decayed": outcome.entries_decayed,
+        "entries_skipped": outcome.entries_skipped,
+    }))
+}
+
+/// Map `CollationError` to a command error tuple.
+fn collation_err(e: CollationError) -> (ErrorCode, String) {
+    (ErrorCode::InternalError, e.to_string())
+}
+
 /// Show effective configuration. Optionally filtered by section name.
 pub fn config(ctx: &CommandContext, args: &serde_json::Value) -> CommandResult {
     let section = args.get("key").and_then(|v| v.as_str());
@@ -705,6 +784,22 @@ model_id = "gpt-4o"
         let (code, msg) = result.unwrap_err();
         assert_eq!(code, ErrorCode::InvalidRequest);
         assert!(msg.contains("No messages"));
+    }
+
+    #[tokio::test]
+    async fn collate_no_model_returns_error() {
+        let tmp = TempDir::new().unwrap();
+        let (mut engine, ctx, _rx) = make_ctx(&tmp);
+
+        // Create memory DB so it opens successfully.
+        let db_dir = ctx.data_dir.join("TestChar").join("memory");
+        std::fs::create_dir_all(&db_dir).unwrap();
+        let _db = MemoryDB::open(&db_dir.join("memory.db")).unwrap();
+
+        let result = collate(&mut engine, &ctx, &json!({})).await;
+        assert!(result.is_err());
+        let (code, _msg) = result.unwrap_err();
+        assert_eq!(code, ErrorCode::InternalError);
     }
 
     #[test]

@@ -91,6 +91,9 @@ pub enum CliCommand {
     /// Trigger memory compaction
     Compact,
 
+    /// Run memory collation (tidy, merge, normalize, decay)
+    Collate,
+
     /// Show or modify configuration
     Config {
         /// Optional key to get/set
@@ -163,6 +166,9 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
         }
         CliCommand::Compact => {
             Some(("compact", json!({})))
+        }
+        CliCommand::Collate => {
+            Some(("collate", json!({})))
         }
         CliCommand::Config { key, value, .. } => {
             Some(("config", json!({ "key": key, "value": value })))
@@ -405,6 +411,12 @@ mod tests {
     }
 
     #[test]
+    fn parse_collate() {
+        let cli = parse(&["collate"]);
+        assert!(matches!(cli.command, CliCommand::Collate));
+    }
+
+    #[test]
     fn parse_config_no_args() {
         let cli = parse(&["config"]);
         match &cli.command {
@@ -544,6 +556,7 @@ mod tests {
             CliCommand::Character { name: Some("c".into()), info: true },
             CliCommand::Memory { query: None },
             CliCommand::Compact,
+            CliCommand::Collate,
             CliCommand::Config { key: None, value: None, path: false },
         ];
         for cmd in &commands {

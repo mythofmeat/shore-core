@@ -14,21 +14,20 @@ Both the subsystem library code AND the daemon core exist for these,
 but they aren't connected to each other yet. These are the lowest-hanging
 fruit for getting the system functional.
 
-- 9.1 **Compact command** — WIRING
-  Library: CompactionManager (working). Daemon compact command is a stub.
-  Needs production implementations of CompactionLlm, VectorIndexer,
-  ConversationManager traits.
+- 9.1 ~~**Compact command**~~ — DONE
+  Production trait impls (RealCompactionLlm, RealVectorIndexer,
+  RealConversationManager) and full daemon command handler.
 
-- 9.4 **Compaction trigger** — WIRING
-  Library: Compactor with idle timer (working).
-  Daemon: No integration with engine activity signal.
+- 9.4 ~~**Compaction trigger**~~ — DONE
+  AutonomyManager has idle + max-messages triggers, background compaction task
+  consumes channel and runs compaction.
 
-- 9.6 **Collation trigger** — WIRING
-  Library: 4-phase pipeline (working).
-  Daemon: No integration with engine or CLI.
+- 9.6 ~~**Collation trigger**~~ — DONE
+  RealCollationLlm impl, `shore collate` CLI command, auto-collation after
+  compaction when `collation.auto_run = true`.
 
-- 5.15 **Manual compaction** — WIRING
-  CLI sends command; daemon handler is a stub. Compactor library code exists.
+- 5.15 ~~**Manual compaction**~~ — DONE
+  CLI `shore compact` sends command, daemon handler runs full pipeline.
 
 
 ## Priority 2: shore-llm Endpoints
@@ -61,9 +60,8 @@ These depend on shore-llm implementing the endpoints.
 
 ### Messaging
 - 5.2 Send with image attachment (-i flag) — MISSING
-- 5.3 **Stdin/pipe support for send** — MISSING
-  `echo "hello" | shore send` opens $EDITOR instead of reading stdin.
-  Blocks common Unix composition patterns (piping, heredocs).
+- 5.3 ~~**Stdin/pipe support for send**~~ — DONE
+  `shore send` reads stdin when piped/redirected, opens $EDITOR when interactive.
 - 5.7 Log follow mode (-f/--follow) — MISSING
 - 5.8 Log format options (--json/--heartbeat/--content) — MISSING
 
@@ -73,9 +71,8 @@ These depend on shore-llm implementing the endpoints.
 - 5.14 Conversation info — MISSING
 
 ### Message CRUD
-- 5.17 **Relative message references for edit/delete** — MISSING
-  edit and delete require opaque m_<uuid> IDs. Need support for `last`, `-1`,
-  or numeric index so users don't have to dig through JSON log output.
+- 5.17 ~~**Relative message references for edit/delete**~~ — DONE
+  Supports `last`, `-1`, negative indices, and positive indices.
 - 5.18 Get message by index — MISSING
 - 5.19 Insert message at position — MISSING
 - 5.20 Detach attachment — MISSING
@@ -87,7 +84,7 @@ These depend on shore-llm implementing the endpoints.
 - 5.28 Reset to default — MISSING
 
 ### Memory CLI
-- 5.31 Memory collation (manual trigger) — MISSING
+- 5.31 ~~Memory collation (manual trigger)~~ — DONE (`shore collate`)
 - 5.32 Memory reindex — MISSING
 - 5.33 Memory import — MISSING
 - 5.34 Memory ask (one-shot agent) — MISSING as CLI; engine-side agent works.
