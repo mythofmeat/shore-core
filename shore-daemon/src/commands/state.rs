@@ -410,7 +410,7 @@ fn compaction_err(e: CompactionError) -> (ErrorCode, String) {
 
 /// Show effective configuration. Optionally filtered by section name.
 pub fn config(ctx: &CommandContext, args: &serde_json::Value) -> CommandResult {
-    let section = args.get("section").and_then(|v| v.as_str());
+    let section = args.get("key").and_then(|v| v.as_str());
 
     let app_json = serde_json::to_value(&ctx.config.app)
         .map_err(|e| (ErrorCode::InternalError, format!("Failed to serialize config: {e}")))?;
@@ -418,7 +418,7 @@ pub fn config(ctx: &CommandContext, args: &serde_json::Value) -> CommandResult {
     match section {
         None => Ok(json!({ "config": app_json })),
         Some(name) => match app_json.get(name) {
-            Some(data) => Ok(json!({ "section": name, "config": data })),
+            Some(data) => Ok(json!({ "key": name, "config": data })),
             None => Err((
                 ErrorCode::NotFound,
                 format!("Config section not found: {name}"),
@@ -721,8 +721,8 @@ model_id = "gpt-4o"
         let tmp = TempDir::new().unwrap();
         let (_engine, ctx, _rx) = make_ctx(&tmp);
 
-        let result = config(&ctx, &json!({"section": "defaults"})).unwrap();
-        assert_eq!(result["section"], "defaults");
+        let result = config(&ctx, &json!({"key": "defaults"})).unwrap();
+        assert_eq!(result["key"], "defaults");
     }
 
     #[test]
@@ -730,7 +730,7 @@ model_id = "gpt-4o"
         let tmp = TempDir::new().unwrap();
         let (_engine, ctx, _rx) = make_ctx(&tmp);
 
-        let result = config(&ctx, &json!({"section": "nonexistent"}));
+        let result = config(&ctx, &json!({"key": "nonexistent"}));
         assert!(result.is_err());
         let (code, _msg) = result.unwrap_err();
         assert_eq!(code, ErrorCode::NotFound);

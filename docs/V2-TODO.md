@@ -95,10 +95,8 @@ These depend on shore-llm implementing the endpoints.
 - 5.36 Memory changelog — MISSING
 
 ### Configuration
-- 5.37 **Config key/section mismatch** — BUG
-  CLI sends `{"key": ..., "value": ...}` but daemon config handler reads
-  `args.get("section")`. `shore config defaults` silently returns full config
-  instead of the filtered section.
+- 5.37 ~~**Config key/section mismatch**~~ — DONE
+  Daemon now reads `args.get("key")` to match CLI.
 - 5.38 Config show (all sections) — MISSING
 - 5.39 Config check (validation) — MISSING (load_config validates on startup)
 - 5.40 Config reset (clear overrides) — MISSING
@@ -203,10 +201,8 @@ Needs design work before implementing — some may not map 1:1.
 
 ## Build & Packaging
 
-- 11.1 **Binary name is `shore-cli`** — MISSING
-  Cargo package name is `shore-cli` so the binary is `shore-cli`. Help text and
-  clap are configured as `shore`. Need `[[bin]] name = "shore"` in Cargo.toml
-  or a rename at install time so the installed binary is just `shore`.
+- 11.1 ~~**Binary name is `shore-cli`**~~ — DONE
+  Already has `[[bin]] name = "shore"` in shore-cli/Cargo.toml.
 
 
 ## Platform Bridges
