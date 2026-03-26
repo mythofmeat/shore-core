@@ -7,11 +7,13 @@ use super::activity::{ActivityStats, HourClassification};
 /// τ used before sufficient data is collected (3 hours).
 pub const WARMUP_TAU: f64 = 10800.0;
 
-/// Check interval during warmup (20 minutes).
-pub const WARMUP_CHECK_INTERVAL: f64 = 1200.0;
+/// Base interval between social-need probability checks (30 minutes).
+pub const SOCIAL_NEED_CHECK_SECS: f64 = 1800.0;
 
-/// Random jitter applied to check intervals (±60s).
-pub const CHECK_INTERVAL_JITTER: f64 = 60.0;
+/// Jitter fraction applied to social-need check intervals (±50%).
+/// Each check is scheduled at `SOCIAL_NEED_CHECK_SECS × (1 ± SOCIAL_NEED_JITTER)`,
+/// giving intervals between 15–45 minutes.
+pub const SOCIAL_NEED_JITTER: f64 = 0.5;
 
 /// Maximum deferral hours for character-chosen times.
 pub const MAX_DEFERRAL_HOURS: f64 = 24.0;

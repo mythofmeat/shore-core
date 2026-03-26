@@ -4,11 +4,14 @@
 //! See §13.1 of ARCHITECTURE.md for the full spec.
 
 use chrono::{Duration, NaiveDateTime};
-use std::time::Instant;
+use std::time::{Duration as StdDuration, Instant};
 
 use super::activity::{ActivityStats, ANOMALY_Z_SCORE, SESSION_GAP};
 use super::time_parse::{parse_time_expression, TimeParseResult};
-use super::timing::{compute_tau, roll_probability, roll_succeeds, TauParams, MAX_DEFERRAL_HOURS};
+use super::timing::{
+    compute_tau, roll_probability, roll_succeeds, TauParams, MAX_DEFERRAL_HOURS,
+    SOCIAL_NEED_CHECK_SECS, SOCIAL_NEED_JITTER,
+};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -158,6 +161,11 @@ pub struct HeartbeatScheduler {
     unanswered_count: u32,
     /// Last time a social-need probability check was performed.
     last_social_check: Option<Instant>,
+    /// Next scheduled social-need check time (with jitter applied).
+    next_social_check_at: Option<Instant>,
+    /// Cumulative probability of no successful roll since entering SocialNeed.
+    /// Social need bar = 1.0 - cumulative_no_hit.
+    cumulative_no_hit: f64,
 }
 
 impl HeartbeatScheduler {
@@ -176,6 +184,8 @@ impl HeartbeatScheduler {
             session_start: None,
             unanswered_count: 0,
             last_social_check: None,
+            next_social_check_at: None,
+            cumulative_no_hit: 1.0,
         }
     }
 
@@ -193,6 +203,12 @@ impl HeartbeatScheduler {
         self.unanswered_count
     }
 
+    /// Cumulative probability that at least one social-need roll has succeeded
+    /// since entering SocialNeed state. Ranges from 0.0 (just entered) to ~1.0.
+    pub fn social_need_bar(&self) -> f64 {
+        1.0 - self.cumulative_no_hit
+    }
+
     // -- control --------------------------------------------------------------
 
     /// Toggle pause/resume. Returns the new paused state.
@@ -201,10 +217,18 @@ impl HeartbeatScheduler {
         self.paused
     }
 
+    /// Explicitly set the pause state. Returns the new state.
+    pub fn set_paused(&mut self, paused: bool) -> bool {
+        self.paused = paused;
+        self.paused
+    }
+
     /// Restore persisted state (heartbeat state and unanswered count).
     pub fn restore(&mut self, state: HeartbeatState, unanswered_count: u32) {
         self.state = state;
         self.unanswered_count = unanswered_count;
+        self.cumulative_no_hit = 1.0;
+        self.next_social_check_at = None;
     }
 
     /// Returns the dormant threshold.
@@ -219,6 +243,8 @@ impl HeartbeatScheduler {
     pub fn on_user_message(&mut self, now: Instant) {
         self.last_user_ts = Some(now);
         self.unanswered_count = 0;
+        self.cumulative_no_hit = 1.0;
+        self.next_social_check_at = None;
 
         if !matches!(self.state, HeartbeatState::Session) {
             self.state = HeartbeatState::Session;
@@ -302,6 +328,8 @@ impl HeartbeatScheduler {
             TimeParseResult::Declined => {
                 self.state = HeartbeatState::SocialNeed;
                 self.last_social_check = Some(now);
+                self.cumulative_no_hit = 1.0;
+                self.next_social_check_at = Some(now + StdDuration::from_secs_f64(SOCIAL_NEED_CHECK_SECS));
                 ProbeResult::Declined
             }
         }
@@ -350,6 +378,8 @@ impl HeartbeatScheduler {
             self.unanswered_count += 1;
             self.state = HeartbeatState::SocialNeed;
             self.last_social_check = Some(now);
+            self.cumulative_no_hit = 1.0;
+            self.next_social_check_at = Some(now + StdDuration::from_secs_f64(SOCIAL_NEED_CHECK_SECS));
             return HeartbeatAction::GenerateDeferredMessage { reasoning };
         }
 
@@ -369,16 +399,36 @@ impl HeartbeatScheduler {
             return HeartbeatAction::None;
         }
 
+        // Initialize check schedule if not set (e.g., after state restore).
+        if self.next_social_check_at.is_none() {
+            self.next_social_check_at = Some(now + StdDuration::from_secs_f64(SOCIAL_NEED_CHECK_SECS));
+            self.last_social_check = Some(now);
+            return HeartbeatAction::None;
+        }
+
+        // Wait for the jittered check interval to elapse.
+        if self.next_social_check_at.is_some_and(|next| now < next) {
+            return HeartbeatAction::None;
+        }
+
         let elapsed = self
             .last_social_check
-            .map_or(0.0, |lc| now.duration_since(lc).as_secs_f64());
+            .map_or(SOCIAL_NEED_CHECK_SECS, |lc| now.duration_since(lc).as_secs_f64());
 
         let tau = compute_tau(stats, params);
         let prob = roll_probability(elapsed, tau);
 
+        // Update cumulative miss probability.
+        self.cumulative_no_hit *= 1.0 - prob;
+
+        // Schedule next jittered check: base interval × (1 ± jitter).
+        let jitter_factor = 1.0 + (random_value * 2.0 - 1.0) * SOCIAL_NEED_JITTER;
+        let next_interval = SOCIAL_NEED_CHECK_SECS * jitter_factor;
+        self.next_social_check_at = Some(now + StdDuration::from_secs_f64(next_interval));
+        self.last_social_check = Some(now);
+
         if roll_succeeds(prob, random_value) {
             self.unanswered_count += 1;
-            self.last_social_check = Some(now);
             let anomaly = stats
                 .anomaly_z_score
                 .is_some_and(|z| z >= ANOMALY_Z_SCORE);
@@ -387,7 +437,6 @@ impl HeartbeatScheduler {
             };
         }
 
-        self.last_social_check = Some(now);
         HeartbeatAction::None
     }
 }
@@ -639,6 +688,7 @@ mod tests {
 
         sched.state = HeartbeatState::SocialNeed;
         sched.last_social_check = Some(t0);
+        sched.next_social_check_at = Some(t0); // Allow immediate check.
 
         let stats = make_stats(0.8, 4.0, true, None);
 
@@ -666,19 +716,22 @@ mod tests {
 
         sched.state = HeartbeatState::SocialNeed;
         sched.last_social_check = Some(t0);
+        sched.next_social_check_at = Some(t0); // Allow immediate check.
 
         let stats = make_stats(0.8, 4.0, true, None);
 
-        // random_value = 0.999 with small elapsed → very unlikely to succeed.
+        // Elapsed = 1800s (one check interval), random_value = 0.999 → likely fails.
         let action = sched.tick(
             &stats,
             &default_params(),
-            t0 + StdDuration::from_secs(1),
+            t0 + StdDuration::from_secs(1800),
             wall(14, 0),
             0.999,
         );
         assert_eq!(action, HeartbeatAction::None);
         assert_eq!(sched.unanswered_count(), 0);
+        // Cumulative bar should have advanced.
+        assert!(sched.social_need_bar() > 0.0);
     }
 
     #[test]
@@ -688,6 +741,7 @@ mod tests {
 
         sched.state = HeartbeatState::SocialNeed;
         sched.last_social_check = Some(t0);
+        sched.next_social_check_at = Some(t0); // Allow immediate check.
 
         // z-score 2.0 > ANOMALY_Z_SCORE (1.5) → anomaly_context = true.
         let stats = make_stats(0.8, 4.0, true, Some(2.0));
@@ -738,12 +792,15 @@ mod tests {
 
         sched.state = HeartbeatState::SocialNeed;
         sched.last_social_check = Some(t0);
+        sched.next_social_check_at = Some(t0); // Allow immediate check.
 
         let stats = make_stats(0.8, 4.0, true, None);
 
         // Send DORMANT_THRESHOLD messages (all succeed).
         for i in 0..DORMANT_THRESHOLD {
             let elapsed = StdDuration::from_secs((i as u64 + 1) * 7200);
+            // Ensure the check fires by setting next_social_check_at to the past.
+            sched.next_social_check_at = Some(t0);
             let action = sched.tick(
                 &stats,
                 &default_params(),
@@ -773,6 +830,120 @@ mod tests {
         );
         assert_eq!(action, HeartbeatAction::None);
         assert!(matches!(sched.state(), HeartbeatState::Dormant));
+    }
+
+    // -- Social need check interval and cumulative bar --------------------------
+
+    #[test]
+    fn test_social_need_skips_before_interval() {
+        let mut sched = HeartbeatScheduler::new();
+        let t0 = Instant::now();
+
+        sched.state = HeartbeatState::SocialNeed;
+        sched.last_social_check = Some(t0);
+        // Next check at t0 + 30 min.
+        sched.next_social_check_at = Some(t0 + StdDuration::from_secs(1800));
+
+        let stats = make_stats(0.8, 4.0, true, None);
+
+        // Tick at t0 + 10 min — too early, should skip.
+        let action = sched.tick(
+            &stats,
+            &default_params(),
+            t0 + StdDuration::from_secs(600),
+            wall(14, 10),
+            0.0,
+        );
+        assert_eq!(action, HeartbeatAction::None);
+        assert_eq!(sched.unanswered_count(), 0);
+        // Bar should not have changed — no roll happened.
+        assert!((sched.social_need_bar() - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_social_need_cumulative_bar_grows() {
+        let mut sched = HeartbeatScheduler::new();
+        let t0 = Instant::now();
+
+        sched.state = HeartbeatState::SocialNeed;
+        sched.last_social_check = Some(t0);
+        sched.next_social_check_at = Some(t0); // Allow immediate check.
+
+        let stats = make_stats(0.8, 4.0, true, None);
+
+        // First failed roll — bar should increase from 0.
+        let action = sched.tick(
+            &stats,
+            &default_params(),
+            t0 + StdDuration::from_secs(1800),
+            wall(14, 30),
+            0.999,
+        );
+        assert_eq!(action, HeartbeatAction::None);
+        let bar_after_one = sched.social_need_bar();
+        assert!(bar_after_one > 0.0, "bar should grow after a roll");
+
+        // Second failed roll — bar should grow further.
+        sched.next_social_check_at = Some(t0 + StdDuration::from_secs(1800));
+        let action = sched.tick(
+            &stats,
+            &default_params(),
+            t0 + StdDuration::from_secs(3600),
+            wall(15, 0),
+            0.999,
+        );
+        assert_eq!(action, HeartbeatAction::None);
+        let bar_after_two = sched.social_need_bar();
+        assert!(bar_after_two > bar_after_one, "bar should grow monotonically");
+    }
+
+    #[test]
+    fn test_social_need_bar_resets_on_user_message() {
+        let mut sched = HeartbeatScheduler::new();
+        let t0 = Instant::now();
+
+        sched.state = HeartbeatState::SocialNeed;
+        sched.last_social_check = Some(t0);
+        sched.next_social_check_at = Some(t0);
+        sched.cumulative_no_hit = 0.5; // Simulate accumulated rolls.
+
+        assert!((sched.social_need_bar() - 0.5).abs() < f64::EPSILON);
+
+        sched.on_user_message(t0 + StdDuration::from_secs(100));
+        assert!((sched.social_need_bar() - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_social_need_jittered_interval() {
+        let mut sched = HeartbeatScheduler::new();
+        let t0 = Instant::now();
+
+        sched.state = HeartbeatState::SocialNeed;
+        sched.last_social_check = Some(t0);
+        sched.next_social_check_at = Some(t0);
+
+        let stats = make_stats(0.8, 4.0, true, None);
+
+        // After a tick, next_social_check_at should be set to a jittered interval.
+        sched.tick(
+            &stats,
+            &default_params(),
+            t0 + StdDuration::from_secs(1800),
+            wall(14, 30),
+            0.75, // random_value for jitter and roll
+        );
+
+        let next = sched.next_social_check_at.unwrap();
+        let tick_time = t0 + StdDuration::from_secs(1800);
+        let interval = next.duration_since(tick_time).as_secs_f64();
+
+        // Jitter factor = 1.0 + (0.75 * 2.0 - 1.0) * 0.5 = 1.0 + 0.25 = 1.25
+        // Expected interval = 1800 * 1.25 = 2250s
+        let expected = 1800.0 * 1.25;
+        assert!(
+            (interval - expected).abs() < 1.0,
+            "expected interval ~{expected}s, got {interval}s"
+        );
     }
 
     // -- Dormant → user message → Session -------------------------------------

@@ -319,6 +319,18 @@ impl AutonomyManager {
         }
     }
 
+    /// Explicitly set the paused state for a character. Returns the new state,
+    /// or None if the character has no autonomy state.
+    pub fn set_paused(&self, character: &str, paused: bool) -> Option<bool> {
+        let states = self.states.lock().unwrap();
+        let state_arc = states.get(character)?;
+        let mut s = state_arc.lock().unwrap();
+        s.heartbeat.set_paused(paused);
+        s.cache_keepalive.set_paused(paused);
+        s.mark_dirty();
+        Some(paused)
+    }
+
     // -- status snapshot ------------------------------------------------------
 
     /// Build an `AutonomyStatus` snapshot for the status command.
@@ -343,11 +355,7 @@ impl AutonomyManager {
             heartbeat_state: format!("{:?}", state.heartbeat.state()),
             unanswered_count: state.heartbeat.unanswered_count(),
             dormant_threshold,
-            social_need_bar: if dormant_threshold > 0 {
-                state.heartbeat.unanswered_count() as f64 / dormant_threshold as f64
-            } else {
-                0.0
-            },
+            social_need_bar: state.heartbeat.social_need_bar(),
             tau,
             cache_keepalive_state: format!("{:?}", state.cache_keepalive.state()),
             cache_keepalive_pings: state.cache_keepalive.ping_count(),
