@@ -1,12 +1,12 @@
-pub mod conversations;
 pub mod messages;
 pub mod prompt;
+pub mod segments;
 pub mod tools;
 
 use std::path::PathBuf;
 
-use conversations::ConversationManager;
 use messages::MessageStore;
+use segments::SegmentReader;
 use shore_protocol::server_msg::{History, ServerMessage};
 use shore_protocol::types::Message;
 use tokio::sync::broadcast;
@@ -35,25 +35,22 @@ pub enum EngineError {
     #[error("message not found: {0}")]
     MessageNotFound(String),
 
-    #[error("conversation not found: {0}")]
-    ConversationNotFound(String),
-
-    #[error("no active conversation")]
-    NoActiveConversation,
-
     #[error("character not found: {0}")]
     CharacterNotFound(String),
 }
 
 /// Per-character conversation engine.
 ///
-/// Manages the conversation lifecycle (create, switch, list) and message
-/// CRUD for the currently active conversation. State changes are broadcast
-/// as `History` messages to all connected clients.
+/// Manages a single continuous conversation per character. Messages in
+/// `active.jsonl` form the current context window; frozen history lives
+/// in numbered segment files managed by `SegmentReader`.
+///
+/// State changes are broadcast as `History` messages to all connected clients.
 pub struct ConversationEngine {
     character_name: String,
-    conversations: ConversationManager,
-    current_messages: Option<MessageStore>,
+    character_dir: PathBuf,
+    messages: MessageStore,
+    segments: SegmentReader,
     push_tx: broadcast::Sender<ServerMessage>,
     /// Accumulates pre-tool text fragments that will be prepended to the
     /// final response content.
@@ -70,23 +67,15 @@ impl ConversationEngine {
         data_dir: PathBuf,
         push_tx: broadcast::Sender<ServerMessage>,
     ) -> Result<Self, EngineError> {
-        let conversations_dir = data_dir
-            .join(&character_name)
-            .join("conversations");
-        let conversations = ConversationManager::load(conversations_dir)?;
-
-        // If there's an active conversation, load its messages.
-        let current_messages = if let Some(id) = conversations.active_id() {
-            let path = conversations.conversation_path(id);
-            Some(MessageStore::load(path)?)
-        } else {
-            None
-        };
+        let character_dir = data_dir.join(&character_name);
+        let messages = MessageStore::load(character_dir.join("active.jsonl"))?;
+        let segments = SegmentReader::load(&character_dir)?;
 
         Ok(Self {
             character_name,
-            conversations,
-            current_messages,
+            character_dir,
+            messages,
+            segments,
             push_tx,
             pre_tool_buffer: String::new(),
         })
@@ -97,92 +86,47 @@ impl ConversationEngine {
         &self.character_name
     }
 
-    // ── Conversation lifecycle ──────────────────────────────────────────
-
-    /// Create a new conversation and switch to it.
-    pub fn new_conversation(&mut self, title: &str) -> Result<String, EngineError> {
-        let id = self.conversations.new_conversation(title)?;
-        let path = self.conversations.conversation_path(&id);
-        self.current_messages = Some(MessageStore::new(path));
-        self.broadcast_history();
-        Ok(id)
+    /// The character data directory.
+    pub fn character_dir(&self) -> &PathBuf {
+        &self.character_dir
     }
 
-    /// Switch to an existing conversation by ID.
-    pub fn switch_conversation(&mut self, conv_id: &str) -> Result<(), EngineError> {
-        self.conversations.switch(conv_id)?;
-        let path = self.conversations.conversation_path(conv_id);
-        self.current_messages = Some(MessageStore::load(path)?);
-        self.broadcast_history();
-        Ok(())
+    // ── Message access ───────────────────────────────────────────────────
+
+    /// Get the active conversation messages (context window).
+    pub fn messages(&self) -> &[Message] {
+        self.messages.messages()
     }
 
-    /// List all conversations.
-    pub fn list_conversations(&self) -> &[shore_protocol::types::ConversationInfo] {
-        self.conversations.list()
+    /// Number of messages in the active context window.
+    pub fn message_count(&self) -> usize {
+        self.messages.message_count()
     }
 
-    /// Set the private flag on a conversation.
-    pub fn set_private(&mut self, conv_id: &str, private: bool) -> Result<(), EngineError> {
-        self.conversations.set_private(conv_id, private)
-    }
-
-    /// The active conversation ID.
-    pub fn active_conversation_id(&self) -> Option<&str> {
-        self.conversations.active_id()
-    }
-
-    /// Check if the active conversation is private.
-    pub fn is_active_private(&self) -> bool {
-        if let Some(active_id) = self.conversations.active_id() {
-            self.conversations
-                .list()
-                .iter()
-                .any(|c| c.id == active_id && c.private)
-        } else {
-            false
-        }
+    /// Access the segment reader for historical messages.
+    pub fn segments(&self) -> &SegmentReader {
+        &self.segments
     }
 
     // ── Message CRUD ────────────────────────────────────────────────────
 
-    /// Get the current conversation's messages.
-    pub fn messages(&self) -> Result<&[Message], EngineError> {
-        self.current_messages
-            .as_ref()
-            .map(|s| s.messages())
-            .ok_or(EngineError::NoActiveConversation)
-    }
-
-    /// Append a message to the current conversation.
+    /// Append a message to the active conversation.
     pub fn append_message(&mut self, msg: Message) -> Result<(), EngineError> {
-        let store = self
-            .current_messages
-            .as_mut()
-            .ok_or(EngineError::NoActiveConversation)?;
-        store.append(msg)?;
+        self.messages.append(msg)?;
         self.broadcast_history();
         Ok(())
     }
 
-    /// Edit a message in the current conversation.
+    /// Edit a message in the active conversation.
     pub fn edit_message(&mut self, msg_id: &str, new_content: &str) -> Result<(), EngineError> {
-        let store = self
-            .current_messages
-            .as_mut()
-            .ok_or(EngineError::NoActiveConversation)?;
-        store.edit(msg_id, new_content)?;
+        self.messages.edit(msg_id, new_content)?;
         self.broadcast_history();
         Ok(())
     }
 
-    /// Delete a message from the current conversation.
+    /// Delete a message from the active conversation.
     pub fn delete_message(&mut self, msg_id: &str) -> Result<(), EngineError> {
-        let store = self
-            .current_messages
-            .as_mut()
-            .ok_or(EngineError::NoActiveConversation)?;
-        store.delete(msg_id)?;
+        self.messages.delete(msg_id)?;
         self.broadcast_history();
         Ok(())
     }
@@ -194,24 +138,24 @@ impl ConversationEngine {
         index: u32,
         count: u32,
     ) -> Result<(), EngineError> {
-        let store = self
-            .current_messages
-            .as_mut()
-            .ok_or(EngineError::NoActiveConversation)?;
-        store.set_swipe(msg_id, index, count)?;
+        self.messages.set_swipe(msg_id, index, count)?;
         self.broadcast_history();
         Ok(())
     }
 
     /// Add a swipe candidate to a message.
     pub fn add_swipe_candidate(&mut self, msg_id: &str) -> Result<u32, EngineError> {
-        let store = self
-            .current_messages
-            .as_mut()
-            .ok_or(EngineError::NoActiveConversation)?;
-        let count = store.add_swipe_candidate(msg_id)?;
+        let count = self.messages.add_swipe_candidate(msg_id)?;
         self.broadcast_history();
         Ok(count)
+    }
+
+    /// Clear all messages from the active conversation and broadcast.
+    pub fn reset(&mut self) -> Result<(), EngineError> {
+        self.messages.clear()?;
+        self.clear_pre_tool_buffer();
+        self.broadcast_history();
+        Ok(())
     }
 
     // ── Pre-tool text accumulation ──────────────────────────────────────
@@ -242,14 +186,8 @@ impl ConversationEngine {
 
     /// Broadcast the current History snapshot to all connected clients.
     pub fn broadcast_history(&self) {
-        let messages = self
-            .current_messages
-            .as_ref()
-            .map(|s| s.messages().to_vec())
-            .unwrap_or_default();
-
         let history = ServerMessage::History(History {
-            messages,
+            messages: self.messages.messages().to_vec(),
             config: serde_json::json!({}),
         });
 
@@ -288,69 +226,30 @@ mod tests {
     }
 
     #[test]
-    fn new_conversation_and_append() {
+    fn engine_starts_with_empty_messages() {
+        let tmp = TempDir::new().unwrap();
+        let (engine, _rx) = make_engine(&tmp);
+        assert!(engine.messages().is_empty());
+        assert_eq!(engine.message_count(), 0);
+    }
+
+    #[test]
+    fn append_and_read_messages() {
         let tmp = TempDir::new().unwrap();
         let (mut engine, _rx) = make_engine(&tmp);
-
-        let id = engine.new_conversation("Test chat").unwrap();
-        assert_eq!(engine.active_conversation_id(), Some(id.as_str()));
 
         engine
             .append_message(make_msg("m1", Role::User, "Hello"))
             .unwrap();
-        assert_eq!(engine.messages().unwrap().len(), 1);
-    }
-
-    #[test]
-    fn switch_conversation_loads_messages() {
-        let tmp = TempDir::new().unwrap();
-        let (mut engine, _rx) = make_engine(&tmp);
-
-        let id1 = engine.new_conversation("Chat 1").unwrap();
-        engine
-            .append_message(make_msg("m1", Role::User, "In chat 1"))
-            .unwrap();
-
-        let id2 = engine.new_conversation("Chat 2").unwrap();
-        engine
-            .append_message(make_msg("m2", Role::User, "In chat 2"))
-            .unwrap();
-
-        // Switch back to chat 1.
-        engine.switch_conversation(&id1).unwrap();
-        assert_eq!(engine.messages().unwrap().len(), 1);
-        assert_eq!(engine.messages().unwrap()[0].content, "In chat 1");
-
-        // Switch to chat 2.
-        engine.switch_conversation(&id2).unwrap();
-        assert_eq!(engine.messages().unwrap().len(), 1);
-        assert_eq!(engine.messages().unwrap()[0].content, "In chat 2");
-    }
-
-    #[test]
-    fn no_active_conversation_returns_error() {
-        let tmp = TempDir::new().unwrap();
-        let (mut engine, _rx) = make_engine(&tmp);
-
-        let result = engine.append_message(make_msg("m1", Role::User, "Hi"));
-        assert!(matches!(result, Err(EngineError::NoActiveConversation)));
-
-        let result = engine.messages();
-        assert!(matches!(result, Err(EngineError::NoActiveConversation)));
+        assert_eq!(engine.messages().len(), 1);
+        assert_eq!(engine.messages()[0].content, "Hello");
+        assert_eq!(engine.message_count(), 1);
     }
 
     #[test]
     fn state_changes_broadcast_history() {
         let tmp = TempDir::new().unwrap();
         let (mut engine, mut rx) = make_engine(&tmp);
-
-        // new_conversation broadcasts.
-        engine.new_conversation("Chat").unwrap();
-        let msg = rx.try_recv().unwrap();
-        match msg {
-            ServerMessage::History(h) => assert!(h.messages.is_empty()),
-            other => panic!("Expected History, got {:?}", other),
-        }
 
         // append_message broadcasts.
         engine
@@ -377,6 +276,26 @@ mod tests {
 
         // delete_message broadcasts.
         engine.delete_message("m1").unwrap();
+        let msg = rx.try_recv().unwrap();
+        match msg {
+            ServerMessage::History(h) => assert!(h.messages.is_empty()),
+            other => panic!("Expected History, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn reset_clears_messages_and_broadcasts() {
+        let tmp = TempDir::new().unwrap();
+        let (mut engine, mut rx) = make_engine(&tmp);
+
+        engine
+            .append_message(make_msg("m1", Role::User, "Hello"))
+            .unwrap();
+        let _ = rx.try_recv(); // drain append broadcast
+
+        engine.reset().unwrap();
+        assert!(engine.messages().is_empty());
+
         let msg = rx.try_recv().unwrap();
         match msg {
             ServerMessage::History(h) => assert!(h.messages.is_empty()),
@@ -413,26 +332,24 @@ mod tests {
     }
 
     #[test]
-    fn conversation_data_persisted_to_correct_path() {
+    fn data_persisted_to_active_jsonl() {
         let tmp = TempDir::new().unwrap();
         let (mut engine, _rx) = make_engine(&tmp);
 
-        let id = engine.new_conversation("Persistent").unwrap();
         engine
             .append_message(make_msg("m1", Role::User, "Hello"))
             .unwrap();
 
-        // Verify files exist at expected paths.
-        let conv_dir = tmp.path().join("TestChar").join("conversations");
-        assert!(conv_dir.join("manifest.json").exists());
-        assert!(conv_dir.join(format!("{id}.jsonl")).exists());
+        // Verify active.jsonl exists at the expected path.
+        let active_path = tmp.path().join("TestChar").join("active.jsonl");
+        assert!(active_path.exists());
     }
 
     #[test]
-    fn engine_reloads_active_conversation() {
+    fn engine_reloads_messages() {
         let tmp = TempDir::new().unwrap();
 
-        // First engine instance — create conversation and add messages.
+        // First engine instance — add messages.
         {
             let (push_tx, _) = broadcast::channel(16);
             let mut engine = ConversationEngine::new(
@@ -441,7 +358,6 @@ mod tests {
                 push_tx,
             )
             .unwrap();
-            engine.new_conversation("Reload test").unwrap();
             engine
                 .append_message(make_msg("m1", Role::User, "Persisted"))
                 .unwrap();
@@ -456,7 +372,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(engine.messages().unwrap().len(), 1);
-        assert_eq!(engine.messages().unwrap()[0].content, "Persisted");
+        assert_eq!(engine.messages().len(), 1);
+        assert_eq!(engine.messages()[0].content, "Persisted");
     }
 }

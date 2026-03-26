@@ -64,48 +64,10 @@ pub fn switch_character(
     Ok(json!({ "character": name, "changed": true, "reconnect_required": true }))
 }
 
-/// List conversations for the active character.
-pub fn list_chats(engine: &ConversationEngine, _ctx: &CommandContext) -> CommandResult {
-    let conversations = engine.list_conversations();
-    let active_id = engine.active_conversation_id();
-    Ok(json!({
-        "conversations": conversations,
-        "active_id": active_id,
-    }))
-}
-
-/// Switch to an existing conversation by ID.
-pub fn switch_chat(
-    engine: &mut ConversationEngine,
-    _ctx: &mut CommandContext,
-    args: &serde_json::Value,
-) -> CommandResult {
-    let id = args.get("id").and_then(|v| v.as_str()).ok_or_else(|| {
-        (
-            ErrorCode::InvalidRequest,
-            "Missing required argument: id".into(),
-        )
-    })?;
-
-    engine.switch_conversation(id).map_err(engine_err)?;
-
-    Ok(json!({ "id": id }))
-}
-
-/// Create a new conversation, optionally with a title.
-pub fn new_chat(
-    engine: &mut ConversationEngine,
-    _ctx: &mut CommandContext,
-    args: &serde_json::Value,
-) -> CommandResult {
-    let title = args
-        .get("title")
-        .and_then(|v| v.as_str())
-        .unwrap_or("New conversation");
-
-    let id = engine.new_conversation(title).map_err(engine_err)?;
-
-    Ok(json!({ "id": id, "title": title }))
+/// Clear the active conversation and start fresh.
+pub fn reset(engine: &mut ConversationEngine) -> CommandResult {
+    engine.reset().map_err(engine_err)?;
+    Ok(json!({ "reset": true }))
 }
 
 #[cfg(test)]
@@ -215,108 +177,41 @@ mod tests {
     }
 
     #[test]
-    fn list_chats_empty() {
+    fn reset_clears_conversation() {
         let tmp = TempDir::new().unwrap();
-        let (engine, ctx, _rx) = make_ctx(&tmp);
+        let (mut engine, _ctx, _rx) = make_ctx(&tmp);
 
-        let result = list_chats(&engine, &ctx).unwrap();
-        assert!(result["conversations"].as_array().unwrap().is_empty());
-        assert!(result["active_id"].is_null());
+        use shore_protocol::types::{Message, Role};
+        engine
+            .append_message(Message {
+                msg_id: "m1".into(),
+                role: Role::User,
+                content: "Hello".into(),
+                images: vec![],
+                alt_index: None,
+                alt_count: None,
+                timestamp: "2026-01-01T00:00:00Z".into(),
+            })
+            .unwrap();
+        assert_eq!(engine.message_count(), 1);
+
+        let result = reset(&mut engine).unwrap();
+        assert_eq!(result["reset"], true);
+        assert_eq!(engine.message_count(), 0);
     }
 
     #[test]
-    fn list_chats_with_conversations() {
+    fn reset_broadcasts_empty_history() {
         let tmp = TempDir::new().unwrap();
-        let (mut engine, ctx, _rx) = make_ctx(&tmp);
-
-        engine.new_conversation("Chat 1").unwrap();
-        engine.new_conversation("Chat 2").unwrap();
-
-        let result = list_chats(&engine, &ctx).unwrap();
-        let convs = result["conversations"].as_array().unwrap();
-        assert_eq!(convs.len(), 2);
-        assert!(result["active_id"].is_string());
-    }
-
-    #[test]
-    fn switch_chat_valid() {
-        let tmp = TempDir::new().unwrap();
-        let (mut engine, mut ctx, _rx) = make_ctx(&tmp);
-
-        let id1 = engine.new_conversation("Chat 1").unwrap();
-        let _id2 = engine.new_conversation("Chat 2").unwrap();
-
-        let result = switch_chat(&mut engine, &mut ctx, &json!({"id": id1})).unwrap();
-        assert_eq!(result["id"], id1);
-        assert_eq!(engine.active_conversation_id(), Some(id1.as_str()));
-    }
-
-    #[test]
-    fn switch_chat_not_found() {
-        let tmp = TempDir::new().unwrap();
-        let (mut engine, mut ctx, _rx) = make_ctx(&tmp);
-
-        let result = switch_chat(&mut engine, &mut ctx, &json!({"id": "nonexistent"}));
-        assert!(result.is_err());
-        let (code, _msg) = result.unwrap_err();
-        assert_eq!(code, ErrorCode::NotFound);
-    }
-
-    #[test]
-    fn switch_chat_missing_id() {
-        let tmp = TempDir::new().unwrap();
-        let (mut engine, mut ctx, _rx) = make_ctx(&tmp);
-
-        let result = switch_chat(&mut engine, &mut ctx, &json!({}));
-        assert!(result.is_err());
-        let (code, _msg) = result.unwrap_err();
-        assert_eq!(code, ErrorCode::InvalidRequest);
-    }
-
-    #[test]
-    fn new_chat_with_title() {
-        let tmp = TempDir::new().unwrap();
-        let (mut engine, mut ctx, _rx) = make_ctx(&tmp);
-
-        let result = new_chat(&mut engine, &mut ctx, &json!({"title": "My Chat"})).unwrap();
-        assert_eq!(result["title"], "My Chat");
-        assert!(result["id"].is_string());
-        assert!(engine.active_conversation_id().is_some());
-    }
-
-    #[test]
-    fn new_chat_default_title() {
-        let tmp = TempDir::new().unwrap();
-        let (mut engine, mut ctx, _rx) = make_ctx(&tmp);
-
-        let result = new_chat(&mut engine, &mut ctx, &json!({})).unwrap();
-        assert_eq!(result["title"], "New conversation");
-    }
-
-    #[test]
-    fn new_chat_triggers_history_push() {
-        let tmp = TempDir::new().unwrap();
-        let (mut engine, mut ctx, mut rx) = make_ctx(&tmp);
-
-        new_chat(&mut engine, &mut ctx, &json!({"title": "Test"})).unwrap();
-
-        let msg = rx.try_recv().unwrap();
-        assert!(matches!(msg, ServerMessage::History(_)));
-    }
-
-    #[test]
-    fn switch_chat_triggers_history_push() {
-        let tmp = TempDir::new().unwrap();
-        let (mut engine, mut ctx, mut rx) = make_ctx(&tmp);
-
-        let id1 = engine.new_conversation("Chat 1").unwrap();
-        let _id2 = engine.new_conversation("Chat 2").unwrap();
-        // Drain broadcast events from conversation creation.
+        let (mut engine, _ctx, mut rx) = make_ctx(&tmp);
         while rx.try_recv().is_ok() {}
 
-        switch_chat(&mut engine, &mut ctx, &json!({"id": id1})).unwrap();
+        reset(&mut engine).unwrap();
 
         let msg = rx.try_recv().unwrap();
-        assert!(matches!(msg, ServerMessage::History(_)));
+        match msg {
+            ServerMessage::History(h) => assert!(h.messages.is_empty()),
+            other => panic!("Expected History, got {:?}", other),
+        }
     }
 }

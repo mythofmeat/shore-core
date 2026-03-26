@@ -1,107 +1,8 @@
 use serde_json::json;
 use shore_protocol::error::ErrorCode;
-use shore_protocol::types::Role;
 
 use super::{engine_err, CommandContext, CommandResult};
 use crate::engine::ConversationEngine;
-
-/// Navigate response candidates (swipe).
-///
-/// `target`: `"prev"`, `"next"` (default), or a numeric index.
-/// Operates on the last assistant message in the current conversation.
-/// At end of stack, `next` adds a new candidate and signals regen.
-pub fn swipe(
-    engine: &mut ConversationEngine,
-    _ctx: &mut CommandContext,
-    args: &serde_json::Value,
-) -> CommandResult {
-    let target = args
-        .get("target")
-        .and_then(|v| v.as_str())
-        .unwrap_or("next");
-
-    let messages = engine.messages().map_err(engine_err)?;
-
-    let last_assistant = messages
-        .iter()
-        .rev()
-        .find(|m| m.role == Role::Assistant)
-        .ok_or_else(|| {
-            (
-                ErrorCode::InvalidRequest,
-                "No assistant message to swipe".into(),
-            )
-        })?;
-
-    let msg_id = last_assistant.msg_id.clone();
-    let current_index = last_assistant.alt_index.unwrap_or(0);
-    let current_count = last_assistant.alt_count.unwrap_or(1);
-
-    match target {
-        "prev" => {
-            if current_index == 0 {
-                return Err((
-                    ErrorCode::InvalidRequest,
-                    "Already at first candidate".into(),
-                ));
-            }
-            let new_index = current_index - 1;
-            engine
-                .set_swipe(&msg_id, new_index, current_count)
-                .map_err(engine_err)?;
-            Ok(json!({
-                "alt_index": new_index,
-                "alt_count": current_count,
-                "regen": false,
-            }))
-        }
-        "next" => {
-            if current_index + 1 < current_count {
-                let new_index = current_index + 1;
-                engine
-                    .set_swipe(&msg_id, new_index, current_count)
-                    .map_err(engine_err)?;
-                Ok(json!({
-                    "alt_index": new_index,
-                    "alt_count": current_count,
-                    "regen": false,
-                }))
-            } else {
-                // At end of stack — add candidate and signal regen.
-                let new_count = engine
-                    .add_swipe_candidate(&msg_id)
-                    .map_err(engine_err)?;
-                Ok(json!({
-                    "alt_index": new_count - 1,
-                    "alt_count": new_count,
-                    "regen": true,
-                }))
-            }
-        }
-        n => {
-            let index: u32 = n.parse().map_err(|_| {
-                (
-                    ErrorCode::InvalidRequest,
-                    format!("Invalid swipe target: {n}"),
-                )
-            })?;
-            if index >= current_count {
-                return Err((
-                    ErrorCode::InvalidRequest,
-                    format!("Swipe index {index} out of range (0..{current_count})"),
-                ));
-            }
-            engine
-                .set_swipe(&msg_id, index, current_count)
-                .map_err(engine_err)?;
-            Ok(json!({
-                "alt_index": index,
-                "alt_count": current_count,
-                "regen": false,
-            }))
-        }
-    }
-}
 
 /// Show conversation history, optionally limited to the last N messages.
 pub fn log(
@@ -109,7 +10,7 @@ pub fn log(
     _ctx: &CommandContext,
     args: &serde_json::Value,
 ) -> CommandResult {
-    let messages = engine.messages().map_err(engine_err)?;
+    let messages = engine.messages();
 
     let count = args.get("count").and_then(|v| v.as_u64()).map(|c| c as usize);
 
@@ -191,7 +92,7 @@ mod tests {
     use super::*;
     use crate::commands::{CommandContext, SessionTokens};
     use shore_protocol::server_msg::ServerMessage;
-    use shore_protocol::types::Message;
+    use shore_protocol::types::{Message, Role};
     use tempfile::TempDir;
     use tokio::sync::broadcast;
 
@@ -241,148 +142,10 @@ mod tests {
         }
     }
 
-    /// Set up a context with a conversation and messages for swipe tests.
-    fn setup_swipe_ctx(
-        tmp: &TempDir,
-    ) -> (
-        ConversationEngine,
-        CommandContext,
-        broadcast::Receiver<ServerMessage>,
-    ) {
-        let (mut engine, ctx, rx) = make_ctx(tmp);
-        engine.new_conversation("Test").unwrap();
-        engine
-            .append_message(make_msg("u1", Role::User, "Hello"))
-            .unwrap();
-        engine
-            .append_message(make_msg("a1", Role::Assistant, "Hi there"))
-            .unwrap();
-        // Initialize swipe state: 2 candidates at index 0.
-        engine.set_swipe("a1", 0, 2).unwrap();
-        (engine, ctx, rx)
-    }
-
-    #[test]
-    fn swipe_next_within_stack() {
-        let tmp = TempDir::new().unwrap();
-        let (mut engine, mut ctx, _rx) = setup_swipe_ctx(&tmp);
-
-        let result = swipe(&mut engine, &mut ctx, &json!({"target": "next"})).unwrap();
-        assert_eq!(result["alt_index"], 1);
-        assert_eq!(result["alt_count"], 2);
-        assert_eq!(result["regen"], false);
-    }
-
-    #[test]
-    fn swipe_next_at_end_triggers_regen() {
-        let tmp = TempDir::new().unwrap();
-        let (mut engine, mut ctx, _rx) = setup_swipe_ctx(&tmp);
-
-        // Move to index 1 first.
-        engine.set_swipe("a1", 1, 2).unwrap();
-
-        let result = swipe(&mut engine, &mut ctx, &json!({"target": "next"})).unwrap();
-        assert_eq!(result["alt_index"], 2);
-        assert_eq!(result["alt_count"], 3);
-        assert_eq!(result["regen"], true);
-    }
-
-    #[test]
-    fn swipe_prev() {
-        let tmp = TempDir::new().unwrap();
-        let (mut engine, mut ctx, _rx) = setup_swipe_ctx(&tmp);
-
-        // Move to index 1 first.
-        engine.set_swipe("a1", 1, 2).unwrap();
-
-        let result = swipe(&mut engine, &mut ctx, &json!({"target": "prev"})).unwrap();
-        assert_eq!(result["alt_index"], 0);
-        assert_eq!(result["regen"], false);
-    }
-
-    #[test]
-    fn swipe_prev_at_start_errors() {
-        let tmp = TempDir::new().unwrap();
-        let (mut engine, mut ctx, _rx) = setup_swipe_ctx(&tmp);
-
-        let result = swipe(&mut engine, &mut ctx, &json!({"target": "prev"}));
-        assert!(result.is_err());
-        let (code, _msg) = result.unwrap_err();
-        assert_eq!(code, ErrorCode::InvalidRequest);
-    }
-
-    #[test]
-    fn swipe_numeric_index() {
-        let tmp = TempDir::new().unwrap();
-        let (mut engine, mut ctx, _rx) = setup_swipe_ctx(&tmp);
-
-        let result = swipe(&mut engine, &mut ctx, &json!({"target": "1"})).unwrap();
-        assert_eq!(result["alt_index"], 1);
-        assert_eq!(result["regen"], false);
-    }
-
-    #[test]
-    fn swipe_numeric_out_of_range() {
-        let tmp = TempDir::new().unwrap();
-        let (mut engine, mut ctx, _rx) = setup_swipe_ctx(&tmp);
-
-        let result = swipe(&mut engine, &mut ctx, &json!({"target": "5"}));
-        assert!(result.is_err());
-        let (code, _msg) = result.unwrap_err();
-        assert_eq!(code, ErrorCode::InvalidRequest);
-    }
-
-    #[test]
-    fn swipe_invalid_target() {
-        let tmp = TempDir::new().unwrap();
-        let (mut engine, mut ctx, _rx) = setup_swipe_ctx(&tmp);
-
-        let result = swipe(&mut engine, &mut ctx, &json!({"target": "sideways"}));
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn swipe_no_assistant_message() {
-        let tmp = TempDir::new().unwrap();
-        let (mut engine, mut ctx, _rx) = make_ctx(&tmp);
-        engine.new_conversation("Test").unwrap();
-        engine
-            .append_message(make_msg("u1", Role::User, "Hello"))
-            .unwrap();
-
-        let result = swipe(&mut engine, &mut ctx, &json!({}));
-        assert!(result.is_err());
-        let (code, _msg) = result.unwrap_err();
-        assert_eq!(code, ErrorCode::InvalidRequest);
-    }
-
-    #[test]
-    fn swipe_default_is_next() {
-        let tmp = TempDir::new().unwrap();
-        let (mut engine, mut ctx, _rx) = setup_swipe_ctx(&tmp);
-
-        // Default target is "next", should move from 0 to 1.
-        let result = swipe(&mut engine, &mut ctx, &json!({})).unwrap();
-        assert_eq!(result["alt_index"], 1);
-    }
-
-    #[test]
-    fn swipe_triggers_history_push() {
-        let tmp = TempDir::new().unwrap();
-        let (mut engine, mut ctx, mut rx) = setup_swipe_ctx(&tmp);
-        while rx.try_recv().is_ok() {}
-
-        swipe(&mut engine, &mut ctx, &json!({"target": "next"})).unwrap();
-
-        let msg = rx.try_recv().unwrap();
-        assert!(matches!(msg, ServerMessage::History(_)));
-    }
-
     #[test]
     fn log_all_messages() {
         let tmp = TempDir::new().unwrap();
         let (mut engine, ctx, _rx) = make_ctx(&tmp);
-        engine.new_conversation("Test").unwrap();
         engine
             .append_message(make_msg("m1", Role::User, "Hello"))
             .unwrap();
@@ -402,7 +165,6 @@ mod tests {
     fn log_with_count() {
         let tmp = TempDir::new().unwrap();
         let (mut engine, ctx, _rx) = make_ctx(&tmp);
-        engine.new_conversation("Test").unwrap();
         engine
             .append_message(make_msg("m1", Role::User, "A"))
             .unwrap();
@@ -422,19 +184,19 @@ mod tests {
     }
 
     #[test]
-    fn log_no_active_conversation() {
+    fn log_empty_conversation() {
         let tmp = TempDir::new().unwrap();
         let (engine, ctx, _rx) = make_ctx(&tmp);
 
-        let result = log(&engine, &ctx, &json!({}));
-        assert!(result.is_err());
+        let result = log(&engine, &ctx, &json!({})).unwrap();
+        let msgs = result["messages"].as_array().unwrap();
+        assert!(msgs.is_empty());
     }
 
     #[test]
     fn edit_message() {
         let tmp = TempDir::new().unwrap();
         let (mut engine, mut ctx, _rx) = make_ctx(&tmp);
-        engine.new_conversation("Test").unwrap();
         engine
             .append_message(make_msg("m1", Role::User, "Original"))
             .unwrap();
@@ -443,7 +205,7 @@ mod tests {
             edit(&mut engine, &mut ctx, &json!({"ref": "m1", "content": "Edited"})).unwrap();
         assert_eq!(result["ref"], "m1");
         assert_eq!(result["edited"], true);
-        assert_eq!(engine.messages().unwrap()[0].content, "Edited");
+        assert_eq!(engine.messages()[0].content, "Edited");
     }
 
     #[test]
@@ -472,7 +234,6 @@ mod tests {
     fn edit_nonexistent_message() {
         let tmp = TempDir::new().unwrap();
         let (mut engine, mut ctx, _rx) = make_ctx(&tmp);
-        engine.new_conversation("Test").unwrap();
 
         let result = edit(&mut engine, &mut ctx, &json!({"ref": "nope", "content": "x"}));
         assert!(result.is_err());
@@ -484,7 +245,6 @@ mod tests {
     fn edit_triggers_history_push() {
         let tmp = TempDir::new().unwrap();
         let (mut engine, mut ctx, mut rx) = make_ctx(&tmp);
-        engine.new_conversation("Test").unwrap();
         engine
             .append_message(make_msg("m1", Role::User, "Original"))
             .unwrap();
@@ -500,7 +260,6 @@ mod tests {
     fn delete_messages() {
         let tmp = TempDir::new().unwrap();
         let (mut engine, mut ctx, _rx) = make_ctx(&tmp);
-        engine.new_conversation("Test").unwrap();
         engine
             .append_message(make_msg("m1", Role::User, "A"))
             .unwrap();
@@ -510,22 +269,21 @@ mod tests {
 
         let result = delete(&mut engine, &mut ctx, &json!({"refs": ["m1"]})).unwrap();
         assert_eq!(result["deleted"].as_array().unwrap().len(), 1);
-        assert_eq!(engine.messages().unwrap().len(), 1);
-        assert_eq!(engine.messages().unwrap()[0].msg_id, "m2");
+        assert_eq!(engine.messages().len(), 1);
+        assert_eq!(engine.messages()[0].msg_id, "m2");
     }
 
     #[test]
     fn delete_single_string_ref() {
         let tmp = TempDir::new().unwrap();
         let (mut engine, mut ctx, _rx) = make_ctx(&tmp);
-        engine.new_conversation("Test").unwrap();
         engine
             .append_message(make_msg("m1", Role::User, "A"))
             .unwrap();
 
         let result = delete(&mut engine, &mut ctx, &json!({"refs": "m1"})).unwrap();
         assert_eq!(result["deleted"].as_array().unwrap().len(), 1);
-        assert!(engine.messages().unwrap().is_empty());
+        assert!(engine.messages().is_empty());
     }
 
     #[test]
@@ -543,7 +301,6 @@ mod tests {
     fn delete_nonexistent_message() {
         let tmp = TempDir::new().unwrap();
         let (mut engine, mut ctx, _rx) = make_ctx(&tmp);
-        engine.new_conversation("Test").unwrap();
 
         let result = delete(&mut engine, &mut ctx, &json!({"refs": ["nope"]}));
         assert!(result.is_err());
@@ -555,7 +312,6 @@ mod tests {
     fn delete_triggers_history_push() {
         let tmp = TempDir::new().unwrap();
         let (mut engine, mut ctx, mut rx) = make_ctx(&tmp);
-        engine.new_conversation("Test").unwrap();
         engine
             .append_message(make_msg("m1", Role::User, "A"))
             .unwrap();

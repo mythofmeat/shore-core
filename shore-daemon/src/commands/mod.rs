@@ -53,12 +53,9 @@ pub fn dispatch(
         // Navigation
         "list_characters" => navigation::list_characters(engine, ctx),
         "switch_character" => navigation::switch_character(engine, ctx, &cmd.args),
-        "list_chats" => navigation::list_chats(engine, ctx),
-        "switch_chat" => navigation::switch_chat(engine, ctx, &cmd.args),
-        "new_chat" => navigation::new_chat(engine, ctx, &cmd.args),
+        "reset" => navigation::reset(engine),
 
         // Conversation
-        "swipe" => conversation::swipe(engine, ctx, &cmd.args),
         "log" => conversation::log(engine, ctx, &cmd.args),
         "edit" => conversation::edit(engine, ctx, &cmd.args),
         "delete" => conversation::delete(engine, ctx, &cmd.args),
@@ -68,7 +65,6 @@ pub fn dispatch(
         "list_models" => state::list_models(ctx),
         "switch_model" => state::switch_model(ctx, &cmd.args),
         "memory" => state::memory(&cmd.args),
-        "toggle_private" => state::toggle_private(engine, ctx),
         "compact" => state::compact(&cmd.args),
         "toggle_autonomy" => state::toggle_autonomy(ctx),
         "config" => state::config(ctx, &cmd.args),
@@ -91,10 +87,9 @@ pub fn dispatch(
 /// Convert an EngineError to a command error tuple.
 pub fn engine_err(e: EngineError) -> (ErrorCode, String) {
     match &e {
-        EngineError::ConversationNotFound(_) | EngineError::MessageNotFound(_) => {
+        EngineError::MessageNotFound(_) | EngineError::CharacterNotFound(_) => {
             (ErrorCode::NotFound, e.to_string())
         }
-        EngineError::NoActiveConversation => (ErrorCode::InvalidRequest, e.to_string()),
         _ => (ErrorCode::InternalError, e.to_string()),
     }
 }

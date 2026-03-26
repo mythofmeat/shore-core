@@ -59,6 +59,17 @@ impl MessageStore {
         &self.messages
     }
 
+    /// Number of messages in the store.
+    pub fn message_count(&self) -> usize {
+        self.messages.len()
+    }
+
+    /// Clear all messages and truncate the backing file.
+    pub fn clear(&mut self) -> Result<(), EngineError> {
+        self.messages.clear();
+        self.persist()
+    }
+
     /// The file path this store persists to.
     pub fn path(&self) -> &Path {
         &self.path

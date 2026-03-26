@@ -3,18 +3,14 @@ use shore_protocol::error::ErrorCode;
 
 use crate::engine::ConversationEngine;
 
-use super::{engine_err, CommandContext, CommandResult};
+use super::{CommandContext, CommandResult};
 
-/// Return system status: character, conversation, model, autonomy state, token counts.
+/// Return system status: character, message count, model, token counts.
 pub fn status(engine: &ConversationEngine, ctx: &CommandContext) -> CommandResult {
-    let message_count = engine.messages().map(|m| m.len()).unwrap_or(0);
-
     Ok(json!({
         "character": engine.character_name(),
-        "active_conversation": engine.active_conversation_id(),
-        "message_count": message_count,
+        "message_count": engine.message_count(),
         "active_model": ctx.active_model,
-        "autonomy_paused": ctx.autonomy_paused,
         "tokens": {
             "input": ctx.session_tokens.input,
             "output": ctx.session_tokens.output,
@@ -87,34 +83,6 @@ pub fn memory(args: &serde_json::Value) -> CommandResult {
         "status": "not_implemented",
         "query": query,
         "message": "Memory system is not yet implemented",
-    }))
-}
-
-/// Toggle private mode on the active conversation.
-pub fn toggle_private(engine: &mut ConversationEngine, _ctx: &mut CommandContext) -> CommandResult {
-    let conv_id = engine
-        .active_conversation_id()
-        .ok_or_else(|| (ErrorCode::InvalidRequest, "No active conversation".into()))?
-        .to_string();
-
-    let current_private = engine
-        .list_conversations()
-        .iter()
-        .find(|c| c.id == conv_id)
-        .map(|c| c.private)
-        .unwrap_or(false);
-
-    let new_private = !current_private;
-    engine
-        .set_private(&conv_id, new_private)
-        .map_err(engine_err)?;
-
-    // Trigger history push so clients see the updated private state.
-    engine.broadcast_history();
-
-    Ok(json!({
-        "conversation_id": conv_id,
-        "private": new_private,
     }))
 }
 
@@ -246,23 +214,19 @@ model_id = "gpt-4o"
 
         let result = status(&engine, &ctx).unwrap();
         assert_eq!(result["character"], "TestChar");
-        assert!(result["active_conversation"].is_null());
         assert_eq!(result["message_count"], 0);
         assert_eq!(result["active_model"], "claude-sonnet");
-        assert_eq!(result["autonomy_paused"], false);
     }
 
     #[test]
-    fn status_with_active_conversation() {
+    fn status_with_messages() {
         let tmp = TempDir::new().unwrap();
-        let (mut engine, _ctx, _rx) = make_ctx(&tmp);
-        engine.new_conversation("Test").unwrap();
+        let (mut engine, ctx, _rx) = make_ctx(&tmp);
         engine
             .append_message(make_msg("m1", Role::User, "Hi"))
             .unwrap();
 
-        let result = status(&engine, &_ctx).unwrap();
-        assert!(result["active_conversation"].is_string());
+        let result = status(&engine, &ctx).unwrap();
         assert_eq!(result["message_count"], 1);
     }
 
@@ -327,45 +291,6 @@ model_id = "gpt-4o"
 
         let result = memory(&json!({"query": "test"})).unwrap();
         assert_eq!(result["query"], "test");
-    }
-
-    #[test]
-    fn toggle_private_on_off() {
-        let tmp = TempDir::new().unwrap();
-        let (mut engine, mut ctx, _rx) = make_ctx(&tmp);
-        engine.new_conversation("Test").unwrap();
-
-        // Toggle on.
-        let result = toggle_private(&mut engine, &mut ctx).unwrap();
-        assert_eq!(result["private"], true);
-
-        // Toggle off.
-        let result = toggle_private(&mut engine, &mut ctx).unwrap();
-        assert_eq!(result["private"], false);
-    }
-
-    #[test]
-    fn toggle_private_no_conversation() {
-        let tmp = TempDir::new().unwrap();
-        let (mut engine, mut ctx, _rx) = make_ctx(&tmp);
-
-        let result = toggle_private(&mut engine, &mut ctx);
-        assert!(result.is_err());
-        let (code, _msg) = result.unwrap_err();
-        assert_eq!(code, ErrorCode::InvalidRequest);
-    }
-
-    #[test]
-    fn toggle_private_triggers_history_push() {
-        let tmp = TempDir::new().unwrap();
-        let (mut engine, mut ctx, mut rx) = make_ctx(&tmp);
-        engine.new_conversation("Test").unwrap();
-        while rx.try_recv().is_ok() {}
-
-        toggle_private(&mut engine, &mut ctx).unwrap();
-
-        let msg = rx.try_recv().unwrap();
-        assert!(matches!(msg, ServerMessage::History(_)));
     }
 
     #[test]

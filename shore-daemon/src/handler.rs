@@ -132,12 +132,7 @@ impl MessageHandler {
             let engine = self.registry.get_or_create(&char_name)
                 .map_err(|e| e.to_string())?;
 
-            // 1. Ensure conversation exists.
-            if engine.active_conversation_id().is_none() {
-                engine.new_conversation("New Chat")?;
-            }
-
-            // 2. Append user message (unless regen).
+            // 1. Append user message (unless regen).
             if !regen && !body.text.is_empty() {
                 let user_msg = Message {
                     msg_id: format!("m_{}", uuid::Uuid::new_v4()),
@@ -182,7 +177,7 @@ impl MessageHandler {
         let engine = self.registry.get_or_create(&char_name)
             .map_err(|e| e.to_string())?;
 
-        let messages = engine.messages()?;
+        let messages = engine.messages();
         let character_data_dir = self
             .cmd_ctx
             .data_dir
@@ -193,7 +188,7 @@ impl MessageHandler {
             character_name: engine.character_name(),
             character_definition: character_definition.as_deref(),
             user_definition: user_definition.as_deref(),
-            is_private: engine.is_active_private(),
+            is_private: false,
             character_data_dir: &character_data_dir,
             messages,
             max_context_tokens: resolved.max_context_tokens,
@@ -221,8 +216,7 @@ impl MessageHandler {
         };
 
         // 6. Build tool definitions.
-        let is_private = engine.is_active_private();
-        let registry = ToolRegistry::new(is_private);
+        let registry = ToolRegistry::new(false);
         let tool_defs = if self.cmd_ctx.config.app.behavior.tool_use.enabled {
             Some(registry.definitions().to_vec())
         } else {
@@ -250,7 +244,7 @@ impl MessageHandler {
         let engine = self.registry.get_or_create(&char_name)
             .map_err(|e| e.to_string())?;
 
-        let turn_count = engine.messages()?.len();
+        let turn_count = engine.messages().len();
         let cache_ctx = CacheContext {
             conversation_turn_count: turn_count,
             is_first_after_restart: self.is_first_after_restart,

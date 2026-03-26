@@ -382,18 +382,6 @@ mod tests {
     }
 
     #[test]
-    fn conversation_info_round_trip() {
-        let info = ConversationInfo {
-            id: "conv_1".into(),
-            title: "Test chat".into(),
-            private: true,
-        };
-        let (_json, back) = round_trip(&info);
-        assert_eq!(back.id, "conv_1");
-        assert!(back.private);
-    }
-
-    #[test]
     fn character_info_round_trip() {
         let info = CharacterInfo {
             name: "alice".into(),

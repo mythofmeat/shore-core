@@ -56,15 +56,6 @@ pub struct StreamMetadata {
     pub model: String,
 }
 
-/// Information about a conversation.
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct ConversationInfo {
-    pub id: String,
-    pub title: String,
-    #[serde(default)]
-    pub private: bool,
-}
-
 /// Information about a character.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct CharacterInfo {
