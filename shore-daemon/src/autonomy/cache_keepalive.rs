@@ -40,6 +40,29 @@ impl CacheKeepaliveConfig {
     pub fn is_eligible(&self) -> bool {
         self.provider == "anthropic" && self.cache_ttl_configured
     }
+
+    /// Build runtime config from the TOML config and resolved model info.
+    ///
+    /// `app_cfg` — the `[behavior.autonomy.cache_keepalive]` section.
+    /// `provider` — provider key from the resolved model (e.g. `"anthropic"`).
+    /// `has_cache_ttl` — whether the resolved model has a `cache_ttl` value.
+    pub fn from_resolved_model(
+        app_cfg: &crate::config::app::CacheKeepaliveConfig,
+        provider: &str,
+        has_cache_ttl: bool,
+    ) -> Self {
+        // Ping slightly before TTL expires: (ttl - 60s), floored to the default.
+        let ping_interval_secs = (app_cfg.ttl_minutes as u64 * 60)
+            .saturating_sub(60)
+            .max(DEFAULT_PING_INTERVAL_SECS);
+
+        Self {
+            provider: provider.to_string(),
+            cache_ttl_configured: has_cache_ttl,
+            ping_interval_secs,
+            max_pings: app_cfg.max_pings,
+        }
+    }
 }
 
 impl Default for CacheKeepaliveConfig {
@@ -124,6 +147,12 @@ impl CacheKeepaliveScheduler {
             ping_count: 0,
             estimated_cache_tokens: 0,
         }
+    }
+
+    /// Restore persisted counters.
+    pub fn restore_counters(&mut self, ping_count: u32, estimated_cache_tokens: u32) {
+        self.ping_count = ping_count;
+        self.estimated_cache_tokens = estimated_cache_tokens;
     }
 
     // -- accessors --------------------------------------------------------

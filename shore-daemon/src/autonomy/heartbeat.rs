@@ -17,8 +17,8 @@ use super::timing::{compute_tau, roll_probability, roll_succeeds, TauParams, MAX
 /// Minimum session duration (seconds) before a post-session probe is eligible.
 pub const SESSION_PROBE_FLOOR: u64 = 180;
 
-/// Consecutive unanswered autonomous messages before going dormant.
-pub const DORMANT_THRESHOLD: u32 = 8;
+/// Default consecutive unanswered autonomous messages before going dormant.
+pub const DORMANT_THRESHOLD: u32 = 1;
 
 // ---------------------------------------------------------------------------
 // Prompt templates
@@ -148,6 +148,8 @@ pub enum ProbeResult {
 pub struct HeartbeatScheduler {
     state: HeartbeatState,
     paused: bool,
+    /// Configurable dormant threshold (overrides DORMANT_THRESHOLD constant).
+    dormant_threshold: u32,
     last_user_ts: Option<Instant>,
     last_assistant_ts: Option<Instant>,
     /// When the current Session period began (for SESSION_PROBE_FLOOR).
@@ -160,9 +162,15 @@ pub struct HeartbeatScheduler {
 
 impl HeartbeatScheduler {
     pub fn new() -> Self {
+        Self::with_threshold(DORMANT_THRESHOLD)
+    }
+
+    /// Create a scheduler with a custom dormant threshold.
+    pub fn with_threshold(dormant_threshold: u32) -> Self {
         Self {
             state: HeartbeatState::Session,
             paused: false,
+            dormant_threshold,
             last_user_ts: None,
             last_assistant_ts: None,
             session_start: None,
@@ -191,6 +199,17 @@ impl HeartbeatScheduler {
     pub fn toggle_pause(&mut self) -> bool {
         self.paused = !self.paused;
         self.paused
+    }
+
+    /// Restore persisted state (heartbeat state and unanswered count).
+    pub fn restore(&mut self, state: HeartbeatState, unanswered_count: u32) {
+        self.state = state;
+        self.unanswered_count = unanswered_count;
+    }
+
+    /// Returns the dormant threshold.
+    pub fn dormant_threshold(&self) -> u32 {
+        self.dormant_threshold
     }
 
     // -- event handlers -------------------------------------------------------
@@ -345,7 +364,7 @@ impl HeartbeatScheduler {
         random_value: f64,
     ) -> HeartbeatAction {
         // Check dormant threshold before rolling.
-        if self.unanswered_count >= DORMANT_THRESHOLD {
+        if self.unanswered_count >= self.dormant_threshold {
             self.state = HeartbeatState::Dormant;
             return HeartbeatAction::None;
         }

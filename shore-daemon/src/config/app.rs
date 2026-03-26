@@ -173,7 +173,7 @@ fn default_session_probe_floor() -> u64 {
     180
 }
 fn default_dormant_threshold() -> u32 {
-    8
+    1
 }
 
 impl Default for HeartbeatConfig {
@@ -192,16 +192,40 @@ pub struct CompactionConfig {
     /// Minutes of idle before compaction triggers.
     #[serde(default = "default_idle_trigger_minutes")]
     pub idle_trigger_minutes: u32,
+    /// Minimum messages before any compaction trigger fires.
+    #[serde(default = "default_min_messages")]
+    pub min_messages: usize,
+    /// Force compaction when this message count is reached.
+    #[serde(default = "default_max_messages")]
+    pub max_messages: usize,
+    /// Messages retained in active.jsonl after compaction.
+    #[serde(default = "default_keep_recent")]
+    pub keep_recent: usize,
 }
 
 fn default_idle_trigger_minutes() -> u32 {
     30
 }
 
+fn default_min_messages() -> usize {
+    20
+}
+
+fn default_max_messages() -> usize {
+    60
+}
+
+fn default_keep_recent() -> usize {
+    4
+}
+
 impl Default for CompactionConfig {
     fn default() -> Self {
         Self {
             idle_trigger_minutes: default_idle_trigger_minutes(),
+            min_messages: default_min_messages(),
+            max_messages: default_max_messages(),
+            keep_recent: default_keep_recent(),
         }
     }
 }
