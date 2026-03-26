@@ -7,6 +7,9 @@ pub struct ClientHello {
     pub client_name: String,
     #[serde(default)]
     pub capabilities: Vec<String>,
+    /// Which character this client wants to talk to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub character: Option<String>,
 }
 
 /// Send a user message.

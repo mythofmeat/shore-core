@@ -88,7 +88,7 @@ mod tests {
         });
 
         let (conn, server_hello, history) =
-            SWPConnection::connect_raw(client_stream, "tui", "test-client")
+            SWPConnection::connect_raw(client_stream, "tui", "test-client", None)
                 .await
                 .unwrap();
 
@@ -117,7 +117,7 @@ mod tests {
         });
 
         let result =
-            SWPConnection::connect_raw(client_stream, "tui", "test").await;
+            SWPConnection::connect_raw(client_stream, "tui", "test", None).await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
@@ -137,7 +137,7 @@ mod tests {
         });
 
         let result =
-            SWPConnection::connect_raw(client_stream, "tui", "test").await;
+            SWPConnection::connect_raw(client_stream, "tui", "test", None).await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(

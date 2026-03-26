@@ -85,6 +85,7 @@ impl SWPConnection {
         addr: &ServerAddr,
         client_type: impl Into<String>,
         client_name: impl Into<String>,
+        character: Option<String>,
     ) -> Result<(Self, ServerHello, History)> {
         let mut conn = Self::open(addr).await?;
 
@@ -112,6 +113,7 @@ impl SWPConnection {
             client_type: client_type.into(),
             client_name: client_name.into(),
             capabilities: vec!["streaming".into()],
+            character,
         });
         conn.send(&hello).await?;
 
@@ -238,6 +240,7 @@ impl SWPConnection {
         stream: S,
         client_type: impl Into<String>,
         client_name: impl Into<String>,
+        character: Option<String>,
     ) -> Result<(Self, ServerHello, History)>
     where
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static,
@@ -268,6 +271,7 @@ impl SWPConnection {
             client_type: client_type.into(),
             client_name: client_name.into(),
             capabilities: vec!["streaming".into()],
+            character,
         });
         conn.send(&hello).await?;
 

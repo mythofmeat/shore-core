@@ -40,6 +40,7 @@ mod tests {
             client_type: "tui".into(),
             client_name: "shore-tui".into(),
             capabilities: vec!["streaming".into()],
+            character: None,
         });
         let (json, _back) = round_trip(&msg);
         assert_eq!(json["type"], "hello");

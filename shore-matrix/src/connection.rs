@@ -64,7 +64,7 @@ async fn connection_loop(
     loop {
         let addr = resolve_addr(&socket, &config);
 
-        match SWPConnection::connect(&addr, "bridge", "shore-matrix").await {
+        match SWPConnection::connect(&addr, "bridge", "shore-matrix", None).await {
             Ok((mut conn, hello, history)) => {
                 backoff = Duration::from_millis(500);
 

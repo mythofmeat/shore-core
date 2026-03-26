@@ -63,7 +63,7 @@ async fn connection_loop(
     loop {
         let addr = resolve_addr(&socket, &config);
 
-        match SWPConnection::connect(&addr, "tui", "shore-tui").await {
+        match SWPConnection::connect(&addr, "tui", "shore-tui", None).await {
             Ok((mut conn, hello, history)) => {
                 backoff = Duration::from_millis(500);
 

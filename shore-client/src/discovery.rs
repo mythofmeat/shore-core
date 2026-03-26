@@ -8,13 +8,17 @@ use crate::error::{ClientError, Result};
 /// One entry in `$XDG_RUNTIME_DIR/shore/instances.json`.
 #[derive(Deserialize, Debug, Clone)]
 pub struct InstanceEntry {
-    /// Absolute path to the config file this daemon was started with.
-    pub config_path: String,
+    /// Instance ID.
+    #[serde(default)]
+    pub id: Option<String>,
     /// Socket path (Unix) or `host:port` (TCP) where the daemon listens.
-    pub socket: String,
+    pub socket_path: String,
     /// PID of the daemon process.
     #[serde(default)]
     pub pid: Option<u32>,
+    /// Optional TCP address.
+    #[serde(default)]
+    pub tcp_addr: Option<String>,
 }
 
 /// The instances file is a JSON array of `InstanceEntry`.
@@ -56,10 +60,10 @@ pub fn discover(config_path: Option<&str>) -> Result<ServerAddr> {
     let entry = match config_path {
         Some(wanted) => entries
             .iter()
-            .find(|e| e.config_path == wanted)
+            .find(|e| e.id.as_deref() == Some(wanted))
             .ok_or_else(|| {
                 ClientError::Discovery(format!(
-                    "no daemon found for config: {wanted}"
+                    "no daemon found for id: {wanted}"
                 ))
             })?,
         None => entries.first().ok_or_else(|| {
@@ -67,7 +71,7 @@ pub fn discover(config_path: Option<&str>) -> Result<ServerAddr> {
         })?,
     };
 
-    Ok(addr_from_socket(&entry.socket))
+    Ok(addr_from_socket(&entry.socket_path))
 }
 
 /// Convert a socket string to a `ServerAddr`.
