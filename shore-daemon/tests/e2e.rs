@@ -19,11 +19,11 @@ use std::time::Duration;
 
 use serde_json::json;
 use shore_client::connection::{SWPConnection, ServerAddr};
+use shore_daemon::characters::CharacterRegistry;
 use shore_daemon::commands::{CommandContext, SessionTokens};
 use shore_daemon::config::app::{AppConfig, ServiceEntry, ServicesConfig};
 use shore_daemon::config::models::{ModelProfile, ModelsConfig};
 use shore_daemon::config::{LoadedConfig, ShoreDirs};
-use shore_daemon::engine::ConversationEngine;
 use shore_daemon::handler::MessageHandler;
 use shore_daemon::llm_client::LlmClient;
 use shore_daemon::server::{Server, ServerConfig};
@@ -112,7 +112,6 @@ fn build_test_config(tmp: &tempfile::TempDir, llm_socket: &PathBuf) -> LoadedCon
     let llm_dist = shore_llm_dist();
 
     let mut app = AppConfig::default();
-    app.character.name = "TestChar".into();
     app.defaults.model = Some("haiku".into());
     app.behavior.tool_use.enabled = true;
     app.behavior.tool_use.max_iterations = 5;
@@ -140,11 +139,6 @@ fn build_test_config(tmp: &tempfile::TempDir, llm_socket: &PathBuf) -> LoadedCon
         }],
     };
 
-    let character_definition = Some(
-        "You are TestChar, a concise test assistant. Keep responses very short (1-2 sentences)."
-            .to_string(),
-    );
-
     LoadedConfig {
         app,
         models,
@@ -153,8 +147,6 @@ fn build_test_config(tmp: &tempfile::TempDir, llm_socket: &PathBuf) -> LoadedCon
             data: data_dir,
             runtime: runtime_dir,
         },
-        character_definition,
-        user_definition: None,
     }
 }
 
@@ -211,16 +203,14 @@ async fn e2e_conversation_milestone() {
     let push_tx = server.push_sender();
     let route_rx = server.take_route_rx();
 
-    // Create conversation engine.
-    let engine = ConversationEngine::new(
-        loaded.app.character.name.clone(),
+    // Create character registry.
+    let char_registry = CharacterRegistry::new(
+        loaded.dirs.config.clone(),
         loaded.dirs.data.clone(),
         push_tx.clone(),
-    )
-    .unwrap();
+    );
 
     let cmd_ctx = CommandContext {
-        engine,
         config: loaded.clone(),
         push_tx: push_tx.clone(),
         data_dir: loaded.dirs.data.clone(),
@@ -230,6 +220,7 @@ async fn e2e_conversation_milestone() {
     };
 
     let mut msg_handler = MessageHandler {
+        registry: char_registry,
         cmd_ctx,
         llm_client: LlmClient::new(llm_socket.clone()),
         push_tx: push_tx.clone(),
@@ -256,6 +247,7 @@ async fn e2e_conversation_milestone() {
         &ServerAddr::Unix(socket_path.display().to_string()),
         "test",
         "e2e-test",
+        None,
     )
     .await
     .expect("Failed to connect to daemon");

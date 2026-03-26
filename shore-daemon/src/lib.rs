@@ -1,4 +1,5 @@
 pub mod autonomy;
+pub mod characters;
 pub mod commands;
 pub mod compat;
 pub mod config;

@@ -1,15 +1,17 @@
 use serde_json::json;
 use shore_protocol::error::ErrorCode;
 
+use crate::engine::ConversationEngine;
+
 use super::{engine_err, CommandContext, CommandResult};
 
 /// Return system status: character, conversation, model, autonomy state, token counts.
-pub fn status(ctx: &CommandContext) -> CommandResult {
-    let message_count = ctx.engine.messages().map(|m| m.len()).unwrap_or(0);
+pub fn status(engine: &ConversationEngine, ctx: &CommandContext) -> CommandResult {
+    let message_count = engine.messages().map(|m| m.len()).unwrap_or(0);
 
     Ok(json!({
-        "character": ctx.engine.character_name(),
-        "active_conversation": ctx.engine.active_conversation_id(),
+        "character": engine.character_name(),
+        "active_conversation": engine.active_conversation_id(),
         "message_count": message_count,
         "active_model": ctx.active_model,
         "autonomy_paused": ctx.autonomy_paused,
@@ -76,15 +78,13 @@ pub fn memory(args: &serde_json::Value) -> CommandResult {
 }
 
 /// Toggle private mode on the active conversation.
-pub fn toggle_private(ctx: &mut CommandContext) -> CommandResult {
-    let conv_id = ctx
-        .engine
+pub fn toggle_private(engine: &mut ConversationEngine, _ctx: &mut CommandContext) -> CommandResult {
+    let conv_id = engine
         .active_conversation_id()
         .ok_or_else(|| (ErrorCode::InvalidRequest, "No active conversation".into()))?
         .to_string();
 
-    let current_private = ctx
-        .engine
+    let current_private = engine
         .list_conversations()
         .iter()
         .find(|c| c.id == conv_id)
@@ -92,12 +92,12 @@ pub fn toggle_private(ctx: &mut CommandContext) -> CommandResult {
         .unwrap_or(false);
 
     let new_private = !current_private;
-    ctx.engine
+    engine
         .set_private(&conv_id, new_private)
         .map_err(engine_err)?;
 
     // Trigger history push so clients see the updated private state.
-    ctx.engine.broadcast_history();
+    engine.broadcast_history();
 
     Ok(json!({
         "conversation_id": conv_id,
@@ -156,14 +156,24 @@ mod tests {
     use tempfile::TempDir;
     use tokio::sync::broadcast;
 
-    fn make_ctx(tmp: &TempDir) -> (CommandContext, broadcast::Receiver<ServerMessage>) {
+    fn make_ctx(
+        tmp: &TempDir,
+    ) -> (
+        ConversationEngine,
+        CommandContext,
+        broadcast::Receiver<ServerMessage>,
+    ) {
         make_ctx_with_models(tmp, ModelsConfig::default())
     }
 
     fn make_ctx_with_models(
         tmp: &TempDir,
         models: ModelsConfig,
-    ) -> (CommandContext, broadcast::Receiver<ServerMessage>) {
+    ) -> (
+        ConversationEngine,
+        CommandContext,
+        broadcast::Receiver<ServerMessage>,
+    ) {
         let (push_tx, push_rx) = broadcast::channel(16);
         let data_dir = tmp.path().to_path_buf();
         let engine =
@@ -178,12 +188,9 @@ mod tests {
                 data: data_dir.clone(),
                 runtime: tmp.path().join("runtime"),
             },
-            character_definition: None,
-            user_definition: None,
         };
 
         let ctx = CommandContext {
-            engine,
             config,
             push_tx,
             data_dir,
@@ -191,7 +198,7 @@ mod tests {
             autonomy_paused: false,
             session_tokens: Default::default(),
         };
-        (ctx, push_rx)
+        (engine, ctx, push_rx)
     }
 
     fn sample_models() -> ModelsConfig {
@@ -239,10 +246,10 @@ mod tests {
     #[test]
     fn status_returns_state() {
         let tmp = TempDir::new().unwrap();
-        let (mut ctx, _rx) = make_ctx(&tmp);
+        let (engine, mut ctx, _rx) = make_ctx(&tmp);
         ctx.active_model = Some("claude-sonnet".into());
 
-        let result = status(&ctx).unwrap();
+        let result = status(&engine, &ctx).unwrap();
         assert_eq!(result["character"], "TestChar");
         assert!(result["active_conversation"].is_null());
         assert_eq!(result["message_count"], 0);
@@ -253,13 +260,13 @@ mod tests {
     #[test]
     fn status_with_active_conversation() {
         let tmp = TempDir::new().unwrap();
-        let (mut ctx, _rx) = make_ctx(&tmp);
-        ctx.engine.new_conversation("Test").unwrap();
-        ctx.engine
+        let (mut engine, _ctx, _rx) = make_ctx(&tmp);
+        engine.new_conversation("Test").unwrap();
+        engine
             .append_message(make_msg("m1", Role::User, "Hi"))
             .unwrap();
 
-        let result = status(&ctx).unwrap();
+        let result = status(&engine, &_ctx).unwrap();
         assert!(result["active_conversation"].is_string());
         assert_eq!(result["message_count"], 1);
     }
@@ -267,7 +274,7 @@ mod tests {
     #[test]
     fn list_models_empty() {
         let tmp = TempDir::new().unwrap();
-        let (ctx, _rx) = make_ctx(&tmp);
+        let (_engine, ctx, _rx) = make_ctx(&tmp);
 
         let result = list_models(&ctx).unwrap();
         assert!(result["models"].as_array().unwrap().is_empty());
@@ -277,7 +284,7 @@ mod tests {
     #[test]
     fn list_models_with_profiles() {
         let tmp = TempDir::new().unwrap();
-        let (ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
+        let (_engine, ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
 
         let result = list_models(&ctx).unwrap();
         let models = result["models"].as_array().unwrap();
@@ -289,7 +296,7 @@ mod tests {
     #[test]
     fn switch_model_show_current() {
         let tmp = TempDir::new().unwrap();
-        let (mut ctx, _rx) = make_ctx(&tmp);
+        let (_engine, mut ctx, _rx) = make_ctx(&tmp);
         ctx.active_model = Some("claude-sonnet".into());
 
         let result = switch_model(&mut ctx, &json!({})).unwrap();
@@ -299,7 +306,7 @@ mod tests {
     #[test]
     fn switch_model_valid() {
         let tmp = TempDir::new().unwrap();
-        let (mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
+        let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
 
         let result = switch_model(&mut ctx, &json!({"name": "gpt-4o"})).unwrap();
         assert_eq!(result["active"], "gpt-4o");
@@ -310,7 +317,7 @@ mod tests {
     #[test]
     fn switch_model_not_found() {
         let tmp = TempDir::new().unwrap();
-        let (mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
+        let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
 
         let result = switch_model(&mut ctx, &json!({"name": "nonexistent"}));
         assert!(result.is_err());
@@ -330,24 +337,24 @@ mod tests {
     #[test]
     fn toggle_private_on_off() {
         let tmp = TempDir::new().unwrap();
-        let (mut ctx, _rx) = make_ctx(&tmp);
-        ctx.engine.new_conversation("Test").unwrap();
+        let (mut engine, mut ctx, _rx) = make_ctx(&tmp);
+        engine.new_conversation("Test").unwrap();
 
         // Toggle on.
-        let result = toggle_private(&mut ctx).unwrap();
+        let result = toggle_private(&mut engine, &mut ctx).unwrap();
         assert_eq!(result["private"], true);
 
         // Toggle off.
-        let result = toggle_private(&mut ctx).unwrap();
+        let result = toggle_private(&mut engine, &mut ctx).unwrap();
         assert_eq!(result["private"], false);
     }
 
     #[test]
     fn toggle_private_no_conversation() {
         let tmp = TempDir::new().unwrap();
-        let (mut ctx, _rx) = make_ctx(&tmp);
+        let (mut engine, mut ctx, _rx) = make_ctx(&tmp);
 
-        let result = toggle_private(&mut ctx);
+        let result = toggle_private(&mut engine, &mut ctx);
         assert!(result.is_err());
         let (code, _msg) = result.unwrap_err();
         assert_eq!(code, ErrorCode::InvalidRequest);
@@ -356,11 +363,11 @@ mod tests {
     #[test]
     fn toggle_private_triggers_history_push() {
         let tmp = TempDir::new().unwrap();
-        let (mut ctx, mut rx) = make_ctx(&tmp);
-        ctx.engine.new_conversation("Test").unwrap();
+        let (mut engine, mut ctx, mut rx) = make_ctx(&tmp);
+        engine.new_conversation("Test").unwrap();
         while rx.try_recv().is_ok() {}
 
-        toggle_private(&mut ctx).unwrap();
+        toggle_private(&mut engine, &mut ctx).unwrap();
 
         let msg = rx.try_recv().unwrap();
         assert!(matches!(msg, ServerMessage::History(_)));
@@ -379,7 +386,7 @@ mod tests {
     #[test]
     fn toggle_autonomy_toggles() {
         let tmp = TempDir::new().unwrap();
-        let (mut ctx, _rx) = make_ctx(&tmp);
+        let (_engine, mut ctx, _rx) = make_ctx(&tmp);
         assert!(!ctx.autonomy_paused);
 
         let result = toggle_autonomy(&mut ctx).unwrap();
@@ -394,27 +401,25 @@ mod tests {
     #[test]
     fn config_full() {
         let tmp = TempDir::new().unwrap();
-        let (ctx, _rx) = make_ctx(&tmp);
+        let (_engine, ctx, _rx) = make_ctx(&tmp);
 
         let result = config(&ctx, &json!({})).unwrap();
         assert!(result["config"].is_object());
-        assert!(result["config"]["character"].is_object());
     }
 
     #[test]
     fn config_section() {
         let tmp = TempDir::new().unwrap();
-        let (ctx, _rx) = make_ctx(&tmp);
+        let (_engine, ctx, _rx) = make_ctx(&tmp);
 
-        let result = config(&ctx, &json!({"section": "character"})).unwrap();
-        assert_eq!(result["section"], "character");
-        assert!(result["config"]["name"].is_string());
+        let result = config(&ctx, &json!({"section": "defaults"})).unwrap();
+        assert_eq!(result["section"], "defaults");
     }
 
     #[test]
     fn config_section_not_found() {
         let tmp = TempDir::new().unwrap();
-        let (ctx, _rx) = make_ctx(&tmp);
+        let (_engine, ctx, _rx) = make_ctx(&tmp);
 
         let result = config(&ctx, &json!({"section": "nonexistent"}));
         assert!(result.is_err());

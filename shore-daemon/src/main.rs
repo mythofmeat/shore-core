@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
+use shore_daemon::characters::CharacterRegistry;
 use shore_daemon::commands::{CommandContext, SessionTokens};
 use shore_daemon::config::load_config;
-use shore_daemon::engine::ConversationEngine;
 use shore_daemon::handler::MessageHandler;
 use shore_daemon::llm_client::LlmClient;
 use shore_daemon::server::registry::{InstanceInfo, Registry};
@@ -31,7 +31,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(PathBuf::from);
 
     let loaded = load_config(config_path.as_deref())?;
-    info!(character = %loaded.app.character.name, "Configuration loaded");
+    info!("Configuration loaded");
 
     // ── Determine socket path ────────────────────────────────────────
     let instance_id = uuid::Uuid::new_v4().to_string();
@@ -129,15 +129,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let push_tx = server.push_sender();
     let route_rx = server.take_route_rx();
 
-    // Create conversation engine for the active character.
-    let engine = ConversationEngine::new(
-        loaded.app.character.name.clone(),
+    // Create character registry for multi-character management.
+    let char_registry = CharacterRegistry::new(
+        loaded.dirs.config.clone(),
         loaded.dirs.data.clone(),
         push_tx.clone(),
-    )?;
+    );
 
     let cmd_ctx = CommandContext {
-        engine,
         config: loaded.clone(),
         push_tx: push_tx.clone(),
         data_dir: loaded.dirs.data.clone(),
@@ -147,6 +146,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let mut msg_handler = MessageHandler {
+        registry: char_registry,
         cmd_ctx,
         llm_client: LlmClient::new(llm_socket),
         push_tx,
@@ -160,6 +160,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ── Run server ───────────────────────────────────────────────────
     let result = server.run(shutdown_rx).await;
+
+    // Drop the server so its route_tx is released, unblocking the handler.
+    drop(server);
 
     // ── Wait for handler and supervisor to finish ─────────────────────
     let _ = handler_handle.await;

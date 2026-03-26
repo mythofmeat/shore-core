@@ -40,6 +40,9 @@ pub enum EngineError {
 
     #[error("no active conversation")]
     NoActiveConversation,
+
+    #[error("character not found: {0}")]
+    CharacterNotFound(String),
 }
 
 /// Per-character conversation engine.

@@ -13,9 +13,6 @@ pub struct AppConfig {
     pub daemon: DaemonConfig,
 
     #[serde(default)]
-    pub character: CharacterConfig,
-
-    #[serde(default)]
     pub defaults: DefaultsConfig,
 
     #[serde(default)]
@@ -44,28 +41,6 @@ pub struct DaemonConfig {
 
     /// Optional TCP address to listen on (e.g. "127.0.0.1:7320").
     pub tcp_addr: Option<String>,
-}
-
-// ── [character] ─────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct CharacterConfig {
-    /// Active character name.
-    #[serde(default = "default_character_name")]
-    pub name: String,
-}
-
-fn default_character_name() -> String {
-    "Shore".into()
-}
-
-impl Default for CharacterConfig {
-    fn default() -> Self {
-        Self {
-            name: default_character_name(),
-        }
-    }
 }
 
 // ── [defaults] ──────────────────────────────────────────────────────────
@@ -433,7 +408,6 @@ mod tests {
     #[test]
     fn defaults_are_sensible() {
         let config = AppConfig::default();
-        assert_eq!(config.character.name, "Shore");
         assert!(config.defaults.stream);
         assert!(!config.behavior.autonomy.enabled);
         assert_eq!(config.behavior.autonomy.personality, 0.5);

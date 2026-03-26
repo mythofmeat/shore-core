@@ -24,15 +24,23 @@ pub struct ClientInfo {
     pub client_type: String,
     pub client_name: String,
     pub capabilities: Vec<String>,
+    /// Which character this client is talking to.
+    pub character: Option<String>,
 }
 
 /// Messages the server routes internally after handshake.
 #[derive(Debug, Clone)]
 pub enum RoutedMessage {
     /// Message or Regen — route to engine.
-    Engine(ClientMessage),
+    Engine {
+        msg: ClientMessage,
+        character: Option<String>,
+    },
     /// Command — route to command dispatcher.
-    Command(Command),
+    Command {
+        cmd: Command,
+        character: Option<String>,
+    },
 }
 
 /// Configuration for the server.
@@ -239,11 +247,13 @@ where
                 client_type: hello.client_type,
                 client_name: hello.client_name,
                 capabilities: hello.capabilities,
+                character: hello.character,
             };
             info!(
                 client_id,
                 client_type = %info.client_type,
                 client_name = %info.client_name,
+                character = ?info.character,
                 "Client hello received"
             );
             info
@@ -261,6 +271,9 @@ where
         }
     };
 
+    // Extract character before moving client_info into the map.
+    let character = client_info.character.clone();
+
     // Register client.
     ctx.clients.write().await.insert(client_id, client_info);
 
@@ -271,8 +284,6 @@ where
     });
     write_message(&mut writer, &history).await?;
     info!(client_id, "Handshake complete");
-
-    // ── Step 4: Message loop ─────────────────────────────────────────
     let result = message_loop(
         client_id,
         &mut buf_reader,
@@ -280,6 +291,7 @@ where
         &mut ctx.push_rx,
         &ctx.route_tx,
         &mut ctx.shutdown,
+        character,
     )
     .await;
 
@@ -298,6 +310,7 @@ async fn message_loop<R, W>(
     push_rx: &mut broadcast::Receiver<ServerMessage>,
     route_tx: &tokio::sync::mpsc::Sender<RoutedMessage>,
     shutdown: &mut tokio::sync::watch::Receiver<()>,
+    character: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
 where
     R: tokio::io::AsyncRead + Unpin + Send,
@@ -309,7 +322,7 @@ where
             msg = read_message(reader) => {
                 match msg? {
                     Some(client_msg) => {
-                        route_client_message(client_id, client_msg, route_tx, writer).await?;
+                        route_client_message(client_id, client_msg, route_tx, writer, &character).await?;
                     }
                     None => {
                         // Client closed the connection.
@@ -348,6 +361,7 @@ async fn route_client_message<W>(
     msg: ClientMessage,
     route_tx: &tokio::sync::mpsc::Sender<RoutedMessage>,
     writer: &mut W,
+    character: &Option<String>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
 where
     W: tokio::io::AsyncWrite + Unpin + Send,
@@ -363,11 +377,21 @@ where
         }
         ClientMessage::Message(_) | ClientMessage::Regen(_) => {
             info!(client_id, msg_type = %msg_type_name(&msg), "Routing to engine");
-            route_tx.send(RoutedMessage::Engine(msg)).await?;
+            route_tx
+                .send(RoutedMessage::Engine {
+                    msg,
+                    character: character.clone(),
+                })
+                .await?;
         }
         ClientMessage::Command(cmd) => {
             info!(client_id, command = %cmd.name, "Routing to command dispatcher");
-            route_tx.send(RoutedMessage::Command(cmd)).await?;
+            route_tx
+                .send(RoutedMessage::Command {
+                    cmd,
+                    character: character.clone(),
+                })
+                .await?;
         }
     }
     Ok(())
@@ -503,6 +527,7 @@ mod tests {
                 client_type: client_type.into(),
                 client_name: "test".into(),
                 capabilities: vec![],
+                character: None,
             }),
         )
         .await
@@ -529,6 +554,7 @@ mod tests {
                 client_type: "tui".into(),
                 client_name: "test-client".into(),
                 capabilities: vec!["streaming".into()],
+                character: None,
             }),
         )
         .await
@@ -574,7 +600,7 @@ mod tests {
 
         let routed = h.route_rx.recv().await.unwrap();
         match routed {
-            RoutedMessage::Engine(ClientMessage::Message(body)) => {
+            RoutedMessage::Engine { msg: ClientMessage::Message(body), .. } => {
                 assert_eq!(body.text, "Hello world");
                 assert_eq!(body.rid, Some("msg_01".into()));
             }
@@ -594,7 +620,7 @@ mod tests {
 
         let routed = h.route_rx.recv().await.unwrap();
         match routed {
-            RoutedMessage::Engine(ClientMessage::Regen(r)) => {
+            RoutedMessage::Engine { msg: ClientMessage::Regen(r), .. } => {
                 assert_eq!(r.rid, Some("regen_01".into()));
             }
             other => panic!("Expected Engine(Regen), got {:?}", other),
@@ -622,7 +648,7 @@ mod tests {
 
         let routed = h.route_rx.recv().await.unwrap();
         match routed {
-            RoutedMessage::Command(cmd) => {
+            RoutedMessage::Command { cmd, .. } => {
                 assert_eq!(cmd.name, "status");
                 assert_eq!(cmd.rid, Some("cmd_01".into()));
             }
@@ -739,6 +765,7 @@ mod tests {
                 client_type: "tui".into(),
                 client_name: "test".into(),
                 capabilities: vec![],
+                character: None,
             }),
         )
         .await

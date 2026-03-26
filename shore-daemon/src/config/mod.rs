@@ -75,8 +75,6 @@ pub struct LoadedConfig {
     pub app: AppConfig,
     pub models: ModelsConfig,
     pub dirs: ShoreDirs,
-    pub character_definition: Option<String>,
-    pub user_definition: Option<String>,
 }
 
 /// Load and validate daemon configuration.
@@ -113,8 +111,10 @@ pub fn load_config(config_path: Option<&Path>) -> Result<LoadedConfig, ConfigErr
         info!(path = %config_file.display(), "Loading config.toml");
         toml::from_str(&content).map_err(ConfigError::ParseApp)?
     } else {
-        info!("No config.toml found, using defaults");
-        AppConfig::default()
+        info!("No config.toml found, creating default config");
+        let app = AppConfig::default();
+        create_default_config(&config_dir);
+        app
     };
 
     // ── Load models.toml ────────────────────────────────────────────
@@ -128,28 +128,74 @@ pub fn load_config(config_path: Option<&Path>) -> Result<LoadedConfig, ConfigErr
         info!(path = %models_file.display(), "Loading models.toml");
         toml::from_str(&content).map_err(ConfigError::ParseModels)?
     } else {
-        info!("No models.toml found, using empty model list");
-        ModelsConfig::default()
+        info!("No models.toml found, creating default models config");
+        let models = ModelsConfig::default();
+        create_default_models(&config_dir);
+        models
     };
 
     // ── Validate ────────────────────────────────────────────────────
     validate_config(&app, &models)?;
 
-    // ── Load character definition ───────────────────────────────────
-    let character_name = &app.character.name;
-    let character_definition =
-        load_character_definition(&config_dir, character_name);
-
-    // ── Resolve user definition ─────────────────────────────────────
-    let user_definition = resolve_user_definition(&config_dir, character_name);
-
     Ok(LoadedConfig {
         app,
         models,
         dirs,
-        character_definition,
-        user_definition,
     })
+}
+
+/// Write a starter config.toml with commented options.
+fn create_default_config(config_dir: &Path) {
+    if let Err(e) = std::fs::create_dir_all(config_dir) {
+        warn!(error = %e, "Could not create config directory");
+        return;
+    }
+    let content = r#"# Shore V2 configuration
+# See examples/config.toml for all available options.
+#
+# Characters are discovered from the characters/ directory.
+# Create characters/<name>/character.md to define a character.
+
+# [defaults]
+# model = "claude-sonnet"    # must match a name in models.toml
+
+# [services.llm]
+# command = "node /path/to/shore-llm/dist/index.js"
+"#;
+    let path = config_dir.join("config.toml");
+    match std::fs::write(&path, content) {
+        Ok(()) => info!(path = %path.display(), "Created default config.toml"),
+        Err(e) => warn!(error = %e, "Could not write default config.toml"),
+    }
+}
+
+/// Write a starter models.toml with example entries.
+fn create_default_models(config_dir: &Path) {
+    if let Err(e) = std::fs::create_dir_all(config_dir) {
+        warn!(error = %e, "Could not create config directory");
+        return;
+    }
+    let content = r#"# Shore V2 model profiles
+# See examples/models.toml for all available options.
+#
+# Uncomment a provider and set the corresponding API key env var:
+#   ANTHROPIC_API_KEY, OPENAI_API_KEY, etc.
+
+# [[models]]
+# name = "claude-sonnet"
+# provider = "anthropic"
+# model_id = "claude-sonnet-4-6"
+
+# [[models]]
+# name = "gpt-4o"
+# provider = "openai"
+# model_id = "gpt-4o"
+"#;
+    let path = config_dir.join("models.toml");
+    match std::fs::write(&path, content) {
+        Ok(()) => info!(path = %path.display(), "Created default models.toml"),
+        Err(e) => warn!(error = %e, "Could not write default models.toml"),
+    }
 }
 
 /// Validate cross-field config constraints.
@@ -186,7 +232,7 @@ fn validate_config(app: &AppConfig, models: &ModelsConfig) -> Result<(), ConfigE
 }
 
 /// Load character definition from `characters/{name}/character.md`.
-fn load_character_definition(config_dir: &Path, character_name: &str) -> Option<String> {
+pub fn load_character_definition(config_dir: &Path, character_name: &str) -> Option<String> {
     let path = config_dir
         .join("characters")
         .join(character_name)
@@ -208,7 +254,7 @@ fn load_character_definition(config_dir: &Path, character_name: &str) -> Option<
 }
 
 /// Resolve user definition: character-specific user.md → global user.md.
-fn resolve_user_definition(config_dir: &Path, character_name: &str) -> Option<String> {
+pub fn resolve_user_definition(config_dir: &Path, character_name: &str) -> Option<String> {
     // 1. Character-specific user.md
     let char_user = config_dir
         .join("characters")
@@ -230,6 +276,30 @@ fn resolve_user_definition(config_dir: &Path, character_name: &str) -> Option<St
     }
 
     None
+}
+
+/// Discover available characters by scanning `characters/` directory.
+///
+/// Returns the names of all subdirectories under `{config_dir}/characters/`
+/// that contain a `character.md` file.
+pub fn discover_characters(config_dir: &Path) -> Vec<String> {
+    let chars_dir = config_dir.join("characters");
+    let entries = match std::fs::read_dir(&chars_dir) {
+        Ok(entries) => entries,
+        Err(_) => return vec![],
+    };
+
+    let mut names = Vec::new();
+    for entry in entries.flatten() {
+        if entry.path().is_dir() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if entry.path().join("character.md").exists() {
+                names.push(name);
+            }
+        }
+    }
+    names.sort();
+    names
 }
 
 /// Resolve a prompt template: character-specific → global → None.
@@ -287,9 +357,6 @@ mod tests {
 [daemon]
 socket_path = "/tmp/shore.sock"
 
-[character]
-name = "Shore"
-
 [behavior.autonomy]
 enabled = true
 personality = 0.7
@@ -322,7 +389,6 @@ model_id = "gpt-4o"
             loaded.app.daemon.socket_path.as_deref(),
             Some("/tmp/shore.sock")
         );
-        assert_eq!(loaded.app.character.name, "Shore");
         assert!(loaded.app.behavior.autonomy.enabled);
         assert_eq!(loaded.app.behavior.autonomy.personality, 0.7);
         assert_eq!(loaded.app.behavior.autonomy.max_unanswered, 2);
@@ -335,13 +401,7 @@ model_id = "gpt-4o"
 
     #[test]
     fn missing_optional_fields_get_defaults() {
-        let tmp = setup_config_dir(&[(
-            "config.toml",
-            r#"
-[character]
-name = "TestChar"
-"#,
-        )]);
+        let tmp = setup_config_dir(&[("config.toml", "")]);
 
         let config_path = tmp.path().join("config.toml");
         let loaded = load_config(Some(&config_path)).unwrap();
@@ -456,65 +516,44 @@ model_id = "b"
     #[test]
     fn character_definition_loaded() {
         let tmp = setup_config_dir(&[
-            (
-                "config.toml",
-                r#"
-[character]
-name = "TestChar"
-"#,
-            ),
-            (
-                "characters/TestChar/character.md",
-                "You are TestChar, a helpful assistant.",
-            ),
+            ("characters/TestChar/character.md", "You are TestChar, a helpful assistant."),
         ]);
 
-        let config_path = tmp.path().join("config.toml");
-        let loaded = load_config(Some(&config_path)).unwrap();
-        assert_eq!(
-            loaded.character_definition.as_deref(),
-            Some("You are TestChar, a helpful assistant.")
-        );
+        let def = load_character_definition(tmp.path(), "TestChar");
+        assert_eq!(def.as_deref(), Some("You are TestChar, a helpful assistant."));
     }
 
     #[test]
     fn user_definition_character_specific_overrides_global() {
         let tmp = setup_config_dir(&[
-            (
-                "config.toml",
-                r#"
-[character]
-name = "TestChar"
-"#,
-            ),
             ("user.md", "Global user definition"),
-            (
-                "characters/TestChar/user.md",
-                "Character-specific user definition",
-            ),
+            ("characters/TestChar/user.md", "Character-specific user definition"),
         ]);
 
-        let config_path = tmp.path().join("config.toml");
-        let loaded = load_config(Some(&config_path)).unwrap();
-        assert_eq!(
-            loaded.user_definition.as_deref(),
-            Some("Character-specific user definition")
-        );
+        let def = resolve_user_definition(tmp.path(), "TestChar");
+        assert_eq!(def.as_deref(), Some("Character-specific user definition"));
     }
 
     #[test]
     fn user_definition_falls_back_to_global() {
         let tmp = setup_config_dir(&[
-            ("config.toml", "[character]\nname = \"TestChar\""),
             ("user.md", "Global user definition"),
         ]);
 
-        let config_path = tmp.path().join("config.toml");
-        let loaded = load_config(Some(&config_path)).unwrap();
-        assert_eq!(
-            loaded.user_definition.as_deref(),
-            Some("Global user definition")
-        );
+        let def = resolve_user_definition(tmp.path(), "TestChar");
+        assert_eq!(def.as_deref(), Some("Global user definition"));
+    }
+
+    #[test]
+    fn discover_characters_finds_valid_chars() {
+        let tmp = setup_config_dir(&[
+            ("characters/Alice/character.md", "Alice character"),
+            ("characters/Bob/character.md", "Bob character"),
+            ("characters/EmptyDir/.gitkeep", ""), // no character.md
+        ]);
+
+        let chars = discover_characters(tmp.path());
+        assert_eq!(chars, vec!["Alice", "Bob"]);
     }
 
     #[test]

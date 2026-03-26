@@ -13,6 +13,7 @@ use shore_protocol::types::{Message, Role};
 use tokio::sync::{broadcast, Mutex};
 use tracing::{error, info, instrument};
 
+use crate::characters::CharacterRegistry;
 use crate::commands::{self, CommandContext};
 use crate::engine::prompt::{self, PromptParams};
 use crate::engine::tools::{self, ToolRegistry};
@@ -25,6 +26,7 @@ use crate::server::RoutedMessage;
 /// Consumes routed messages from the server and orchestrates the full
 /// message → LLM → response pipeline.
 pub struct MessageHandler {
+    pub registry: CharacterRegistry,
     pub cmd_ctx: CommandContext,
     pub llm_client: LlmClient,
     pub push_tx: broadcast::Sender<ServerMessage>,
@@ -40,12 +42,12 @@ impl MessageHandler {
         let mut rx = route_rx.lock().await;
         while let Some(msg) = rx.recv().await {
             match msg {
-                RoutedMessage::Command(cmd) => {
-                    let result = commands::dispatch(&mut self.cmd_ctx, &cmd);
+                RoutedMessage::Command { cmd, character } => {
+                    let result = self.dispatch_command(&cmd, character.as_deref());
                     let _ = self.push_tx.send(result);
                 }
-                RoutedMessage::Engine(client_msg) => {
-                    if let Err(e) = self.handle_engine_message(client_msg).await {
+                RoutedMessage::Engine { msg, character } => {
+                    if let Err(e) = self.handle_engine_message(msg, character.as_deref()).await {
                         error!(error = %e, "Error processing engine message");
                         let _ = self.push_tx.send(ServerMessage::Error(SwpError {
                             code: ErrorCode::InternalError,
@@ -58,12 +60,45 @@ impl MessageHandler {
         info!("Message handler shutting down (route channel closed)");
     }
 
+    /// Resolve the engine for a character and dispatch a command.
+    fn dispatch_command(
+        &mut self,
+        cmd: &shore_protocol::client_msg::Command,
+        character: Option<&str>,
+    ) -> ServerMessage {
+        // Resolve character and get engine.
+        let char_name = match self.registry.resolve_character(character) {
+            Ok(name) => name,
+            Err(e) => {
+                return ServerMessage::Error(SwpError {
+                    code: ErrorCode::InvalidRequest,
+                    message: e.to_string(),
+                });
+            }
+        };
+
+        let engine = match self.registry.get_or_create(&char_name) {
+            Ok(engine) => engine,
+            Err(e) => {
+                return ServerMessage::Error(SwpError {
+                    code: ErrorCode::InternalError,
+                    message: e.to_string(),
+                });
+            }
+        };
+
+        commands::dispatch(engine, &mut self.cmd_ctx, cmd)
+    }
+
     async fn handle_engine_message(
         &mut self,
         msg: ClientMessage,
+        character: Option<&str>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         match msg {
-            ClientMessage::Message(body) => self.handle_user_message(body, false).await,
+            ClientMessage::Message(body) => {
+                self.handle_user_message(body, false, character).await
+            }
             ClientMessage::Regen(regen) => {
                 // Regen re-generates the last assistant response.
                 let body = ClientMessageBody {
@@ -73,7 +108,7 @@ impl MessageHandler {
                     images: vec![],
                     absence_seconds: None,
                 };
-                self.handle_user_message(body, true).await
+                self.handle_user_message(body, true, character).await
             }
             _ => Ok(()),
         }
@@ -84,26 +119,37 @@ impl MessageHandler {
         &mut self,
         body: ClientMessageBody,
         regen: bool,
+        character: Option<&str>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let rid = body.rid.clone();
 
-        // 1. Ensure conversation exists.
-        if self.cmd_ctx.engine.active_conversation_id().is_none() {
-            self.cmd_ctx.engine.new_conversation("New Chat")?;
-        }
+        // Resolve character.
+        let char_name = self.registry.resolve_character(character)
+            .map_err(|e| e.to_string())?;
 
-        // 2. Append user message (unless regen).
-        if !regen && !body.text.is_empty() {
-            let user_msg = Message {
-                msg_id: format!("m_{}", uuid::Uuid::new_v4()),
-                role: Role::User,
-                content: body.text.clone(),
-                images: vec![],
-                alt_index: None,
-                alt_count: None,
-                timestamp: chrono::Utc::now().to_rfc3339(),
-            };
-            self.cmd_ctx.engine.append_message(user_msg)?;
+        {
+            // Get engine for this character (scoped borrow).
+            let engine = self.registry.get_or_create(&char_name)
+                .map_err(|e| e.to_string())?;
+
+            // 1. Ensure conversation exists.
+            if engine.active_conversation_id().is_none() {
+                engine.new_conversation("New Chat")?;
+            }
+
+            // 2. Append user message (unless regen).
+            if !regen && !body.text.is_empty() {
+                let user_msg = Message {
+                    msg_id: format!("m_{}", uuid::Uuid::new_v4()),
+                    role: Role::User,
+                    content: body.text.clone(),
+                    images: vec![],
+                    alt_index: None,
+                    alt_count: None,
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                };
+                engine.append_message(user_msg)?;
+            }
         }
 
         // 3. Resolve model.
@@ -133,18 +179,25 @@ impl MessageHandler {
             .ok_or_else(|| format!("Model not found: {model_name}"))?;
 
         // 4. Assemble prompt.
-        let messages = self.cmd_ctx.engine.messages()?;
+        // Load definitions before borrowing engine (avoids borrow conflicts).
+        let character_definition = self.registry.character_definition(&char_name);
+        let user_definition = self.registry.user_definition(&char_name);
+
+        let engine = self.registry.get_or_create(&char_name)
+            .map_err(|e| e.to_string())?;
+
+        let messages = engine.messages()?;
         let character_data_dir = self
             .cmd_ctx
             .data_dir
-            .join(self.cmd_ctx.engine.character_name());
+            .join(engine.character_name());
 
         let prompt_result = prompt::assemble_prompt(&PromptParams {
             config_dir: &self.cmd_ctx.config.dirs.config,
-            character_name: self.cmd_ctx.engine.character_name(),
-            character_definition: self.cmd_ctx.config.character_definition.as_deref(),
-            user_definition: self.cmd_ctx.config.user_definition.as_deref(),
-            is_private: self.cmd_ctx.engine.is_active_private(),
+            character_name: engine.character_name(),
+            character_definition: character_definition.as_deref(),
+            user_definition: user_definition.as_deref(),
+            is_private: engine.is_active_private(),
             character_data_dir: &character_data_dir,
             messages,
             max_context_tokens: resolved.max_context_tokens,
@@ -172,7 +225,7 @@ impl MessageHandler {
         };
 
         // 6. Build tool definitions.
-        let is_private = self.cmd_ctx.engine.is_active_private();
+        let is_private = engine.is_active_private();
         let registry = ToolRegistry::new(is_private);
         let tool_defs = if self.cmd_ctx.config.app.behavior.tool_use.enabled {
             Some(registry.definitions().to_vec())
@@ -197,7 +250,11 @@ impl MessageHandler {
             .stream_raw(&request, rid.as_deref())
             .await?;
 
-        let turn_count = self.cmd_ctx.engine.messages()?.len();
+        // Re-borrow engine after releasing the previous borrow for the LLM client.
+        let engine = self.registry.get_or_create(&char_name)
+            .map_err(|e| e.to_string())?;
+
+        let turn_count = engine.messages()?.len();
         let cache_ctx = CacheContext {
             conversation_turn_count: turn_count,
             is_first_after_restart: self.is_first_after_restart,
@@ -217,10 +274,11 @@ impl MessageHandler {
         if result.finish_reason == "tool_use"
             && self.cmd_ctx.config.app.behavior.tool_use.enabled
         {
+            let engine = self.registry.get_or_create(&char_name)
+                .map_err(|e| e.to_string())?;
+
             if !result.content.is_empty() {
-                self.cmd_ctx
-                    .engine
-                    .accumulate_pre_tool_text(&result.content);
+                engine.accumulate_pre_tool_text(&result.content);
             }
 
             result = tools::run_tool_loop(
@@ -235,8 +293,12 @@ impl MessageHandler {
             .await?;
         }
 
+        // Re-borrow engine for final operations.
+        let engine = self.registry.get_or_create(&char_name)
+            .map_err(|e| e.to_string())?;
+
         // 10. Finalize response content (prepend any pre-tool text).
-        let content = self.cmd_ctx.engine.finalize_response(&result.content);
+        let content = engine.finalize_response(&result.content);
 
         // 11. Track cumulative token usage.
         self.cmd_ctx.session_tokens.input += result.usage.input_tokens;
@@ -261,7 +323,7 @@ impl MessageHandler {
             alt_count: None,
             timestamp: chrono::Utc::now().to_rfc3339(),
         };
-        self.cmd_ctx.engine.append_message(assistant_msg)?;
+        engine.append_message(assistant_msg)?;
 
         Ok(())
     }

@@ -22,10 +22,8 @@ pub struct SessionTokens {
     pub cache_write: u32,
 }
 
-/// Shared state for command handlers.
+/// Shared state for command handlers (does not own the engine).
 pub struct CommandContext {
-    /// The active conversation engine.
-    pub engine: ConversationEngine,
     /// Loaded configuration.
     pub config: LoadedConfig,
     /// Broadcast sender for push messages.
@@ -44,29 +42,33 @@ pub struct CommandContext {
 pub type CommandResult = Result<serde_json::Value, (ErrorCode, String)>;
 
 /// Dispatch a command to the appropriate handler.
-pub fn dispatch(ctx: &mut CommandContext, cmd: &Command) -> ServerMessage {
+pub fn dispatch(
+    engine: &mut ConversationEngine,
+    ctx: &mut CommandContext,
+    cmd: &Command,
+) -> ServerMessage {
     info!(command = %cmd.name, "Dispatching command");
 
     let result = match cmd.name.as_str() {
         // Navigation
-        "list_characters" => navigation::list_characters(ctx),
-        "switch_character" => navigation::switch_character(ctx, &cmd.args),
-        "list_chats" => navigation::list_chats(ctx),
-        "switch_chat" => navigation::switch_chat(ctx, &cmd.args),
-        "new_chat" => navigation::new_chat(ctx, &cmd.args),
+        "list_characters" => navigation::list_characters(engine, ctx),
+        "switch_character" => navigation::switch_character(engine, ctx, &cmd.args),
+        "list_chats" => navigation::list_chats(engine, ctx),
+        "switch_chat" => navigation::switch_chat(engine, ctx, &cmd.args),
+        "new_chat" => navigation::new_chat(engine, ctx, &cmd.args),
 
         // Conversation
-        "swipe" => conversation::swipe(ctx, &cmd.args),
-        "log" => conversation::log(ctx, &cmd.args),
-        "edit" => conversation::edit(ctx, &cmd.args),
-        "delete" => conversation::delete(ctx, &cmd.args),
+        "swipe" => conversation::swipe(engine, ctx, &cmd.args),
+        "log" => conversation::log(engine, ctx, &cmd.args),
+        "edit" => conversation::edit(engine, ctx, &cmd.args),
+        "delete" => conversation::delete(engine, ctx, &cmd.args),
 
         // State
-        "status" => state::status(ctx),
+        "status" => state::status(engine, ctx),
         "list_models" => state::list_models(ctx),
         "switch_model" => state::switch_model(ctx, &cmd.args),
         "memory" => state::memory(&cmd.args),
-        "toggle_private" => state::toggle_private(ctx),
+        "toggle_private" => state::toggle_private(engine, ctx),
         "compact" => state::compact(&cmd.args),
         "toggle_autonomy" => state::toggle_autonomy(ctx),
         "config" => state::config(ctx, &cmd.args),
@@ -102,7 +104,13 @@ mod tests {
     use super::*;
     use shore_protocol::client_msg::Command;
 
-    fn make_ctx(tmp: &tempfile::TempDir) -> (CommandContext, broadcast::Receiver<ServerMessage>) {
+    fn make_ctx(
+        tmp: &tempfile::TempDir,
+    ) -> (
+        ConversationEngine,
+        CommandContext,
+        broadcast::Receiver<ServerMessage>,
+    ) {
         let (push_tx, push_rx) = broadcast::channel(16);
         let data_dir = tmp.path().to_path_buf();
         let engine = ConversationEngine::new(
@@ -120,12 +128,9 @@ mod tests {
                 data: data_dir.clone(),
                 runtime: tmp.path().join("runtime"),
             },
-            character_definition: None,
-            user_definition: None,
         };
 
         let ctx = CommandContext {
-            engine,
             config,
             push_tx,
             data_dir,
@@ -133,13 +138,13 @@ mod tests {
             autonomy_paused: false,
             session_tokens: Default::default(),
         };
-        (ctx, push_rx)
+        (engine, ctx, push_rx)
     }
 
     #[test]
     fn unknown_command_returns_invalid_request() {
         let tmp = tempfile::tempdir().unwrap();
-        let (mut ctx, _rx) = make_ctx(&tmp);
+        let (mut engine, mut ctx, _rx) = make_ctx(&tmp);
 
         let cmd = Command {
             rid: None,
@@ -147,7 +152,7 @@ mod tests {
             args: serde_json::json!({}),
         };
 
-        let result = dispatch(&mut ctx, &cmd);
+        let result = dispatch(&mut engine, &mut ctx, &cmd);
         match result {
             ServerMessage::Error(e) => {
                 assert_eq!(e.code, ErrorCode::InvalidRequest);
@@ -160,7 +165,7 @@ mod tests {
     #[test]
     fn dispatch_returns_command_output_with_name() {
         let tmp = tempfile::tempdir().unwrap();
-        let (mut ctx, _rx) = make_ctx(&tmp);
+        let (mut engine, mut ctx, _rx) = make_ctx(&tmp);
 
         let cmd = Command {
             rid: None,
@@ -168,7 +173,7 @@ mod tests {
             args: serde_json::json!({}),
         };
 
-        let result = dispatch(&mut ctx, &cmd);
+        let result = dispatch(&mut engine, &mut ctx, &cmd);
         match result {
             ServerMessage::CommandOutput(output) => {
                 assert_eq!(output.name, "status");
