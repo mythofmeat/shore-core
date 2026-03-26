@@ -129,12 +129,6 @@ pub fn switch_character(
     Ok(json!({ "character": name, "changed": true, "reconnect_required": true }))
 }
 
-/// Clear the active conversation and start fresh.
-pub fn reset(engine: &mut ConversationEngine) -> CommandResult {
-    engine.reset().map_err(engine_err)?;
-    Ok(json!({ "reset": true }))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -166,12 +160,17 @@ mod tests {
             },
         );
 
+        let (_tx, rx) = tokio::sync::watch::channel(());
+        let (autonomy, _compaction_rx) = crate::autonomy::manager::AutonomyManager::new(Default::default(), data_dir.clone(), rx);
+
         let ctx = CommandContext {
             config,
             push_tx,
-            data_dir,
+            data_dir: data_dir.clone(),
             active_model: None,
             session_tokens: SessionTokens::default(),
+            autonomy,
+            llm_client: crate::llm_client::LlmClient::new(data_dir.join("dummy.sock")),
         };
         (engine, ctx, push_rx)
     }
@@ -241,30 +240,6 @@ mod tests {
     }
 
     #[test]
-    fn reset_clears_conversation() {
-        let tmp = TempDir::new().unwrap();
-        let (mut engine, _ctx, _rx) = make_ctx(&tmp);
-
-        use shore_protocol::types::{Message, Role};
-        engine
-            .append_message(Message {
-                msg_id: "m1".into(),
-                role: Role::User,
-                content: "Hello".into(),
-                images: vec![],
-                alt_index: None,
-                alt_count: None,
-                timestamp: "2026-01-01T00:00:00Z".into(),
-            })
-            .unwrap();
-        assert_eq!(engine.message_count(), 1);
-
-        let result = reset(&mut engine).unwrap();
-        assert_eq!(result["reset"], true);
-        assert_eq!(engine.message_count(), 0);
-    }
-
-    #[test]
     fn character_info_active() {
         let tmp = TempDir::new().unwrap();
         let (engine, ctx, _rx) = make_ctx(&tmp);
@@ -323,18 +298,4 @@ mod tests {
         assert_eq!(overrides[0], "system.md");
     }
 
-    #[test]
-    fn reset_broadcasts_empty_history() {
-        let tmp = TempDir::new().unwrap();
-        let (mut engine, _ctx, mut rx) = make_ctx(&tmp);
-        while rx.try_recv().is_ok() {}
-
-        reset(&mut engine).unwrap();
-
-        let msg = rx.try_recv().unwrap();
-        match msg {
-            ServerMessage::History(h) => assert!(h.messages.is_empty()),
-            other => panic!("Expected History, got {:?}", other),
-        }
-    }
 }

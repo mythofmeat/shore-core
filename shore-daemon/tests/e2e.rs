@@ -207,20 +207,31 @@ async fn e2e_conversation_milestone() {
         push_tx.clone(),
     );
 
+    let (autonomy, _compaction_rx) = shore_daemon::autonomy::manager::AutonomyManager::new(
+        Default::default(),
+        loaded.dirs.data.clone(),
+        shutdown_rx.clone(),
+    );
+
+    let llm_client = LlmClient::new(llm_socket.clone());
+
     let cmd_ctx = CommandContext {
         config: loaded.clone(),
         push_tx: push_tx.clone(),
         data_dir: loaded.dirs.data.clone(),
         active_model: loaded.app.defaults.model.clone(),
         session_tokens: SessionTokens::default(),
+        autonomy: autonomy.clone(),
+        llm_client: llm_client.clone(),
     };
 
     let mut msg_handler = MessageHandler {
         registry: char_registry,
         cmd_ctx,
-        llm_client: LlmClient::new(llm_socket.clone()),
+        llm_client,
         push_tx: push_tx.clone(),
         is_first_after_restart: true,
+        autonomy,
     };
 
     // Spawn message handler.

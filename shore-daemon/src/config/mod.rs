@@ -344,6 +344,15 @@ fn validate_config(app: &AppConfig, catalog: &ModelCatalog) -> Result<(), Config
         }
     }
 
+    // If a default memory_agent model is specified, it must exist.
+    if let Some(ref memory_agent) = app.defaults.memory_agent {
+        if catalog.find_model(memory_agent).is_err() {
+            return Err(ConfigError::Validation(format!(
+                "defaults.memory_agent \"{memory_agent}\" not found in model catalog"
+            )));
+        }
+    }
+
     Ok(())
 }
 

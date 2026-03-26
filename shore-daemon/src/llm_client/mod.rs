@@ -265,6 +265,80 @@ impl LlmClient {
 
         serde_json::from_str(&body_buf).map_err(LlmError::Deserialize)
     }
+
+    /// Send an embedding request to shore-llm's POST /v1/embed.
+    pub async fn embed(
+        &self,
+        provider: &str,
+        model: &str,
+        api_key: &str,
+        base_url: Option<&str>,
+        input: &[&str],
+    ) -> Result<Vec<Vec<f32>>, LlmError> {
+        let mut payload = serde_json::json!({
+            "provider": provider,
+            "model": model,
+            "api_key": api_key,
+            "input": input,
+        });
+        if let Some(url) = base_url {
+            payload["base_url"] = serde_json::Value::String(url.to_string());
+        }
+        let body = serde_json::to_string(&payload)
+        .map_err(LlmError::Serialize)?;
+
+        let mut stream = UnixStream::connect(&self.socket_path)
+            .await
+            .map_err(|e| LlmError::Connect {
+                path: self.socket_path.clone(),
+                source: e,
+            })?;
+
+        let http_request = format!(
+            "POST /v1/embed HTTP/1.0\r\n\
+             Host: localhost\r\n\
+             Content-Type: application/json\r\n\
+             Content-Length: {}\r\n\
+             \r\n",
+            body.len()
+        );
+
+        stream.write_all(http_request.as_bytes()).await?;
+        stream.write_all(body.as_bytes()).await?;
+        stream.flush().await?;
+
+        let mut reader = BufReader::new(stream);
+        let status_line = read_status_line(&mut reader).await?;
+
+        if !status_line.contains("200") {
+            let body = read_error_body(&mut reader).await;
+            return Err(LlmError::HttpStatus {
+                status: status_line,
+                body,
+            });
+        }
+
+        skip_headers(&mut reader).await?;
+
+        let mut body_buf = String::new();
+        loop {
+            let mut line = String::new();
+            let n = reader.read_line(&mut line).await?;
+            if n == 0 {
+                break;
+            }
+            body_buf.push_str(&line);
+        }
+
+        #[derive(serde::Deserialize)]
+        struct EmbedResponse {
+            embeddings: Vec<Vec<f32>>,
+        }
+
+        let resp: EmbedResponse =
+            serde_json::from_str(&body_buf).map_err(LlmError::Deserialize)?;
+        Ok(resp.embeddings)
+    }
 }
 
 /// Return the conventional API key env var name for a provider key.

@@ -10,8 +10,10 @@ use shore_protocol::server_msg::{CommandOutput, Error, ServerMessage};
 use tokio::sync::broadcast;
 use tracing::info;
 
+use crate::autonomy::manager::AutonomyManager;
 use crate::config::LoadedConfig;
 use crate::engine::{ConversationEngine, EngineError};
+use crate::llm_client::LlmClient;
 
 /// Cumulative token usage tracked across the daemon session.
 #[derive(Debug, Clone, Default)]
@@ -34,13 +36,17 @@ pub struct CommandContext {
     pub active_model: Option<String>,
     /// Cumulative token usage for the session.
     pub session_tokens: SessionTokens,
+    /// Shared autonomy manager for scheduler state.
+    pub autonomy: AutonomyManager,
+    /// LLM client for commands that need model access (e.g. memory query).
+    pub llm_client: LlmClient,
 }
 
 /// Convenience type for command handler results.
 pub type CommandResult = Result<serde_json::Value, (ErrorCode, String)>;
 
 /// Dispatch a command to the appropriate handler.
-pub fn dispatch(
+pub async fn dispatch(
     engine: &mut ConversationEngine,
     ctx: &mut CommandContext,
     cmd: &Command,
@@ -52,7 +58,6 @@ pub fn dispatch(
         "list_characters" => navigation::list_characters(engine, ctx),
         "switch_character" => navigation::switch_character(engine, ctx, &cmd.args),
         "character_info" => navigation::character_info(engine, ctx, &cmd.args),
-        "reset" => navigation::reset(engine),
 
         // Conversation
         "log" => conversation::log(engine, ctx, &cmd.args),
@@ -64,8 +69,8 @@ pub fn dispatch(
         "list_models" => state::list_models(ctx),
         "model_info" => state::model_info(ctx, &cmd.args),
         "switch_model" => state::switch_model(ctx, &cmd.args),
-        "memory" => state::memory(&cmd.args),
-        "compact" => state::compact(&cmd.args),
+        "memory" => state::memory(engine, ctx, &cmd.args).await,
+        "compact" => state::compact(engine, ctx, &cmd.args).await,
         "config" => state::config(ctx, &cmd.args),
 
         _ => Err((
@@ -124,18 +129,23 @@ mod tests {
             },
         );
 
+        let (_tx, rx) = tokio::sync::watch::channel(());
+        let (autonomy, _compaction_rx) = AutonomyManager::new(Default::default(), data_dir.clone(), rx);
+
         let ctx = CommandContext {
             config,
             push_tx,
-            data_dir,
+            data_dir: data_dir.clone(),
             active_model: None,
             session_tokens: Default::default(),
+            autonomy,
+            llm_client: LlmClient::new(data_dir.join("dummy.sock")),
         };
         (engine, ctx, push_rx)
     }
 
-    #[test]
-    fn unknown_command_returns_invalid_request() {
+    #[tokio::test]
+    async fn unknown_command_returns_invalid_request() {
         let tmp = tempfile::tempdir().unwrap();
         let (mut engine, mut ctx, _rx) = make_ctx(&tmp);
 
@@ -145,7 +155,7 @@ mod tests {
             args: serde_json::json!({}),
         };
 
-        let result = dispatch(&mut engine, &mut ctx, &cmd);
+        let result = dispatch(&mut engine, &mut ctx, &cmd).await;
         match result {
             ServerMessage::Error(e) => {
                 assert_eq!(e.code, ErrorCode::InvalidRequest);
@@ -155,8 +165,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn dispatch_returns_command_output_with_name() {
+    #[tokio::test]
+    async fn dispatch_returns_command_output_with_name() {
         let tmp = tempfile::tempdir().unwrap();
         let (mut engine, mut ctx, _rx) = make_ctx(&tmp);
 
@@ -166,7 +176,7 @@ mod tests {
             args: serde_json::json!({}),
         };
 
-        let result = dispatch(&mut engine, &mut ctx, &cmd);
+        let result = dispatch(&mut engine, &mut ctx, &cmd).await;
         match result {
             ServerMessage::CommandOutput(output) => {
                 assert_eq!(output.name, "status");

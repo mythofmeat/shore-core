@@ -119,12 +119,17 @@ mod tests {
             },
         );
 
+        let (_tx, rx) = tokio::sync::watch::channel(());
+        let (autonomy, _compaction_rx) = crate::autonomy::manager::AutonomyManager::new(Default::default(), data_dir.clone(), rx);
+
         let ctx = CommandContext {
             config,
             push_tx,
-            data_dir,
+            data_dir: data_dir.clone(),
             active_model: None,
             session_tokens: SessionTokens::default(),
+            autonomy,
+            llm_client: crate::llm_client::LlmClient::new(data_dir.join("dummy.sock")),
         };
         (engine, ctx, push_rx)
     }

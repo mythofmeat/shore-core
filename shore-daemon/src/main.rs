@@ -1,13 +1,25 @@
 use std::path::PathBuf;
 
+use shore_daemon::autonomy::manager::AutonomyManager;
 use shore_daemon::characters::CharacterRegistry;
 use shore_daemon::commands::{CommandContext, SessionTokens};
-use shore_daemon::config::load_config;
+use shore_daemon::config::{load_config, resolve_prompt_template, LoadedConfig};
 use shore_daemon::handler::MessageHandler;
 use shore_daemon::llm_client::LlmClient;
+use shore_daemon::memory::compaction::{
+    CompactionConfig, CompactionManager, CompactionOutcome, ConversationMessage,
+    DEFAULT_COMPACT_PROMPT,
+};
+use shore_daemon::memory::compaction_impls::{
+    resolve_embed_config, RealCompactionLlm, RealConversationManager, RealVectorIndexer,
+};
+use shore_daemon::memory::db::MemoryDB;
+use shore_daemon::memory::vectorstore::VectorStore;
 use shore_daemon::server::registry::{InstanceInfo, Registry};
 use shore_daemon::server::{Server, ServerConfig};
 use shore_daemon::supervisor::Supervisor;
+use shore_protocol::server_msg::{History, ServerMessage};
+use tokio::sync::{broadcast, mpsc};
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
@@ -136,20 +148,43 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         push_tx.clone(),
     );
 
+    // Create autonomy manager (shared between handler, commands, and per-character tick tasks).
+    let (autonomy, compaction_rx) = AutonomyManager::new(
+        loaded.app.behavior.autonomy.clone(),
+        loaded.dirs.data.clone(),
+        shutdown_rx.clone(),
+    );
+
+    let llm_client = LlmClient::new(llm_socket);
+
     let cmd_ctx = CommandContext {
         config: loaded.clone(),
         push_tx: push_tx.clone(),
         data_dir: loaded.dirs.data.clone(),
         active_model: loaded.app.defaults.model.clone(),
         session_tokens: SessionTokens::default(),
+        autonomy: autonomy.clone(),
+        llm_client: llm_client.clone(),
+    };
+
+    // Spawn background compaction task driven by autonomy idle triggers.
+    let compaction_handle = {
+        let config = loaded.clone();
+        let compaction_llm_client = llm_client.clone();
+        let data_dir = loaded.dirs.data.clone();
+        let compaction_push_tx = push_tx.clone();
+        tokio::spawn(async move {
+            compaction_task(compaction_rx, config, compaction_llm_client, data_dir, compaction_push_tx).await;
+        })
     };
 
     let mut msg_handler = MessageHandler {
         registry: char_registry,
         cmd_ctx,
-        llm_client: LlmClient::new(llm_socket),
+        llm_client,
         push_tx,
         is_first_after_restart: true,
+        autonomy: autonomy.clone(),
     };
 
     // Spawn message handler as a background task.
@@ -163,8 +198,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Drop the server so its route_tx is released, unblocking the handler.
     drop(server);
 
-    // ── Wait for handler and supervisor to finish ─────────────────────
+    // ── Wait for handler, autonomy tasks, and supervisor to finish ───
     let _ = handler_handle.await;
+    let _ = compaction_handle.await;
+    autonomy.shutdown().await;
     if let Some(handle) = supervisor_handle {
         let _ = handle.await;
     }
@@ -176,6 +213,152 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Daemon shut down cleanly");
 
     result?;
+    Ok(())
+}
+
+/// Background task that processes compaction triggers from the autonomy system.
+///
+/// Reads character names from the channel and runs compaction for each.
+/// Reads `active.jsonl` directly (no engine access needed).
+async fn compaction_task(
+    mut rx: mpsc::Receiver<String>,
+    config: LoadedConfig,
+    llm_client: LlmClient,
+    data_dir: PathBuf,
+    push_tx: broadcast::Sender<ServerMessage>,
+) {
+    while let Some(character) = rx.recv().await {
+        info!(character = %character, "Background compaction triggered");
+
+        if let Err(e) = run_compaction(&character, &config, &llm_client, &data_dir, &push_tx).await
+        {
+            warn!(
+                character = %character,
+                error = %e,
+                "Background compaction failed"
+            );
+        }
+    }
+    info!("Background compaction task shutting down");
+}
+
+/// Run compaction for a single character (called from the background task).
+async fn run_compaction(
+    character: &str,
+    config: &LoadedConfig,
+    llm_client: &LlmClient,
+    data_dir: &std::path::Path,
+    push_tx: &broadcast::Sender<ServerMessage>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let character_dir = data_dir.join(character);
+    let active_path = character_dir.join("active.jsonl");
+
+    // Read messages directly from active.jsonl.
+    let content = tokio::fs::read_to_string(&active_path).await?;
+    let mut messages = Vec::new();
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let msg: shore_protocol::types::Message = serde_json::from_str(line)?;
+        messages.push(ConversationMessage {
+            role: format!("{:?}", msg.role).to_lowercase(),
+            content: msg.content,
+            timestamp: msg.timestamp,
+        });
+    }
+
+    if messages.is_empty() {
+        info!(character = %character, "No messages to compact, skipping");
+        return Ok(());
+    }
+
+    // Open memory DB.
+    let db_path = character_dir.join("memory").join("memory.db");
+    let db = MemoryDB::open(&db_path)
+        .map_err(|e| format!("Failed to open memory DB: {e}"))?;
+
+    // Resolve prompt template.
+    let prompt_template = resolve_prompt_template(&config.dirs.config, character, "compact.md")
+        .unwrap_or_else(|| DEFAULT_COMPACT_PROMPT.to_string());
+
+    // Resolve model.
+    let model = config
+        .app
+        .defaults
+        .memory_agent
+        .as_deref()
+        .and_then(|name| config.models.find_model(name).ok())
+        .or_else(|| {
+            config
+                .app
+                .defaults
+                .model
+                .as_deref()
+                .and_then(|name| config.models.find_model(name).ok())
+        })
+        .or_else(|| config.models.first_chat_model())
+        .ok_or("No model configured")?
+        .clone();
+
+    // Resolve embedding config.
+    let embed_config = resolve_embed_config(
+        config.app.defaults.embedding.as_deref(),
+        &config.models.embedding,
+    )?;
+
+    // Open vector store.
+    let vs_path = character_dir.join("memory").join("vectorstore");
+    let store = VectorStore::open(&vs_path, embed_config.dimensions).await
+        .map_err(|e| format!("Failed to open vector store: {e}"))?;
+
+    // Create trait implementations.
+    let llm = RealCompactionLlm::new(llm_client.clone(), model);
+    let indexer = RealVectorIndexer::new(store, llm_client.clone(), embed_config);
+    let conv_mgr = RealConversationManager::new(&character_dir);
+
+    let app_compaction = &config.app.behavior.autonomy.compaction;
+    let mgr_config = CompactionConfig {
+        idle_trigger_minutes: app_compaction.idle_trigger_minutes as u64,
+        message_count_threshold: app_compaction.message_count_threshold,
+    };
+    let mgr = CompactionManager::new(mgr_config);
+
+    let outcome = mgr
+        .compact(
+            character,
+            &messages,
+            false,
+            &prompt_template,
+            &llm,
+            &db,
+            &indexer,
+            &conv_mgr,
+            false,
+        )
+        .await?;
+
+    match outcome {
+        CompactionOutcome::Compacted(result) => {
+            info!(
+                character = %character,
+                entries = result.entries_created.len(),
+                messages = result.message_count,
+                "Background compaction completed"
+            );
+
+            // Broadcast empty history so connected clients refresh.
+            let _ = push_tx.send(ServerMessage::History(History {
+                messages: vec![],
+                config: serde_json::json!({}),
+            }));
+        }
+        CompactionOutcome::DryRun(_) => {
+            // Should not happen in background mode, but harmless.
+        }
+    }
+
     Ok(())
 }
 

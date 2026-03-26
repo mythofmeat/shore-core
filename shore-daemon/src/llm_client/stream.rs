@@ -163,6 +163,7 @@ impl StreamConsumer {
                         StreamEnd {
                             content: content.clone(),
                             metadata,
+                            finish_reason: finish_reason.clone(),
                         },
                     ));
 

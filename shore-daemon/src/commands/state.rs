@@ -1,7 +1,20 @@
 use serde_json::json;
 use shore_protocol::error::ErrorCode;
+use shore_protocol::types::Role;
 
+use crate::config::resolve_prompt_template;
 use crate::engine::ConversationEngine;
+use crate::memory::agent::{CallerIdentity, MemoryAgent};
+use crate::memory::agent_llm::RealAgentLlm;
+use crate::memory::compaction::{
+    CompactionConfig, CompactionError, CompactionManager, CompactionOutcome,
+    ConversationMessage, DEFAULT_COMPACT_PROMPT,
+};
+use crate::memory::compaction_impls::{
+    resolve_embed_config, RealCompactionLlm, RealConversationManager, RealVectorIndexer,
+};
+use crate::memory::db::MemoryDB;
+use crate::memory::vectorstore::VectorStore;
 
 use super::{CommandContext, CommandResult};
 
@@ -17,6 +30,7 @@ pub fn status(engine: &ConversationEngine, ctx: &CommandContext) -> CommandResul
             "cache_read": ctx.session_tokens.cache_read,
             "cache_write": ctx.session_tokens.cache_write,
         },
+        "autonomy": ctx.autonomy.status(engine.character_name()),
     }))
 }
 
@@ -103,27 +117,280 @@ pub fn switch_model(ctx: &mut CommandContext, args: &serde_json::Value) -> Comma
     }
 }
 
-/// Memory command (stub).
-pub fn memory(args: &serde_json::Value) -> CommandResult {
-    let query = args.get("query").and_then(|v| v.as_str());
+/// Memory command: status (no query) or agent query (with query).
+pub async fn memory(
+    engine: &ConversationEngine,
+    ctx: &CommandContext,
+    args: &serde_json::Value,
+) -> CommandResult {
+    let query = args
+        .get("query")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty());
+
+    match query {
+        None => memory_status(engine, ctx),
+        Some(q) => memory_query(engine, ctx, q).await,
+    }
+}
+
+/// Return memory entry/entity counts for the current character.
+fn memory_status(engine: &ConversationEngine, ctx: &CommandContext) -> CommandResult {
+    let char_name = engine.character_name();
+    let db_path = ctx
+        .data_dir
+        .join(char_name)
+        .join("memory")
+        .join("memory.db");
+
+    if !db_path.exists() {
+        return Ok(json!({
+            "character": char_name,
+            "entries": 0,
+            "entities": 0,
+            "active_entries": 0,
+        }));
+    }
+
+    let db = MemoryDB::open(&db_path)
+        .map_err(|e| (ErrorCode::InternalError, format!("Failed to open memory DB: {e}")))?;
+
+    let entries = db
+        .count_entries()
+        .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
+    let entities = db
+        .count_entities()
+        .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
+    let active = db
+        .count_entries_by_status("active")
+        .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
+
     Ok(json!({
-        "status": "not_implemented",
-        "query": query,
-        "message": "Memory system is not yet implemented",
+        "character": char_name,
+        "entries": entries,
+        "entities": entities,
+        "active_entries": active,
     }))
 }
 
-/// Compaction command (stub).
-pub fn compact(args: &serde_json::Value) -> CommandResult {
+/// Run a one-shot memory agent query and return the synthesis.
+async fn memory_query(
+    engine: &ConversationEngine,
+    ctx: &CommandContext,
+    query: &str,
+) -> CommandResult {
+    let char_name = engine.character_name();
+    let db_path = ctx
+        .data_dir
+        .join(char_name)
+        .join("memory")
+        .join("memory.db");
+
+    let db = MemoryDB::open(&db_path)
+        .map_err(|e| (ErrorCode::InternalError, format!("Failed to open memory DB: {e}")))?;
+
+    // Resolve agent model: configured memory_agent → active model → first available.
+    let agent_model = ctx
+        .config
+        .app
+        .defaults
+        .memory_agent
+        .as_deref()
+        .and_then(|name| ctx.config.models.find_model(name).ok())
+        .or_else(|| {
+            ctx.active_model
+                .as_deref()
+                .and_then(|name| ctx.config.models.find_model(name).ok())
+        })
+        .or_else(|| ctx.config.models.first_chat_model())
+        .ok_or_else(|| (ErrorCode::InternalError, "No model configured".to_string()))?
+        .clone();
+
+    let agent = MemoryAgent::one_shot(CallerIdentity::User, "User", char_name);
+    let agent_llm = RealAgentLlm::new(ctx.llm_client.clone());
+
+    let result = agent
+        .ask(query, &agent_llm, &db, None, &agent_model)
+        .await
+        .map_err(|e| (ErrorCode::InternalError, format!("Memory query failed: {e}")))?;
+
+    Ok(json!({
+        "character": char_name,
+        "query": query,
+        "result": result,
+    }))
+}
+
+/// Run compaction on the current character's conversation.
+///
+/// Extracts memories from the active conversation via an LLM, stores them
+/// in the memory database, indexes them in the vector store, and archives
+/// the conversation to a segment file.
+pub async fn compact(
+    engine: &mut ConversationEngine,
+    ctx: &CommandContext,
+    args: &serde_json::Value,
+) -> CommandResult {
     let dry_run = args
         .get("dry_run")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    Ok(json!({
-        "status": "not_implemented",
-        "dry_run": dry_run,
-        "message": "Compaction is not yet implemented",
-    }))
+
+    let char_name = engine.character_name().to_string();
+
+    // Convert engine messages to compaction format.
+    let messages: Vec<ConversationMessage> = engine
+        .messages()
+        .iter()
+        .map(|m| ConversationMessage {
+            role: match m.role {
+                Role::User => "user".to_string(),
+                Role::Assistant => "assistant".to_string(),
+                Role::System => "system".to_string(),
+            },
+            content: m.content.clone(),
+            timestamp: m.timestamp.clone(),
+        })
+        .collect();
+
+    if messages.is_empty() {
+        return Err((
+            ErrorCode::InvalidRequest,
+            "No messages to compact".to_string(),
+        ));
+    }
+
+    // Open the memory database.
+    let db_path = ctx
+        .data_dir
+        .join(&char_name)
+        .join("memory")
+        .join("memory.db");
+    let db = MemoryDB::open(&db_path)
+        .map_err(|e| (ErrorCode::InternalError, format!("Failed to open memory DB: {e}")))?;
+
+    // Resolve the compaction prompt template.
+    let prompt_template = resolve_prompt_template(
+        &ctx.config.dirs.config,
+        &char_name,
+        "compact.md",
+    )
+    .unwrap_or_else(|| DEFAULT_COMPACT_PROMPT.to_string());
+
+    // Resolve model: memory_agent -> active_model -> first_chat_model.
+    let model = ctx
+        .config
+        .app
+        .defaults
+        .memory_agent
+        .as_deref()
+        .and_then(|name| ctx.config.models.find_model(name).ok())
+        .or_else(|| {
+            ctx.active_model
+                .as_deref()
+                .and_then(|name| ctx.config.models.find_model(name).ok())
+        })
+        .or_else(|| ctx.config.models.first_chat_model())
+        .ok_or_else(|| (ErrorCode::InternalError, "No model configured".to_string()))?
+        .clone();
+
+    // Resolve embedding config.
+    let embed_config = resolve_embed_config(
+        ctx.config.app.defaults.embedding.as_deref(),
+        &ctx.config.models.embedding,
+    )
+    .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
+
+    // Open vector store.
+    let vs_path = ctx
+        .data_dir
+        .join(&char_name)
+        .join("memory")
+        .join("vectorstore");
+    let store = VectorStore::open(&vs_path, embed_config.dimensions)
+        .await
+        .map_err(|e| (ErrorCode::InternalError, format!("Failed to open vector store: {e}")))?;
+
+    // Create trait implementations.
+    let llm = RealCompactionLlm::new(ctx.llm_client.clone(), model);
+    let indexer = RealVectorIndexer::new(store, ctx.llm_client.clone(), embed_config);
+    let conv_mgr = RealConversationManager::new(engine.character_dir());
+
+    // Create compaction manager with config.
+    let app_compaction = &ctx.config.app.behavior.autonomy.compaction;
+    let config = CompactionConfig {
+        idle_trigger_minutes: app_compaction.idle_trigger_minutes as u64,
+        message_count_threshold: app_compaction.message_count_threshold,
+    };
+    let mgr = CompactionManager::new(config);
+
+    // Run compaction.
+    let outcome = mgr
+        .compact(
+            &char_name,
+            &messages,
+            false, // is_private: V2 has no per-conversation privacy flag yet
+            &prompt_template,
+            &llm,
+            &db,
+            &indexer,
+            &conv_mgr,
+            dry_run,
+        )
+        .await
+        .map_err(|e| compaction_err(e))?;
+
+    // Build response and handle post-compaction engine state.
+    match outcome {
+        CompactionOutcome::Compacted(result) => {
+            // Clear the in-memory messages (active.jsonl was already truncated).
+            engine
+                .reset()
+                .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
+
+            Ok(json!({
+                "status": "compacted",
+                "character": char_name,
+                "entries_created": result.entries_created.len(),
+                "entry_ids": result.entries_created,
+                "message_count": result.message_count,
+                "new_conversation_id": result.new_conversation_id,
+            }))
+        }
+        CompactionOutcome::DryRun(result) => {
+            let previews: Vec<serde_json::Value> = result
+                .entries_preview
+                .iter()
+                .map(|e| {
+                    json!({
+                        "memory_type": e.memory_type,
+                        "summary_text": e.summary_text,
+                        "topic_tags": e.topic_tags,
+                        "topic_key": e.topic_key,
+                        "confidence": e.confidence,
+                    })
+                })
+                .collect();
+
+            Ok(json!({
+                "status": "dry_run",
+                "character": char_name,
+                "would_create_entries": result.would_create_entries,
+                "entries_preview": previews,
+                "message_count": result.message_count,
+            }))
+        }
+    }
+}
+
+/// Map `CompactionError` to a command error tuple.
+fn compaction_err(e: CompactionError) -> (ErrorCode, String) {
+    match &e {
+        CompactionError::PrivateConversation | CompactionError::InsufficientMessages => {
+            (ErrorCode::InvalidRequest, e.to_string())
+        }
+        _ => (ErrorCode::InternalError, e.to_string()),
+    }
 }
 
 /// Show effective configuration. Optionally filtered by section name.
@@ -190,12 +457,17 @@ mod tests {
             },
         );
 
+        let (_tx, rx) = tokio::sync::watch::channel(());
+        let (autonomy, _compaction_rx) = crate::autonomy::manager::AutonomyManager::new(Default::default(), data_dir.clone(), rx);
+
         let ctx = CommandContext {
             config,
             push_tx,
-            data_dir,
+            data_dir: data_dir.clone(),
             active_model: None,
             session_tokens: Default::default(),
+            autonomy,
+            llm_client: crate::llm_client::LlmClient::new(data_dir.join("dummy.sock")),
         };
         (engine, ctx, push_rx)
     }
@@ -345,23 +617,79 @@ model_id = "gpt-4o"
         assert_eq!(code, ErrorCode::NotFound);
     }
 
-    #[test]
-    fn memory_stub() {
-        let result = memory(&json!({})).unwrap();
-        assert_eq!(result["status"], "not_implemented");
+    #[tokio::test]
+    async fn memory_status_no_db() {
+        let tmp = TempDir::new().unwrap();
+        let (engine, ctx, _rx) = make_ctx(&tmp);
 
-        let result = memory(&json!({"query": "test"})).unwrap();
-        assert_eq!(result["query"], "test");
+        let result = memory(&engine, &ctx, &json!({})).await.unwrap();
+        assert_eq!(result["character"], "TestChar");
+        assert_eq!(result["entries"], 0);
+        assert_eq!(result["entities"], 0);
+        assert_eq!(result["active_entries"], 0);
     }
 
-    #[test]
-    fn compact_stub() {
-        let result = compact(&json!({})).unwrap();
-        assert_eq!(result["status"], "not_implemented");
-        assert_eq!(result["dry_run"], false);
+    #[tokio::test]
+    async fn memory_status_with_db() {
+        let tmp = TempDir::new().unwrap();
+        let (engine, ctx, _rx) = make_ctx(&tmp);
 
-        let result = compact(&json!({"dry_run": true})).unwrap();
-        assert_eq!(result["dry_run"], true);
+        // Create a memory DB with some entries.
+        let db_dir = ctx.data_dir.join("TestChar").join("memory");
+        std::fs::create_dir_all(&db_dir).unwrap();
+        let db = MemoryDB::open(&db_dir.join("memory.db")).unwrap();
+        db.create_entry(&crate::memory::db::Entry {
+            id: "test_1".into(),
+            memory_type: "semantic".into(),
+            source: "test".into(),
+            reason: "test".into(),
+            status: "active".into(),
+            canonical: false,
+            confidence: 0.9,
+            summary_text: "Test entry".into(),
+            topic_tags: "test".into(),
+            topic_key: "test".into(),
+            start_timestamp: String::new(),
+            end_timestamp: String::new(),
+            message_count: 0,
+            source_entry_ids: String::new(),
+            related_entry_ids: String::new(),
+            superseded_by: String::new(),
+            created_at: "2026-01-01T00:00:00Z".into(),
+            updated_at: "2026-01-01T00:00:00Z".into(),
+            entry_type: String::new(),
+            image_path: String::new(),
+        })
+        .unwrap();
+        drop(db);
+
+        let result = memory(&engine, &ctx, &json!({})).await.unwrap();
+        assert_eq!(result["character"], "TestChar");
+        assert_eq!(result["entries"], 1);
+        assert_eq!(result["active_entries"], 1);
+    }
+
+    #[tokio::test]
+    async fn memory_status_null_query_is_status() {
+        // Sending {"query": null} (what CLI sends with no arg) should return status.
+        let tmp = TempDir::new().unwrap();
+        let (engine, ctx, _rx) = make_ctx(&tmp);
+
+        let result = memory(&engine, &ctx, &json!({"query": null})).await.unwrap();
+        assert_eq!(result["character"], "TestChar");
+        assert!(result.get("entries").is_some());
+    }
+
+    #[tokio::test]
+    async fn compact_empty_conversation_returns_error() {
+        let tmp = TempDir::new().unwrap();
+        let (mut engine, ctx, _rx) = make_ctx(&tmp);
+
+        let result = compact(&mut engine, &ctx, &json!({})).await;
+        assert!(result.is_err());
+        let (code, msg) = result.unwrap_err();
+        assert_eq!(code, ErrorCode::InvalidRequest);
+        assert!(msg.contains("No messages"));
     }
 
     #[test]

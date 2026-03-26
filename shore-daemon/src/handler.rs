@@ -13,13 +13,69 @@ use shore_protocol::types::{Message, Role};
 use tokio::sync::{broadcast, Mutex};
 use tracing::{error, info, instrument};
 
+use crate::autonomy::cache_keepalive::CacheKeepaliveConfig;
+use crate::autonomy::manager::AutonomyManager;
 use crate::characters::CharacterRegistry;
 use crate::commands::{self, CommandContext};
 use crate::engine::prompt::{self, PromptParams};
-use crate::engine::tools::{self, ToolRegistry};
+use crate::engine::tools;
+use crate::memory::agent::{AgentError, AgentIndexer, AgentRag, CallerIdentity, MemoryAgent, RagHit};
+use crate::memory::agent_llm::{AgentLlm, RealAgentLlm};
+use crate::memory::db::MemoryDB;
+use crate::memory::researcher::MemoryResearcher;
+use crate::tools::{self as tool_system, ToolContext};
 use crate::llm_client::stream::{CacheContext, StreamConsumer};
 use crate::llm_client::LlmClient;
 use crate::server::RoutedMessage;
+
+// ── NoopRag stub (legacy, needed by image tools via ToolContext) ──────
+
+struct NoopRag;
+
+impl AgentRag for NoopRag {
+    fn query(
+        &self,
+        _query: &str,
+        _top_k: usize,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Vec<RagHit>, AgentError>> + Send + '_>,
+    > {
+        Box::pin(async { Ok(vec![]) })
+    }
+}
+
+// ── Per-request tool context (owns all memory dependencies) ──────────
+
+struct HandlerToolContext {
+    db: MemoryDB,
+    agent: MemoryAgent,
+    agent_llm: RealAgentLlm,
+    agent_model_val: crate::config::models::ResolvedModel,
+    researcher: Option<MemoryResearcher>,
+    researcher_llm_val: Option<RealAgentLlm>,
+    researcher_model_val: Option<crate::config::models::ResolvedModel>,
+    rag: NoopRag,
+    image_dir_val: String,
+}
+
+impl ToolContext for HandlerToolContext {
+    fn memory_db(&self) -> &MemoryDB { &self.db }
+    fn memory_agent(&self) -> &MemoryAgent { &self.agent }
+    fn agent_llm(&self) -> &dyn AgentLlm { &self.agent_llm }
+    fn agent_model(&self) -> &crate::config::models::ResolvedModel { &self.agent_model_val }
+    fn researcher_llm(&self) -> Option<&dyn AgentLlm> {
+        self.researcher_llm_val.as_ref().map(|l| l as &dyn AgentLlm)
+    }
+    fn researcher_model(&self) -> Option<&crate::config::models::ResolvedModel> {
+        self.researcher_model_val.as_ref()
+    }
+    fn memory_researcher(&self) -> Option<&MemoryResearcher> {
+        self.researcher.as_ref()
+    }
+    fn indexer(&self) -> Option<&dyn AgentIndexer> { None }
+    fn rag(&self) -> &dyn AgentRag { &self.rag }
+    fn image_dir(&self) -> &str { &self.image_dir_val }
+}
 
 /// The message processing handler.
 ///
@@ -31,6 +87,7 @@ pub struct MessageHandler {
     pub llm_client: LlmClient,
     pub push_tx: broadcast::Sender<ServerMessage>,
     pub is_first_after_restart: bool,
+    pub autonomy: AutonomyManager,
 }
 
 impl MessageHandler {
@@ -43,7 +100,7 @@ impl MessageHandler {
         while let Some(msg) = rx.recv().await {
             match msg {
                 RoutedMessage::Command { cmd, character } => {
-                    let result = self.dispatch_command(&cmd, character.as_deref());
+                    let result = self.dispatch_command(&cmd, character.as_deref()).await;
                     let _ = self.push_tx.send(result);
                 }
                 RoutedMessage::Engine { msg, character } => {
@@ -61,7 +118,7 @@ impl MessageHandler {
     }
 
     /// Resolve the engine for a character and dispatch a command.
-    fn dispatch_command(
+    async fn dispatch_command(
         &mut self,
         cmd: &shore_protocol::client_msg::Command,
         character: Option<&str>,
@@ -87,7 +144,7 @@ impl MessageHandler {
             }
         };
 
-        commands::dispatch(engine, &mut self.cmd_ctx, cmd)
+        commands::dispatch(engine, &mut self.cmd_ctx, cmd).await
     }
 
     async fn handle_engine_message(
@@ -133,7 +190,16 @@ impl MessageHandler {
                 .map_err(|e| e.to_string())?;
 
             // 1. Append user message (unless regen).
-            if !regen && !body.text.is_empty() {
+            if regen {
+                // Remove the last assistant message so the LLM regenerates it.
+                let msgs = engine.messages();
+                if let Some(last) = msgs.last() {
+                    if last.role == Role::Assistant {
+                        let id = last.msg_id.clone();
+                        engine.delete_message(&id)?;
+                    }
+                }
+            } else if !body.text.is_empty() {
                 let user_msg = Message {
                     msg_id: format!("m_{}", uuid::Uuid::new_v4()),
                     role: Role::User,
@@ -144,10 +210,11 @@ impl MessageHandler {
                     timestamp: chrono::Utc::now().to_rfc3339(),
                 };
                 engine.append_message(user_msg)?;
+                self.autonomy.notify_user_message(&char_name);
             }
         }
 
-        // 3. Resolve model.
+        // 2. Ensure autonomy state and resolve model.
         let model_name = self
             .cmd_ctx
             .active_model
@@ -168,6 +235,24 @@ impl MessageHandler {
                 .first_chat_model()
                 .ok_or("No model configured")?,
         };
+
+        // 3. Resolve memory agent and researcher models.
+        let agent_model = self.cmd_ctx.config.app.defaults.memory_agent.as_deref()
+            .and_then(|name| self.cmd_ctx.config.models.find_model(name).ok())
+            .unwrap_or(resolved)
+            .clone();
+
+        let researcher_model = self.cmd_ctx.config.app.defaults.tool_model.as_deref()
+            .and_then(|name| self.cmd_ctx.config.models.find_model(name).ok())
+            .cloned();
+
+        // Ensure autonomy state exists with model-specific keepalive config.
+        let keepalive_cfg = CacheKeepaliveConfig::from_resolved_model(
+            &self.cmd_ctx.config.app.behavior.autonomy.cache_keepalive,
+            &resolved.provider_key,
+            resolved.cache_ttl.is_some(),
+        );
+        self.autonomy.ensure_state(&char_name, keepalive_cfg);
 
         // 4. Assemble prompt.
         // Load definitions before borrowing engine (avoids borrow conflicts).
@@ -215,10 +300,17 @@ impl MessageHandler {
             Some(json!(prompt_result.system[0].content))
         };
 
-        // 6. Build tool definitions.
-        let registry = ToolRegistry::new(false);
+        // 6. Build tool definitions from unified tool system.
         let tool_defs = if self.cmd_ctx.config.app.behavior.tool_use.enabled {
-            Some(registry.definitions().to_vec())
+            let defs: Vec<Value> = tool_system::available_tools(false)
+                .iter()
+                .map(|t| json!({
+                    "name": t.name,
+                    "description": t.description,
+                    "input_schema": t.parameters.clone(),
+                }))
+                .collect();
+            Some(defs)
         } else {
             None
         };
@@ -264,19 +356,51 @@ impl MessageHandler {
         if result.finish_reason == "tool_use"
             && self.cmd_ctx.config.app.behavior.tool_use.enabled
         {
-            let engine = self.registry.get_or_create(&char_name)
-                .map_err(|e| e.to_string())?;
-
-            if !result.content.is_empty() {
-                engine.accumulate_pre_tool_text(&result.content);
+            {
+                let engine = self.registry.get_or_create(&char_name)
+                    .map_err(|e| e.to_string())?;
+                if !result.content.is_empty() {
+                    engine.accumulate_pre_tool_text(&result.content);
+                }
             }
+
+            // Build per-request tool context with memory dependencies.
+            let db_path = self.cmd_ctx.data_dir
+                .join(&char_name)
+                .join("memory")
+                .join("memory.db");
+            let memory_db = MemoryDB::open(&db_path)
+                .map_err(|e| format!("failed to open memory DB: {e}"))?;
+
+            let char_def = character_definition.clone().unwrap_or_default();
+            let user_def = user_definition.clone().unwrap_or_default();
+
+            let tool_ctx = HandlerToolContext {
+                db: memory_db,
+                agent: MemoryAgent::one_shot(CallerIdentity::Char, &char_name, "User"),
+                agent_llm: RealAgentLlm::new(self.llm_client.clone()),
+                agent_model_val: agent_model.clone(),
+                researcher: researcher_model.as_ref().map(|_| {
+                    MemoryResearcher::new(char_def, user_def)
+                }),
+                researcher_llm_val: researcher_model.as_ref().map(|_| {
+                    RealAgentLlm::new(self.llm_client.clone())
+                }),
+                researcher_model_val: researcher_model.clone(),
+                rag: NoopRag,
+                image_dir_val: self.cmd_ctx.data_dir
+                    .join(&char_name)
+                    .join("images")
+                    .to_string_lossy()
+                    .into_owned(),
+            };
 
             result = tools::run_tool_loop(
                 &self.llm_client,
                 &self.push_tx,
                 &mut request,
                 result,
-                &registry,
+                &tool_ctx,
                 self.cmd_ctx.config.app.behavior.tool_use.max_iterations,
                 &cache_ctx,
             )
@@ -296,6 +420,13 @@ impl MessageHandler {
         self.cmd_ctx.session_tokens.cache_read += result.usage.cache_read_tokens;
         self.cmd_ctx.session_tokens.cache_write += result.usage.cache_creation_tokens;
 
+        // Notify cache keepalive of API response.
+        self.autonomy.notify_api_response(
+            &char_name,
+            result.usage.cache_read_tokens,
+            result.usage.input_tokens,
+        );
+
         info!(
             input_tokens = result.usage.input_tokens,
             output_tokens = result.usage.output_tokens,
@@ -314,6 +445,7 @@ impl MessageHandler {
             timestamp: chrono::Utc::now().to_rfc3339(),
         };
         engine.append_message(assistant_msg)?;
+        self.autonomy.notify_assistant_message(&char_name);
 
         Ok(())
     }

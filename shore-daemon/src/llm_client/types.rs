@@ -130,10 +130,24 @@ pub struct StreamResult {
     pub tool_uses: Vec<ToolUseEvent>,
 }
 
+/// A content block in a non-streaming response.
+///
+/// Mirrors shore-llm's `NormalizedContentBlock` — the `/v1/generate` endpoint
+/// returns these in `content_blocks` alongside the flattened `content` string.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ContentBlock {
+    Text { text: String },
+    ToolUse { id: String, name: String, input: serde_json::Value },
+    Thinking { thinking: String },
+}
+
 /// Non-streaming response from POST /v1/generate.
 #[derive(Debug, Clone, Deserialize)]
 pub struct GenerateResponse {
     pub content: String,
+    #[serde(default)]
+    pub content_blocks: Vec<ContentBlock>,
     pub finish_reason: String,
     pub usage: Usage,
     pub timing: Timing,
@@ -284,5 +298,58 @@ mod tests {
         assert_eq!(resp.content, "Response text");
         assert_eq!(resp.model, "claude-sonnet-4-6");
         assert_eq!(resp.usage.input_tokens, 50);
+        // content_blocks defaults to empty when absent.
+        assert!(resp.content_blocks.is_empty());
+    }
+
+    #[test]
+    fn deserialize_generate_response_with_content_blocks() {
+        let json = r#"{
+            "content": "I'll check the weather.",
+            "content_blocks": [
+                {"type": "text", "text": "I'll check the weather."},
+                {"type": "tool_use", "id": "toolu_01", "name": "get_weather", "input": {"city": "NYC"}}
+            ],
+            "finish_reason": "tool_use",
+            "usage": {"input_tokens": 50, "output_tokens": 25},
+            "timing": {"total_ms": 800},
+            "model": "claude-sonnet-4-6"
+        }"#;
+        let resp: GenerateResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.finish_reason, "tool_use");
+        assert_eq!(resp.content_blocks.len(), 2);
+        match &resp.content_blocks[0] {
+            ContentBlock::Text { text } => assert_eq!(text, "I'll check the weather."),
+            other => panic!("Expected Text, got {:?}", other),
+        }
+        match &resp.content_blocks[1] {
+            ContentBlock::ToolUse { id, name, input } => {
+                assert_eq!(id, "toolu_01");
+                assert_eq!(name, "get_weather");
+                assert_eq!(input["city"], "NYC");
+            }
+            other => panic!("Expected ToolUse, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn deserialize_generate_response_with_thinking() {
+        let json = r#"{
+            "content": "The answer is 42.",
+            "content_blocks": [
+                {"type": "thinking", "thinking": "Let me think..."},
+                {"type": "text", "text": "The answer is 42."}
+            ],
+            "finish_reason": "end_turn",
+            "usage": {"input_tokens": 30, "output_tokens": 15},
+            "timing": {"total_ms": 500},
+            "model": "claude-sonnet-4-6"
+        }"#;
+        let resp: GenerateResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.content_blocks.len(), 2);
+        match &resp.content_blocks[0] {
+            ContentBlock::Thinking { thinking } => assert_eq!(thinking, "Let me think..."),
+            other => panic!("Expected Thinking, got {:?}", other),
+        }
     }
 }
