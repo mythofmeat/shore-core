@@ -11,22 +11,30 @@ use tokio::time::Duration;
 // ---------------------------------------------------------------------------
 
 const DEFAULT_IDLE_TRIGGER_MINUTES: u64 = 15;
-const DEFAULT_MESSAGE_COUNT_THRESHOLD: usize = 50;
+const DEFAULT_MIN_MESSAGES: usize = 20;
+const DEFAULT_MAX_MESSAGES: usize = 60;
+const DEFAULT_KEEP_RECENT: usize = 4;
 
 /// Configuration for compaction triggers.
 #[derive(Debug, Clone)]
 pub struct CompactionConfig {
     /// Minutes of idle time before proactive compaction fires.
     pub idle_trigger_minutes: u64,
-    /// Compact when message count reaches this threshold.
-    pub message_count_threshold: usize,
+    /// Minimum messages before any compaction trigger fires.
+    pub min_messages: usize,
+    /// Force compaction when this message count is reached.
+    pub max_messages: usize,
+    /// Messages retained in active conversation after compaction.
+    pub keep_recent: usize,
 }
 
 impl Default for CompactionConfig {
     fn default() -> Self {
         Self {
             idle_trigger_minutes: DEFAULT_IDLE_TRIGGER_MINUTES,
-            message_count_threshold: DEFAULT_MESSAGE_COUNT_THRESHOLD,
+            min_messages: DEFAULT_MIN_MESSAGES,
+            max_messages: DEFAULT_MAX_MESSAGES,
+            keep_recent: DEFAULT_KEEP_RECENT,
         }
     }
 }
