@@ -2,6 +2,8 @@
 /target/
 **/*.rs.bk
 Cargo.lock
+*.profraw
+*.profdata
 
 # Node / TypeScript
 node_modules/
@@ -16,13 +18,28 @@ dist/
 *.swp
 *.swo
 *~
+
+# OS
 .DS_Store
+Thumbs.db
+
+# Runtime / data
+*.db
+*.sqlite
+*.sqlite3
+*.log
+*.sock
+*.pid
+
+# Task orchestration
 .ralph-tui
 *.todo.md
 todo/
 prd*.json
 
-# Environment
+# Environment / secrets
 .env
 .env.*
 !.env.example
+*.pem
+*.key
