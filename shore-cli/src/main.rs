@@ -3,6 +3,7 @@ mod images;
 mod notifications;
 mod output;
 mod run;
+mod state;
 
 use std::process::ExitCode;
 
