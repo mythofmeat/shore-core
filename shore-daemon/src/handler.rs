@@ -209,8 +209,13 @@ impl MessageHandler {
                     alt_count: None,
                     timestamp: chrono::Utc::now().to_rfc3339(),
                 };
-                engine.append_message(user_msg)?;
+                engine.append_message(user_msg.clone())?;
                 self.autonomy.notify_user_message(&char_name, engine.message_count());
+
+                // Broadcast user message so follow-mode clients see it.
+                let _ = self.push_tx.send(ServerMessage::NewMessage(
+                    shore_protocol::server_msg::NewMessage { message: user_msg },
+                ));
             }
         }
 
@@ -448,5 +453,214 @@ impl MessageHandler {
         self.autonomy.notify_assistant_message(&char_name, engine.message_count());
 
         Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use shore_protocol::client_msg::{Command, Regen};
+    use shore_protocol::error::ErrorCode;
+    use tempfile::TempDir;
+
+    /// Build a `MessageHandler` backed by a tempdir with the given characters.
+    fn make_handler(
+        tmp: &TempDir,
+        chars: &[&str],
+    ) -> (MessageHandler, broadcast::Receiver<ServerMessage>) {
+        let config_dir = tmp.path().join("config");
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+
+        for name in chars {
+            let char_dir = config_dir.join("characters").join(name);
+            std::fs::create_dir_all(&char_dir).unwrap();
+            std::fs::write(
+                char_dir.join("character.md"),
+                format!("{name} system prompt"),
+            )
+            .unwrap();
+        }
+
+        let (push_tx, push_rx) = broadcast::channel(16);
+
+        let loaded_config = crate::config::LoadedConfig::new_for_test(
+            crate::config::app::AppConfig::default(),
+            crate::config::models::ModelCatalog::default(),
+            crate::config::ShoreDirs {
+                config: config_dir.clone(),
+                data: data_dir.clone(),
+                runtime: tmp.path().join("runtime"),
+            },
+        );
+
+        let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+        let (autonomy, _compaction_rx) = AutonomyManager::new(
+            Default::default(),
+            data_dir.clone(),
+            shutdown_rx,
+        );
+
+        let cmd_ctx = CommandContext {
+            config: loaded_config,
+            push_tx: push_tx.clone(),
+            data_dir: data_dir.clone(),
+            active_model: None,
+            session_tokens: Default::default(),
+            autonomy: autonomy.clone(),
+            llm_client: LlmClient::new(tmp.path().join("dummy.sock")),
+        };
+
+        let registry = CharacterRegistry::new(config_dir, data_dir, push_tx.clone());
+
+        let handler = MessageHandler {
+            registry,
+            cmd_ctx,
+            llm_client: LlmClient::new(tmp.path().join("dummy.sock")),
+            push_tx: push_tx.clone(),
+            is_first_after_restart: false,
+            autonomy,
+        };
+
+        (handler, push_rx)
+    }
+
+    // ── dispatch_command ────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn dispatch_command_valid_character() {
+        let tmp = TempDir::new().unwrap();
+        let (mut handler, _rx) = make_handler(&tmp, &["Alice"]);
+
+        let cmd = Command {
+            rid: None,
+            name: "status".into(),
+            args: serde_json::json!({}),
+        };
+
+        let result = handler.dispatch_command(&cmd, Some("Alice")).await;
+        assert!(
+            matches!(result, ServerMessage::CommandOutput(_)),
+            "Expected CommandOutput, got {:?}",
+            result
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_command_invalid_character() {
+        let tmp = TempDir::new().unwrap();
+        let (mut handler, _rx) = make_handler(&tmp, &["Alice"]);
+
+        let cmd = Command {
+            rid: None,
+            name: "status".into(),
+            args: serde_json::json!({}),
+        };
+
+        let result = handler.dispatch_command(&cmd, Some("Bob")).await;
+        match result {
+            ServerMessage::Error(e) => {
+                assert_eq!(e.code, ErrorCode::InvalidRequest);
+                assert!(e.message.contains("Bob"));
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatch_command_auto_select() {
+        let tmp = TempDir::new().unwrap();
+        let (mut handler, _rx) = make_handler(&tmp, &["Alice"]);
+
+        let cmd = Command {
+            rid: None,
+            name: "status".into(),
+            args: serde_json::json!({}),
+        };
+
+        let result = handler.dispatch_command(&cmd, None).await;
+        assert!(
+            matches!(result, ServerMessage::CommandOutput(_)),
+            "Expected auto-select to succeed, got {:?}",
+            result
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_command_ambiguous_character() {
+        let tmp = TempDir::new().unwrap();
+        let (mut handler, _rx) = make_handler(&tmp, &["Alice", "Bob"]);
+
+        let cmd = Command {
+            rid: None,
+            name: "status".into(),
+            args: serde_json::json!({}),
+        };
+
+        let result = handler.dispatch_command(&cmd, None).await;
+        match result {
+            ServerMessage::Error(e) => {
+                assert_eq!(e.code, ErrorCode::InvalidRequest);
+            }
+            other => panic!("Expected Error, got {:?}", other),
+        }
+    }
+
+    // ── handle_engine_message ──────────────────────────────────────
+
+    #[tokio::test]
+    async fn handle_engine_message_regen_builds_empty_body() {
+        let tmp = TempDir::new().unwrap();
+        let (mut handler, _rx) = make_handler(&tmp, &["Alice"]);
+
+        // Regen without a model configured will fail at model resolution,
+        // but the important thing is it doesn't fail at message routing.
+        let regen = ClientMessage::Regen(Regen {
+            rid: Some("r1".into()),
+            stream: false,
+            guidance: None,
+        });
+
+        // This will error because no model is configured, but it should
+        // get past the routing stage (no panic, no wrong-variant error).
+        let result = handler.handle_engine_message(regen, Some("Alice")).await;
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        // Should fail at model resolution, not at message routing.
+        assert!(
+            err_msg.contains("model") || err_msg.contains("Model"),
+            "Expected model-related error, got: {}",
+            err_msg
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_engine_message_hello_is_noop() {
+        let tmp = TempDir::new().unwrap();
+        let (mut handler, _rx) = make_handler(&tmp, &["Alice"]);
+
+        let hello = ClientMessage::Hello(shore_protocol::client_msg::ClientHello {
+            client_type: "test".into(),
+            client_name: "test".into(),
+            capabilities: vec![],
+            character: None,
+        });
+
+        // Hello variant should be silently ignored (wildcard arm).
+        let result = handler.handle_engine_message(hello, Some("Alice")).await;
+        assert!(result.is_ok());
+    }
+
+    // ── NoopRag ────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn nooprag_returns_empty() {
+        let rag = NoopRag;
+        let results = rag.query("anything", 10).await.unwrap();
+        assert!(results.is_empty());
     }
 }

@@ -86,94 +86,9 @@ pub async fn handle_memory(input: Value, ctx: &dyn ToolContext) -> Result<Value,
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::models::{ResolvedModel, Sdk};
     use crate::llm_client::types::ContentBlock;
-    use crate::memory::agent::types::{AgentError, AgentIndexer, AgentRag, RagHit};
-    use crate::memory::agent::{CallerIdentity, MemoryAgent};
     use crate::memory::agent_llm::{AgentLlmResponse, MockAgentLlm};
-    use crate::memory::db::MemoryDB;
-    use std::future::Future;
-    use std::pin::Pin;
-
-    fn test_model() -> ResolvedModel {
-        ResolvedModel {
-            name: "test".into(),
-            qualified_name: "chat.test".into(),
-            category: "chat".into(),
-            provider_key: "anthropic".into(),
-            sdk: Sdk::Anthropic,
-            model_id: "claude-test".into(),
-            api_key_env: Some("TEST_KEY".into()),
-            base_url: None,
-            max_context_tokens: None,
-            max_tokens: Some(4096),
-            temperature: Some(0.7),
-            top_p: None,
-            reasoning_effort: None,
-            budget_tokens: None,
-            cache_ttl: None,
-            cache_control_depth: None,
-            keepalive_enabled: None,
-            openrouter_provider: None,
-            vertex_project: None,
-            vertex_location: None,
-            gemini_generation: None,
-            gemini_web_search: None,
-        }
-    }
-
-    struct MockRag;
-
-    impl AgentRag for MockRag {
-        fn query(
-            &self,
-            _query: &str,
-            _top_k: usize,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<RagHit>, AgentError>> + Send + '_>> {
-            Box::pin(async { Ok(vec![]) })
-        }
-    }
-
-    struct TestContext {
-        db: MemoryDB,
-        agent: MemoryAgent,
-        agent_llm: MockAgentLlm,
-        model: ResolvedModel,
-        rag: MockRag,
-    }
-
-    impl ToolContext for TestContext {
-        fn memory_db(&self) -> &MemoryDB {
-            &self.db
-        }
-        fn memory_agent(&self) -> &MemoryAgent {
-            &self.agent
-        }
-        fn agent_llm(&self) -> &dyn crate::memory::agent_llm::AgentLlm {
-            &self.agent_llm
-        }
-        fn agent_model(&self) -> &ResolvedModel {
-            &self.model
-        }
-        fn researcher_llm(&self) -> Option<&dyn crate::memory::agent_llm::AgentLlm> {
-            None
-        }
-        fn researcher_model(&self) -> Option<&ResolvedModel> {
-            None
-        }
-        fn memory_researcher(&self) -> Option<&crate::memory::researcher::MemoryResearcher> {
-            None
-        }
-        fn indexer(&self) -> Option<&dyn AgentIndexer> {
-            None
-        }
-        fn rag(&self) -> &dyn AgentRag {
-            &self.rag
-        }
-        fn image_dir(&self) -> &str {
-            "/tmp/test_images"
-        }
-    }
+    use crate::test_support::TestToolContext;
 
     #[test]
     fn test_memory_tool_def() {
@@ -193,13 +108,7 @@ mod tests {
             finish_reason: "end_turn".into(),
         }]);
 
-        let ctx = TestContext {
-            db: MemoryDB::open_in_memory().unwrap(),
-            agent: MemoryAgent::one_shot(CallerIdentity::Char, "Alice", "Bob"),
-            agent_llm,
-            model: test_model(),
-            rag: MockRag,
-        };
+        let ctx = TestToolContext::new().with_agent_llm(agent_llm);
 
         let result = handle_memory(json!({"request": "What do I like?"}), &ctx)
             .await
@@ -211,15 +120,73 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_memory_missing_request() {
-        let ctx = TestContext {
-            db: MemoryDB::open_in_memory().unwrap(),
-            agent: MemoryAgent::one_shot(CallerIdentity::Char, "Alice", "Bob"),
-            agent_llm: MockAgentLlm::new(vec![]),
-            model: test_model(),
-            rag: MockRag,
-        };
+        let ctx = TestToolContext::new();
 
         let result = handle_memory(json!({}), &ctx).await;
         assert!(matches!(result, Err(ToolError::InvalidArgs(_))));
+    }
+
+    #[tokio::test]
+    async fn test_handle_memory_with_researcher() {
+        use crate::memory::researcher::MemoryResearcher;
+        use crate::test_support::test_model;
+
+        // Researcher LLM: calls ask_memory_agent, then synthesizes.
+        let researcher_llm = MockAgentLlm::new(vec![
+            AgentLlmResponse {
+                text: String::new(),
+                content_blocks: vec![ContentBlock::ToolUse {
+                    id: "tu_1".into(),
+                    name: "ask_memory_agent".into(),
+                    input: serde_json::json!({"question": "What does Alice like?"}),
+                }],
+                finish_reason: "tool_use".into(),
+            },
+            AgentLlmResponse {
+                text: "Alice likes chocolate.".into(),
+                content_blocks: vec![ContentBlock::Text {
+                    text: "Alice likes chocolate.".into(),
+                }],
+                finish_reason: "end_turn".into(),
+            },
+        ]);
+
+        // Agent LLM: responds when the researcher queries the inner agent.
+        let agent_llm = MockAgentLlm::new(vec![AgentLlmResponse {
+            text: "Alice likes chocolate according to entry e1.".into(),
+            content_blocks: vec![ContentBlock::Text {
+                text: "Alice likes chocolate according to entry e1.".into(),
+            }],
+            finish_reason: "end_turn".into(),
+        }]);
+
+        let researcher = MemoryResearcher::new(String::new(), String::new());
+
+        let ctx = TestToolContext::new()
+            .with_agent_llm(agent_llm)
+            .with_researcher(researcher, researcher_llm, test_model());
+
+        let result = handle_memory(json!({"request": "What does Alice like?"}), &ctx)
+            .await
+            .unwrap();
+
+        assert!(result.as_str().unwrap().contains("chocolate"));
+    }
+
+    #[tokio::test]
+    async fn test_handle_memory_researcher_missing_llm() {
+        use crate::memory::researcher::MemoryResearcher;
+
+        // Build context with researcher but NO researcher LLM.
+        let mut ctx = TestToolContext::new();
+        ctx.researcher = Some(MemoryResearcher::new(String::new(), String::new()));
+        // researcher_llm_val and researcher_model_val remain None.
+
+        let result = handle_memory(json!({"request": "test"}), &ctx).await;
+        assert!(
+            matches!(result, Err(ToolError::InvalidArgs(_))),
+            "Expected InvalidArgs for missing researcher LLM, got {:?}",
+            result
+        );
     }
 }

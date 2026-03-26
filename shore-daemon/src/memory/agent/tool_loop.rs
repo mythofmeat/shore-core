@@ -228,36 +228,9 @@ fn describe_mutation(tool_name: &str, input: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::models::{ResolvedModel, Sdk};
     use crate::memory::agent_llm::{AgentLlmResponse, MockAgentLlm};
     use crate::memory::db::MemoryDB;
-
-    fn test_model() -> ResolvedModel {
-        ResolvedModel {
-            name: "test".into(),
-            qualified_name: "chat.test.model".into(),
-            category: "chat".into(),
-            provider_key: "anthropic".into(),
-            sdk: Sdk::Anthropic,
-            model_id: "claude-test".into(),
-            api_key_env: Some("TEST_KEY".into()),
-            base_url: None,
-            max_context_tokens: None,
-            max_tokens: Some(4096),
-            temperature: Some(0.7),
-            top_p: None,
-            reasoning_effort: None,
-            budget_tokens: None,
-            cache_ttl: None,
-            cache_control_depth: None,
-            keepalive_enabled: None,
-            openrouter_provider: None,
-            vertex_project: None,
-            vertex_location: None,
-            gemini_generation: None,
-            gemini_web_search: None,
-        }
-    }
+    use crate::test_support::test_model;
 
     fn test_db() -> MemoryDB {
         MemoryDB::open_in_memory().unwrap()

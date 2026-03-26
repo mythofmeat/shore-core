@@ -152,85 +152,9 @@ mod tests {
     use super::*;
     use crate::config::models::{ResolvedModel, Sdk};
     use crate::llm_client::types::ToolUseEvent;
-    use crate::memory::agent::types::{AgentError, AgentRag, RagHit};
-    use crate::memory::agent::{CallerIdentity, MemoryAgent};
-    use crate::memory::agent_llm::MockAgentLlm;
-    use crate::memory::db::MemoryDB;
-    use std::future::Future;
-    use std::pin::Pin;
+    use crate::test_support::TestToolContext;
     use tokio::io::AsyncWriteExt;
     use tokio::net::UnixListener;
-
-    fn test_model() -> ResolvedModel {
-        ResolvedModel {
-            name: "test".into(),
-            qualified_name: "chat.test".into(),
-            category: "chat".into(),
-            provider_key: "anthropic".into(),
-            sdk: Sdk::Anthropic,
-            model_id: "claude-test".into(),
-            api_key_env: Some("TEST_KEY".into()),
-            base_url: None,
-            max_context_tokens: None,
-            max_tokens: Some(4096),
-            temperature: Some(0.7),
-            top_p: None,
-            reasoning_effort: None,
-            budget_tokens: None,
-            cache_ttl: None,
-            cache_control_depth: None,
-            keepalive_enabled: None,
-            openrouter_provider: None,
-            vertex_project: None,
-            vertex_location: None,
-            gemini_generation: None,
-            gemini_web_search: None,
-        }
-    }
-
-    struct MockRag;
-    impl AgentRag for MockRag {
-        fn query(
-            &self,
-            _: &str,
-            _: usize,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<RagHit>, AgentError>> + Send + '_>> {
-            Box::pin(async { Ok(vec![]) })
-        }
-    }
-
-    struct TestToolContext {
-        db: MemoryDB,
-        agent: MemoryAgent,
-        agent_llm: MockAgentLlm,
-        model: ResolvedModel,
-        rag: MockRag,
-    }
-
-    impl TestToolContext {
-        fn new() -> Self {
-            Self {
-                db: MemoryDB::open_in_memory().unwrap(),
-                agent: MemoryAgent::one_shot(CallerIdentity::Char, "Test", "User"),
-                agent_llm: MockAgentLlm::new(vec![]),
-                model: test_model(),
-                rag: MockRag,
-            }
-        }
-    }
-
-    impl ToolContext for TestToolContext {
-        fn memory_db(&self) -> &MemoryDB { &self.db }
-        fn memory_agent(&self) -> &MemoryAgent { &self.agent }
-        fn agent_llm(&self) -> &dyn crate::memory::agent_llm::AgentLlm { &self.agent_llm }
-        fn agent_model(&self) -> &ResolvedModel { &self.model }
-        fn researcher_llm(&self) -> Option<&dyn crate::memory::agent_llm::AgentLlm> { None }
-        fn researcher_model(&self) -> Option<&ResolvedModel> { None }
-        fn memory_researcher(&self) -> Option<&crate::memory::researcher::MemoryResearcher> { None }
-        fn indexer(&self) -> Option<&dyn crate::memory::agent::types::AgentIndexer> { None }
-        fn rag(&self) -> &dyn AgentRag { &self.rag }
-        fn image_dir(&self) -> &str { "/tmp/test_images" }
-    }
 
     // ── Tool loop ───────────────────────────────────────────────────
 
@@ -453,6 +377,249 @@ mod tests {
         .unwrap();
 
         assert_eq!(result.finish_reason, "tool_use");
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn tool_loop_handles_tool_error() {
+        // generate_image always returns NotImplemented.
+        let tmp = tempfile::tempdir().unwrap();
+        let socket_path = tmp.path().join("mock-llm-err.sock");
+        let listener = UnixListener::bind(&socket_path).unwrap();
+
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (mut reader, mut writer) = tokio::io::split(stream);
+            let mut buf = vec![0u8; 16384];
+            let _ = tokio::io::AsyncReadExt::read(&mut reader, &mut buf).await;
+
+            let response = "HTTP/1.0 200 OK\r\n\r\n\
+                {\"type\":\"start\",\"model\":\"test\"}\n\
+                {\"type\":\"text\",\"text\":\"Image generation is not available.\"}\n\
+                {\"type\":\"done\",\"content\":\"Image generation is not available.\",\"finish_reason\":\"end_turn\",\"usage\":{\"input_tokens\":10,\"output_tokens\":5},\"timing\":{\"total_ms\":50}}\n";
+            writer.write_all(response.as_bytes()).await.unwrap();
+            writer.shutdown().await.unwrap();
+        });
+
+        let client = LlmClient::new(socket_path);
+        let (push_tx, mut push_rx) = broadcast::channel(64);
+        let ctx = TestToolContext::new();
+        let cache_ctx = CacheContext::default();
+
+        let mut request = LlmRequest {
+            provider: "anthropic".into(),
+            model: "test".into(),
+            api_key: "sk-test".into(),
+            base_url: None,
+            messages: vec![],
+            system: None,
+            tools: None,
+            max_tokens: 4096,
+            temperature: None,
+            top_p: None,
+            provider_options: None,
+        };
+
+        let initial = StreamResult {
+            content: String::new(),
+            model: "test".into(),
+            finish_reason: "tool_use".into(),
+            usage: Default::default(),
+            timing: Default::default(),
+            tool_uses: vec![ToolUseEvent {
+                id: "t_img".into(),
+                name: "generate_image".into(),
+                input: json!({"prompt": "a cat"}),
+            }],
+        };
+
+        let result = run_tool_loop(
+            &client,
+            &push_tx,
+            &mut request,
+            initial,
+            &ctx,
+            10,
+            &cache_ctx,
+        )
+        .await
+        .unwrap();
+
+        // LLM should have received the error and responded.
+        assert_eq!(result.finish_reason, "end_turn");
+
+        // ToolCall event should be present.
+        let tc = push_rx.try_recv().unwrap();
+        assert!(matches!(tc, ServerMessage::ToolCall(_)));
+
+        // ToolResult should have is_error = true.
+        let tr = push_rx.try_recv().unwrap();
+        match tr {
+            ServerMessage::ToolResult(res) => {
+                assert!(res.is_error);
+                assert_eq!(res.tool_name, "generate_image");
+            }
+            other => panic!("Expected ToolResult, got {:?}", other),
+        }
+
+        // The tool_result in request.messages should also have is_error.
+        let tool_result_msg = &request.messages[1]["content"][0];
+        assert_eq!(tool_result_msg["is_error"], json!(true));
+
+        server.await.unwrap();
+    }
+
+    #[test]
+    fn tool_loop_text_with_tool_use() {
+        // Verify that when content accompanies a tool_use, both blocks
+        // appear in the assistant message.
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let client = LlmClient::new("/tmp/unused.sock".into());
+            let (push_tx, _rx) = broadcast::channel(16);
+            let ctx = TestToolContext::new();
+            let cache_ctx = CacheContext::default();
+
+            let mut request = LlmRequest {
+                provider: "anthropic".into(),
+                model: "test".into(),
+                api_key: "sk-test".into(),
+                base_url: None,
+                messages: vec![],
+                system: None,
+                tools: None,
+                max_tokens: 4096,
+                temperature: None,
+                top_p: None,
+                provider_options: None,
+            };
+
+            // Result with both text content and tool_uses, but no LLM socket
+            // to call — the tool_uses are empty, so it should return immediately.
+            let result = StreamResult {
+                content: "Let me check the time...".into(),
+                model: "test".into(),
+                finish_reason: "end_turn".into(),
+                usage: Default::default(),
+                timing: Default::default(),
+                tool_uses: vec![],
+            };
+
+            let out = run_tool_loop(
+                &client,
+                &push_tx,
+                &mut request,
+                result,
+                &ctx,
+                10,
+                &cache_ctx,
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(out.content, "Let me check the time...");
+        });
+    }
+
+    #[tokio::test]
+    async fn tool_loop_multiple_tools_single_response() {
+        let tmp = tempfile::tempdir().unwrap();
+        let socket_path = tmp.path().join("mock-llm-multi.sock");
+        let listener = UnixListener::bind(&socket_path).unwrap();
+
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (mut reader, mut writer) = tokio::io::split(stream);
+            let mut buf = vec![0u8; 16384];
+            let _ = tokio::io::AsyncReadExt::read(&mut reader, &mut buf).await;
+
+            let response = "HTTP/1.0 200 OK\r\n\r\n\
+                {\"type\":\"start\",\"model\":\"test\"}\n\
+                {\"type\":\"text\",\"text\":\"Done.\"}\n\
+                {\"type\":\"done\",\"content\":\"Done.\",\"finish_reason\":\"end_turn\",\"usage\":{\"input_tokens\":10,\"output_tokens\":5},\"timing\":{\"total_ms\":50}}\n";
+            writer.write_all(response.as_bytes()).await.unwrap();
+            writer.shutdown().await.unwrap();
+        });
+
+        let client = LlmClient::new(socket_path);
+        let (push_tx, mut push_rx) = broadcast::channel(64);
+        let ctx = TestToolContext::new();
+        let cache_ctx = CacheContext::default();
+
+        let mut request = LlmRequest {
+            provider: "anthropic".into(),
+            model: "test".into(),
+            api_key: "sk-test".into(),
+            base_url: None,
+            messages: vec![],
+            system: None,
+            tools: None,
+            max_tokens: 4096,
+            temperature: None,
+            top_p: None,
+            provider_options: None,
+        };
+
+        // Two tools in one response.
+        let initial = StreamResult {
+            content: String::new(),
+            model: "test".into(),
+            finish_reason: "tool_use".into(),
+            usage: Default::default(),
+            timing: Default::default(),
+            tool_uses: vec![
+                ToolUseEvent {
+                    id: "t1".into(),
+                    name: "check_time".into(),
+                    input: json!({}),
+                },
+                ToolUseEvent {
+                    id: "t2".into(),
+                    name: "roll_dice".into(),
+                    input: json!({"notation": "1d6"}),
+                },
+            ],
+        };
+
+        let result = run_tool_loop(
+            &client,
+            &push_tx,
+            &mut request,
+            initial,
+            &ctx,
+            10,
+            &cache_ctx,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.finish_reason, "end_turn");
+
+        // Should have ToolCall + ToolResult for each tool (4 events), then stream events.
+        let mut tool_calls = vec![];
+        let mut tool_results = vec![];
+        for _ in 0..4 {
+            match push_rx.try_recv().unwrap() {
+                ServerMessage::ToolCall(tc) => tool_calls.push(tc),
+                ServerMessage::ToolResult(tr) => tool_results.push(tr),
+                other => panic!("Unexpected event: {:?}", other),
+            }
+        }
+
+        assert_eq!(tool_calls.len(), 2);
+        assert_eq!(tool_results.len(), 2);
+        assert_eq!(tool_calls[0].tool_name, "check_time");
+        assert_eq!(tool_calls[1].tool_name, "roll_dice");
+        assert!(!tool_results[0].is_error);
+        assert!(!tool_results[1].is_error);
+
+        // The request should have: assistant msg (with 2 tool_use blocks) + user msg (with 2 tool_result blocks).
+        assert_eq!(request.messages.len(), 2);
+        let assistant_content = request.messages[0]["content"].as_array().unwrap();
+        assert_eq!(assistant_content.len(), 2); // 2 tool_use blocks (no text)
+        let user_content = request.messages[1]["content"].as_array().unwrap();
+        assert_eq!(user_content.len(), 2); // 2 tool_result blocks
+
         server.await.unwrap();
     }
 }

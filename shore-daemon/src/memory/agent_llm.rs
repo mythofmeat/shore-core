@@ -195,35 +195,8 @@ impl AgentLlm for MockAgentLlm {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::models::{ResolvedModel, Sdk};
+    use crate::test_support::test_model;
     use serde_json::json;
-
-    fn test_model() -> ResolvedModel {
-        ResolvedModel {
-            name: "test".into(),
-            qualified_name: "chat.test.model".into(),
-            category: "chat".into(),
-            provider_key: "anthropic".into(),
-            sdk: Sdk::Anthropic,
-            model_id: "claude-test".into(),
-            api_key_env: Some("TEST_KEY".into()),
-            base_url: None,
-            max_context_tokens: None,
-            max_tokens: Some(4096),
-            temperature: Some(0.7),
-            top_p: None,
-            reasoning_effort: None,
-            budget_tokens: None,
-            cache_ttl: None,
-            cache_control_depth: None,
-            keepalive_enabled: None,
-            openrouter_provider: None,
-            vertex_project: None,
-            vertex_location: None,
-            gemini_generation: None,
-            gemini_web_search: None,
-        }
-    }
 
     #[tokio::test]
     async fn mock_returns_canned_responses() {

@@ -146,3 +146,168 @@ pub enum CharacterError {
     #[error("multiple characters available ({available:?}) — specify one with --character or SHORE_CHARACTER")]
     AmbiguousSelection { available: Vec<String> },
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    /// Create a registry backed by a tempdir with the given character names.
+    fn make_registry(tmp: &TempDir, names: &[&str]) -> CharacterRegistry {
+        let config_dir = tmp.path().join("config");
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+
+        for name in names {
+            let char_dir = config_dir.join("characters").join(name);
+            std::fs::create_dir_all(&char_dir).unwrap();
+            std::fs::write(
+                char_dir.join("character.md"),
+                format!("{name} system prompt"),
+            )
+            .unwrap();
+        }
+
+        let (tx, _rx) = broadcast::channel(16);
+        CharacterRegistry::new(config_dir, data_dir, tx)
+    }
+
+    #[test]
+    fn new_discovers_characters() {
+        let tmp = TempDir::new().unwrap();
+        let reg = make_registry(&tmp, &["Alice", "Bob"]);
+        let chars = reg.available_characters();
+        assert_eq!(chars.len(), 2);
+        assert!(chars.contains(&"Alice".to_string()));
+        assert!(chars.contains(&"Bob".to_string()));
+    }
+
+    #[test]
+    fn new_empty_config_dir() {
+        let tmp = TempDir::new().unwrap();
+        let reg = make_registry(&tmp, &[]);
+        assert!(reg.available_characters().is_empty());
+    }
+
+    #[test]
+    fn has_character_true_and_false() {
+        let tmp = TempDir::new().unwrap();
+        let reg = make_registry(&tmp, &["Alice"]);
+        assert!(reg.has_character("Alice"));
+        assert!(!reg.has_character("Bob"));
+    }
+
+    #[test]
+    fn resolve_explicit_valid() {
+        let tmp = TempDir::new().unwrap();
+        let reg = make_registry(&tmp, &["Alice"]);
+        assert_eq!(reg.resolve_character(Some("Alice")).unwrap(), "Alice");
+    }
+
+    #[test]
+    fn resolve_explicit_invalid() {
+        let tmp = TempDir::new().unwrap();
+        let reg = make_registry(&tmp, &["Alice"]);
+        let err = reg.resolve_character(Some("Bob")).unwrap_err();
+        assert!(matches!(err, CharacterError::NotFound { .. }));
+        // Error message should mention the requested name and available characters.
+        let msg = err.to_string();
+        assert!(msg.contains("Bob"));
+        assert!(msg.contains("Alice"));
+    }
+
+    #[test]
+    fn resolve_none_single_auto_select() {
+        let tmp = TempDir::new().unwrap();
+        let reg = make_registry(&tmp, &["Alice"]);
+        assert_eq!(reg.resolve_character(None).unwrap(), "Alice");
+    }
+
+    #[test]
+    fn resolve_none_empty() {
+        let tmp = TempDir::new().unwrap();
+        let reg = make_registry(&tmp, &[]);
+        assert!(matches!(
+            reg.resolve_character(None).unwrap_err(),
+            CharacterError::NoneAvailable
+        ));
+    }
+
+    #[test]
+    fn resolve_none_ambiguous() {
+        let tmp = TempDir::new().unwrap();
+        let reg = make_registry(&tmp, &["Alice", "Bob"]);
+        let err = reg.resolve_character(None).unwrap_err();
+        assert!(matches!(err, CharacterError::AmbiguousSelection { .. }));
+    }
+
+    #[test]
+    fn get_or_create_caches_engine() {
+        let tmp = TempDir::new().unwrap();
+        let mut reg = make_registry(&tmp, &["Alice"]);
+
+        // First call creates the engine.
+        let name1 = reg.get_or_create("Alice").unwrap().character_name().to_string();
+        // Second call returns the same engine (cached).
+        let name2 = reg.get_or_create("Alice").unwrap().character_name().to_string();
+        assert_eq!(name1, "Alice");
+        assert_eq!(name2, "Alice");
+    }
+
+    #[test]
+    fn get_or_create_unknown_errors() {
+        let tmp = TempDir::new().unwrap();
+        let mut reg = make_registry(&tmp, &["Alice"]);
+        assert!(reg.get_or_create("Bob").is_err());
+    }
+
+    #[test]
+    fn refresh_picks_up_new_character() {
+        let tmp = TempDir::new().unwrap();
+        let mut reg = make_registry(&tmp, &["Alice"]);
+        assert_eq!(reg.available_characters().len(), 1);
+
+        // Add a new character directory.
+        let bob_dir = tmp.path().join("config").join("characters").join("Bob");
+        std::fs::create_dir_all(&bob_dir).unwrap();
+        std::fs::write(bob_dir.join("character.md"), "Bob prompt").unwrap();
+
+        reg.refresh();
+        assert_eq!(reg.available_characters().len(), 2);
+        assert!(reg.has_character("Bob"));
+    }
+
+    #[test]
+    fn character_definition_loads_content() {
+        let tmp = TempDir::new().unwrap();
+        let reg = make_registry(&tmp, &["Alice"]);
+        let def = reg.character_definition("Alice").unwrap();
+        assert_eq!(def, "Alice system prompt");
+    }
+
+    #[test]
+    fn user_definition_loads_character_specific() {
+        let tmp = TempDir::new().unwrap();
+        let reg = make_registry(&tmp, &["Alice"]);
+
+        // No user.md yet → None (or global fallback, which doesn't exist).
+        assert!(reg.user_definition("Alice").is_none());
+
+        // Write character-specific user.md.
+        let user_path = tmp
+            .path()
+            .join("config")
+            .join("characters")
+            .join("Alice")
+            .join("user.md");
+        std::fs::write(&user_path, "Alice user context").unwrap();
+        assert_eq!(
+            reg.user_definition("Alice").unwrap(),
+            "Alice user context"
+        );
+    }
+}

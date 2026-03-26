@@ -1,3 +1,6 @@
+#[cfg(test)]
+pub mod test_support;
+
 pub mod autonomy;
 pub mod characters;
 pub mod commands;
