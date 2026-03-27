@@ -21,13 +21,13 @@ use serde_json::json;
 use shore_client::connection::{SWPConnection, ServerAddr};
 use shore_daemon::characters::CharacterRegistry;
 use shore_daemon::commands::{CommandContext, SessionTokens};
-use shore_daemon::config::app::{AppConfig, ServiceEntry, ServicesConfig};
-use shore_daemon::config::models::ModelCatalog;
-use shore_daemon::config::{LoadedConfig, ShoreDirs};
+use shore_config::app::{AppConfig, ServiceEntry, ServicesConfig};
+use shore_config::models::ModelCatalog;
+use shore_config::{LoadedConfig, ShoreDirs};
 use shore_daemon::handler::MessageHandler;
-use shore_daemon::llm_client::LlmClient;
+use shore_llm_client::LlmClient;
 use shore_daemon::server::{Server, ServerConfig};
-use shore_daemon::supervisor::Supervisor;
+use shore_supervisor::Supervisor;
 use shore_protocol::server_msg::ServerMessage;
 use tokio::time::timeout;
 
@@ -250,7 +250,7 @@ async fn e2e_conversation_milestone() {
         session_tokens: SessionTokens::default(),
         autonomy: autonomy.clone(),
         llm_client: llm_client.clone(),
-        diagnostics: std::sync::Arc::new(std::sync::Mutex::new(shore_daemon::diagnostics::Diagnostics::default())),
+        diagnostics: std::sync::Arc::new(std::sync::Mutex::new(shore_diagnostics::Diagnostics::default())),
         memory_shell_sessions: std::collections::HashMap::new(),
     };
 
@@ -710,7 +710,7 @@ impl E2EHarness {
             session_tokens: SessionTokens::default(),
             autonomy: autonomy.clone(),
             llm_client: llm_client.clone(),
-            diagnostics: std::sync::Arc::new(std::sync::Mutex::new(shore_daemon::diagnostics::Diagnostics::default())),
+            diagnostics: std::sync::Arc::new(std::sync::Mutex::new(shore_diagnostics::Diagnostics::default())),
             memory_shell_sessions: std::collections::HashMap::new(),
         };
 

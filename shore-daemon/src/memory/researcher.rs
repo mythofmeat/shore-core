@@ -7,8 +7,8 @@
 use tracing::{info, warn};
 use serde_json::{json, Value};
 
-use crate::config::models::ResolvedModel;
-use crate::llm_client::types::ContentBlock;
+use shore_config::models::ResolvedModel;
+use shore_llm_client::types::ContentBlock;
 use crate::memory::agent::types::{AgentError, AgentIndexer};
 use crate::memory::agent::MemoryAgent;
 use crate::memory::agent_llm::AgentLlm;

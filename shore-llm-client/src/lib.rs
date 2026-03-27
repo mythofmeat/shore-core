@@ -9,7 +9,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tracing::{debug, error, warn};
 
-use crate::config::models::ResolvedModel;
+use shore_config::models::ResolvedModel;
 use types::{ImageGenerateResponse, LlmRequest};
 
 /// Errors from the LLM client.
@@ -572,7 +572,7 @@ async fn read_error_body(reader: &mut BufReader<UnixStream>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::models::{ResolvedModel, Sdk};
+    use shore_config::models::{ResolvedModel, Sdk};
 
     /// Helper to build a minimal test ResolvedModel.
     fn test_model(name: &str, provider_key: &str, sdk: Sdk) -> ResolvedModel {

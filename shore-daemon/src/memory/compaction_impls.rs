@@ -12,10 +12,10 @@ use chrono::Utc;
 use serde_json::json;
 use uuid::Uuid;
 
-use crate::config::models::ResolvedModel;
+use shore_config::models::ResolvedModel;
 use crate::engine::segments::{CompactionManifest, SegmentEntry};
-use crate::llm_client::types::ContentBlock;
-use crate::llm_client::LlmClient;
+use shore_llm_client::types::ContentBlock;
+use shore_llm_client::LlmClient;
 
 use super::compaction::{CompactionError, CompactionLlm, ConversationManager, RetentionParams, VectorIndexer};
 use super::vectorstore::VectorStore;

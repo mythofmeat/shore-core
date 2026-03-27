@@ -86,7 +86,7 @@ pub async fn handle_memory(input: Value, ctx: &dyn ToolContext) -> Result<Value,
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llm_client::types::ContentBlock;
+    use shore_llm_client::types::ContentBlock;
     use crate::memory::agent_llm::{AgentLlmResponse, MockAgentLlm};
     use crate::test_support::TestToolContext;
 

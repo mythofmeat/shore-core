@@ -47,7 +47,7 @@ impl CacheKeepaliveConfig {
     /// `provider` — provider key from the resolved model (e.g. `"anthropic"`).
     /// `has_cache_ttl` — whether the resolved model has a `cache_ttl` value.
     pub fn from_resolved_model(
-        app_cfg: &crate::config::app::CacheKeepaliveConfig,
+        app_cfg: &shore_config::app::CacheKeepaliveConfig,
         provider: &str,
         has_cache_ttl: bool,
     ) -> Self {

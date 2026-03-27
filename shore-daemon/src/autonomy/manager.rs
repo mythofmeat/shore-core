@@ -29,10 +29,10 @@ use super::heartbeat::{
 use super::timing::{compute_tau, TauParams};
 use super::AutonomyStatus;
 use crate::notifications::{NotificationEvent, NotificationService};
-use crate::config::app::AutonomyConfig;
-use crate::config::LoadedConfig;
-use crate::llm_client::types::LlmRequest;
-use crate::llm_client::LlmClient;
+use shore_config::app::AutonomyConfig;
+use shore_config::LoadedConfig;
+use shore_llm_client::types::LlmRequest;
+use shore_llm_client::LlmClient;
 
 // ---------------------------------------------------------------------------
 // Per-character state

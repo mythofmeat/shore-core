@@ -191,7 +191,7 @@ fn truncate(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llm_client::types::{StreamResult, Timing, Usage};
+    use crate::types::{StreamResult, Timing, Usage};
 
     fn make_policy(max_retries: u32, fallback: Option<&str>) -> RetryPolicy {
         RetryPolicy {

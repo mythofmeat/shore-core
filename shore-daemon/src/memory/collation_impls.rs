@@ -9,9 +9,9 @@ use std::pin::Pin;
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::config::models::ResolvedModel;
-use crate::llm_client::types::ContentBlock;
-use crate::llm_client::LlmClient;
+use shore_config::models::ResolvedModel;
+use shore_llm_client::types::ContentBlock;
+use shore_llm_client::LlmClient;
 
 use super::collation::{
     CollateMerge, CollationError, CollationLlm, EntityNormalization, TidySplit,

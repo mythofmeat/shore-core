@@ -772,7 +772,7 @@ mod tests {
             cache_invalidation_warnings: true,
         };
 
-        let usage = super::super::types::Usage {
+        let usage = crate::types::Usage {
             input_tokens: 5000,
             output_tokens: 100,
             cache_read_tokens: 0, // Unexpected!
@@ -803,7 +803,7 @@ mod tests {
             cache_invalidation_warnings: true,
         };
 
-        let usage = super::super::types::Usage {
+        let usage = crate::types::Usage {
             input_tokens: 100,
             output_tokens: 10,
             cache_read_tokens: 0,
@@ -827,7 +827,7 @@ mod tests {
             cache_invalidation_warnings: true,
         };
 
-        let usage = super::super::types::Usage {
+        let usage = crate::types::Usage {
             input_tokens: 5000,
             output_tokens: 100,
             cache_read_tokens: 0,
@@ -849,7 +849,7 @@ mod tests {
             cache_invalidation_warnings: true,
         };
 
-        let usage = super::super::types::Usage {
+        let usage = crate::types::Usage {
             input_tokens: 3000,
             output_tokens: 50,
             cache_read_tokens: 0,
@@ -871,7 +871,7 @@ mod tests {
             cache_invalidation_warnings: false, // Disabled!
         };
 
-        let usage = super::super::types::Usage {
+        let usage = crate::types::Usage {
             input_tokens: 5000,
             output_tokens: 100,
             cache_read_tokens: 0,
@@ -893,7 +893,7 @@ mod tests {
             cache_invalidation_warnings: true,
         };
 
-        let usage = super::super::types::Usage {
+        let usage = crate::types::Usage {
             input_tokens: 5000,
             output_tokens: 100,
             cache_read_tokens: 4500, // Cache hit — no warning.

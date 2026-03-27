@@ -3,10 +3,10 @@ use std::path::PathBuf;
 use shore_daemon::autonomy::manager::AutonomyManager;
 use shore_daemon::characters::CharacterRegistry;
 use shore_daemon::commands::{CommandContext, SessionTokens};
-use shore_daemon::diagnostics::Diagnostics;
-use shore_daemon::config::{load_config, resolve_prompt_template, LoadedConfig};
+use shore_diagnostics::Diagnostics;
+use shore_config::{load_config, resolve_prompt_template, LoadedConfig};
 use shore_daemon::handler::MessageHandler;
-use shore_daemon::llm_client::LlmClient;
+use shore_llm_client::LlmClient;
 use shore_daemon::notifications::NotificationService;
 use shore_daemon::memory::collation::{
     CollationConfig as LibCollationConfig, CollationManager, DEFAULT_COLLATE_PROMPT,
@@ -24,7 +24,7 @@ use shore_daemon::memory::db::MemoryDB;
 use shore_daemon::memory::vectorstore::VectorStore;
 use shore_daemon::server::registry::{InstanceInfo, Registry};
 use shore_daemon::server::{Server, ServerConfig};
-use shore_daemon::supervisor::Supervisor;
+use shore_supervisor::Supervisor;
 use shore_protocol::server_msg::{History, ServerMessage};
 use tokio::sync::{broadcast, mpsc};
 use tracing::{error, info, warn};
@@ -74,7 +74,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tcp_config = match loaded.app.connections.tcp.clone() {
         Some(tcp) => Some(tcp),
         None => std::env::var("SHORE_TCP_ADDR").ok().map(|addr| {
-            shore_daemon::config::app::TcpConfig {
+            shore_config::app::TcpConfig {
                 enabled: true,
                 addr: Some(addr),
                 allowed_hosts: vec![],
@@ -525,7 +525,7 @@ async fn run_collation(
 }
 
 /// Check if shore-llm is configured as a supervised service.
-fn sup_has_llm(services: &shore_daemon::config::app::ServicesConfig) -> bool {
+fn sup_has_llm(services: &shore_config::app::ServicesConfig) -> bool {
     services.llm.enabled && services.llm.command.is_some()
 }
 

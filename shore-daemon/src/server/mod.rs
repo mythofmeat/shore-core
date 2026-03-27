@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::config::app::TcpConfig;
+use shore_config::app::TcpConfig;
 use shore_protocol::client_msg::{ClientMessage, Command};
 use shore_protocol::error::ErrorCode;
 use shore_protocol::server_msg::{Error, History, ServerHello, ServerMessage, Shutdown};
@@ -608,6 +608,7 @@ mod tests {
                 stream: true,
                 images: vec![],
                 absence_seconds: None,
+                overrides: None,
             }),
         )
         .await
@@ -754,6 +755,7 @@ mod tests {
                 stream: false,
                 images: vec![],
                 absence_seconds: None,
+                overrides: None,
             }),
         )
         .await

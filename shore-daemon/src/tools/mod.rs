@@ -5,8 +5,8 @@ pub mod memory_tools;
 pub mod web;
 
 use crate::autonomy::manager::AutonomyManager;
-use crate::config::models::ResolvedModel;
-use crate::llm_client::LlmClient;
+use shore_config::models::ResolvedModel;
+use shore_llm_client::LlmClient;
 use crate::memory::agent::types::AgentIndexer;
 use crate::memory::agent::{AgentError, AgentRag, MemoryAgent};
 use crate::memory::agent_llm::AgentLlm;
@@ -115,7 +115,7 @@ pub trait ToolContext: Sync {
     fn rag(&self) -> &dyn AgentRag;
 
     // Web search configuration
-    fn search_config(&self) -> &crate::config::app::SearchConfig;
+    fn search_config(&self) -> &shore_config::app::SearchConfig;
 
     // Autonomy access — used by activity heatmap tool
     fn autonomy_manager(&self) -> Option<&AutonomyManager> { None }
@@ -138,7 +138,7 @@ pub fn all_tools() -> Vec<ToolDef> {
 }
 
 /// Returns tool definitions available for the current privacy mode and tool toggles.
-pub fn available_tools(is_private: bool, toggles: &crate::config::app::ToolToggles) -> Vec<ToolDef> {
+pub fn available_tools(is_private: bool, toggles: &shore_config::app::ToolToggles) -> Vec<ToolDef> {
     all_tools()
         .into_iter()
         .filter(|t| {
@@ -188,7 +188,7 @@ pub fn dispatch_tool<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::app::ToolToggles;
+    use shore_config::app::ToolToggles;
 
     #[test]
     fn test_all_tools_returns_expected_count() {

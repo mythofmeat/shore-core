@@ -63,7 +63,7 @@ impl Supervisor {
     ///
     /// `runtime_dir` is used to auto-generate socket paths when not specified.
     pub fn from_config(
-        services_config: &crate::config::app::ServicesConfig,
+        services_config: &shore_config::app::ServicesConfig,
         runtime_dir: &Path,
     ) -> Self {
         let mut specs = Vec::new();
@@ -421,7 +421,7 @@ async fn handle_service_restart(svc: &mut ManagedService) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::app::ServiceEntry;
+    use shore_config::app::ServiceEntry;
     use tokio::net::UnixListener;
 
     #[tokio::test]
@@ -526,7 +526,7 @@ mod tests {
 
     #[tokio::test]
     async fn supervisor_from_config_parses_services() {
-        let config = crate::config::app::ServicesConfig {
+        let config = shore_config::app::ServicesConfig {
             llm: ServiceEntry {
                 command: Some("node shore-llm/dist/index.js".into()),
                 socket: Some("/tmp/llm.sock".into()),
@@ -551,7 +551,7 @@ mod tests {
 
     #[tokio::test]
     async fn supervisor_from_config_respects_enabled() {
-        let config = crate::config::app::ServicesConfig {
+        let config = shore_config::app::ServicesConfig {
             llm: ServiceEntry {
                 command: Some("node shore-llm/dist/index.js".into()),
                 socket: None,

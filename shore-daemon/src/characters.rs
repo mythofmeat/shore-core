@@ -11,7 +11,7 @@ use shore_protocol::server_msg::ServerMessage;
 use tokio::sync::broadcast;
 use tracing::info;
 
-use crate::config::{discover_characters, load_character_definition, resolve_user_definition};
+use shore_config::{discover_characters, load_character_definition, resolve_user_definition};
 use crate::engine::{ConversationEngine, EngineError};
 
 /// Manages multiple character engines with lazy initialization.

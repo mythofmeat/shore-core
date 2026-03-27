@@ -6250,6 +6250,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "shore-config"
+version = "0.1.0"
+dependencies = [
+ "dirs 6.0.0",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "toml 0.8.23",
+ "tracing",
+]
+
+[[package]]
 name = "shore-daemon"
 version = "0.1.0"
 dependencies = [
@@ -6261,7 +6274,6 @@ dependencies = [
  "fs2",
  "futures",
  "lancedb",
- "libc",
  "rand 0.8.5",
  "reqwest",
  "rusqlite",
@@ -6269,7 +6281,11 @@ dependencies = [
  "serde_json",
  "sha2",
  "shore-client",
+ "shore-config",
+ "shore-diagnostics",
+ "shore-llm-client",
  "shore-protocol",
+ "shore-supervisor",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -6277,6 +6293,29 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "shore-diagnostics"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "shore-llm-client"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "shore-config",
+ "shore-protocol",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -6307,6 +6346,17 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "shore-supervisor"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "shore-config",
+ "tempfile",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

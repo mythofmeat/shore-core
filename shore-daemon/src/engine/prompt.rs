@@ -4,7 +4,7 @@ use std::path::Path;
 use chrono::Local;
 use shore_protocol::types::{ContentBlock, ImageRef, Message, Role};
 
-use crate::config::resolve_prompt_template;
+use shore_config::resolve_prompt_template;
 
 /// Default context window size when not specified in model config.
 const DEFAULT_MAX_CONTEXT_TOKENS: usize = 200_000;

@@ -13,11 +13,11 @@ use tokio::sync::broadcast;
 use tracing::info;
 
 use crate::autonomy::manager::AutonomyManager;
-use crate::config::models::ResolvedModel;
-use crate::config::LoadedConfig;
-use crate::diagnostics::Diagnostics;
+use shore_config::models::ResolvedModel;
+use shore_config::LoadedConfig;
+use shore_diagnostics::Diagnostics;
 use crate::engine::{ConversationEngine, EngineError};
-use crate::llm_client::LlmClient;
+use shore_llm_client::LlmClient;
 use crate::memory::agent::MemoryAgent;
 
 /// Cumulative token usage tracked across the daemon session.
@@ -147,10 +147,10 @@ mod tests {
         )
         .unwrap();
 
-        let config = crate::config::LoadedConfig::new_for_test(
-            crate::config::app::AppConfig::default(),
-            crate::config::models::ModelCatalog::default(),
-            crate::config::ShoreDirs {
+        let config = shore_config::LoadedConfig::new_for_test(
+            shore_config::app::AppConfig::default(),
+            shore_config::models::ModelCatalog::default(),
+            shore_config::ShoreDirs {
                 config: tmp.path().join("config"),
                 data: data_dir.clone(),
                 runtime: tmp.path().join("runtime"),

@@ -3,8 +3,30 @@ resolver = "2"
 members = [
     "shore-protocol",
     "shore-client",
+    "shore-diagnostics",
+    "shore-config",
+    "shore-supervisor",
+    "shore-llm-client",
     "shore-daemon",
     "shore-cli",
     "shore-tui",
     "shore-matrix",
 ]
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+dirs = "6"
+tokio = { version = "1", features = ["full"] }
+chrono = "0.4"
+libc = "0.2"
+tempfile = "3"
+shore-protocol = { path = "shore-protocol" }
+shore-config = { path = "shore-config" }
+shore-diagnostics = { path = "shore-diagnostics" }
+shore-supervisor = { path = "shore-supervisor" }
+shore-llm-client = { path = "shore-llm-client" }

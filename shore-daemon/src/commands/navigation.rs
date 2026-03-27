@@ -150,10 +150,10 @@ mod tests {
             ConversationEngine::new("TestChar".to_string(), data_dir.clone(), push_tx.clone())
                 .unwrap();
 
-        let config = crate::config::LoadedConfig::new_for_test(
-            crate::config::app::AppConfig::default(),
-            crate::config::models::ModelCatalog::default(),
-            crate::config::ShoreDirs {
+        let config = shore_config::LoadedConfig::new_for_test(
+            shore_config::app::AppConfig::default(),
+            shore_config::models::ModelCatalog::default(),
+            shore_config::ShoreDirs {
                 config: tmp.path().join("config"),
                 data: data_dir.clone(),
                 runtime: tmp.path().join("runtime"),
@@ -170,8 +170,8 @@ mod tests {
             active_model: None,
             session_tokens: SessionTokens::default(),
             autonomy,
-            llm_client: crate::llm_client::LlmClient::new(data_dir.join("dummy.sock")),
-            diagnostics: std::sync::Arc::new(std::sync::Mutex::new(crate::diagnostics::Diagnostics::default())),
+            llm_client: shore_llm_client::LlmClient::new(data_dir.join("dummy.sock")),
+            diagnostics: std::sync::Arc::new(std::sync::Mutex::new(shore_diagnostics::Diagnostics::default())),
             memory_shell_sessions: std::collections::HashMap::new(),
         };
         (engine, ctx, push_rx)

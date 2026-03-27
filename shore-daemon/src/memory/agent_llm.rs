@@ -10,8 +10,8 @@ use std::sync::Mutex;
 
 use serde_json::Value;
 
-use crate::config::models::ResolvedModel;
-use crate::llm_client::types::ContentBlock;
+use shore_config::models::ResolvedModel;
+use shore_llm_client::types::ContentBlock;
 
 // ---------------------------------------------------------------------------
 // Error
@@ -74,7 +74,7 @@ pub trait AgentLlm: Send + Sync {
 // Production implementation
 // ---------------------------------------------------------------------------
 
-use crate::llm_client::LlmClient;
+use shore_llm_client::LlmClient;
 
 /// Production `AgentLlm` backed by `LlmClient` (Unix socket to shore-llm).
 pub struct RealAgentLlm {

@@ -13,7 +13,7 @@ pub mod types;
 
 use serde_json::{json, Value};
 
-use crate::config::models::ResolvedModel;
+use shore_config::models::ResolvedModel;
 use crate::memory::agent_llm::AgentLlm;
 use crate::memory::db::MemoryDB;
 
@@ -319,8 +319,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_ask_returns_text() {
-        use crate::config::models::Sdk;
-        use crate::llm_client::types::ContentBlock;
+        use shore_config::models::Sdk;
+        use shore_llm_client::types::ContentBlock;
         use crate::memory::agent_llm::{AgentLlmResponse, MockAgentLlm};
 
         let mock = MockAgentLlm::new(vec![AgentLlmResponse {

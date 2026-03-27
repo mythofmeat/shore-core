@@ -25,11 +25,11 @@ use crate::memory::agent_llm::{AgentLlm, RealAgentLlm};
 use crate::memory::db::MemoryDB;
 use crate::memory::researcher::MemoryResearcher;
 use crate::tools::{self as tool_system, ToolContext};
-use crate::llm_client::retry::{self, RetryDecision, RetryPolicy};
-use crate::llm_client::stream::{CacheContext, StreamConsumer};
-use crate::llm_client::LlmClient;
+use shore_llm_client::retry::{self, RetryDecision, RetryPolicy};
+use shore_llm_client::stream::{CacheContext, StreamConsumer};
+use shore_llm_client::LlmClient;
 use crate::notifications::{NotificationEvent, NotificationService};
-use crate::config::app::SearchConfig;
+use shore_config::app::SearchConfig;
 use crate::memory::compaction_impls::ImageGenConfig;
 use crate::server::RoutedMessage;
 
@@ -55,10 +55,10 @@ struct HandlerToolContext {
     db: MemoryDB,
     agent: MemoryAgent,
     agent_llm: RealAgentLlm,
-    agent_model_val: crate::config::models::ResolvedModel,
+    agent_model_val: shore_config::models::ResolvedModel,
     researcher: Option<MemoryResearcher>,
     researcher_llm_val: Option<RealAgentLlm>,
-    researcher_model_val: Option<crate::config::models::ResolvedModel>,
+    researcher_model_val: Option<shore_config::models::ResolvedModel>,
     rag: NoopRag,
     image_dir_val: String,
     llm_client_val: LlmClient,
@@ -72,11 +72,11 @@ impl ToolContext for HandlerToolContext {
     fn memory_db(&self) -> &MemoryDB { &self.db }
     fn memory_agent(&self) -> &MemoryAgent { &self.agent }
     fn agent_llm(&self) -> &dyn AgentLlm { &self.agent_llm }
-    fn agent_model(&self) -> &crate::config::models::ResolvedModel { &self.agent_model_val }
+    fn agent_model(&self) -> &shore_config::models::ResolvedModel { &self.agent_model_val }
     fn researcher_llm(&self) -> Option<&dyn AgentLlm> {
         self.researcher_llm_val.as_ref().map(|l| l as &dyn AgentLlm)
     }
-    fn researcher_model(&self) -> Option<&crate::config::models::ResolvedModel> {
+    fn researcher_model(&self) -> Option<&shore_config::models::ResolvedModel> {
         self.researcher_model_val.as_ref()
     }
     fn memory_researcher(&self) -> Option<&MemoryResearcher> {
@@ -508,7 +508,7 @@ impl MessageHandler {
                     .await?;
 
                 let engine = self.registry.get_or_create(&char_name)
-                    .map_err(|e| crate::llm_client::LlmError::Provider { message: e.to_string() })?;
+                    .map_err(|e| shore_llm_client::LlmError::Provider { message: e.to_string() })?;
 
                 let turn_count = engine.messages().len();
                 let cache_ctx = CacheContext {
@@ -657,7 +657,7 @@ impl MessageHandler {
 
         // 11b. Record API call in diagnostics ring buffer.
         {
-            let entry = crate::diagnostics::ApiCallEntry {
+            let entry = shore_diagnostics::ApiCallEntry {
                 timestamp: chrono::Utc::now().to_rfc3339(),
                 model: result.model.clone(),
                 provider: resolved.provider_key.clone(),
@@ -739,10 +739,10 @@ mod tests {
 
         let (push_tx, push_rx) = broadcast::channel(16);
 
-        let loaded_config = crate::config::LoadedConfig::new_for_test(
-            crate::config::app::AppConfig::default(),
-            crate::config::models::ModelCatalog::default(),
-            crate::config::ShoreDirs {
+        let loaded_config = shore_config::LoadedConfig::new_for_test(
+            shore_config::app::AppConfig::default(),
+            shore_config::models::ModelCatalog::default(),
+            shore_config::ShoreDirs {
                 config: config_dir.clone(),
                 data: data_dir.clone(),
                 runtime: tmp.path().join("runtime"),
@@ -764,7 +764,7 @@ mod tests {
             session_tokens: Default::default(),
             autonomy: autonomy.clone(),
             llm_client: LlmClient::new(tmp.path().join("dummy.sock")),
-            diagnostics: std::sync::Arc::new(std::sync::Mutex::new(crate::diagnostics::Diagnostics::default())),
+            diagnostics: std::sync::Arc::new(std::sync::Mutex::new(shore_diagnostics::Diagnostics::default())),
             memory_shell_sessions: std::collections::HashMap::new(),
         };
 

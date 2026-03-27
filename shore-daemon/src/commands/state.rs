@@ -2,7 +2,7 @@ use serde_json::json;
 use shore_protocol::error::ErrorCode;
 use shore_protocol::types::Role;
 
-use crate::config::resolve_prompt_template;
+use shore_config::resolve_prompt_template;
 use crate::engine::ConversationEngine;
 use crate::memory::agent::{CallerIdentity, MemoryAgent};
 use crate::memory::agent_llm::RealAgentLlm;
@@ -1011,7 +1011,7 @@ fn config_set(ctx: &mut CommandContext, key: &str, value: &str) -> CommandResult
 
 /// Reset all runtime config overrides by reloading from disk.
 pub fn config_reset(ctx: &mut CommandContext) -> CommandResult {
-    match crate::config::load_config(None) {
+    match shore_config::load_config(None) {
         Ok(fresh) => {
             ctx.active_model = fresh.app.defaults.model.clone();
             ctx.config = fresh;
@@ -1025,7 +1025,7 @@ pub fn config_reset(ctx: &mut CommandContext) -> CommandResult {
 mod tests {
     use super::*;
     use crate::commands::CommandContext;
-    use crate::config::models::ModelCatalog;
+    use shore_config::models::ModelCatalog;
     use crate::engine::ConversationEngine;
     use shore_protocol::server_msg::ServerMessage;
     use shore_protocol::types::{Message, Role};
@@ -1056,10 +1056,10 @@ mod tests {
             ConversationEngine::new("TestChar".to_string(), data_dir.clone(), push_tx.clone())
                 .unwrap();
 
-        let config = crate::config::LoadedConfig::new_for_test(
-            crate::config::app::AppConfig::default(),
+        let config = shore_config::LoadedConfig::new_for_test(
+            shore_config::app::AppConfig::default(),
             models,
-            crate::config::ShoreDirs {
+            shore_config::ShoreDirs {
                 config: tmp.path().join("config"),
                 data: data_dir.clone(),
                 runtime: tmp.path().join("runtime"),
@@ -1076,8 +1076,8 @@ mod tests {
             active_model: None,
             session_tokens: Default::default(),
             autonomy,
-            llm_client: crate::llm_client::LlmClient::new(data_dir.join("dummy.sock")),
-            diagnostics: std::sync::Arc::new(std::sync::Mutex::new(crate::diagnostics::Diagnostics::default())),
+            llm_client: shore_llm_client::LlmClient::new(data_dir.join("dummy.sock")),
+            diagnostics: std::sync::Arc::new(std::sync::Mutex::new(shore_diagnostics::Diagnostics::default())),
             memory_shell_sessions: std::collections::HashMap::new(),
         };
         (engine, ctx, push_rx)

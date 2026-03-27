@@ -5,6 +5,10 @@ edition = "2021"
 
 [dependencies]
 shore-protocol = { path = "../shore-protocol" }
+shore-config = { workspace = true }
+shore-diagnostics = { workspace = true }
+shore-supervisor = { workspace = true }
+shore-llm-client = { workspace = true }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -15,7 +19,6 @@ tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 fs2 = "0.4"
 dirs = "6"
 uuid = { version = "1", features = ["v4"] }
-libc = "0.2"
 chrono = "0.4"
 rand = "0.8"
 rusqlite = { version = "0.37", features = ["bundled"] }
@@ -31,3 +34,7 @@ base64 = "0.22.1"
 tempfile = "3"
 tokio = { version = "1", features = ["test-util"] }
 shore-client = { path = "../shore-client" }
+shore-config = { workspace = true }
+shore-diagnostics = { workspace = true }
+shore-supervisor = { workspace = true }
+shore-llm-client = { workspace = true }

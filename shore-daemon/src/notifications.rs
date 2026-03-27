@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use tracing::warn;
 
-use crate::config::app::{NotificationBackend, NotificationsConfig, NtfyConfig};
+use shore_config::app::{NotificationBackend, NotificationsConfig, NtfyConfig};
 
 /// Events that can trigger a push notification.
 #[derive(Debug, Clone, Copy)]
@@ -156,7 +156,7 @@ fn truncate(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::app::{
+    use shore_config::app::{
         CommandNotifyConfig, NotificationEventsConfig,
     };
 

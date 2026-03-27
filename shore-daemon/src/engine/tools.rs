@@ -5,10 +5,10 @@ use serde_json::{json, Value};
 use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
 
-use crate::diagnostics::{self, Diagnostics};
-use crate::llm_client::stream::{CacheContext, StreamConsumer};
-use crate::llm_client::types::{LlmRequest, StreamResult};
-use crate::llm_client::{LlmClient, LlmError};
+use shore_diagnostics::{self as diagnostics, Diagnostics};
+use shore_llm_client::stream::{CacheContext, StreamConsumer};
+use shore_llm_client::types::{LlmRequest, StreamResult};
+use shore_llm_client::{LlmClient, LlmError};
 use crate::tools::{self as tool_system, ToolContext};
 use shore_protocol::server_msg::{ServerMessage, ToolCall, ToolResult as SwpToolResult};
 use shore_protocol::types::{ContentBlock, Message, Role};
@@ -265,7 +265,7 @@ pub async fn run_tool_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llm_client::types::ToolUseEvent;
+    use shore_llm_client::types::ToolUseEvent;
     use crate::test_support::TestToolContext;
     use tokio::io::AsyncWriteExt;
 
