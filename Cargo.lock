@@ -6285,21 +6285,20 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "dirs 5.0.1",
- "hex",
- "hmac",
  "matrix-sdk",
  "mime",
  "mime_guess",
  "reqwest",
  "serde",
  "serde_json",
- "sha1",
  "shore-client",
  "shore-protocol",
  "tempfile",
  "tokio",
+ "toml 0.8.23",
  "tracing",
  "tracing-subscriber",
+ "urlencoding",
 ]
 
 [[package]]

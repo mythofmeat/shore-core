@@ -112,60 +112,83 @@ impl ProvisionState {
     }
 }
 
-/// Register a Matrix account using Synapse's shared-secret registration endpoint.
+/// Register a Matrix account using the standard client-server API with a
+/// registration token (User-Interactive Authentication flow).
 ///
-/// This uses the `/_synapse/admin/v1/register` API which requires an HMAC
-/// signature computed from the registration shared secret.
+/// Works with any Matrix homeserver that supports `m.login.registration_token`.
 pub async fn register_account(
     homeserver_url: &str,
-    shared_secret: &str,
+    registration_token: &str,
     username: &str,
     password: &str,
-    admin: bool,
 ) -> Result<RegisterResponse, ProvisionError> {
     let client = reqwest::Client::new();
+    let url = format!("{homeserver_url}/_matrix/client/v3/register");
 
-    // Step 1: Get nonce
-    let nonce_url = format!("{homeserver_url}/_synapse/admin/v1/register");
-    let nonce_resp: NonceResponse = client
-        .get(&nonce_url)
-        .send()
-        .await
-        .map_err(|e| ProvisionError::Http(format!("get nonce: {e}")))?
-        .json()
-        .await
-        .map_err(|e| ProvisionError::Http(format!("parse nonce: {e}")))?;
-
-    // Step 2: Compute HMAC
-    let mac = compute_registration_mac(
-        shared_secret,
-        &nonce_resp.nonce,
-        username,
-        password,
-        admin,
-    );
-
-    // Step 3: Register
-    let body = serde_json::json!({
-        "nonce": nonce_resp.nonce,
+    // Step 1: Initial request to get session ID and required auth flows
+    let initial_body = serde_json::json!({
         "username": username,
         "password": password,
-        "admin": admin,
-        "mac": mac,
     });
 
     let resp = client
-        .post(&nonce_url)
-        .json(&body)
+        .post(&url)
+        .json(&initial_body)
         .send()
         .await
-        .map_err(|e| ProvisionError::Http(format!("register: {e}")))?;
+        .map_err(|e| ProvisionError::Http(format!("register initial: {e}")))?;
+
+    // 200 = registered immediately (unlikely with token auth), 401 = UIA required
+    if resp.status().is_success() {
+        let result: RegisterResponse = resp
+            .json()
+            .await
+            .map_err(|e| ProvisionError::Http(format!("parse register response: {e}")))?;
+        info!("registered Matrix account: {}", result.user_id);
+        return Ok(result);
+    }
+
+    if resp.status() != reqwest::StatusCode::UNAUTHORIZED {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(ProvisionError::Registration(format!(
+            "unexpected status {status}: {body}"
+        )));
+    }
+
+    // Extract session from 401 response
+    let uia_resp: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| ProvisionError::Http(format!("parse UIA response: {e}")))?;
+
+    let session = uia_resp["session"]
+        .as_str()
+        .ok_or_else(|| ProvisionError::Registration("no session in UIA response".into()))?;
+
+    // Step 2: Complete registration with token auth
+    let auth_body = serde_json::json!({
+        "username": username,
+        "password": password,
+        "auth": {
+            "type": "m.login.registration_token",
+            "token": registration_token,
+            "session": session,
+        },
+    });
+
+    let resp = client
+        .post(&url)
+        .json(&auth_body)
+        .send()
+        .await
+        .map_err(|e| ProvisionError::Http(format!("register with token: {e}")))?;
 
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
         return Err(ProvisionError::Registration(format!(
-            "status {status}: {body}"
+            "registration failed {status}: {body}"
         )));
     }
 
@@ -178,39 +201,14 @@ pub async fn register_account(
     Ok(result)
 }
 
-/// Compute the HMAC for Synapse shared-secret registration.
-///
-/// Format: HMAC-SHA1(shared_secret, nonce + "\0" + username + "\0" + password + "\0" + admin_flag)
-fn compute_registration_mac(
-    shared_secret: &str,
-    nonce: &str,
-    username: &str,
-    password: &str,
-    admin: bool,
-) -> String {
-    use hmac::{Hmac, Mac};
-    use sha1::Sha1;
-
-    type HmacSha1 = Hmac<Sha1>;
-
-    let admin_str = if admin { "admin" } else { "notadmin" };
-    let message = format!("{nonce}\0{username}\0{password}\0{admin_str}");
-
-    let mut mac =
-        HmacSha1::new_from_slice(shared_secret.as_bytes()).expect("HMAC accepts any key size");
-    mac.update(message.as_bytes());
-    let result = mac.finalize();
-    hex::encode(result.into_bytes())
-}
-
 /// Full provisioning flow for a character.
 ///
 /// 1. Load existing state (skip if already provisioned)
-/// 2. Register Matrix account via admin API
+/// 2. Register Matrix account via registration token
 /// 3. Save provision state
 pub async fn provision_character(
     homeserver_url: &str,
-    shared_secret: &str,
+    registration_token: &str,
     character: &str,
     password: &str,
     paths: &CharacterPaths,
@@ -232,9 +230,9 @@ pub async fn provision_character(
 
     paths.ensure_dirs().await?;
 
-    // Register the bot account (not admin)
     let username = format!("shore-{}", character.to_lowercase().replace(' ', "-"));
-    let reg = register_account(homeserver_url, shared_secret, &username, password, false).await?;
+    let reg =
+        register_account(homeserver_url, registration_token, &username, password).await?;
 
     let state = ProvisionState {
         character: character.to_string(),
@@ -253,22 +251,11 @@ pub async fn provision_character(
 /// Provision the admin account on first run.
 pub async fn provision_admin(
     homeserver_url: &str,
-    shared_secret: &str,
+    registration_token: &str,
+    admin_user: &str,
     admin_password: &str,
 ) -> Result<RegisterResponse, ProvisionError> {
-    register_account(
-        homeserver_url,
-        shared_secret,
-        "shore-admin",
-        admin_password,
-        true,
-    )
-    .await
-}
-
-#[derive(Debug, Deserialize)]
-struct NonceResponse {
-    nonce: String,
+    register_account(homeserver_url, registration_token, admin_user, admin_password).await
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -299,6 +286,182 @@ impl std::fmt::Display for ProvisionError {
 }
 
 impl std::error::Error for ProvisionError {}
+
+// ── Embedded Synapse state ──────────────────────────────────────────────
+
+/// Paths for the global embedded Matrix homeserver instance.
+#[derive(Debug, Clone)]
+pub struct HomeserverPaths {
+    /// $XDG_DATA_HOME/shore/matrix-server/
+    pub server_dir: PathBuf,
+    /// $XDG_DATA_HOME/shore/matrix-server/embedded_state.json
+    pub state_file: PathBuf,
+}
+
+impl HomeserverPaths {
+    /// Compute paths using the standard XDG data directory.
+    pub fn new() -> Self {
+        let data_dir = dirs::data_dir().unwrap_or_else(|| PathBuf::from(".local/share"));
+        Self::with_base(data_dir)
+    }
+
+    /// Compute paths from an explicit data directory override.
+    pub fn from_data_dir(data_dir: &str) -> Self {
+        Self {
+            server_dir: PathBuf::from(data_dir),
+            state_file: PathBuf::from(data_dir).join("embedded_state.json"),
+        }
+    }
+
+    /// Compute paths with an explicit base data directory.
+    pub fn with_base(base: PathBuf) -> Self {
+        let server_dir = base.join("shore").join("matrix-server");
+        let state_file = server_dir.join("embedded_state.json");
+        Self {
+            server_dir,
+            state_file,
+        }
+    }
+}
+
+/// Persisted state for an embedded Matrix homeserver.
+///
+/// Generated on first run and loaded on subsequent starts. Contains
+/// the registration token and admin credentials needed to manage accounts.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmbeddedState {
+    /// Registration token for creating accounts via the Matrix API.
+    pub registration_token: String,
+    /// Admin user ID (e.g. @shore-admin:shore.local).
+    pub admin_user_id: String,
+    /// Admin access token.
+    pub admin_access_token: String,
+    /// Admin device ID.
+    pub admin_device_id: String,
+    /// The password used for the admin account.
+    pub admin_password: String,
+    /// Homeserver URL (e.g. http://127.0.0.1:6167).
+    pub homeserver_url: String,
+}
+
+impl EmbeddedState {
+    /// Load embedded state from a JSON file.
+    pub fn load(path: &Path) -> Result<Option<Self>, ProvisionError> {
+        if !path.exists() {
+            return Ok(None);
+        }
+        let data = std::fs::read_to_string(path)
+            .map_err(|e| ProvisionError::Io(format!("read embedded_state.json: {e}")))?;
+        let state: Self = serde_json::from_str(&data)
+            .map_err(|e| ProvisionError::InvalidState(format!("parse embedded_state.json: {e}")))?;
+        Ok(Some(state))
+    }
+
+    /// Save embedded state to a JSON file.
+    pub fn save(&self, path: &Path) -> Result<(), ProvisionError> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| ProvisionError::Io(format!("create parent dir: {e}")))?;
+        }
+        let data = serde_json::to_string_pretty(self)
+            .map_err(|e| ProvisionError::Io(format!("serialize embedded state: {e}")))?;
+        std::fs::write(path, data)
+            .map_err(|e| ProvisionError::Io(format!("write embedded_state.json: {e}")))?;
+        info!("saved embedded state to {}", path.display());
+        Ok(())
+    }
+}
+
+// ── Room creation ───────────────────────────────────────────────────────
+
+/// Create a private room for a character, inviting the bot and optionally a human user.
+///
+/// Uses the admin account's access token to create the room and set power levels.
+pub async fn create_character_room(
+    homeserver_url: &str,
+    admin_token: &str,
+    character_user_id: &str,
+    trusted_user: Option<&str>,
+    character_name: &str,
+    server_name: &str,
+) -> Result<String, ProvisionError> {
+    let client = reqwest::Client::new();
+    let url = format!("{homeserver_url}/_matrix/client/v3/createRoom");
+
+    let mut invite = vec![character_user_id.to_string()];
+    if let Some(human) = trusted_user {
+        invite.push(human.to_string());
+    }
+
+    let admin_user_id = format!("@shore-admin:{server_name}");
+    let body = serde_json::json!({
+        "name": character_name,
+        "topic": format!("Chat with {character_name} (Shore)"),
+        "preset": "private_chat",
+        "invite": invite,
+        "creation_content": {
+            "m.federate": false
+        },
+        "power_level_content_override": {
+            "users": {
+                admin_user_id: 100,
+                character_user_id: 50,
+            }
+        }
+    });
+
+    let resp = client
+        .post(&url)
+        .bearer_auth(admin_token)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| ProvisionError::Http(format!("create room: {e}")))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        return Err(ProvisionError::Registration(format!(
+            "create room failed {status}: {text}"
+        )));
+    }
+
+    #[derive(Deserialize)]
+    struct CreateRoomResponse {
+        room_id: String,
+    }
+    let result: CreateRoomResponse = resp
+        .json()
+        .await
+        .map_err(|e| ProvisionError::Http(format!("parse room response: {e}")))?;
+
+    info!("created room {} for {}", result.room_id, character_name);
+    Ok(result.room_id)
+}
+
+/// Join a room using an access token.
+pub async fn join_room(
+    homeserver_url: &str,
+    room_id: &str,
+    access_token: &str,
+) -> Result<(), ProvisionError> {
+    let client = reqwest::Client::new();
+    let encoded = urlencoding::encode(room_id);
+    let url = format!("{homeserver_url}/_matrix/client/v3/join/{encoded}");
+    let resp = client
+        .post(&url)
+        .bearer_auth(access_token)
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .map_err(|e| ProvisionError::Http(format!("join room: {e}")))?;
+
+    if !resp.status().is_success() {
+        let text = resp.text().await.unwrap_or_default();
+        return Err(ProvisionError::Http(format!("join room failed: {text}")));
+    }
+    Ok(())
+}
 
 #[cfg(test)]
 mod tests {
@@ -408,22 +571,6 @@ mod tests {
     }
 
     #[test]
-    fn compute_hmac_known_value() {
-        // Synapse uses HMAC-SHA1 for registration MAC
-        let mac = compute_registration_mac("secret", "nonce123", "user", "pass", false);
-        // Just verify it's a hex string of correct length (SHA1 = 20 bytes = 40 hex chars)
-        assert_eq!(mac.len(), 40);
-        assert!(mac.chars().all(|c| c.is_ascii_hexdigit()));
-    }
-
-    #[test]
-    fn compute_hmac_admin_differs() {
-        let mac1 = compute_registration_mac("secret", "nonce", "user", "pass", false);
-        let mac2 = compute_registration_mac("secret", "nonce", "user", "pass", true);
-        assert_ne!(mac1, mac2);
-    }
-
-    #[test]
     fn provision_error_display() {
         assert!(ProvisionError::Io("disk full".into())
             .to_string()
@@ -466,6 +613,112 @@ mod tests {
             access_token: "tok".to_string(),
             room_id: None,
             avatar_set: false,
+            homeserver_url: "http://localhost:8008".to_string(),
+        };
+
+        state.save(&path).unwrap();
+        assert!(path.exists());
+    }
+
+    // ── Embedded state tests ────────────────────────────────────────
+
+    #[test]
+    fn homeserver_paths_structure() {
+        let base = PathBuf::from("/home/user/.local/share");
+        let paths = HomeserverPaths::with_base(base);
+
+        assert_eq!(
+            paths.server_dir,
+            PathBuf::from("/home/user/.local/share/shore/matrix-server")
+        );
+        assert_eq!(
+            paths.state_file,
+            PathBuf::from("/home/user/.local/share/shore/matrix-server/embedded_state.json")
+        );
+    }
+
+    #[test]
+    fn homeserver_paths_from_data_dir() {
+        let paths = HomeserverPaths::from_data_dir("/opt/shore-matrix");
+        assert_eq!(paths.server_dir, PathBuf::from("/opt/shore-matrix"));
+        assert_eq!(
+            paths.state_file,
+            PathBuf::from("/opt/shore-matrix/embedded_state.json")
+        );
+    }
+
+    #[test]
+    fn embedded_state_roundtrip() {
+        let state = EmbeddedState {
+            registration_token: "abc123def456".to_string(),
+            admin_user_id: "@shore-admin:localhost".to_string(),
+            admin_access_token: "tok_admin".to_string(),
+            admin_device_id: "SHORE_ADMIN".to_string(),
+            admin_password: "admin_pass".to_string(),
+            homeserver_url: "http://localhost:8008".to_string(),
+        };
+
+        let json = serde_json::to_string_pretty(&state).unwrap();
+        let restored: EmbeddedState = serde_json::from_str(&json).unwrap();
+        assert_eq!(state.registration_token, restored.registration_token);
+        assert_eq!(state.admin_user_id, restored.admin_user_id);
+        assert_eq!(state.admin_access_token, restored.admin_access_token);
+        assert_eq!(state.admin_device_id, restored.admin_device_id);
+        assert_eq!(state.admin_password, restored.admin_password);
+        assert_eq!(state.homeserver_url, restored.homeserver_url);
+    }
+
+    #[test]
+    fn embedded_state_save_and_load() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("embedded_state.json");
+
+        let state = EmbeddedState {
+            registration_token: "secret123".to_string(),
+            admin_user_id: "@shore-admin:test".to_string(),
+            admin_access_token: "tok".to_string(),
+            admin_device_id: "DEV".to_string(),
+            admin_password: "pass".to_string(),
+            homeserver_url: "http://localhost:9999".to_string(),
+        };
+
+        state.save(&path).unwrap();
+        let loaded = EmbeddedState::load(&path).unwrap().unwrap();
+        assert_eq!(state.registration_token, loaded.registration_token);
+        assert_eq!(state.admin_user_id, loaded.admin_user_id);
+        assert_eq!(state.homeserver_url, loaded.homeserver_url);
+    }
+
+    #[test]
+    fn embedded_state_load_nonexistent() {
+        let result = EmbeddedState::load(Path::new("/nonexistent/state.json")).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn embedded_state_load_invalid_json() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("embedded_state.json");
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(b"not json").unwrap();
+
+        let result = EmbeddedState::load(&path);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("parse embedded_state.json"));
+    }
+
+    #[test]
+    fn embedded_state_save_creates_parent_dirs() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("a").join("b").join("embedded_state.json");
+
+        let state = EmbeddedState {
+            registration_token: "s".to_string(),
+            admin_user_id: "@a:l".to_string(),
+            admin_access_token: "t".to_string(),
+            admin_device_id: "d".to_string(),
+            admin_password: "p".to_string(),
             homeserver_url: "http://localhost:8008".to_string(),
         };
 

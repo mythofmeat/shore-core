@@ -294,8 +294,10 @@ INTERNAL_ERROR     — unexpected server error
 
 ### 3.7 Command Reference
 
-18 flat commands. Naming convention: `verb_noun` for actions on a specific
-thing, bare verb/noun when unambiguous.
+18 flat SWP protocol commands. These are the daemon-side wire commands — the
+CLI exposes a reduced surface (9 user-facing commands that map to these).
+Naming convention: `verb_noun` for actions on a specific thing, bare
+verb/noun when unambiguous.
 
 #### Conversation
 
@@ -817,8 +819,8 @@ Three XDG directories, each with a clear purpose.
 
 ```
 $XDG_CONFIG_HOME/shore/            (~/.config/shore/)
-├── config.toml                    # Global configuration
-├── models.toml                    # Model profiles
+├── config.toml                    # Global configuration (includes model definitions)
+├── conf.d/                        # Optional drop-in config fragments (*.toml)
 ├── user.md                        # Default user definition
 ├── prompts/                       # Default prompt templates
 │   ├── system.md
@@ -907,9 +909,12 @@ Loaded by daemon on startup. Key changes from V1:
   (single section, mode determined by config present)
 - `[connections.telegram]` and `[connections.discord]` — reserved for future use
 
-### 8.2 models.toml (Daemon)
+### 8.2 Model Definitions
 
-Unchanged from V1 structure.
+V2 merges model definitions into `config.toml` using the nested
+`[chat.<provider>.<model>]` structure. A separate `models.toml` is no longer
+required — but users can still split models into a separate file via
+`include = ["models.toml"]` or by placing a `conf.d/models.toml` drop-in.
 
 ### 8.3 Bridge Configuration
 

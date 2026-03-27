@@ -517,14 +517,78 @@ pub struct TcpConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct MatrixConfig {
-    /// Homeserver URL.
-    pub homeserver: String,
+    /// Whether the Matrix connection is enabled.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
 
-    /// Matrix user ID (e.g. @shore:example.com).
+    /// Homeserver URL. Required for external mode.
+    /// In embedded mode, auto-derived as http://localhost:{port}.
+    pub homeserver: Option<String>,
+
+    /// Matrix user ID (e.g. @shore:example.com). External mode only.
     pub user_id: Option<String>,
 
-    /// Room ID to join.
+    /// Room ID to join. External mode only.
     pub room_id: Option<String>,
+
+    /// Matrix user to trust for SAS auto-verification.
+    pub trusted_user: Option<String>,
+
+    /// Embedded homeserver configuration. Presence of this section
+    /// activates embedded mode (mutually exclusive with homeserver).
+    pub embedded: Option<EmbeddedConfig>,
+}
+
+/// Configuration for an embedded (shore-matrix-managed) Matrix homeserver.
+///
+/// Uses a conduwuit-compatible server (continuwuity, conduwuit, or tuwunel).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct EmbeddedConfig {
+    /// Matrix server_name (e.g. "shore.local"). Cannot be changed after first run.
+    #[serde(default = "default_server_name")]
+    pub server_name: String,
+
+    /// HTTP listener port.
+    #[serde(default = "default_homeserver_port")]
+    pub port: u16,
+
+    /// Admin username (without @ or :server).
+    #[serde(default = "default_admin_user")]
+    pub admin_user: String,
+
+    /// Admin account password.
+    pub admin_password: String,
+
+    /// Override data directory. Default: $XDG_DATA_HOME/shore/matrix-server/
+    pub data_dir: Option<String>,
+
+    /// Override the homeserver binary name.
+    /// Default: auto-detect (tries continuwuity, conduwuit, tuwunel).
+    pub binary: Option<String>,
+}
+
+fn default_server_name() -> String {
+    "localhost".into()
+}
+fn default_homeserver_port() -> u16 {
+    6167
+}
+fn default_admin_user() -> String {
+    "shore-admin".into()
+}
+
+impl Default for EmbeddedConfig {
+    fn default() -> Self {
+        Self {
+            server_name: default_server_name(),
+            port: default_homeserver_port(),
+            admin_user: default_admin_user(),
+            admin_password: String::new(),
+            data_dir: None,
+            binary: None,
+        }
+    }
 }
 
 /// Reserved for future use.
@@ -927,5 +991,106 @@ bogus_key = 42
 "#;
         let result: Result<AppConfig, _> = toml::from_str(toml_str);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn matrix_external_mode_parses() {
+        let toml_str = r#"
+[connections.matrix]
+homeserver = "https://matrix.example.com"
+user_id = "@shore:example.com"
+room_id = "!abc:example.com"
+trusted_user = "@user:example.com"
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let mx = config.connections.matrix.unwrap();
+        assert!(mx.enabled);
+        assert_eq!(mx.homeserver.as_deref(), Some("https://matrix.example.com"));
+        assert_eq!(mx.user_id.as_deref(), Some("@shore:example.com"));
+        assert_eq!(mx.room_id.as_deref(), Some("!abc:example.com"));
+        assert_eq!(mx.trusted_user.as_deref(), Some("@user:example.com"));
+        assert!(mx.embedded.is_none());
+    }
+
+    #[test]
+    fn matrix_embedded_mode_parses() {
+        let toml_str = r#"
+[connections.matrix]
+trusted_user = "@user:shore.local"
+
+[connections.matrix.embedded]
+server_name = "shore.local"
+port = 9008
+admin_password = "secret"
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let mx = config.connections.matrix.unwrap();
+        assert!(mx.enabled);
+        assert!(mx.homeserver.is_none());
+        assert_eq!(mx.trusted_user.as_deref(), Some("@user:shore.local"));
+        let emb = mx.embedded.unwrap();
+        assert_eq!(emb.server_name, "shore.local");
+        assert_eq!(emb.port, 9008);
+        assert_eq!(emb.admin_password, "secret");
+        assert_eq!(emb.admin_user, "shore-admin");
+        assert!(emb.data_dir.is_none());
+        assert!(emb.binary.is_none());
+    }
+
+    #[test]
+    fn matrix_embedded_defaults() {
+        let toml_str = r#"
+[connections.matrix.embedded]
+admin_password = "required"
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let emb = config.connections.matrix.unwrap().embedded.unwrap();
+        assert_eq!(emb.server_name, "localhost");
+        assert_eq!(emb.port, 6167);
+        assert_eq!(emb.admin_user, "shore-admin");
+    }
+
+    #[test]
+    fn matrix_embedded_with_all_fields() {
+        let toml_str = r#"
+[connections.matrix.embedded]
+server_name = "test.local"
+port = 9999
+admin_user = "admin"
+admin_password = "secret123"
+data_dir = "/tmp/test-matrix"
+binary = "tuwunel"
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let emb = config.connections.matrix.unwrap().embedded.unwrap();
+        assert_eq!(emb.server_name, "test.local");
+        assert_eq!(emb.port, 9999);
+        assert_eq!(emb.admin_user, "admin");
+        assert_eq!(emb.admin_password, "secret123");
+        assert_eq!(emb.data_dir.as_deref(), Some("/tmp/test-matrix"));
+        assert_eq!(emb.binary.as_deref(), Some("tuwunel"));
+    }
+
+    #[test]
+    fn matrix_rejects_unknown_embedded_field() {
+        let toml_str = r#"
+[connections.matrix.embedded]
+server_name = "localhost"
+bogus = true
+"#;
+        let result: Result<AppConfig, _> = toml::from_str(toml_str);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn matrix_disabled() {
+        let toml_str = r#"
+[connections.matrix]
+enabled = false
+homeserver = "https://matrix.example.com"
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let mx = config.connections.matrix.unwrap();
+        assert!(!mx.enabled);
     }
 }

@@ -97,10 +97,25 @@ image_enabled = true                 # Set false to disable image memory subsyst
 # addr = "127.0.0.1:7320"
 # allowed_hosts = []                 # Empty = allow all; otherwise list of allowed IPs
 
+# ── Matrix: External mode (connect to existing homeserver) ─────────────
 # [connections.matrix]
 # homeserver = "https://matrix.example.com"
 # user_id = "@shore:example.com"
 # room_id = "!abc123:example.com"
+# trusted_user = "@user:example.com"
+
+# ── Matrix: Embedded mode (shore-matrix manages a local homeserver) ────
+# Uses a conduwuit-compatible server (continuwuity, conduwuit, or tuwunel).
+# [connections.matrix]
+# trusted_user = "@user:shore.local"
+#
+# [connections.matrix.embedded]
+# server_name = "shore.local"          # Default: "localhost"
+# admin_password = "your-admin-pass"   # Required
+# # port = 6167                        # Default: 6167
+# # admin_user = "shore-admin"         # Default: "shore-admin"
+# # data_dir = "..."                   # Default: $XDG_DATA_HOME/shore/matrix-server/
+# # binary = "continuwuity"            # Default: auto-detect
 
 [services.llm]
 # command = "node /path/to/shore-llm/dist/index.js"

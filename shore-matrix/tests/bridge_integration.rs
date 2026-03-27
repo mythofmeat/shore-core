@@ -1,14 +1,14 @@
 //! US-038: Matrix bridge milestone — end-to-end integration test.
 //!
 //! Exercises the complete Matrix bridge subsystem with all components wired together:
-//! SynapseConfig/Manager, provisioning, room management, bridge routing,
+//! HomeserverConfig/Manager, provisioning, room management, bridge routing,
 //! response collection, cross-room isolation, image handling, and command dispatch.
 //!
-//! Tests marked `#[ignore]` require a running Synapse instance (set
-//! `SHORE_TEST_SYNAPSE_URL` and `SHORE_TEST_SYNAPSE_SECRET` to enable).
+//! Tests marked `#[ignore]` require a running Matrix homeserver (set
+//! `SHORE_TEST_MATRIX_URL` and `SHORE_TEST_MATRIX_TOKEN` to enable).
 //!
 //! Coverage:
-//! - Synapse config generation and lifecycle management
+//! - Homeserver config generation and lifecycle management
 //! - Character provisioning (state persistence, idempotent re-provision)
 //! - Bridge message routing: text → SWP, !command → SWP, image → SWP
 //! - Response collection: StreamStart → typing, StreamEnd → SendMessage
@@ -21,70 +21,66 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use shore_matrix::homeserver::{generate_token, HealthStatus, HomeserverConfig, HomeserverManager};
 use shore_matrix::provision::{CharacterPaths, ProvisionState};
-use shore_matrix::synapse::{generate_shared_secret, HealthStatus, SynapseConfig, SynapseManager};
 
 // Re-use bridge types via the crate's public modules.
 // bridge/rooms/bot are private, so we test them indirectly or use the public
-// provision/synapse modules for integration.
+// provision/homeserver modules for integration.
 use shore_protocol::client_msg::{ClientMessage, ClientMessageBody, Command};
 use shore_protocol::server_msg::*;
 use shore_protocol::types::*;
 use tempfile::TempDir;
 
 // ---------------------------------------------------------------------------
-// Synapse config + manager integration
+// Homeserver config + manager integration
 // ---------------------------------------------------------------------------
 
 #[test]
-fn synapse_config_generates_valid_yaml_with_all_fields() {
-    let secret = generate_shared_secret();
-    let config = SynapseConfig {
+fn homeserver_config_generates_valid_toml_with_all_fields() {
+    let token = generate_token();
+    let config = HomeserverConfig {
         server_name: "shore-test.local".to_string(),
         port: 18008,
-        data_dir: PathBuf::from("/tmp/shore-test-synapse"),
-        registration_shared_secret: secret.clone(),
-        enable_registration: true,
-        log_level: "INFO".to_string(),
+        data_dir: PathBuf::from("/tmp/shore-test-matrix"),
+        registration_token: token.clone(),
+        allow_federation: false,
     };
 
-    let yaml = config.generate_yaml();
-    assert!(yaml.contains("server_name: \"shore-test.local\""));
-    assert!(yaml.contains("port: 18008"));
-    assert!(yaml.contains(&format!("registration_shared_secret: \"{secret}\"")));
-    assert!(yaml.contains("enable_registration: true"));
-    assert!(yaml.contains("suppress_key_server_warning: true"));
-    assert!(yaml.contains("report_stats: false"));
+    let toml = config.generate_config();
+    assert!(toml.contains("server_name = \"shore-test.local\""));
+    assert!(toml.contains("port = 18008"));
+    assert!(toml.contains(&format!("registration_token = \"{token}\"")));
+    assert!(toml.contains("database_backend = \"rocksdb\""));
+    assert!(toml.contains("allow_registration = true"));
+    assert!(toml.contains("allow_federation = false"));
 
-    let log_config = config.generate_log_config();
-    assert!(log_config.contains("level: INFO"));
-    assert!(log_config.contains("RotatingFileHandler"));
-
-    assert_eq!(config.homeserver_url(), "http://localhost:18008");
+    assert_eq!(config.homeserver_url(), "http://127.0.0.1:18008");
 }
 
 #[test]
-fn synapse_manager_lifecycle_without_process() {
-    let config = SynapseConfig {
+fn homeserver_manager_lifecycle_without_process() {
+    let config = HomeserverConfig {
         server_name: "test.local".to_string(),
         port: 19999,
-        ..SynapseConfig::default()
+        ..HomeserverConfig::default()
     };
-    let mgr = SynapseManager::new(config);
+    let mgr = HomeserverManager::new(config, Some("test-binary".into()));
 
     assert!(!mgr.is_running());
     assert_eq!(mgr.config().port, 19999);
     assert_eq!(mgr.config().server_name, "test.local");
+    assert_eq!(mgr.binary_name(), "test-binary");
 }
 
 #[test]
-fn shared_secret_generation_produces_unique_values() {
-    let secrets: Vec<String> = (0..10).map(|_| generate_shared_secret()).collect();
-    for i in 0..secrets.len() {
-        assert_eq!(secrets[i].len(), 32);
-        assert!(secrets[i].chars().all(|c| c.is_ascii_hexdigit()));
-        for j in (i + 1)..secrets.len() {
-            assert_ne!(secrets[i], secrets[j], "collision at {i} and {j}");
+fn token_generation_produces_unique_values() {
+    let tokens: Vec<String> = (0..10).map(|_| generate_token()).collect();
+    for i in 0..tokens.len() {
+        assert_eq!(tokens[i].len(), 32);
+        assert!(tokens[i].chars().all(|c| c.is_ascii_hexdigit()));
+        for j in (i + 1)..tokens.len() {
+            assert_ne!(tokens[i], tokens[j], "collision at {i} and {j}");
         }
     }
 }
@@ -554,55 +550,37 @@ async fn provision_lifecycle_create_save_reload() {
 }
 
 // ---------------------------------------------------------------------------
-// Synapse embedded config for shore-matrix
+// Embedded homeserver config for shore-matrix
 // ---------------------------------------------------------------------------
 
-/// Verifies the complete Synapse configuration pipeline:
-/// generate secret → create config → generate YAML → verify all settings.
+/// Verifies the complete homeserver configuration pipeline:
+/// generate token → create config → generate TOML → verify all settings.
 #[test]
-fn synapse_embedded_config_pipeline() {
-    let secret = generate_shared_secret();
+fn homeserver_embedded_config_pipeline() {
+    let token = generate_token();
     let dir = TempDir::new().unwrap();
 
-    let config = SynapseConfig {
+    let config = HomeserverConfig {
         server_name: "shore.local".to_string(),
         port: 18448,
         data_dir: dir.path().to_path_buf(),
-        registration_shared_secret: secret.clone(),
-        enable_registration: true,
-        log_level: "WARNING".to_string(),
+        registration_token: token.clone(),
+        allow_federation: false,
     };
 
-    // Verify YAML has all required Synapse directives
-    let yaml = config.generate_yaml();
-    assert!(yaml.contains("server_name: \"shore.local\""));
-    assert!(yaml.contains("port: 18448"));
-    assert!(yaml.contains("tls: false"));
-    assert!(yaml.contains("type: http"));
-    assert!(yaml.contains("name: sqlite3"));
-    assert!(yaml.contains(&format!(
-        "database: \"{}\"",
-        dir.path().join("homeserver.db").display()
-    )));
-    assert!(yaml.contains(&format!(
-        "media_store_path: \"{}\"",
-        dir.path().join("media_store").display()
-    )));
-    assert!(yaml.contains(&format!(
-        "signing_key_path: \"{}\"",
-        dir.path().join("signing.key").display()
+    let toml = config.generate_config();
+    assert!(toml.contains("server_name = \"shore.local\""));
+    assert!(toml.contains("port = 18448"));
+    assert!(toml.contains("database_backend = \"rocksdb\""));
+    assert!(toml.contains(&format!("registration_token = \"{token}\"")));
+    assert!(toml.contains("allow_registration = true"));
+    assert!(toml.contains("allow_federation = false"));
+    assert!(toml.contains(&format!(
+        "database_path = \"{}\"",
+        dir.path().join("database").display()
     )));
 
-    // Verify log config
-    let log_config = config.generate_log_config();
-    assert!(log_config.contains("level: WARNING"));
-    assert!(log_config.contains(&format!(
-        "filename: \"{}\"",
-        dir.path().join("homeserver.log").display()
-    )));
-
-    // Verify homeserver URL
-    assert_eq!(config.homeserver_url(), "http://localhost:18448");
+    assert_eq!(config.homeserver_url(), "http://127.0.0.1:18448");
 }
 
 #[test]
@@ -788,43 +766,43 @@ fn avatar_sync_path_resolution() {
 }
 
 // ---------------------------------------------------------------------------
-// Live Synapse integration tests (require running Synapse)
+// Live Matrix homeserver integration tests (require running homeserver)
 // ---------------------------------------------------------------------------
 
-/// Start embedded Synapse, register an account, verify health.
+/// Health check against a live Matrix homeserver.
 ///
-/// Run with: SHORE_TEST_SYNAPSE_URL=http://localhost:8008 \
-///           SHORE_TEST_SYNAPSE_SECRET=<secret> \
-///           cargo test --package shore-matrix live_synapse -- --ignored
+/// Run with: SHORE_TEST_MATRIX_URL=http://127.0.0.1:6167 \
+///           SHORE_TEST_MATRIX_TOKEN=<registration_token> \
+///           cargo test --package shore-matrix live_matrix -- --ignored
 #[tokio::test]
 #[ignore]
-async fn live_synapse_health_check() {
-    let url = std::env::var("SHORE_TEST_SYNAPSE_URL")
-        .expect("SHORE_TEST_SYNAPSE_URL required for live tests");
+async fn live_matrix_health_check() {
+    let url = std::env::var("SHORE_TEST_MATRIX_URL")
+        .expect("SHORE_TEST_MATRIX_URL required for live tests");
 
-    let healthy = shore_matrix::synapse::wait_for_healthy(
+    let healthy = shore_matrix::homeserver::wait_for_healthy(
         &url,
         std::time::Duration::from_secs(10),
     )
     .await;
-    assert!(healthy, "Synapse at {url} is not healthy");
+    assert!(healthy, "homeserver at {url} is not healthy");
 }
 
-/// Register a character account via Synapse admin API.
+/// Register a character account via Matrix registration token.
 #[tokio::test]
 #[ignore]
-async fn live_synapse_register_character() {
-    let url = std::env::var("SHORE_TEST_SYNAPSE_URL")
-        .expect("SHORE_TEST_SYNAPSE_URL required for live tests");
-    let secret = std::env::var("SHORE_TEST_SYNAPSE_SECRET")
-        .expect("SHORE_TEST_SYNAPSE_SECRET required for live tests");
+async fn live_matrix_register_character() {
+    let url = std::env::var("SHORE_TEST_MATRIX_URL")
+        .expect("SHORE_TEST_MATRIX_URL required for live tests");
+    let token = std::env::var("SHORE_TEST_MATRIX_TOKEN")
+        .expect("SHORE_TEST_MATRIX_TOKEN required for live tests");
 
     let dir = TempDir::new().unwrap();
     let paths = CharacterPaths::with_base(dir.path().to_path_buf(), "test-char");
 
     let result = shore_matrix::provision::provision_character(
         &url,
-        &secret,
+        &token,
         "test-char",
         "test-password-12345",
         &paths,
@@ -841,7 +819,7 @@ async fn live_synapse_register_character() {
             // Verify idempotent re-provision
             let state2 = shore_matrix::provision::provision_character(
                 &url,
-                &secret,
+                &token,
                 "test-char",
                 "test-password-12345",
                 &paths,
@@ -851,30 +829,28 @@ async fn live_synapse_register_character() {
             assert_eq!(state.user_id, state2.user_id);
         }
         Err(e) => {
-            // Registration may fail if account already exists — that's ok for
-            // repeated test runs. Check it's a registration error, not a
-            // connectivity error.
             let err_str = e.to_string();
             assert!(
-                err_str.contains("status 400") || err_str.contains("User ID already taken"),
+                err_str.contains("400") || err_str.contains("already"),
                 "unexpected error: {err_str}"
             );
         }
     }
 }
 
-/// Full end-to-end: start Synapse, provision admin + character, verify.
+/// Full end-to-end: provision admin + characters, verify.
 #[tokio::test]
 #[ignore]
-async fn live_synapse_full_provision_lifecycle() {
-    let url = std::env::var("SHORE_TEST_SYNAPSE_URL")
-        .expect("SHORE_TEST_SYNAPSE_URL required for live tests");
-    let secret = std::env::var("SHORE_TEST_SYNAPSE_SECRET")
-        .expect("SHORE_TEST_SYNAPSE_SECRET required for live tests");
+async fn live_matrix_full_provision_lifecycle() {
+    let url = std::env::var("SHORE_TEST_MATRIX_URL")
+        .expect("SHORE_TEST_MATRIX_URL required for live tests");
+    let token = std::env::var("SHORE_TEST_MATRIX_TOKEN")
+        .expect("SHORE_TEST_MATRIX_TOKEN required for live tests");
 
     // Provision admin
-    let admin_result = shore_matrix::provision::provision_admin(&url, &secret, "admin-pass-test").await;
-    // May fail if already registered
+    let admin_result =
+        shore_matrix::provision::provision_admin(&url, &token, "shore-admin", "admin-pass-test")
+            .await;
     if let Err(ref e) = admin_result {
         let err_str = e.to_string();
         assert!(
@@ -889,7 +865,7 @@ async fn live_synapse_full_provision_lifecycle() {
         let paths = CharacterPaths::with_base(dir.path().to_path_buf(), character);
         let result = shore_matrix::provision::provision_character(
             &url,
-            &secret,
+            &token,
             character,
             &format!("{character}-pass-test"),
             &paths,
@@ -900,7 +876,6 @@ async fn live_synapse_full_provision_lifecycle() {
             Ok(state) => {
                 assert_eq!(state.character, *character);
                 assert!(state.user_id.starts_with("@shore-"));
-                // Verify state was persisted
                 let loaded = ProvisionState::load(&paths.provision_file).unwrap().unwrap();
                 assert_eq!(loaded.user_id, state.user_id);
             }

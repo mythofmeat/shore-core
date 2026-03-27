@@ -14,10 +14,12 @@ requires human judgment about how it should work, not just coding.
 
 ## Embedded Matrix Server
 
-- 10.5 **Embedded Synapse provisioning & config** — DONE
+- 10.5 **Embedded Matrix homeserver provisioning & config** — DONE
   Lives under `[connections.matrix.embedded]`. shore-matrix manages the full
-  Synapse lifecycle: config generation, subprocess, admin provisioning,
-  character account registration, room creation with trusted_user invitation.
+  homeserver lifecycle using a conduwuit-compatible server (continuwuity,
+  conduwuit, or tuwunel): TOML config generation, subprocess management,
+  admin provisioning via registration token, character account registration,
+  room creation with trusted_user invitation. No Python dependency.
   CLI: `shore matrix setup` (one-shot provisioning), `shore matrix register`
   (user account creation). Embedded state persisted at
-  `$XDG_DATA_HOME/shore/synapse/embedded_state.json`.
+  `$XDG_DATA_HOME/shore/matrix-server/embedded_state.json`.
