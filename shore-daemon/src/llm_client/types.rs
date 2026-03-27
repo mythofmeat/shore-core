@@ -91,6 +91,9 @@ pub enum StreamEvent {
     ThinkingSignature {
         signature: String,
     },
+    RedactedThinking {
+        data: String,
+    },
     ToolUse {
         id: String,
         name: String,
@@ -379,6 +382,18 @@ mod tests {
                 assert_eq!(signature, "sig_abc123");
             }
             other => panic!("Expected ThinkingSignature, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn deserialize_stream_redacted_thinking() {
+        let json = r#"{"type":"redacted_thinking","data":"opaque_encrypted_data"}"#;
+        let event: StreamEvent = serde_json::from_str(json).unwrap();
+        match event {
+            StreamEvent::RedactedThinking { data } => {
+                assert_eq!(data, "opaque_encrypted_data");
+            }
+            other => panic!("Expected RedactedThinking, got {:?}", other),
         }
     }
 }

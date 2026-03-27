@@ -36,6 +36,7 @@ pub enum ContentBlock {
         name: String,
         input: serde_json::Value,
     },
+    RedactedThinking { data: String },
     ToolResult {
         tool_use_id: String,
         content: String,

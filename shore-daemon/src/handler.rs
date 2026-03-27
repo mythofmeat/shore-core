@@ -243,6 +243,7 @@ impl MessageHandler {
                     stream: regen.stream,
                     images: vec![],
                     absence_seconds: None,
+                    overrides: None,
                 };
                 self.handle_user_message(body, true, character).await
             }
@@ -407,6 +408,9 @@ impl MessageHandler {
                                 json!({ "type": "thinking", "thinking": thinking, "signature": sig })
                             })
                         }
+                        ContentBlock::RedactedThinking { data } => Some(json!({
+                            "type": "redacted_thinking", "data": data,
+                        })),
                         ContentBlock::ToolUse { id, name, input } => Some(json!({
                             "type": "tool_use", "id": id, "name": name, "input": input,
                         })),
@@ -460,6 +464,24 @@ impl MessageHandler {
         // 7. Build LLM request.
         let mut request =
             LlmClient::build_request(&resolved, llm_messages, system, tool_defs, None)?;
+
+        // Apply per-message parameter overrides from the client.
+        if let Some(ref ov) = body.overrides {
+            if let Some(t) = ov.temperature {
+                request.temperature = Some(t);
+            }
+            if let Some(p) = ov.top_p {
+                request.top_p = Some(p);
+            }
+            if let Some(budget) = ov.thinking_budget {
+                let opts = request.provider_options.get_or_insert_with(|| {
+                    serde_json::Value::Object(serde_json::Map::new())
+                });
+                if let Some(map) = opts.as_object_mut() {
+                    map.insert("budget_tokens".into(), serde_json::json!(budget));
+                }
+            }
+        }
 
         info!(
             model = %resolved.model_id,

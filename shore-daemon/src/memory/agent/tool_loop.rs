@@ -152,6 +152,9 @@ pub async fn run_agent_loop(
                     }
                     block
                 }
+                ContentBlock::RedactedThinking { data } => {
+                    json!({"type": "redacted_thinking", "data": data})
+                }
                 ContentBlock::ToolResult { tool_use_id, content, is_error } => {
                     let mut v = json!({"type": "tool_result", "tool_use_id": tool_use_id, "content": content});
                     if *is_error { v["is_error"] = json!(true); }

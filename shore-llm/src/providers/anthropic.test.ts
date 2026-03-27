@@ -339,6 +339,32 @@ describe("generate", () => {
     ]);
   });
 
+  it("normalizes redacted_thinking content blocks", async () => {
+    const msg = makeMessage({
+      content: [
+        {
+          type: "thinking",
+          thinking: "Visible thinking",
+          signature: "sig_1",
+        },
+        {
+          type: "redacted_thinking",
+          data: "opaque_encrypted_data",
+        },
+        { type: "text", text: "Answer.", citations: null },
+      ],
+    });
+    const client = mockClient(msg);
+    const result = await generate(client, baseRequest());
+
+    expect(result.content).toBe("Answer.");
+    expect(result.content_blocks).toEqual([
+      { type: "thinking", thinking: "Visible thinking", signature: "sig_1" },
+      { type: "redacted_thinking", data: "opaque_encrypted_data" },
+      { type: "text", text: "Answer." },
+    ]);
+  });
+
   it("passes correct params to SDK", async () => {
     const msg = makeMessage();
     const client = mockClient(msg);
@@ -495,6 +521,65 @@ describe("stream", () => {
     expect(lines[2]).toEqual({ type: "thinking_signature", signature: "sig_stream_123" });
     expect(lines[3]).toEqual({ type: "text", text: "Answer" });
     expect(lines[4]).toMatchObject({ type: "done", content: "Answer" });
+  });
+
+  it("emits redacted_thinking events", async () => {
+    const events: RawMessageStreamEvent[] = [
+      {
+        type: "message_start",
+        message: makeMessage({ content: [] }),
+      } as RawMessageStartEvent,
+      {
+        type: "content_block_start",
+        index: 0,
+        content_block: { type: "redacted_thinking", data: "opaque_data_123" },
+      } as unknown as RawContentBlockStartEvent,
+      {
+        type: "content_block_stop",
+        index: 0,
+      } as RawContentBlockStopEvent,
+      {
+        type: "content_block_start",
+        index: 1,
+        content_block: { type: "text", text: "", citations: null },
+      } as RawContentBlockStartEvent,
+      {
+        type: "content_block_delta",
+        index: 1,
+        delta: { type: "text_delta", text: "Answer" },
+      } as RawContentBlockDeltaEvent,
+      {
+        type: "content_block_stop",
+        index: 1,
+      } as RawContentBlockStopEvent,
+      {
+        type: "message_delta",
+        delta: { stop_reason: "end_turn", stop_sequence: null, container: null },
+        usage: {
+          output_tokens: 10,
+          input_tokens: null,
+          cache_read_input_tokens: null,
+          cache_creation_input_tokens: null,
+          server_tool_use: null,
+        },
+      } as RawMessageDeltaEvent,
+      { type: "message_stop" } as RawMessageStopEvent,
+    ];
+
+    const client = mockStreamClient(events);
+    const res = mockResponse();
+    await stream(client, baseRequest(), res);
+
+    const lines = res.written
+      .join("")
+      .split("\n")
+      .filter((l) => l.length > 0)
+      .map((l) => JSON.parse(l));
+
+    expect(lines[0]).toMatchObject({ type: "start" });
+    expect(lines[1]).toEqual({ type: "redacted_thinking", data: "opaque_data_123" });
+    expect(lines[2]).toEqual({ type: "text", text: "Answer" });
+    expect(lines[3]).toMatchObject({ type: "done", content: "Answer" });
   });
 
   it("emits tool_use events with accumulated JSON input", async () => {

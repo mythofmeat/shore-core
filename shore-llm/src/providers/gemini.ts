@@ -139,8 +139,13 @@ function extractParts(parts: Part[]): {
 
   for (const part of parts) {
     if ("text" in part && part.text != null) {
-      text += part.text;
-      blocks.push({ type: "text", text: part.text });
+      // Gemini returns thinking as text parts with thought: true flag.
+      if ((part as unknown as Record<string, unknown>).thought === true) {
+        blocks.push({ type: "thinking", thinking: part.text });
+      } else {
+        text += part.text;
+        blocks.push({ type: "text", text: part.text });
+      }
     } else if ("functionCall" in part && part.functionCall) {
       blocks.push({
         type: "tool_use",
@@ -262,8 +267,12 @@ export async function stream(
         if (firstTokenMs === null) {
           firstTokenMs = performance.now() - start;
         }
-        textContent += part.text;
-        writeLine({ type: "text", text: part.text });
+        if ((part as unknown as Record<string, unknown>).thought === true) {
+          writeLine({ type: "thinking", text: part.text });
+        } else {
+          textContent += part.text;
+          writeLine({ type: "text", text: part.text });
+        }
       } else if ("functionCall" in part && part.functionCall) {
         functionCalls.push({
           name: part.functionCall.name,

@@ -525,6 +525,38 @@ describe("generate", () => {
       }),
     );
   });
+
+  it("extracts thinking parts with thought flag", async () => {
+    const mockModel = {
+      generateContent: vi.fn().mockResolvedValue({
+        response: {
+          candidates: [
+            {
+              content: {
+                parts: [
+                  { text: "Let me reason...", thought: true },
+                  { text: "The answer is 42." },
+                ],
+              },
+              finishReason: "STOP",
+            },
+          ],
+          usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 20 },
+        },
+      }),
+    };
+    const client = {
+      getGenerativeModel: vi.fn().mockReturnValue(mockModel),
+    } as unknown as GoogleGenerativeAI;
+
+    const result = await generate(client, baseRequest());
+
+    expect(result.content).toBe("The answer is 42.");
+    expect(result.content_blocks).toEqual([
+      { type: "thinking", thinking: "Let me reason..." },
+      { type: "text", text: "The answer is 42." },
+    ]);
+  });
 });
 
 // ── Tests: stream ─────────────────────────────────────────────────────
@@ -713,5 +745,46 @@ describe("stream", () => {
     const timing = done.timing as Record<string, number>;
     expect(timing.total_ms).toBeGreaterThanOrEqual(0);
     expect(timing.time_to_first_token_ms).toBeGreaterThanOrEqual(0);
+  });
+
+  it("emits thinking events for thought-flagged parts", async () => {
+    async function* fakeStream() {
+      yield {
+        candidates: [
+          {
+            content: { parts: [{ text: "Reasoning...", thought: true }] },
+            finishReason: undefined,
+          },
+        ],
+        usageMetadata: undefined,
+      };
+      yield {
+        candidates: [
+          {
+            content: { parts: [{ text: "Answer" }] },
+            finishReason: "STOP",
+          },
+        ],
+        usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 5 },
+      };
+    }
+
+    const mockModel = {
+      generateContentStream: vi.fn().mockResolvedValue({
+        stream: fakeStream(),
+      }),
+    };
+    const client = {
+      getGenerativeModel: vi.fn().mockReturnValue(mockModel),
+    } as unknown as GoogleGenerativeAI;
+
+    const res = mockResponse();
+    await stream(client, baseRequest(), res);
+
+    const lines = parseNdjson(res.written);
+    expect(lines[0]).toMatchObject({ type: "start" });
+    expect(lines[1]).toEqual({ type: "thinking", text: "Reasoning..." });
+    expect(lines[2]).toEqual({ type: "text", text: "Answer" });
+    expect(lines[3]).toMatchObject({ type: "done", content: "Answer" });
   });
 });

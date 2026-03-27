@@ -55,6 +55,7 @@ mod tests {
             stream: true,
             images: vec![],
             absence_seconds: None,
+            overrides: None,
         });
         let (json, _back) = round_trip(&msg);
         assert_eq!(json["type"], "message");
@@ -434,6 +435,16 @@ mod tests {
         assert_eq!(json["type"], "thinking");
         assert_eq!(json["thinking"], "Let me consider...");
         assert_eq!(json["signature"], "sig_abc123");
+        let back: ContentBlock = serde_json::from_value(json).unwrap();
+        assert_eq!(back, block);
+    }
+
+    #[test]
+    fn content_block_redacted_thinking_round_trip() {
+        let block = ContentBlock::RedactedThinking { data: "opaque_data_abc".into() };
+        let json = serde_json::to_value(&block).unwrap();
+        assert_eq!(json["type"], "redacted_thinking");
+        assert_eq!(json["data"], "opaque_data_abc");
         let back: ContentBlock = serde_json::from_value(json).unwrap();
         assert_eq!(back, block);
     }

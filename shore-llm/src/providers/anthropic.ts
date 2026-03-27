@@ -113,6 +113,12 @@ function normalizeContentBlocks(
           signature: (block as unknown as { signature?: string }).signature,
         };
       }
+      if (block.type === "redacted_thinking") {
+        return {
+          type: "redacted_thinking",
+          data: (block as unknown as { data: string }).data,
+        };
+      }
       if (block.type === "tool_use") {
         return {
           type: "tool_use",
@@ -235,6 +241,9 @@ export async function stream(
   const thinkingBlocks = new Set<number>();
   const thinkingSignatures = new Map<number, string>();
 
+  // Track redacted_thinking blocks (arrive complete at content_block_start)
+  const redactedThinkingBlocks = new Map<number, string>();
+
   function writeLine(event: StreamEvent): void {
     res.write(JSON.stringify(event) + "\n");
   }
@@ -258,6 +267,11 @@ export async function stream(
           });
         } else if (block.type === "thinking") {
           thinkingBlocks.add(event.index);
+        } else if (block.type === "redacted_thinking") {
+          redactedThinkingBlocks.set(
+            event.index,
+            (block as unknown as { data: string }).data,
+          );
         }
         break;
       }
@@ -322,6 +336,13 @@ export async function stream(
             thinkingSignatures.delete(event.index);
           }
           thinkingBlocks.delete(event.index);
+        }
+
+        // Emit redacted thinking data when the block finishes.
+        const redactedData = redactedThinkingBlocks.get(event.index);
+        if (redactedData != null) {
+          writeLine({ type: "redacted_thinking", data: redactedData });
+          redactedThinkingBlocks.delete(event.index);
         }
         break;
       }

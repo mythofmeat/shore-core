@@ -45,6 +45,9 @@ fn content_block_to_json(block: &ContentBlock) -> Value {
             }
             block
         }
+        ContentBlock::RedactedThinking { data } => json!({
+            "type": "redacted_thinking", "data": data,
+        }),
         ContentBlock::ToolUse { id, name, input } => json!({
             "type": "tool_use", "id": id, "name": name, "input": input,
         }),

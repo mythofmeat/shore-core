@@ -157,6 +157,13 @@ impl StreamConsumer {
                     pending_signature = Some(signature);
                 }
 
+                StreamEvent::RedactedThinking { data } => {
+                    // Redacted thinking is a complete block — flush buffers and push directly.
+                    flush_text(&mut text_buf, &mut content_blocks);
+                    flush_thinking(&mut thinking_buf, &mut content_blocks, &mut pending_signature);
+                    content_blocks.push(ContentBlock::RedactedThinking { data });
+                }
+
                 StreamEvent::ToolUse { id, name, input } => {
                     // Flush pending buffers before tool_use block.
                     flush_text(&mut text_buf, &mut content_blocks);
@@ -486,6 +493,51 @@ mod tests {
             other => panic!("Expected Thinking with signature, got {:?}", other),
         }
         assert!(matches!(&result.content_blocks[1], ContentBlock::Text { text } if text == "The answer"));
+
+        server_handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn consume_stream_with_redacted_thinking() {
+        let (mut writer, mut reader, push_tx, _push_rx) =
+            setup_stream_pair().await;
+        let consumer = StreamConsumer::new(push_tx);
+        let ctx = CacheContext::default();
+
+        let events = [
+            r#"{"type":"start","model":"claude-test"}"#,
+            r#"{"type":"thinking","text":"Visible thinking"}"#,
+            r#"{"type":"thinking_signature","signature":"sig_1"}"#,
+            r#"{"type":"redacted_thinking","data":"opaque_encrypted_bytes"}"#,
+            r#"{"type":"text","text":"Answer"}"#,
+            r#"{"type":"done","content":"Answer","finish_reason":"end_turn","usage":{"input_tokens":20,"output_tokens":10},"timing":{"total_ms":300}}"#,
+        ];
+
+        let server_handle = tokio::spawn(async move {
+            for event in events {
+                writer.write_all(event.as_bytes()).await.unwrap();
+                writer.write_all(b"\n").await.unwrap();
+            }
+            writer.shutdown().await.unwrap();
+        });
+
+        let result = consumer.consume(&mut reader, false, &ctx).await.unwrap();
+
+        assert_eq!(result.content_blocks.len(), 3);
+        match &result.content_blocks[0] {
+            ContentBlock::Thinking { thinking, signature } => {
+                assert_eq!(thinking, "Visible thinking");
+                assert_eq!(signature.as_deref(), Some("sig_1"));
+            }
+            other => panic!("Expected Thinking, got {:?}", other),
+        }
+        match &result.content_blocks[1] {
+            ContentBlock::RedactedThinking { data } => {
+                assert_eq!(data, "opaque_encrypted_bytes");
+            }
+            other => panic!("Expected RedactedThinking, got {:?}", other),
+        }
+        assert!(matches!(&result.content_blocks[2], ContentBlock::Text { text } if text == "Answer"));
 
         server_handle.await.unwrap();
     }

@@ -20,6 +20,7 @@ export interface NormalizedContentBlock {
   input?: unknown;
   thinking?: string;
   signature?: string;
+  data?: string;
 }
 
 export interface NormalizedUsage {
@@ -41,6 +42,7 @@ export type StreamEvent =
   | { type: "text"; text: string }
   | { type: "thinking"; text: string }
   | { type: "thinking_signature"; signature: string }
+  | { type: "redacted_thinking"; data: string }
   | { type: "tool_use"; id: string; name: string; input: unknown }
   | {
       type: "done";

@@ -334,6 +334,31 @@ describe("generate", () => {
     expect(result.provider).toBe("deepseek");
   });
 
+  it("extracts reasoning_content for deepseek", async () => {
+    const completion = makeCompletion({
+      choices: [
+        {
+          index: 0,
+          message: {
+            role: "assistant" as const,
+            content: "The answer is 42.",
+            reasoning_content: "Let me reason step by step...",
+            refusal: null,
+          },
+          finish_reason: "stop" as const,
+          logprobs: null,
+        },
+      ],
+    });
+    const client = mockClient(completion);
+    const result = await generate(client, baseRequest(), "deepseek");
+
+    expect(result.content_blocks).toEqual([
+      { type: "thinking", thinking: "Let me reason step by step..." },
+      { type: "text", text: "The answer is 42." },
+    ]);
+  });
+
   it("passes correct params to SDK", async () => {
     const completion = makeCompletion();
     const client = mockClient(completion);
@@ -573,6 +598,84 @@ describe("stream", () => {
     await stream(client, baseRequest(), res);
 
     expect(res.headHeaders["Content-Type"]).toBe("application/x-ndjson");
+  });
+
+  it("emits thinking events for deepseek reasoning_content", async () => {
+    const chunks = [
+      {
+        id: "chatcmpl-01",
+        object: "chat.completion.chunk",
+        created: 1234567890,
+        model: "deepseek-reasoner",
+        choices: [
+          {
+            index: 0,
+            delta: { role: "assistant", reasoning_content: "Step 1..." },
+            finish_reason: null,
+            logprobs: null,
+          },
+        ],
+      },
+      {
+        id: "chatcmpl-01",
+        object: "chat.completion.chunk",
+        created: 1234567890,
+        model: "deepseek-reasoner",
+        choices: [
+          {
+            index: 0,
+            delta: { reasoning_content: " Step 2..." },
+            finish_reason: null,
+            logprobs: null,
+          },
+        ],
+      },
+      {
+        id: "chatcmpl-01",
+        object: "chat.completion.chunk",
+        created: 1234567890,
+        model: "deepseek-reasoner",
+        choices: [
+          {
+            index: 0,
+            delta: { content: "The answer" },
+            finish_reason: null,
+            logprobs: null,
+          },
+        ],
+      },
+      {
+        id: "chatcmpl-01",
+        object: "chat.completion.chunk",
+        created: 1234567890,
+        model: "deepseek-reasoner",
+        choices: [
+          {
+            index: 0,
+            delta: {},
+            finish_reason: "stop",
+            logprobs: null,
+          },
+        ],
+        usage: { prompt_tokens: 10, completion_tokens: 20, total_tokens: 30 },
+      },
+    ];
+
+    const client = mockStreamClient(chunks);
+    const res = mockResponse();
+    await stream(client, baseRequest(), res, "deepseek");
+
+    const lines = res.written
+      .join("")
+      .split("\n")
+      .filter((l: string) => l.length > 0)
+      .map((l: string) => JSON.parse(l));
+
+    expect(lines[0]).toMatchObject({ type: "start", model: "deepseek-reasoner" });
+    expect(lines[1]).toEqual({ type: "thinking", text: "Step 1..." });
+    expect(lines[2]).toEqual({ type: "thinking", text: " Step 2..." });
+    expect(lines[3]).toEqual({ type: "text", text: "The answer" });
+    expect(lines[4]).toMatchObject({ type: "done", content: "The answer" });
   });
 });
 

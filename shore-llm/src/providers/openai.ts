@@ -168,6 +168,14 @@ export async function generate(
 
   // Build content blocks
   const contentBlocks: NormalizedContentBlock[] = [];
+
+  // DeepSeek returns reasoning as a top-level field (not in SDK types).
+  const reasoning = (message as unknown as Record<string, unknown>)
+    ?.reasoning_content;
+  if (typeof reasoning === "string" && reasoning.length > 0) {
+    contentBlocks.push({ type: "thinking", thinking: reasoning });
+  }
+
   if (message?.content) {
     contentBlocks.push({ type: "text", text: message.content });
   }
@@ -274,6 +282,17 @@ export async function stream(
     const choice = chunk.choices?.[0];
     if (choice) {
       const delta = choice.delta;
+
+      // DeepSeek reasoning content (not in SDK types).
+      const reasoningChunk = (
+        delta as unknown as Record<string, unknown>
+      )?.reasoning_content;
+      if (typeof reasoningChunk === "string" && reasoningChunk.length > 0) {
+        if (firstTokenMs === null) {
+          firstTokenMs = performance.now() - start;
+        }
+        writeLine({ type: "thinking", text: reasoningChunk });
+      }
 
       // Text content
       if (delta?.content) {
