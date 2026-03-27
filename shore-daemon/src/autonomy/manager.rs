@@ -28,6 +28,7 @@ use super::heartbeat::{
 };
 use super::timing::{compute_tau, TauParams};
 use super::AutonomyStatus;
+use crate::notifications::{NotificationEvent, NotificationService};
 use crate::config::app::AutonomyConfig;
 use crate::config::LoadedConfig;
 use crate::llm_client::types::LlmRequest;
@@ -209,6 +210,8 @@ pub struct AutonomyManager {
     push_tx: Option<broadcast::Sender<ServerMessage>>,
     /// Full config for model resolution in autonomous actions.
     loaded_config: Option<Arc<LoadedConfig>>,
+    /// Push notification service for autonomous events.
+    notifier: Option<NotificationService>,
 }
 
 impl AutonomyManager {
@@ -228,6 +231,7 @@ impl AutonomyManager {
             llm_client: None,
             push_tx: None,
             loaded_config: None,
+            notifier: None,
         };
         (mgr, compaction_rx)
     }
@@ -239,10 +243,12 @@ impl AutonomyManager {
         llm_client: LlmClient,
         push_tx: broadcast::Sender<ServerMessage>,
         loaded_config: LoadedConfig,
+        notifier: NotificationService,
     ) {
         self.llm_client = Some(llm_client);
         self.push_tx = Some(push_tx);
         self.loaded_config = Some(Arc::new(loaded_config));
+        self.notifier = Some(notifier);
     }
 
     /// Ensure autonomy state exists for a character. On first call for a
@@ -291,6 +297,7 @@ impl AutonomyManager {
         let llm_client = self.llm_client.clone();
         let push_tx = self.push_tx.clone();
         let loaded_config = self.loaded_config.clone();
+        let notifier = self.notifier.clone();
 
         let handle = tokio::spawn(async move {
             character_tick_loop(
@@ -303,6 +310,7 @@ impl AutonomyManager {
                 llm_client,
                 push_tx,
                 loaded_config,
+                notifier,
             )
             .await;
         });
@@ -468,6 +476,7 @@ async fn character_tick_loop(
     llm_client: Option<LlmClient>,
     push_tx: Option<broadcast::Sender<ServerMessage>>,
     loaded_config: Option<Arc<LoadedConfig>>,
+    notifier: Option<NotificationService>,
 ) {
     let mut interval = tokio::time::interval(TICK_INTERVAL);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -490,6 +499,7 @@ async fn character_tick_loop(
                     llm_client.as_ref(),
                     push_tx.as_ref(),
                     loaded_config.as_deref(),
+                    notifier.as_ref(),
                 ).await;
             }
             _ = shutdown_rx.changed() => {
@@ -514,6 +524,7 @@ async fn tick_character(
     llm_client: Option<&LlmClient>,
     push_tx: Option<&broadcast::Sender<ServerMessage>>,
     loaded_config: Option<&LoadedConfig>,
+    notifier: Option<&NotificationService>,
 ) {
     let now = Instant::now();
     let wall_now = Utc::now().naive_utc();
@@ -607,7 +618,7 @@ async fn tick_character(
             );
             execute_autonomous_message(
                 character, &heartbeat::render_deferred(&reasoning, &wall_now),
-                state, data_dir, llm_client, push_tx, loaded_config,
+                state, data_dir, llm_client, push_tx, loaded_config, notifier,
             ).await;
         }
         HeartbeatAction::GenerateSocialNeedMessage { anomaly_context } => {
@@ -618,7 +629,7 @@ async fn tick_character(
             );
             execute_autonomous_message(
                 character, &heartbeat::render_social_need(anomaly_context),
-                state, data_dir, llm_client, push_tx, loaded_config,
+                state, data_dir, llm_client, push_tx, loaded_config, notifier,
             ).await;
         }
     }
@@ -639,8 +650,15 @@ async fn tick_character(
             if let Some(tx) = push_tx {
                 let _ = tx.send(ServerMessage::CacheWarning(CacheWarning {
                     expected_tokens,
-                    message,
+                    message: message.clone(),
                 }));
+            }
+            if let Some(n) = notifier {
+                n.notify(
+                    NotificationEvent::CacheWarning,
+                    &format!("Shore — {character}"),
+                    &message,
+                );
             }
         }
     }
@@ -710,6 +728,7 @@ async fn execute_autonomous_message(
     llm_client: Option<&LlmClient>,
     push_tx: Option<&broadcast::Sender<ServerMessage>>,
     loaded_config: Option<&LoadedConfig>,
+    notifier: Option<&NotificationService>,
 ) {
     let Some(client) = llm_client else { return };
     let Some(config) = loaded_config else { return };
@@ -755,7 +774,16 @@ async fn execute_autonomous_message(
 
             // Broadcast to connected clients.
             if let Some(tx) = push_tx {
-                let _ = tx.send(ServerMessage::NewMessage(NewMessage { message: msg }));
+                let _ = tx.send(ServerMessage::NewMessage(NewMessage { message: msg.clone() }));
+            }
+
+            // Push notification.
+            if let Some(n) = notifier {
+                n.notify(
+                    NotificationEvent::AutonomousMessage,
+                    &format!("Shore — {character}"),
+                    &msg.content,
+                );
             }
 
             // Update heartbeat state.
@@ -1079,6 +1107,6 @@ mod tests {
             s.activity.record_message();
         }
 
-        tick_character("alice", &state, &config, tmp.path(), &compaction_tx, None, None, None).await;
+        tick_character("alice", &state, &config, tmp.path(), &compaction_tx, None, None, None, None).await;
     }
 }

@@ -260,6 +260,7 @@ async fn e2e_conversation_milestone() {
         push_tx: push_tx.clone(),
         is_first_after_restart: true,
         autonomy,
+        notifier: shore_daemon::notifications::NotificationService::new(Default::default()),
     };
 
     // Spawn message handler.
@@ -718,6 +719,7 @@ impl E2EHarness {
             push_tx: push_tx.clone(),
             is_first_after_restart: true,
             autonomy,
+            notifier: shore_daemon::notifications::NotificationService::new(Default::default()),
         };
 
         let handler_handle = tokio::spawn(async move {

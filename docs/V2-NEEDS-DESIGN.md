@@ -5,40 +5,11 @@ These were split out of V2-TODO.md because they're "fiddly" — each one
 requires human judgment about how it should work, not just coding.
 
 
-## CLI Output Formatting
-
-- 7.10 **Human-readable command output** — IN PROGRESS
-  Replacing raw JSON output with formatted, colored display for each command.
-  Done: `log` (chat transcript with colored headers, timestamps, image badges),
-  `status` (dashboard with autonomy state, social need bar, cache info).
-  Remaining: `log <ref>` (single message), `model`, `character --info`, `memory`,
-  `memory changelog`, `config`, `log edit`/`log delete` confirmations,
-  `memory compact` results, `status --diagnostics`.
-  **Design pattern:** section headers (`── Title ───`), dim labels with bright values,
-  character-colored names via deterministic hash, conditional sections that hide
-  when data is absent.
-
-- 7.11 **`--json` output mode flag** — IN PROGRESS
-  Once human-readable formatting is the default, add `--json` flag for scripts.
-  Done: `log` (--json flag).
-  Remaining: other commands as 7.10 progresses.
-
-
 ## Memory Agent
 
 - 3.12 **Memory agent — interactive REPL** (5.35) — STUB
   **Needs decision:** Is this a chat with the memory agent, or a structured command
   interface? How does it differ from `shore send` with memory tools? What commands?
-
-
-## Tool Use
-
-- 4.6 **web_search** (Tavily API + synthesis) — DONE
-  Implemented via Tavily Search API. Configurable under `[behavior.tool_use.search]`.
-
-- 4.8 **research_web** — REMOVED
-  Removed in favor of the LLM orchestrating multi-step research via `web_search` + `fetch_url`
-  through the existing tool loop.
 
 
 ## Provider Payload Projection
@@ -59,14 +30,6 @@ requires human judgment about how it should work, not just coding.
   **Needs decision:** Search across characters or within current? What gets returned
   (message snippets, conversation IDs)? Output format? Does this use existing FTS5
   or a separate index?
-
-
-## Push Notifications
-
-- 5.44 **Push notifications** (shore notify) — MISSING
-  **Needs decision:** What notification backend? (Desktop notifications, ntfy, webhook?)
-  What events trigger notifications? (Autonomous messages, errors, compaction complete?)
-  Does the daemon push, or does the CLI poll?
 
 
 ## Config Schema Gaps

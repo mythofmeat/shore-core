@@ -28,6 +28,9 @@ pub struct AppConfig {
     pub services: ServicesConfig,
 
     #[serde(default)]
+    pub notifications: NotificationsConfig,
+
+    #[serde(default)]
     pub advanced: AdvancedConfig,
 }
 
@@ -562,6 +565,136 @@ impl Default for ServiceEntry {
     }
 }
 
+// ── [notifications] ─────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct NotificationsConfig {
+    /// Master switch for push notifications.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Notification backend: notify_send, ntfy, or command.
+    #[serde(default)]
+    pub backend: NotificationBackend,
+
+    /// ntfy backend configuration.
+    #[serde(default)]
+    pub ntfy: NtfyConfig,
+
+    /// Custom command backend configuration.
+    #[serde(default)]
+    pub command: CommandNotifyConfig,
+
+    /// Per-event toggles.
+    #[serde(default)]
+    pub events: NotificationEventsConfig,
+}
+
+impl Default for NotificationsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            backend: NotificationBackend::default(),
+            ntfy: NtfyConfig::default(),
+            command: CommandNotifyConfig::default(),
+            events: NotificationEventsConfig::default(),
+        }
+    }
+}
+
+/// Notification delivery backend.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum NotificationBackend {
+    /// Linux desktop notifications via notify-send.
+    NotifySend,
+    /// Push notifications via ntfy server.
+    Ntfy,
+    /// User-defined shell command.
+    Command,
+}
+
+impl Default for NotificationBackend {
+    fn default() -> Self {
+        Self::NotifySend
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct NtfyConfig {
+    /// ntfy server URL.
+    #[serde(default = "default_ntfy_url")]
+    pub url: String,
+
+    /// ntfy topic name.
+    #[serde(default)]
+    pub topic: String,
+
+    /// Optional auth token for self-hosted instances.
+    #[serde(default)]
+    pub token: String,
+}
+
+fn default_ntfy_url() -> String {
+    "https://ntfy.sh".into()
+}
+
+impl Default for NtfyConfig {
+    fn default() -> Self {
+        Self {
+            url: default_ntfy_url(),
+            topic: String::new(),
+            token: String::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct CommandNotifyConfig {
+    /// Shell command template. Use {title} and {body} as placeholders.
+    #[serde(default)]
+    pub template: String,
+}
+
+impl Default for CommandNotifyConfig {
+    fn default() -> Self {
+        Self {
+            template: String::new(),
+        }
+    }
+}
+
+/// Per-event notification toggles. All default to true (fire when enabled).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct NotificationEventsConfig {
+    #[serde(default = "default_true")]
+    pub autonomous_message: bool,
+    #[serde(default = "default_true")]
+    pub cache_warning: bool,
+    #[serde(default = "default_true")]
+    pub compaction_complete: bool,
+    #[serde(default = "default_true")]
+    pub collation_complete: bool,
+    #[serde(default = "default_true")]
+    pub error: bool,
+}
+
+impl Default for NotificationEventsConfig {
+    fn default() -> Self {
+        Self {
+            autonomous_message: true,
+            cache_warning: true,
+            compaction_complete: true,
+            collation_complete: true,
+            error: true,
+        }
+    }
+}
+
 // ── [advanced] ──────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -703,6 +836,71 @@ key = "value"
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("unknown field"), "Error should mention unknown field: {err}");
+    }
+
+    #[test]
+    fn notifications_config_defaults() {
+        let config = AppConfig::default();
+        assert!(!config.notifications.enabled);
+        assert_eq!(config.notifications.backend, NotificationBackend::NotifySend);
+        assert_eq!(config.notifications.ntfy.url, "https://ntfy.sh");
+        assert!(config.notifications.ntfy.topic.is_empty());
+        assert!(config.notifications.events.autonomous_message);
+        assert!(config.notifications.events.cache_warning);
+        assert!(config.notifications.events.compaction_complete);
+        assert!(config.notifications.events.collation_complete);
+        assert!(config.notifications.events.error);
+    }
+
+    #[test]
+    fn notifications_config_parses_from_toml() {
+        let toml_str = r#"
+[notifications]
+enabled = true
+backend = "ntfy"
+
+[notifications.ntfy]
+url = "https://ntfy.example.com"
+topic = "shore-test"
+token = "tk_secret"
+
+[notifications.events]
+cache_warning = false
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert!(config.notifications.enabled);
+        assert_eq!(config.notifications.backend, NotificationBackend::Ntfy);
+        assert_eq!(config.notifications.ntfy.url, "https://ntfy.example.com");
+        assert_eq!(config.notifications.ntfy.topic, "shore-test");
+        assert_eq!(config.notifications.ntfy.token, "tk_secret");
+        assert!(config.notifications.events.autonomous_message);
+        assert!(!config.notifications.events.cache_warning);
+    }
+
+    #[test]
+    fn notifications_command_backend_parses() {
+        let toml_str = r#"
+[notifications]
+enabled = true
+backend = "command"
+
+[notifications.command]
+template = "echo '{title}: {body}'"
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.notifications.backend, NotificationBackend::Command);
+        assert_eq!(config.notifications.command.template, "echo '{title}: {body}'");
+    }
+
+    #[test]
+    fn rejects_unknown_notifications_key() {
+        let toml_str = r#"
+[notifications]
+enabled = true
+bogus_key = "value"
+"#;
+        let result: Result<AppConfig, _> = toml::from_str(toml_str);
+        assert!(result.is_err());
     }
 
     #[test]

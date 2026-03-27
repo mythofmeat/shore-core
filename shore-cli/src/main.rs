@@ -1,6 +1,5 @@
 mod cli;
 mod images;
-mod notifications;
 mod output;
 mod run;
 mod state;

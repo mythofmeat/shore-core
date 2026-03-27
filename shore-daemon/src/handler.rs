@@ -28,6 +28,7 @@ use crate::tools::{self as tool_system, ToolContext};
 use crate::llm_client::retry::{self, RetryDecision, RetryPolicy};
 use crate::llm_client::stream::{CacheContext, StreamConsumer};
 use crate::llm_client::LlmClient;
+use crate::notifications::{NotificationEvent, NotificationService};
 use crate::config::app::SearchConfig;
 use crate::memory::compaction_impls::ImageGenConfig;
 use crate::server::RoutedMessage;
@@ -102,6 +103,7 @@ pub struct MessageHandler {
     pub push_tx: broadcast::Sender<ServerMessage>,
     pub is_first_after_restart: bool,
     pub autonomy: AutonomyManager,
+    pub notifier: NotificationService,
 }
 
 // ---------------------------------------------------------------------------
@@ -177,10 +179,16 @@ impl MessageHandler {
                 RoutedMessage::Engine { msg, character } => {
                     if let Err(e) = self.handle_engine_message(msg, character.as_deref()).await {
                         error!(error = %e, "Error processing engine message");
+                        let err_msg = e.to_string();
                         let _ = self.push_tx.send(ServerMessage::Error(SwpError {
                             code: ErrorCode::InternalError,
-                            message: e.to_string(),
+                            message: err_msg.clone(),
                         }));
+                        self.notifier.notify(
+                            NotificationEvent::Error,
+                            "Shore — Error",
+                            &err_msg,
+                        );
                     }
                 }
             }
@@ -715,6 +723,7 @@ mod tests {
             push_tx: push_tx.clone(),
             is_first_after_restart: false,
             autonomy,
+            notifier: NotificationService::new(Default::default()),
         };
 
         (handler, push_rx)

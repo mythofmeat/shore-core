@@ -40,6 +40,7 @@ Features that are fully implemented and working in the V2 (Rust/TypeScript) rewr
 - **Unified tool system** — `dispatch_tool()` + `available_tools()` with privacy filtering (ToolCategory). Replaced legacy ToolRegistry.
 - **Memory tool** (unified NL search/create/update) — Wired into engine tool dispatch. Routes through MemoryResearcher (if tool_model configured) or direct MemoryAgent.ask().
 - **generate_image** (4.5) — `LlmClient.image_generate()` → shore-llm, download + save, memory entry creation.
+- **web_search** (4.6) — Tavily Search API + synthesis. Configurable under `[behavior.tool_use.search]`.
 - **fetch_url** (4.7) — reqwest + HTML stripping for readable text extraction.
 - **send_image**
 - **list_images** (semantic search)
@@ -120,6 +121,8 @@ Features that are fully implemented and working in the V2 (Rust/TypeScript) rewr
 - **Tool result truncation** — 500 char limit in CLI display.
 - **Stream metadata abbreviation** — Strips date suffix from model names.
 - **Verbose spinner** (7.6) — `StreamSpinner` shows elapsed time and current phase during streaming, updated every 200ms. Clears on first content chunk. Non-terminal safe (no-op when piped).
+- **Human-readable command output** (7.10) — All CLI commands now produce formatted, colored output instead of raw JSON. `format_command()` dispatcher routes to per-command formatters: `model` (table with active indicator), `model --info` (key-value details), `character --info` (definition preview), `memory` (status counts), `memory changelog` (timestamped operation table), `memory compact` (compaction + collation summary), `config` (recursive key-value display), `config --check` (validation with warnings/info), `status --diagnostics` (API calls, tool calls, errors tables), `log <ref>` (single message transcript), `log edit`/`log delete` (confirmations).
+- **`--json` output mode flag** (7.11) — All commands with rich output support `--json` for script consumption: `log`, `status`, `model`, `character`, `memory`, `config`. Generic `recv_command_response` replaced by `recv_command_data` + per-command formatting/JSON dispatch.
 
 ## Memory Maintenance
 
@@ -128,6 +131,10 @@ Features that are fully implemented and working in the V2 (Rust/TypeScript) rewr
 ## Rendering (additional)
 
 - **Rich markdown rendering** — Custom parser in shore-tui/src/markdown.rs. Covers bold, italic, inline code, code blocks, headings, blockquotes. Not full CommonMark but sufficient for chat display.
+
+## Push Notifications
+
+- **Push notifications** (5.44) — Daemon-side notification service with 3 backends: `notify_send` (Linux desktop), `ntfy` (mobile push via ntfy.sh or self-hosted), `command` (user-defined shell template). Per-event toggles for autonomous messages, cache warnings, compaction/collation completion, and errors. Fire-and-forget dispatch via tokio::spawn, best-effort delivery. Config under `[notifications]`.
 
 ## Observability
 

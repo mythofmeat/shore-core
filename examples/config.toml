@@ -67,6 +67,25 @@ max_iterations = 10
 # search_depth = "basic"              # "basic" or "advanced"
 # include_answer = true               # Include Tavily's synthesized answer
 
+# [notifications]
+# enabled = false
+# backend = "notify_send"           # "notify_send", "ntfy", or "command"
+#
+# [notifications.ntfy]
+# url = "https://ntfy.sh"
+# topic = ""
+# token = ""                        # Optional auth token for self-hosted
+#
+# [notifications.command]
+# template = ""                     # Use {title} and {body} placeholders
+#
+# [notifications.events]
+# autonomous_message = true
+# cache_warning = true
+# compaction_complete = true
+# collation_complete = true
+# error = true
+
 [memory]
 rag_results = 5
 rag_threshold = 0.3

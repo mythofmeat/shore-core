@@ -7,6 +7,7 @@ use shore_daemon::diagnostics::Diagnostics;
 use shore_daemon::config::{load_config, resolve_prompt_template, LoadedConfig};
 use shore_daemon::handler::MessageHandler;
 use shore_daemon::llm_client::LlmClient;
+use shore_daemon::notifications::NotificationService;
 use shore_daemon::memory::collation::{
     CollationConfig as LibCollationConfig, CollationManager, DEFAULT_COLLATE_PROMPT,
     DEFAULT_NORMALIZE_PROMPT, DEFAULT_TIDY_PROMPT,
@@ -50,6 +51,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let loaded = load_config(config_path.as_deref())?;
     info!("Configuration loaded");
+
+    // ── Notification service ──────────────────────────────────────────
+    let notifier = NotificationService::new(loaded.app.notifications.clone());
 
     // ── Determine socket path ────────────────────────────────────────
     let instance_id = uuid::Uuid::new_v4().to_string();
@@ -186,7 +190,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Provide the autonomy manager with resources for heartbeat/keepalive execution.
-    autonomy.set_resources(llm_client.clone(), push_tx.clone(), loaded.clone());
+    autonomy.set_resources(llm_client.clone(), push_tx.clone(), loaded.clone(), notifier.clone());
 
     let diagnostics = std::sync::Arc::new(std::sync::Mutex::new(Diagnostics::default()));
 
@@ -207,8 +211,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let compaction_llm_client = llm_client.clone();
         let data_dir = loaded.dirs.data.clone();
         let compaction_push_tx = push_tx.clone();
+        let compaction_notifier = notifier.clone();
         tokio::spawn(async move {
-            compaction_task(compaction_rx, config, compaction_llm_client, data_dir, compaction_push_tx).await;
+            compaction_task(compaction_rx, config, compaction_llm_client, data_dir, compaction_push_tx, compaction_notifier).await;
         })
     };
 
@@ -219,6 +224,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         push_tx,
         is_first_after_restart: true,
         autonomy: autonomy.clone(),
+        notifier,
     };
 
     // Spawn message handler as a background task.
@@ -260,11 +266,12 @@ async fn compaction_task(
     llm_client: LlmClient,
     data_dir: PathBuf,
     push_tx: broadcast::Sender<ServerMessage>,
+    notifier: NotificationService,
 ) {
     while let Some(character) = rx.recv().await {
         info!(character = %character, "Background compaction triggered");
 
-        if let Err(e) = run_compaction(&character, &config, &llm_client, &data_dir, &push_tx).await
+        if let Err(e) = run_compaction(&character, &config, &llm_client, &data_dir, &push_tx, &notifier).await
         {
             warn!(
                 character = %character,
@@ -283,6 +290,7 @@ async fn run_compaction(
     llm_client: &LlmClient,
     data_dir: &std::path::Path,
     push_tx: &broadcast::Sender<ServerMessage>,
+    notifier: &NotificationService,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let character_dir = data_dir.join(character);
     let active_path = character_dir.join("active.jsonl");
@@ -408,16 +416,31 @@ async fn run_compaction(
                 config: serde_json::json!({}),
             }));
 
+            notifier.notify(
+                shore_daemon::notifications::NotificationEvent::CompactionComplete,
+                &format!("Shore — {character}"),
+                &format!("Compaction complete: {} entries from {} messages", result.entries_created.len(), result.message_count),
+            );
+
             // Run collation after successful compaction if configured.
             if config.app.behavior.autonomy.collation.enabled
                 && config.app.behavior.autonomy.collation.auto_run {
                 info!(character = %character, "Running auto-collation after compaction");
-                if let Err(e) = run_collation(character, config, llm_client, data_dir).await {
-                    warn!(
-                        character = %character,
-                        error = %e,
-                        "Auto-collation failed"
-                    );
+                match run_collation(character, config, llm_client, data_dir).await {
+                    Ok(()) => {
+                        notifier.notify(
+                            shore_daemon::notifications::NotificationEvent::CollationComplete,
+                            &format!("Shore — {character}"),
+                            "Collation complete",
+                        );
+                    }
+                    Err(e) => {
+                        warn!(
+                            character = %character,
+                            error = %e,
+                            "Auto-collation failed"
+                        );
+                    }
                 }
             }
         }

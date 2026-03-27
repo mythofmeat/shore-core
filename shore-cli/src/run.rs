@@ -45,13 +45,13 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             conn.send_regen(true, guidance.clone()).await?;
             recv_streaming_response(&mut conn).await?;
         }
-        CliCommand::Character { name, info: false, new: false } => {
+        CliCommand::Character { name, info: false, new: false, .. } => {
             match name {
                 Some(name) => handle_switch_character(&mut conn, name).await?,
                 None => handle_list_characters(&mut conn).await?,
             }
         }
-        CliCommand::Log { subcommand: Some(sub), .. } => {
+        CliCommand::Log { subcommand: Some(sub), json, .. } => {
             let (name, args) = match sub {
                 crate::cli::LogCommand::Edit { msg_ref, content } => {
                     ("edit", serde_json::json!({ "ref": msg_ref, "content": content.join(" ") }))
@@ -61,11 +61,22 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 }
             };
             conn.send_command(name, args).await?;
-            recv_command_response(&mut conn).await?;
+            let data = recv_command_data(&mut conn).await?;
+            if *json {
+                println!("{}", serde_json::to_string_pretty(&data)?);
+            } else {
+                output::format_command(name, &data);
+            }
         }
-        CliCommand::Log { msg_ref: Some(r), .. } => {
+        CliCommand::Log { msg_ref: Some(r), json, .. } => {
             conn.send_command("get", serde_json::json!({ "ref": r })).await?;
-            recv_command_response(&mut conn).await?;
+            let data = recv_command_data(&mut conn).await?;
+            if *json {
+                println!("{}", serde_json::to_string_pretty(&data)?);
+            } else {
+                let char_name = character.as_deref().unwrap_or("Assistant");
+                output::print_single_message(&data, char_name);
+            }
         }
         CliCommand::Log { count, follow, json, content, .. } => {
             conn.send_command("log", serde_json::json!({ "count": count })).await?;
@@ -125,24 +136,28 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
-        CliCommand::Status { diagnostics: true, count, .. } => {
+        CliCommand::Status { diagnostics: true, count, json, .. } => {
             conn.send_command("diagnostics", serde_json::json!({ "count": count })).await?;
-            recv_command_response(&mut conn).await?;
+            let data = recv_command_data(&mut conn).await?;
+            if *json {
+                println!("{}", serde_json::to_string_pretty(&data)?);
+            } else {
+                output::print_diagnostics(&data);
+            }
         }
-        CliCommand::Status { section, .. } => {
+        CliCommand::Status { section, json, .. } => {
             conn.send_command("status", serde_json::json!({})).await?;
             let data = recv_command_data(&mut conn).await?;
             match section {
                 Some(s) => {
                     if let Some(val) = data.get(s.as_str()) {
-                        if let Ok(pretty) = serde_json::to_string_pretty(val) {
-                            println!("{pretty}");
-                        } else {
-                            println!("{val}");
-                        }
+                        println!("{}", serde_json::to_string_pretty(val)?);
                     } else {
                         return Err(format!("Unknown status section: {s}").into());
                     }
+                }
+                None if *json => {
+                    println!("{}", serde_json::to_string_pretty(&data)?);
                 }
                 None => {
                     let char_name = character.as_deref().unwrap_or("Assistant");
@@ -151,10 +166,22 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         other => {
+            let json_mode = match other {
+                CliCommand::Model { json, .. }
+                | CliCommand::Character { json, .. }
+                | CliCommand::Memory { json, .. }
+                | CliCommand::Config { json, .. } => *json,
+                _ => false,
+            };
             let (name, args) = crate::cli::to_swp_command(other)
                 .expect("non-send/regen/local command must map to SWP command");
             conn.send_command(name, args).await?;
-            recv_command_response(&mut conn).await?;
+            let data = recv_command_data(&mut conn).await?;
+            if json_mode {
+                println!("{}", serde_json::to_string_pretty(&data)?);
+            } else {
+                output::format_command(name, &data);
+            }
         }
     }
 
@@ -398,44 +425,12 @@ async fn recv_command_data(
             }
             ServerMessage::NewMessage(msg) => {
                 output::print_new_message(msg, "Assistant");
-                crate::notifications::notify_new_message(msg);
             }
             _ => {}
         }
     }
 }
 
-/// Receive a command response and print it.
-async fn recv_command_response(
-    conn: &mut SWPConnection,
-) -> Result<(), Box<dyn std::error::Error>> {
-    loop {
-        let msg = conn.recv().await?;
-        match &msg {
-            ServerMessage::CommandOutput(co) => {
-                output::print_command_output(co);
-                return Ok(());
-            }
-            ServerMessage::Error(err) => {
-                output::print_server_error(
-                    &serde_json::to_string(&err.code).unwrap_or_default(),
-                    &err.message,
-                );
-                return Err(err.message.clone().into());
-            }
-            ServerMessage::Ping(_)
-            | ServerMessage::History(_) => {}
-            ServerMessage::SendImage(img) => {
-                output::print_send_image(img);
-            }
-            ServerMessage::NewMessage(msg) => {
-                output::print_new_message(msg, "Assistant");
-                crate::notifications::notify_new_message(msg);
-            }
-            _ => {}
-        }
-    }
-}
 
 // ── Tests ────────────────────────────────────────────────────────────────
 
@@ -548,7 +543,7 @@ mod tests {
             other => {
                 let (name, args) = crate::cli::to_swp_command(other).unwrap();
                 conn.send_command(name, args).await.unwrap();
-                super::recv_command_response(&mut conn).await.unwrap();
+                let _data = super::recv_command_data(&mut conn).await.unwrap();
             }
         }
 
@@ -631,7 +626,7 @@ mod tests {
 
     #[tokio::test]
     async fn status_sends_swp_command() {
-        let cli = test_cli(CliCommand::Status { section: None, diagnostics: false, count: 10 });
+        let cli = test_cli(CliCommand::Status { section: None, diagnostics: false, count: 10, json: false });
         let received = execute_with_mock(cli, command_response("status")).await;
 
         match received {
@@ -650,7 +645,7 @@ mod tests {
     async fn memory_compact_sends_command() {
         let cli = test_cli(CliCommand::Memory {
             subcommand: Some(crate::cli::MemoryCommand::Compact),
-            query: None,
+            query: None, json: false,
         });
         let received = execute_with_mock(cli, command_response("compact")).await;
 
@@ -669,7 +664,7 @@ mod tests {
     async fn memory_sends_command_with_query() {
         let cli = test_cli(CliCommand::Memory {
             subcommand: None,
-            query: Some("recent topics".into()),
+            query: Some("recent topics".into()), json: false,
         });
         let received = execute_with_mock(cli, command_response("memory")).await;
 
