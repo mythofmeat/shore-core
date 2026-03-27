@@ -110,6 +110,7 @@ mod tests {
                 role: Role::User,
                 content: "hi".into(),
                 images: vec![],
+                content_blocks: vec![],
                 alt_index: None,
                 alt_count: None,
                 timestamp: "2026-01-01T00:00:00Z".into(),
@@ -235,6 +236,7 @@ mod tests {
                 role: Role::Assistant,
                 content: "autonomous msg".into(),
                 images: vec![],
+                content_blocks: vec![],
                 alt_index: None,
                 alt_count: None,
                 timestamp: "2026-01-01T00:00:01Z".into(),
@@ -306,6 +308,7 @@ mod tests {
                 path: "/img/a.png".into(),
                 caption: Some("photo".into()),
             }],
+            content_blocks: vec![],
             alt_index: Some(1),
             alt_count: Some(3),
             timestamp: "2026-01-01T00:00:00Z".into(),
@@ -325,6 +328,7 @@ mod tests {
             role: Role::User,
             content: "hi".into(),
             images: vec![],
+            content_blocks: vec![],
             alt_index: None,
             alt_count: None,
             timestamp: "2026-01-01T00:00:00Z".into(),
@@ -396,5 +400,146 @@ mod tests {
         assert_eq!(serde_json::to_value(Role::User).unwrap(), "user");
         assert_eq!(serde_json::to_value(Role::Assistant).unwrap(), "assistant");
         assert_eq!(serde_json::to_value(Role::System).unwrap(), "system");
+    }
+
+    // ── ContentBlock serde round-trip ─────────────────────────────────
+
+    #[test]
+    fn content_block_text_round_trip() {
+        let block = ContentBlock::Text { text: "hello world".into() };
+        let json = serde_json::to_value(&block).unwrap();
+        assert_eq!(json["type"], "text");
+        assert_eq!(json["text"], "hello world");
+        let back: ContentBlock = serde_json::from_value(json).unwrap();
+        assert_eq!(back, block);
+    }
+
+    #[test]
+    fn content_block_thinking_round_trip() {
+        let block = ContentBlock::Thinking { thinking: "Let me consider...".into() };
+        let json = serde_json::to_value(&block).unwrap();
+        assert_eq!(json["type"], "thinking");
+        assert_eq!(json["thinking"], "Let me consider...");
+        let back: ContentBlock = serde_json::from_value(json).unwrap();
+        assert_eq!(back, block);
+    }
+
+    #[test]
+    fn content_block_tool_use_round_trip() {
+        let block = ContentBlock::ToolUse {
+            id: "tu_123".into(),
+            name: "check_time".into(),
+            input: json!({"timezone": "UTC"}),
+        };
+        let json = serde_json::to_value(&block).unwrap();
+        assert_eq!(json["type"], "tool_use");
+        assert_eq!(json["id"], "tu_123");
+        assert_eq!(json["name"], "check_time");
+        assert_eq!(json["input"]["timezone"], "UTC");
+        let back: ContentBlock = serde_json::from_value(json).unwrap();
+        assert_eq!(back, block);
+    }
+
+    #[test]
+    fn content_block_tool_result_round_trip() {
+        let block = ContentBlock::ToolResult {
+            tool_use_id: "tu_123".into(),
+            content: "2026-03-27T12:00:00Z".into(),
+            is_error: false,
+        };
+        let json = serde_json::to_value(&block).unwrap();
+        assert_eq!(json["type"], "tool_result");
+        assert_eq!(json["tool_use_id"], "tu_123");
+        assert_eq!(json["content"], "2026-03-27T12:00:00Z");
+        // is_error defaults to false, verify it round-trips
+        let back: ContentBlock = serde_json::from_value(json).unwrap();
+        assert_eq!(back, block);
+    }
+
+    #[test]
+    fn content_block_tool_result_with_error() {
+        let block = ContentBlock::ToolResult {
+            tool_use_id: "tu_456".into(),
+            content: "Tool not found".into(),
+            is_error: true,
+        };
+        let json = serde_json::to_value(&block).unwrap();
+        assert_eq!(json["is_error"], true);
+        let back: ContentBlock = serde_json::from_value(json).unwrap();
+        assert_eq!(back, block);
+    }
+
+    #[test]
+    fn content_block_tool_result_is_error_defaults_false() {
+        // Simulate old JSON without is_error field
+        let json = json!({"type": "tool_result", "tool_use_id": "tu_1", "content": "ok"});
+        let block: ContentBlock = serde_json::from_value(json).unwrap();
+        match block {
+            ContentBlock::ToolResult { is_error, .. } => assert!(!is_error),
+            _ => panic!("Expected ToolResult"),
+        }
+    }
+
+    #[test]
+    fn message_with_content_blocks_round_trip() {
+        let msg = Message {
+            msg_id: "m_test".into(),
+            role: Role::Assistant,
+            content: "The time is noon.".into(),
+            images: vec![],
+            content_blocks: vec![
+                ContentBlock::Thinking { thinking: "User wants the time.".into() },
+                ContentBlock::ToolUse {
+                    id: "tu_1".into(),
+                    name: "check_time".into(),
+                    input: json!({}),
+                },
+                ContentBlock::Text { text: "The time is noon.".into() },
+            ],
+            alt_index: None,
+            alt_count: None,
+            timestamp: "2026-01-01T00:00:00Z".into(),
+        };
+        let json = serde_json::to_value(&msg).unwrap();
+        // content_blocks should be present in serialized form
+        let blocks = json["content_blocks"].as_array().unwrap();
+        assert_eq!(blocks.len(), 3);
+        assert_eq!(blocks[0]["type"], "thinking");
+        assert_eq!(blocks[1]["type"], "tool_use");
+        assert_eq!(blocks[2]["type"], "text");
+        // Round-trip
+        let back: Message = serde_json::from_value(json).unwrap();
+        assert_eq!(back.content_blocks.len(), 3);
+        assert_eq!(back.content_blocks, msg.content_blocks);
+    }
+
+    #[test]
+    fn message_without_content_blocks_omits_field() {
+        let msg = Message {
+            msg_id: "m_old".into(),
+            role: Role::User,
+            content: "hello".into(),
+            images: vec![],
+            content_blocks: vec![],
+            alt_index: None,
+            alt_count: None,
+            timestamp: "2026-01-01T00:00:00Z".into(),
+        };
+        let json = serde_json::to_value(&msg).unwrap();
+        assert!(json.get("content_blocks").is_none(), "Empty content_blocks should be omitted via skip_serializing_if");
+    }
+
+    #[test]
+    fn old_message_json_without_content_blocks_deserializes() {
+        // Simulate V1/old JSONL that has no content_blocks field
+        let json = json!({
+            "msg_id": "m_legacy",
+            "role": "assistant",
+            "content": "old message",
+            "timestamp": "2025-01-01T00:00:00Z"
+        });
+        let msg: Message = serde_json::from_value(json).unwrap();
+        assert!(msg.content_blocks.is_empty());
+        assert_eq!(msg.content, "old message");
     }
 }

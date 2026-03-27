@@ -1,4 +1,5 @@
 use super::{ToolCategory, ToolContext, ToolDef, ToolError};
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde_json::{json, Value};
 use tracing::info;
 
@@ -58,7 +59,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "generate_image",
-            description: "Generate an image using DALL-E 3 or compatible endpoint.",
+            description: "Generate an image using the configured image generation model.",
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -202,31 +203,39 @@ pub async fn handle_generate_image(input: Value, ctx: &dyn ToolContext) -> Resul
             prompt,
             Some(size),
             config.quality.as_deref(),
+            config.aspect_ratio.as_deref(),
+            config.image_size.as_deref(),
         )
         .await
         .map_err(|e| ToolError::Http(format!("image generation failed: {e}")))?;
 
     info!(
-        url = %result.url,
+        url_len = result.url.len(),
         revised_prompt = %result.revised_prompt,
         timing_ms = result.timing.total_ms,
         "Image generated via shore-llm"
     );
 
-    // 2. Download the image from the returned URL.
-    let http_client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(60))
-        .build()
-        .map_err(|e| ToolError::Http(format!("failed to create HTTP client: {e}")))?;
+    // 2. Get image bytes — either decode base64 data URL or download from HTTP URL.
+    let (image_bytes, extension) = if result.url.starts_with("data:") {
+        decode_data_url(&result.url)?
+    } else {
+        let http_client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(60))
+            .build()
+            .map_err(|e| ToolError::Http(format!("failed to create HTTP client: {e}")))?;
 
-    let image_bytes = http_client
-        .get(&result.url)
-        .send()
-        .await
-        .map_err(|e| ToolError::Http(format!("failed to download image: {e}")))?
-        .bytes()
-        .await
-        .map_err(|e| ToolError::Http(format!("failed to read image bytes: {e}")))?;
+        let bytes = http_client
+            .get(&result.url)
+            .send()
+            .await
+            .map_err(|e| ToolError::Http(format!("failed to download image: {e}")))?
+            .bytes()
+            .await
+            .map_err(|e| ToolError::Http(format!("failed to read image bytes: {e}")))?;
+
+        (bytes.to_vec(), "png".to_string())
+    };
 
     // 3. Save to image directory.
     let image_dir = std::path::Path::new(ctx.image_dir());
@@ -235,7 +244,7 @@ pub async fn handle_generate_image(input: Value, ctx: &dyn ToolContext) -> Resul
         .map_err(|e| ToolError::Io(format!("failed to create directory: {e}")))?;
 
     let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
-    let filename = format!("{timestamp}.png");
+    let filename = format!("{timestamp}.{extension}");
     let save_path = generated_dir.join(&filename);
 
     std::fs::write(&save_path, &image_bytes)
@@ -244,6 +253,11 @@ pub async fn handle_generate_image(input: Value, ctx: &dyn ToolContext) -> Resul
     let relative_path = format!("generated/{filename}");
 
     // 4. Create memory entry for the generated image.
+    let summary = if result.revised_prompt.is_empty() {
+        prompt.to_string()
+    } else {
+        result.revised_prompt.clone()
+    };
     let now = chrono::Utc::now().to_rfc3339();
     let entry = crate::memory::db::Entry {
         id: format!("img_{}", uuid::Uuid::new_v4()),
@@ -253,7 +267,7 @@ pub async fn handle_generate_image(input: Value, ctx: &dyn ToolContext) -> Resul
         status: "active".into(),
         canonical: false,
         confidence: 1.0,
-        summary_text: result.revised_prompt.clone(),
+        summary_text: summary,
         topic_tags: "generated,image".into(),
         topic_key: "images".into(),
         start_timestamp: now.clone(),
@@ -276,6 +290,29 @@ pub async fn handle_generate_image(input: Value, ctx: &dyn ToolContext) -> Resul
         "revised_prompt": result.revised_prompt,
         "timing_ms": result.timing.total_ms,
     }))
+}
+
+/// Decode a `data:image/{format};base64,{data}` URL into raw bytes and file extension.
+fn decode_data_url(url: &str) -> Result<(Vec<u8>, String), ToolError> {
+    let rest = url
+        .strip_prefix("data:image/")
+        .ok_or_else(|| ToolError::Io("data URL is not an image".into()))?;
+
+    let (mime_subtype, b64_data) = rest
+        .split_once(";base64,")
+        .ok_or_else(|| ToolError::Io("data URL missing ;base64, separator".into()))?;
+
+    let extension = match mime_subtype {
+        "jpeg" => "jpg",
+        other => other,
+    }
+    .to_string();
+
+    let bytes = BASE64
+        .decode(b64_data)
+        .map_err(|e| ToolError::Io(format!("failed to decode base64 image: {e}")))?;
+
+    Ok((bytes, extension))
 }
 
 // ---------------------------------------------------------------------------
@@ -423,5 +460,57 @@ mod tests {
         assert_eq!(images.len(), 1);
         assert_eq!(images[0]["entry_id"], "img_sunset");
         assert_eq!(result["query"], "sunset");
+    }
+
+    // ── decode_data_url tests ──────────────────────────────────────────
+
+    #[test]
+    fn test_decode_data_url_png() {
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
+        let raw = b"fake png bytes";
+        let encoded = STANDARD.encode(raw);
+        let url = format!("data:image/png;base64,{encoded}");
+
+        let (bytes, ext) = decode_data_url(&url).unwrap();
+        assert_eq!(bytes, raw);
+        assert_eq!(ext, "png");
+    }
+
+    #[test]
+    fn test_decode_data_url_jpeg() {
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
+        let raw = b"fake jpeg bytes";
+        let encoded = STANDARD.encode(raw);
+        let url = format!("data:image/jpeg;base64,{encoded}");
+
+        let (bytes, ext) = decode_data_url(&url).unwrap();
+        assert_eq!(bytes, raw);
+        assert_eq!(ext, "jpg");
+    }
+
+    #[test]
+    fn test_decode_data_url_webp() {
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
+        let raw = b"fake webp bytes";
+        let encoded = STANDARD.encode(raw);
+        let url = format!("data:image/webp;base64,{encoded}");
+
+        let (bytes, ext) = decode_data_url(&url).unwrap();
+        assert_eq!(bytes, raw);
+        assert_eq!(ext, "webp");
+    }
+
+    #[test]
+    fn test_decode_data_url_not_image() {
+        let url = "data:text/plain;base64,aGVsbG8=";
+        let result = decode_data_url(url);
+        assert!(matches!(result, Err(ToolError::Io(_))));
+    }
+
+    #[test]
+    fn test_decode_data_url_missing_base64() {
+        let url = "data:image/png,raw-data";
+        let result = decode_data_url(url);
+        assert!(matches!(result, Err(ToolError::Io(_))));
     }
 }

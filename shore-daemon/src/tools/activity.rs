@@ -1,4 +1,4 @@
-use super::{ToolCategory, ToolDef, ToolError};
+use super::{ToolCategory, ToolContext, ToolDef, ToolError};
 use serde_json::{json, Value};
 
 // ---------------------------------------------------------------------------
@@ -27,21 +27,60 @@ pub fn tool_defs() -> Vec<ToolDef> {
 // Handler
 // ---------------------------------------------------------------------------
 
-/// Handle `activity_heatmap` — stub returning placeholder data.
-/// Full implementation in Phase 4 (Autonomy subsystem).
-pub async fn handle_activity_heatmap(input: Value) -> Result<Value, ToolError> {
+/// Handle `activity_heatmap` — returns real data from the ActivityTracker
+/// when available, otherwise an empty heatmap.
+pub async fn handle_activity_heatmap(
+    input: Value,
+    ctx: &dyn ToolContext,
+) -> Result<Value, ToolError> {
     let days = input
         .get("days")
         .and_then(|v| v.as_u64())
         .unwrap_or(30);
 
-    // Stub: return empty heatmap structure.
-    Ok(json!({
-        "days": days,
-        "hours": (0..24).map(|h| json!({ "hour": h, "count": 0 })).collect::<Vec<_>>(),
-        "total_messages": 0,
-        "note": "Activity heatmap stub — full implementation in Phase 4.",
-    }))
+    let character = ctx.character_name();
+    let autonomy = ctx.autonomy_manager();
+
+    let stats_opt = autonomy.and_then(|mgr| mgr.activity_stats(character));
+
+    match stats_opt {
+        Some((stats, message_count)) => {
+            let hours: Vec<Value> = (0..24)
+                .map(|h| {
+                    let class = match stats.hour_classifications[h] {
+                        crate::autonomy::activity::HourClassification::Peak => "peak",
+                        crate::autonomy::activity::HourClassification::Trough => "trough",
+                        crate::autonomy::activity::HourClassification::Normal => "normal",
+                    };
+                    json!({
+                        "hour": h,
+                        "density": stats.hour_histogram[h],
+                        "classification": class,
+                    })
+                })
+                .collect();
+
+            Ok(json!({
+                "days": days,
+                "hours": hours,
+                "total_messages": message_count,
+                "has_sufficient_data": stats.has_sufficient_heatmap,
+                "engagement_score": stats.engagement_score,
+                "sessions_per_day": stats.sessions_per_day,
+            }))
+        }
+        None => {
+            // No autonomy data available — return empty heatmap.
+            Ok(json!({
+                "days": days,
+                "hours": (0..24).map(|h| json!({ "hour": h, "density": 0.0, "classification": "normal" })).collect::<Vec<_>>(),
+                "total_messages": 0,
+                "has_sufficient_data": false,
+                "engagement_score": 0.0,
+                "sessions_per_day": 0.0,
+            }))
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -51,6 +90,7 @@ pub async fn handle_activity_heatmap(input: Value) -> Result<Value, ToolError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::TestToolContext;
 
     #[test]
     fn test_activity_tool_defs() {
@@ -61,10 +101,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_activity_heatmap_stub() {
-        let result = handle_activity_heatmap(json!({})).await.unwrap();
+    async fn test_activity_heatmap_no_autonomy() {
+        // TestToolContext has no autonomy manager — should return empty heatmap.
+        let ctx = TestToolContext::new();
+        let result = handle_activity_heatmap(json!({}), &ctx).await.unwrap();
         assert_eq!(result["days"], 30);
         assert_eq!(result["total_messages"], 0);
+        assert_eq!(result["has_sufficient_data"], false);
 
         let hours = result["hours"].as_array().unwrap();
         assert_eq!(hours.len(), 24);
@@ -72,7 +115,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_activity_heatmap_custom_days() {
-        let result = handle_activity_heatmap(json!({"days": 7})).await.unwrap();
+        let ctx = TestToolContext::new();
+        let result = handle_activity_heatmap(json!({"days": 7}), &ctx).await.unwrap();
         assert_eq!(result["days"], 7);
     }
 }

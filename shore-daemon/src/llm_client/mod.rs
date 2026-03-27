@@ -373,6 +373,8 @@ impl LlmClient {
         prompt: &str,
         size: Option<&str>,
         quality: Option<&str>,
+        aspect_ratio: Option<&str>,
+        image_size: Option<&str>,
     ) -> Result<ImageGenerateResponse, LlmError> {
         let mut payload = serde_json::json!({
             "provider": provider,
@@ -388,6 +390,12 @@ impl LlmClient {
         }
         if let Some(q) = quality {
             payload["quality"] = serde_json::Value::String(q.to_string());
+        }
+        if let Some(ar) = aspect_ratio {
+            payload["aspect_ratio"] = serde_json::Value::String(ar.to_string());
+        }
+        if let Some(is) = image_size {
+            payload["image_size"] = serde_json::Value::String(is.to_string());
         }
         let body = serde_json::to_string(&payload)
             .map_err(LlmError::Serialize)?;

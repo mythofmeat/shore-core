@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use shore_protocol::types::{ImageRef, Message, Role};
+use shore_protocol::types::{ContentBlock, ImageRef, Message, Role};
 
 use crate::config::resolve_prompt_template;
 
@@ -46,6 +46,7 @@ pub struct PromptMessage {
     pub role: Role,
     pub content: String,
     pub images: Vec<ImageRef>,
+    pub content_blocks: Vec<ContentBlock>,
 }
 
 /// The fully assembled prompt ready for LLM submission.
@@ -210,6 +211,22 @@ fn estimate_tokens(text: &str) -> usize {
     text.len().div_ceil(CHARS_PER_TOKEN)
 }
 
+/// Estimate token count for a message, accounting for content blocks.
+fn estimate_message_tokens(msg: &Message) -> usize {
+    if msg.content_blocks.is_empty() {
+        return estimate_tokens(&msg.content);
+    }
+    // Sum tokens across all content blocks.
+    msg.content_blocks.iter().map(|b| match b {
+        ContentBlock::Text { text } => estimate_tokens(text),
+        ContentBlock::Thinking { thinking } => estimate_tokens(thinking),
+        ContentBlock::ToolUse { input, name, .. } => {
+            estimate_tokens(name) + estimate_tokens(&input.to_string())
+        }
+        ContentBlock::ToolResult { content, .. } => estimate_tokens(content),
+    }).sum()
+}
+
 /// Trim messages from the beginning to fit within the token budget.
 ///
 /// Keeps the most recent messages, discarding older ones first.
@@ -219,7 +236,7 @@ fn trim_messages(messages: &[Message], token_budget: usize) -> Vec<PromptMessage
     let mut used_tokens = 0;
 
     for msg in messages.iter().rev() {
-        let msg_tokens = estimate_tokens(&msg.content);
+        let msg_tokens = estimate_message_tokens(msg);
         if used_tokens + msg_tokens > token_budget && !result.is_empty() {
             // Budget exhausted — stop adding older messages.
             break;
@@ -229,6 +246,7 @@ fn trim_messages(messages: &[Message], token_budget: usize) -> Vec<PromptMessage
             role: msg.role.clone(),
             content: msg.content.clone(),
             images: msg.images.clone(),
+            content_blocks: msg.content_blocks.clone(),
         });
     }
 
@@ -248,6 +266,7 @@ mod tests {
             role,
             content: content.to_string(),
             images: vec![],
+            content_blocks: vec![],
             alt_index: None,
             alt_count: None,
             timestamp: "2026-01-01T00:00:00Z".to_string(),
@@ -308,6 +327,105 @@ mod tests {
         assert_eq!(estimate_tokens(""), 0);
         // 5 chars → ceil(5/4) = 2
         assert_eq!(estimate_tokens("Hello"), 2);
+    }
+
+    // ── Token estimation with content blocks ────────────────────────────
+
+    #[test]
+    fn estimate_message_tokens_uses_content_blocks_when_present() {
+        let msg = Message {
+            msg_id: "m1".into(),
+            role: Role::Assistant,
+            content: "short".into(), // 5 chars = 2 tokens, but should be ignored
+            images: vec![],
+            content_blocks: vec![
+                ContentBlock::Text { text: "A".repeat(40).to_string() }, // 40 chars = 10 tokens
+                ContentBlock::Thinking { thinking: "B".repeat(20).to_string() }, // 20 chars = 5 tokens
+            ],
+            alt_index: None,
+            alt_count: None,
+            timestamp: "2026-01-01T00:00:00Z".into(),
+        };
+        let tokens = estimate_message_tokens(&msg);
+        assert_eq!(tokens, 15); // 10 + 5, NOT 2 from content field
+    }
+
+    #[test]
+    fn estimate_message_tokens_falls_back_to_content_when_no_blocks() {
+        let msg = make_msg(Role::User, &"X".repeat(20)); // 20 chars = 5 tokens
+        let tokens = estimate_message_tokens(&msg);
+        assert_eq!(tokens, 5);
+    }
+
+    #[test]
+    fn estimate_message_tokens_tool_use_block() {
+        let msg = Message {
+            msg_id: "m1".into(),
+            role: Role::Assistant,
+            content: String::new(),
+            images: vec![],
+            content_blocks: vec![
+                ContentBlock::ToolUse {
+                    id: "tu_1".into(),
+                    name: "check_time".into(),
+                    input: serde_json::json!({}),
+                },
+            ],
+            alt_index: None,
+            alt_count: None,
+            timestamp: "2026-01-01T00:00:00Z".into(),
+        };
+        let tokens = estimate_message_tokens(&msg);
+        // name "check_time" (10 chars → 3 tokens) + input "{}" (2 chars → 1 token)
+        assert!(tokens > 0);
+    }
+
+    #[test]
+    fn estimate_message_tokens_tool_result_block() {
+        let msg = Message {
+            msg_id: "m1".into(),
+            role: Role::User,
+            content: String::new(),
+            images: vec![],
+            content_blocks: vec![
+                ContentBlock::ToolResult {
+                    tool_use_id: "tu_1".into(),
+                    content: "2026-03-27T12:00:00Z".into(), // 20 chars = 5 tokens
+                    is_error: false,
+                },
+            ],
+            alt_index: None,
+            alt_count: None,
+            timestamp: "2026-01-01T00:00:00Z".into(),
+        };
+        let tokens = estimate_message_tokens(&msg);
+        assert_eq!(tokens, 5);
+    }
+
+    #[test]
+    fn trim_messages_accounts_for_content_blocks_size() {
+        // A message with large content_blocks should consume more budget.
+        let small_msg = make_msg(Role::User, "Hello");
+        let big_msg = Message {
+            msg_id: "m_big".into(),
+            role: Role::Assistant,
+            content: String::new(),
+            images: vec![],
+            content_blocks: vec![
+                ContentBlock::Text { text: "X".repeat(400) }, // 400 chars = 100 tokens
+            ],
+            alt_index: None,
+            alt_count: None,
+            timestamp: "2026-01-01T00:00:00Z".into(),
+        };
+        let recent_msg = make_msg(Role::User, "Recent");
+
+        let msgs = vec![small_msg, big_msg, recent_msg];
+        // Budget of 10 tokens — big_msg alone is 100 tokens, won't fit alongside others.
+        let result = trim_messages(&msgs, 10);
+        // Should include at least the most recent, and drop some older ones.
+        assert_eq!(result.last().unwrap().content, "Recent");
+        assert!(result.len() < 3);
     }
 
     // ── Message trimming ───────────────────────────────────────────────

@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use shore_daemon::autonomy::manager::AutonomyManager;
 use shore_daemon::characters::CharacterRegistry;
 use shore_daemon::commands::{CommandContext, SessionTokens};
+use shore_daemon::diagnostics::Diagnostics;
 use shore_daemon::config::{load_config, resolve_prompt_template, LoadedConfig};
 use shore_daemon::handler::MessageHandler;
 use shore_daemon::llm_client::LlmClient;
@@ -178,6 +179,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Provide the autonomy manager with resources for heartbeat/keepalive execution.
     autonomy.set_resources(llm_client.clone(), push_tx.clone(), loaded.clone());
 
+    let diagnostics = std::sync::Arc::new(std::sync::Mutex::new(Diagnostics::default()));
+
     let cmd_ctx = CommandContext {
         config: loaded.clone(),
         push_tx: push_tx.clone(),
@@ -186,6 +189,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         session_tokens: SessionTokens::default(),
         autonomy: autonomy.clone(),
         llm_client: llm_client.clone(),
+        diagnostics: diagnostics.clone(),
     };
 
     // Spawn background compaction task driven by autonomy idle triggers.

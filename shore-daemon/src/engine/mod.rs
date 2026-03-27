@@ -52,9 +52,6 @@ pub struct ConversationEngine {
     messages: MessageStore,
     segments: SegmentReader,
     push_tx: broadcast::Sender<ServerMessage>,
-    /// Accumulates pre-tool text fragments that will be prepended to the
-    /// final response content.
-    pre_tool_buffer: String,
 }
 
 impl ConversationEngine {
@@ -77,7 +74,6 @@ impl ConversationEngine {
             messages,
             segments,
             push_tx,
-            pre_tool_buffer: String::new(),
         })
     }
 
@@ -153,7 +149,6 @@ impl ConversationEngine {
     /// Clear all messages from the active conversation and broadcast.
     pub fn reset(&mut self) -> Result<(), EngineError> {
         self.messages.clear()?;
-        self.clear_pre_tool_buffer();
         self.broadcast_history();
         Ok(())
     }
@@ -162,33 +157,8 @@ impl ConversationEngine {
     pub fn reload(&mut self) -> Result<(), EngineError> {
         self.messages = MessageStore::load(self.character_dir.join("active.jsonl"))?;
         self.segments = SegmentReader::load(&self.character_dir)?;
-        self.clear_pre_tool_buffer();
         self.broadcast_history();
         Ok(())
-    }
-
-    // ── Pre-tool text accumulation ──────────────────────────────────────
-
-    /// Accumulate pre-tool text. Called when partial text arrives before a
-    /// tool invocation.
-    pub fn accumulate_pre_tool_text(&mut self, text: &str) {
-        self.pre_tool_buffer.push_str(text);
-    }
-
-    /// Take the accumulated pre-tool text and prepend it to the given
-    /// final response content. Clears the buffer.
-    pub fn finalize_response(&mut self, final_content: &str) -> String {
-        if self.pre_tool_buffer.is_empty() {
-            return final_content.to_string();
-        }
-        let mut result = std::mem::take(&mut self.pre_tool_buffer);
-        result.push_str(final_content);
-        result
-    }
-
-    /// Clear the pre-tool buffer without using it (e.g., on error/reset).
-    pub fn clear_pre_tool_buffer(&mut self) {
-        self.pre_tool_buffer.clear();
     }
 
     // ── Internal ────────────────────────────────────────────────────────
@@ -228,6 +198,7 @@ mod tests {
             role,
             content: content.to_string(),
             images: vec![],
+            content_blocks: vec![],
             alt_index: None,
             alt_count: None,
             timestamp: "2026-01-01T00:00:00Z".to_string(),
@@ -310,34 +281,6 @@ mod tests {
             ServerMessage::History(h) => assert!(h.messages.is_empty()),
             other => panic!("Expected History, got {:?}", other),
         }
-    }
-
-    #[test]
-    fn pre_tool_text_accumulation() {
-        let tmp = TempDir::new().unwrap();
-        let (mut engine, _rx) = make_engine(&tmp);
-
-        // No accumulated text — returns final content as-is.
-        assert_eq!(engine.finalize_response("Final"), "Final");
-
-        // Accumulate some pre-tool text.
-        engine.accumulate_pre_tool_text("Before tool. ");
-        engine.accumulate_pre_tool_text("More text. ");
-        let result = engine.finalize_response("After tool.");
-        assert_eq!(result, "Before tool. More text. After tool.");
-
-        // Buffer is cleared after finalize.
-        assert_eq!(engine.finalize_response("Clean"), "Clean");
-    }
-
-    #[test]
-    fn clear_pre_tool_buffer() {
-        let tmp = TempDir::new().unwrap();
-        let (mut engine, _rx) = make_engine(&tmp);
-
-        engine.accumulate_pre_tool_text("Should be cleared");
-        engine.clear_pre_tool_buffer();
-        assert_eq!(engine.finalize_response("Final"), "Final");
     }
 
     #[test]

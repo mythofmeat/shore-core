@@ -39,6 +39,16 @@ pub fn status(engine: &ConversationEngine, ctx: &CommandContext) -> CommandResul
     }))
 }
 
+/// Return recent diagnostics from in-memory ring buffers.
+pub fn diagnostics(ctx: &CommandContext, args: &serde_json::Value) -> CommandResult {
+    let count = args
+        .get("count")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(10) as usize;
+    let diag = ctx.diagnostics.lock().unwrap();
+    Ok(diag.to_json(count))
+}
+
 /// List available model profiles from the model catalog.
 pub fn list_models(ctx: &CommandContext) -> CommandResult {
     let mut models: Vec<_> = ctx
@@ -822,6 +832,7 @@ mod tests {
             session_tokens: Default::default(),
             autonomy,
             llm_client: crate::llm_client::LlmClient::new(data_dir.join("dummy.sock")),
+            diagnostics: std::sync::Arc::new(std::sync::Mutex::new(crate::diagnostics::Diagnostics::default())),
         };
         (engine, ctx, push_rx)
     }
@@ -844,6 +855,7 @@ model_id = "gpt-4o"
             role,
             content: content.to_string(),
             images: vec![],
+            content_blocks: vec![],
             alt_index: None,
             alt_count: None,
             timestamp: "2026-01-01T00:00:00Z".to_string(),

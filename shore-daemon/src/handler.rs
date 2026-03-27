@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use shore_protocol::client_msg::{ClientMessage, ClientMessageBody};
 use shore_protocol::error::ErrorCode;
 use shore_protocol::server_msg::{Error as SwpError, ServerMessage};
-use shore_protocol::types::{ImageRef, Message, Role};
+use shore_protocol::types::{ContentBlock, ImageRef, Message, Role};
 use tokio::sync::{broadcast, Mutex};
 use tracing::{error, info, instrument, warn};
 
@@ -61,6 +61,8 @@ struct HandlerToolContext {
     image_dir_val: String,
     llm_client_val: LlmClient,
     image_gen_config_val: Option<ImageGenConfig>,
+    autonomy_val: AutonomyManager,
+    character_name_val: String,
 }
 
 impl ToolContext for HandlerToolContext {
@@ -82,6 +84,8 @@ impl ToolContext for HandlerToolContext {
     fn image_dir(&self) -> &str { &self.image_dir_val }
     fn llm_client(&self) -> Option<&LlmClient> { Some(&self.llm_client_val) }
     fn image_gen_config(&self) -> Option<&ImageGenConfig> { self.image_gen_config_val.as_ref() }
+    fn autonomy_manager(&self) -> Option<&AutonomyManager> { Some(&self.autonomy_val) }
+    fn character_name(&self) -> &str { &self.character_name_val }
 }
 
 /// The message processing handler.
@@ -274,6 +278,7 @@ impl MessageHandler {
                     role: Role::User,
                     content: body.text.clone(),
                     images,
+                    content_blocks: vec![],
                     alt_index: None,
                     alt_count: None,
                     timestamp: chrono::Utc::now().to_rfc3339(),
@@ -364,7 +369,31 @@ impl MessageHandler {
                     Role::Assistant => "assistant",
                     Role::System => "system",
                 };
-                json!({ "role": role, "content": build_content(&m.content, &m.images) })
+                let content = if !m.content_blocks.is_empty() {
+                    // Build payload from structured content blocks.
+                    // Strip Thinking blocks for now (provider projection TODO).
+                    let blocks: Vec<Value> = m.content_blocks.iter().filter_map(|b| match b {
+                        ContentBlock::Text { text } => Some(json!({ "type": "text", "text": text })),
+                        ContentBlock::Thinking { .. } => None, // stripped for now
+                        ContentBlock::ToolUse { id, name, input } => Some(json!({
+                            "type": "tool_use", "id": id, "name": name, "input": input,
+                        })),
+                        ContentBlock::ToolResult { tool_use_id, content, is_error } => {
+                            let mut v = json!({
+                                "type": "tool_result", "tool_use_id": tool_use_id, "content": content,
+                            });
+                            if *is_error {
+                                v["is_error"] = json!(true);
+                            }
+                            Some(v)
+                        }
+                    }).collect();
+                    json!(blocks)
+                } else {
+                    // Legacy messages without content_blocks — use text + images.
+                    build_content(&m.content, &m.images)
+                };
+                json!({ "role": role, "content": content })
             })
             .collect();
 
@@ -476,17 +505,11 @@ impl MessageHandler {
         self.is_first_after_restart = false;
 
         // 9. Run tool loop if the LLM requested tool use.
+        let mut tool_intermediate_messages: Vec<Message> = Vec::new();
+
         if result.finish_reason == "tool_use"
             && self.cmd_ctx.config.app.behavior.tool_use.enabled
         {
-            {
-                let engine = self.registry.get_or_create(&char_name)
-                    .map_err(|e| e.to_string())?;
-                if !result.content.is_empty() {
-                    engine.accumulate_pre_tool_text(&result.content);
-                }
-            }
-
             // Build per-request tool context with memory dependencies.
             let db_path = self.cmd_ctx.data_dir
                 .join(&char_name)
@@ -524,9 +547,11 @@ impl MessageHandler {
                     .into_owned(),
                 llm_client_val: self.llm_client.clone(),
                 image_gen_config_val: image_gen_config,
+                autonomy_val: self.autonomy.clone(),
+                character_name_val: char_name.clone(),
             };
 
-            result = tools::run_tool_loop(
+            let tool_loop_result = tools::run_tool_loop(
                 &self.llm_client,
                 &self.push_tx,
                 &mut request,
@@ -534,22 +559,46 @@ impl MessageHandler {
                 &tool_ctx,
                 self.cmd_ctx.config.app.behavior.tool_use.max_iterations,
                 &cache_ctx,
+                &self.cmd_ctx.diagnostics,
             )
             .await?;
+
+            result = tool_loop_result.result;
+            tool_intermediate_messages = tool_loop_result.intermediate_messages;
         }
 
         // Re-borrow engine for final operations.
         let engine = self.registry.get_or_create(&char_name)
             .map_err(|e| e.to_string())?;
 
-        // 10. Finalize response content (prepend any pre-tool text).
-        let content = engine.finalize_response(&result.content);
+        // 10. Persist intermediate tool messages (assistant tool_use + user tool_result pairs).
+        for msg in tool_intermediate_messages {
+            engine.append_message(msg)?;
+        }
 
         // 11. Track cumulative token usage.
         self.cmd_ctx.session_tokens.input += result.usage.input_tokens;
         self.cmd_ctx.session_tokens.output += result.usage.output_tokens;
         self.cmd_ctx.session_tokens.cache_read += result.usage.cache_read_tokens;
         self.cmd_ctx.session_tokens.cache_write += result.usage.cache_creation_tokens;
+
+        // 11b. Record API call in diagnostics ring buffer.
+        {
+            let entry = crate::diagnostics::ApiCallEntry {
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                model: result.model.clone(),
+                provider: resolved.provider_key.clone(),
+                input_tokens: result.usage.input_tokens,
+                output_tokens: result.usage.output_tokens,
+                cache_read_tokens: result.usage.cache_read_tokens,
+                cache_write_tokens: result.usage.cache_creation_tokens,
+                ttft_ms: result.timing.time_to_first_token_ms,
+                total_ms: result.timing.total_ms,
+                finish_reason: result.finish_reason.clone(),
+                error: None,
+            };
+            self.cmd_ctx.diagnostics.lock().unwrap().api_calls.push(entry);
+        }
 
         // Notify cache keepalive of API response and cache the request for keepalive pings.
         self.autonomy.notify_api_response(
@@ -566,12 +615,14 @@ impl MessageHandler {
             "Response complete"
         );
 
-        // 12. Append assistant message to conversation.
+        // 12. Append final assistant message with content_blocks to conversation.
+        let content_blocks = result.content_blocks.clone();
         let assistant_msg = Message {
             msg_id: format!("m_{}", uuid::Uuid::new_v4()),
             role: Role::Assistant,
-            content,
+            content: result.content.clone(),
             images: vec![],
+            content_blocks,
             alt_index: None,
             alt_count: None,
             timestamp: chrono::Utc::now().to_rfc3339(),
@@ -640,6 +691,7 @@ mod tests {
             session_tokens: Default::default(),
             autonomy: autonomy.clone(),
             llm_client: LlmClient::new(tmp.path().join("dummy.sock")),
+            diagnostics: std::sync::Arc::new(std::sync::Mutex::new(crate::diagnostics::Diagnostics::default())),
         };
 
         let registry = CharacterRegistry::new(config_dir, data_dir, push_tx.clone());

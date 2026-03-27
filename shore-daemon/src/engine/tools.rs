@@ -1,12 +1,17 @@
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
+
 use serde_json::{json, Value};
 use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
 
+use crate::diagnostics::{self, Diagnostics};
 use crate::llm_client::stream::{CacheContext, StreamConsumer};
 use crate::llm_client::types::{LlmRequest, StreamResult};
 use crate::llm_client::{LlmClient, LlmError};
 use crate::tools::{self as tool_system, ToolContext};
 use shore_protocol::server_msg::{ServerMessage, ToolCall, ToolResult as SwpToolResult};
+use shore_protocol::types::{ContentBlock, Message, Role};
 
 // ── Errors ──────────────────────────────────────────────────────────────
 
@@ -16,7 +21,38 @@ pub enum ToolError {
     Llm(#[from] LlmError),
 }
 
+/// Result of the tool loop: the final LLM response plus any intermediate
+/// messages (assistant tool_use + user tool_result) that should be persisted.
+pub struct ToolLoopResult {
+    /// The final stream result from the last LLM call.
+    pub result: StreamResult,
+    /// Intermediate messages generated during the tool loop, in order.
+    /// These are assistant messages (with tool_use blocks) and user messages
+    /// (with tool_result blocks) that should be persisted to the conversation.
+    pub intermediate_messages: Vec<Message>,
+}
+
 // ── Tool loop ───────────────────────────────────────────────────────────
+
+/// Convert a ContentBlock to its LLM API JSON representation.
+fn content_block_to_json(block: &ContentBlock) -> Value {
+    match block {
+        ContentBlock::Text { text } => json!({ "type": "text", "text": text }),
+        ContentBlock::Thinking { thinking } => json!({ "type": "thinking", "thinking": thinking }),
+        ContentBlock::ToolUse { id, name, input } => json!({
+            "type": "tool_use", "id": id, "name": name, "input": input,
+        }),
+        ContentBlock::ToolResult { tool_use_id, content, is_error } => {
+            let mut v = json!({
+                "type": "tool_result", "tool_use_id": tool_use_id, "content": content,
+            });
+            if *is_error {
+                v["is_error"] = json!(true);
+            }
+            v
+        }
+    }
+}
 
 /// Run the tool use agentic loop.
 ///
@@ -24,6 +60,8 @@ pub enum ToolError {
 /// the requested tools via the unified `dispatch_tool()` system, appends
 /// results to the request messages, and calls the LLM again. Repeats until
 /// `finish_reason != "tool_use"` or `max_iterations` is reached.
+///
+/// Returns both the final result and any intermediate messages for persistence.
 pub async fn run_tool_loop(
     client: &LlmClient,
     push_tx: &broadcast::Sender<ServerMessage>,
@@ -32,12 +70,14 @@ pub async fn run_tool_loop(
     ctx: &dyn ToolContext,
     max_iterations: u32,
     cache_ctx: &CacheContext,
-) -> Result<StreamResult, ToolError> {
+    diag: &Arc<Mutex<Diagnostics>>,
+) -> Result<ToolLoopResult, ToolError> {
     let consumer = StreamConsumer::new(push_tx.clone());
+    let mut intermediate_messages: Vec<Message> = Vec::new();
 
     for iteration in 0..max_iterations {
         if result.finish_reason != "tool_use" || result.tool_uses.is_empty() {
-            return Ok(result);
+            return Ok(ToolLoopResult { result, intermediate_messages });
         }
 
         info!(
@@ -47,29 +87,58 @@ pub async fn run_tool_loop(
             "Tool loop iteration"
         );
 
-        // Build assistant message with tool use content blocks.
-        let mut assistant_content: Vec<Value> = Vec::new();
-        if !result.content.is_empty() {
-            assistant_content.push(json!({
-                "type": "text",
-                "text": result.content,
-            }));
-        }
-        for tool_use in &result.tool_uses {
-            assistant_content.push(json!({
-                "type": "tool_use",
-                "id": tool_use.id,
-                "name": tool_use.name,
-                "input": tool_use.input,
-            }));
-        }
+        // Build content blocks for the assistant message.
+        // Use the accumulated content_blocks from streaming if available,
+        // otherwise fall back to constructing from content + tool_uses.
+        let assistant_blocks = if result.content_blocks.is_empty() {
+            let mut blocks = Vec::new();
+            if !result.content.is_empty() {
+                blocks.push(ContentBlock::Text { text: result.content.clone() });
+            }
+            for tu in &result.tool_uses {
+                blocks.push(ContentBlock::ToolUse {
+                    id: tu.id.clone(),
+                    name: tu.name.clone(),
+                    input: tu.input.clone(),
+                });
+            }
+            blocks
+        } else {
+            result.content_blocks.clone()
+        };
+
+        // Build LLM payload from content blocks.
+        let assistant_content: Vec<Value> = assistant_blocks
+            .iter()
+            .map(content_block_to_json)
+            .collect();
+
         request.messages.push(json!({
             "role": "assistant",
             "content": assistant_content,
         }));
 
+        // Persist assistant message with content_blocks.
+        let assistant_text: String = assistant_blocks.iter().filter_map(|b| match b {
+            ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        }).collect::<Vec<_>>().join("");
+
+        intermediate_messages.push(Message {
+            msg_id: format!("m_{}", uuid::Uuid::new_v4()),
+            role: Role::Assistant,
+            content: assistant_text,
+            images: vec![],
+            content_blocks: assistant_blocks,
+            alt_index: None,
+            alt_count: None,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+        });
+
         // Execute each tool and collect results.
         let mut tool_results: Vec<Value> = Vec::new();
+        let mut tool_result_blocks: Vec<ContentBlock> = Vec::new();
+
         for tool_use in &result.tool_uses {
             // Push ToolCall event to SWP clients.
             let _ = push_tx.send(ServerMessage::ToolCall(ToolCall {
@@ -85,8 +154,10 @@ pub async fn run_tool_loop(
             );
 
             // Dispatch through unified tool system.
+            let dispatch_start = Instant::now();
             let dispatch_result =
                 tool_system::dispatch_tool(&tool_use.name, tool_use.input.clone(), ctx).await;
+            let dispatch_ms = dispatch_start.elapsed().as_millis() as u64;
 
             let (output_str, is_error) = match dispatch_result {
                 Ok(value) => {
@@ -100,6 +171,21 @@ pub async fn run_tool_loop(
                 }
                 Err(e) => (e.to_string(), true),
             };
+
+            // Record tool call in diagnostics ring buffer.
+            {
+                let input_str = serde_json::to_string(&tool_use.input).unwrap_or_default();
+                let entry = diagnostics::ToolCallEntry {
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    tool_name: tool_use.name.clone(),
+                    tool_id: tool_use.id.clone(),
+                    success: !is_error,
+                    duration_ms: dispatch_ms,
+                    input_summary: diagnostics::truncate_summary(&input_str, 200),
+                    output_summary: diagnostics::truncate_summary(&output_str, 200),
+                };
+                diag.lock().unwrap().tool_calls.push(entry);
+            }
 
             // Push ToolResult event to SWP clients.
             let _ = push_tx.send(ServerMessage::ToolResult(SwpToolResult {
@@ -116,6 +202,14 @@ pub async fn run_tool_loop(
                 "Tool completed"
             );
 
+            // Content block for persistence.
+            tool_result_blocks.push(ContentBlock::ToolResult {
+                tool_use_id: tool_use.id.clone(),
+                content: output_str.clone(),
+                is_error,
+            });
+
+            // JSON for LLM payload.
             let mut result_block = json!({
                 "type": "tool_result",
                 "tool_use_id": tool_use.id,
@@ -127,11 +221,23 @@ pub async fn run_tool_loop(
             tool_results.push(result_block);
         }
 
-        // Append tool results as user message.
+        // Append tool results as user message to LLM payload.
         request.messages.push(json!({
             "role": "user",
             "content": tool_results,
         }));
+
+        // Persist user message with tool_result content_blocks.
+        intermediate_messages.push(Message {
+            msg_id: format!("m_{}", uuid::Uuid::new_v4()),
+            role: Role::User,
+            content: String::new(),
+            images: vec![],
+            content_blocks: tool_result_blocks,
+            alt_index: None,
+            alt_count: None,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+        });
 
         // Call LLM again with the extended conversation.
         let mut reader = client.stream_raw(request, None).await?;
@@ -142,7 +248,7 @@ pub async fn run_tool_loop(
         max_iterations,
         "Tool loop hit max iterations, returning last result"
     );
-    Ok(result)
+    Ok(ToolLoopResult { result, intermediate_messages })
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────
@@ -150,10 +256,13 @@ pub async fn run_tool_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::models::{ResolvedModel, Sdk};
     use crate::llm_client::types::ToolUseEvent;
     use crate::test_support::TestToolContext;
     use tokio::io::AsyncWriteExt;
+
+    fn test_diag() -> Arc<Mutex<Diagnostics>> {
+        Arc::new(Mutex::new(Diagnostics::default()))
+    }
     use tokio::net::UnixListener;
 
     // ── Tool loop ───────────────────────────────────────────────────
@@ -188,6 +297,7 @@ mod tests {
                 usage: Default::default(),
                 timing: Default::default(),
                 tool_uses: vec![],
+                content_blocks: vec![],
             };
 
             let out = run_tool_loop(
@@ -198,12 +308,13 @@ mod tests {
                 &ctx,
                 10,
                 &cache_ctx,
+                &test_diag(),
             )
             .await
             .unwrap();
 
-            assert_eq!(out.finish_reason, "end_turn");
-            assert_eq!(out.content, "Hello");
+            assert_eq!(out.result.finish_reason, "end_turn");
+            assert_eq!(out.result.content, "Hello");
         });
     }
 
@@ -259,6 +370,7 @@ mod tests {
                 name: "check_time".into(),
                 input: json!({}),
             }],
+            content_blocks: vec![],
         };
 
         let result = run_tool_loop(
@@ -269,12 +381,20 @@ mod tests {
             &ctx,
             10,
             &cache_ctx,
+            &test_diag(),
         )
         .await
         .unwrap();
 
-        assert_eq!(result.finish_reason, "end_turn");
-        assert_eq!(result.content, "The current time is shown above.");
+        assert_eq!(result.result.finish_reason, "end_turn");
+        assert_eq!(result.result.content, "The current time is shown above.");
+
+        // Intermediate messages should have been generated.
+        assert_eq!(result.intermediate_messages.len(), 2);
+        assert_eq!(result.intermediate_messages[0].role, Role::Assistant);
+        assert_eq!(result.intermediate_messages[1].role, Role::User);
+        assert!(!result.intermediate_messages[0].content_blocks.is_empty());
+        assert!(!result.intermediate_messages[1].content_blocks.is_empty());
 
         let tc = push_rx.try_recv().unwrap();
         match tc {
@@ -362,6 +482,7 @@ mod tests {
                 name: "check_time".into(),
                 input: json!({}),
             }],
+            content_blocks: vec![],
         };
 
         let result = run_tool_loop(
@@ -372,11 +493,12 @@ mod tests {
             &ctx,
             3,
             &cache_ctx,
+            &test_diag(),
         )
         .await
         .unwrap();
 
-        assert_eq!(result.finish_reason, "tool_use");
+        assert_eq!(result.result.finish_reason, "tool_use");
         server.await.unwrap();
     }
 
@@ -431,6 +553,7 @@ mod tests {
                 name: "generate_image".into(),
                 input: json!({"prompt": "a cat"}),
             }],
+            content_blocks: vec![],
         };
 
         let result = run_tool_loop(
@@ -441,12 +564,13 @@ mod tests {
             &ctx,
             10,
             &cache_ctx,
+            &test_diag(),
         )
         .await
         .unwrap();
 
         // LLM should have received the error and responded.
-        assert_eq!(result.finish_reason, "end_turn");
+        assert_eq!(result.result.finish_reason, "end_turn");
 
         // ToolCall event should be present.
         let tc = push_rx.try_recv().unwrap();
@@ -503,6 +627,7 @@ mod tests {
                 usage: Default::default(),
                 timing: Default::default(),
                 tool_uses: vec![],
+                content_blocks: vec![],
             };
 
             let out = run_tool_loop(
@@ -513,11 +638,12 @@ mod tests {
                 &ctx,
                 10,
                 &cache_ctx,
+                &test_diag(),
             )
             .await
             .unwrap();
 
-            assert_eq!(out.content, "Let me check the time...");
+            assert_eq!(out.result.content, "Let me check the time...");
         });
     }
 
@@ -579,6 +705,7 @@ mod tests {
                     input: json!({"notation": "1d6"}),
                 },
             ],
+            content_blocks: vec![],
         };
 
         let result = run_tool_loop(
@@ -589,11 +716,12 @@ mod tests {
             &ctx,
             10,
             &cache_ctx,
+            &test_diag(),
         )
         .await
         .unwrap();
 
-        assert_eq!(result.finish_reason, "end_turn");
+        assert_eq!(result.result.finish_reason, "end_turn");
 
         // Should have ToolCall + ToolResult for each tool (4 events), then stream events.
         let mut tool_calls = vec![];

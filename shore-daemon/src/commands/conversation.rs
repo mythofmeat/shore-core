@@ -209,6 +209,7 @@ mod tests {
             session_tokens: SessionTokens::default(),
             autonomy,
             llm_client: crate::llm_client::LlmClient::new(data_dir.join("dummy.sock")),
+            diagnostics: std::sync::Arc::new(std::sync::Mutex::new(crate::diagnostics::Diagnostics::default())),
         };
         (engine, ctx, push_rx)
     }
@@ -219,6 +220,7 @@ mod tests {
             role,
             content: content.to_string(),
             images: vec![],
+            content_blocks: vec![],
             alt_index: None,
             alt_count: None,
             timestamp: "2026-01-01T00:00:00Z".to_string(),

@@ -387,6 +387,23 @@ impl AutonomyManager {
         Some(paused)
     }
 
+    // -- activity stats --------------------------------------------------------
+
+    /// Return a clone of the `ActivityStats` and message count for a character.
+    ///
+    /// Used by the activity heatmap tool.
+    pub fn activity_stats(
+        &self,
+        character: &str,
+    ) -> Option<(super::activity::ActivityStats, usize)> {
+        let states = self.states.lock().unwrap();
+        let state_arc = states.get(character)?;
+        let mut state = state_arc.lock().unwrap();
+        let stats = state.activity.stats().clone();
+        let count = state.activity.message_count();
+        Some((stats, count))
+    }
+
     // -- status snapshot ------------------------------------------------------
 
     /// Build an `AutonomyStatus` snapshot for the status command.
@@ -718,6 +735,7 @@ async fn execute_autonomous_message(
                 role: Role::Assistant,
                 content: resp.content,
                 images: vec![],
+                content_blocks: vec![],
                 alt_index: None,
                 alt_count: None,
                 timestamp: chrono::Utc::now().to_rfc3339(),

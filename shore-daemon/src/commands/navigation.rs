@@ -3,7 +3,7 @@ use shore_protocol::error::ErrorCode;
 use shore_protocol::types::CharacterInfo;
 use tracing::info;
 
-use super::{engine_err, CommandContext, CommandResult};
+use super::{CommandContext, CommandResult};
 use crate::engine::ConversationEngine;
 
 /// List available characters by scanning the config characters directory.
@@ -171,6 +171,7 @@ mod tests {
             session_tokens: SessionTokens::default(),
             autonomy,
             llm_client: crate::llm_client::LlmClient::new(data_dir.join("dummy.sock")),
+            diagnostics: std::sync::Arc::new(std::sync::Mutex::new(crate::diagnostics::Diagnostics::default())),
         };
         (engine, ctx, push_rx)
     }

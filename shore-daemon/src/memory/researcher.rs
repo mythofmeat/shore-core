@@ -180,6 +180,11 @@ impl MemoryResearcher {
                     ContentBlock::Thinking { thinking } => {
                         json!({"type": "thinking", "thinking": thinking})
                     }
+                    ContentBlock::ToolResult { tool_use_id, content, is_error } => {
+                        let mut v = json!({"type": "tool_result", "tool_use_id": tool_use_id, "content": content});
+                        if *is_error { v["is_error"] = json!(true); }
+                        v
+                    }
                 })
                 .collect();
 

@@ -1,10 +1,13 @@
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use chrono::{DateTime, FixedOffset, Local};
 use crossterm::style::{Attribute, Color, ResetColor, SetAttribute, SetForegroundColor};
 use shore_protocol::server_msg::{CommandOutput, NewMessage, Phase, SendImage, StreamChunk, StreamEnd, ToolCall, ToolResult};
 use shore_protocol::types::ImageRef;
+use tokio::task::JoinHandle;
 
 use crate::images;
 
@@ -262,6 +265,143 @@ pub fn print_phase(phase: &Phase) {
 }
 
 // ---------------------------------------------------------------------------
+// Stream spinner — live-updating elapsed time during streaming
+// ---------------------------------------------------------------------------
+
+struct SpinnerState {
+    phase: String,
+    model: Option<String>,
+    start: Instant,
+    active: bool,
+}
+
+/// Live-updating status line shown during LLM streaming.
+///
+/// Displays elapsed time and current phase (e.g. `(thinking... 2.3s)`),
+/// updated every 200ms. Automatically disabled when stdout is not a terminal.
+pub struct StreamSpinner {
+    state: Arc<Mutex<SpinnerState>>,
+    handle: Option<JoinHandle<()>>,
+    is_terminal: bool,
+    cleared: bool,
+}
+
+/// Format the spinner display line from current state.
+fn format_spinner_line(phase: &str, model: Option<&str>, elapsed_secs: f64) -> String {
+    let label = match phase {
+        "thinking" => "thinking...",
+        "" => "generating...",
+        other => other,
+    };
+    match model {
+        Some(m) => format!("({label} {elapsed_secs:.1}s · {m}) "),
+        None => format!("({label} {elapsed_secs:.1}s) "),
+    }
+}
+
+impl StreamSpinner {
+    pub fn new() -> Self {
+        Self {
+            state: Arc::new(Mutex::new(SpinnerState {
+                phase: String::new(),
+                model: None,
+                start: Instant::now(),
+                active: false,
+            })),
+            handle: None,
+            is_terminal: io::stdout().is_terminal(),
+            cleared: false,
+        }
+    }
+
+    /// Start the spinner render loop. No-op if stdout is not a terminal.
+    pub fn start(&mut self) {
+        if !self.is_terminal {
+            return;
+        }
+        {
+            let mut s = self.state.lock().unwrap();
+            s.start = Instant::now();
+            s.active = true;
+        }
+
+        let state = Arc::clone(&self.state);
+        self.handle = Some(tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                let line = {
+                    let s = state.lock().unwrap();
+                    if !s.active {
+                        break;
+                    }
+                    let elapsed = s.start.elapsed().as_secs_f64();
+                    let model_abbrev = s.model.as_deref().map(abbreviate_model);
+                    format_spinner_line(&s.phase, model_abbrev, elapsed)
+                };
+                let stdout = io::stdout();
+                let mut out = stdout.lock();
+                if use_color() {
+                    let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+                }
+                let _ = write!(out, "\r{line}");
+                if use_color() {
+                    let _ = crossterm::execute!(out, ResetColor);
+                }
+                let _ = out.flush();
+            }
+        }));
+    }
+
+    pub fn set_phase(&self, phase: &str) {
+        let mut s = self.state.lock().unwrap();
+        s.phase = phase.to_string();
+    }
+
+    pub fn set_model(&self, model: Option<String>) {
+        let mut s = self.state.lock().unwrap();
+        s.model = model;
+    }
+
+    /// Whether the spinner render loop is running.
+    pub fn is_active(&self) -> bool {
+        self.state.lock().unwrap().active
+    }
+
+    /// Clear the spinner line and stop the render task.
+    pub async fn clear(&mut self) {
+        if self.cleared {
+            return;
+        }
+        self.cleared = true;
+        {
+            let mut s = self.state.lock().unwrap();
+            s.active = false;
+        }
+        if let Some(h) = self.handle.take() {
+            let _ = h.await;
+        }
+        if self.is_terminal {
+            let stdout = io::stdout();
+            let mut out = stdout.lock();
+            // Overwrite spinner line with spaces and return to start.
+            let _ = write!(out, "\r{}\r", " ".repeat(60));
+            let _ = out.flush();
+        }
+    }
+
+    /// Stop the spinner (alias for clear). Use when streaming ends without chunks.
+    pub async fn stop(&mut self) {
+        self.clear().await;
+    }
+
+    /// Restart the spinner for a new LLM round (e.g. after tool execution).
+    pub fn restart(&mut self) {
+        self.cleared = false;
+        self.start();
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Log formatter — human-readable chat transcript (Option B)
 // ---------------------------------------------------------------------------
 
@@ -348,6 +488,7 @@ pub fn print_log(messages: &[serde_json::Value], character_name: &str) {
         let content = msg["content"].as_str().unwrap_or("");
         let ts = msg["timestamp"].as_str().unwrap_or("");
         let images = msg["images"].as_array();
+        let content_blocks = msg["content_blocks"].as_array();
 
         let parsed_ts = parse_timestamp(ts);
         let time_str = parsed_ts
@@ -360,34 +501,104 @@ pub fn print_log(messages: &[serde_json::Value], character_name: &str) {
             prev_date = Some(dt.format("%Y-%m-%d").to_string());
         }
 
-        match role_str {
-            "user" => {
-                write_header(&mut out, "You", &time_str, Color::Cyan, width);
-                let _ = writeln!(out, "{content}");
-            }
-            "assistant" => {
-                write_header(&mut out, character_name, &time_str, char_color, width);
-                let _ = writeln!(out, "{content}");
-            }
-            "system" => {
-                // System messages: entirely dim
-                if use_color() {
-                    let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+        // Detect tool-result-only "user" messages (from tool loop).
+        let is_tool_result_msg = role_str == "user"
+            && content_blocks.map_or(false, |blocks| {
+                !blocks.is_empty()
+                    && blocks.iter().all(|b| b["type"].as_str() == Some("tool_result"))
+            });
+
+        // Write header (skip for tool result messages — they're continuations).
+        if !is_tool_result_msg {
+            match role_str {
+                "user" => write_header(&mut out, "You", &time_str, Color::Cyan, width),
+                "assistant" => write_header(&mut out, character_name, &time_str, char_color, width),
+                "system" => {
+                    if use_color() {
+                        let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+                    }
+                    let prefix = format!("── system · {} ", time_str);
+                    let prefix_len = prefix.chars().count();
+                    let trail = if width > prefix_len { width - prefix_len } else { 0 };
+                    let _ = write!(out, "{prefix}{}", "─".repeat(trail));
+                    let _ = writeln!(out);
                 }
-                let prefix = format!("── system · {} ", time_str);
-                let prefix_len = prefix.chars().count();
-                let trail = if width > prefix_len { width - prefix_len } else { 0 };
-                let _ = write!(out, "{prefix}{}", "─".repeat(trail));
-                let _ = writeln!(out);
-                let _ = writeln!(out, "{content}");
-                if use_color() {
-                    let _ = crossterm::execute!(out, ResetColor);
+                _ => {}
+            }
+        }
+
+        // Render content blocks if present, otherwise fall back to plain content.
+        if let Some(blocks) = content_blocks {
+            if !blocks.is_empty() {
+                for block in blocks {
+                    match block["type"].as_str().unwrap_or("text") {
+                        "text" => {
+                            let text = block["text"].as_str().unwrap_or("");
+                            if !text.is_empty() {
+                                let _ = writeln!(out, "{text}");
+                            }
+                        }
+                        "thinking" => {
+                            let thinking = block["thinking"].as_str().unwrap_or("");
+                            if !thinking.is_empty() {
+                                if use_color() {
+                                    let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+                                }
+                                let _ = writeln!(out, "{thinking}");
+                                if use_color() {
+                                    let _ = crossterm::execute!(out, ResetColor);
+                                }
+                            }
+                        }
+                        "tool_use" => {
+                            let name = block["name"].as_str().unwrap_or("?");
+                            if use_color() {
+                                let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkYellow));
+                            }
+                            let _ = write!(out, "[tool: {name}]");
+                            if use_color() {
+                                let _ = crossterm::execute!(out, ResetColor);
+                            }
+                            let _ = writeln!(out);
+                        }
+                        "tool_result" => {
+                            let output = block["content"].as_str().unwrap_or("");
+                            let is_error = block["is_error"].as_bool().unwrap_or(false);
+                            let color = if is_error { Color::Red } else { Color::DarkGrey };
+                            let label = if is_error { "error" } else { "result" };
+                            if use_color() {
+                                let _ = crossterm::execute!(out, SetForegroundColor(color));
+                            }
+                            if output.len() > MAX_TOOL_OUTPUT {
+                                let end = output.floor_char_boundary(MAX_TOOL_OUTPUT);
+                                let _ = write!(out, "[{label}: {}... truncated]", &output[..end]);
+                            } else {
+                                let _ = write!(out, "[{label}: {output}]");
+                            }
+                            if use_color() {
+                                let _ = crossterm::execute!(out, ResetColor);
+                            }
+                            let _ = writeln!(out);
+                        }
+                        _ => {}
+                    }
+                }
+            } else {
+                // Empty content_blocks — fall back to content string.
+                if !content.is_empty() {
+                    let _ = writeln!(out, "{content}");
                 }
             }
-            _ => {
-                // Unknown role, fall through to basic display
-                let _ = writeln!(out, "[{role_str}] {content}");
+        } else {
+            // No content_blocks field — legacy message, show content string.
+            if !content.is_empty() || !is_tool_result_msg {
+                let _ = writeln!(out, "{content}");
             }
+        }
+
+        // System messages: close dimming.
+        if role_str == "system" && use_color() {
+            let _ = crossterm::execute!(out, ResetColor);
         }
 
         // Images
@@ -419,14 +630,6 @@ pub fn print_log(messages: &[serde_json::Value], character_name: &str) {
     }
 }
 
-/// Print a single message in the log transcript style (for `shore get`).
-pub fn print_single_message(msg: &serde_json::Value, character_name: &str) {
-    if let Some(arr) = msg.as_array() {
-        print_log(arr, character_name);
-    } else {
-        print_log(&[msg.clone()], character_name);
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Status formatter — human-readable dashboard
@@ -858,5 +1061,37 @@ mod tests {
             }
         });
         print_status(&data, "Sable");
+    }
+
+    // ── Spinner tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn format_spinner_line_thinking() {
+        let line = format_spinner_line("thinking", None, 2.3);
+        assert_eq!(line, "(thinking... 2.3s) ");
+    }
+
+    #[test]
+    fn format_spinner_line_with_model() {
+        let line = format_spinner_line("thinking", Some("claude-sonnet-4"), 1.5);
+        assert_eq!(line, "(thinking... 1.5s · claude-sonnet-4) ");
+    }
+
+    #[test]
+    fn format_spinner_line_empty_phase() {
+        let line = format_spinner_line("", None, 0.4);
+        assert_eq!(line, "(generating... 0.4s) ");
+    }
+
+    #[test]
+    fn format_spinner_line_custom_phase() {
+        let line = format_spinner_line("analyzing", None, 5.0);
+        assert_eq!(line, "(analyzing 5.0s) ");
+    }
+
+    #[test]
+    fn stream_spinner_new_does_not_panic() {
+        let spinner = StreamSpinner::new();
+        assert!(!spinner.is_active());
     }
 }

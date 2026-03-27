@@ -57,6 +57,11 @@ Add items here as decisions are made.
 - **Discord bot** (1.2) — Never used. Slash commands, selective character
   filtering. Can re-implement later if needed.
 
+## Superseded by Existing Features
+
+- **Failed message list/retry/clear** (5.45–5.47) — Removed. Auto-retry on
+  transient errors + `shore regen` covers this use case.
+
 ## Not Needed
 
 - **Insert message at position** (5.19) — Never used. No practical use case.

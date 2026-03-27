@@ -3,6 +3,7 @@ pub mod navigation;
 pub mod state;
 
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use shore_protocol::client_msg::Command;
 use shore_protocol::error::ErrorCode;
@@ -12,6 +13,7 @@ use tracing::info;
 
 use crate::autonomy::manager::AutonomyManager;
 use crate::config::LoadedConfig;
+use crate::diagnostics::Diagnostics;
 use crate::engine::{ConversationEngine, EngineError};
 use crate::llm_client::LlmClient;
 
@@ -40,6 +42,8 @@ pub struct CommandContext {
     pub autonomy: AutonomyManager,
     /// LLM client for commands that need model access (e.g. memory query).
     pub llm_client: LlmClient,
+    /// In-memory diagnostics ring buffers.
+    pub diagnostics: Arc<Mutex<Diagnostics>>,
 }
 
 /// Convenience type for command handler results.
@@ -79,6 +83,7 @@ pub async fn dispatch(
         "config_check" => state::config_check(ctx),
         "memory_reindex" => state::memory_reindex(engine, ctx).await,
         "config_reset" => state::config_reset(ctx),
+        "diagnostics" => state::diagnostics(ctx, &cmd.args),
 
         _ => Err((
             ErrorCode::InvalidRequest,
@@ -147,6 +152,7 @@ mod tests {
             session_tokens: Default::default(),
             autonomy,
             llm_client: LlmClient::new(data_dir.join("dummy.sock")),
+            diagnostics: Arc::new(Mutex::new(Diagnostics::default())),
         };
         (engine, ctx, push_rx)
     }

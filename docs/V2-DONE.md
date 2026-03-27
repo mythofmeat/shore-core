@@ -39,12 +39,15 @@ Features that are fully implemented and working in the V2 (Rust/TypeScript) rewr
 
 - **Unified tool system** — `dispatch_tool()` + `available_tools()` with privacy filtering (ToolCategory). Replaced legacy ToolRegistry.
 - **Memory tool** (unified NL search/create/update) — Wired into engine tool dispatch. Routes through MemoryResearcher (if tool_model configured) or direct MemoryAgent.ask().
+- **generate_image** (4.5) — `LlmClient.image_generate()` → shore-llm, download + save, memory entry creation.
+- **fetch_url** (4.7) — reqwest + HTML stripping for readable text extraction.
 - **send_image**
 - **list_images** (semantic search)
 - **recall_image**
 - **roll_dice** — Full dice notation parser (NdS+/-M).
 - **check_time** — Returns ISO 8601 datetime.
 - **Tool loop cap** — Configurable max_iterations (default 10).
+- **activity_heatmap** (2.7) — Real data from ActivityTracker via ToolContext. Returns hour_histogram (normalized densities), classifications (peak/trough/normal), engagement_score, sessions_per_day. Graceful empty fallback.
 
 ## CLI Commands
 
@@ -54,18 +57,22 @@ Features that are fully implemented and working in the V2 (Rust/TypeScript) rewr
 - **Send message** (shore send) — Supports `-i`/`--image` flag for multi-image attachments.
 - **In-context image description** — handler.rs builds Anthropic content arrays with base64-encoded images. Media type detection by extension (jpg, png, gif, webp).
 - **Regenerate** (shore regen [--guidance])
-- **Log** (--count flag)
+- **Log** (--count flag, -f/--follow mode, --json/--content format options)
 - **Edit message**
+- **Get message by index** (`shore get <ref>`)
 - **Delete message** (supports multiple refs)
 - **List characters** (scans config/characters directory)
+- **Create character** (`shore character --new <name>`, scaffolds directory)
 - **Switch character** (creates new engine instance, client-side state file)
 - **List models**
 - **Switch model** (accepts short or qualified names)
+- **Model reset** (`shore model --reset`, revert to default)
 - **Config get** (shore config / shore config <section>)
 - **Config set** (shore config <key> <value>) — Runtime config changes with focused whitelist: defaults.model, defaults.stream, autonomy.enabled, cache_keepalive.enabled.
 - **Config reset** (shore config --reset) — Reloads config from disk, clears runtime overrides.
 - **Config path** (shore config --path) — Prints config directory, no daemon needed.
 - **Status** (character, conversation, model, autonomy state/tau/keepalive, token counts)
+- **Status sections** (`shore status --section <name>`, filtered view)
 - **Completions** (fish, bash, zsh)
 - **Send via editor** (shore send with no args opens $EDITOR)
 - **Model info** (shore model <name> --info) — Full ResolvedModel details.
@@ -90,6 +97,10 @@ Features that are fully implemented and working in the V2 (Rust/TypeScript) rewr
 - **Per-character config overrides** — Character definitions, user definitions, prompt templates all resolve per-character.
 - **Process supervision** (shore-llm) — Daemon spawns and supervises shore-llm. Health checks, restart with backoff, SIGTERM/SIGKILL.
 
+## Message Storage
+
+- **Persist tool calls and reasoning in messages** (2.9) — Expanded Message with `content_blocks: Vec<ContentBlock>` (Text, Thinking, ToolUse, ToolResult). Tool loop intermediate messages persisted to JSONL. Payload rebuilt from content_blocks. Old conversations load fine via serde defaults.
+
 ## Rendering & UX
 
 - **Streaming responses** — With thinking token support.
@@ -100,6 +111,7 @@ Features that are fully implemented and working in the V2 (Rust/TypeScript) rewr
 - **Phase indicator before first token** — Shows generation phase during streaming.
 - **Tool result truncation** — 500 char limit in CLI display.
 - **Stream metadata abbreviation** — Strips date suffix from model names.
+- **Verbose spinner** (7.6) — `StreamSpinner` shows elapsed time and current phase during streaming, updated every 200ms. Clears on first content chunk. Non-terminal safe (no-op when piped).
 
 ## Memory Maintenance
 
@@ -115,3 +127,4 @@ Features that are fully implemented and working in the V2 (Rust/TypeScript) rewr
 - **API payload logging** (8.2) — `advanced.api_payload_logging` config flag. Logs request payloads to `{data_dir}/api_payloads.jsonl` with API keys redacted. Covers streaming and non-streaming requests.
 - **Cache debug guards** (8.3) — 5-layer guard in `check_cache_invalidation()`: checks warnings enabled, cache_read_tokens==0, turn count >1, not first after restart/compaction. Pushes `CacheWarning` to connected clients. 5 unit tests.
 - **shore-llm lifecycle robustness** (8.5) — Startup socket check warns when shore-llm is externally managed and socket is missing. Actionable error messages by error kind (NotFound, ConnectionRefused, PermissionDenied).
+- **In-memory ring buffers** (8.1) — `Diagnostics` struct with `RingBuffer<T>` (capacity 100) for API calls, tool executions, and errors. Recorded in handler and tool loop. Exposed via `shore diagnostics [-n count]` command.

@@ -4,6 +4,7 @@ pub mod images;
 pub mod memory_tools;
 pub mod web;
 
+use crate::autonomy::manager::AutonomyManager;
 use crate::config::models::ResolvedModel;
 use crate::llm_client::LlmClient;
 use crate::memory::agent::types::AgentIndexer;
@@ -112,6 +113,10 @@ pub trait ToolContext: Sync {
 
     // Legacy RAG — kept for image tools until they're migrated
     fn rag(&self) -> &dyn AgentRag;
+
+    // Autonomy access — used by activity heatmap tool
+    fn autonomy_manager(&self) -> Option<&AutonomyManager> { None }
+    fn character_name(&self) -> &str { "" }
 }
 
 // ---------------------------------------------------------------------------
@@ -167,7 +172,7 @@ pub fn dispatch_tool<'a>(
             "check_time" => basic::handle_check_time(input).await,
             "roll_dice" => basic::handle_roll_dice(input).await,
             // Other
-            "activity_heatmap" => activity::handle_activity_heatmap(input).await,
+            "activity_heatmap" => activity::handle_activity_heatmap(input, ctx).await,
             _ => Err(ToolError::NotImplemented(name.to_string())),
         }
     })

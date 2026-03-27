@@ -145,6 +145,13 @@ pub enum CliCommand {
     /// Run memory collation (tidy, merge, normalize, decay)
     Collate,
 
+    /// Show recent API calls, tool invocations, and errors
+    Diagnostics {
+        /// Number of entries to show per category
+        #[arg(short = 'n', long, default_value = "10")]
+        count: u32,
+    },
+
     /// Show or modify configuration
     Config {
         /// Optional key to get/set
@@ -191,6 +198,10 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
         | CliCommand::Regen { .. }
         | CliCommand::Completions { .. }
         | CliCommand::Config { path: true, check: false, reset: false, .. } => None,
+
+        CliCommand::Diagnostics { count } => {
+            Some(("diagnostics", json!({ "count": count })))
+        }
 
         // Character: list/switch/new handled locally, --info goes to daemon.
         CliCommand::Character { name, info, .. } => {
@@ -673,6 +684,7 @@ mod tests {
             CliCommand::Compact,
             CliCommand::Collate,
             CliCommand::Config { key: None, value: None, path: false, check: false, reset: false },
+            CliCommand::Diagnostics { count: 10 },
         ];
         for cmd in &commands {
             assert!(

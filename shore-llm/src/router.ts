@@ -7,6 +7,7 @@ import {
   type ImageGenerateRequest,
 } from "./providers/index.js";
 import * as openai from "./providers/openai.js";
+import * as openrouter from "./providers/openrouter.js";
 
 type Handler = (
   req: IncomingMessage,
@@ -50,9 +51,16 @@ async function handleImageGenerate(
   body: string,
 ): Promise<void> {
   const req = JSON.parse(body) as ImageGenerateRequest;
-  const client = openai.createClient(req.api_key, req.base_url);
-  const result = await openai.imageGenerate(client, req);
-  json(res, 200, result);
+
+  if (req.provider === "openrouter") {
+    const result = await openrouter.imageGenerate(req);
+    json(res, 200, result);
+  } else {
+    // OpenAI path (also works for any OpenAI-compatible base_url).
+    const client = openai.createClient(req.api_key, req.base_url);
+    const result = await openai.imageGenerate(client, req);
+    json(res, 200, result);
+  }
 }
 
 async function handleGenerate(

@@ -346,6 +346,7 @@ mod tests {
                 role: Role::Assistant,
                 content: "autonomous hello".into(),
                 images: vec![],
+                content_blocks: vec![],
                 alt_index: None,
                 alt_count: None,
                 timestamp: "2026-01-01T00:00:00Z".into(),

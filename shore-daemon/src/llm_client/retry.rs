@@ -208,6 +208,7 @@ mod tests {
             usage: Usage::default(),
             timing: Timing::default(),
             tool_uses: vec![],
+            content_blocks: vec![],
         }
     }
 

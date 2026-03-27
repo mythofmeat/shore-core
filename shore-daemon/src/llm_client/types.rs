@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+pub use shore_protocol::types::ContentBlock;
 
 /// Request body for shore-llm's POST /v1/stream and POST /v1/generate endpoints.
 ///
@@ -128,6 +129,12 @@ pub struct StreamResult {
 
     /// Tool invocations encountered during the stream.
     pub tool_uses: Vec<ToolUseEvent>,
+
+    /// Structured content blocks accumulated during streaming.
+    ///
+    /// Contains the full sequence of text, thinking, and tool_use blocks
+    /// in the order they were received. Used for persistence.
+    pub content_blocks: Vec<ContentBlock>,
 }
 
 /// Response from shore-llm's POST /v1/image/generate endpoint.
@@ -144,17 +151,7 @@ pub struct ImageGenerateTiming {
     pub total_ms: u32,
 }
 
-/// A content block in a non-streaming response.
-///
-/// Mirrors shore-llm's `NormalizedContentBlock` — the `/v1/generate` endpoint
-/// returns these in `content_blocks` alongside the flattened `content` string.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum ContentBlock {
-    Text { text: String },
-    ToolUse { id: String, name: String, input: serde_json::Value },
-    Thinking { thinking: String },
-}
+// ContentBlock is re-exported from shore_protocol::types::ContentBlock.
 
 /// Non-streaming response from POST /v1/generate.
 #[derive(Debug, Clone, Deserialize)]

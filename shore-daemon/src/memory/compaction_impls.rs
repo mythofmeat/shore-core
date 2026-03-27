@@ -120,10 +120,14 @@ pub struct ImageGenConfig {
     pub model_id: String,
     pub api_key: String,
     pub base_url: Option<String>,
-    /// Default size (e.g. "1024x1024").
+    /// Default size for OpenAI path (e.g. "1024x1024").
     pub size: String,
-    /// Optional quality hint (e.g. "hd").
+    /// Optional quality hint for OpenAI path (e.g. "hd").
     pub quality: Option<String>,
+    /// OpenRouter aspect ratio (e.g. "1:1", "16:9").
+    pub aspect_ratio: Option<String>,
+    /// OpenRouter image size (e.g. "1K", "2K", "4K").
+    pub image_size: Option<String>,
 }
 
 /// Resolve image generation config from the raw TOML catalog entry.
@@ -163,10 +167,14 @@ pub fn resolve_image_gen_config(
         .unwrap_or("openai")
         .to_string();
 
+    let default_api_key_env = match provider.as_str() {
+        "openrouter" => "OPENROUTER_API_KEY",
+        _ => "OPENAI_API_KEY",
+    };
     let api_key_env = entry
         .get("api_key_env")
         .and_then(|v| v.as_str())
-        .unwrap_or("OPENAI_API_KEY");
+        .unwrap_or(default_api_key_env);
 
     let api_key = std::env::var(api_key_env).map_err(|_| {
         format!(
@@ -191,6 +199,16 @@ pub fn resolve_image_gen_config(
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
+    let aspect_ratio = entry
+        .get("aspect_ratio")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let image_size = entry
+        .get("image_size")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
     Ok(ImageGenConfig {
         provider,
         model_id,
@@ -198,6 +216,8 @@ pub fn resolve_image_gen_config(
         base_url,
         size,
         quality,
+        aspect_ratio,
+        image_size,
     })
 }
 

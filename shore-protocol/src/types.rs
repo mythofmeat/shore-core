@@ -17,6 +17,29 @@ pub struct ImageRef {
     pub caption: Option<String>,
 }
 
+/// A structured content block within a message.
+///
+/// Messages can contain a sequence of content blocks representing text,
+/// thinking/reasoning, tool invocations, and tool results. This preserves
+/// the full fidelity of what happened during generation.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ContentBlock {
+    Text { text: String },
+    Thinking { thinking: String },
+    ToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
+    ToolResult {
+        tool_use_id: String,
+        content: String,
+        #[serde(default)]
+        is_error: bool,
+    },
+}
+
 /// A chat message. One shape everywhere — no polymorphism.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Message {
@@ -25,6 +48,8 @@ pub struct Message {
     pub content: String,
     #[serde(default)]
     pub images: Vec<ImageRef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub content_blocks: Vec<ContentBlock>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub alt_index: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]

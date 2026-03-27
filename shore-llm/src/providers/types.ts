@@ -94,6 +94,10 @@ export interface ImageGenerateRequest {
   prompt: string;
   size?: string;
   quality?: string;
+  /** OpenRouter aspect ratio (e.g. "1:1", "16:9"). */
+  aspect_ratio?: string;
+  /** OpenRouter image size (e.g. "1K", "2K", "4K"). */
+  image_size?: string;
 }
 
 export interface ImageGenerateResponse {

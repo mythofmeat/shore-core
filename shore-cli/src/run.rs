@@ -287,30 +287,39 @@ fn resolve_addr(cli: &Cli) -> ServerAddr {
 async fn recv_streaming_response(
     conn: &mut SWPConnection,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let mut spinner = output::StreamSpinner::new();
+
     loop {
         let msg = conn.recv().await?;
         match &msg {
             ServerMessage::StreamStart(start) => {
                 output::print_stream_start(start.regen);
+                spinner.start();
             }
             ServerMessage::StreamChunk(chunk) => {
+                spinner.clear().await;
                 output::print_chunk(chunk);
             }
             ServerMessage::StreamEnd(end) => {
+                spinner.stop().await;
                 if end.finish_reason == "tool_use" {
-                    // Tool loop: more messages will follow — don't print metadata yet.
+                    // Tool loop: more messages will follow.
+                    // Restart spinner for the next LLM round.
+                    spinner.restart();
                     continue;
                 }
                 output::print_stream_end(end);
                 return Ok(());
             }
             ServerMessage::ToolCall(call) => {
+                spinner.clear().await;
                 output::print_tool_call(call);
             }
             ServerMessage::ToolResult(result) => {
                 output::print_tool_result(result);
             }
             ServerMessage::Error(err) => {
+                spinner.stop().await;
                 output::print_server_error(
                     &serde_json::to_string(&err.code).unwrap_or_default(),
                     &err.message,
@@ -325,7 +334,15 @@ async fn recv_streaming_response(
                 // NewMessage is for follow-mode / other clients.
             }
             ServerMessage::Phase(phase) => {
-                output::print_phase(phase);
+                // Update spinner instead of printing static label when active.
+                if spinner.is_active() {
+                    spinner.set_phase(&phase.phase);
+                    if let Some(model) = &phase.model {
+                        spinner.set_model(Some(model.clone()));
+                    }
+                } else {
+                    output::print_phase(phase);
+                }
             }
             ServerMessage::Ping(_) => {
                 // Keepalive, ignore

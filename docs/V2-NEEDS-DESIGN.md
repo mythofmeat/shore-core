@@ -43,14 +43,16 @@ requires human judgment about how it should work, not just coding.
   research, when to stop, output format.
 
 
-## Message Storage
+## Provider Payload Projection
 
-- 2.9 **Persist tool calls and reasoning in messages** — MISSING
-  Tool calls (name, input, output, is_error) and thinking/reasoning content are
-  streamed in real-time but discarded after generation. They should be persisted
-  alongside Message so that `shore log` can display them and for debugging/audit.
-  **Needs decision:** Message struct expansion, storage format (inline vs sidecar),
-  migration strategy for existing conversations.
+- 11.1 **Provider-specific payload projection** — MISSING
+  Each LLM provider has different rules for content blocks in conversation history:
+  Anthropic requires interleaved thinking with signatures on the last turn only;
+  OpenAI-compatible APIs have no thinking blocks; DeepSeek has its own reasoning
+  format. Currently thinking blocks are stripped from all payloads.
+  **Needs decision:** Where thinking signatures come from (shore-llm? stored in
+  ContentBlock?), handling of provider switches mid-conversation, per-Sdk projection
+  logic in the daemon.
 
 
 ## Conversation Management (cont.)

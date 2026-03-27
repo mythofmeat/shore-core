@@ -394,6 +394,7 @@ fn push_message_delivers_content() {
             role: Role::Assistant,
             content: "Hey, I was thinking about our conversation...".into(),
             images: vec![],
+            content_blocks: vec![],
             alt_index: None,
             alt_count: None,
             timestamp: "2026-03-25T14:30:00Z".into(),

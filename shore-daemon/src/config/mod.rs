@@ -87,8 +87,6 @@ pub struct LoadedConfig {
     pub app: AppConfig,
     pub models: ModelCatalog,
     pub dirs: ShoreDirs,
-    /// Raw merged TOML table, retained for character overlay use.
-    raw_table: toml::Table,
 }
 
 impl LoadedConfig {
@@ -100,8 +98,7 @@ impl LoadedConfig {
             app,
             models,
             dirs,
-            raw_table: toml::Table::new(),
-        }
+}
     }
 }
 
@@ -187,21 +184,6 @@ pub fn load_config(config_path: Option<&Path>) -> Result<LoadedConfig, ConfigErr
     let embedding_section = table.remove("embedding");
     let image_generation_section = table.remove("image_generation");
 
-    // Save the full merged table (with model sections) for character overlays.
-    let mut raw_for_storage = table.clone();
-    if let Some(ref v) = chat_section {
-        raw_for_storage.insert("chat".to_string(), v.clone());
-    }
-    if let Some(ref v) = tools_section {
-        raw_for_storage.insert("tools".to_string(), v.clone());
-    }
-    if let Some(ref v) = embedding_section {
-        raw_for_storage.insert("embedding".to_string(), v.clone());
-    }
-    if let Some(ref v) = image_generation_section {
-        raw_for_storage.insert("image_generation".to_string(), v.clone());
-    }
-
     // Deserialize the remaining table into AppConfig.
     let app: AppConfig = toml::Value::Table(table)
         .try_into()
@@ -222,8 +204,7 @@ pub fn load_config(config_path: Option<&Path>) -> Result<LoadedConfig, ConfigErr
         app,
         models: catalog,
         dirs,
-        raw_table: raw_for_storage,
-    })
+})
 }
 
 /// Recursively deep-merge `overlay` into `base`.
