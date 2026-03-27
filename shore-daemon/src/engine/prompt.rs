@@ -219,7 +219,7 @@ fn estimate_message_tokens(msg: &Message) -> usize {
     // Sum tokens across all content blocks.
     msg.content_blocks.iter().map(|b| match b {
         ContentBlock::Text { text } => estimate_tokens(text),
-        ContentBlock::Thinking { thinking } => estimate_tokens(thinking),
+        ContentBlock::Thinking { thinking, .. } => estimate_tokens(thinking),
         ContentBlock::ToolUse { input, name, .. } => {
             estimate_tokens(name) + estimate_tokens(&input.to_string())
         }
@@ -340,7 +340,7 @@ mod tests {
             images: vec![],
             content_blocks: vec![
                 ContentBlock::Text { text: "A".repeat(40).to_string() }, // 40 chars = 10 tokens
-                ContentBlock::Thinking { thinking: "B".repeat(20).to_string() }, // 20 chars = 5 tokens
+                ContentBlock::Thinking { thinking: "B".repeat(20).to_string(), signature: None }, // 20 chars = 5 tokens
             ],
             alt_index: None,
             alt_count: None,

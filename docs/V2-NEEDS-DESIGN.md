@@ -12,18 +12,6 @@ requires human judgment about how it should work, not just coding.
   ephemeral history, auto-accept writes (no confirmation flow).
 
 
-## Provider Payload Projection
-
-- 11.1 **Provider-specific payload projection** — MISSING
-  Each LLM provider has different rules for content blocks in conversation history:
-  Anthropic requires interleaved thinking with signatures on the last turn only;
-  OpenAI-compatible APIs have no thinking blocks; DeepSeek has its own reasoning
-  format. Currently thinking blocks are stripped from all payloads.
-  **Needs decision:** Where thinking signatures come from (shore-llm? stored in
-  ContentBlock?), handling of provider switches mid-conversation, per-Sdk projection
-  logic in the daemon.
-
-
 ## Embedded Matrix Server
 
 - 10.5 **Embedded Synapse provisioning & config** — DONE

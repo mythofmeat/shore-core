@@ -145,8 +145,12 @@ pub async fn run_agent_loop(
                 ContentBlock::ToolUse { id, name, input } => {
                     json!({"type": "tool_use", "id": id, "name": name, "input": input})
                 }
-                ContentBlock::Thinking { thinking } => {
-                    json!({"type": "thinking", "thinking": thinking})
+                ContentBlock::Thinking { thinking, signature } => {
+                    let mut block = json!({"type": "thinking", "thinking": thinking});
+                    if let Some(sig) = signature {
+                        block["signature"] = json!(sig);
+                    }
+                    block
                 }
                 ContentBlock::ToolResult { tool_use_id, content, is_error } => {
                     let mut v = json!({"type": "tool_result", "tool_use_id": tool_use_id, "content": content});

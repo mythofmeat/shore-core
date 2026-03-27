@@ -416,12 +416,40 @@ mod tests {
 
     #[test]
     fn content_block_thinking_round_trip() {
-        let block = ContentBlock::Thinking { thinking: "Let me consider...".into() };
+        let block = ContentBlock::Thinking { thinking: "Let me consider...".into(), signature: None };
         let json = serde_json::to_value(&block).unwrap();
         assert_eq!(json["type"], "thinking");
         assert_eq!(json["thinking"], "Let me consider...");
         let back: ContentBlock = serde_json::from_value(json).unwrap();
         assert_eq!(back, block);
+    }
+
+    #[test]
+    fn content_block_thinking_with_signature_round_trip() {
+        let block = ContentBlock::Thinking {
+            thinking: "Let me consider...".into(),
+            signature: Some("sig_abc123".into()),
+        };
+        let json = serde_json::to_value(&block).unwrap();
+        assert_eq!(json["type"], "thinking");
+        assert_eq!(json["thinking"], "Let me consider...");
+        assert_eq!(json["signature"], "sig_abc123");
+        let back: ContentBlock = serde_json::from_value(json).unwrap();
+        assert_eq!(back, block);
+    }
+
+    #[test]
+    fn content_block_thinking_without_signature_compat() {
+        // Simulate old JSON without signature field — should deserialize with None.
+        let json = json!({"type": "thinking", "thinking": "old block"});
+        let block: ContentBlock = serde_json::from_value(json).unwrap();
+        match block {
+            ContentBlock::Thinking { thinking, signature } => {
+                assert_eq!(thinking, "old block");
+                assert!(signature.is_none());
+            }
+            _ => panic!("Expected Thinking"),
+        }
     }
 
     #[test]
@@ -488,7 +516,7 @@ mod tests {
             content: "The time is noon.".into(),
             images: vec![],
             content_blocks: vec![
-                ContentBlock::Thinking { thinking: "User wants the time.".into() },
+                ContentBlock::Thinking { thinking: "User wants the time.".into(), signature: None },
                 ContentBlock::ToolUse {
                     id: "tu_1".into(),
                     name: "check_time".into(),

@@ -88,6 +88,9 @@ pub enum StreamEvent {
     Thinking {
         text: String,
     },
+    ThinkingSignature {
+        signature: String,
+    },
     ToolUse {
         id: String,
         name: String,
@@ -359,8 +362,23 @@ mod tests {
         let resp: GenerateResponse = serde_json::from_str(json).unwrap();
         assert_eq!(resp.content_blocks.len(), 2);
         match &resp.content_blocks[0] {
-            ContentBlock::Thinking { thinking } => assert_eq!(thinking, "Let me think..."),
+            ContentBlock::Thinking { thinking, signature } => {
+                assert_eq!(thinking, "Let me think...");
+                assert!(signature.is_none());
+            }
             other => panic!("Expected Thinking, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn deserialize_stream_thinking_signature() {
+        let json = r#"{"type":"thinking_signature","signature":"sig_abc123"}"#;
+        let event: StreamEvent = serde_json::from_str(json).unwrap();
+        match event {
+            StreamEvent::ThinkingSignature { signature } => {
+                assert_eq!(signature, "sig_abc123");
+            }
+            other => panic!("Expected ThinkingSignature, got {:?}", other),
         }
     }
 }

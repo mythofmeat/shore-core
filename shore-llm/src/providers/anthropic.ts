@@ -107,7 +107,11 @@ function normalizeContentBlocks(
         return { type: "text", text: block.text };
       }
       if (block.type === "thinking") {
-        return { type: "thinking", thinking: block.thinking };
+        return {
+          type: "thinking",
+          thinking: block.thinking,
+          signature: (block as unknown as { signature?: string }).signature,
+        };
       }
       if (block.type === "tool_use") {
         return {
@@ -227,6 +231,10 @@ export async function stream(
     { id: string; name: string; jsonChunks: string[] }
   >();
 
+  // Track thinking block indices and their accumulated signatures
+  const thinkingBlocks = new Set<number>();
+  const thinkingSignatures = new Map<number, string>();
+
   function writeLine(event: StreamEvent): void {
     res.write(JSON.stringify(event) + "\n");
   }
@@ -248,6 +256,8 @@ export async function stream(
             name: block.name,
             jsonChunks: [],
           });
+        } else if (block.type === "thinking") {
+          thinkingBlocks.add(event.index);
         }
         break;
       }
@@ -265,6 +275,15 @@ export async function stream(
             firstTokenMs = performance.now() - start;
           }
           writeLine({ type: "thinking", text: delta.thinking });
+        } else if (
+          delta.type === "signature_delta" &&
+          thinkingBlocks.has(event.index)
+        ) {
+          const existing = thinkingSignatures.get(event.index) ?? "";
+          thinkingSignatures.set(
+            event.index,
+            existing + (delta as unknown as { signature: string }).signature,
+          );
         } else if (delta.type === "input_json_delta") {
           const tool = toolBlocks.get(event.index);
           if (tool) {
@@ -293,6 +312,16 @@ export async function stream(
             input,
           });
           toolBlocks.delete(event.index);
+        }
+
+        // Emit thinking signature when a thinking block finishes.
+        if (thinkingBlocks.has(event.index)) {
+          const sig = thinkingSignatures.get(event.index);
+          if (sig) {
+            writeLine({ type: "thinking_signature", signature: sig });
+            thinkingSignatures.delete(event.index);
+          }
+          thinkingBlocks.delete(event.index);
         }
         break;
       }

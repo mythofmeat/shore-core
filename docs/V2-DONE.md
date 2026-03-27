@@ -109,6 +109,7 @@ Features that are fully implemented and working in the V2 (Rust/TypeScript) rewr
 ## Message Storage
 
 - **Persist tool calls and reasoning in messages** (2.9) — Expanded Message with `content_blocks: Vec<ContentBlock>` (Text, Thinking, ToolUse, ToolResult). Tool loop intermediate messages persisted to JSONL. Payload rebuilt from content_blocks. Old conversations load fine via serde defaults.
+- **Provider-specific payload projection** (11.1) — Thinking block signatures captured from Anthropic API (streaming `signature_delta` → `thinking_signature` event, non-streaming via content block). Stored in `ContentBlock::Thinking { signature: Option<String> }`. Daemon sends full-fidelity content blocks; shore-llm handles per-provider projection (Anthropic passes through thinking+signature, OpenAI-compatible providers implicitly strip thinking in `translateMessages`). Backward compatible: old messages without signatures deserialize with `None` and are stripped from payloads.
 
 ## Rendering & UX
 

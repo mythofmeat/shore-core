@@ -71,6 +71,7 @@ impl StreamConsumer {
         let mut content_blocks: Vec<ContentBlock> = Vec::new();
         let mut text_buf = String::new();
         let mut thinking_buf = String::new();
+        let mut pending_signature: Option<String> = None;
         let mut started = false;
 
         // Flush accumulated text buffer into content_blocks.
@@ -82,11 +83,12 @@ impl StreamConsumer {
             }
         };
 
-        // Flush accumulated thinking buffer into content_blocks.
-        let flush_thinking = |buf: &mut String, blocks: &mut Vec<ContentBlock>| {
+        // Flush accumulated thinking buffer into content_blocks, attaching any pending signature.
+        let flush_thinking = |buf: &mut String, blocks: &mut Vec<ContentBlock>, sig: &mut Option<String>| {
             if !buf.is_empty() {
                 blocks.push(ContentBlock::Thinking {
                     thinking: std::mem::take(buf),
+                    signature: sig.take(),
                 });
             }
         };
@@ -124,7 +126,7 @@ impl StreamConsumer {
 
                 StreamEvent::Text { text } => {
                     // Flush any pending thinking before accumulating text.
-                    flush_thinking(&mut thinking_buf, &mut content_blocks);
+                    flush_thinking(&mut thinking_buf, &mut content_blocks, &mut pending_signature);
                     text_buf.push_str(&text);
 
                     // Relay as StreamChunk with content_type "text".
@@ -150,10 +152,15 @@ impl StreamConsumer {
                     ));
                 }
 
+                StreamEvent::ThinkingSignature { signature } => {
+                    // Buffer the signature to attach when the thinking block is flushed.
+                    pending_signature = Some(signature);
+                }
+
                 StreamEvent::ToolUse { id, name, input } => {
                     // Flush pending buffers before tool_use block.
                     flush_text(&mut text_buf, &mut content_blocks);
-                    flush_thinking(&mut thinking_buf, &mut content_blocks);
+                    flush_thinking(&mut thinking_buf, &mut content_blocks, &mut pending_signature);
 
                     content_blocks.push(ContentBlock::ToolUse {
                         id: id.clone(),
@@ -176,7 +183,7 @@ impl StreamConsumer {
                 } => {
                     // Flush any remaining buffers.
                     flush_text(&mut text_buf, &mut content_blocks);
-                    flush_thinking(&mut thinking_buf, &mut content_blocks);
+                    flush_thinking(&mut thinking_buf, &mut content_blocks, &mut pending_signature);
                     let metadata = StreamMetadata {
                         tokens: TokenCounts {
                             input: usage.input_tokens,
@@ -426,7 +433,7 @@ mod tests {
 
         // Verify content_blocks accumulated correctly.
         assert_eq!(result.content_blocks.len(), 3, "Should have thinking + tool_use + text blocks");
-        assert!(matches!(&result.content_blocks[0], ContentBlock::Thinking { thinking } if thinking == "Let me think..."));
+        assert!(matches!(&result.content_blocks[0], ContentBlock::Thinking { thinking, signature } if thinking == "Let me think..." && signature.is_none()));
         assert!(matches!(&result.content_blocks[1], ContentBlock::ToolUse { id, name, .. } if id == "t1" && name == "search"));
         assert!(matches!(&result.content_blocks[2], ContentBlock::Text { text } if text == "Found it"));
 
@@ -440,6 +447,45 @@ mod tests {
             }
             other => panic!("Expected StreamChunk(thinking), got {:?}", other),
         }
+
+        server_handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn consume_stream_with_thinking_signature() {
+        let (mut writer, mut reader, push_tx, _push_rx) =
+            setup_stream_pair().await;
+        let consumer = StreamConsumer::new(push_tx);
+        let ctx = CacheContext::default();
+
+        let events = [
+            r#"{"type":"start","model":"claude-test"}"#,
+            r#"{"type":"thinking","text":"Let me "}"#,
+            r#"{"type":"thinking","text":"reason..."}"#,
+            r#"{"type":"thinking_signature","signature":"sig_test_abc"}"#,
+            r#"{"type":"text","text":"The answer"}"#,
+            r#"{"type":"done","content":"The answer","finish_reason":"end_turn","usage":{"input_tokens":20,"output_tokens":10},"timing":{"total_ms":300}}"#,
+        ];
+
+        let server_handle = tokio::spawn(async move {
+            for event in events {
+                writer.write_all(event.as_bytes()).await.unwrap();
+                writer.write_all(b"\n").await.unwrap();
+            }
+            writer.shutdown().await.unwrap();
+        });
+
+        let result = consumer.consume(&mut reader, false, &ctx).await.unwrap();
+
+        assert_eq!(result.content_blocks.len(), 2);
+        match &result.content_blocks[0] {
+            ContentBlock::Thinking { thinking, signature } => {
+                assert_eq!(thinking, "Let me reason...");
+                assert_eq!(signature.as_deref(), Some("sig_test_abc"));
+            }
+            other => panic!("Expected Thinking with signature, got {:?}", other),
+        }
+        assert!(matches!(&result.content_blocks[1], ContentBlock::Text { text } if text == "The answer"));
 
         server_handle.await.unwrap();
     }
@@ -563,7 +609,7 @@ mod tests {
 
         // Consecutive thinking chunks merged, then text block.
         assert_eq!(result.content_blocks.len(), 2);
-        assert!(matches!(&result.content_blocks[0], ContentBlock::Thinking { thinking } if thinking == "First thought"));
+        assert!(matches!(&result.content_blocks[0], ContentBlock::Thinking { thinking, signature } if thinking == "First thought" && signature.is_none()));
         assert!(matches!(&result.content_blocks[1], ContentBlock::Text { text } if text == "Answer"));
 
         server_handle.await.unwrap();
@@ -598,7 +644,7 @@ mod tests {
         // Type change should flush: text, thinking, text → 3 blocks.
         assert_eq!(result.content_blocks.len(), 3);
         assert!(matches!(&result.content_blocks[0], ContentBlock::Text { text } if text == "pre-thought "));
-        assert!(matches!(&result.content_blocks[1], ContentBlock::Thinking { thinking } if thinking == "hmm..."));
+        assert!(matches!(&result.content_blocks[1], ContentBlock::Thinking { thinking, signature } if thinking == "hmm..." && signature.is_none()));
         assert!(matches!(&result.content_blocks[2], ContentBlock::Text { text } if text == "post-thought"));
 
         server_handle.await.unwrap();

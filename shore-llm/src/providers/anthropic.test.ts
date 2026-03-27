@@ -334,7 +334,7 @@ describe("generate", () => {
 
     expect(result.content).toBe("The answer is 42.");
     expect(result.content_blocks).toEqual([
-      { type: "thinking", thinking: "Let me think..." },
+      { type: "thinking", thinking: "Let me think...", signature: "sig_abc" },
       { type: "text", text: "The answer is 42." },
     ]);
   });
@@ -444,6 +444,11 @@ describe("stream", () => {
         delta: { type: "thinking_delta", thinking: "Hmm..." },
       } as RawContentBlockDeltaEvent,
       {
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "signature_delta", signature: "sig_stream_123" },
+      } as unknown as RawContentBlockDeltaEvent,
+      {
         type: "content_block_stop",
         index: 0,
       } as RawContentBlockStopEvent,
@@ -487,8 +492,9 @@ describe("stream", () => {
 
     expect(lines[0]).toMatchObject({ type: "start" });
     expect(lines[1]).toEqual({ type: "thinking", text: "Hmm..." });
-    expect(lines[2]).toEqual({ type: "text", text: "Answer" });
-    expect(lines[3]).toMatchObject({ type: "done", content: "Answer" });
+    expect(lines[2]).toEqual({ type: "thinking_signature", signature: "sig_stream_123" });
+    expect(lines[3]).toEqual({ type: "text", text: "Answer" });
+    expect(lines[4]).toMatchObject({ type: "done", content: "Answer" });
   });
 
   it("emits tool_use events with accumulated JSON input", async () => {

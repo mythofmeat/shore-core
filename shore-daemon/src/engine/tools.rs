@@ -38,7 +38,13 @@ pub struct ToolLoopResult {
 fn content_block_to_json(block: &ContentBlock) -> Value {
     match block {
         ContentBlock::Text { text } => json!({ "type": "text", "text": text }),
-        ContentBlock::Thinking { thinking } => json!({ "type": "thinking", "thinking": thinking }),
+        ContentBlock::Thinking { thinking, signature } => {
+            let mut block = json!({ "type": "thinking", "thinking": thinking });
+            if let Some(sig) = signature {
+                block["signature"] = json!(sig);
+            }
+            block
+        }
         ContentBlock::ToolUse { id, name, input } => json!({
             "type": "tool_use", "id": id, "name": name, "input": input,
         }),

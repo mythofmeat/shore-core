@@ -382,7 +382,6 @@ impl MessageHandler {
                 };
                 let content = if !m.content_blocks.is_empty() {
                     // Build payload from structured content blocks.
-                    // Strip Thinking blocks for now (provider projection TODO).
                     let blocks: Vec<Value> = m.content_blocks.iter().filter_map(|b| match b {
                         ContentBlock::Text { text } => Some(json!({ "type": "text", "text": text })),
                         ContentBlock::Thinking { thinking, signature } => {
