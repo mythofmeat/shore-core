@@ -28,6 +28,7 @@ use crate::tools::{self as tool_system, ToolContext};
 use crate::llm_client::retry::{self, RetryDecision, RetryPolicy};
 use crate::llm_client::stream::{CacheContext, StreamConsumer};
 use crate::llm_client::LlmClient;
+use crate::config::app::SearchConfig;
 use crate::memory::compaction_impls::ImageGenConfig;
 use crate::server::RoutedMessage;
 
@@ -61,6 +62,7 @@ struct HandlerToolContext {
     image_dir_val: String,
     llm_client_val: LlmClient,
     image_gen_config_val: Option<ImageGenConfig>,
+    search_config_val: SearchConfig,
     autonomy_val: AutonomyManager,
     character_name_val: String,
 }
@@ -84,6 +86,7 @@ impl ToolContext for HandlerToolContext {
     fn image_dir(&self) -> &str { &self.image_dir_val }
     fn llm_client(&self) -> Option<&LlmClient> { Some(&self.llm_client_val) }
     fn image_gen_config(&self) -> Option<&ImageGenConfig> { self.image_gen_config_val.as_ref() }
+    fn search_config(&self) -> &SearchConfig { &self.search_config_val }
     fn autonomy_manager(&self) -> Option<&AutonomyManager> { Some(&self.autonomy_val) }
     fn character_name(&self) -> &str { &self.character_name_val }
 }
@@ -555,6 +558,7 @@ impl MessageHandler {
                     .into_owned(),
                 llm_client_val: self.llm_client.clone(),
                 image_gen_config_val: image_gen_config,
+                search_config_val: self.cmd_ctx.config.app.behavior.tool_use.search.clone(),
                 autonomy_val: self.autonomy.clone(),
                 character_name_val: char_name.clone(),
             };

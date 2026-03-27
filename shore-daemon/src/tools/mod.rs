@@ -114,6 +114,9 @@ pub trait ToolContext: Sync {
     // Legacy RAG — kept for image tools until they're migrated
     fn rag(&self) -> &dyn AgentRag;
 
+    // Web search configuration
+    fn search_config(&self) -> &crate::config::app::SearchConfig;
+
     // Autonomy access — used by activity heatmap tool
     fn autonomy_manager(&self) -> Option<&AutonomyManager> { None }
     fn character_name(&self) -> &str { "" }
@@ -166,9 +169,8 @@ pub fn dispatch_tool<'a>(
             "recall_image" => images::handle_recall_image(input, ctx).await,
             "generate_image" => images::handle_generate_image(input, ctx).await,
             // Web tools
-            "web_search" => web::handle_web_search(input).await,
+            "web_search" => web::handle_web_search(input, ctx).await,
             "fetch_url" => web::handle_fetch_url(input).await,
-            "research_web" => web::handle_research_web(input).await,
             // Basic tools
             "check_time" => basic::handle_check_time(input).await,
             "roll_dice" => basic::handle_roll_dice(input).await,
@@ -191,8 +193,8 @@ mod tests {
     #[test]
     fn test_all_tools_returns_expected_count() {
         let tools = all_tools();
-        // memory(1) + images(4) + web(3) + activity(1) + basic(2) = 11
-        assert_eq!(tools.len(), 11);
+        // memory(1) + images(4) + web(2) + activity(1) + basic(2) = 10
+        assert_eq!(tools.len(), 10);
     }
 
     #[test]
@@ -231,7 +233,6 @@ mod tests {
         // Web and other tools should remain.
         assert!(private_names.contains(&"web_search"));
         assert!(private_names.contains(&"fetch_url"));
-        assert!(private_names.contains(&"research_web"));
         assert!(private_names.contains(&"activity_heatmap"));
     }
 
@@ -248,7 +249,7 @@ mod tests {
         assert!(!names.contains(&"web_search"));
         assert!(names.contains(&"memory"));
         assert!(names.contains(&"check_time"));
-        assert_eq!(tools.len(), 9); // 11 - 2 disabled
+        assert_eq!(tools.len(), 8); // 10 - 2 disabled
     }
 
     #[test]

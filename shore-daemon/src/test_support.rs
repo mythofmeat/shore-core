@@ -12,6 +12,7 @@ use crate::llm_client::LlmClient;
 use crate::memory::agent::types::{AgentError, AgentIndexer, AgentRag, RagHit};
 use crate::memory::agent::{CallerIdentity, MemoryAgent};
 use crate::memory::agent_llm::{AgentLlm, MockAgentLlm};
+use crate::config::app::SearchConfig;
 use crate::memory::compaction_impls::ImageGenConfig;
 use crate::memory::db::MemoryDB;
 use crate::memory::researcher::MemoryResearcher;
@@ -90,6 +91,7 @@ pub struct TestToolContext {
     pub researcher: Option<MemoryResearcher>,
     pub researcher_llm_val: Option<MockAgentLlm>,
     pub researcher_model_val: Option<ResolvedModel>,
+    pub search_config_val: SearchConfig,
 }
 
 impl TestToolContext {
@@ -105,6 +107,7 @@ impl TestToolContext {
             researcher: None,
             researcher_llm_val: None,
             researcher_model_val: None,
+            search_config_val: SearchConfig::default(),
         }
     }
 
@@ -176,6 +179,9 @@ impl ToolContext for TestToolContext {
     }
     fn image_gen_config(&self) -> Option<&ImageGenConfig> {
         None
+    }
+    fn search_config(&self) -> &SearchConfig {
+        &self.search_config_val
     }
 }
 

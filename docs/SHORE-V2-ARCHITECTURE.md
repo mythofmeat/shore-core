@@ -1124,9 +1124,8 @@ LLM during conversation:
 | `list_images` | List image memories (optional `query` for semantic search via RAG, top-32) | Memory DB + RAG |
 | `recall_image` | View image at full resolution | Filesystem |
 | `generate_image` | DALL-E 3 / Flux generation | HTTP (OpenAI-compat endpoint) |
-| `web_search` | Search the web | HTTP (Tavily or configurable) |
+| `web_search` | Search the web | HTTP (Tavily API) |
 | `fetch_url` | Read a webpage | HTTP |
-| `research_web` | Multi-step web research | HTTP |
 | `roll_dice` | Dice notation (2d6+3) | Pure computation |
 | `check_time` | Current date/time | System clock |
 | `activity_heatmap` | User's message patterns | Activity tracker |

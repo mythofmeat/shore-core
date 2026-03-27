@@ -57,10 +57,15 @@ max_iterations = 10
 # generate_image = true
 # web_search = true
 # fetch_url = true
-# research_web = true
 # check_time = true
 # roll_dice = true
 # activity_heatmap = true
+
+# [behavior.tool_use.search]
+# api_key_env = "TAVILY_API_KEY"     # Env var holding the Tavily API key
+# max_results = 5                     # Default results per search
+# search_depth = "basic"              # "basic" or "advanced"
+# include_answer = true               # Include Tavily's synthesized answer
 
 [memory]
 rag_results = 5

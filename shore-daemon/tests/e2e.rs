@@ -872,3 +872,127 @@ async fn e2e_generate_image() {
     eprintln!("=== Image Gen E2E test passed ===");
     harness.shutdown().await;
 }
+
+// ── Web search E2E test ───────────────────────────────────────────────────
+
+#[tokio::test]
+#[ignore = "Requires OPENROUTER_API_KEY, TAVILY_API_KEY, and shore-llm built"]
+async fn e2e_web_search() {
+    if let Some(msg) = check_prerequisites() {
+        panic!("Skipping web search E2E test: {msg}");
+    }
+    if std::env::var("TAVILY_API_KEY").is_err() {
+        panic!("Skipping web search E2E test: TAVILY_API_KEY not set");
+    }
+
+    let tmp = tempfile::tempdir().unwrap();
+    let llm_socket = tmp.path().join("runtime").join("llm.sock");
+    let loaded = build_test_config(&tmp, &llm_socket);
+
+    let mut harness = E2EHarness::start(loaded, tmp).await;
+
+    // ── Send a message that should trigger web_search ─────────────────
+    eprintln!("=== Web Search: Sending search request ===");
+    harness
+        .conn
+        .send_message(
+            "Use the web_search tool to search for 'Rust programming language 2024'. \
+             Use that exact tool, then summarize what you found in one sentence.",
+            true,
+        )
+        .await
+        .unwrap();
+
+    // ── Drain messages until we see ToolCall + ToolResult + StreamEnd ──
+    let mut got_tool_call = false;
+    let mut tool_call_name = String::new();
+    let mut got_tool_result = false;
+    let mut tool_result_output = String::new();
+    let mut final_content = String::new();
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            panic!("Timed out waiting for web search response");
+        }
+        let msg = recv_timeout(&mut harness.conn, remaining).await;
+        match &msg {
+            ServerMessage::ToolCall(tc) => {
+                got_tool_call = true;
+                tool_call_name = tc.tool_name.clone();
+                eprintln!("  ToolCall: name={}, id={}", tc.tool_name, tc.tool_id);
+            }
+            ServerMessage::ToolResult(tr) => {
+                got_tool_result = true;
+                tool_result_output = tr.output.clone();
+                eprintln!(
+                    "  ToolResult: name={}, is_error={}, output_len={}",
+                    tr.tool_name, tr.is_error, tr.output.len()
+                );
+            }
+            ServerMessage::StreamEnd(end) => {
+                final_content = end.content.clone();
+                eprintln!(
+                    "  StreamEnd: content_len={}, tokens=in:{}/out:{}",
+                    end.content.len(),
+                    end.metadata.tokens.input,
+                    end.metadata.tokens.output,
+                );
+                if got_tool_result {
+                    break;
+                }
+            }
+            ServerMessage::StreamStart(_) | ServerMessage::StreamChunk(_) => {}
+            ServerMessage::History(_) => {
+                if got_tool_result {
+                    break;
+                }
+            }
+            ServerMessage::Error(e) => {
+                panic!("Received error from daemon: {} ({:?})", e.message, e.code);
+            }
+            other => {
+                eprintln!("  (other: {:?})", std::mem::discriminant(other));
+            }
+        }
+    }
+
+    // ── Assertions ────────────────────────────────────────────────────
+    assert!(got_tool_call, "LLM should have called a tool");
+    assert_eq!(tool_call_name, "web_search", "Tool called should be web_search");
+    assert!(got_tool_result, "Tool result should have been returned");
+
+    // Parse the tool result JSON and verify structure.
+    let result_json: serde_json::Value = serde_json::from_str(&tool_result_output)
+        .unwrap_or_else(|e| panic!("Tool result should be valid JSON: {e}\nGot: {tool_result_output}"));
+    assert!(
+        result_json.get("query").is_some(),
+        "Tool result should contain 'query' field"
+    );
+    let results = result_json["results"]
+        .as_array()
+        .expect("Tool result should contain 'results' array");
+    assert!(
+        !results.is_empty(),
+        "Search results should not be empty"
+    );
+    // Each result should have title, url, content.
+    for r in results {
+        assert!(r["title"].as_str().is_some(), "Result should have title");
+        assert!(r["url"].as_str().is_some(), "Result should have url");
+        assert!(r["content"].as_str().is_some(), "Result should have content");
+    }
+    eprintln!("  Search returned {} results", results.len());
+
+    // The LLM should have produced a final response incorporating the search results.
+    assert!(
+        !final_content.is_empty(),
+        "LLM should have produced a final response after web search"
+    );
+    eprintln!("  Final response length: {} chars", final_content.len());
+
+    // ── Cleanup ───────────────────────────────────────────────────────
+    eprintln!("=== Web Search E2E test passed ===");
+    harness.shutdown().await;
+}

@@ -1,4 +1,4 @@
-use super::{ToolCategory, ToolDef, ToolError};
+use super::{ToolCategory, ToolContext, ToolDef, ToolError};
 use serde_json::{json, Value};
 use std::time::Duration;
 
@@ -10,7 +10,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
     vec![
         ToolDef {
             name: "web_search",
-            description: "Search the web using Tavily or a configurable search provider.",
+            description: "Search the web for information. Returns a list of results with titles, URLs, and content snippets. Use fetch_url to read full pages from the results.",
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -43,26 +43,6 @@ pub fn tool_defs() -> Vec<ToolDef> {
             }),
             category: ToolCategory::Web,
         },
-        ToolDef {
-            name: "research_web",
-            description: "Perform multi-step web research on a topic, combining multiple searches and page reads.",
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "topic": {
-                        "type": "string",
-                        "description": "The research topic or question."
-                    },
-                    "depth": {
-                        "type": "string",
-                        "description": "Research depth: 'shallow' (1-2 searches) or 'deep' (3+ searches with cross-referencing).",
-                        "default": "shallow"
-                    }
-                },
-                "required": ["topic"]
-            }),
-            category: ToolCategory::Web,
-        },
     ]
 }
 
@@ -70,24 +50,90 @@ pub fn tool_defs() -> Vec<ToolDef> {
 // Handlers
 // ---------------------------------------------------------------------------
 
-/// Handle `web_search` — search the web.
-/// Stub: full implementation requires a configured search API (e.g. Tavily).
-pub async fn handle_web_search(input: Value) -> Result<Value, ToolError> {
+/// Handle `web_search` — search the web via Tavily API.
+pub async fn handle_web_search(
+    input: Value,
+    ctx: &dyn ToolContext,
+) -> Result<Value, ToolError> {
     let query = input
         .get("query")
         .and_then(|v| v.as_str())
         .ok_or_else(|| ToolError::InvalidArgs("missing 'query' field".to_string()))?;
 
+    let search_cfg = ctx.search_config();
+
+    let api_key = std::env::var(&search_cfg.api_key_env).map_err(|_| {
+        ToolError::InvalidArgs(format!(
+            "web_search requires the {} environment variable to be set",
+            search_cfg.api_key_env
+        ))
+    })?;
+
     let max_results = input
         .get("max_results")
         .and_then(|v| v.as_u64())
-        .unwrap_or(5);
+        .unwrap_or(search_cfg.max_results as u64);
 
-    // Stub — full implementation calls Tavily/SearXNG API via reqwest.
-    Err(ToolError::NotImplemented(format!(
-        "web_search (query={}, max_results={}): requires search API configuration",
-        query, max_results
-    )))
+    let body = json!({
+        "api_key": api_key,
+        "query": query,
+        "max_results": max_results,
+        "search_depth": search_cfg.search_depth,
+        "include_answer": search_cfg.include_answer,
+    });
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|e| ToolError::Http(format!("failed to build HTTP client: {e}")))?;
+
+    let resp = client
+        .post("https://api.tavily.com/search")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| ToolError::Http(format!("Tavily request failed: {e}")))?;
+
+    let status = resp.status().as_u16();
+    if !resp.status().is_success() {
+        let err_body = resp.text().await.unwrap_or_default();
+        return Err(ToolError::Http(format!(
+            "Tavily API returned HTTP {status}: {err_body}"
+        )));
+    }
+
+    let tavily_resp: Value = resp
+        .json()
+        .await
+        .map_err(|e| ToolError::Http(format!("failed to parse Tavily response: {e}")))?;
+
+    // Reshape results to a clean format.
+    let results = tavily_resp
+        .get("results")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .map(|r| {
+                    json!({
+                        "title": r.get("title").and_then(|v| v.as_str()).unwrap_or(""),
+                        "url": r.get("url").and_then(|v| v.as_str()).unwrap_or(""),
+                        "content": r.get("content").and_then(|v| v.as_str()).unwrap_or(""),
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    let mut result = json!({
+        "query": query,
+        "results": results,
+    });
+
+    if let Some(answer) = tavily_resp.get("answer").and_then(|v| v.as_str()) {
+        result["answer"] = json!(answer);
+    }
+
+    Ok(result)
 }
 
 /// Maximum content length returned to the model (chars).
@@ -235,26 +281,6 @@ fn strip_html(html: &str) -> String {
     result.trim().to_string()
 }
 
-/// Handle `research_web` — multi-step web research.
-/// Stub: full implementation orchestrates multiple search + fetch cycles.
-pub async fn handle_research_web(input: Value) -> Result<Value, ToolError> {
-    let topic = input
-        .get("topic")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| ToolError::InvalidArgs("missing 'topic' field".to_string()))?;
-
-    let depth = input
-        .get("depth")
-        .and_then(|v| v.as_str())
-        .unwrap_or("shallow");
-
-    // Stub — full implementation chains web_search + fetch_url calls.
-    Err(ToolError::NotImplemented(format!(
-        "research_web (topic={}, depth={}): requires search API configuration",
-        topic, depth
-    )))
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -262,16 +288,16 @@ pub async fn handle_research_web(input: Value) -> Result<Value, ToolError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::TestToolContext;
 
     #[test]
     fn test_web_tool_defs() {
         let defs = tool_defs();
-        assert_eq!(defs.len(), 3);
+        assert_eq!(defs.len(), 2);
 
         let names: Vec<&str> = defs.iter().map(|d| d.name).collect();
         assert!(names.contains(&"web_search"));
         assert!(names.contains(&"fetch_url"));
-        assert!(names.contains(&"research_web"));
 
         // All web tools should have Web category.
         for def in &defs {
@@ -281,14 +307,43 @@ mod tests {
 
     #[tokio::test]
     async fn test_web_search_missing_query() {
-        let result = handle_web_search(json!({})).await;
+        let ctx = TestToolContext::new();
+        let result = handle_web_search(json!({}), &ctx).await;
         assert!(matches!(result, Err(ToolError::InvalidArgs(_))));
     }
 
     #[tokio::test]
-    async fn test_web_search_stub() {
-        let result = handle_web_search(json!({"query": "rust programming"})).await;
-        assert!(matches!(result, Err(ToolError::NotImplemented(_))));
+    async fn test_web_search_no_api_key() {
+        // With default config, TAVILY_API_KEY is unlikely to be set in test env.
+        let ctx = TestToolContext::new();
+        let result = handle_web_search(json!({"query": "rust programming"}), &ctx).await;
+        assert!(matches!(result, Err(ToolError::InvalidArgs(_))));
+        if let Err(ToolError::InvalidArgs(msg)) = result {
+            assert!(msg.contains("TAVILY_API_KEY"), "error should name the env var: {msg}");
+        }
+    }
+
+    /// Live integration test — requires TAVILY_API_KEY env var.
+    #[tokio::test]
+    #[ignore]
+    async fn test_web_search_live() {
+        let ctx = TestToolContext::new();
+        let result = handle_web_search(
+            json!({"query": "Rust programming language", "max_results": 2}),
+            &ctx,
+        )
+        .await
+        .expect("live search should succeed");
+
+        assert_eq!(result["query"], "Rust programming language");
+        let results = result["results"].as_array().expect("results should be array");
+        assert!(!results.is_empty(), "should have at least one result");
+        // Each result should have title, url, content.
+        for r in results {
+            assert!(r["title"].as_str().is_some());
+            assert!(r["url"].as_str().is_some());
+            assert!(r["content"].as_str().is_some());
+        }
     }
 
     #[tokio::test]
@@ -333,17 +388,5 @@ mod tests {
         let text = strip_html(html);
         // Should not have runs of multiple spaces
         assert!(!text.contains("  "));
-    }
-
-    #[tokio::test]
-    async fn test_research_web_missing_topic() {
-        let result = handle_research_web(json!({})).await;
-        assert!(matches!(result, Err(ToolError::InvalidArgs(_))));
-    }
-
-    #[tokio::test]
-    async fn test_research_web_stub() {
-        let result = handle_research_web(json!({"topic": "AI safety"})).await;
-        assert!(matches!(result, Err(ToolError::NotImplemented(_))));
     }
 }

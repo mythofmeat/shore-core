@@ -306,6 +306,10 @@ pub struct ToolUseConfig {
     /// Per-tool enable/disable toggles.
     #[serde(default)]
     pub tools: ToolToggles,
+
+    /// Web search (Tavily) configuration.
+    #[serde(default)]
+    pub search: SearchConfig,
 }
 
 fn default_max_iterations() -> u32 {
@@ -318,6 +322,7 @@ impl Default for ToolUseConfig {
             enabled: true,
             max_iterations: default_max_iterations(),
             tools: ToolToggles::default(),
+            search: SearchConfig::default(),
         }
     }
 }
@@ -341,8 +346,6 @@ pub struct ToolToggles {
     #[serde(default = "default_true")]
     pub fetch_url: bool,
     #[serde(default = "default_true")]
-    pub research_web: bool,
-    #[serde(default = "default_true")]
     pub check_time: bool,
     #[serde(default = "default_true")]
     pub roll_dice: bool,
@@ -360,7 +363,6 @@ impl Default for ToolToggles {
             generate_image: true,
             web_search: true,
             fetch_url: true,
-            research_web: true,
             check_time: true,
             roll_dice: true,
             activity_heatmap: true,
@@ -379,12 +381,49 @@ impl ToolToggles {
             "generate_image" => self.generate_image,
             "web_search" => self.web_search,
             "fetch_url" => self.fetch_url,
-            "research_web" => self.research_web,
             "check_time" => self.check_time,
             "roll_dice" => self.roll_dice,
             "activity_heatmap" => self.activity_heatmap,
             // Unknown tools are enabled by default.
             _ => true,
+        }
+    }
+}
+
+// ── [behavior.tool_use.search] ───────────────────────────────────────────
+
+/// Configuration for the web search tool (Tavily API).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SearchConfig {
+    /// Environment variable holding the Tavily API key.
+    #[serde(default = "default_search_api_key_env")]
+    pub api_key_env: String,
+
+    /// Default max results per search.
+    #[serde(default = "default_search_max_results")]
+    pub max_results: u32,
+
+    /// Search depth: "basic" or "advanced".
+    #[serde(default = "default_search_depth")]
+    pub search_depth: String,
+
+    /// Whether to include Tavily's synthesized answer.
+    #[serde(default = "default_true")]
+    pub include_answer: bool,
+}
+
+fn default_search_api_key_env() -> String { "TAVILY_API_KEY".into() }
+fn default_search_max_results() -> u32 { 5 }
+fn default_search_depth() -> String { "basic".into() }
+
+impl Default for SearchConfig {
+    fn default() -> Self {
+        Self {
+            api_key_env: default_search_api_key_env(),
+            max_results: default_search_max_results(),
+            search_depth: default_search_depth(),
+            include_answer: true,
         }
     }
 }
@@ -605,6 +644,31 @@ web_search = false
         assert!(config.behavior.tool_use.tools.memory);
         assert!(config.behavior.tool_use.tools.is_enabled("memory"));
         assert!(!config.behavior.tool_use.tools.is_enabled("roll_dice"));
+    }
+
+    #[test]
+    fn search_config_defaults() {
+        let config = AppConfig::default();
+        assert_eq!(config.behavior.tool_use.search.api_key_env, "TAVILY_API_KEY");
+        assert_eq!(config.behavior.tool_use.search.max_results, 5);
+        assert_eq!(config.behavior.tool_use.search.search_depth, "basic");
+        assert!(config.behavior.tool_use.search.include_answer);
+    }
+
+    #[test]
+    fn search_config_parses_from_toml() {
+        let toml_str = r#"
+[behavior.tool_use.search]
+api_key_env = "MY_TAVILY_KEY"
+max_results = 10
+search_depth = "advanced"
+include_answer = false
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.behavior.tool_use.search.api_key_env, "MY_TAVILY_KEY");
+        assert_eq!(config.behavior.tool_use.search.max_results, 10);
+        assert_eq!(config.behavior.tool_use.search.search_depth, "advanced");
+        assert!(!config.behavior.tool_use.search.include_answer);
     }
 
     #[test]

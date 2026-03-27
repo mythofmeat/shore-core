@@ -11,8 +11,9 @@ requires human judgment about how it should work, not just coding.
   Replacing raw JSON output with formatted, colored display for each command.
   Done: `log` (chat transcript with colored headers, timestamps, image badges),
   `status` (dashboard with autonomy state, social need bar, cache info).
-  Remaining: `get`, `model`, `character --info`, `memory`, `memory-changelog`,
-  `config`, `edit`/`delete` confirmations, `compact`/`collate` results.
+  Remaining: `log <ref>` (single message), `model`, `character --info`, `memory`,
+  `memory changelog`, `config`, `log edit`/`log delete` confirmations,
+  `memory compact` results, `status --diagnostics`.
   **Design pattern:** section headers (`── Title ───`), dim labels with bright values,
   character-colored names via deterministic hash, conditional sections that hide
   when data is absent.
@@ -32,15 +33,12 @@ requires human judgment about how it should work, not just coding.
 
 ## Tool Use
 
-- 4.6 **web_search** (Tavily API + synthesis) — STUB
-  Returns NotImplemented. Needs Tavily integration in daemon.
-  **Needs decision:** How many results to fetch, how to present synthesis,
-  cost/budget controls for Tavily API calls.
+- 4.6 **web_search** (Tavily API + synthesis) — DONE
+  Implemented via Tavily Search API. Configurable under `[behavior.tool_use.search]`.
 
-- 4.8 **research_web** (multi-step deep research) — STUB
-  Returns NotImplemented. Depends on 4.6.
-  **Needs decision:** How many search rounds, how to orchestrate multi-step
-  research, when to stop, output format.
+- 4.8 **research_web** — REMOVED
+  Removed in favor of the LLM orchestrating multi-step research via `web_search` + `fetch_url`
+  through the existing tool loop.
 
 
 ## Provider Payload Projection
