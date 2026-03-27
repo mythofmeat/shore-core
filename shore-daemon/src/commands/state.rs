@@ -542,26 +542,6 @@ fn collation_err(e: CollationError) -> (ErrorCode, String) {
     (ErrorCode::InternalError, e.to_string())
 }
 
-/// Pause autonomy for the current character.
-pub fn autonomy_pause(engine: &ConversationEngine, ctx: &CommandContext) -> CommandResult {
-    let char_name = engine.character_name();
-    let result = ctx.autonomy.set_paused(char_name, true);
-    Ok(json!({
-        "character": char_name,
-        "paused": result.unwrap_or(true),
-    }))
-}
-
-/// Resume autonomy for the current character.
-pub fn autonomy_resume(engine: &ConversationEngine, ctx: &CommandContext) -> CommandResult {
-    let char_name = engine.character_name();
-    let result = ctx.autonomy.set_paused(char_name, false);
-    Ok(json!({
-        "character": char_name,
-        "paused": result.unwrap_or(false),
-    }))
-}
-
 /// Validate configuration and return warnings/info.
 pub fn config_check(ctx: &CommandContext) -> CommandResult {
     let mut warnings: Vec<String> = Vec::new();
@@ -650,13 +630,84 @@ pub fn config_check(ctx: &CommandContext) -> CommandResult {
 }
 
 /// Show effective configuration. Optionally filtered by section name.
-pub fn config(ctx: &CommandContext, args: &serde_json::Value) -> CommandResult {
-    let section = args.get("key").and_then(|v| v.as_str());
+/// Rebuild FTS and vector indexes from existing memory entries.
+pub async fn memory_reindex(engine: &ConversationEngine, ctx: &CommandContext) -> CommandResult {
+    let char_name = engine.character_name().to_string();
 
+    // Open memory DB.
+    let db_path = ctx.data_dir.join(&char_name).join("memory").join("memory.db");
+    let db = MemoryDB::open(&db_path)
+        .map_err(|e| (ErrorCode::InternalError, format!("Failed to open memory DB: {e}")))?;
+
+    // Load all active entries.
+    let entries = db.get_entries_by_status("active")
+        .map_err(|e| (ErrorCode::InternalError, format!("Failed to load entries: {e}")))?;
+
+    if entries.is_empty() {
+        return Ok(json!({ "reindexed": 0, "message": "No active entries to reindex" }));
+    }
+
+    // Rebuild FTS index.
+    db.rebuild_fts()
+        .map_err(|e| (ErrorCode::InternalError, format!("Failed to rebuild FTS: {e}")))?;
+
+    // Resolve embedding config and rebuild vector index.
+    let embed_config = resolve_embed_config(
+        ctx.config.app.defaults.embedding.as_deref(),
+        &ctx.config.models.embedding,
+    )
+    .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
+
+    let vs_path = ctx.data_dir.join(&char_name).join("memory").join("vectorstore");
+    let store = VectorStore::open(&vs_path, embed_config.dimensions)
+        .await
+        .map_err(|e| (ErrorCode::InternalError, format!("Failed to open vector store: {e}")))?;
+
+    // Embed all entries and rebuild the vector index.
+    let texts: Vec<&str> = entries.iter().map(|e| e.summary_text.as_str()).collect();
+
+    // Batch embed (the embed endpoint handles batching internally).
+    let embeddings = ctx.llm_client
+        .embed(
+            &embed_config.provider,
+            &embed_config.model_id,
+            &embed_config.api_key,
+            embed_config.base_url.as_deref(),
+            &texts,
+        )
+        .await
+        .map_err(|e| (ErrorCode::InternalError, format!("Embedding failed: {e}")))?;
+
+    let pairs: Vec<(&str, &[f32])> = entries
+        .iter()
+        .zip(embeddings.iter())
+        .map(|(e, v)| (e.id.as_str(), v.as_slice()))
+        .collect();
+
+    store.reindex(&pairs)
+        .await
+        .map_err(|e| (ErrorCode::InternalError, format!("Vector reindex failed: {e}")))?;
+
+    Ok(json!({
+        "reindexed": entries.len(),
+        "message": format!("Reindexed {} entries (FTS + vector)", entries.len()),
+    }))
+}
+
+pub fn config(ctx: &mut CommandContext, args: &serde_json::Value) -> CommandResult {
+    let key = args.get("key").and_then(|v| v.as_str());
+    let value = args.get("value").and_then(|v| v.as_str());
+
+    // If both key and value are present, this is a config set operation.
+    if let (Some(key), Some(value)) = (key, value) {
+        return config_set(ctx, key, value);
+    }
+
+    // Otherwise, read-only config display.
     let app_json = serde_json::to_value(&ctx.config.app)
         .map_err(|e| (ErrorCode::InternalError, format!("Failed to serialize config: {e}")))?;
 
-    match section {
+    match key {
         None => Ok(json!({ "config": app_json })),
         Some(name) => match app_json.get(name) {
             Some(data) => Ok(json!({ "key": name, "config": data })),
@@ -665,6 +716,53 @@ pub fn config(ctx: &CommandContext, args: &serde_json::Value) -> CommandResult {
                 format!("Config section not found: {name}"),
             )),
         },
+    }
+}
+
+/// Set a runtime config value. Only a focused set of keys are supported.
+fn config_set(ctx: &mut CommandContext, key: &str, value: &str) -> CommandResult {
+    match key {
+        "defaults.model" | "model" => {
+            // Validate the model exists.
+            let _ = ctx.config.models.find_model(value)
+                .map_err(|e| (ErrorCode::NotFound, format!("{e}")))?;
+            ctx.active_model = Some(value.to_string());
+            Ok(json!({ "set": key, "value": value }))
+        }
+        "defaults.stream" | "stream" => {
+            let v: bool = value.parse()
+                .map_err(|_| (ErrorCode::InvalidRequest, "expected true or false".into()))?;
+            ctx.config.app.defaults.stream = v;
+            Ok(json!({ "set": key, "value": v }))
+        }
+        "autonomy.enabled" | "behavior.autonomy.enabled" => {
+            let v: bool = value.parse()
+                .map_err(|_| (ErrorCode::InvalidRequest, "expected true or false".into()))?;
+            ctx.config.app.behavior.autonomy.enabled = v;
+            Ok(json!({ "set": "autonomy.enabled", "value": v }))
+        }
+        "cache_keepalive.enabled" | "behavior.autonomy.cache_keepalive.enabled" => {
+            let v: bool = value.parse()
+                .map_err(|_| (ErrorCode::InvalidRequest, "expected true or false".into()))?;
+            ctx.config.app.behavior.autonomy.cache_keepalive.enabled = v;
+            Ok(json!({ "set": "cache_keepalive.enabled", "value": v }))
+        }
+        _ => Err((
+            ErrorCode::InvalidRequest,
+            format!("Config key not settable at runtime: {key}. Supported: defaults.model, defaults.stream, autonomy.enabled, cache_keepalive.enabled"),
+        )),
+    }
+}
+
+/// Reset all runtime config overrides by reloading from disk.
+pub fn config_reset(ctx: &mut CommandContext) -> CommandResult {
+    match crate::config::load_config(None) {
+        Ok(fresh) => {
+            ctx.active_model = fresh.app.defaults.model.clone();
+            ctx.config = fresh;
+            Ok(json!({ "reset": true, "message": "Configuration reloaded from disk" }))
+        }
+        Err(e) => Err((ErrorCode::InternalError, format!("Failed to reload config: {e}"))),
     }
 }
 
@@ -990,27 +1088,27 @@ model_id = "gpt-4o"
     #[test]
     fn config_full() {
         let tmp = TempDir::new().unwrap();
-        let (_engine, ctx, _rx) = make_ctx(&tmp);
+        let (_engine, mut ctx, _rx) = make_ctx(&tmp);
 
-        let result = config(&ctx, &json!({})).unwrap();
+        let result = config(&mut ctx, &json!({})).unwrap();
         assert!(result["config"].is_object());
     }
 
     #[test]
     fn config_section() {
         let tmp = TempDir::new().unwrap();
-        let (_engine, ctx, _rx) = make_ctx(&tmp);
+        let (_engine, mut ctx, _rx) = make_ctx(&tmp);
 
-        let result = config(&ctx, &json!({"key": "defaults"})).unwrap();
+        let result = config(&mut ctx, &json!({"key": "defaults"})).unwrap();
         assert_eq!(result["key"], "defaults");
     }
 
     #[test]
     fn config_section_not_found() {
         let tmp = TempDir::new().unwrap();
-        let (_engine, ctx, _rx) = make_ctx(&tmp);
+        let (_engine, mut ctx, _rx) = make_ctx(&tmp);
 
-        let result = config(&ctx, &json!({"key": "nonexistent"}));
+        let result = config(&mut ctx, &json!({"key": "nonexistent"}));
         assert!(result.is_err());
         let (code, _msg) = result.unwrap_err();
         assert_eq!(code, ErrorCode::NotFound);

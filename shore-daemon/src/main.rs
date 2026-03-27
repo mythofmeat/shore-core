@@ -141,6 +141,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
+    // If shore-llm is not supervisor-managed, check that the socket exists.
+    if !sup_has_llm(&loaded.app.services) && !llm_socket.exists() {
+        warn!(
+            "shore-llm socket not found at {}. Is shore-llm running? \
+             LLM requests will fail until shore-llm is started.",
+            llm_socket.display()
+        );
+    }
+
     // ── Create server and message handler ─────────────────────────────
     let server = Server::new(server_config);
     let push_tx = server.push_sender();
@@ -154,13 +163,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Create autonomy manager (shared between handler, commands, and per-character tick tasks).
-    let (autonomy, compaction_rx) = AutonomyManager::new(
+    let (mut autonomy, compaction_rx) = AutonomyManager::new(
         loaded.app.behavior.autonomy.clone(),
         loaded.dirs.data.clone(),
         shutdown_rx.clone(),
     );
 
-    let llm_client = LlmClient::new(llm_socket);
+    let mut llm_client = LlmClient::new(llm_socket);
+    if loaded.app.advanced.api_payload_logging {
+        llm_client.set_payload_log_dir(loaded.dirs.data.clone());
+        info!("API payload logging enabled → {}/api_payloads.jsonl", loaded.dirs.data.display());
+    }
+
+    // Provide the autonomy manager with resources for heartbeat/keepalive execution.
+    autonomy.set_resources(llm_client.clone(), push_tx.clone(), loaded.clone());
 
     let cmd_ctx = CommandContext {
         config: loaded.clone(),

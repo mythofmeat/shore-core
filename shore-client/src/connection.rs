@@ -170,13 +170,23 @@ impl SWPConnection {
         text: impl Into<String>,
         stream: bool,
     ) -> Result<Option<String>> {
+        self.send_message_with_images(text, stream, vec![]).await
+    }
+
+    /// Send a user message with image attachments. Returns the `rid` used.
+    pub async fn send_message_with_images(
+        &mut self,
+        text: impl Into<String>,
+        stream: bool,
+        images: Vec<String>,
+    ) -> Result<Option<String>> {
         use shore_protocol::client_msg::ClientMessageBody;
         let rid = Some(uuid_v4());
         let msg = ClientMessage::Message(ClientMessageBody {
             rid: rid.clone(),
             text: text.into(),
             stream,
-            images: vec![],
+            images,
             absence_seconds: None,
         });
         self.send(&msg).await?;

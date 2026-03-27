@@ -27,7 +27,7 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     match &cli.command {
-        CliCommand::Send { message } => {
+        CliCommand::Send { message, images } => {
             let text = if !message.is_empty() {
                 message.join(" ")
             } else if !io::stdin().is_terminal() {
@@ -35,10 +35,10 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 edit_message_in_editor()?
             };
-            if text.is_empty() {
+            if text.is_empty() && images.is_empty() {
                 return Ok(());
             }
-            conn.send_message(&text, true).await?;
+            conn.send_message_with_images(&text, true, images.clone()).await?;
             recv_streaming_response(&mut conn).await?;
         }
         CliCommand::Regen { guidance } => {
@@ -499,9 +499,9 @@ mod tests {
                 .unwrap();
 
         match &cli.command {
-            CliCommand::Send { message } => {
+            CliCommand::Send { message, images } => {
                 let text = message.join(" ");
-                conn.send_message(&text, true).await.unwrap();
+                conn.send_message_with_images(&text, true, images.clone()).await.unwrap();
                 super::recv_streaming_response(&mut conn).await.unwrap();
             }
             CliCommand::Regen { guidance } => {
@@ -559,6 +559,7 @@ mod tests {
     async fn send_sends_swp_message() {
         let cli = test_cli(CliCommand::Send {
             message: vec!["hello".into(), "world".into()],
+            images: vec![],
         });
         let received = execute_with_mock(cli, streaming_response("Hi there!")).await;
 
@@ -642,6 +643,7 @@ mod tests {
     async fn memory_sends_command_with_query() {
         let cli = test_cli(CliCommand::Memory {
             query: Some("recent topics".into()),
+            reindex: false,
         });
         let received = execute_with_mock(cli, command_response("memory")).await;
 
@@ -709,6 +711,7 @@ mod tests {
 
         let cli = test_cli(CliCommand::Send {
             message: vec!["test".into()],
+            images: vec![],
         });
         let received = execute_with_mock(cli, responses).await;
         assert!(matches!(received, ClientMessage::Message(_)));

@@ -24,6 +24,16 @@ Add items here as decisions are made.
 - **`shore info` command** (5.14) — Removed. Entirely redundant with `shore status`,
   which already shows character, model, message count, and more.
 
+- **`shore autonomy pause/resume`** (2.8) — Removed. Subsumed by
+  `shore config autonomy.enabled true/false` (5.41).
+
+- **`shore cache suppress/unsuppress`** (5.48/5.49) — Removed. Subsumed by
+  `shore config cache_keepalive.enabled true/false` (5.41).
+
+- **CLI image commands** (5.50 list, 5.51 import, 5.52 describe) — Removed.
+  Superseded by in-context image tools (`send_image`, `list_images`,
+  `recall_image`) which the character uses during conversation.
+
 ## Architecture Decisions
 
 - **Multi-conversation per character** — V1 had list/switch/new conversation
@@ -48,6 +58,13 @@ Add items here as decisions are made.
   filtering. Can re-implement later if needed.
 
 ## Not Needed
+
+- **Insert message at position** (5.19) — Never used. No practical use case.
+
+- **Detach attachment** (5.20) — Never used. No practical use case.
+
+- **Memory import command** (5.33) — A standalone script is more appropriate
+  than a built-in command for one-time bulk imports.
 
 - **Reset subcommand** (5.11) — Not needed. Users can delete or archive
   the conversation file directly for a fresh start.

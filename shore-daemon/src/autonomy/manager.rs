@@ -12,18 +12,26 @@ use std::time::{Duration, Instant};
 use chrono::{NaiveDateTime, Timelike, Utc};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc;
+use serde_json::json;
+use shore_protocol::server_msg::{CacheWarning, NewMessage, ServerMessage};
+use shore_protocol::types::{Message, Role};
+use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 use super::activity::{ActivityTracker, HourClassification};
 use super::cache_keepalive::{
     CacheKeepaliveConfig, CacheKeepaliveScheduler, KeepaliveAction,
 };
-use super::heartbeat::{HeartbeatAction, HeartbeatScheduler, HeartbeatState};
+use super::heartbeat::{
+    self, HeartbeatAction, HeartbeatScheduler, HeartbeatState, ProbeResult,
+};
 use super::timing::{compute_tau, TauParams};
 use super::AutonomyStatus;
 use crate::config::app::AutonomyConfig;
+use crate::config::LoadedConfig;
+use crate::llm_client::types::LlmRequest;
+use crate::llm_client::LlmClient;
 
 // ---------------------------------------------------------------------------
 // Per-character state
@@ -42,6 +50,8 @@ pub struct AutonomyState {
     compaction_triggered: bool,
     /// Current number of messages in active.jsonl (updated on each message notification).
     active_message_count: usize,
+    /// Cached last LLM request for cache keepalive pings.
+    last_request: Option<LlmRequest>,
 }
 
 impl AutonomyState {
@@ -193,6 +203,12 @@ pub struct AutonomyManager {
     shutdown_rx: tokio::sync::watch::Receiver<()>,
     /// Channel for sending compaction trigger signals (character name).
     compaction_tx: mpsc::Sender<String>,
+    /// LLM client for heartbeat probes and cache keepalive pings.
+    llm_client: Option<LlmClient>,
+    /// Broadcast sender for pushing autonomous messages to SWP clients.
+    push_tx: Option<broadcast::Sender<ServerMessage>>,
+    /// Full config for model resolution in autonomous actions.
+    loaded_config: Option<Arc<LoadedConfig>>,
 }
 
 impl AutonomyManager {
@@ -209,8 +225,24 @@ impl AutonomyManager {
             data_dir,
             shutdown_rx,
             compaction_tx,
+            llm_client: None,
+            push_tx: None,
+            loaded_config: None,
         };
         (mgr, compaction_rx)
+    }
+
+    /// Set the LLM client and push channel for autonomous actions.
+    /// Called once after creation, before any characters are ensured.
+    pub fn set_resources(
+        &mut self,
+        llm_client: LlmClient,
+        push_tx: broadcast::Sender<ServerMessage>,
+        loaded_config: LoadedConfig,
+    ) {
+        self.llm_client = Some(llm_client);
+        self.push_tx = Some(push_tx);
+        self.loaded_config = Some(Arc::new(loaded_config));
     }
 
     /// Ensure autonomy state exists for a character. On first call for a
@@ -245,6 +277,7 @@ impl AutonomyManager {
             last_compaction_activity: Instant::now(),
             compaction_triggered: false,
             active_message_count: 0,
+            last_request: None,
         }));
 
         states.insert(character.to_string(), state.clone());
@@ -255,9 +288,23 @@ impl AutonomyManager {
         let data_dir = self.data_dir.clone();
         let shutdown_rx = self.shutdown_rx.clone();
         let compaction_tx = self.compaction_tx.clone();
+        let llm_client = self.llm_client.clone();
+        let push_tx = self.push_tx.clone();
+        let loaded_config = self.loaded_config.clone();
 
         let handle = tokio::spawn(async move {
-            character_tick_loop(name, state, config, data_dir, shutdown_rx, compaction_tx).await;
+            character_tick_loop(
+                name,
+                state,
+                config,
+                data_dir,
+                shutdown_rx,
+                compaction_tx,
+                llm_client,
+                push_tx,
+                loaded_config,
+            )
+            .await;
         });
 
         self.handles.lock().unwrap().push(handle);
@@ -307,6 +354,15 @@ impl AutonomyManager {
             let now = Instant::now();
             s.cache_keepalive
                 .on_api_response(now, cache_read_tokens, input_tokens);
+        }
+    }
+
+    /// Cache the last LLM request for keepalive ping reuse.
+    pub fn notify_last_request(&self, character: &str, request: LlmRequest) {
+        let states = self.states.lock().unwrap();
+        if let Some(state) = states.get(character) {
+            let mut s = state.lock().unwrap();
+            s.last_request = Some(request);
         }
     }
 
@@ -392,6 +448,9 @@ async fn character_tick_loop(
     data_dir: PathBuf,
     mut shutdown_rx: tokio::sync::watch::Receiver<()>,
     compaction_tx: mpsc::Sender<String>,
+    llm_client: Option<LlmClient>,
+    push_tx: Option<broadcast::Sender<ServerMessage>>,
+    loaded_config: Option<Arc<LoadedConfig>>,
 ) {
     let mut interval = tokio::time::interval(TICK_INTERVAL);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -405,7 +464,16 @@ async fn character_tick_loop(
     loop {
         tokio::select! {
             _ = interval.tick() => {
-                tick_character(&character, &state, &config, &data_dir, &compaction_tx);
+                tick_character(
+                    &character,
+                    &state,
+                    &config,
+                    &data_dir,
+                    &compaction_tx,
+                    llm_client.as_ref(),
+                    push_tx.as_ref(),
+                    loaded_config.as_deref(),
+                ).await;
             }
             _ = shutdown_rx.changed() => {
                 // Final save before shutdown.
@@ -420,136 +488,357 @@ async fn character_tick_loop(
 }
 
 /// One tick for a single character.
-fn tick_character(
+async fn tick_character(
     character: &str,
     state: &Arc<Mutex<AutonomyState>>,
     config: &AutonomyConfig,
     data_dir: &Path,
     compaction_tx: &mpsc::Sender<String>,
+    llm_client: Option<&LlmClient>,
+    push_tx: Option<&broadcast::Sender<ServerMessage>>,
+    loaded_config: Option<&LoadedConfig>,
 ) {
     let now = Instant::now();
     let wall_now = Utc::now().naive_utc();
-    let mut rng = rand::thread_rng();
 
-    let mut s = state.lock().unwrap();
+    // Collect actions under the lock, then release before any async work.
+    let (hb_action, ka_action, compaction_needed) = {
+        let mut s = state.lock().unwrap();
 
-    // -- heartbeat --------------------------------------------------------
-    if config.enabled {
-        // Clone stats to release the mutable borrow on activity before
-        // accessing heartbeat.
-        let stats = s.activity.stats().clone();
-        let tau_params = TauParams {
-            reciprocated: s.heartbeat.unanswered_count() == 0,
-            hour_class: current_hour_class(stats.hour_classifications),
-            personality: config.personality,
+        // -- heartbeat --------------------------------------------------------
+        let hb_action = if config.enabled {
+            let stats = s.activity.stats().clone();
+            let tau_params = TauParams {
+                reciprocated: s.heartbeat.unanswered_count() == 0,
+                hour_class: current_hour_class(stats.hour_classifications),
+                personality: config.personality,
+            };
+            let random_value: f64 = rand::thread_rng().gen();
+            let action = s.heartbeat.tick(&stats, &tau_params, now, wall_now, random_value);
+            if !matches!(action, HeartbeatAction::None) {
+                s.mark_dirty();
+            }
+            action
+        } else {
+            HeartbeatAction::None
         };
-        let random_value: f64 = rng.gen();
-        let hb_action = s.heartbeat.tick(&stats, &tau_params, now, wall_now, random_value);
 
-        match hb_action {
-            HeartbeatAction::None => {}
-            HeartbeatAction::GenerateProbe {
+        // -- cache keepalive --------------------------------------------------
+        let ka_action = s.cache_keepalive.tick(now);
+        if !matches!(ka_action, KeepaliveAction::None) {
+            s.mark_dirty();
+        }
+
+        // -- compaction triggers ---------------------------------------------
+        let mut compaction_needed = false;
+        if config.enabled && !s.compaction_triggered {
+            let min_total = config.compaction.min_messages + config.compaction.keep_recent;
+            if config.compaction.max_messages > 0
+                && s.active_message_count >= config.compaction.max_messages
+                && s.active_message_count >= min_total
+            {
+                s.compaction_triggered = true;
+                compaction_needed = true;
+                info!(
+                    character = %character,
+                    message_count = s.active_message_count,
+                    max_messages = config.compaction.max_messages,
+                    "Compaction: max messages trigger fired"
+                );
+            } else if s.active_message_count >= min_total {
+                let idle_secs = now.duration_since(s.last_compaction_activity).as_secs();
+                let threshold_secs = config.compaction.idle_trigger_minutes as u64 * 60;
+                if threshold_secs > 0 && idle_secs >= threshold_secs {
+                    s.compaction_triggered = true;
+                    compaction_needed = true;
+                    info!(
+                        character = %character,
+                        idle_secs,
+                        threshold_secs,
+                        message_count = s.active_message_count,
+                        "Compaction: idle trigger fired"
+                    );
+                }
+            }
+        }
+
+        save_state(data_dir, character, &mut s);
+        (hb_action, ka_action, compaction_needed)
+    };
+
+    if compaction_needed {
+        let _ = compaction_tx.try_send(character.to_string());
+    }
+
+    // -- execute heartbeat actions (async, outside lock) -------------------
+    match hb_action {
+        HeartbeatAction::None => {}
+        HeartbeatAction::GenerateProbe { idle_secs, current_time } => {
+            info!(
+                character = %character,
                 idle_secs,
-                current_time,
-            } => {
-                info!(
-                    character = %character,
-                    idle_secs,
-                    current_time = %current_time,
-                    "Heartbeat: post-session probe triggered"
-                );
-                s.mark_dirty();
-                // TODO: invoke LLM for probe, feed response to
-                // heartbeat.handle_probe_response()
-            }
-            HeartbeatAction::GenerateDeferredMessage { reasoning } => {
-                info!(
-                    character = %character,
-                    reasoning = %reasoning,
-                    "Heartbeat: deferred message triggered"
-                );
-                s.mark_dirty();
-                // TODO: invoke LLM to generate and push message
-            }
-            HeartbeatAction::GenerateSocialNeedMessage { anomaly_context } => {
-                info!(
-                    character = %character,
-                    anomaly_context,
-                    "Heartbeat: social-need message triggered"
-                );
-                s.mark_dirty();
-                // TODO: invoke LLM to generate and push message
-            }
+                current_time = %current_time,
+                "Heartbeat: post-session probe triggered"
+            );
+            execute_probe(character, idle_secs, current_time, now, wall_now, state, data_dir, llm_client, loaded_config).await;
+        }
+        HeartbeatAction::GenerateDeferredMessage { reasoning } => {
+            info!(
+                character = %character,
+                reasoning = %reasoning,
+                "Heartbeat: deferred message triggered"
+            );
+            execute_autonomous_message(
+                character, &heartbeat::render_deferred(&reasoning, &wall_now),
+                state, data_dir, llm_client, push_tx, loaded_config,
+            ).await;
+        }
+        HeartbeatAction::GenerateSocialNeedMessage { anomaly_context } => {
+            info!(
+                character = %character,
+                anomaly_context,
+                "Heartbeat: social-need message triggered"
+            );
+            execute_autonomous_message(
+                character, &heartbeat::render_social_need(anomaly_context),
+                state, data_dir, llm_client, push_tx, loaded_config,
+            ).await;
         }
     }
 
-    // -- cache keepalive --------------------------------------------------
-    let ka_action = s.cache_keepalive.tick(now);
+    // -- execute keepalive actions (async, outside lock) -------------------
     match ka_action {
         KeepaliveAction::None => {}
         KeepaliveAction::SendPing => {
-            info!(
-                character = %character,
-                ping_count = s.cache_keepalive.ping_count(),
-                "Cache keepalive: ping requested"
-            );
-            s.mark_dirty();
-            // TODO: send minimal API call (max_tokens=1) and feed
-            // response to cache_keepalive.on_ping_response()
+            execute_keepalive_ping(character, state, llm_client).await;
         }
-        KeepaliveAction::EmitCacheWarning {
-            expected_tokens,
-            message,
-        } => {
+        KeepaliveAction::EmitCacheWarning { expected_tokens, message } => {
             info!(
                 character = %character,
                 expected_tokens,
                 message = %message,
                 "Cache keepalive: cache miss warning"
             );
-            s.mark_dirty();
-            // TODO: push CacheWarning to SWP clients
-        }
-    }
-
-    // -- compaction triggers ---------------------------------------------
-    if config.enabled && !s.compaction_triggered {
-        let min_total = config.compaction.min_messages + config.compaction.keep_recent;
-
-        // Force compaction when max_messages is reached.
-        if config.compaction.max_messages > 0
-            && s.active_message_count >= config.compaction.max_messages
-            && s.active_message_count >= min_total
-        {
-            s.compaction_triggered = true;
-            info!(
-                character = %character,
-                message_count = s.active_message_count,
-                max_messages = config.compaction.max_messages,
-                "Compaction: max messages trigger fired"
-            );
-            let _ = compaction_tx.try_send(character.to_string());
-        }
-        // Idle trigger: only if we have enough messages.
-        else if s.active_message_count >= min_total {
-            let idle_secs = now.duration_since(s.last_compaction_activity).as_secs();
-            let threshold_secs = config.compaction.idle_trigger_minutes as u64 * 60;
-            if threshold_secs > 0 && idle_secs >= threshold_secs {
-                s.compaction_triggered = true;
-                info!(
-                    character = %character,
-                    idle_secs,
-                    threshold_secs,
-                    message_count = s.active_message_count,
-                    "Compaction: idle trigger fired"
-                );
-                let _ = compaction_tx.try_send(character.to_string());
+            if let Some(tx) = push_tx {
+                let _ = tx.send(ServerMessage::CacheWarning(CacheWarning {
+                    expected_tokens,
+                    message,
+                }));
             }
         }
     }
 
-    // -- persist if dirty -------------------------------------------------
-    save_state(data_dir, character, &mut s);
+    // -- final persist (in case async actions dirtied state) ---------------
+    {
+        let mut s = state.lock().unwrap();
+        save_state(data_dir, character, &mut s);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Heartbeat action executors
+// ---------------------------------------------------------------------------
+
+/// Execute the post-session probe: ask the LLM if the character wants to reach out.
+async fn execute_probe(
+    character: &str,
+    idle_secs: u64,
+    current_time: NaiveDateTime,
+    now: Instant,
+    wall_now: NaiveDateTime,
+    state: &Arc<Mutex<AutonomyState>>,
+    data_dir: &Path,
+    llm_client: Option<&LlmClient>,
+    loaded_config: Option<&LoadedConfig>,
+) {
+    let Some(client) = llm_client else { return };
+    let Some(config) = loaded_config else { return };
+
+    let prompt = heartbeat::render_post_session(idle_secs, &current_time);
+    let request = match build_autonomy_request(config, &prompt, 500) {
+        Some(r) => r,
+        None => {
+            warn!(character, "Cannot execute probe: no model configured");
+            return;
+        }
+    };
+
+    match client.generate(&request, None).await {
+        Ok(resp) => {
+            let mut s = state.lock().unwrap();
+            let result = s.heartbeat.handle_probe_response(&resp.content, now, wall_now);
+            match result {
+                ProbeResult::Deferred(fire_at) => {
+                    info!(character, fire_at = %fire_at, "Probe: character deferred to later");
+                }
+                ProbeResult::Declined => {
+                    info!(character, "Probe: character declined to reach out");
+                }
+            }
+            s.mark_dirty();
+            save_state(data_dir, character, &mut s);
+        }
+        Err(e) => {
+            error!(character, error = %e, "Heartbeat probe LLM call failed");
+        }
+    }
+}
+
+/// Execute an autonomous message (deferred or social-need): generate text and push it.
+async fn execute_autonomous_message(
+    character: &str,
+    prompt: &str,
+    state: &Arc<Mutex<AutonomyState>>,
+    data_dir: &Path,
+    llm_client: Option<&LlmClient>,
+    push_tx: Option<&broadcast::Sender<ServerMessage>>,
+    loaded_config: Option<&LoadedConfig>,
+) {
+    let Some(client) = llm_client else { return };
+    let Some(config) = loaded_config else { return };
+
+    let request = match build_autonomy_request(config, prompt, 1000) {
+        Some(r) => r,
+        None => {
+            warn!(character, "Cannot execute autonomous message: no model configured");
+            return;
+        }
+    };
+
+    match client.generate(&request, None).await {
+        Ok(resp) => {
+            if resp.content.trim().is_empty() {
+                info!(character, "Autonomous message: character chose not to respond");
+                return;
+            }
+
+            // Append to conversation file directly (like compaction_task does).
+            let msg = Message {
+                msg_id: format!("m_{}", uuid::Uuid::new_v4()),
+                role: Role::Assistant,
+                content: resp.content,
+                images: vec![],
+                alt_index: None,
+                alt_count: None,
+                timestamp: chrono::Utc::now().to_rfc3339(),
+            };
+
+            let active_path = data_dir.join(character).join("active.jsonl");
+            if let Ok(line) = serde_json::to_string(&msg) {
+                use std::io::Write;
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&active_path)
+                {
+                    let _ = writeln!(f, "{line}");
+                }
+            }
+
+            // Broadcast to connected clients.
+            if let Some(tx) = push_tx {
+                let _ = tx.send(ServerMessage::NewMessage(NewMessage { message: msg }));
+            }
+
+            // Update heartbeat state.
+            {
+                let mut s = state.lock().unwrap();
+                let now = Instant::now();
+                s.heartbeat.on_assistant_message(now);
+                s.activity.record_message();
+                s.mark_dirty();
+                save_state(data_dir, character, &mut s);
+            }
+        }
+        Err(e) => {
+            error!(character, error = %e, "Autonomous message LLM call failed");
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Cache keepalive executor
+// ---------------------------------------------------------------------------
+
+/// Send a minimal API call (max_tokens=1) to refresh the prompt cache.
+async fn execute_keepalive_ping(
+    character: &str,
+    state: &Arc<Mutex<AutonomyState>>,
+    llm_client: Option<&LlmClient>,
+) {
+    let Some(client) = llm_client else { return };
+
+    // Clone the last request from state (if available), with max_tokens=1.
+    let request = {
+        let s = state.lock().unwrap();
+        info!(
+            character = %character,
+            ping_count = s.cache_keepalive.ping_count(),
+            "Cache keepalive: sending ping"
+        );
+        match &s.last_request {
+            Some(req) => {
+                let mut ping = req.clone();
+                ping.max_tokens = 1;
+                ping.tools = None;
+                Some(ping)
+            }
+            None => None,
+        }
+    };
+
+    let Some(request) = request else {
+        debug!(character, "Cache keepalive: no cached request, skipping ping");
+        return;
+    };
+
+    match client.generate(&request, None).await {
+        Ok(resp) => {
+            let mut s = state.lock().unwrap();
+            let now = Instant::now();
+            let action = s.cache_keepalive.on_ping_response(now, resp.usage.cache_read_tokens);
+            match action {
+                KeepaliveAction::EmitCacheWarning { expected_tokens, message } => {
+                    warn!(character, expected_tokens, %message, "Cache keepalive: miss after ping");
+                }
+                _ => {
+                    debug!(
+                        character,
+                        cache_read = resp.usage.cache_read_tokens,
+                        "Cache keepalive: ping successful"
+                    );
+                }
+            }
+            s.mark_dirty();
+        }
+        Err(e) => {
+            error!(character, error = %e, "Cache keepalive ping failed");
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Build a minimal LLM request for autonomous actions using the default model.
+fn build_autonomy_request(
+    config: &LoadedConfig,
+    prompt: &str,
+    max_tokens: u32,
+) -> Option<LlmRequest> {
+    let model_name = config.app.defaults.model.as_deref()?;
+    let resolved = config.models.find_model(model_name).ok()?;
+    LlmClient::build_request(
+        resolved,
+        vec![json!({"role": "user", "content": prompt})],
+        None,
+        None,
+        None,
+    ).ok().map(|mut r| {
+        r.max_tokens = max_tokens;
+        r
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -677,6 +966,7 @@ mod tests {
             last_compaction_activity: Instant::now(),
             compaction_triggered: false,
             active_message_count: 0,
+            last_request: None,
         };
         save_state(data_dir, "alice", &mut state);
         assert!(!state.dirty);
@@ -748,8 +1038,8 @@ mod tests {
         assert!(matches!(hb_state, HeartbeatState::SocialNeed));
     }
 
-    #[test]
-    fn tick_character_runs_without_panic() {
+    #[tokio::test]
+    async fn tick_character_runs_without_panic() {
         let tmp = tempfile::tempdir().unwrap();
         let config = test_config();
         let (compaction_tx, _compaction_rx) = mpsc::channel(16);
@@ -761,6 +1051,7 @@ mod tests {
             last_compaction_activity: Instant::now(),
             compaction_triggered: false,
             active_message_count: 0,
+            last_request: None,
         }));
 
         // Need at least one message for heartbeat to have timestamps.
@@ -770,6 +1061,6 @@ mod tests {
             s.activity.record_message();
         }
 
-        tick_character("alice", &state, &config, tmp.path(), &compaction_tx);
+        tick_character("alice", &state, &config, tmp.path(), &compaction_tx, None, None, None).await;
     }
 }

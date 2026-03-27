@@ -10,7 +10,7 @@ pub enum Role {
 }
 
 /// Reference to an image file.
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct ImageRef {
     pub path: String,
     #[serde(skip_serializing_if = "Option::is_none")]

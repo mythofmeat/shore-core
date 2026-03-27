@@ -5,13 +5,14 @@
 
 use std::sync::Arc;
 
+use base64::Engine as _;
 use serde_json::{json, Value};
 use shore_protocol::client_msg::{ClientMessage, ClientMessageBody};
 use shore_protocol::error::ErrorCode;
 use shore_protocol::server_msg::{Error as SwpError, ServerMessage};
-use shore_protocol::types::{Message, Role};
+use shore_protocol::types::{ImageRef, Message, Role};
 use tokio::sync::{broadcast, Mutex};
-use tracing::{error, info, instrument};
+use tracing::{error, info, instrument, warn};
 
 use crate::autonomy::cache_keepalive::CacheKeepaliveConfig;
 use crate::autonomy::manager::AutonomyManager;
@@ -88,6 +89,63 @@ pub struct MessageHandler {
     pub push_tx: broadcast::Sender<ServerMessage>,
     pub is_first_after_restart: bool,
     pub autonomy: AutonomyManager,
+}
+
+// ---------------------------------------------------------------------------
+// Image → LLM content helpers
+// ---------------------------------------------------------------------------
+
+/// Detect MIME type from file extension.
+fn media_type_for_path(path: &str) -> Option<&'static str> {
+    let ext = path.rsplit('.').next()?.to_ascii_lowercase();
+    match ext.as_str() {
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "png" => Some("image/png"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        _ => None,
+    }
+}
+
+/// Build a `content` value for an LLM message.
+///
+/// If `images` is non-empty, returns a JSON array containing image blocks
+/// (base64-encoded) followed by a text block. Otherwise returns a plain string.
+fn build_content(text: &str, images: &[ImageRef]) -> Value {
+    if images.is_empty() {
+        return json!(text);
+    }
+
+    let mut blocks: Vec<Value> = Vec::with_capacity(images.len() + 1);
+
+    for img in images {
+        let media_type = match media_type_for_path(&img.path) {
+            Some(mt) => mt,
+            None => {
+                warn!(path = %img.path, "Skipping image with unsupported extension");
+                continue;
+            }
+        };
+        match std::fs::read(&img.path) {
+            Ok(bytes) => {
+                let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                blocks.push(json!({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": media_type,
+                        "data": encoded,
+                    }
+                }));
+            }
+            Err(e) => {
+                warn!(path = %img.path, error = %e, "Failed to read image file");
+            }
+        }
+    }
+
+    blocks.push(json!({ "type": "text", "text": text }));
+    json!(blocks)
 }
 
 impl MessageHandler {
@@ -199,12 +257,17 @@ impl MessageHandler {
                         engine.delete_message(&id)?;
                     }
                 }
-            } else if !body.text.is_empty() {
+            } else if !body.text.is_empty() || !body.images.is_empty() {
+                let images: Vec<ImageRef> = body
+                    .images
+                    .iter()
+                    .map(|p| ImageRef { path: p.clone(), caption: None })
+                    .collect();
                 let user_msg = Message {
                     msg_id: format!("m_{}", uuid::Uuid::new_v4()),
                     role: Role::User,
                     content: body.text.clone(),
-                    images: vec![],
+                    images,
                     alt_index: None,
                     alt_count: None,
                     timestamp: chrono::Utc::now().to_rfc3339(),
@@ -295,7 +358,7 @@ impl MessageHandler {
                     Role::Assistant => "assistant",
                     Role::System => "system",
                 };
-                json!({ "role": role, "content": m.content })
+                json!({ "role": role, "content": build_content(&m.content, &m.images) })
             })
             .collect();
 
@@ -425,12 +488,13 @@ impl MessageHandler {
         self.cmd_ctx.session_tokens.cache_read += result.usage.cache_read_tokens;
         self.cmd_ctx.session_tokens.cache_write += result.usage.cache_creation_tokens;
 
-        // Notify cache keepalive of API response.
+        // Notify cache keepalive of API response and cache the request for keepalive pings.
         self.autonomy.notify_api_response(
             &char_name,
             result.usage.cache_read_tokens,
             result.usage.input_tokens,
         );
+        self.autonomy.notify_last_request(&char_name, request.clone());
 
         info!(
             input_tokens = result.usage.input_tokens,

@@ -17,9 +17,10 @@ requires human judgment about how it should work, not just coding.
   character-colored names via deterministic hash, conditional sections that hide
   when data is absent.
 
-- 7.11 **`--json` output mode flag** — MISSING
+- 7.11 **`--json` output mode flag** — IN PROGRESS
   Once human-readable formatting is the default, add `--json` flag for scripts.
-  (Blocked on 7.10.)
+  Done: `log` (--json flag).
+  Remaining: other commands as 7.10 progresses.
 
 
 ## Conversation Management
@@ -34,6 +35,58 @@ requires human judgment about how it should work, not just coding.
 - 3.12 **Memory agent — interactive REPL** (5.35) — STUB
   **Needs decision:** Is this a chat with the memory agent, or a structured command
   interface? How does it differ from `shore send` with memory tools? What commands?
+
+
+## Tool Use
+
+- 4.6 **web_search** (Tavily API + synthesis) — STUB
+  Returns NotImplemented. Needs Tavily integration in daemon.
+  **Needs decision:** How many results to fetch, how to present synthesis,
+  cost/budget controls for Tavily API calls.
+
+- 4.8 **research_web** (multi-step deep research) — STUB
+  Returns NotImplemented. Depends on 4.6.
+  **Needs decision:** How many search rounds, how to orchestrate multi-step
+  research, when to stop, output format.
+
+
+## Message Storage
+
+- 2.9 **Persist tool calls and reasoning in messages** — MISSING
+  Tool calls (name, input, output, is_error) and thinking/reasoning content are
+  streamed in real-time but discarded after generation. They should be persisted
+  alongside Message so that `shore log` can display them and for debugging/audit.
+  **Needs decision:** Message struct expansion, storage format (inline vs sidecar),
+  migration strategy for existing conversations.
+
+
+## Conversation Management (cont.)
+
+- 5.13 **Search conversations** (full-text) — MISSING
+  **Needs decision:** Search across characters or within current? What gets returned
+  (message snippets, conversation IDs)? Output format? Does this use existing FTS5
+  or a separate index?
+
+
+## Push Notifications
+
+- 5.44 **Push notifications** (shore notify) — MISSING
+  **Needs decision:** What notification backend? (Desktop notifications, ntfy, webhook?)
+  What events trigger notifications? (Autonomous messages, errors, compaction complete?)
+  Does the daemon push, or does the CLI poll?
+
+
+## Failed Messages
+
+These may not be necessary — if `send` failures surface clearly enough already,
+this could be YAGNI.
+
+- 5.45 **Failed message list** — MISSING
+- 5.46 **Failed message retry** — MISSING
+- 5.47 **Failed message clear** — MISSING
+  **Needs decision:** Are these worth implementing? What constitutes a "failed" message
+  (LLM timeout, rate limit, malformed response)? Should failures be persisted or
+  ephemeral? If persisted, where — in the conversation file or separate?
 
 
 ## Config Schema Gaps

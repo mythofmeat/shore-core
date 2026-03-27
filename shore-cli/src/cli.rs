@@ -30,6 +30,10 @@ pub enum CliCommand {
     Send {
         /// The message text
         message: Vec<String>,
+
+        /// Attach image file(s) to the message
+        #[arg(short = 'i', long = "image")]
+        images: Vec<String>,
     },
 
     /// Regenerate the last assistant response
@@ -121,6 +125,10 @@ pub enum CliCommand {
     Memory {
         /// Optional query to search memory
         query: Option<String>,
+
+        /// Rebuild FTS and vector indexes from existing entries
+        #[arg(long)]
+        reindex: bool,
     },
 
     /// Show recent memory changelog entries
@@ -152,12 +160,10 @@ pub enum CliCommand {
         /// Validate configuration and show warnings
         #[arg(long)]
         check: bool,
-    },
 
-    /// Pause or resume autonomy
-    Autonomy {
-        #[command(subcommand)]
-        action: AutonomyAction,
+        /// Reset all runtime overrides (reload config from disk)
+        #[arg(long)]
+        reset: bool,
     },
 
     /// Generate shell completions
@@ -165,14 +171,6 @@ pub enum CliCommand {
         /// Shell to generate completions for
         shell: Shell,
     },
-}
-
-#[derive(Subcommand, Debug)]
-pub enum AutonomyAction {
-    /// Pause autonomy (heartbeat + cache keepalive)
-    Pause,
-    /// Resume autonomy
-    Resume,
 }
 
 /// Generate and print shell completions to stdout.
@@ -192,7 +190,7 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
         CliCommand::Send { .. }
         | CliCommand::Regen { .. }
         | CliCommand::Completions { .. }
-        | CliCommand::Config { path: true, check: false, .. } => None,
+        | CliCommand::Config { path: true, check: false, reset: false, .. } => None,
 
         // Character: list/switch/new handled locally, --info goes to daemon.
         CliCommand::Character { name, info, .. } => {
@@ -232,7 +230,10 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
                 }
             }
         }
-        CliCommand::Memory { query } => {
+        CliCommand::Memory { reindex: true, .. } => {
+            Some(("memory_reindex", json!({})))
+        }
+        CliCommand::Memory { query, .. } => {
             Some(("memory", json!({ "query": query })))
         }
         CliCommand::MemoryChangelog { limit } => {
@@ -244,15 +245,14 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
         CliCommand::Collate => {
             Some(("collate", json!({})))
         }
+        CliCommand::Config { reset: true, .. } => {
+            Some(("config_reset", json!({})))
+        }
         CliCommand::Config { check: true, .. } => {
             Some(("config_check", json!({})))
         }
         CliCommand::Config { key, value, .. } => {
             Some(("config", json!({ "key": key, "value": value })))
-        }
-        CliCommand::Autonomy { action } => match action {
-            AutonomyAction::Pause => Some(("autonomy_pause", json!({}))),
-            AutonomyAction::Resume => Some(("autonomy_resume", json!({}))),
         }
     }
 }
@@ -276,8 +276,33 @@ mod tests {
     fn parse_send() {
         let cli = parse(&["send", "hello", "world"]);
         match &cli.command {
-            CliCommand::Send { message } => {
+            CliCommand::Send { message, images } => {
                 assert_eq!(message, &["hello", "world"]);
+                assert!(images.is_empty());
+            }
+            other => panic!("expected Send, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_send_with_image() {
+        let cli = parse(&["send", "-i", "photo.jpg", "describe", "this"]);
+        match &cli.command {
+            CliCommand::Send { message, images } => {
+                assert_eq!(message, &["describe", "this"]);
+                assert_eq!(images, &["photo.jpg"]);
+            }
+            other => panic!("expected Send, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_send_with_multiple_images() {
+        let cli = parse(&["send", "-i", "a.jpg", "-i", "b.png", "compare"]);
+        match &cli.command {
+            CliCommand::Send { message, images } => {
+                assert_eq!(message, &["compare"]);
+                assert_eq!(images, &["a.jpg", "b.png"]);
             }
             other => panic!("expected Send, got: {other:?}"),
         }
@@ -470,8 +495,9 @@ mod tests {
     fn parse_memory_no_query() {
         let cli = parse(&["memory"]);
         match &cli.command {
-            CliCommand::Memory { query } => {
+            CliCommand::Memory { query, reindex } => {
                 assert!(query.is_none());
+                assert!(!reindex);
             }
             other => panic!("expected Memory, got: {other:?}"),
         }
@@ -481,8 +507,9 @@ mod tests {
     fn parse_memory_with_query() {
         let cli = parse(&["memory", "recent topics"]);
         match &cli.command {
-            CliCommand::Memory { query } => {
+            CliCommand::Memory { query, reindex } => {
                 assert_eq!(query.as_deref(), Some("recent topics"));
+                assert!(!reindex);
             }
             other => panic!("expected Memory, got: {other:?}"),
         }
@@ -504,11 +531,12 @@ mod tests {
     fn parse_config_no_args() {
         let cli = parse(&["config"]);
         match &cli.command {
-            CliCommand::Config { key, value, path, check } => {
+            CliCommand::Config { key, value, path, check, reset } => {
                 assert!(key.is_none());
                 assert!(value.is_none());
                 assert!(!path);
                 assert!(!check);
+                assert!(!reset);
             }
             other => panic!("expected Config, got: {other:?}"),
         }
@@ -569,6 +597,7 @@ mod tests {
     fn send_maps_to_none() {
         let cmd = CliCommand::Send {
             message: vec!["hi".into()],
+            images: vec![],
         };
         assert!(to_swp_command(&cmd).is_none());
     }
@@ -621,7 +650,7 @@ mod tests {
 
     #[test]
     fn config_path_maps_to_none() {
-        let cmd = CliCommand::Config { key: None, value: None, path: true, check: false };
+        let cmd = CliCommand::Config { key: None, value: None, path: true, check: false, reset: false };
         assert!(to_swp_command(&cmd).is_none());
     }
 
@@ -639,11 +668,11 @@ mod tests {
             CliCommand::Model { name: Some("m".into()), info: true, reset: false },
             CliCommand::Model { name: None, info: false, reset: true },
             CliCommand::Character { name: Some("c".into()), info: true, new: false },
-            CliCommand::Memory { query: None },
+            CliCommand::Memory { query: None, reindex: false },
             CliCommand::MemoryChangelog { limit: 20 },
             CliCommand::Compact,
             CliCommand::Collate,
-            CliCommand::Config { key: None, value: None, path: false, check: false },
+            CliCommand::Config { key: None, value: None, path: false, check: false, reset: false },
         ];
         for cmd in &commands {
             assert!(

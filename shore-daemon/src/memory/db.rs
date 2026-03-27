@@ -733,6 +733,19 @@ impl MemoryDB {
     }
 
     // ------------------------------------------------------------------
+    // FTS maintenance
+    // ------------------------------------------------------------------
+
+    /// Rebuild the FTS index from the entries table.
+    pub fn rebuild_fts(&self) -> SqlResult<()> {
+        self.conn.execute_batch(
+            "DELETE FROM entries_fts;
+             INSERT INTO entries_fts(rowid, summary_text, topic_tags, topic_key)
+               SELECT rowid, summary_text, topic_tags, topic_key FROM entries;",
+        )
+    }
+
+    // ------------------------------------------------------------------
     // Read-only SQL query
     // ------------------------------------------------------------------
 

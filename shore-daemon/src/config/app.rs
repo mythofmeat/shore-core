@@ -425,12 +425,17 @@ pub struct AdvancedConfig {
     /// Warn when prompt cache is unexpectedly invalidated (§13.3).
     #[serde(default = "default_true")]
     pub cache_invalidation_warnings: bool,
+
+    /// Log full API request/response payloads to api_payloads.jsonl per character.
+    #[serde(default)]
+    pub api_payload_logging: bool,
 }
 
 impl Default for AdvancedConfig {
     fn default() -> Self {
         Self {
             cache_invalidation_warnings: true,
+            api_payload_logging: false,
         }
     }
 }

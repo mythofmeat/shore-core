@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use shore_protocol::types::{Message, Role};
+use shore_protocol::types::{ImageRef, Message, Role};
 
 use crate::config::resolve_prompt_template;
 
@@ -45,6 +45,7 @@ pub struct SystemBlock {
 pub struct PromptMessage {
     pub role: Role,
     pub content: String,
+    pub images: Vec<ImageRef>,
 }
 
 /// The fully assembled prompt ready for LLM submission.
@@ -227,6 +228,7 @@ fn trim_messages(messages: &[Message], token_budget: usize) -> Vec<PromptMessage
         result.push(PromptMessage {
             role: msg.role.clone(),
             content: msg.content.clone(),
+            images: msg.images.clone(),
         });
     }
 

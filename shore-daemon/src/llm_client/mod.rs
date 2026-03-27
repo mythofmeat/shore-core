@@ -4,9 +4,10 @@ pub mod types;
 
 use std::path::{Path, PathBuf};
 
+use chrono::Utc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 
 use crate::config::models::ResolvedModel;
 use types::LlmRequest;
@@ -14,7 +15,7 @@ use types::LlmRequest;
 /// Errors from the LLM client.
 #[derive(Debug, thiserror::Error)]
 pub enum LlmError {
-    #[error("failed to connect to shore-llm at {path}: {source}")]
+    #[error("{}", connect_message(.path, .source))]
     Connect {
         path: PathBuf,
         source: std::io::Error,
@@ -55,12 +56,28 @@ pub enum LlmError {
 #[derive(Debug, Clone)]
 pub struct LlmClient {
     socket_path: PathBuf,
+    /// If set, API payloads are logged to `{dir}/api_payloads.jsonl`.
+    payload_log_dir: Option<PathBuf>,
 }
 
 impl LlmClient {
     /// Create a new client pointing at the given shore-llm Unix socket.
     pub fn new(socket_path: PathBuf) -> Self {
-        Self { socket_path }
+        Self {
+            socket_path,
+            payload_log_dir: None,
+        }
+    }
+
+    /// Enable API payload logging to the given directory.
+    pub fn with_payload_logging(mut self, dir: PathBuf) -> Self {
+        self.payload_log_dir = Some(dir);
+        self
+    }
+
+    /// Set the payload log directory for a specific character.
+    pub fn set_payload_log_dir(&mut self, dir: PathBuf) {
+        self.payload_log_dir = Some(dir);
     }
 
     /// The socket path this client connects to.
@@ -156,6 +173,8 @@ impl LlmClient {
         let body =
             serde_json::to_string(request).map_err(LlmError::Serialize)?;
 
+        self.log_payload("request", &body);
+
         let mut stream = UnixStream::connect(&self.socket_path)
             .await
             .map_err(|e| LlmError::Connect {
@@ -216,6 +235,8 @@ impl LlmClient {
         let body =
             serde_json::to_string(request).map_err(LlmError::Serialize)?;
 
+        self.log_payload("request", &body);
+
         let mut stream = UnixStream::connect(&self.socket_path)
             .await
             .map_err(|e| LlmError::Connect {
@@ -262,6 +283,8 @@ impl LlmClient {
             }
             body_buf.push_str(&line);
         }
+
+        self.log_payload("response", &body_buf);
 
         serde_json::from_str(&body_buf).map_err(LlmError::Deserialize)
     }
@@ -338,6 +361,66 @@ impl LlmClient {
         let resp: EmbedResponse =
             serde_json::from_str(&body_buf).map_err(LlmError::Deserialize)?;
         Ok(resp.embeddings)
+    }
+
+    /// Log an API payload to `{payload_log_dir}/api_payloads.jsonl` if logging is enabled.
+    fn log_payload(&self, direction: &str, payload: &str) {
+        let Some(dir) = &self.payload_log_dir else {
+            return;
+        };
+        let path = dir.join("api_payloads.jsonl");
+        let ts = Utc::now().to_rfc3339();
+        // Redact api_key from request payloads.
+        let sanitized = if direction == "request" {
+            if let Ok(mut v) = serde_json::from_str::<serde_json::Value>(payload) {
+                if let Some(obj) = v.as_object_mut() {
+                    if obj.contains_key("api_key") {
+                        obj.insert("api_key".into(), serde_json::json!("[REDACTED]"));
+                    }
+                }
+                serde_json::to_string(&v).unwrap_or_else(|_| payload.to_string())
+            } else {
+                payload.to_string()
+            }
+        } else {
+            payload.to_string()
+        };
+        let line = serde_json::json!({
+            "ts": ts,
+            "direction": direction,
+            "payload": serde_json::from_str::<serde_json::Value>(&sanitized)
+                .unwrap_or_else(|_| serde_json::Value::String(sanitized)),
+        });
+        if let Err(e) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .and_then(|mut f| {
+                use std::io::Write;
+                writeln!(f, "{}", line)
+            })
+        {
+            warn!(error = %e, path = %path.display(), "Failed to write API payload log");
+        }
+    }
+}
+
+/// Generate an actionable error message for connection failures.
+fn connect_message(path: &Path, source: &std::io::Error) -> String {
+    let p = path.display();
+    match source.kind() {
+        std::io::ErrorKind::NotFound => {
+            format!("shore-llm is not running (socket not found at {p}). Start shore-llm or check services.llm config.")
+        }
+        std::io::ErrorKind::ConnectionRefused => {
+            format!("shore-llm is not accepting connections at {p}. It may be starting up or crashed — check its logs.")
+        }
+        std::io::ErrorKind::PermissionDenied => {
+            format!("Permission denied connecting to shore-llm at {p}. Check socket file permissions.")
+        }
+        _ => {
+            format!("Cannot reach shore-llm at {p}: {source}")
+        }
     }
 }
 

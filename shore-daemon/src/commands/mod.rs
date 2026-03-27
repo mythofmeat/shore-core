@@ -77,8 +77,8 @@ pub async fn dispatch(
         "collate" => state::collate(engine, ctx, &cmd.args).await,
         "config" => state::config(ctx, &cmd.args),
         "config_check" => state::config_check(ctx),
-        "autonomy_pause" => state::autonomy_pause(engine, ctx),
-        "autonomy_resume" => state::autonomy_resume(engine, ctx),
+        "memory_reindex" => state::memory_reindex(engine, ctx).await,
+        "config_reset" => state::config_reset(ctx),
 
         _ => Err((
             ErrorCode::InvalidRequest,
