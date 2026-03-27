@@ -77,10 +77,10 @@ Features that are fully implemented and working in the V2 (Rust/TypeScript) rewr
 - **Send via editor** (shore send with no args opens $EDITOR)
 - **Model info** (shore model <name> --info) — Full ResolvedModel details.
 - **Character info** (shore character <name> --info) — Definition preview, user.md, prompt overrides.
-- **Compact** (shore compact) — Full compaction pipeline via daemon command.
-- **Collate** (shore collate) — Manual collation trigger via daemon command.
+- **Compact** (shore memory compact) — Full compaction + collation pipeline via daemon command.
 - **Stdin/pipe support** (echo "hi" | shore send) — Reads stdin when not a terminal.
-- **Relative message refs** (shore edit last, shore delete -1) — Supports `last`, negative indices, positive indices.
+- **Relative message refs** (shore log edit last, shore log delete -1) — Supports `last`, negative indices, positive indices.
+- **CLI restructuring** — Reduced from 16 to 9 user-facing commands. `get`/`edit`/`delete` folded under `log` as subcommands. `compact`/`collate`/`memory-changelog`/`--reindex` folded under `memory` as subcommands. `diagnostics` folded into `status --diagnostics`. Collation merged into compact pipeline (always runs after compaction).
 
 ## Configuration & Architecture
 

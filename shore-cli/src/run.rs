@@ -51,7 +51,23 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 None => handle_list_characters(&mut conn).await?,
             }
         }
-        CliCommand::Log { count, follow, json, content } => {
+        CliCommand::Log { subcommand: Some(sub), .. } => {
+            let (name, args) = match sub {
+                crate::cli::LogCommand::Edit { msg_ref, content } => {
+                    ("edit", serde_json::json!({ "ref": msg_ref, "content": content.join(" ") }))
+                }
+                crate::cli::LogCommand::Delete { msg_ref } => {
+                    ("delete", serde_json::json!({ "refs": msg_ref }))
+                }
+            };
+            conn.send_command(name, args).await?;
+            recv_command_response(&mut conn).await?;
+        }
+        CliCommand::Log { msg_ref: Some(r), .. } => {
+            conn.send_command("get", serde_json::json!({ "ref": r })).await?;
+            recv_command_response(&mut conn).await?;
+        }
+        CliCommand::Log { count, follow, json, content, .. } => {
             conn.send_command("log", serde_json::json!({ "count": count })).await?;
             let data = recv_command_data(&mut conn).await?;
 
@@ -109,7 +125,11 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
-        CliCommand::Status { section } => {
+        CliCommand::Status { diagnostics: true, count, .. } => {
+            conn.send_command("diagnostics", serde_json::json!({ "count": count })).await?;
+            recv_command_response(&mut conn).await?;
+        }
+        CliCommand::Status { section, .. } => {
             conn.send_command("status", serde_json::json!({})).await?;
             let data = recv_command_data(&mut conn).await?;
             match section {
@@ -611,7 +631,7 @@ mod tests {
 
     #[tokio::test]
     async fn status_sends_swp_command() {
-        let cli = test_cli(CliCommand::Status { section: None });
+        let cli = test_cli(CliCommand::Status { section: None, diagnostics: false, count: 10 });
         let received = execute_with_mock(cli, command_response("status")).await;
 
         match received {
@@ -624,43 +644,32 @@ mod tests {
 
     // ── Character is handled locally (see state.rs) ───────────────
 
-    // ── Compact command ──────────────────────────────────────────────
+    // ── Memory compact command ───────────────────────────────────────
 
     #[tokio::test]
-    async fn compact_sends_command() {
-        let cli = test_cli(CliCommand::Compact);
+    async fn memory_compact_sends_command() {
+        let cli = test_cli(CliCommand::Memory {
+            subcommand: Some(crate::cli::MemoryCommand::Compact),
+            query: None,
+        });
         let received = execute_with_mock(cli, command_response("compact")).await;
 
         match received {
             ClientMessage::Command(c) => {
                 assert_eq!(c.name, "compact");
+                assert_eq!(c.args["collate"], true);
             }
             other => panic!("expected Command, got: {other:?}"),
         }
     }
 
-    // ── Collate command ─────────────────────────────────────────────
-
-    #[tokio::test]
-    async fn collate_sends_command() {
-        let cli = test_cli(CliCommand::Collate);
-        let received = execute_with_mock(cli, command_response("collate")).await;
-
-        match received {
-            ClientMessage::Command(c) => {
-                assert_eq!(c.name, "collate");
-            }
-            other => panic!("expected Command, got: {other:?}"),
-        }
-    }
-
-    // ── Memory command ───────────────────────────────────────────────
+    // ── Memory query command ─────────────────────────────────────────
 
     #[tokio::test]
     async fn memory_sends_command_with_query() {
         let cli = test_cli(CliCommand::Memory {
+            subcommand: None,
             query: Some("recent topics".into()),
-            reindex: false,
         });
         let received = execute_with_mock(cli, command_response("memory")).await;
 
@@ -673,13 +682,16 @@ mod tests {
         }
     }
 
-    // ── Edit command ─────────────────────────────────────────────────
+    // ── Log edit command ─────────────────────────────────────────────
 
     #[tokio::test]
-    async fn edit_sends_command_with_joined_content() {
-        let cli = test_cli(CliCommand::Edit {
-            msg_id: "m1".into(),
-            content: vec!["new".into(), "text".into()],
+    async fn log_edit_sends_edit_command() {
+        let cli = test_cli(CliCommand::Log {
+            subcommand: Some(crate::cli::LogCommand::Edit {
+                msg_ref: "m1".into(),
+                content: vec!["new".into(), "text".into()],
+            }),
+            msg_ref: None, count: 20, follow: false, json: false, content: false,
         });
         let received = execute_with_mock(cli, command_response("edit")).await;
 
@@ -688,6 +700,27 @@ mod tests {
                 assert_eq!(c.name, "edit");
                 assert_eq!(c.args["ref"], "m1");
                 assert_eq!(c.args["content"], "new text");
+            }
+            other => panic!("expected Command, got: {other:?}"),
+        }
+    }
+
+    // ── Log delete command ───────────────────────────────────────────
+
+    #[tokio::test]
+    async fn log_delete_sends_delete_command() {
+        let cli = test_cli(CliCommand::Log {
+            subcommand: Some(crate::cli::LogCommand::Delete {
+                msg_ref: "m1".into(),
+            }),
+            msg_ref: None, count: 20, follow: false, json: false, content: false,
+        });
+        let received = execute_with_mock(cli, command_response("delete")).await;
+
+        match received {
+            ClientMessage::Command(c) => {
+                assert_eq!(c.name, "delete");
+                assert_eq!(c.args["refs"], "m1");
             }
             other => panic!("expected Command, got: {other:?}"),
         }

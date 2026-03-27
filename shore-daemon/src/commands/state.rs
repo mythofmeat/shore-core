@@ -455,6 +455,86 @@ pub async fn compact(
                 .reload()
                 .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
 
+            // Run collation after compaction if enabled and requested.
+            let do_collate = args
+                .get("collate")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let collation_result = if do_collate
+                && ctx.config.app.behavior.autonomy.collation.enabled
+            {
+                let collation_model = ctx
+                    .config
+                    .app
+                    .defaults
+                    .memory_agent
+                    .as_deref()
+                    .and_then(|name| ctx.config.models.find_model(name).ok())
+                    .or_else(|| {
+                        ctx.active_model
+                            .as_deref()
+                            .and_then(|name| ctx.config.models.find_model(name).ok())
+                    })
+                    .or_else(|| ctx.config.models.first_chat_model());
+
+                if let Some(cmodel) = collation_model {
+                    let collation_llm =
+                        RealCollationLlm::new(ctx.llm_client.clone(), cmodel.clone());
+                    let tidy_template = resolve_prompt_template(
+                        &ctx.config.dirs.config,
+                        &char_name,
+                        "tidy.md",
+                    )
+                    .unwrap_or_else(|| DEFAULT_TIDY_PROMPT.to_string());
+                    let collate_template = resolve_prompt_template(
+                        &ctx.config.dirs.config,
+                        &char_name,
+                        "collate.md",
+                    )
+                    .unwrap_or_else(|| DEFAULT_COLLATE_PROMPT.to_string());
+                    let normalize_template = resolve_prompt_template(
+                        &ctx.config.dirs.config,
+                        &char_name,
+                        "normalize.md",
+                    )
+                    .unwrap_or_else(|| DEFAULT_NORMALIZE_PROMPT.to_string());
+
+                    let collation_mgr = CollationManager::new(LibCollationConfig::default());
+                    match collation_mgr
+                        .run(
+                            &db,
+                            &collation_llm,
+                            &tidy_template,
+                            &collate_template,
+                            &normalize_template,
+                        )
+                        .await
+                    {
+                        Ok(outcome) => Some(json!({
+                            "tidy_splits": outcome.tidy_splits,
+                            "tidy_new_entries": outcome.tidy_new_entries,
+                            "collate_merges": outcome.collate_merges,
+                            "collate_new_entries": outcome.collate_new_entries,
+                            "entities_normalized": outcome.entities_normalized,
+                            "entries_decayed": outcome.entries_decayed,
+                            "entries_skipped": outcome.entries_skipped,
+                        })),
+                        Err(e) => {
+                            tracing::warn!(
+                                character = %char_name,
+                                error = %e,
+                                "Collation after compaction failed"
+                            );
+                            None
+                        }
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
             Ok(json!({
                 "status": "compacted",
                 "character": char_name,
@@ -464,6 +544,7 @@ pub async fn compact(
                 "retained_count": result.retained_count,
                 "recap_generated": result.recap_generated,
                 "new_conversation_id": result.new_conversation_id,
+                "collation": collation_result,
             }))
         }
         CompactionOutcome::DryRun(result) => {

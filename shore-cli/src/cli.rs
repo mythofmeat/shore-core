@@ -43,8 +43,16 @@ pub enum CliCommand {
         guidance: Option<String>,
     },
 
-    /// Show conversation log
+    /// Show conversation log, get/edit/delete messages
+    #[command(args_conflicts_with_subcommands = true)]
     Log {
+        #[command(subcommand)]
+        subcommand: Option<LogCommand>,
+
+        /// Message reference — show a single message (last, -1, 3, etc.)
+        #[arg(allow_hyphen_values = true)]
+        msg_ref: Option<String>,
+
         /// Number of messages to show
         #[arg(short = 'n', long, default_value = "20")]
         count: u32,
@@ -60,23 +68,6 @@ pub enum CliCommand {
         /// Output only message content (no metadata)
         #[arg(long)]
         content: bool,
-    },
-
-    /// Edit a message by ID or relative reference (last, -1, 3, etc.)
-    Edit {
-        /// Message ID or relative reference (last, -1, -2, 3, etc.)
-        #[arg(allow_hyphen_values = true)]
-        msg_id: String,
-
-        /// New content
-        content: Vec<String>,
-    },
-
-    /// Delete a message by ID or relative reference (last, -1, 3, etc.)
-    Delete {
-        /// Message ID or relative reference (last, -1, -2, 3, etc.)
-        #[arg(allow_hyphen_values = true)]
-        msg_id: String,
     },
 
     /// List or switch characters (no args = list, with name = switch)
@@ -98,13 +89,14 @@ pub enum CliCommand {
         /// Show only a specific section (e.g. autonomy, tokens)
         #[arg(long)]
         section: Option<String>,
-    },
 
-    /// Get a single message by index or reference
-    Get {
-        /// Message reference (last, -1, -2, 3, etc.)
-        #[arg(allow_hyphen_values = true)]
-        msg_ref: String,
+        /// Show recent API calls, tool invocations, and errors
+        #[arg(long)]
+        diagnostics: bool,
+
+        /// Number of diagnostic entries to show (used with --diagnostics)
+        #[arg(short = 'n', long, default_value = "10")]
+        count: u32,
     },
 
     /// List or switch models (no args = list, with name = switch)
@@ -121,35 +113,14 @@ pub enum CliCommand {
         reset: bool,
     },
 
-    /// Show or query memory system
+    /// Show, query, or manage the memory system
+    #[command(args_conflicts_with_subcommands = true)]
     Memory {
-        /// Optional query to search memory
+        #[command(subcommand)]
+        subcommand: Option<MemoryCommand>,
+
+        /// Query to search memory
         query: Option<String>,
-
-        /// Rebuild FTS and vector indexes from existing entries
-        #[arg(long)]
-        reindex: bool,
-    },
-
-    /// Show recent memory changelog entries
-    #[command(name = "memory-changelog")]
-    MemoryChangelog {
-        /// Number of entries to show
-        #[arg(short = 'n', long, default_value = "20")]
-        limit: u32,
-    },
-
-    /// Trigger memory compaction
-    Compact,
-
-    /// Run memory collation (tidy, merge, normalize, decay)
-    Collate,
-
-    /// Show recent API calls, tool invocations, and errors
-    Diagnostics {
-        /// Number of entries to show per category
-        #[arg(short = 'n', long, default_value = "10")]
-        count: u32,
     },
 
     /// Show or modify configuration
@@ -180,6 +151,42 @@ pub enum CliCommand {
     },
 }
 
+#[derive(Subcommand, Debug)]
+pub enum LogCommand {
+    /// Edit a message by reference (last, -1, 3, etc.)
+    Edit {
+        /// Message reference (last, -1, -2, 3, etc.)
+        #[arg(allow_hyphen_values = true)]
+        msg_ref: String,
+
+        /// New content
+        content: Vec<String>,
+    },
+
+    /// Delete a message by reference (last, -1, 3, etc.)
+    Delete {
+        /// Message reference (last, -1, -2, 3, etc.)
+        #[arg(allow_hyphen_values = true)]
+        msg_ref: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum MemoryCommand {
+    /// Compact conversation into memory entries, then run collation
+    Compact,
+
+    /// Show recent memory changelog entries
+    Changelog {
+        /// Number of entries to show
+        #[arg(short = 'n', long, default_value = "20")]
+        limit: u32,
+    },
+
+    /// Rebuild FTS and vector indexes
+    Reindex,
+}
+
 /// Generate and print shell completions to stdout.
 pub fn print_completions(shell: Shell) {
     use clap::CommandFactory;
@@ -199,10 +206,6 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
         | CliCommand::Completions { .. }
         | CliCommand::Config { path: true, check: false, reset: false, .. } => None,
 
-        CliCommand::Diagnostics { count } => {
-            Some(("diagnostics", json!({ "count": count })))
-        }
-
         // Character: list/switch/new handled locally, --info goes to daemon.
         CliCommand::Character { name, info, .. } => {
             if *info {
@@ -214,21 +217,28 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
             }
         }
 
+        // Log: subcommands (edit/delete), single message ref, or list.
+        CliCommand::Log { subcommand: Some(LogCommand::Edit { msg_ref, content }), .. } => {
+            Some(("edit", json!({ "ref": msg_ref, "content": content.join(" ") })))
+        }
+        CliCommand::Log { subcommand: Some(LogCommand::Delete { msg_ref }), .. } => {
+            Some(("delete", json!({ "refs": msg_ref })))
+        }
+        CliCommand::Log { msg_ref: Some(r), .. } => {
+            Some(("get", json!({ "ref": r })))
+        }
         CliCommand::Log { count, .. } => {
             Some(("log", json!({ "count": count })))
         }
-        CliCommand::Edit { msg_id, content } => {
-            Some(("edit", json!({ "ref": msg_id, "content": content.join(" ") })))
-        }
-        CliCommand::Delete { msg_id } => {
-            Some(("delete", json!({ "refs": msg_id })))
+
+        // Status: diagnostics mode or normal status.
+        CliCommand::Status { diagnostics: true, count, .. } => {
+            Some(("diagnostics", json!({ "count": count })))
         }
         CliCommand::Status { .. } => {
             Some(("status", json!({})))
         }
-        CliCommand::Get { msg_ref } => {
-            Some(("get", json!({ "ref": msg_ref })))
-        }
+
         CliCommand::Model { name, info, reset } => {
             if *reset {
                 Some(("reset_model", json!({})))
@@ -241,21 +251,21 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
                 }
             }
         }
-        CliCommand::Memory { reindex: true, .. } => {
+
+        // Memory: subcommands (compact/changelog/reindex) or status/query.
+        CliCommand::Memory { subcommand: Some(MemoryCommand::Compact), .. } => {
+            Some(("compact", json!({ "collate": true })))
+        }
+        CliCommand::Memory { subcommand: Some(MemoryCommand::Changelog { limit }), .. } => {
+            Some(("memory_changelog", json!({ "limit": limit })))
+        }
+        CliCommand::Memory { subcommand: Some(MemoryCommand::Reindex), .. } => {
             Some(("memory_reindex", json!({})))
         }
         CliCommand::Memory { query, .. } => {
             Some(("memory", json!({ "query": query })))
         }
-        CliCommand::MemoryChangelog { limit } => {
-            Some(("memory_changelog", json!({ "limit": limit })))
-        }
-        CliCommand::Compact => {
-            Some(("compact", json!({})))
-        }
-        CliCommand::Collate => {
-            Some(("collate", json!({})))
-        }
+
         CliCommand::Config { reset: true, .. } => {
             Some(("config_reset", json!({})))
         }
@@ -282,6 +292,8 @@ mod tests {
         full.extend_from_slice(args);
         Cli::parse_from(full)
     }
+
+    // ── Send ─────────────────────────────────────────────────────────
 
     #[test]
     fn parse_send() {
@@ -319,6 +331,8 @@ mod tests {
         }
     }
 
+    // ── Regen ────────────────────────────────────────────────────────
+
     #[test]
     fn parse_regen_no_guidance() {
         let cli = parse(&["regen"]);
@@ -341,11 +355,15 @@ mod tests {
         }
     }
 
+    // ── Log ──────────────────────────────────────────────────────────
+
     #[test]
     fn parse_log_default() {
         let cli = parse(&["log"]);
         match &cli.command {
-            CliCommand::Log { count, follow, json, content } => {
+            CliCommand::Log { subcommand, msg_ref, count, follow, json, content } => {
+                assert!(subcommand.is_none());
+                assert!(msg_ref.is_none());
                 assert_eq!(*count, 20);
                 assert!(!follow);
                 assert!(!json);
@@ -367,62 +385,88 @@ mod tests {
     }
 
     #[test]
-    fn parse_edit() {
-        let cli = parse(&["edit", "msg_123", "new", "text"]);
+    fn parse_log_get_by_ref() {
+        let cli = parse(&["log", "last"]);
         match &cli.command {
-            CliCommand::Edit { msg_id, content } => {
-                assert_eq!(msg_id, "msg_123");
+            CliCommand::Log { msg_ref, subcommand, .. } => {
+                assert!(subcommand.is_none());
+                assert_eq!(msg_ref.as_deref(), Some("last"));
+            }
+            other => panic!("expected Log, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_log_get_positive_index() {
+        let cli = parse(&["log", "3"]);
+        match &cli.command {
+            CliCommand::Log { msg_ref, subcommand, .. } => {
+                assert!(subcommand.is_none());
+                assert_eq!(msg_ref.as_deref(), Some("3"));
+            }
+            other => panic!("expected Log, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_log_edit() {
+        let cli = parse(&["log", "edit", "msg_123", "new", "text"]);
+        match &cli.command {
+            CliCommand::Log { subcommand: Some(LogCommand::Edit { msg_ref, content }), .. } => {
+                assert_eq!(msg_ref, "msg_123");
                 assert_eq!(content, &["new", "text"]);
             }
-            other => panic!("expected Edit, got: {other:?}"),
+            other => panic!("expected Log Edit, got: {other:?}"),
         }
     }
 
     #[test]
-    fn parse_delete() {
-        let cli = parse(&["delete", "msg_456"]);
+    fn parse_log_edit_last() {
+        let cli = parse(&["log", "edit", "last", "updated"]);
         match &cli.command {
-            CliCommand::Delete { msg_id } => {
-                assert_eq!(msg_id, "msg_456");
-            }
-            other => panic!("expected Delete, got: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_edit_negative_index() {
-        let cli = parse(&["edit", "-1", "new", "text"]);
-        match &cli.command {
-            CliCommand::Edit { msg_id, content } => {
-                assert_eq!(msg_id, "-1");
-                assert_eq!(content, &["new", "text"]);
-            }
-            other => panic!("expected Edit, got: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_delete_negative_index() {
-        let cli = parse(&["delete", "-1"]);
-        match &cli.command {
-            CliCommand::Delete { msg_id } => {
-                assert_eq!(msg_id, "-1");
-            }
-            other => panic!("expected Delete, got: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parse_edit_last() {
-        let cli = parse(&["edit", "last", "updated"]);
-        match &cli.command {
-            CliCommand::Edit { msg_id, content } => {
-                assert_eq!(msg_id, "last");
+            CliCommand::Log { subcommand: Some(LogCommand::Edit { msg_ref, content }), .. } => {
+                assert_eq!(msg_ref, "last");
                 assert_eq!(content, &["updated"]);
             }
-            other => panic!("expected Edit, got: {other:?}"),
+            other => panic!("expected Log Edit, got: {other:?}"),
         }
     }
+
+    #[test]
+    fn parse_log_edit_negative_index() {
+        let cli = parse(&["log", "edit", "-1", "new", "text"]);
+        match &cli.command {
+            CliCommand::Log { subcommand: Some(LogCommand::Edit { msg_ref, content }), .. } => {
+                assert_eq!(msg_ref, "-1");
+                assert_eq!(content, &["new", "text"]);
+            }
+            other => panic!("expected Log Edit, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_log_delete() {
+        let cli = parse(&["log", "delete", "msg_456"]);
+        match &cli.command {
+            CliCommand::Log { subcommand: Some(LogCommand::Delete { msg_ref }), .. } => {
+                assert_eq!(msg_ref, "msg_456");
+            }
+            other => panic!("expected Log Delete, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_log_delete_negative_index() {
+        let cli = parse(&["log", "delete", "-1"]);
+        match &cli.command {
+            CliCommand::Log { subcommand: Some(LogCommand::Delete { msg_ref }), .. } => {
+                assert_eq!(msg_ref, "-1");
+            }
+            other => panic!("expected Log Delete, got: {other:?}"),
+        }
+    }
+
+    // ── Character ────────────────────────────────────────────────────
 
     #[test]
     fn parse_character_list() {
@@ -460,11 +504,45 @@ mod tests {
         }
     }
 
+    // ── Status ───────────────────────────────────────────────────────
+
     #[test]
     fn parse_status() {
         let cli = parse(&["status"]);
-        assert!(matches!(cli.command, CliCommand::Status { .. }));
+        match &cli.command {
+            CliCommand::Status { section, diagnostics, .. } => {
+                assert!(section.is_none());
+                assert!(!diagnostics);
+            }
+            other => panic!("expected Status, got: {other:?}"),
+        }
     }
+
+    #[test]
+    fn parse_status_diagnostics() {
+        let cli = parse(&["status", "--diagnostics"]);
+        match &cli.command {
+            CliCommand::Status { diagnostics, count, .. } => {
+                assert!(diagnostics);
+                assert_eq!(*count, 10);
+            }
+            other => panic!("expected Status, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_status_diagnostics_with_count() {
+        let cli = parse(&["status", "--diagnostics", "-n", "25"]);
+        match &cli.command {
+            CliCommand::Status { diagnostics, count, .. } => {
+                assert!(diagnostics);
+                assert_eq!(*count, 25);
+            }
+            other => panic!("expected Status, got: {other:?}"),
+        }
+    }
+
+    // ── Model ────────────────────────────────────────────────────────
 
     #[test]
     fn parse_model_list() {
@@ -502,13 +580,15 @@ mod tests {
         }
     }
 
+    // ── Memory ───────────────────────────────────────────────────────
+
     #[test]
     fn parse_memory_no_query() {
         let cli = parse(&["memory"]);
         match &cli.command {
-            CliCommand::Memory { query, reindex } => {
+            CliCommand::Memory { query, subcommand } => {
                 assert!(query.is_none());
-                assert!(!reindex);
+                assert!(subcommand.is_none());
             }
             other => panic!("expected Memory, got: {other:?}"),
         }
@@ -518,25 +598,55 @@ mod tests {
     fn parse_memory_with_query() {
         let cli = parse(&["memory", "recent topics"]);
         match &cli.command {
-            CliCommand::Memory { query, reindex } => {
+            CliCommand::Memory { query, subcommand } => {
                 assert_eq!(query.as_deref(), Some("recent topics"));
-                assert!(!reindex);
+                assert!(subcommand.is_none());
             }
             other => panic!("expected Memory, got: {other:?}"),
         }
     }
 
     #[test]
-    fn parse_compact() {
-        let cli = parse(&["compact"]);
-        assert!(matches!(cli.command, CliCommand::Compact));
+    fn parse_memory_compact() {
+        let cli = parse(&["memory", "compact"]);
+        match &cli.command {
+            CliCommand::Memory { subcommand: Some(MemoryCommand::Compact), .. } => {}
+            other => panic!("expected Memory Compact, got: {other:?}"),
+        }
     }
 
     #[test]
-    fn parse_collate() {
-        let cli = parse(&["collate"]);
-        assert!(matches!(cli.command, CliCommand::Collate));
+    fn parse_memory_changelog() {
+        let cli = parse(&["memory", "changelog"]);
+        match &cli.command {
+            CliCommand::Memory { subcommand: Some(MemoryCommand::Changelog { limit }), .. } => {
+                assert_eq!(*limit, 20);
+            }
+            other => panic!("expected Memory Changelog, got: {other:?}"),
+        }
     }
+
+    #[test]
+    fn parse_memory_changelog_with_limit() {
+        let cli = parse(&["memory", "changelog", "-n", "50"]);
+        match &cli.command {
+            CliCommand::Memory { subcommand: Some(MemoryCommand::Changelog { limit }), .. } => {
+                assert_eq!(*limit, 50);
+            }
+            other => panic!("expected Memory Changelog, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_memory_reindex() {
+        let cli = parse(&["memory", "reindex"]);
+        match &cli.command {
+            CliCommand::Memory { subcommand: Some(MemoryCommand::Reindex), .. } => {}
+            other => panic!("expected Memory Reindex, got: {other:?}"),
+        }
+    }
+
+    // ── Config ───────────────────────────────────────────────────────
 
     #[test]
     fn parse_config_no_args() {
@@ -588,6 +698,8 @@ mod tests {
         }
     }
 
+    // ── Global flags ─────────────────────────────────────────────────
+
     #[test]
     fn parse_global_socket_flag() {
         let cli = parse(&["--socket", "/tmp/shore.sock", "status"]);
@@ -629,10 +741,18 @@ mod tests {
 
     #[test]
     fn status_maps_to_command() {
-        let cmd = CliCommand::Status { section: None };
+        let cmd = CliCommand::Status { section: None, diagnostics: false, count: 10 };
         let (name, args) = to_swp_command(&cmd).unwrap();
         assert_eq!(name, "status");
         assert_eq!(args, serde_json::json!({}));
+    }
+
+    #[test]
+    fn status_diagnostics_maps_to_command() {
+        let cmd = CliCommand::Status { section: None, diagnostics: true, count: 15 };
+        let (name, args) = to_swp_command(&cmd).unwrap();
+        assert_eq!(name, "diagnostics");
+        assert_eq!(args["count"], 15);
     }
 
     #[test]
@@ -666,25 +786,112 @@ mod tests {
     }
 
     #[test]
+    fn log_edit_maps_to_edit_command() {
+        let cmd = CliCommand::Log {
+            subcommand: Some(LogCommand::Edit {
+                msg_ref: "m1".into(),
+                content: vec!["new".into(), "text".into()],
+            }),
+            msg_ref: None, count: 20, follow: false, json: false, content: false,
+        };
+        let (name, args) = to_swp_command(&cmd).unwrap();
+        assert_eq!(name, "edit");
+        assert_eq!(args["ref"], "m1");
+        assert_eq!(args["content"], "new text");
+    }
+
+    #[test]
+    fn log_delete_maps_to_delete_command() {
+        let cmd = CliCommand::Log {
+            subcommand: Some(LogCommand::Delete { msg_ref: "m1".into() }),
+            msg_ref: None, count: 20, follow: false, json: false, content: false,
+        };
+        let (name, args) = to_swp_command(&cmd).unwrap();
+        assert_eq!(name, "delete");
+        assert_eq!(args["refs"], "m1");
+    }
+
+    #[test]
+    fn log_ref_maps_to_get_command() {
+        let cmd = CliCommand::Log {
+            subcommand: None,
+            msg_ref: Some("last".into()),
+            count: 20, follow: false, json: false, content: false,
+        };
+        let (name, args) = to_swp_command(&cmd).unwrap();
+        assert_eq!(name, "get");
+        assert_eq!(args["ref"], "last");
+    }
+
+    #[test]
+    fn log_default_maps_to_log_command() {
+        let cmd = CliCommand::Log {
+            subcommand: None, msg_ref: None,
+            count: 20, follow: false, json: false, content: false,
+        };
+        let (name, args) = to_swp_command(&cmd).unwrap();
+        assert_eq!(name, "log");
+        assert_eq!(args["count"], 20);
+    }
+
+    #[test]
+    fn memory_compact_maps_to_compact_command() {
+        let cmd = CliCommand::Memory {
+            subcommand: Some(MemoryCommand::Compact),
+            query: None,
+        };
+        let (name, args) = to_swp_command(&cmd).unwrap();
+        assert_eq!(name, "compact");
+        assert_eq!(args["collate"], true);
+    }
+
+    #[test]
+    fn memory_changelog_maps_to_command() {
+        let cmd = CliCommand::Memory {
+            subcommand: Some(MemoryCommand::Changelog { limit: 20 }),
+            query: None,
+        };
+        let (name, args) = to_swp_command(&cmd).unwrap();
+        assert_eq!(name, "memory_changelog");
+        assert_eq!(args["limit"], 20);
+    }
+
+    #[test]
+    fn memory_reindex_maps_to_command() {
+        let cmd = CliCommand::Memory {
+            subcommand: Some(MemoryCommand::Reindex),
+            query: None,
+        };
+        let (name, _) = to_swp_command(&cmd).unwrap();
+        assert_eq!(name, "memory_reindex");
+    }
+
+    #[test]
     fn all_non_message_commands_map() {
         // Every variant except Send, Regen, Character (no --info), Config --path, and Completions should produce Some.
         let commands: Vec<CliCommand> = vec![
-            CliCommand::Log { count: 20, follow: false, json: false, content: false },
-            CliCommand::Edit { msg_id: "m1".into(), content: vec!["text".into()] },
-            CliCommand::Delete { msg_id: "m1".into() },
-            CliCommand::Status { section: None },
-            CliCommand::Get { msg_ref: "last".into() },
+            CliCommand::Log { subcommand: None, msg_ref: None, count: 20, follow: false, json: false, content: false },
+            CliCommand::Log {
+                subcommand: Some(LogCommand::Edit { msg_ref: "m1".into(), content: vec!["text".into()] }),
+                msg_ref: None, count: 20, follow: false, json: false, content: false,
+            },
+            CliCommand::Log {
+                subcommand: Some(LogCommand::Delete { msg_ref: "m1".into() }),
+                msg_ref: None, count: 20, follow: false, json: false, content: false,
+            },
+            CliCommand::Log { subcommand: None, msg_ref: Some("last".into()), count: 20, follow: false, json: false, content: false },
+            CliCommand::Status { section: None, diagnostics: false, count: 10 },
+            CliCommand::Status { section: None, diagnostics: true, count: 10 },
             CliCommand::Model { name: None, info: false, reset: false },
             CliCommand::Model { name: Some("m".into()), info: false, reset: false },
             CliCommand::Model { name: Some("m".into()), info: true, reset: false },
             CliCommand::Model { name: None, info: false, reset: true },
             CliCommand::Character { name: Some("c".into()), info: true, new: false },
-            CliCommand::Memory { query: None, reindex: false },
-            CliCommand::MemoryChangelog { limit: 20 },
-            CliCommand::Compact,
-            CliCommand::Collate,
+            CliCommand::Memory { subcommand: None, query: None },
+            CliCommand::Memory { subcommand: Some(MemoryCommand::Compact), query: None },
+            CliCommand::Memory { subcommand: Some(MemoryCommand::Changelog { limit: 20 }), query: None },
+            CliCommand::Memory { subcommand: Some(MemoryCommand::Reindex), query: None },
             CliCommand::Config { key: None, value: None, path: false, check: false, reset: false },
-            CliCommand::Diagnostics { count: 10 },
         ];
         for cmd in &commands {
             assert!(
