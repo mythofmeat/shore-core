@@ -89,13 +89,21 @@ Features that are fully implemented and working in the V2 (Rust/TypeScript) rewr
 - **include/conf.d** — `include = [...]` for explicit file includes, `conf.d/*.toml` for automatic drop-in merging.
 - **Per-model cache config** (ttl, depth, keepalive) — All cache fields are per-model in ResolvedModel.
 - **Multi-provider reasoning effort** — reasoning_effort is a per-model field.
-- **TCP / remote daemon access** — Config [daemon].tcp_addr + SHORE_TCP_ADDR env var.
+- **TCP / remote daemon access** — Config [connections.tcp] with enabled, addr, allowed_hosts ACL. SHORE_TCP_ADDR env var fallback. Replaces old [daemon].tcp_addr.
 - **Thin-client mode** (no local config) — CLI --socket flag can point to remote.
 - **Instance registry** — instances.json with file locking, register/unregister/list.
 - **Runtime config overrides** — Model switch, per-character overrides, and general `config set` pathway (5.41) with focused whitelist.
 - **Config auto-sync** (fills missing fields on startup)
 - **Per-character config overrides** — Character definitions, user definitions, prompt templates all resolve per-character.
 - **Process supervision** (shore-llm) — Daemon spawns and supervises shore-llm. Health checks, restart with backoff, SIGTERM/SIGKILL.
+- **Per-tool toggles** (10.3) — Named bools under [behavior.tool_use.tools] for each of the 11 tools. Filtered in available_tools().
+- **TCP access control** (10.4) — [connections.tcp] with enabled, addr, allowed_hosts. ACL enforced on TCP accept (empty = allow all).
+- **memory.image_enabled** (10.6) — Toggle for image memory subsystem under [memory].
+- **Autonomy sub-toggles** (10.7) — heartbeat.enabled, compaction.enabled, collation.enabled under their respective [behavior.autonomy.*] sections. Top-level autonomy.enabled still gates everything.
+- **Compaction message triggers** (10.8) — Already covered: min_messages (idle gate) + max_messages (force trigger) in CompactionConfig.
+- **advanced.editor** (10.9) — Config-level editor override, checked before $VISUAL/$EDITOR.
+- **advanced.data_dir** (10.10) — Decision: use $XDG_DATA_HOME env var. No config field needed.
+- **advanced.max_retries / retry_backoff_seconds** (10.11) — Config-level retry tuning. Wired into RetryPolicy and exponential backoff in handler.
 
 ## Message Storage
 

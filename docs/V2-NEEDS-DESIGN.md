@@ -80,23 +80,7 @@ Each one needs a design call about whether/how to port it.
   Default character to load on startup.
 - 10.2 **defaults.display_name** — MISSING
   User's display name in conversations.
-- 10.3 **Per-tool toggles** (send_image, roll_dice, image_generation, web_search) — MISSING
-  V1 had per-tool enable/disable under [behavior.tool_use].
-- 10.4 **connections.tcp** (enabled, addr, allowed_hosts) — MISSING
-  V1 had TCP access control. V2 has daemon.tcp_addr but no ACL.
 - 10.5 **connections.matrix_embedded** — MISSING
   Embedded Synapse config (server_name, admin credentials).
-- 10.6 **memory.image.enabled** — MISSING
-  Toggle for image memory subsystem.
-- 10.7 **Autonomy sub-toggles** (heartbeat.enabled, compaction.enabled, collation.enabled) — MISSING
-  V1 had per-subsystem enabled flags. V2 only has the top-level autonomy.enabled.
-- 10.8 **compaction.message_trigger / min_new_messages** — MISSING
-  V1 had message-count-based compaction triggers. V2 only has idle_trigger_minutes.
-- 10.9 **advanced.editor** — MISSING
-  Config-level editor preference. V2 reads $VISUAL/$EDITOR env vars only.
-- 10.10 **advanced.data_dir** — MISSING
-  Config-level data directory override. V2 uses XDG only.
-- 10.11 **advanced.max_retries / retry_backoff_seconds** — MISSING
-  Config-level retry tuning. V2 has hardcoded retry logic in LLM client.
 - 10.12 **debug.anthropic_cache** (log_expected_misses, preflight_check, exit_on_unexpected_miss) — MISSING
   Cache debug instrumentation flags.

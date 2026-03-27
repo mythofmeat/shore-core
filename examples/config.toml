@@ -9,7 +9,6 @@
 
 [daemon]
 # socket_path = "/tmp/shore.sock"   # Override Unix socket path (auto-generated if omitted)
-# tcp_addr = "127.0.0.1:7320"       # Optional TCP listener
 
 [defaults]
 # model = "claude-sonnet"           # Must match a model key below
@@ -25,15 +24,20 @@ max_unanswered = 1
 max_deferral_hours = 24.0
 
 [behavior.autonomy.heartbeat]
+enabled = true                       # Set false to disable heartbeat scheduling
 session_gap_secs = 1800              # 30 min — idle gap marking session boundary
 session_probe_floor_secs = 180       # 3 min — minimum idle before post-session probe
 dormant_threshold = 8                # Max consecutive unanswered probes
 
 [behavior.autonomy.compaction]
+enabled = true                       # Set false to disable compaction triggers
 idle_trigger_minutes = 30
+min_messages = 20                    # Minimum messages before any compaction trigger
+max_messages = 60                    # Force compaction at this message count
 
 [behavior.autonomy.collation]
-auto_run = true
+enabled = true                       # Master kill switch for collation
+auto_run = true                      # Run automatically after compaction
 
 [behavior.autonomy.cache_keepalive]
 enabled = true
@@ -44,9 +48,29 @@ max_pings = 12
 enabled = true
 max_iterations = 10
 
+# Per-tool toggles — set to false to disable individual tools.
+# [behavior.tool_use.tools]
+# memory = true
+# send_image = true
+# list_images = true
+# recall_image = true
+# generate_image = true
+# web_search = true
+# fetch_url = true
+# research_web = true
+# check_time = true
+# roll_dice = true
+# activity_heatmap = true
+
 [memory]
 rag_results = 5
 rag_threshold = 0.3
+image_enabled = true                 # Set false to disable image memory subsystem
+
+# [connections.tcp]
+# enabled = false                    # Set true to enable TCP listener
+# addr = "127.0.0.1:7320"
+# allowed_hosts = []                 # Empty = allow all; otherwise list of allowed IPs
 
 # [connections.matrix]
 # homeserver = "https://matrix.example.com"
@@ -59,6 +83,10 @@ rag_threshold = 0.3
 
 [advanced]
 cache_invalidation_warnings = true
+# editor = "nvim"                    # Override $VISUAL / $EDITOR
+# max_retries = 2                    # LLM retry attempts (default: 2)
+# retry_backoff_seconds = 0.5        # Base delay between retries (exponential backoff)
+# Data directory: use $XDG_DATA_HOME to override (default: ~/.local/share/shore)
 
 # ── Chat models ─────────────────────────────────────────────────────────
 # Provider-level defaults cascade into every model under that provider.
