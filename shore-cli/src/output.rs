@@ -815,8 +815,10 @@ pub fn print_status(data: &serde_json::Value, character_name: &str) {
     // ── Status ──────────────────────────────────────────
     write_section_header(&mut out, "Status", "", width);
 
-    let char_color = character_color(character_name);
-    write_row_colored(&mut out, "Character", character_name, char_color);
+    // Prefer the character name from the daemon response over the CLI fallback.
+    let effective_name = data["character"].as_str().unwrap_or(character_name);
+    let char_color = character_color(effective_name);
+    write_row_colored(&mut out, "Character", effective_name, char_color);
 
     let model = data["active_model"].as_str().unwrap_or("(none)");
     write_row(&mut out, "Model", abbreviate_model(model));

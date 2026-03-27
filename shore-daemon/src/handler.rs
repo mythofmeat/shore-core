@@ -518,16 +518,15 @@ impl MessageHandler {
                     .map_err(|e| shore_llm_client::LlmError::Provider { message: e.to_string() })?;
 
                 let turn_count = engine.messages().len();
+                // Only check for cache invalidation on providers that support
+                // prompt caching (currently only Anthropic).
+                let cache_warnings = resolved.provider_key == "anthropic"
+                    && self.cmd_ctx.config.app.advanced.cache_invalidation_warnings;
                 let cache_ctx = CacheContext {
                     conversation_turn_count: turn_count,
                     is_first_after_restart: self.is_first_after_restart,
                     is_first_after_compaction: false,
-                    cache_invalidation_warnings: self
-                        .cmd_ctx
-                        .config
-                        .app
-                        .advanced
-                        .cache_invalidation_warnings,
+                    cache_invalidation_warnings: cache_warnings,
                 };
 
                 consumer.consume(&mut reader, regen, &cache_ctx).await
@@ -565,16 +564,15 @@ impl MessageHandler {
         let engine = self.registry.get_or_create(&char_name)
             .map_err(|e| e.to_string())?;
         let turn_count = engine.messages().len();
+        // Only check for cache invalidation on providers that support
+        // prompt caching (currently only Anthropic).
+        let tool_cache_warnings = resolved.provider_key == "anthropic"
+            && self.cmd_ctx.config.app.advanced.cache_invalidation_warnings;
         let cache_ctx = CacheContext {
             conversation_turn_count: turn_count,
             is_first_after_restart: self.is_first_after_restart,
             is_first_after_compaction: false,
-            cache_invalidation_warnings: self
-                .cmd_ctx
-                .config
-                .app
-                .advanced
-                .cache_invalidation_warnings,
+            cache_invalidation_warnings: tool_cache_warnings,
         };
 
         self.is_first_after_restart = false;

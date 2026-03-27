@@ -153,9 +153,13 @@ pub struct HeartbeatScheduler {
     paused: bool,
     /// Configurable dormant threshold (overrides DORMANT_THRESHOLD constant).
     dormant_threshold: u32,
+    /// Idle gap (seconds) before session → probe transition.
+    session_gap_secs: u64,
+    /// Minimum session duration (seconds) before a probe can fire.
+    session_probe_floor_secs: u64,
     last_user_ts: Option<Instant>,
     last_assistant_ts: Option<Instant>,
-    /// When the current Session period began (for SESSION_PROBE_FLOOR).
+    /// When the current Session period began (for session_probe_floor_secs).
     session_start: Option<Instant>,
     /// Consecutive autonomous messages without a user reply.
     unanswered_count: u32,
@@ -170,15 +174,22 @@ pub struct HeartbeatScheduler {
 
 impl HeartbeatScheduler {
     pub fn new() -> Self {
-        Self::with_threshold(DORMANT_THRESHOLD)
+        Self::with_config(DORMANT_THRESHOLD, SESSION_GAP, SESSION_PROBE_FLOOR)
     }
 
-    /// Create a scheduler with a custom dormant threshold.
+    /// Create a scheduler with a custom dormant threshold (uses default gap/floor).
     pub fn with_threshold(dormant_threshold: u32) -> Self {
+        Self::with_config(dormant_threshold, SESSION_GAP, SESSION_PROBE_FLOOR)
+    }
+
+    /// Create a scheduler with full config control over timing.
+    pub fn with_config(dormant_threshold: u32, session_gap_secs: u64, session_probe_floor_secs: u64) -> Self {
         Self {
             state: HeartbeatState::Session,
             paused: false,
             dormant_threshold,
+            session_gap_secs,
+            session_probe_floor_secs,
             last_user_ts: None,
             last_assistant_ts: None,
             session_start: None,
@@ -355,7 +366,7 @@ impl HeartbeatScheduler {
             .map(|s| now.duration_since(s).as_secs())
             .unwrap_or(0);
 
-        if idle_secs >= SESSION_GAP && session_duration >= SESSION_PROBE_FLOOR {
+        if idle_secs >= self.session_gap_secs && session_duration >= self.session_probe_floor_secs {
             self.state = HeartbeatState::PostSessionProbe;
             return HeartbeatAction::GenerateProbe {
                 idle_secs,

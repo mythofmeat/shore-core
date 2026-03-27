@@ -202,6 +202,19 @@ impl VectorStore {
     }
 
     fn make_batch(&self, entries: &[(&str, &[f32])]) -> Result<RecordBatch, VectorStoreError> {
+        // Validate embedding dimensions before building the arrow batch.
+        // Mismatched dimensions cause a panic in FixedSizeListBuilder.
+        for (id, vec) in entries {
+            if vec.len() != self.dimension as usize {
+                return Err(VectorStoreError::Embed(format!(
+                    "embedding for '{}' has {} dimensions, expected {}",
+                    id,
+                    vec.len(),
+                    self.dimension
+                )));
+            }
+        }
+
         let schema = self.table_schema();
         let ids: Vec<&str> = entries.iter().map(|(id, _)| *id).collect();
         let vectors: Vec<Option<Vec<Option<f32>>>> = entries
@@ -380,5 +393,18 @@ mod tests {
     async fn test_default_path() {
         let path = VectorStore::default_path("test-char");
         assert!(path.ends_with("shore/test-char/memory/vectorstore"));
+    }
+
+    #[tokio::test]
+    async fn test_dimension_mismatch_returns_error() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = open_temp_store(tmp.path(), 4).await;
+
+        // Try to index a 3-dimensional vector into a 4-dimensional store.
+        let result = store.index_entry("e1", &[1.0, 0.0, 0.0]).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("3 dimensions"), "error should mention actual dimensions: {err}");
+        assert!(err.contains("expected 4"), "error should mention expected dimensions: {err}");
     }
 }

@@ -104,13 +104,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     registry.register(instance_info)?;
     info!(instance_id = %instance_id, "Registered daemon instance");
 
-    // ── Shutdown signal (Ctrl+C) ─────────────────────────────────────
+    // ── Shutdown signal (SIGINT / SIGTERM) ──────────────────────────
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
     tokio::spawn(async move {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("Failed to listen for Ctrl+C");
-        info!("Received shutdown signal");
+        let ctrl_c = tokio::signal::ctrl_c();
+
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{signal, SignalKind};
+            let mut sigterm = signal(SignalKind::terminate())
+                .expect("Failed to listen for SIGTERM");
+            tokio::select! {
+                _ = ctrl_c => info!("Received SIGINT"),
+                _ = sigterm.recv() => info!("Received SIGTERM"),
+            }
+        }
+
+        #[cfg(not(unix))]
+        {
+            ctrl_c.await.expect("Failed to listen for Ctrl+C");
+            info!("Received shutdown signal");
+        }
+
         let _ = shutdown_tx.send(());
     });
 
@@ -240,11 +255,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     drop(server);
 
     // ── Wait for handler, autonomy tasks, and supervisor to finish ───
-    let _ = handler_handle.await;
-    let _ = compaction_handle.await;
-    autonomy.shutdown().await;
+    // Use timeouts to prevent indefinite hangs during shutdown.
+    // Order matters: autonomy must shut down before compaction, because
+    // autonomy holds the compaction channel sender — dropping it unblocks
+    // the compaction task's recv().
+    let shutdown_timeout = std::time::Duration::from_secs(10);
+
+    let _ = tokio::time::timeout(shutdown_timeout, handler_handle).await;
+    let _ = tokio::time::timeout(shutdown_timeout, autonomy.shutdown()).await;
+    // Drop the autonomy manager so its compaction_tx sender is released,
+    // allowing the compaction task's recv() to return None and exit.
+    drop(autonomy);
+    let _ = tokio::time::timeout(shutdown_timeout, compaction_handle).await;
     if let Some(handle) = supervisor_handle {
-        let _ = handle.await;
+        let _ = tokio::time::timeout(shutdown_timeout, handle).await;
     }
 
     // ── Cleanup ──────────────────────────────────────────────────────

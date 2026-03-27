@@ -262,9 +262,12 @@ impl AutonomyManager {
             return;
         }
 
-        // Create scheduler state.
-        let threshold = self.config.heartbeat.dormant_threshold;
-        let mut heartbeat = HeartbeatScheduler::with_threshold(threshold);
+        // Create scheduler state with config values.
+        let mut heartbeat = HeartbeatScheduler::with_config(
+            self.config.heartbeat.dormant_threshold,
+            self.config.heartbeat.session_gap_secs,
+            self.config.heartbeat.session_probe_floor_secs,
+        );
         let mut cache_keepalive = CacheKeepaliveScheduler::new(keepalive_config);
 
         // Restore persisted state if available.
