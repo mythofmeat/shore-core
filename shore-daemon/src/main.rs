@@ -66,16 +66,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .join(format!("{}.sock", instance_id))
         });
 
-    let tcp_addr = loaded
-        .app
-        .daemon
-        .tcp_addr
-        .clone()
-        .or_else(|| std::env::var("SHORE_TCP_ADDR").ok());
+    // Resolve TCP config: config file → SHORE_TCP_ADDR env var fallback.
+    let tcp_config = match loaded.app.connections.tcp.clone() {
+        Some(tcp) => Some(tcp),
+        None => std::env::var("SHORE_TCP_ADDR").ok().map(|addr| {
+            shore_daemon::config::app::TcpConfig {
+                enabled: true,
+                addr: Some(addr),
+                allowed_hosts: vec![],
+            }
+        }),
+    };
+
+    let tcp_addr = tcp_config.as_ref()
+        .filter(|t| t.enabled)
+        .and_then(|t| t.addr.clone());
 
     let server_config = ServerConfig {
         socket_path: socket_path.clone(),
-        tcp_addr: tcp_addr.clone(),
+        tcp: tcp_config,
         server_name: "shore-daemon".into(),
     };
 
@@ -400,7 +409,8 @@ async fn run_compaction(
             }));
 
             // Run collation after successful compaction if configured.
-            if config.app.behavior.autonomy.collation.auto_run {
+            if config.app.behavior.autonomy.collation.enabled
+                && config.app.behavior.autonomy.collation.auto_run {
                 info!(character = %character, "Running auto-collation after compaction");
                 if let Err(e) = run_collation(character, config, llm_client, data_dir).await {
                     warn!(

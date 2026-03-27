@@ -716,6 +716,107 @@ fn format_social_need_bar(value: f64) -> String {
     format!("{bar}{rest}  {pct}%")
 }
 
+/// Map a normalized density (0.0–1.0) to a bar character.
+///
+/// Uses 8 Unicode block elements (▁▂▃▄▅▆▇█) for non-zero values and `░` for
+/// effectively-zero values.
+fn density_to_block(normalized: f64) -> char {
+    const BLOCKS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    if normalized < 0.05 {
+        '░'
+    } else {
+        let idx = ((normalized * 7.0).round() as usize).min(7);
+        BLOCKS[idx]
+    }
+}
+
+/// Color for an hour classification label.
+fn classification_color(class: &str) -> Color {
+    match class {
+        "peak" => Color::Cyan,
+        "trough" => Color::DarkGrey,
+        _ => Color::White,
+    }
+}
+
+/// Write the activity heatmap section into the status dashboard.
+///
+/// Renders a 24-character bar chart (one block per hour) with hour labels
+/// underneath, plus engagement and session stats.
+fn write_activity_section(
+    out: &mut impl Write,
+    activity: &serde_json::Value,
+    width: usize,
+) {
+    let histogram: Vec<f64> = match activity["hour_histogram"].as_array() {
+        Some(arr) => arr.iter().filter_map(|v| v.as_f64()).collect(),
+        None => return,
+    };
+    if histogram.len() != 24 {
+        return;
+    }
+    let classifications: Vec<String> = activity["hour_classifications"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    if classifications.len() != 24 {
+        return;
+    }
+
+    let sufficient = activity["has_sufficient_heatmap"].as_bool().unwrap_or(false);
+    let suffix = if sufficient { "" } else { "sparse" };
+    write_section_header(out, "Activity", suffix, width);
+
+    // -- bar chart row --
+    let max_val = histogram.iter().cloned().fold(0.0_f64, f64::max);
+    if use_color() {
+        let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+    }
+    let _ = write!(out, "  {:<13}", "");
+    for (i, &density) in histogram.iter().enumerate() {
+        let linear = if max_val > 0.0 { density / max_val } else { 0.0 };
+        // Log scale: ln(1 + x·k) / ln(1+k) — spreads low values, compresses peaks.
+        let normalized = (1.0 + linear * 9.0).ln() / 10.0_f64.ln();
+        let ch = density_to_block(normalized);
+        if use_color() {
+            let color = classification_color(&classifications[i]);
+            let _ = crossterm::execute!(out, SetForegroundColor(color));
+        }
+        let _ = write!(out, "{ch}");
+    }
+    if use_color() {
+        let _ = crossterm::execute!(out, ResetColor);
+    }
+    let _ = writeln!(out);
+
+    // -- hour labels row --
+    //    0  3  6  9  12 15 18 21
+    if use_color() {
+        let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+    }
+    let _ = write!(out, "  {:<13}0  3  6  9  12 15 18 21", "");
+    if use_color() {
+        let _ = crossterm::execute!(out, ResetColor);
+    }
+    let _ = writeln!(out);
+
+    // -- stats row --
+    let engagement = activity["engagement_score"].as_f64().unwrap_or(0.0);
+    let sessions = activity["sessions_per_day"].as_f64().unwrap_or(0.0);
+    let msg_count = activity["message_count"].as_u64().unwrap_or(0);
+    write_row(
+        out,
+        "Engagement",
+        &format!("{engagement:.2} · {sessions:.1} sessions/day · {msg_count} msgs"),
+    );
+
+    let _ = writeln!(out);
+}
+
 /// Choose a color for the social need bar based on value.
 fn social_need_color(value: f64) -> Color {
     if value < 0.33 {
@@ -832,6 +933,16 @@ pub fn print_status(data: &serde_json::Value, character_name: &str) {
             }
 
             let _ = writeln!(out);
+        }
+    }
+
+    // ── Activity ───────────────────────────────────────
+    if let Some(activity) = data.get("activity") {
+        if !activity.is_null() {
+            let msg_count = activity["message_count"].as_u64().unwrap_or(0);
+            if msg_count > 0 {
+                write_activity_section(&mut out, activity, width);
+            }
         }
     }
 }
@@ -1061,6 +1172,74 @@ mod tests {
             }
         });
         print_status(&data, "Sable");
+    }
+
+    #[test]
+    fn print_status_with_activity_does_not_panic() {
+        set_color_enabled(false);
+        // Simulate a realistic hour histogram: busier in afternoon/evening.
+        let histogram: Vec<f64> = (0..24)
+            .map(|h| match h {
+                0..=5 => 0.01,
+                6..=8 => 0.04,
+                9..=11 => 0.06,
+                12..=14 => 0.08,
+                15..=17 => 0.05,
+                18..=21 => 0.10,
+                _ => 0.02,
+            })
+            .collect();
+        let classifications: Vec<&str> = (0..24)
+            .map(|h| match h {
+                0..=5 => "trough",
+                18..=21 => "peak",
+                _ => "normal",
+            })
+            .collect();
+
+        let data = serde_json::json!({
+            "character": "Sable",
+            "message_count": 200,
+            "active_model": "claude-sonnet-4-20250514",
+            "tokens": { "input": 5000, "output": 1200, "cache_read": 0, "cache_write": 0 },
+            "activity": {
+                "hour_histogram": histogram,
+                "hour_classifications": classifications,
+                "has_sufficient_heatmap": true,
+                "engagement_score": 0.72,
+                "sessions_per_day": 2.3,
+                "message_count": 200,
+            }
+        });
+        print_status(&data, "Sable");
+    }
+
+    #[test]
+    fn print_status_sparse_activity_does_not_panic() {
+        set_color_enabled(false);
+        let data = serde_json::json!({
+            "character": "Sable",
+            "message_count": 3,
+            "active_model": "test-model",
+            "activity": {
+                "hour_histogram": vec![0.0_f64; 24],
+                "hour_classifications": vec!["normal"; 24],
+                "has_sufficient_heatmap": false,
+                "engagement_score": 0.0,
+                "sessions_per_day": 0.0,
+                "message_count": 3,
+            }
+        });
+        print_status(&data, "Sable");
+    }
+
+    #[test]
+    fn density_to_block_ranges() {
+        assert_eq!(density_to_block(0.0), '░');   // below threshold
+        assert_eq!(density_to_block(0.04), '░');  // below threshold
+        assert_eq!(density_to_block(0.06), '▁');  // 0.06 * 7 = 0.42 → round 0 → ▁
+        assert_eq!(density_to_block(0.5), '▅');   // 0.5 * 7 = 3.5 → round 4 → ▅
+        assert_eq!(density_to_block(1.0), '█');   // 1.0 * 7 = 7.0 → index 7 → █
     }
 
     // ── Spinner tests ──────────────────────────────────────────────────

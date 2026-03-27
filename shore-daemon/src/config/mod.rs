@@ -287,6 +287,11 @@ fn create_default_config(config_dir: &Path) {
 # [chat.anthropic.sonnet]
 # model_id = "claude-sonnet-4-6"
 
+# [connections.tcp]
+# enabled = false
+# addr = "127.0.0.1:7320"
+# allowed_hosts = []           # empty = allow all
+
 # [services.llm]
 # command = "node /path/to/shore-llm/dist/index.js"
 "#;
@@ -467,8 +472,20 @@ enabled = true
 personality = 0.7
 max_unanswered = 2
 
+[behavior.autonomy.heartbeat]
+enabled = false
+
+[behavior.tool_use.tools]
+roll_dice = false
+
+[connections.tcp]
+enabled = true
+addr = "127.0.0.1:7320"
+allowed_hosts = ["127.0.0.1"]
+
 [advanced]
 cache_invalidation_warnings = false
+max_retries = 5
 
 [chat.anthropic]
 api_key_env = "MY_KEY"
@@ -491,7 +508,16 @@ model_id = "claude-opus-4-6"
         assert!(loaded.app.behavior.autonomy.enabled);
         assert_eq!(loaded.app.behavior.autonomy.personality, 0.7);
         assert_eq!(loaded.app.behavior.autonomy.max_unanswered, 2);
+        assert!(!loaded.app.behavior.autonomy.heartbeat.enabled);
+        assert!(!loaded.app.behavior.tool_use.tools.roll_dice);
+        assert!(loaded.app.behavior.tool_use.tools.memory);
         assert!(!loaded.app.advanced.cache_invalidation_warnings);
+        assert_eq!(loaded.app.advanced.max_retries, Some(5));
+
+        let tcp = loaded.app.connections.tcp.unwrap();
+        assert!(tcp.enabled);
+        assert_eq!(tcp.addr.as_deref(), Some("127.0.0.1:7320"));
+        assert_eq!(tcp.allowed_hosts, vec!["127.0.0.1"]);
 
         assert_eq!(loaded.models.chat.len(), 2);
         assert!(loaded.models.find_model("sonnet").is_ok());
@@ -518,6 +544,15 @@ model_id = "claude-opus-4-6"
             loaded.app.behavior.autonomy.heartbeat.session_gap_secs,
             1800
         );
+        // New defaults: sub-toggles, image_enabled, tcp, retry.
+        assert!(loaded.app.behavior.autonomy.heartbeat.enabled);
+        assert!(loaded.app.behavior.autonomy.compaction.enabled);
+        assert!(loaded.app.behavior.autonomy.collation.enabled);
+        assert!(loaded.app.memory.image_enabled);
+        assert!(loaded.app.connections.tcp.is_none());
+        assert!(loaded.app.advanced.editor.is_none());
+        assert!(loaded.app.advanced.max_retries.is_none());
+        assert!(loaded.app.advanced.retry_backoff_seconds.is_none());
     }
 
     #[test]

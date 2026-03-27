@@ -405,7 +405,8 @@ impl MessageHandler {
 
         // 6. Build tool definitions from unified tool system.
         let tool_defs = if self.cmd_ctx.config.app.behavior.tool_use.enabled {
-            let defs: Vec<Value> = tool_system::available_tools(false)
+            let toggles = &self.cmd_ctx.config.app.behavior.tool_use.tools;
+            let defs: Vec<Value> = tool_system::available_tools(false, toggles)
                 .iter()
                 .map(|t| json!({
                     "name": t.name,
@@ -429,7 +430,11 @@ impl MessageHandler {
         );
 
         // 8. Stream response from shore-llm (with retry on transient errors).
-        let retry_policy = RetryPolicy::default();
+        let retry_policy = RetryPolicy {
+            max_retries: self.cmd_ctx.config.app.advanced.max_retries
+                .unwrap_or(RetryPolicy::default().max_retries),
+            ..RetryPolicy::default()
+        };
         let mut attempt: u32 = 0;
         let mut result;
 
@@ -470,7 +475,10 @@ impl MessageHandler {
                 Err(e) => {
                     match retry::should_retry_error(&e, attempt, &retry_policy) {
                         RetryDecision::Retry => {
-                            let delay = std::time::Duration::from_millis(500 * 2u64.pow(attempt));
+                            let base_ms = self.cmd_ctx.config.app.advanced.retry_backoff_seconds
+                                .map(|s| (s * 1000.0) as u64)
+                                .unwrap_or(500);
+                            let delay = std::time::Duration::from_millis(base_ms * 2u64.pow(attempt));
                             warn!(attempt, delay_ms = delay.as_millis() as u64, "Retrying after transient LLM error");
                             tokio::time::sleep(delay).await;
                             attempt += 1;

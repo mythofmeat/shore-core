@@ -220,7 +220,7 @@ async fn e2e_conversation_milestone() {
     // ── Start SWP server ───────────────────────────────────────────────
     let server_config = ServerConfig {
         socket_path: socket_path.clone(),
-        tcp_addr: None,
+        tcp: None,
         server_name: "shore-daemon-test".into(),
     };
     let server = Server::new(server_config);
@@ -677,7 +677,7 @@ impl E2EHarness {
 
         let server_config = ServerConfig {
             socket_path: socket_path.clone(),
-            tcp_addr: None,
+            tcp: None,
             server_name: "shore-daemon-test".into(),
         };
         let server = Server::new(server_config);

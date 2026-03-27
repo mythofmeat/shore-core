@@ -134,16 +134,17 @@ pub fn all_tools() -> Vec<ToolDef> {
     tools
 }
 
-/// Returns tool definitions available for the current privacy mode.
-pub fn available_tools(is_private: bool) -> Vec<ToolDef> {
-    if is_private {
-        all_tools()
-            .into_iter()
-            .filter(|t| t.category.allowed_in_private())
-            .collect()
-    } else {
-        all_tools()
-    }
+/// Returns tool definitions available for the current privacy mode and tool toggles.
+pub fn available_tools(is_private: bool, toggles: &crate::config::app::ToolToggles) -> Vec<ToolDef> {
+    all_tools()
+        .into_iter()
+        .filter(|t| {
+            if is_private && !t.category.allowed_in_private() {
+                return false;
+            }
+            toggles.is_enabled(t.name)
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -185,6 +186,7 @@ pub fn dispatch_tool<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::app::ToolToggles;
 
     #[test]
     fn test_all_tools_returns_expected_count() {
@@ -195,9 +197,10 @@ mod tests {
 
     #[test]
     fn test_available_tools_filters_private() {
+        let toggles = ToolToggles::default();
         let all = all_tools();
-        let private = available_tools(true);
-        let public = available_tools(false);
+        let private = available_tools(true, &toggles);
+        let public = available_tools(false, &toggles);
 
         assert_eq!(public.len(), all.len());
         assert!(private.len() < public.len());
@@ -214,7 +217,8 @@ mod tests {
 
     #[test]
     fn test_private_excludes_memory_tools() {
-        let private = available_tools(true);
+        let toggles = ToolToggles::default();
+        let private = available_tools(true, &toggles);
         let private_names: Vec<&str> = private.iter().map(|t| t.name).collect();
 
         // Memory tools should be excluded.
@@ -229,6 +233,22 @@ mod tests {
         assert!(private_names.contains(&"fetch_url"));
         assert!(private_names.contains(&"research_web"));
         assert!(private_names.contains(&"activity_heatmap"));
+    }
+
+    #[test]
+    fn test_tool_toggles_filter() {
+        let mut toggles = ToolToggles::default();
+        toggles.roll_dice = false;
+        toggles.web_search = false;
+
+        let tools = available_tools(false, &toggles);
+        let names: Vec<&str> = tools.iter().map(|t| t.name).collect();
+
+        assert!(!names.contains(&"roll_dice"));
+        assert!(!names.contains(&"web_search"));
+        assert!(names.contains(&"memory"));
+        assert!(names.contains(&"check_time"));
+        assert_eq!(tools.len(), 9); // 11 - 2 disabled
     }
 
     #[test]

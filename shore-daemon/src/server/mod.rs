@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::config::app::TcpConfig;
 use shore_protocol::client_msg::{ClientMessage, Command};
 use shore_protocol::error::ErrorCode;
 use shore_protocol::server_msg::{Error, History, ServerHello, ServerMessage, Shutdown};
@@ -47,7 +48,7 @@ pub enum RoutedMessage {
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
     pub socket_path: PathBuf,
-    pub tcp_addr: Option<String>,
+    pub tcp: Option<TcpConfig>,
     pub server_name: String,
 }
 
@@ -111,13 +112,18 @@ impl Server {
         let unix_listener = UnixListener::bind(&self.config.socket_path)?;
         info!(path = %self.config.socket_path.display(), "Unix socket listening");
 
-        let tcp_listener = if let Some(ref addr) = self.config.tcp_addr {
-            let listener = TcpListener::bind(addr).await?;
-            info!(%addr, "TCP listening");
-            Some(listener)
-        } else {
-            None
+        let tcp_listener = match self.config.tcp.as_ref() {
+            Some(tcp) if tcp.enabled => {
+                let addr = tcp.addr.as_deref().unwrap_or("127.0.0.1:7320");
+                let listener = TcpListener::bind(addr).await?;
+                info!(%addr, "TCP listening");
+                Some(listener)
+            }
+            _ => None,
         };
+        let tcp_allowed_hosts: Vec<String> = self.config.tcp.as_ref()
+            .map(|t| t.allowed_hosts.clone())
+            .unwrap_or_default();
 
         loop {
             tokio::select! {
@@ -141,6 +147,15 @@ impl Server {
                 } => {
                     match result {
                         Ok((stream, addr)) => {
+                            // ACL: check peer IP against allowed_hosts (empty = allow all).
+                            if !tcp_allowed_hosts.is_empty() {
+                                let peer_ip = addr.ip().to_string();
+                                if !tcp_allowed_hosts.iter().any(|h| h == &peer_ip) {
+                                    warn!(%addr, "TCP connection rejected: not in allowed_hosts");
+                                    drop(stream);
+                                    continue;
+                                }
+                            }
                             info!(%addr, "TCP client connected");
                             let (reader, writer) = stream.into_split();
                             self.spawn_client(reader, writer, shutdown.clone());

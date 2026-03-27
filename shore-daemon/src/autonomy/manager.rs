@@ -523,7 +523,7 @@ async fn tick_character(
         let mut s = state.lock().unwrap();
 
         // -- heartbeat --------------------------------------------------------
-        let hb_action = if config.enabled {
+        let hb_action = if config.enabled && config.heartbeat.enabled {
             let stats = s.activity.stats().clone();
             let tau_params = TauParams {
                 reciprocated: s.heartbeat.unanswered_count() == 0,
@@ -548,7 +548,7 @@ async fn tick_character(
 
         // -- compaction triggers ---------------------------------------------
         let mut compaction_needed = false;
-        if config.enabled && !s.compaction_triggered {
+        if config.enabled && config.compaction.enabled && !s.compaction_triggered {
             let min_total = config.compaction.min_messages + config.compaction.keep_recent;
             if config.compaction.max_messages > 0
                 && s.active_message_count >= config.compaction.max_messages

@@ -21,10 +21,35 @@ use crate::memory::compaction_impls::{
 use crate::memory::db::MemoryDB;
 use crate::memory::vectorstore::VectorStore;
 
+use crate::autonomy::activity::HourClassification;
+
 use super::{CommandContext, CommandResult};
 
 /// Return system status: character, message count, model, token counts.
 pub fn status(engine: &ConversationEngine, ctx: &CommandContext) -> CommandResult {
+    let activity = ctx
+        .autonomy
+        .activity_stats(engine.character_name())
+        .map(|(stats, msg_count)| {
+            let classifications: Vec<&str> = stats
+                .hour_classifications
+                .iter()
+                .map(|c| match c {
+                    HourClassification::Peak => "peak",
+                    HourClassification::Trough => "trough",
+                    HourClassification::Normal => "normal",
+                })
+                .collect();
+            json!({
+                "hour_histogram": stats.hour_histogram.to_vec(),
+                "hour_classifications": classifications,
+                "has_sufficient_heatmap": stats.has_sufficient_heatmap,
+                "engagement_score": stats.engagement_score,
+                "sessions_per_day": stats.sessions_per_day,
+                "message_count": msg_count,
+            })
+        });
+
     Ok(json!({
         "character": engine.character_name(),
         "message_count": engine.message_count(),
@@ -36,6 +61,7 @@ pub fn status(engine: &ConversationEngine, ctx: &CommandContext) -> CommandResul
             "cache_write": ctx.session_tokens.cache_write,
         },
         "autonomy": ctx.autonomy.status(engine.character_name()),
+        "activity": activity,
     }))
 }
 
