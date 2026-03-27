@@ -25,8 +25,10 @@ use crate::memory::agent_llm::{AgentLlm, RealAgentLlm};
 use crate::memory::db::MemoryDB;
 use crate::memory::researcher::MemoryResearcher;
 use crate::tools::{self as tool_system, ToolContext};
+use crate::llm_client::retry::{self, RetryDecision, RetryPolicy};
 use crate::llm_client::stream::{CacheContext, StreamConsumer};
 use crate::llm_client::LlmClient;
+use crate::memory::compaction_impls::ImageGenConfig;
 use crate::server::RoutedMessage;
 
 // ── NoopRag stub (legacy, needed by image tools via ToolContext) ──────
@@ -57,6 +59,8 @@ struct HandlerToolContext {
     researcher_model_val: Option<crate::config::models::ResolvedModel>,
     rag: NoopRag,
     image_dir_val: String,
+    llm_client_val: LlmClient,
+    image_gen_config_val: Option<ImageGenConfig>,
 }
 
 impl ToolContext for HandlerToolContext {
@@ -76,6 +80,8 @@ impl ToolContext for HandlerToolContext {
     fn indexer(&self) -> Option<&dyn AgentIndexer> { None }
     fn rag(&self) -> &dyn AgentRag { &self.rag }
     fn image_dir(&self) -> &str { &self.image_dir_val }
+    fn llm_client(&self) -> Option<&LlmClient> { Some(&self.llm_client_val) }
+    fn image_gen_config(&self) -> Option<&ImageGenConfig> { self.image_gen_config_val.as_ref() }
 }
 
 /// The message processing handler.
@@ -393,17 +399,67 @@ impl MessageHandler {
             "Sending streaming request to LLM"
         );
 
-        // 8. Stream response from shore-llm.
-        let consumer = StreamConsumer::new(self.push_tx.clone());
-        let mut reader = self
-            .llm_client
-            .stream_raw(&request, rid.as_deref())
-            .await?;
+        // 8. Stream response from shore-llm (with retry on transient errors).
+        let retry_policy = RetryPolicy::default();
+        let mut attempt: u32 = 0;
+        let mut result;
 
-        // Re-borrow engine after releasing the previous borrow for the LLM client.
+        loop {
+            let consumer = StreamConsumer::new(self.push_tx.clone());
+
+            let stream_result = async {
+                let mut reader = self
+                    .llm_client
+                    .stream_raw(&request, rid.as_deref())
+                    .await?;
+
+                let engine = self.registry.get_or_create(&char_name)
+                    .map_err(|e| crate::llm_client::LlmError::Provider { message: e.to_string() })?;
+
+                let turn_count = engine.messages().len();
+                let cache_ctx = CacheContext {
+                    conversation_turn_count: turn_count,
+                    is_first_after_restart: self.is_first_after_restart,
+                    is_first_after_compaction: false,
+                    cache_invalidation_warnings: self
+                        .cmd_ctx
+                        .config
+                        .app
+                        .advanced
+                        .cache_invalidation_warnings,
+                };
+
+                consumer.consume(&mut reader, regen, &cache_ctx).await
+            }
+            .await;
+
+            match stream_result {
+                Ok(r) => {
+                    result = r;
+                    break;
+                }
+                Err(e) => {
+                    match retry::should_retry_error(&e, attempt, &retry_policy) {
+                        RetryDecision::Retry => {
+                            let delay = std::time::Duration::from_millis(500 * 2u64.pow(attempt));
+                            warn!(attempt, delay_ms = delay.as_millis() as u64, "Retrying after transient LLM error");
+                            tokio::time::sleep(delay).await;
+                            attempt += 1;
+                        }
+                        RetryDecision::FallbackModel(_model) => {
+                            // TODO: fallback model support requires re-resolving the model
+                            // and rebuilding the request. For now, treat as failure.
+                            return Err(e.into());
+                        }
+                        RetryDecision::Fail => return Err(e.into()),
+                    }
+                }
+            }
+        }
+
+        // Build cache context for tool loop (values don't depend on retry attempt).
         let engine = self.registry.get_or_create(&char_name)
             .map_err(|e| e.to_string())?;
-
         let turn_count = engine.messages().len();
         let cache_ctx = CacheContext {
             conversation_turn_count: turn_count,
@@ -417,7 +473,6 @@ impl MessageHandler {
                 .cache_invalidation_warnings,
         };
 
-        let mut result = consumer.consume(&mut reader, regen, &cache_ctx).await?;
         self.is_first_after_restart = false;
 
         // 9. Run tool loop if the LLM requested tool use.
@@ -443,6 +498,12 @@ impl MessageHandler {
             let char_def = character_definition.clone().unwrap_or_default();
             let user_def = user_definition.clone().unwrap_or_default();
 
+            // Resolve image generation config (best-effort — None if not configured).
+            let image_gen_config = crate::memory::compaction_impls::resolve_image_gen_config(
+                self.cmd_ctx.config.app.defaults.image_generation.as_deref(),
+                &self.cmd_ctx.config.models.image_generation,
+            ).ok();
+
             let tool_ctx = HandlerToolContext {
                 db: memory_db,
                 agent: MemoryAgent::one_shot(CallerIdentity::Char, &char_name, "User"),
@@ -461,6 +522,8 @@ impl MessageHandler {
                     .join("images")
                     .to_string_lossy()
                     .into_owned(),
+                llm_client_val: self.llm_client.clone(),
+                image_gen_config_val: image_gen_config,
             };
 
             result = tools::run_tool_loop(

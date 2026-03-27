@@ -8,9 +8,11 @@ use std::future::Future;
 use std::pin::Pin;
 
 use crate::config::models::{ResolvedModel, Sdk};
+use crate::llm_client::LlmClient;
 use crate::memory::agent::types::{AgentError, AgentIndexer, AgentRag, RagHit};
 use crate::memory::agent::{CallerIdentity, MemoryAgent};
 use crate::memory::agent_llm::{AgentLlm, MockAgentLlm};
+use crate::memory::compaction_impls::ImageGenConfig;
 use crate::memory::db::MemoryDB;
 use crate::memory::researcher::MemoryResearcher;
 use crate::tools::ToolContext;
@@ -168,6 +170,12 @@ impl ToolContext for TestToolContext {
     }
     fn image_dir(&self) -> &str {
         &self.image_dir_val
+    }
+    fn llm_client(&self) -> Option<&LlmClient> {
+        None
+    }
+    fn image_gen_config(&self) -> Option<&ImageGenConfig> {
+        None
     }
 }
 

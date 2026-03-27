@@ -130,6 +130,20 @@ pub struct StreamResult {
     pub tool_uses: Vec<ToolUseEvent>,
 }
 
+/// Response from shore-llm's POST /v1/image/generate endpoint.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ImageGenerateResponse {
+    pub url: String,
+    pub revised_prompt: String,
+    pub timing: ImageGenerateTiming,
+}
+
+/// Timing for image generation.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ImageGenerateTiming {
+    pub total_ms: u32,
+}
+
 /// A content block in a non-streaming response.
 ///
 /// Mirrors shore-llm's `NormalizedContentBlock` — the `/v1/generate` endpoint

@@ -14,8 +14,7 @@ These depend on shore-llm implementing the endpoints.
 
 - ~~3.15 **Embedding endpoint**~~ — DONE (openai.embed() + daemon LlmClient.embed() + RealVectorIndexer)
 
-- 4.5 **generate_image** — STUB
-  shore-llm /v1/image/generate returns 501.
+- ~~4.5 **generate_image**~~ — DONE (LlmClient.image_generate() → shore-llm, download + save, memory entry creation)
 
 
 ## Priority 2: Tool Use
@@ -107,9 +106,9 @@ These depend on shore-llm implementing the endpoints.
 ## Priority 7: Other CLI
 
 - ~~5.44 Push notifications (shore notify)~~ — moved to V2-NEEDS-DESIGN.md
-- ~~5.45 Failed message list~~ — moved to V2-NEEDS-DESIGN.md
-- ~~5.46 Failed message retry~~ — moved to V2-NEEDS-DESIGN.md
-- ~~5.47 Failed message clear~~ — moved to V2-NEEDS-DESIGN.md
+- ~~5.45 Failed message list~~ — REMOVED (auto-retry on transient errors + regen covers this)
+- ~~5.46 Failed message retry~~ — REMOVED (auto-retry on transient errors + regen covers this)
+- ~~5.47 Failed message clear~~ — REMOVED (auto-retry on transient errors + regen covers this)
 - ~~5.48 Cache suppress~~ — REMOVED (subsumed by `shore config set`, 5.41)
 - ~~5.49 Cache unsuppress~~ — REMOVED (subsumed by `shore config set`, 5.41)
 - ~~5.50 Images list (CLI-level browsing)~~ — REMOVED (superseded by in-context image tools)

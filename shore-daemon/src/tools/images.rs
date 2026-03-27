@@ -1,5 +1,6 @@
 use super::{ToolCategory, ToolContext, ToolDef, ToolError};
 use serde_json::{json, Value};
+use tracing::info;
 
 // ---------------------------------------------------------------------------
 // Tool definitions
@@ -172,24 +173,109 @@ pub async fn handle_recall_image(input: Value, ctx: &dyn ToolContext) -> Result<
     }))
 }
 
-/// Handle `generate_image` — stub that returns a placeholder.
-/// Full implementation requires HTTP call to an OpenAI-compatible endpoint.
-pub async fn handle_generate_image(input: Value, _ctx: &dyn ToolContext) -> Result<Value, ToolError> {
+/// Handle `generate_image` — calls shore-llm, downloads the result, and saves to disk.
+pub async fn handle_generate_image(input: Value, ctx: &dyn ToolContext) -> Result<Value, ToolError> {
     let prompt = input
         .get("prompt")
         .and_then(|v| v.as_str())
         .ok_or_else(|| ToolError::InvalidArgs("missing 'prompt' field".to_string()))?;
 
+    let client = ctx
+        .llm_client()
+        .ok_or_else(|| ToolError::Io("image generation not available: no LLM client".into()))?;
+    let config = ctx
+        .image_gen_config()
+        .ok_or_else(|| ToolError::Io("no [image_generation] profile configured".into()))?;
+
     let size = input
         .get("size")
         .and_then(|v| v.as_str())
-        .unwrap_or("1024x1024");
+        .unwrap_or(&config.size);
 
-    // Stub — full implementation will call an image generation API.
-    Err(ToolError::NotImplemented(format!(
-        "generate_image (prompt={}, size={}): requires HTTP endpoint configuration",
-        prompt, size
-    )))
+    // 1. Call shore-llm to generate the image.
+    let result = client
+        .image_generate(
+            &config.provider,
+            &config.model_id,
+            &config.api_key,
+            config.base_url.as_deref(),
+            prompt,
+            Some(size),
+            config.quality.as_deref(),
+        )
+        .await
+        .map_err(|e| ToolError::Http(format!("image generation failed: {e}")))?;
+
+    info!(
+        url = %result.url,
+        revised_prompt = %result.revised_prompt,
+        timing_ms = result.timing.total_ms,
+        "Image generated via shore-llm"
+    );
+
+    // 2. Download the image from the returned URL.
+    let http_client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|e| ToolError::Http(format!("failed to create HTTP client: {e}")))?;
+
+    let image_bytes = http_client
+        .get(&result.url)
+        .send()
+        .await
+        .map_err(|e| ToolError::Http(format!("failed to download image: {e}")))?
+        .bytes()
+        .await
+        .map_err(|e| ToolError::Http(format!("failed to read image bytes: {e}")))?;
+
+    // 3. Save to image directory.
+    let image_dir = std::path::Path::new(ctx.image_dir());
+    let generated_dir = image_dir.join("generated");
+    std::fs::create_dir_all(&generated_dir)
+        .map_err(|e| ToolError::Io(format!("failed to create directory: {e}")))?;
+
+    let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+    let filename = format!("{timestamp}.png");
+    let save_path = generated_dir.join(&filename);
+
+    std::fs::write(&save_path, &image_bytes)
+        .map_err(|e| ToolError::Io(format!("failed to save image: {e}")))?;
+
+    let relative_path = format!("generated/{filename}");
+
+    // 4. Create memory entry for the generated image.
+    let now = chrono::Utc::now().to_rfc3339();
+    let entry = crate::memory::db::Entry {
+        id: format!("img_{}", uuid::Uuid::new_v4()),
+        memory_type: "image".into(),
+        source: "tool".into(),
+        reason: "generate_image".into(),
+        status: "active".into(),
+        canonical: false,
+        confidence: 1.0,
+        summary_text: result.revised_prompt.clone(),
+        topic_tags: "generated,image".into(),
+        topic_key: "images".into(),
+        start_timestamp: now.clone(),
+        end_timestamp: now.clone(),
+        message_count: 0,
+        source_entry_ids: String::new(),
+        related_entry_ids: String::new(),
+        superseded_by: String::new(),
+        created_at: now.clone(),
+        updated_at: now,
+        entry_type: String::new(),
+        image_path: relative_path.clone(),
+    };
+    ctx.memory_db()
+        .create_entry(&entry)
+        .map_err(|e| ToolError::Io(format!("failed to create memory entry: {e}")))?;
+
+    Ok(json!({
+        "path": relative_path,
+        "revised_prompt": result.revised_prompt,
+        "timing_ms": result.timing.total_ms,
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -255,14 +341,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_generate_image_stub() {
+    async fn test_generate_image_no_config() {
         let ctx = TestToolContext::new().with_image_dir("/tmp");
         let result = handle_generate_image(
             json!({"prompt": "a cat", "size": "512x512"}),
             &ctx,
         )
         .await;
-        assert!(matches!(result, Err(ToolError::NotImplemented(_))));
+        // Without LLM client configured, should return an Io error.
+        assert!(matches!(result, Err(ToolError::Io(_))));
     }
 
     #[tokio::test]

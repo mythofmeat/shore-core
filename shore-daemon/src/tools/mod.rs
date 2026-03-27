@@ -5,9 +5,11 @@ pub mod memory_tools;
 pub mod web;
 
 use crate::config::models::ResolvedModel;
+use crate::llm_client::LlmClient;
 use crate::memory::agent::types::AgentIndexer;
 use crate::memory::agent::{AgentError, AgentRag, MemoryAgent};
 use crate::memory::agent_llm::AgentLlm;
+use crate::memory::compaction_impls::ImageGenConfig;
 use crate::memory::db::MemoryDB;
 use crate::memory::researcher::MemoryResearcher;
 use serde_json::Value;
@@ -105,6 +107,8 @@ pub trait ToolContext: Sync {
     fn memory_researcher(&self) -> Option<&MemoryResearcher>;
     fn indexer(&self) -> Option<&dyn AgentIndexer>;
     fn image_dir(&self) -> &str;
+    fn llm_client(&self) -> Option<&LlmClient>;
+    fn image_gen_config(&self) -> Option<&ImageGenConfig>;
 
     // Legacy RAG — kept for image tools until they're migrated
     fn rag(&self) -> &dyn AgentRag;

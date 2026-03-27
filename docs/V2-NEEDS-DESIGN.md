@@ -23,13 +23,6 @@ requires human judgment about how it should work, not just coding.
   Remaining: other commands as 7.10 progresses.
 
 
-## Conversation Management
-
-- 5.12 **Fork conversation** (fork last N messages) — MISSING
-  **Needs decision:** What gets forked — just messages, or also memory/compaction state?
-  New character instance or shared? New conversation file? What about attachments?
-
-
 ## Memory Agent
 
 - 3.12 **Memory agent — interactive REPL** (5.35) — STUB
@@ -74,19 +67,6 @@ requires human judgment about how it should work, not just coding.
   **Needs decision:** What notification backend? (Desktop notifications, ntfy, webhook?)
   What events trigger notifications? (Autonomous messages, errors, compaction complete?)
   Does the daemon push, or does the CLI poll?
-
-
-## Failed Messages
-
-These may not be necessary — if `send` failures surface clearly enough already,
-this could be YAGNI.
-
-- 5.45 **Failed message list** — MISSING
-- 5.46 **Failed message retry** — MISSING
-- 5.47 **Failed message clear** — MISSING
-  **Needs decision:** Are these worth implementing? What constitutes a "failed" message
-  (LLM timeout, rate limit, malformed response)? Should failures be persisted or
-  ephemeral? If persisted, where — in the conversation file or separate?
 
 
 ## Config Schema Gaps

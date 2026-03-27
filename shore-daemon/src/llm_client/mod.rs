@@ -10,7 +10,7 @@ use tokio::net::UnixStream;
 use tracing::{debug, error, warn};
 
 use crate::config::models::ResolvedModel;
-use types::LlmRequest;
+use types::{ImageGenerateResponse, LlmRequest};
 
 /// Errors from the LLM client.
 #[derive(Debug, thiserror::Error)]
@@ -361,6 +361,85 @@ impl LlmClient {
         let resp: EmbedResponse =
             serde_json::from_str(&body_buf).map_err(LlmError::Deserialize)?;
         Ok(resp.embeddings)
+    }
+
+    /// Send an image generation request to shore-llm's POST /v1/image/generate.
+    pub async fn image_generate(
+        &self,
+        provider: &str,
+        model: &str,
+        api_key: &str,
+        base_url: Option<&str>,
+        prompt: &str,
+        size: Option<&str>,
+        quality: Option<&str>,
+    ) -> Result<ImageGenerateResponse, LlmError> {
+        let mut payload = serde_json::json!({
+            "provider": provider,
+            "model": model,
+            "api_key": api_key,
+            "prompt": prompt,
+        });
+        if let Some(url) = base_url {
+            payload["base_url"] = serde_json::Value::String(url.to_string());
+        }
+        if let Some(s) = size {
+            payload["size"] = serde_json::Value::String(s.to_string());
+        }
+        if let Some(q) = quality {
+            payload["quality"] = serde_json::Value::String(q.to_string());
+        }
+        let body = serde_json::to_string(&payload)
+            .map_err(LlmError::Serialize)?;
+
+        self.log_payload("request", &body);
+
+        let mut stream = UnixStream::connect(&self.socket_path)
+            .await
+            .map_err(|e| LlmError::Connect {
+                path: self.socket_path.clone(),
+                source: e,
+            })?;
+
+        let http_request = format!(
+            "POST /v1/image/generate HTTP/1.0\r\n\
+             Host: localhost\r\n\
+             Content-Type: application/json\r\n\
+             Content-Length: {}\r\n\
+             \r\n",
+            body.len()
+        );
+
+        stream.write_all(http_request.as_bytes()).await?;
+        stream.write_all(body.as_bytes()).await?;
+        stream.flush().await?;
+
+        let mut reader = BufReader::new(stream);
+        let status_line = read_status_line(&mut reader).await?;
+
+        if !status_line.contains("200") {
+            let body = read_error_body(&mut reader).await;
+            return Err(LlmError::HttpStatus {
+                status: status_line,
+                body,
+            });
+        }
+
+        skip_headers(&mut reader).await?;
+
+        let mut body_buf = String::new();
+        loop {
+            let mut line = String::new();
+            let n = reader.read_line(&mut line).await?;
+            if n == 0 {
+                break;
+            }
+            body_buf.push_str(&line);
+        }
+
+        self.log_payload("response", &body_buf);
+
+        serde_json::from_str(&body_buf).map_err(LlmError::Deserialize)
     }
 
     /// Log an API payload to `{payload_log_dir}/api_payloads.jsonl` if logging is enabled.
