@@ -5,7 +5,7 @@ use std::time::Instant;
 
 use chrono::{DateTime, FixedOffset, Local};
 use crossterm::style::{Attribute, Color, ResetColor, SetAttribute, SetForegroundColor};
-use shore_protocol::server_msg::{CommandOutput, NewMessage, Phase, SendImage, StreamChunk, StreamEnd, ToolCall, ToolResult};
+use shore_protocol::server_msg::{NewMessage, Phase, SendImage, StreamChunk, StreamEnd, ToolCall, ToolResult};
 use shore_protocol::types::ImageRef;
 use tokio::task::JoinHandle;
 
@@ -86,28 +86,6 @@ pub fn print_stream_end(end: &StreamEnd) {
     let _ = writeln!(out); // blank line after metadata
 }
 
-/// Print command output. Formats JSON data in a readable way.
-pub fn print_command_output(output: &CommandOutput) {
-    let stdout = io::stdout();
-    let mut out = stdout.lock();
-
-    // Command name in bold
-    if use_color() {
-        let _ = crossterm::execute!(out, SetAttribute(Attribute::Bold));
-    }
-    let _ = write!(out, "{}", output.name);
-    if use_color() {
-        let _ = crossterm::execute!(out, SetAttribute(Attribute::Reset));
-    }
-    let _ = writeln!(out);
-
-    // Pretty-print the JSON data
-    if let Ok(pretty) = serde_json::to_string_pretty(&output.data) {
-        let _ = writeln!(out, "{pretty}");
-    } else {
-        let _ = writeln!(out, "{}", output.data);
-    }
-}
 
 /// Print an error in red to stderr.
 pub fn print_error(err: &dyn std::fmt::Display) {
@@ -944,6 +922,682 @@ pub fn print_status(data: &serde_json::Value, character_name: &str) {
                 write_activity_section(&mut out, activity, width);
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Command-specific formatters
+// ---------------------------------------------------------------------------
+
+/// Dispatch a command response to the appropriate formatter.
+/// Falls back to generic JSON output for unknown command names.
+pub fn format_command(name: &str, data: &serde_json::Value) {
+    match name {
+        "character_info" => print_character_info(data),
+        "list_models" => print_model_list(data),
+        "switch_model" => print_model_switched(data),
+        "reset_model" => print_model_reset(data),
+        "model_info" => print_model_info(data),
+        "memory" => print_memory(data),
+        "compact" => print_compact_result(data),
+        "memory_changelog" => print_changelog(data),
+        "memory_reindex" => print_reindex(data),
+        "config" => print_config(data),
+        "config_check" => print_config_check(data),
+        "config_reset" => print_config_reset(data),
+        "edit" => print_edit_confirmation(data),
+        "delete" => print_delete_confirmation(data),
+        "diagnostics" => print_diagnostics(data),
+        _ => print_command_output_fallback(name, data),
+    }
+}
+
+fn print_command_output_fallback(name: &str, data: &serde_json::Value) {
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    if use_color() {
+        let _ = crossterm::execute!(out, SetAttribute(Attribute::Bold));
+    }
+    let _ = write!(out, "{name}");
+    if use_color() {
+        let _ = crossterm::execute!(out, SetAttribute(Attribute::Reset));
+    }
+    let _ = writeln!(out);
+    if let Ok(pretty) = serde_json::to_string_pretty(data) {
+        let _ = writeln!(out, "{pretty}");
+    }
+}
+
+/// Print a single message in the same transcript format as print_log.
+pub fn print_single_message(data: &serde_json::Value, character_name: &str) {
+    print_log(&[data.clone()], character_name);
+}
+
+/// Print edit confirmation.
+fn print_edit_confirmation(data: &serde_json::Value) {
+    let msg_ref = data["ref"].as_str().unwrap_or("?");
+    println!("Edited message {msg_ref}");
+}
+
+/// Print delete confirmation.
+fn print_delete_confirmation(data: &serde_json::Value) {
+    if let Some(arr) = data["deleted"].as_array() {
+        let n = arr.len();
+        if n == 1 {
+            let id = arr[0].as_str().unwrap_or("?");
+            println!("Deleted message {id}");
+        } else {
+            println!("Deleted {n} messages");
+        }
+    } else if let Some(id) = data["deleted"].as_str() {
+        println!("Deleted message {id}");
+    }
+}
+
+/// Print model list.
+fn print_model_list(data: &serde_json::Value) {
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    let width = term_width();
+
+    let active = data["active"].as_str().unwrap_or("");
+
+    write_section_header(&mut out, "Models", "", width);
+
+    if let Some(models) = data["models"].as_array() {
+        for m in models {
+            let name = m["name"].as_str().unwrap_or("?");
+            let provider = m["provider"].as_str().unwrap_or("?");
+            let is_active = name == active
+                || m["qualified_name"].as_str() == Some(active);
+
+            let marker = if is_active { "*" } else { " " };
+
+            if use_color() && is_active {
+                let _ = crossterm::execute!(out, SetForegroundColor(Color::Cyan));
+            } else if use_color() {
+                let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+            }
+            let _ = write!(out, "  {marker} ");
+            if use_color() {
+                let _ = crossterm::execute!(out, ResetColor);
+            }
+            let _ = write!(out, "{name:<24}");
+            if use_color() {
+                let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+            }
+            let _ = write!(out, "{provider}");
+            if use_color() {
+                let _ = crossterm::execute!(out, ResetColor);
+            }
+            let _ = writeln!(out);
+        }
+    }
+    let _ = writeln!(out);
+}
+
+/// Print model switch confirmation.
+fn print_model_switched(data: &serde_json::Value) {
+    let model = data["active"].as_str().unwrap_or("(none)");
+    println!("Switched to model: {}", abbreviate_model(model));
+}
+
+/// Print model reset confirmation.
+fn print_model_reset(data: &serde_json::Value) {
+    let model = data["active"].as_str().unwrap_or("(none)");
+    println!("Model reset to: {}", abbreviate_model(model));
+}
+
+/// Print detailed model info.
+fn print_model_info(data: &serde_json::Value) {
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    let width = term_width();
+
+    let name = data["name"].as_str().unwrap_or("?");
+    write_section_header(&mut out, "Model", name, width);
+
+    if let Some(qn) = data["qualified_name"].as_str() {
+        write_row(&mut out, "Qualified", qn);
+    }
+    if let Some(mid) = data["model_id"].as_str() {
+        write_row(&mut out, "Model ID", mid);
+    }
+    if let Some(sdk) = data["sdk"].as_str() {
+        write_row(&mut out, "SDK", sdk);
+    }
+    if let Some(pk) = data["provider_key"].as_str() {
+        write_row(&mut out, "Provider", pk);
+    }
+    if let Some(url) = data["base_url"].as_str() {
+        write_row(&mut out, "Base URL", url);
+    }
+    if let Some(key) = data["api_key_env"].as_str() {
+        write_row(&mut out, "API key env", &format!("${key}"));
+    }
+
+    // Cache settings
+    if let Some(ttl) = data["cache_ttl_secs"].as_u64() {
+        if ttl > 0 {
+            write_row(&mut out, "Cache TTL", &format!("{ttl}s"));
+        }
+    }
+    if let Some(depth) = data["cache_depth"].as_u64() {
+        if depth > 0 {
+            write_row(&mut out, "Cache depth", &depth.to_string());
+        }
+    }
+    if let Some(re) = data["reasoning_effort"].as_str() {
+        write_row(&mut out, "Reasoning", re);
+    }
+    if let Some(mt) = data["max_tokens"].as_u64() {
+        write_row(&mut out, "Max tokens", &mt.to_string());
+    }
+    let _ = writeln!(out);
+}
+
+/// Print character info.
+fn print_character_info(data: &serde_json::Value) {
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    let width = term_width();
+
+    let name = data["name"].as_str().unwrap_or("?");
+    let char_color = character_color(name);
+
+    write_section_header(&mut out, "Character", "", width);
+    write_row_colored(&mut out, "Name", name, char_color);
+
+    let active = data["active"].as_bool().unwrap_or(false);
+    if active {
+        write_row_colored(&mut out, "Active", "yes", Color::Green);
+    }
+
+    if let Some(dir) = data["config_dir"].as_str() {
+        write_row(&mut out, "Config", dir);
+    }
+
+    let has_def = data["has_definition"].as_bool().unwrap_or(false);
+    let has_user = data["has_user_definition"].as_bool().unwrap_or(false);
+    write_row(&mut out, "Definition", if has_def { "yes" } else { "no" });
+    if has_user {
+        write_row(&mut out, "User def", "yes");
+    }
+
+    if let Some(overrides) = data["prompt_overrides"].as_array() {
+        if !overrides.is_empty() {
+            let names: Vec<&str> = overrides.iter().filter_map(|v| v.as_str()).collect();
+            write_row(&mut out, "Prompts", &names.join(", "));
+        }
+    }
+
+    if let Some(dir) = data["data_dir"].as_str() {
+        write_row(&mut out, "Data", dir);
+    }
+
+    // Definition preview
+    if let Some(preview) = data["definition_preview"].as_str() {
+        if !preview.is_empty() {
+            let _ = writeln!(out);
+            write_section_header(&mut out, "Preview", "", width);
+            // Show first few lines, dimmed
+            if use_color() {
+                let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+            }
+            for line in preview.lines().take(8) {
+                let _ = writeln!(out, "  {line}");
+            }
+            if use_color() {
+                let _ = crossterm::execute!(out, ResetColor);
+            }
+        }
+    }
+    let _ = writeln!(out);
+}
+
+/// Print memory status or query result.
+fn print_memory(data: &serde_json::Value) {
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    let width = term_width();
+
+    // If there's a "result" field, this is a query response.
+    if let Some(result) = data["result"].as_str() {
+        let _ = writeln!(out, "{result}");
+        return;
+    }
+
+    // Otherwise it's a status response.
+    let char_name = data["character"].as_str().unwrap_or("?");
+    write_section_header(&mut out, "Memory", char_name, width);
+
+    let entries = data["entries"].as_u64().unwrap_or(0);
+    let active = data["active_entries"].as_u64().unwrap_or(0);
+    let entities = data["entities"].as_u64().unwrap_or(0);
+
+    if entries > 0 {
+        write_row(&mut out, "Entries", &format!("{entries} ({active} active)"));
+    } else {
+        write_row(&mut out, "Entries", "0");
+    }
+    write_row(&mut out, "Entities", &entities.to_string());
+    let _ = writeln!(out);
+}
+
+/// Print memory changelog.
+fn print_changelog(data: &serde_json::Value) {
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    let width = term_width();
+
+    let char_name = data["character"].as_str().unwrap_or("?");
+    write_section_header(&mut out, "Memory Changelog", char_name, width);
+
+    if let Some(entries) = data["changelog"].as_array() {
+        if entries.is_empty() {
+            if use_color() {
+                let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+            }
+            let _ = writeln!(out, "  (no entries)");
+            if use_color() {
+                let _ = crossterm::execute!(out, ResetColor);
+            }
+        } else {
+            for entry in entries {
+                let ts = entry["timestamp"].as_str().unwrap_or("");
+                let op = entry["operation"].as_str().unwrap_or("?");
+                let desc = entry["description"].as_str().unwrap_or("");
+
+                let time_display = parse_timestamp(ts)
+                    .map(|dt| dt.format("%b %d %H:%M").to_string())
+                    .unwrap_or_else(|| ts.to_string());
+
+                if use_color() {
+                    let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+                }
+                let _ = write!(out, "  {time_display:<16}");
+
+                let op_color = match op {
+                    s if s.starts_with("create") || s.starts_with("compaction") => Color::Green,
+                    s if s.starts_with("update") || s.starts_with("collation") => Color::DarkYellow,
+                    s if s.starts_with("supersede") || s.starts_with("delete") || s.starts_with("decay") => Color::Red,
+                    _ => Color::White,
+                };
+                if use_color() {
+                    let _ = crossterm::execute!(out, SetForegroundColor(op_color));
+                }
+                let _ = write!(out, "{op:<18}");
+                if use_color() {
+                    let _ = crossterm::execute!(out, ResetColor);
+                }
+                let _ = writeln!(out, "{desc}");
+            }
+        }
+    }
+    let _ = writeln!(out);
+}
+
+/// Print compaction result.
+fn print_compact_result(data: &serde_json::Value) {
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    let width = term_width();
+
+    let status = data["status"].as_str().unwrap_or("?");
+    let suffix = if status == "dry_run" { "dry run" } else { "" };
+    write_section_header(&mut out, "Compaction", suffix, width);
+
+    let char_name = data["character"].as_str().unwrap_or("?");
+    write_row(&mut out, "Character", char_name);
+
+    if status == "dry_run" {
+        let would = data["would_create_entries"].as_u64().unwrap_or(0);
+        write_row(&mut out, "Would create", &format!("{would} entries"));
+        let msgs = data["message_count"].as_u64().unwrap_or(0);
+        let retained = data["retained_count"].as_u64().unwrap_or(0);
+        write_row(&mut out, "Messages", &format!("{msgs} → {retained} retained"));
+    } else {
+        let entries = data["entries_created"].as_u64().unwrap_or(0);
+        write_row(&mut out, "Entries", &format!("{entries} new"));
+        let msgs = data["message_count"].as_u64().unwrap_or(0);
+        let retained = data["retained_count"].as_u64().unwrap_or(0);
+        write_row(&mut out, "Messages", &format!("{msgs} → {retained} retained"));
+        if data["recap_generated"].as_bool().unwrap_or(false) {
+            write_row(&mut out, "Recap", "generated");
+        }
+    }
+
+    // Collation results (if present).
+    if let Some(collation) = data.get("collation").filter(|v| !v.is_null()) {
+        let _ = writeln!(out);
+        write_section_header(&mut out, "Collation", "", width);
+
+        let tidy_splits = collation["tidy_splits"].as_u64().unwrap_or(0);
+        let tidy_new = collation["tidy_new_entries"].as_u64().unwrap_or(0);
+        if tidy_splits > 0 {
+            write_row(&mut out, "Tidy", &format!("{tidy_splits} splits → {tidy_new} new"));
+        }
+
+        let merges = collation["collate_merges"].as_u64().unwrap_or(0);
+        let merge_new = collation["collate_new_entries"].as_u64().unwrap_or(0);
+        if merges > 0 {
+            write_row(&mut out, "Merge", &format!("{merges} merges → {merge_new} new"));
+        }
+
+        let normalized = collation["entities_normalized"].as_u64().unwrap_or(0);
+        if normalized > 0 {
+            write_row(&mut out, "Normalize", &format!("{normalized} entities"));
+        }
+
+        let decayed = collation["entries_decayed"].as_u64().unwrap_or(0);
+        if decayed > 0 {
+            write_row(&mut out, "Decay", &format!("{decayed} entries"));
+        }
+
+        let skipped = collation["entries_skipped"].as_u64().unwrap_or(0);
+        if skipped > 0 {
+            write_row(&mut out, "Skipped", &format!("{skipped} entries"));
+        }
+    }
+    let _ = writeln!(out);
+}
+
+/// Print reindex result.
+fn print_reindex(data: &serde_json::Value) {
+    let msg = data["message"].as_str().unwrap_or("Reindex complete");
+    println!("{msg}");
+}
+
+/// Print config display.
+fn print_config(data: &serde_json::Value) {
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    let width = term_width();
+
+    // Config set confirmation: { "set": "key", "value": ... }
+    if let Some(key) = data["set"].as_str() {
+        let value = &data["value"];
+        let _ = writeln!(out, "Set {key} = {value}");
+        return;
+    }
+
+    // Section view: { "key": "name", "config": { ... } }
+    if let Some(key) = data["key"].as_str() {
+        write_section_header(&mut out, "Config", key, width);
+        print_config_section(&mut out, &data["config"], 1);
+        let _ = writeln!(out);
+        return;
+    }
+
+    // Full config: { "config": { ... } }
+    if let Some(config) = data.get("config") {
+        write_section_header(&mut out, "Config", "", width);
+        print_config_section(&mut out, config, 1);
+        let _ = writeln!(out);
+    }
+}
+
+/// Recursively print config as indented key-value pairs.
+fn print_config_section(out: &mut impl Write, value: &serde_json::Value, depth: usize) {
+    let indent = "  ".repeat(depth);
+    match value {
+        serde_json::Value::Object(map) => {
+            for (k, v) in map {
+                match v {
+                    serde_json::Value::Object(_) => {
+                        if use_color() {
+                            let _ = crossterm::execute!(out, SetForegroundColor(Color::White));
+                        }
+                        let _ = writeln!(out, "{indent}{k}:");
+                        if use_color() {
+                            let _ = crossterm::execute!(out, ResetColor);
+                        }
+                        print_config_section(out, v, depth + 1);
+                    }
+                    serde_json::Value::Null => {} // skip nulls
+                    _ => {
+                        if use_color() {
+                            let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+                        }
+                        let _ = write!(out, "{indent}{k:<24}");
+                        if use_color() {
+                            let _ = crossterm::execute!(out, ResetColor);
+                        }
+                        let display = match v {
+                            serde_json::Value::String(s) => s.clone(),
+                            serde_json::Value::Bool(b) => b.to_string(),
+                            serde_json::Value::Number(n) => n.to_string(),
+                            serde_json::Value::Array(arr) => {
+                                let items: Vec<String> = arr.iter().map(|i| {
+                                    i.as_str().map(String::from).unwrap_or_else(|| i.to_string())
+                                }).collect();
+                                items.join(", ")
+                            }
+                            _ => v.to_string(),
+                        };
+                        let _ = writeln!(out, "{display}");
+                    }
+                }
+            }
+        }
+        _ => {
+            let _ = writeln!(out, "{indent}{value}");
+        }
+    }
+}
+
+/// Print config check results.
+fn print_config_check(data: &serde_json::Value) {
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    let width = term_width();
+
+    let valid = data["valid"].as_bool().unwrap_or(false);
+    let suffix = if valid { "valid" } else { "warnings" };
+    write_section_header(&mut out, "Config Check", suffix, width);
+
+    if let Some(dir) = data["config_dir"].as_str() {
+        write_row(&mut out, "Config dir", dir);
+    }
+    if let Some(dir) = data["data_dir"].as_str() {
+        write_row(&mut out, "Data dir", dir);
+    }
+
+    let chat = data["chat_models"].as_u64().unwrap_or(0);
+    let tool = data["tool_models"].as_u64().unwrap_or(0);
+    let embed = data["embedding_models"].as_u64().unwrap_or(0);
+    write_row(&mut out, "Models", &format!("{chat} chat, {tool} tool, {embed} embedding"));
+
+    let _ = writeln!(out);
+
+    // Warnings
+    if let Some(warnings) = data["warnings"].as_array() {
+        for w in warnings {
+            if let Some(msg) = w.as_str() {
+                if use_color() {
+                    let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkYellow));
+                }
+                let _ = write!(out, "  ! ");
+                if use_color() {
+                    let _ = crossterm::execute!(out, ResetColor);
+                }
+                let _ = writeln!(out, "{msg}");
+            }
+        }
+    }
+
+    // Info
+    if let Some(info) = data["info"].as_array() {
+        for i in info {
+            if let Some(msg) = i.as_str() {
+                if use_color() {
+                    let _ = crossterm::execute!(out, SetForegroundColor(Color::Green));
+                }
+                let _ = write!(out, "  ");
+                if use_color() {
+                    let _ = crossterm::execute!(out, ResetColor);
+                }
+                let _ = writeln!(out, "{msg}");
+            }
+        }
+    }
+    let _ = writeln!(out);
+}
+
+/// Print config reset confirmation.
+fn print_config_reset(data: &serde_json::Value) {
+    let msg = data["message"].as_str().unwrap_or("Configuration reloaded from disk");
+    println!("{msg}");
+}
+
+/// Print diagnostics from ring buffers.
+pub fn print_diagnostics(data: &serde_json::Value) {
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    let width = term_width();
+
+    // ── API Calls ───────────────────────
+    let api_count = data["api_calls"]["count"].as_u64().unwrap_or(0);
+    let api_suffix = format!("{api_count} total");
+    write_section_header(&mut out, "API Calls", &api_suffix, width);
+
+    if let Some(calls) = data["api_calls"]["recent"].as_array() {
+        if calls.is_empty() {
+            print_dim_line(&mut out, "(none)");
+        } else {
+            for call in calls {
+                let ts = call["timestamp"].as_str().unwrap_or("");
+                let time = parse_timestamp(ts)
+                    .map(|dt| dt.format("%H:%M:%S").to_string())
+                    .unwrap_or_else(|| ts.chars().take(8).collect());
+                let model = abbreviate_model(call["model"].as_str().unwrap_or("?"));
+                let input = call["input_tokens"].as_u64().unwrap_or(0);
+                let output_t = call["output_tokens"].as_u64().unwrap_or(0);
+                let cr = call["cache_read_tokens"].as_u64().unwrap_or(0);
+                let cw = call["cache_write_tokens"].as_u64().unwrap_or(0);
+                let total = call["total_ms"].as_u64().unwrap_or(0);
+                let secs = total as f64 / 1000.0;
+
+                if use_color() {
+                    let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+                }
+                let _ = write!(out, "  {time}  ");
+                if use_color() {
+                    let _ = crossterm::execute!(out, ResetColor);
+                }
+                let _ = write!(out, "{model:<24}");
+                if use_color() {
+                    let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+                }
+                let _ = write!(out, "in:{input:<5} out:{output_t:<5} cache:{cr}/{cw}");
+                let _ = write!(out, "  {secs:.1}s");
+                if use_color() {
+                    let _ = crossterm::execute!(out, ResetColor);
+                }
+
+                // Error indicator
+                if let Some(err) = call.get("error").filter(|v| !v.is_null()) {
+                    if use_color() {
+                        let _ = crossterm::execute!(out, SetForegroundColor(Color::Red));
+                    }
+                    let _ = write!(out, "  ERR: {}", err.as_str().unwrap_or("?"));
+                    if use_color() {
+                        let _ = crossterm::execute!(out, ResetColor);
+                    }
+                }
+                let _ = writeln!(out);
+            }
+        }
+    }
+    let _ = writeln!(out);
+
+    // ── Tool Calls ──────────────────────
+    let tool_count = data["tool_calls"]["count"].as_u64().unwrap_or(0);
+    let tool_suffix = format!("{tool_count} total");
+    write_section_header(&mut out, "Tool Calls", &tool_suffix, width);
+
+    if let Some(calls) = data["tool_calls"]["recent"].as_array() {
+        if calls.is_empty() {
+            print_dim_line(&mut out, "(none)");
+        } else {
+            for call in calls {
+                let ts = call["timestamp"].as_str().unwrap_or("");
+                let time = parse_timestamp(ts)
+                    .map(|dt| dt.format("%H:%M:%S").to_string())
+                    .unwrap_or_else(|| ts.chars().take(8).collect());
+                let name = call["tool_name"].as_str().unwrap_or("?");
+                let dur = call["duration_ms"].as_u64().unwrap_or(0);
+                let ok = call["success"].as_bool().unwrap_or(true);
+
+                if use_color() {
+                    let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+                }
+                let _ = write!(out, "  {time}  ");
+                if use_color() {
+                    let _ = crossterm::execute!(out, ResetColor);
+                }
+                let _ = write!(out, "{name:<24}");
+                if use_color() {
+                    let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+                }
+                let _ = write!(out, "{dur}ms  ");
+                let marker_color = if ok { Color::Green } else { Color::Red };
+                if use_color() {
+                    let _ = crossterm::execute!(out, SetForegroundColor(marker_color));
+                }
+                let _ = write!(out, "{}", if ok { "ok" } else { "FAIL" });
+                if use_color() {
+                    let _ = crossterm::execute!(out, ResetColor);
+                }
+                let _ = writeln!(out);
+            }
+        }
+    }
+    let _ = writeln!(out);
+
+    // ── Errors ──────────────────────────
+    let err_count = data["errors"]["count"].as_u64().unwrap_or(0);
+    let err_suffix = format!("{err_count} total");
+    write_section_header(&mut out, "Errors", &err_suffix, width);
+
+    if let Some(errors) = data["errors"]["recent"].as_array() {
+        if errors.is_empty() {
+            print_dim_line(&mut out, "(none)");
+        } else {
+            for err in errors {
+                let ts = err["timestamp"].as_str().unwrap_or("");
+                let time = parse_timestamp(ts)
+                    .map(|dt| dt.format("%H:%M:%S").to_string())
+                    .unwrap_or_else(|| ts.chars().take(8).collect());
+                let etype = err["error_type"].as_str().unwrap_or("?");
+                let msg = err["message"].as_str().unwrap_or("?");
+
+                if use_color() {
+                    let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+                }
+                let _ = write!(out, "  {time}  ");
+                if use_color() {
+                    let _ = crossterm::execute!(out, SetForegroundColor(Color::Red));
+                }
+                let _ = write!(out, "{etype:<12}");
+                if use_color() {
+                    let _ = crossterm::execute!(out, ResetColor);
+                }
+                let _ = writeln!(out, "{msg}");
+            }
+        }
+    }
+    let _ = writeln!(out);
+}
+
+/// Print a dimmed line (for empty states).
+fn print_dim_line(out: &mut impl Write, text: &str) {
+    if use_color() {
+        let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+    }
+    let _ = writeln!(out, "  {text}");
+    if use_color() {
+        let _ = crossterm::execute!(out, ResetColor);
     }
 }
 

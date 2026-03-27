@@ -10,11 +10,11 @@ V2 renames and restructures the top-level sections. The daemon detects
 V1 sections at startup and prints migration warnings with the correct
 replacement.
 
-| V1 Section   | V2 Replacement             | Notes                                              |
-|-------------|----------------------------|----------------------------------------------------|
-| `[server]`  | `[daemon]`                 | Keys unchanged — only the section name changed.     |
-| `[char]`    | `[character]`              | Keys unchanged — only the section name changed.     |
-| `[llm]`     | Removed — use `models.toml` | Model definitions moved to a separate file.         |
+| V1 Section   | V2 Replacement                    | Notes                                              |
+|-------------|-----------------------------------|----------------------------------------------------|
+| `[server]`  | `[daemon]`                        | Keys unchanged — only the section name changed.     |
+| `[char]`    | `[character]`                     | Keys unchanged — only the section name changed.     |
+| `[llm]`     | `[chat.<provider>.<model>]`       | Nested structure in config.toml with provider defaults cascading. |
 
 **V1 config.toml:**
 ```toml
@@ -37,14 +37,19 @@ socket_path = "/tmp/shore.sock"
 name = "Shore"
 ```
 
-### models.toml (new in V2)
+### Model definitions
 
-Model definitions are now in a dedicated file. The `model` field was
-renamed to `model_id`.
+V2 uses nested `[chat.<provider>.<model>]` tables in config.toml. Provider-level
+defaults cascade into all models under that provider. Known providers have hardcoded
+defaults (api_key_env, base_url, sdk), so minimal config is needed.
 
-| V1 Field   | V2 Field    | Notes                           |
-|-----------|------------|----------------------------------|
-| `model`   | `model_id` | Identifier sent to the provider. |
+Models can live directly in config.toml, in files loaded via `include = [...]`,
+or in `conf.d/*.toml` drop-in files.
+
+| V1 Field        | V2 Equivalent                          | Notes                                        |
+|-----------------|----------------------------------------|----------------------------------------------|
+| `default_model` | `[defaults] model = "chat.anthropic.sonnet"` | Qualified or short name.              |
+| `model`         | `model_id`                             | Identifier sent to the provider.              |
 
 **V1 (inside config.toml [llm]):**
 ```toml
@@ -52,18 +57,26 @@ renamed to `model_id`.
 default_model = "gpt-4"
 ```
 
-**V2 models.toml:**
+**V2 (inline in config.toml or a separate included file):**
 ```toml
-[[models]]
-name = "claude-sonnet"
-provider = "anthropic"
-model_id = "claude-sonnet-4-20250514"
+[chat.anthropic]
+# Provider-level defaults — inherited by all models below
+api_key_env = "ANTHROPIC_API_KEY"    # (also the hardcoded default)
+max_tokens = 8192
 
-[[models]]
-name = "gpt-4o"
-provider = "openai"
+[chat.anthropic.sonnet]
+model_id = "claude-sonnet-4-6"
+
+[chat.anthropic.opus]
+model_id = "claude-opus-4-6"
+max_tokens = 16384                   # Overrides provider default
+
+[chat.openai.gpt-4o]
 model_id = "gpt-4o"
 ```
+
+Tool models, embedding profiles, and image generation profiles use parallel
+top-level sections (`[tools.*]`, `[embedding.*]`, `[image_generation.*]`).
 
 ## Data Directory
 
@@ -87,7 +100,7 @@ V1 stored memory entries in SQLite only. V2 adds a LanceDB vector store
 for semantic search. On first V2 startup with existing V1 data, run:
 
 ```
-shore reindex
+shore memory --reindex
 ```
 
 This extracts active and protected entries from SQLite, computes
@@ -98,9 +111,9 @@ embeddings via `shore-llm`, and populates the vector store.
 | V1 Binary     | V2 Binary       | Notes                                    |
 |--------------|-----------------|------------------------------------------|
 | `shore` (Python) | `shore-daemon` | Persistent daemon process.              |
-|              | `shore-cli`     | Stateless CLI commands.                   |
+|              | `shore`         | Stateless CLI commands.                   |
 |              | `shore-tui`     | Terminal UI with persistent connection.   |
-|              | `shore-matrix`  | Matrix bridge (replaces Python bridge).   |
+|              | `shore-mx`      | Matrix bridge (replaces Python bridge).   |
 |              | `shore-llm`     | TypeScript LLM provider proxy (Node.js).  |
 
 ## Removed Features

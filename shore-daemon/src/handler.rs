@@ -548,7 +548,11 @@ impl MessageHandler {
 
             let tool_ctx = HandlerToolContext {
                 db: memory_db,
-                agent: MemoryAgent::one_shot(CallerIdentity::Char, &char_name, "User"),
+                agent: MemoryAgent::one_shot(
+                    CallerIdentity::Char,
+                    &char_name,
+                    &self.cmd_ctx.config.app.defaults.resolve_display_name(),
+                ),
                 agent_llm: RealAgentLlm::new(self.llm_client.clone()),
                 agent_model_val: agent_model.clone(),
                 researcher: researcher_model.as_ref().map(|_| {

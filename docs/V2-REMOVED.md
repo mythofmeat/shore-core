@@ -7,6 +7,11 @@ Add items here as decisions are made.
 
 ## Replaced by Better V2 Alternatives
 
+- **defaults.cli_target_character** (10.1) — Removed. V2 uses a state file +
+  `SHORE_CHARACTER` envvar for character targeting, and defaults to the only
+  character for single-character setups. The V1 config default caused more
+  problems than it solved.
+
 - **Flat models.toml with [[models]] array** — Replaced by nested
   [chat.provider.model] config structure with include/conf.d support.
   More expressive, matches V1's original design intent.
@@ -33,6 +38,9 @@ Add items here as decisions are made.
 - **CLI image commands** (5.50 list, 5.51 import, 5.52 describe) — Removed.
   Superseded by in-context image tools (`send_image`, `list_images`,
   `recall_image`) which the character uses during conversation.
+
+- **research_web** (4.8) — Removed in favor of the LLM orchestrating
+  multi-step research via `web_search` + `fetch_url` through the existing tool loop.
 
 ## Architecture Decisions
 

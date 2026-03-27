@@ -302,7 +302,8 @@ async fn memory_query(
         .ok_or_else(|| (ErrorCode::InternalError, "No model configured".to_string()))?
         .clone();
 
-    let agent = MemoryAgent::one_shot(CallerIdentity::User, "User", char_name);
+    let display_name = ctx.config.app.defaults.resolve_display_name();
+    let agent = MemoryAgent::one_shot(CallerIdentity::User, &display_name, char_name);
     let agent_llm = RealAgentLlm::new(ctx.llm_client.clone());
 
     let result = agent

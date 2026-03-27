@@ -82,6 +82,10 @@ pub enum CliCommand {
         /// Create a new character scaffold directory
         #[arg(long)]
         new: bool,
+
+        /// Output raw JSON
+        #[arg(long)]
+        json: bool,
     },
 
     /// Show daemon and session status
@@ -97,6 +101,10 @@ pub enum CliCommand {
         /// Number of diagnostic entries to show (used with --diagnostics)
         #[arg(short = 'n', long, default_value = "10")]
         count: u32,
+
+        /// Output raw JSON
+        #[arg(long)]
+        json: bool,
     },
 
     /// List or switch models (no args = list, with name = switch)
@@ -111,6 +119,10 @@ pub enum CliCommand {
         /// Reset to config default model
         #[arg(long)]
         reset: bool,
+
+        /// Output raw JSON
+        #[arg(long)]
+        json: bool,
     },
 
     /// Show, query, or manage the memory system
@@ -121,6 +133,10 @@ pub enum CliCommand {
 
         /// Query to search memory
         query: Option<String>,
+
+        /// Output raw JSON
+        #[arg(long)]
+        json: bool,
     },
 
     /// Show or modify configuration
@@ -142,6 +158,10 @@ pub enum CliCommand {
         /// Reset all runtime overrides (reload config from disk)
         #[arg(long)]
         reset: bool,
+
+        /// Output raw JSON
+        #[arg(long)]
+        json: bool,
     },
 
     /// Generate shell completions
@@ -239,7 +259,7 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
             Some(("status", json!({})))
         }
 
-        CliCommand::Model { name, info, reset } => {
+        CliCommand::Model { name, info, reset, .. } => {
             if *reset {
                 Some(("reset_model", json!({})))
             } else {
@@ -586,7 +606,7 @@ mod tests {
     fn parse_memory_no_query() {
         let cli = parse(&["memory"]);
         match &cli.command {
-            CliCommand::Memory { query, subcommand } => {
+            CliCommand::Memory { query, subcommand, .. } => {
                 assert!(query.is_none());
                 assert!(subcommand.is_none());
             }
@@ -598,7 +618,7 @@ mod tests {
     fn parse_memory_with_query() {
         let cli = parse(&["memory", "recent topics"]);
         match &cli.command {
-            CliCommand::Memory { query, subcommand } => {
+            CliCommand::Memory { query, subcommand, .. } => {
                 assert_eq!(query.as_deref(), Some("recent topics"));
                 assert!(subcommand.is_none());
             }
@@ -652,7 +672,7 @@ mod tests {
     fn parse_config_no_args() {
         let cli = parse(&["config"]);
         match &cli.command {
-            CliCommand::Config { key, value, path, check, reset } => {
+            CliCommand::Config { key, value, path, check, reset, .. } => {
                 assert!(key.is_none());
                 assert!(value.is_none());
                 assert!(!path);
@@ -741,7 +761,7 @@ mod tests {
 
     #[test]
     fn status_maps_to_command() {
-        let cmd = CliCommand::Status { section: None, diagnostics: false, count: 10 };
+        let cmd = CliCommand::Status { section: None, diagnostics: false, count: 10, json: false };
         let (name, args) = to_swp_command(&cmd).unwrap();
         assert_eq!(name, "status");
         assert_eq!(args, serde_json::json!({}));
@@ -749,7 +769,7 @@ mod tests {
 
     #[test]
     fn status_diagnostics_maps_to_command() {
-        let cmd = CliCommand::Status { section: None, diagnostics: true, count: 15 };
+        let cmd = CliCommand::Status { section: None, diagnostics: true, count: 15, json: false };
         let (name, args) = to_swp_command(&cmd).unwrap();
         assert_eq!(name, "diagnostics");
         assert_eq!(args["count"], 15);
@@ -757,15 +777,15 @@ mod tests {
 
     #[test]
     fn character_maps_to_none_without_info() {
-        let cmd = CliCommand::Character { name: None, info: false, new: false };
+        let cmd = CliCommand::Character { name: None, info: false, new: false, json: false };
         assert!(to_swp_command(&cmd).is_none());
-        let cmd = CliCommand::Character { name: Some("alice".into()), info: false, new: false };
+        let cmd = CliCommand::Character { name: Some("alice".into()), info: false, new: false, json: false };
         assert!(to_swp_command(&cmd).is_none());
     }
 
     #[test]
     fn character_info_maps_to_command() {
-        let cmd = CliCommand::Character { name: Some("alice".into()), info: true, new: false };
+        let cmd = CliCommand::Character { name: Some("alice".into()), info: true, new: false, json: false };
         let (name, args) = to_swp_command(&cmd).unwrap();
         assert_eq!(name, "character_info");
         assert_eq!(args["name"], "alice");
@@ -773,7 +793,7 @@ mod tests {
 
     #[test]
     fn model_info_maps_to_command() {
-        let cmd = CliCommand::Model { name: Some("opus".into()), info: true, reset: false };
+        let cmd = CliCommand::Model { name: Some("opus".into()), info: true, reset: false, json: false };
         let (name, args) = to_swp_command(&cmd).unwrap();
         assert_eq!(name, "model_info");
         assert_eq!(args["name"], "opus");
@@ -781,7 +801,7 @@ mod tests {
 
     #[test]
     fn config_path_maps_to_none() {
-        let cmd = CliCommand::Config { key: None, value: None, path: true, check: false, reset: false };
+        let cmd = CliCommand::Config { key: None, value: None, path: true, check: false, reset: false, json: false };
         assert!(to_swp_command(&cmd).is_none());
     }
 
@@ -838,7 +858,7 @@ mod tests {
     fn memory_compact_maps_to_compact_command() {
         let cmd = CliCommand::Memory {
             subcommand: Some(MemoryCommand::Compact),
-            query: None,
+            query: None, json: false,
         };
         let (name, args) = to_swp_command(&cmd).unwrap();
         assert_eq!(name, "compact");
@@ -849,7 +869,7 @@ mod tests {
     fn memory_changelog_maps_to_command() {
         let cmd = CliCommand::Memory {
             subcommand: Some(MemoryCommand::Changelog { limit: 20 }),
-            query: None,
+            query: None, json: false,
         };
         let (name, args) = to_swp_command(&cmd).unwrap();
         assert_eq!(name, "memory_changelog");
@@ -860,7 +880,7 @@ mod tests {
     fn memory_reindex_maps_to_command() {
         let cmd = CliCommand::Memory {
             subcommand: Some(MemoryCommand::Reindex),
-            query: None,
+            query: None, json: false,
         };
         let (name, _) = to_swp_command(&cmd).unwrap();
         assert_eq!(name, "memory_reindex");
@@ -880,18 +900,18 @@ mod tests {
                 msg_ref: None, count: 20, follow: false, json: false, content: false,
             },
             CliCommand::Log { subcommand: None, msg_ref: Some("last".into()), count: 20, follow: false, json: false, content: false },
-            CliCommand::Status { section: None, diagnostics: false, count: 10 },
-            CliCommand::Status { section: None, diagnostics: true, count: 10 },
-            CliCommand::Model { name: None, info: false, reset: false },
-            CliCommand::Model { name: Some("m".into()), info: false, reset: false },
-            CliCommand::Model { name: Some("m".into()), info: true, reset: false },
-            CliCommand::Model { name: None, info: false, reset: true },
-            CliCommand::Character { name: Some("c".into()), info: true, new: false },
-            CliCommand::Memory { subcommand: None, query: None },
-            CliCommand::Memory { subcommand: Some(MemoryCommand::Compact), query: None },
-            CliCommand::Memory { subcommand: Some(MemoryCommand::Changelog { limit: 20 }), query: None },
-            CliCommand::Memory { subcommand: Some(MemoryCommand::Reindex), query: None },
-            CliCommand::Config { key: None, value: None, path: false, check: false, reset: false },
+            CliCommand::Status { section: None, diagnostics: false, count: 10, json: false },
+            CliCommand::Status { section: None, diagnostics: true, count: 10, json: false },
+            CliCommand::Model { name: None, info: false, reset: false, json: false },
+            CliCommand::Model { name: Some("m".into()), info: false, reset: false, json: false },
+            CliCommand::Model { name: Some("m".into()), info: true, reset: false, json: false },
+            CliCommand::Model { name: None, info: false, reset: true, json: false },
+            CliCommand::Character { name: Some("c".into()), info: true, new: false, json: false },
+            CliCommand::Memory { subcommand: None, query: None, json: false },
+            CliCommand::Memory { subcommand: Some(MemoryCommand::Compact), query: None, json: false },
+            CliCommand::Memory { subcommand: Some(MemoryCommand::Changelog { limit: 20 }), query: None, json: false },
+            CliCommand::Memory { subcommand: Some(MemoryCommand::Reindex), query: None, json: false },
+            CliCommand::Config { key: None, value: None, path: false, check: false, reset: false, json: false },
         ];
         for cmd in &commands {
             assert!(

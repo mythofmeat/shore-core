@@ -15,6 +15,7 @@
 # tool_model = "mistral-small"      # Default model for tool-use calls
 # embedding = "text-large"          # Default embedding profile
 # image_generation = "gemini-flash" # Default image generation profile
+# display_name = "Your Name"        # {{user}} in templates; falls back to $USER
 stream = true
 
 [behavior.autonomy]

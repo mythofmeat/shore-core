@@ -32,16 +32,10 @@ requires human judgment about how it should work, not just coding.
   or a separate index?
 
 
-## Config Schema Gaps
+## Embedded Matrix Server
 
-Config fields that exist in V1 but have no V2 schema support yet.
-Each one needs a design call about whether/how to port it.
-
-- 10.1 **defaults.cli_target_character** — MISSING
-  Default character to load on startup.
-- 10.2 **defaults.display_name** — MISSING
-  User's display name in conversations.
-- 10.5 **connections.matrix_embedded** — MISSING
-  Embedded Synapse config (server_name, admin credentials).
-- 10.12 **debug.anthropic_cache** (log_expected_misses, preflight_check, exit_on_unexpected_miss) — MISSING
-  Cache debug instrumentation flags.
+- 10.5 **Embedded Synapse provisioning & config** — MISSING
+  Full embedded Synapse setup: server_name, admin credentials, port binding,
+  federation toggles. This is a standalone feature workstream, not a config gap.
+  **Needs decision:** Scope of daemon-managed Synapse lifecycle, config surface,
+  whether it lives under `[connections]` or gets its own top-level section.

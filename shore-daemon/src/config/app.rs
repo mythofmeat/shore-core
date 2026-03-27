@@ -63,9 +63,23 @@ pub struct DefaultsConfig {
     /// Default image generation profile name.
     pub image_generation: Option<String>,
 
+    /// User's display name for {{user}} template substitution.
+    /// Falls back to $USER env var, then "User".
+    pub display_name: Option<String>,
+
     /// Whether to stream responses by default.
     #[serde(default = "default_true")]
     pub stream: bool,
+}
+
+impl DefaultsConfig {
+    /// Resolve the user's display name: config → $USER → "User".
+    pub fn resolve_display_name(&self) -> String {
+        self.display_name
+            .clone()
+            .or_else(|| std::env::var("USER").ok())
+            .unwrap_or_else(|| "User".to_string())
+    }
 }
 
 impl Default for DefaultsConfig {
@@ -76,6 +90,7 @@ impl Default for DefaultsConfig {
             memory_agent: None,
             embedding: None,
             image_generation: None,
+            display_name: None,
             stream: true,
         }
     }
