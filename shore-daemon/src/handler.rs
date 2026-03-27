@@ -385,7 +385,13 @@ impl MessageHandler {
                     // Strip Thinking blocks for now (provider projection TODO).
                     let blocks: Vec<Value> = m.content_blocks.iter().filter_map(|b| match b {
                         ContentBlock::Text { text } => Some(json!({ "type": "text", "text": text })),
-                        ContentBlock::Thinking { .. } => None, // stripped for now
+                        ContentBlock::Thinking { thinking, signature } => {
+                            // Only include thinking blocks with signatures (required by Anthropic API).
+                            // Pre-signature blocks (no signature captured) are still stripped.
+                            signature.as_ref().map(|sig| {
+                                json!({ "type": "thinking", "thinking": thinking, "signature": sig })
+                            })
+                        }
                         ContentBlock::ToolUse { id, name, input } => Some(json!({
                             "type": "tool_use", "id": id, "name": name, "input": input,
                         })),
@@ -716,6 +722,7 @@ mod tests {
             autonomy: autonomy.clone(),
             llm_client: LlmClient::new(tmp.path().join("dummy.sock")),
             diagnostics: std::sync::Arc::new(std::sync::Mutex::new(crate::diagnostics::Diagnostics::default())),
+            memory_shell_sessions: std::collections::HashMap::new(),
         };
 
         let registry = CharacterRegistry::new(config_dir, data_dir, push_tx.clone());

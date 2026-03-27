@@ -30,7 +30,7 @@ pub enum CallerIdentity {
 pub enum AgentMode {
     /// One-shot tool call: accept a natural language request, return result.
     OneShot,
-    /// Interactive memory shell session (stub — deferred per §3.8).
+    /// Interactive memory shell session.
     Interactive,
 }
 
@@ -45,7 +45,6 @@ pub enum AgentError {
     Indexing(String),
     Llm(String),
     MaxIterations,
-    InteractiveNotImplemented,
 }
 
 impl std::fmt::Display for AgentError {
@@ -56,9 +55,6 @@ impl std::fmt::Display for AgentError {
             AgentError::Indexing(e) => write!(f, "indexing: {e}"),
             AgentError::Llm(e) => write!(f, "llm: {e}"),
             AgentError::MaxIterations => write!(f, "agent loop reached maximum iterations"),
-            AgentError::InteractiveNotImplemented => {
-                write!(f, "interactive mode not yet implemented")
-            }
         }
     }
 }

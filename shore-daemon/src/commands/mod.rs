@@ -2,6 +2,7 @@ pub mod conversation;
 pub mod navigation;
 pub mod state;
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -12,10 +13,12 @@ use tokio::sync::broadcast;
 use tracing::info;
 
 use crate::autonomy::manager::AutonomyManager;
+use crate::config::models::ResolvedModel;
 use crate::config::LoadedConfig;
 use crate::diagnostics::Diagnostics;
 use crate::engine::{ConversationEngine, EngineError};
 use crate::llm_client::LlmClient;
+use crate::memory::agent::MemoryAgent;
 
 /// Cumulative token usage tracked across the daemon session.
 #[derive(Debug, Clone, Default)]
@@ -24,6 +27,14 @@ pub struct SessionTokens {
     pub output: u32,
     pub cache_read: u32,
     pub cache_write: u32,
+}
+
+/// An active memory shell session.
+pub struct MemoryShellSession {
+    pub agent: MemoryAgent,
+    pub history: Vec<serde_json::Value>,
+    pub character: String,
+    pub model: ResolvedModel,
 }
 
 /// Shared state for command handlers (does not own the engine).
@@ -44,6 +55,8 @@ pub struct CommandContext {
     pub llm_client: LlmClient,
     /// In-memory diagnostics ring buffers.
     pub diagnostics: Arc<Mutex<Diagnostics>>,
+    /// Active memory shell sessions, keyed by session ID.
+    pub memory_shell_sessions: HashMap<String, MemoryShellSession>,
 }
 
 /// Convenience type for command handler results.
@@ -77,6 +90,9 @@ pub async fn dispatch(
         "reset_model" => state::reset_model(ctx),
         "memory_changelog" => state::memory_changelog(engine, ctx, &cmd.args),
         "memory" => state::memory(engine, ctx, &cmd.args).await,
+        "memory_shell_start" => state::memory_shell_start(engine, ctx, &cmd.args).await,
+        "memory_shell_query" => state::memory_shell_query(ctx, &cmd.args).await,
+        "memory_shell_end" => state::memory_shell_end(ctx, &cmd.args),
         "compact" => state::compact(engine, ctx, &cmd.args).await,
         "collate" => state::collate(engine, ctx, &cmd.args).await,
         "config" => state::config(ctx, &cmd.args),
@@ -153,6 +169,7 @@ mod tests {
             autonomy,
             llm_client: LlmClient::new(data_dir.join("dummy.sock")),
             diagnostics: Arc::new(Mutex::new(Diagnostics::default())),
+            memory_shell_sessions: HashMap::new(),
         };
         (engine, ctx, push_rx)
     }

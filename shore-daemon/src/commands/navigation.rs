@@ -172,6 +172,7 @@ mod tests {
             autonomy,
             llm_client: crate::llm_client::LlmClient::new(data_dir.join("dummy.sock")),
             diagnostics: std::sync::Arc::new(std::sync::Mutex::new(crate::diagnostics::Diagnostics::default())),
+            memory_shell_sessions: std::collections::HashMap::new(),
         };
         (engine, ctx, push_rx)
     }

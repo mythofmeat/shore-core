@@ -82,10 +82,9 @@ pub fn resolve_pronouns(query: &str, caller: CallerIdentity, name: &str) -> Stri
 
 /// LLM-backed agent for memory management.
 ///
-/// Three entry points:
+/// Two entry points:
 /// - `ask()` — one-shot, no confirmation (used by researcher)
-/// - `run_query()` — with history and optional confirmation (used by engine)
-/// - `shell()` — interactive REPL (deferred)
+/// - `run_query()` — with history and optional confirmation (used by engine and memory shell)
 pub struct MemoryAgent {
     /// Who is calling the agent.
     caller: CallerIdentity,
@@ -202,11 +201,6 @@ impl MemoryAgent {
         }
     }
 
-    /// Interactive REPL for memory management (stub).
-    pub async fn shell(&self) -> Result<(), AgentError> {
-        Err(AgentError::InteractiveNotImplemented)
-    }
-
     // ------------------------------------------------------------------
     // Legacy RAG-only path — used by current tool handlers until Phase 4
     // ------------------------------------------------------------------
@@ -219,7 +213,9 @@ impl MemoryAgent {
         db: &MemoryDB,
     ) -> Result<MemoryQueryResult, AgentError> {
         if self.mode == AgentMode::Interactive {
-            return Err(AgentError::InteractiveNotImplemented);
+            return Err(AgentError::Llm(
+                "legacy query() not available in interactive mode".to_string(),
+            ));
         }
 
         let resolved = resolve_pronouns(request, self.caller, &self.caller_name);

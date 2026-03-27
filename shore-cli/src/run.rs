@@ -1,4 +1,4 @@
-use std::io::{self, IsTerminal, Read as _};
+use std::io::{self, IsTerminal, Read as _, Write as _};
 
 use shore_client::{SWPConnection, ServerAddr};
 use shore_protocol::server_msg::ServerMessage;
@@ -9,14 +9,6 @@ use crate::state;
 
 /// Execute the CLI command by connecting to the daemon and dispatching.
 pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
-    let addr = resolve_addr(&cli);
-
-    // Character resolution: --character flag > SHORE_CHARACTER env > state file > None (daemon auto-selects).
-    let character = cli.character.clone().or_else(state::read_active_character);
-
-    let (mut conn, _server_hello, _history) =
-        SWPConnection::connect(&addr, "cli", "shore-cli", character.clone()).await?;
-
     // Handle local-only commands that don't need a daemon connection.
     if matches!(&cli.command, CliCommand::Config { path: true, .. }) {
         print_config_path();
@@ -25,6 +17,17 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     if let CliCommand::Character { name: Some(name), new: true, .. } = &cli.command {
         return handle_create_character(name);
     }
+    if let CliCommand::Matrix { subcommand } = &cli.command {
+        return handle_matrix_command(subcommand, &cli).await;
+    }
+
+    let addr = resolve_addr(&cli);
+
+    // Character resolution: --character flag > SHORE_CHARACTER env > state file > None (daemon auto-selects).
+    let character = cli.character.clone().or_else(state::read_active_character);
+
+    let (mut conn, _server_hello, _history) =
+        SWPConnection::connect(&addr, "cli", "shore-cli", character.clone()).await?;
 
     match &cli.command {
         CliCommand::Send { message, images } => {
@@ -165,6 +168,9 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
+        CliCommand::Memory { subcommand: Some(crate::cli::MemoryCommand::Shell), .. } => {
+            run_memory_shell(&mut conn).await?;
+        }
         other => {
             let json_mode = match other {
                 CliCommand::Model { json, .. }
@@ -247,6 +253,51 @@ async fn handle_list_characters(
     Ok(())
 }
 
+/// Handle `shore matrix` subcommands by delegating to shore-matrix binary.
+async fn handle_matrix_command(
+    subcommand: &crate::cli::MatrixCommand,
+    cli: &Cli,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut cmd = std::process::Command::new("shore-matrix");
+
+    // Pass through config path if set
+    if let Some(ref config) = cli.config {
+        cmd.arg("--config").arg(config);
+    }
+    if let Some(ref socket) = cli.socket {
+        cmd.arg("--socket").arg(socket);
+    }
+
+    match subcommand {
+        crate::cli::MatrixCommand::Setup => {
+            cmd.arg("--setup");
+        }
+        crate::cli::MatrixCommand::Register { username, password } => {
+            cmd.arg("--register").arg(username);
+            if let Some(pw) = password {
+                cmd.arg("--register-password").arg(pw);
+            }
+        }
+    }
+
+    let status = cmd
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .status()
+        .map_err(|e| {
+            if e.kind() == io::ErrorKind::NotFound {
+                "shore-matrix binary not found. Is it installed and in your PATH?".to_string()
+            } else {
+                format!("failed to run shore-matrix: {e}")
+            }
+        })?;
+
+    if !status.success() {
+        return Err(format!("shore-matrix exited with status {status}").into());
+    }
+    Ok(())
+}
+
 /// Create a new character scaffold directory.
 fn handle_create_character(name: &str) -> Result<(), Box<dyn std::error::Error>> {
     let config_dir = config_dir();
@@ -263,6 +314,79 @@ fn handle_create_character(name: &str) -> Result<(), Box<dyn std::error::Error>>
         format!("You are {name}.\n\n<!-- Edit this file to define {name}'s personality and behavior. -->\n"),
     )?;
     println!("Created character scaffold: {}", char_dir.display());
+    Ok(())
+}
+
+/// Run an interactive memory shell session.
+async fn run_memory_shell(
+    conn: &mut SWPConnection,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Start the session.
+    conn.send_command("memory_shell_start", serde_json::json!({}))
+        .await?;
+    let start_data = recv_command_data(conn).await?;
+    let session_id = start_data["session_id"]
+        .as_str()
+        .ok_or("missing session_id in response")?
+        .to_string();
+    let character = start_data["character"]
+        .as_str()
+        .unwrap_or("unknown");
+
+    output::print_memory_shell_welcome(character);
+
+    let stdin = io::stdin();
+    let mut line_buf = String::new();
+
+    loop {
+        // Print prompt.
+        eprint!("memory> ");
+        io::stderr().flush().ok();
+
+        line_buf.clear();
+        let bytes = stdin.read_line(&mut line_buf)?;
+
+        // EOF (ctrl-d).
+        if bytes == 0 {
+            eprintln!();
+            break;
+        }
+
+        let input = line_buf.trim();
+
+        if input.is_empty() {
+            continue;
+        }
+
+        if input == "/quit" || input == "/exit" {
+            break;
+        }
+
+        // Send query.
+        conn.send_command(
+            "memory_shell_query",
+            serde_json::json!({
+                "session_id": session_id,
+                "input": input,
+            }),
+        )
+        .await?;
+
+        let data = recv_command_data(conn).await?;
+        let response = data["response"].as_str().unwrap_or("");
+        let mutations = data["mutations"].as_str().unwrap_or("");
+
+        output::print_memory_shell_response(response, mutations);
+    }
+
+    // End the session.
+    conn.send_command(
+        "memory_shell_end",
+        serde_json::json!({ "session_id": session_id }),
+    )
+    .await?;
+    let _ = recv_command_data(conn).await;
+
     Ok(())
 }
 

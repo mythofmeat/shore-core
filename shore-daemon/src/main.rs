@@ -203,6 +203,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         autonomy: autonomy.clone(),
         llm_client: llm_client.clone(),
         diagnostics: diagnostics.clone(),
+        memory_shell_sessions: std::collections::HashMap::new(),
     };
 
     // Spawn background compaction task driven by autonomy idle triggers.

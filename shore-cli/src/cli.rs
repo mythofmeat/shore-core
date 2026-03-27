@@ -164,10 +164,33 @@ pub enum CliCommand {
         json: bool,
     },
 
+    /// Matrix bridge setup and management
+    Matrix {
+        #[command(subcommand)]
+        subcommand: MatrixCommand,
+    },
+
     /// Generate shell completions
     Completions {
         /// Shell to generate completions for
         shell: Shell,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum MatrixCommand {
+    /// Initialize embedded Synapse and provision all characters
+    Setup,
+
+    /// Register a user account on the embedded Synapse
+    Register {
+        /// Username (without @ or :server)
+        #[arg(long)]
+        username: String,
+
+        /// Password (prompted or auto-generated if omitted)
+        #[arg(long)]
+        password: Option<String>,
     },
 }
 
@@ -205,6 +228,9 @@ pub enum MemoryCommand {
 
     /// Rebuild FTS and vector indexes
     Reindex,
+
+    /// Interactive memory agent shell
+    Shell,
 }
 
 /// Generate and print shell completions to stdout.
@@ -224,6 +250,7 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
         CliCommand::Send { .. }
         | CliCommand::Regen { .. }
         | CliCommand::Completions { .. }
+        | CliCommand::Matrix { .. }
         | CliCommand::Config { path: true, check: false, reset: false, .. } => None,
 
         // Character: list/switch/new handled locally, --info goes to daemon.
@@ -282,6 +309,8 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
         CliCommand::Memory { subcommand: Some(MemoryCommand::Reindex), .. } => {
             Some(("memory_reindex", json!({})))
         }
+        // Shell is handled as a special case in run.rs (interactive REPL).
+        CliCommand::Memory { subcommand: Some(MemoryCommand::Shell), .. } => None,
         CliCommand::Memory { query, .. } => {
             Some(("memory", json!({ "query": query })))
         }

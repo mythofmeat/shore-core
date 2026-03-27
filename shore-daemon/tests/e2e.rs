@@ -251,6 +251,7 @@ async fn e2e_conversation_milestone() {
         autonomy: autonomy.clone(),
         llm_client: llm_client.clone(),
         diagnostics: std::sync::Arc::new(std::sync::Mutex::new(shore_daemon::diagnostics::Diagnostics::default())),
+        memory_shell_sessions: std::collections::HashMap::new(),
     };
 
     let mut msg_handler = MessageHandler {
@@ -710,6 +711,7 @@ impl E2EHarness {
             autonomy: autonomy.clone(),
             llm_client: llm_client.clone(),
             diagnostics: std::sync::Arc::new(std::sync::Mutex::new(shore_daemon::diagnostics::Diagnostics::default())),
+            memory_shell_sessions: std::collections::HashMap::new(),
         };
 
         let mut msg_handler = MessageHandler {

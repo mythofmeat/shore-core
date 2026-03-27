@@ -23,7 +23,7 @@ use crate::memory::vectorstore::VectorStore;
 
 use crate::autonomy::activity::HourClassification;
 
-use super::{CommandContext, CommandResult};
+use super::{CommandContext, CommandResult, MemoryShellSession};
 
 /// Return system status: character, message count, model, token counts.
 pub fn status(engine: &ConversationEngine, ctx: &CommandContext) -> CommandResult {
@@ -316,6 +316,131 @@ async fn memory_query(
         "query": query,
         "result": result,
     }))
+}
+
+// ---------------------------------------------------------------------------
+// Memory shell (interactive REPL)
+// ---------------------------------------------------------------------------
+
+/// Start a new memory shell session.
+pub async fn memory_shell_start(
+    engine: &ConversationEngine,
+    ctx: &mut CommandContext,
+    _args: &serde_json::Value,
+) -> CommandResult {
+    let char_name = engine.character_name().to_string();
+
+    // Resolve agent model (same logic as memory_query).
+    let agent_model = ctx
+        .config
+        .app
+        .defaults
+        .memory_agent
+        .as_deref()
+        .and_then(|name| ctx.config.models.find_model(name).ok())
+        .or_else(|| {
+            ctx.active_model
+                .as_deref()
+                .and_then(|name| ctx.config.models.find_model(name).ok())
+        })
+        .or_else(|| ctx.config.models.first_chat_model())
+        .ok_or_else(|| (ErrorCode::InternalError, "No model configured".to_string()))?
+        .clone();
+
+    let display_name = ctx.config.app.defaults.resolve_display_name();
+    let agent = MemoryAgent::interactive(CallerIdentity::User, &display_name, &char_name);
+
+    let session_id = uuid::Uuid::new_v4().to_string();
+    ctx.memory_shell_sessions.insert(
+        session_id.clone(),
+        MemoryShellSession {
+            agent,
+            history: Vec::new(),
+            character: char_name.clone(),
+            model: agent_model,
+        },
+    );
+
+    Ok(json!({
+        "session_id": session_id,
+        "character": char_name,
+    }))
+}
+
+/// Process a query within an existing memory shell session.
+pub async fn memory_shell_query(
+    ctx: &mut CommandContext,
+    args: &serde_json::Value,
+) -> CommandResult {
+    let session_id = args
+        .get("session_id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| (ErrorCode::InvalidRequest, "Missing session_id".to_string()))?;
+
+    let input = args
+        .get("input")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| (ErrorCode::InvalidRequest, "Missing input".to_string()))?
+        .to_string();
+
+    let session = ctx
+        .memory_shell_sessions
+        .get_mut(session_id)
+        .ok_or_else(|| (ErrorCode::NotFound, "Session not found".to_string()))?;
+
+    let db_path = ctx
+        .data_dir
+        .join(&session.character)
+        .join("memory")
+        .join("memory.db");
+
+    let db = MemoryDB::open(&db_path)
+        .map_err(|e| (ErrorCode::InternalError, format!("Failed to open memory DB: {e}")))?;
+
+    let agent_llm = RealAgentLlm::new(ctx.llm_client.clone());
+
+    let mutations = session
+        .agent
+        .run_query(
+            &input,
+            &mut session.history,
+            &agent_llm,
+            &db,
+            None,
+            &session.model,
+            None, // no confirmation callback
+        )
+        .await
+        .map_err(|e| (ErrorCode::InternalError, format!("Memory agent error: {e}")))?;
+
+    // The last assistant message in history is the response.
+    let response = session
+        .history
+        .last()
+        .and_then(|msg| msg.get("content"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    Ok(json!({
+        "response": response,
+        "mutations": mutations,
+    }))
+}
+
+/// End a memory shell session.
+pub fn memory_shell_end(
+    ctx: &mut CommandContext,
+    args: &serde_json::Value,
+) -> CommandResult {
+    let session_id = args
+        .get("session_id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| (ErrorCode::InvalidRequest, "Missing session_id".to_string()))?;
+
+    ctx.memory_shell_sessions.remove(session_id);
+
+    Ok(json!({ "ok": true }))
 }
 
 /// Run compaction on the current character's conversation.
@@ -941,6 +1066,7 @@ mod tests {
             autonomy,
             llm_client: crate::llm_client::LlmClient::new(data_dir.join("dummy.sock")),
             diagnostics: std::sync::Arc::new(std::sync::Mutex::new(crate::diagnostics::Diagnostics::default())),
+            memory_shell_sessions: std::collections::HashMap::new(),
         };
         (engine, ctx, push_rx)
     }

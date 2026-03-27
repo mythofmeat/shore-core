@@ -7,9 +7,9 @@ requires human judgment about how it should work, not just coding.
 
 ## Memory Agent
 
-- 3.12 **Memory agent — interactive REPL** (5.35) — STUB
-  **Needs decision:** Is this a chat with the memory agent, or a structured command
-  interface? How does it differ from `shore send` with memory tools? What commands?
+- 3.12 **Memory agent — interactive REPL** (5.35) — DONE
+  Natural language chat loop via `shore memory shell`. Stateful daemon sessions,
+  ephemeral history, auto-accept writes (no confirmation flow).
 
 
 ## Provider Payload Projection
@@ -24,18 +24,12 @@ requires human judgment about how it should work, not just coding.
   logic in the daemon.
 
 
-## Conversation Management (cont.)
-
-- 5.13 **Search conversations** (full-text) — MISSING
-  **Needs decision:** Search across characters or within current? What gets returned
-  (message snippets, conversation IDs)? Output format? Does this use existing FTS5
-  or a separate index?
-
-
 ## Embedded Matrix Server
 
-- 10.5 **Embedded Synapse provisioning & config** — MISSING
-  Full embedded Synapse setup: server_name, admin credentials, port binding,
-  federation toggles. This is a standalone feature workstream, not a config gap.
-  **Needs decision:** Scope of daemon-managed Synapse lifecycle, config surface,
-  whether it lives under `[connections]` or gets its own top-level section.
+- 10.5 **Embedded Synapse provisioning & config** — DONE
+  Lives under `[connections.matrix.embedded]`. shore-matrix manages the full
+  Synapse lifecycle: config generation, subprocess, admin provisioning,
+  character account registration, room creation with trusted_user invitation.
+  CLI: `shore matrix setup` (one-shot provisioning), `shore matrix register`
+  (user account creation). Embedded state persisted at
+  `$XDG_DATA_HOME/shore/synapse/embedded_state.json`.

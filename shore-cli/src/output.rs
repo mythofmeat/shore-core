@@ -1601,6 +1601,41 @@ fn print_dim_line(out: &mut impl Write, text: &str) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Memory shell
+// ---------------------------------------------------------------------------
+
+/// Print the memory shell welcome banner.
+pub fn print_memory_shell_welcome(character: &str) {
+    let mut out = io::stderr().lock();
+    if use_color() {
+        let _ = crossterm::execute!(out, SetForegroundColor(Color::Cyan));
+    }
+    let _ = writeln!(out, "Memory shell for {character}");
+    if use_color() {
+        let _ = crossterm::execute!(out, ResetColor);
+    }
+    let _ = writeln!(out, "Type a query or command. /quit to exit.\n");
+}
+
+/// Print a memory shell response.
+pub fn print_memory_shell_response(response: &str, mutations: &str) {
+    if !response.is_empty() {
+        println!("{response}");
+    }
+    if !mutations.is_empty() {
+        let mut out = io::stdout().lock();
+        if use_color() {
+            let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+        }
+        let _ = writeln!(out, "  [{mutations}]");
+        if use_color() {
+            let _ = crossterm::execute!(out, ResetColor);
+        }
+    }
+    println!();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
