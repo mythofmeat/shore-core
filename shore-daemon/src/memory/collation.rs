@@ -1,5 +1,6 @@
 use crate::memory::db::{Entry, MemoryDB};
 use chrono::Utc;
+use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 
@@ -133,7 +134,22 @@ pub trait CollationLlm: Send + Sync {
 // Default prompt templates
 // ---------------------------------------------------------------------------
 
-pub const DEFAULT_TIDY_PROMPT: &str = r#"Analyze the following memory entries and identify any that are overly broad or cover multiple distinct topics. For each such entry, split it into focused, single-topic entries.
+pub const DEFAULT_TIDY_PROMPT: &str = r#"You are splitting messy, multi-topic memory entries into clean, atomic entries.
+
+User: {{user}}
+Character: {{char}}
+
+Analyze the following memory entries and identify any that are overly broad or cover multiple distinct topics. For each such entry, split it into focused, single-topic entries.
+
+Rules:
+- Every piece of information from the original entry MUST appear in exactly one output entry
+- Do not fabricate or infer anything not present in the source
+- Each entry should be atomic — focused on exactly one topic or theme
+- If an entry is actually coherent (single topic), return it unchanged as one entry
+- Preserve entity names, dates, and specific details
+
+Topic landscape (existing topics in the memory store):
+{{topic_landscape}}
 
 Respond with a JSON object:
 {"splits":[{"original_entry_id":"...","replacements":[{"summary_text":"...","topic_tags":"tag1,tag2","topic_key":"topic","confidence":0.9}]}]}
@@ -143,7 +159,32 @@ If no entries need splitting, return {"splits":[]}.
 Entries:
 {{entries}}"#;
 
-pub const DEFAULT_COLLATE_PROMPT: &str = r#"Analyze the following memory entries and identify groups that are semantically similar or redundant. For each group, merge them into a single consolidated entry that preserves all important information.
+pub const DEFAULT_COLLATE_PROMPT: &str = r#"You are distilling a cluster of conversation records into stable, durable knowledge about {{user}} and their relationship with {{char}}.
+
+User: {{user}}
+Character: {{char}}
+
+Goal: Extract what is durably true — preferences, personal details, important attributes, ongoing truths — not what merely happened in a specific conversation. Write in present tense where possible. The output should read as settled facts, not narrative.
+
+Instructions:
+- The primary goal is **consolidation** — reduce the number of entries by merging overlapping or related information
+- You MUST produce fewer entries than the number of source entries ({{entry_count}} sources → at most {{max_entries}} output entries)
+- Merge redundant information across entries
+- Extract stable facts, preferences, and attributes from episodic narratives
+- Do not fabricate or infer anything not present in the source entries
+- Keep specific names, dates, and details where relevant
+- Each entry should be self-contained — but prefer merging related sub-topics into one entry over splitting into many
+
+Contradiction handling:
+- When entries contain conflicting information, prefer the more recent entry (by timestamp or position)
+- If one entry explicitly corrects or updates another, use the correction
+- If the contradiction reflects genuine change over time, preserve both with temporal framing (e.g. "Previously X, but as of [date] Y")
+- If unresolvable, preserve both and note the conflict
+
+Drop permission:
+- You MAY drop information that is clearly outdated, superseded by newer facts, or no longer relevant
+- When dropping information, note what was dropped in the merged_summary
+- Only drop when confident the information is stale — when in doubt, preserve it
 
 Respond with a JSON object:
 {"merges":[{"source_entry_ids":["id1","id2"],"merged_summary":"...","merged_topic_tags":"tag1,tag2","merged_topic_key":"topic","merged_confidence":0.9}]}
@@ -153,7 +194,15 @@ If no entries should be merged, return {"merges":[]}.
 Entries:
 {{entries}}"#;
 
-pub const DEFAULT_NORMALIZE_PROMPT: &str = r#"Analyze the following entity names and identify duplicates (different names referring to the same entity). For each group, choose the canonical name and list the duplicates.
+pub const DEFAULT_NORMALIZE_PROMPT: &str = r#"You are normalizing entity records in a memory system.
+
+Below are entity records that may have inconsistencies: duplicate names (aliases), conflicting types, or missing information.
+
+For each group of related entities, produce a single canonical record with:
+- The most complete, correct name
+- The best available type classification
+
+If an entity has no issues, do not include it in the output.
 
 Respond with a JSON object:
 {"normalizations":[{"canonical_name":"...","duplicate_names":["alias1","alias2"]}]}
@@ -198,8 +247,13 @@ impl CollationManager {
         format!("{}_{}", now.format("%Y%m%d_%H%M%S"), index)
     }
 
-    /// Build a prompt from a template, replacing `{{entries}}` with formatted entries.
-    pub fn build_entries_prompt(template: &str, entries: &[Entry]) -> String {
+    /// Build a prompt from a template, replacing `{{entries}}` with formatted entries
+    /// and any additional template variables from `vars`.
+    pub fn build_entries_prompt(
+        template: &str,
+        entries: &[Entry],
+        vars: &HashMap<String, String>,
+    ) -> String {
         let mut text = String::new();
         for e in entries {
             text.push_str(&format!(
@@ -207,22 +261,38 @@ impl CollationManager {
                 e.id, e.memory_type, e.confidence, e.topic_tags, e.summary_text
             ));
         }
-        template.replace("{{entries}}", &text)
+        let mut result = template.replace("{{entries}}", &text);
+        for (key, value) in vars {
+            let tag = format!("{{{{{key}}}}}");
+            result = result.replace(&tag, value);
+        }
+        result
     }
 
-    /// Build a prompt from a template, replacing `{{entities}}` with formatted entity names.
+    /// Build a prompt from a template, replacing `{{entities}}` with formatted entity names
+    /// and any additional template variables from `vars`.
     pub fn build_entities_prompt(
         template: &str,
         entities: &[(String, String)],
+        vars: &HashMap<String, String>,
     ) -> String {
         let mut text = String::new();
         for (name, etype) in entities {
             text.push_str(&format!("- Name: {} | Type: {}\n", name, etype));
         }
-        template.replace("{{entities}}", &text)
+        let mut result = template.replace("{{entities}}", &text);
+        for (key, value) in vars {
+            let tag = format!("{{{{{key}}}}}");
+            result = result.replace(&tag, value);
+        }
+        result
     }
 
     /// Run the full 4-phase collation pipeline.
+    ///
+    /// `vars` provides template variables like `{{char}}` and `{{user}}`.
+    /// Phase-specific variables (entry_count, max_entries, topic_landscape)
+    /// are computed internally and merged into a copy of `vars` before rendering.
     pub async fn run(
         &self,
         db: &MemoryDB,
@@ -230,21 +300,22 @@ impl CollationManager {
         tidy_template: &str,
         collate_template: &str,
         normalize_template: &str,
+        vars: &HashMap<String, String>,
     ) -> Result<CollationOutcome, CollationError> {
         let mut outcome = CollationOutcome::default();
         // Shared counter to avoid entry ID collisions across phases.
         let mut id_counter: usize = 0;
 
         // Phase 1: Tidy
-        self.phase_tidy(db, llm, tidy_template, &mut outcome, &mut id_counter)
+        self.phase_tidy(db, llm, tidy_template, vars, &mut outcome, &mut id_counter)
             .await?;
 
         // Phase 2: Collate
-        self.phase_collate(db, llm, collate_template, &mut outcome, &mut id_counter)
+        self.phase_collate(db, llm, collate_template, vars, &mut outcome, &mut id_counter)
             .await?;
 
         // Phase 3: Normalize entities
-        self.phase_normalize_entities(db, llm, normalize_template, &mut outcome)
+        self.phase_normalize_entities(db, llm, normalize_template, vars, &mut outcome)
             .await?;
 
         // Phase 4: Confidence decay
@@ -262,6 +333,7 @@ impl CollationManager {
         db: &MemoryDB,
         llm: &dyn CollationLlm,
         template: &str,
+        vars: &HashMap<String, String>,
         outcome: &mut CollationOutcome,
         id_counter: &mut usize,
     ) -> Result<(), CollationError> {
@@ -283,8 +355,22 @@ impl CollationManager {
             return Ok(());
         }
 
+        // Build topic landscape from all active entries' topic keys.
+        let topic_landscape: String = {
+            let mut keys: Vec<&str> = entries
+                .iter()
+                .map(|e| e.topic_key.as_str())
+                .filter(|k| !k.is_empty())
+                .collect();
+            keys.sort();
+            keys.dedup();
+            keys.join(", ")
+        };
+        let mut phase_vars = vars.clone();
+        phase_vars.insert("topic_landscape".into(), topic_landscape);
+
         let owned: Vec<Entry> = candidates.iter().map(|e| (*e).clone()).collect();
-        let prompt = Self::build_entries_prompt(template, &owned);
+        let prompt = Self::build_entries_prompt(template, &owned, &phase_vars);
         let splits = llm.tidy(&prompt).await?;
 
         let now_str = Utc::now().to_rfc3339();
@@ -376,6 +462,7 @@ impl CollationManager {
         db: &MemoryDB,
         llm: &dyn CollationLlm,
         template: &str,
+        vars: &HashMap<String, String>,
         outcome: &mut CollationOutcome,
         id_counter: &mut usize,
     ) -> Result<(), CollationError> {
@@ -396,8 +483,15 @@ impl CollationManager {
             return Ok(());
         }
 
+        // Add entry count caps as template variables.
+        let entry_count = candidates.len();
+        let max_entries = (entry_count / 2).max(1);
+        let mut phase_vars = vars.clone();
+        phase_vars.insert("entry_count".into(), entry_count.to_string());
+        phase_vars.insert("max_entries".into(), max_entries.to_string());
+
         let owned: Vec<Entry> = candidates.iter().map(|e| (*e).clone()).collect();
-        let prompt = Self::build_entries_prompt(template, &owned);
+        let prompt = Self::build_entries_prompt(template, &owned, &phase_vars);
         let merges = llm.collate(&prompt).await?;
 
         let now_str = Utc::now().to_rfc3339();
@@ -494,6 +588,7 @@ impl CollationManager {
         db: &MemoryDB,
         llm: &dyn CollationLlm,
         template: &str,
+        vars: &HashMap<String, String>,
         outcome: &mut CollationOutcome,
     ) -> Result<(), CollationError> {
         // Gather all entities.
@@ -510,7 +605,7 @@ impl CollationManager {
             .map(|e| (e.name.clone(), e.entity_type.clone()))
             .collect();
 
-        let prompt = Self::build_entities_prompt(template, &entity_pairs);
+        let prompt = Self::build_entities_prompt(template, &entity_pairs, vars);
         let normalizations = llm.normalize_entities(&prompt).await?;
 
         for norm in &normalizations {
@@ -780,6 +875,7 @@ mod tests {
                 DEFAULT_TIDY_PROMPT,
                 DEFAULT_COLLATE_PROMPT,
                 DEFAULT_NORMALIZE_PROMPT,
+                &HashMap::new(),
             )
             .await
             .unwrap();
@@ -826,6 +922,7 @@ mod tests {
                 DEFAULT_TIDY_PROMPT,
                 DEFAULT_COLLATE_PROMPT,
                 DEFAULT_NORMALIZE_PROMPT,
+                &HashMap::new(),
             )
             .await
             .unwrap();
@@ -870,6 +967,7 @@ mod tests {
                 DEFAULT_TIDY_PROMPT,
                 DEFAULT_COLLATE_PROMPT,
                 DEFAULT_NORMALIZE_PROMPT,
+                &HashMap::new(),
             )
             .await
             .unwrap();
@@ -929,6 +1027,7 @@ mod tests {
                 DEFAULT_TIDY_PROMPT,
                 DEFAULT_COLLATE_PROMPT,
                 DEFAULT_NORMALIZE_PROMPT,
+                &HashMap::new(),
             )
             .await
             .unwrap();
@@ -975,6 +1074,7 @@ mod tests {
                 DEFAULT_TIDY_PROMPT,
                 DEFAULT_COLLATE_PROMPT,
                 DEFAULT_NORMALIZE_PROMPT,
+                &HashMap::new(),
             )
             .await
             .unwrap();
@@ -1013,6 +1113,7 @@ mod tests {
                 DEFAULT_TIDY_PROMPT,
                 DEFAULT_COLLATE_PROMPT,
                 DEFAULT_NORMALIZE_PROMPT,
+                &HashMap::new(),
             )
             .await
             .unwrap();
@@ -1046,6 +1147,7 @@ mod tests {
                 DEFAULT_TIDY_PROMPT,
                 DEFAULT_COLLATE_PROMPT,
                 DEFAULT_NORMALIZE_PROMPT,
+                &HashMap::new(),
             )
             .await
             .unwrap();
@@ -1077,6 +1179,7 @@ mod tests {
                 DEFAULT_TIDY_PROMPT,
                 DEFAULT_COLLATE_PROMPT,
                 DEFAULT_NORMALIZE_PROMPT,
+                &HashMap::new(),
             )
             .await
             .unwrap();
@@ -1103,6 +1206,7 @@ mod tests {
             DEFAULT_TIDY_PROMPT,
             DEFAULT_COLLATE_PROMPT,
             DEFAULT_NORMALIZE_PROMPT,
+            &HashMap::new(),
         )
         .await
         .unwrap();
@@ -1144,6 +1248,7 @@ mod tests {
                 DEFAULT_TIDY_PROMPT,
                 DEFAULT_COLLATE_PROMPT,
                 DEFAULT_NORMALIZE_PROMPT,
+                &HashMap::new(),
             )
             .await
             .unwrap();
@@ -1177,6 +1282,7 @@ mod tests {
                 DEFAULT_TIDY_PROMPT,
                 DEFAULT_COLLATE_PROMPT,
                 DEFAULT_NORMALIZE_PROMPT,
+                &HashMap::new(),
             )
             .await
             .unwrap();
@@ -1254,6 +1360,7 @@ mod tests {
                 DEFAULT_TIDY_PROMPT,
                 DEFAULT_COLLATE_PROMPT,
                 DEFAULT_NORMALIZE_PROMPT,
+                &HashMap::new(),
             )
             .await
             .unwrap();
@@ -1279,7 +1386,9 @@ mod tests {
     fn test_build_entries_prompt() {
         let now = now_str();
         let entries = vec![make_entry("e1", "Test summary", 0.9, &now)];
-        let prompt = CollationManager::build_entries_prompt("Template:\n{{entries}}", &entries);
+        let vars = HashMap::new();
+        let prompt =
+            CollationManager::build_entries_prompt("Template:\n{{entries}}", &entries, &vars);
         assert!(prompt.contains("ID: e1"));
         assert!(prompt.contains("Test summary"));
         assert!(!prompt.contains("{{entries}}"));
@@ -1291,10 +1400,28 @@ mod tests {
             ("Alice".to_string(), "person".to_string()),
             ("ACME Corp".to_string(), "organization".to_string()),
         ];
+        let vars = HashMap::new();
         let prompt =
-            CollationManager::build_entities_prompt("Entities:\n{{entities}}", &entities);
+            CollationManager::build_entities_prompt("Entities:\n{{entities}}", &entities, &vars);
         assert!(prompt.contains("Alice"));
         assert!(prompt.contains("ACME Corp"));
         assert!(!prompt.contains("{{entities}}"));
+    }
+
+    #[test]
+    fn test_build_entries_prompt_substitutes_vars() {
+        let now = now_str();
+        let entries = vec![make_entry("e1", "Test", 0.9, &now)];
+        let mut vars = HashMap::new();
+        vars.insert("char".into(), "Shore".into());
+        vars.insert("user".into(), "Alice".into());
+        let prompt = CollationManager::build_entries_prompt(
+            "{{char}} and {{user}}:\n{{entries}}",
+            &entries,
+            &vars,
+        );
+        assert!(prompt.contains("Shore and Alice:"));
+        assert!(!prompt.contains("{{char}}"));
+        assert!(!prompt.contains("{{user}}"));
     }
 }

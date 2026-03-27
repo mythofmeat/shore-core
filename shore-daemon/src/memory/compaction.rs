@@ -169,17 +169,22 @@ pub trait ConversationManager: Send + Sync {
 /// Default compaction prompt template. In production, loaded from `compact.md`.
 ///
 /// Placeholders:
+/// - `{{char}}`, `{{user}}` — character and user names
 /// - `{{conversation}}` — formatted conversation messages
 /// - `{{#if recap}}...{{/if}}` — conditional block for existing recap
 /// - `{{recap}}` — existing recap text (inside conditional)
-pub const DEFAULT_COMPACT_PROMPT: &str = r#"You are recording what happened in this specific conversation. Write temporal, narrative entries — events, decisions, what was said, emotional shifts — anchored to this conversation. Do not extract timeless facts or stable preferences; those are handled separately.
+pub const DEFAULT_COMPACT_PROMPT: &str = r#"You are recording what happened in this specific conversation between {{user}} and {{char}}. Write temporal, narrative entries — events, decisions, what was said, emotional shifts — anchored to this conversation. Do not extract timeless facts or stable preferences; those are handled separately.
 
 Preserve:
 - Key events and decisions made in this conversation
 - Emotional developments and relationship changes
 - Ongoing threads or unresolved topics
 - Specific details that would be important to remember later
-- If information was corrected or updated, note the change explicitly
+- If {{user}} corrected or updated previously stated information, note the change explicitly
+
+Your response MUST contain two parts, in this order:
+
+1. A single <recap> block — a flowing narrative (2-4 paragraphs) written **about {{char}} in close third person, using {{char}}'s own voice and vocabulary** — not "I" but "{{char}}" / "she" / "he" / "they". Same emotional texture, same interpretive lens, third-person pronouns. Cover what happened, how {{char}} felt about it, what matters to them, and where things stand with {{user}}.
 
 {{#if recap}}
 Here is the existing recap from previous compactions. Fold it into your new recap — preserve ongoing threads and relationship developments while incorporating new events. Older details should condense naturally but never disappear entirely:
@@ -188,17 +193,15 @@ Here is the existing recap from previous compactions. Fold it into your new reca
 </previous_recap>
 {{/if}}
 
-Your response MUST contain two parts, in this order:
-
-1. A single <recap> block — a flowing narrative (2-4 paragraphs) written **about the assistant in close third person** — not "I" but the assistant's name or "they". Same emotional texture, same interpretive lens, third-person pronouns. Cover what happened, how the assistant felt about it, what matters to them, and where things stand with the user.
-
 <recap>
-[rolling narrative recap, close third person about the assistant]
+[rolling narrative recap, close third person about {{char}}]
 </recap>
 
 2. One or more <entry> blocks (one per topic discussed).
 
-Each entry should be **atomic** — focused on exactly one topic or event. Prefer more entries with fewer bullets (2-4 each) over fewer entries with many bullets.
+Each entry should be **atomic** — focused on exactly one topic or event. Prefer more entries with fewer bullets (2-4 each) over fewer entries with many bullets. If your bullets cover different subjects, split them into separate entries. Each entry is embedded as a single vector for retrieval, so mixing unrelated topics in one entry makes it harder to find later.
+
+Both parts are required. Begin with the <recap>, then the <entry> blocks.
 
 <entry>
 <summary>
@@ -209,6 +212,9 @@ Each entry should be **atomic** — focused on exactly one topic or event. Prefe
 <topic_tags>
 [comma separated short tags for this topic]
 </topic_tags>
+<entities>
+- name: [entity name], type: [person/place/organization/concept], relation: [brief description of relation to the conversation]
+</entities>
 <memory_type>
 [episodic or semantic — "episodic" for events, conversations, time-bound happenings; "semantic" for stable facts, preferences, traits, relationships]
 </memory_type>
@@ -339,12 +345,15 @@ impl CompactionManager {
 
     /// Build a compaction prompt from a template and conversation messages.
     ///
-    /// Replaces `{{conversation}}` with formatted messages and handles
-    /// the `{{#if recap}}...{{/if}}` conditional block.
+    /// Replaces `{{conversation}}` with formatted messages, handles the
+    /// `{{#if recap}}...{{/if}}` conditional block, and substitutes
+    /// `{{char}}` / `{{user}}` with the provided names.
     pub fn build_prompt(
         template: &str,
         messages: &[ConversationMessage],
         existing_recap: Option<&str>,
+        char_name: &str,
+        user_name: &str,
     ) -> String {
         let mut conversation_text = String::new();
         for msg in messages {
@@ -387,6 +396,10 @@ impl CompactionManager {
             }
         }
 
+        // Substitute character and user names.
+        result = result.replace("{{char}}", char_name);
+        result = result.replace("{{user}}", user_name);
+
         result
     }
 
@@ -411,6 +424,8 @@ impl CompactionManager {
         is_private: bool,
         prompt_template: &str,
         existing_recap: Option<&str>,
+        char_name: &str,
+        user_name: &str,
         llm: &dyn CompactionLlm,
         db: &MemoryDB,
         indexer: &dyn VectorIndexer,
@@ -435,7 +450,7 @@ impl CompactionManager {
         let compacted_part = &messages[..split_at];
 
         // Build and send prompt to LLM (only compacted messages, not retained).
-        let prompt = Self::build_prompt(prompt_template, compacted_part, existing_recap);
+        let prompt = Self::build_prompt(prompt_template, compacted_part, existing_recap, char_name, user_name);
         let raw_response = llm.summarize(&prompt).await?;
 
         // Parse recap + entries from LLM response.
@@ -792,7 +807,7 @@ They discussed daily activities and the user's beverage preferences.
         ];
 
         let prompt =
-            CompactionManager::build_prompt("Template:\n{{conversation}}", &messages, None);
+            CompactionManager::build_prompt("Template:\n{{conversation}}", &messages, None, "Char", "User");
         assert!(prompt.contains("[2026-03-25T10:00:00Z] user: Hello!"));
         assert!(prompt.contains("[2026-03-25T10:00:01Z] assistant: Hi there!"));
         assert!(!prompt.contains("{{conversation}}"));
@@ -805,7 +820,7 @@ They discussed daily activities and the user's beverage preferences.
             "Before\n{{#if recap}}RECAP: {{recap}}{{/if}}\nAfter\n{{conversation}}";
 
         let prompt =
-            CompactionManager::build_prompt(template, &messages, Some("Previous events."));
+            CompactionManager::build_prompt(template, &messages, Some("Previous events."), "Char", "User");
         assert!(prompt.contains("RECAP: Previous events."));
         assert!(!prompt.contains("{{#if recap}}"));
         assert!(!prompt.contains("{{/if}}"));
@@ -817,7 +832,7 @@ They discussed daily activities and the user's beverage preferences.
         let template =
             "Before\n{{#if recap}}RECAP: {{recap}}{{/if}}\nAfter\n{{conversation}}";
 
-        let prompt = CompactionManager::build_prompt(template, &messages, None);
+        let prompt = CompactionManager::build_prompt(template, &messages, None, "Char", "User");
         assert!(!prompt.contains("RECAP"));
         assert!(!prompt.contains("{{#if recap}}"));
         assert!(prompt.contains("Before"));
@@ -885,6 +900,8 @@ They discussed daily activities and the user's beverage preferences.
                 false,
                 DEFAULT_COMPACT_PROMPT,
                 None,
+                "TestChar",
+                "TestUser",
                 &llm,
                 &db,
                 &indexer,
@@ -931,6 +948,8 @@ They discussed daily activities and the user's beverage preferences.
             false,
             DEFAULT_COMPACT_PROMPT,
             None,
+            "TestChar",
+            "TestUser",
             &llm,
             &db,
             &indexer,
@@ -962,6 +981,8 @@ They discussed daily activities and the user's beverage preferences.
             false,
             DEFAULT_COMPACT_PROMPT,
             None,
+            "TestChar",
+            "TestUser",
             &llm,
             &db,
             &indexer,
@@ -994,6 +1015,8 @@ They discussed daily activities and the user's beverage preferences.
                 false,
                 DEFAULT_COMPACT_PROMPT,
                 None,
+                "TestChar",
+                "TestUser",
                 &llm,
                 &db,
                 &indexer,
@@ -1036,6 +1059,8 @@ They discussed daily activities and the user's beverage preferences.
                 true,
                 DEFAULT_COMPACT_PROMPT,
                 None,
+                "TestChar",
+                "TestUser",
                 &llm,
                 &db,
                 &indexer,
@@ -1071,6 +1096,8 @@ They discussed daily activities and the user's beverage preferences.
                 false,
                 DEFAULT_COMPACT_PROMPT,
                 None,
+                "TestChar",
+                "TestUser",
                 &llm,
                 &db,
                 &indexer,
@@ -1116,6 +1143,8 @@ They discussed daily activities and the user's beverage preferences.
                 false,
                 DEFAULT_COMPACT_PROMPT,
                 None,
+                "TestChar",
+                "TestUser",
                 &llm,
                 &db,
                 &indexer,
@@ -1145,6 +1174,8 @@ They discussed daily activities and the user's beverage preferences.
                 false,
                 DEFAULT_COMPACT_PROMPT,
                 None,
+                "TestChar",
+                "TestUser",
                 &llm,
                 &db,
                 &indexer,

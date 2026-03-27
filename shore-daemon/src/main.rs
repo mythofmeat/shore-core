@@ -374,6 +374,7 @@ async fn run_compaction(
     let recap_path = character_dir.join("memory").join("recap.md");
     let existing_recap = tokio::fs::read_to_string(&recap_path).await.ok();
 
+    let display_name = config.app.defaults.resolve_display_name();
     let outcome = mgr
         .compact(
             character,
@@ -381,6 +382,8 @@ async fn run_compaction(
             false,
             &prompt_template,
             existing_recap.as_deref(),
+            character,
+            &display_name,
             &llm,
             &db,
             &indexer,
@@ -500,9 +503,13 @@ async fn run_collation(
             .unwrap_or_else(|| DEFAULT_NORMALIZE_PROMPT.to_string());
 
     let mgr = CollationManager::new(LibCollationConfig::default());
+    let collation_display_name = config.app.defaults.resolve_display_name();
+    let mut collation_vars = std::collections::HashMap::new();
+    collation_vars.insert("char".to_string(), character.to_string());
+    collation_vars.insert("user".to_string(), collation_display_name);
 
     let outcome = mgr
-        .run(&db, &llm, &tidy_template, &collate_template, &normalize_template)
+        .run(&db, &llm, &tidy_template, &collate_template, &normalize_template, &collation_vars)
         .await?;
 
     info!(

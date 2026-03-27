@@ -18,7 +18,7 @@ use crate::autonomy::cache_keepalive::CacheKeepaliveConfig;
 use crate::autonomy::manager::AutonomyManager;
 use crate::characters::CharacterRegistry;
 use crate::commands::{self, CommandContext};
-use crate::engine::prompt::{self, PromptParams};
+use crate::engine::prompt::{self, CapabilitiesConfig, PromptParams};
 use crate::engine::tools;
 use crate::memory::agent::{AgentError, AgentIndexer, AgentRag, CallerIdentity, MemoryAgent, RagHit};
 use crate::memory::agent_llm::{AgentLlm, RealAgentLlm};
@@ -358,9 +358,24 @@ impl MessageHandler {
             .data_dir
             .join(engine.character_name());
 
+        let display_name = self.cmd_ctx.config.app.defaults.resolve_display_name();
+        let tool_toggles = &self.cmd_ctx.config.app.behavior.tool_use.tools;
+        let capabilities = CapabilitiesConfig {
+            heartbeat_enabled: self.cmd_ctx.config.app.behavior.autonomy.heartbeat.enabled,
+            memory_enabled: tool_toggles.memory,
+            image_memory_enabled: self.cmd_ctx.config.app.memory.image_enabled,
+            send_image_enabled: tool_toggles.send_image,
+            generate_image_enabled: tool_toggles.generate_image,
+            web_search_enabled: tool_toggles.web_search,
+            activity_heatmap_enabled: tool_toggles.activity_heatmap,
+            roll_dice_enabled: tool_toggles.roll_dice,
+            check_time_enabled: tool_toggles.check_time,
+        };
+
         let prompt_result = prompt::assemble_prompt(&PromptParams {
             config_dir: &self.cmd_ctx.config.dirs.config,
             character_name: engine.character_name(),
+            display_name: &display_name,
             character_definition: character_definition.as_deref(),
             user_definition: user_definition.as_deref(),
             is_private: false,
@@ -368,6 +383,7 @@ impl MessageHandler {
             messages,
             max_context_tokens: resolved.max_context_tokens,
             max_output_tokens: resolved.max_tokens,
+            capabilities: Some(&capabilities),
         });
 
         // 5. Build LLM messages from assembled prompt.
@@ -415,8 +431,14 @@ impl MessageHandler {
 
         let system = if prompt_result.system.is_empty() {
             None
-        } else {
+        } else if prompt_result.system.len() == 1 {
+            // Single block — send as plain string for maximum provider compat.
             Some(json!(prompt_result.system[0].content))
+        } else {
+            // Multiple blocks — send as TextBlockParam[] for Anthropic API.
+            Some(json!(prompt_result.system.iter().map(|b| {
+                json!({"type": "text", "text": b.content})
+            }).collect::<Vec<_>>()))
         };
 
         // 6. Build tool definitions from unified tool system.

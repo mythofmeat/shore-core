@@ -557,6 +557,7 @@ pub async fn compact(
     let existing_recap = std::fs::read_to_string(&recap_path).ok();
 
     // Run compaction.
+    let display_name = ctx.config.app.defaults.resolve_display_name();
     let outcome = mgr
         .compact(
             &char_name,
@@ -564,6 +565,8 @@ pub async fn compact(
             false, // is_private: V2 has no per-conversation privacy flag yet
             &prompt_template,
             existing_recap.as_deref(),
+            &char_name,
+            &display_name,
             &llm,
             &db,
             &indexer,
@@ -626,6 +629,9 @@ pub async fn compact(
                     .unwrap_or_else(|| DEFAULT_NORMALIZE_PROMPT.to_string());
 
                     let collation_mgr = CollationManager::new(LibCollationConfig::default());
+                    let mut collation_vars = std::collections::HashMap::new();
+                    collation_vars.insert("char".to_string(), char_name.clone());
+                    collation_vars.insert("user".to_string(), display_name.clone());
                     match collation_mgr
                         .run(
                             &db,
@@ -633,6 +639,7 @@ pub async fn compact(
                             &tidy_template,
                             &collate_template,
                             &normalize_template,
+                            &collation_vars,
                         )
                         .await
                     {
@@ -762,8 +769,13 @@ pub async fn collate(
 
     let mgr = CollationManager::new(LibCollationConfig::default());
 
+    let collation_display_name = ctx.config.app.defaults.resolve_display_name();
+    let mut collation_vars = std::collections::HashMap::new();
+    collation_vars.insert("char".to_string(), char_name.clone());
+    collation_vars.insert("user".to_string(), collation_display_name);
+
     let outcome = mgr
-        .run(&db, &llm, &tidy_template, &collate_template, &normalize_template)
+        .run(&db, &llm, &tidy_template, &collate_template, &normalize_template, &collation_vars)
         .await
         .map_err(collation_err)?;
 
