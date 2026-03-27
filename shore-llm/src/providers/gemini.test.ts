@@ -422,7 +422,37 @@ describe("generate", () => {
     );
   });
 
-  it("passes reasoning_effort as thinkingConfig", async () => {
+  it("passes budget_tokens as thinkingConfig", async () => {
+    const model = mockModel({
+      generateContent: vi.fn().mockResolvedValue({
+        response: {
+          candidates: [
+            {
+              content: { parts: [{ text: "ok" }] },
+              finishReason: "STOP",
+            },
+          ],
+        },
+      }),
+    });
+    const client = mockClient(model);
+    await generate(
+      client,
+      baseRequest({ provider_options: { budget_tokens: 4096 } }),
+    );
+
+    expect(
+      (client.getGenerativeModel as ReturnType<typeof vi.fn>),
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({
+        generationConfig: expect.objectContaining({
+          thinkingConfig: { thinkingBudget: 4096 },
+        }),
+      }),
+    );
+  });
+
+  it("falls back to reasoning_effort for thinkingConfig", async () => {
     const model = mockModel({
       generateContent: vi.fn().mockResolvedValue({
         response: {

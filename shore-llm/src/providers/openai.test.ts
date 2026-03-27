@@ -374,6 +374,21 @@ describe("generate", () => {
       }),
     );
   });
+
+  it("passes reasoning_effort from provider_options to SDK", async () => {
+    const completion = makeCompletion();
+    const client = mockClient(completion);
+    const req = baseRequest({
+      provider_options: { reasoning_effort: "high" },
+    });
+    await generate(client, req);
+
+    expect(client.chat.completions.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reasoning_effort: "high",
+      }),
+    );
+  });
 });
 
 // ── Tests: stream ──────────────────────────────────────────────────────

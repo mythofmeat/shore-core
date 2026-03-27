@@ -20,6 +20,9 @@ import type {
 // ── Provider options ──────────────────────────────────────────────────
 
 export interface GeminiProviderOptions {
+  /** Token budget for Gemini thinking (thinkingBudget in the REST API). */
+  budget_tokens?: number;
+  /** @deprecated Use budget_tokens instead. */
   reasoning_effort?: number;
 }
 
@@ -172,10 +175,11 @@ function getModel(
   };
   if (req.temperature != null) generationConfig.temperature = req.temperature;
   if (req.top_p != null) generationConfig.topP = req.top_p;
-  if (opts?.reasoning_effort != null) {
-    generationConfig.thinkingConfig = {
-      thinkingBudget: opts.reasoning_effort,
-    };
+  // Gemini thinking config — budget_tokens maps to thinkingBudget in the REST API.
+  // The SDK types don't include thinkingConfig yet, but the API accepts it.
+  const thinkingBudget = opts?.budget_tokens ?? opts?.reasoning_effort;
+  if (thinkingBudget != null) {
+    generationConfig.thinkingConfig = { thinkingBudget };
   }
 
   const tools = translateTools(req.tools);

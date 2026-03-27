@@ -141,13 +141,53 @@ model_id = "claude-sonnet-4-6"
 
 [chat.anthropic.claude-opus]
 model_id = "claude-opus-4-6"
-max_tokens = 8192
+max_tokens = 16384
 
 [chat.openai.gpt-4o]
 model_id = "gpt-4o"
 
 [chat.gemini.gemini-pro]
 model_id = "gemini-2.5-pro"
+
+# ── Thinking / reasoning configuration ─────────────────────────────────
+# Each provider handles reasoning differently. Use the fields below
+# on any model entry to configure thinking/reasoning output.
+#
+# Anthropic (budget_tokens or reasoning_effort):
+#   budget_tokens = 8192        — explicit token budget, enables extended thinking
+#   reasoning_effort = "adaptive" — model decides how much to think (newer models)
+#
+# OpenAI / DeepSeek (reasoning_effort):
+#   reasoning_effort = "high"   — valid: "low", "medium", "high"
+#   Reasoning output is captured automatically when the model returns it.
+#
+# Gemini (budget_tokens):
+#   budget_tokens = 8192        — token budget for Gemini thinking
+#   Thinking output (thought-flagged parts) is captured automatically.
+#
+# Examples:
+#
+# [chat.anthropic.claude-opus-thinking]
+# model_id = "claude-opus-4-6"
+# max_tokens = 16384
+# budget_tokens = 10000
+#
+# [chat.anthropic.claude-sonnet-adaptive]
+# model_id = "claude-sonnet-4-6"
+# max_tokens = 16384
+# reasoning_effort = "adaptive"
+#
+# [chat.openai.o3]
+# model_id = "o3"
+# reasoning_effort = "high"
+#
+# [chat.deepseek.deepseek-r1]
+# model_id = "deepseek-reasoner"
+# reasoning_effort = "high"
+#
+# [chat.gemini.gemini-pro-thinking]
+# model_id = "gemini-2.5-pro"
+# budget_tokens = 8192
 
 # ── Tool models ─────────────────────────────────────────────────────────
 

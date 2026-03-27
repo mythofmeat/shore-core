@@ -196,6 +196,27 @@ describe("buildCreateParams", () => {
     expect(params).not.toHaveProperty("thinking");
   });
 
+  it("enables thinking when budget_tokens is set without explicit thinking flag", () => {
+    const req = baseRequest({
+      provider_options: { budget_tokens: 4096 },
+    });
+    const params = buildCreateParams(req, false) as Record<string, unknown>;
+    expect(params.thinking).toEqual({
+      type: "enabled",
+      budget_tokens: 4096,
+    });
+  });
+
+  it("enables adaptive thinking when reasoning_effort is 'adaptive'", () => {
+    const req = baseRequest({
+      provider_options: { reasoning_effort: "adaptive" },
+    });
+    const params = buildCreateParams(req, false) as Record<string, unknown>;
+    expect(params.thinking).toEqual({
+      type: "adaptive",
+    });
+  });
+
   it("applies cache_control to last N messages", () => {
     const req = baseRequest({
       messages: [

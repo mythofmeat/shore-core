@@ -35,6 +35,8 @@ export interface AnthropicProviderOptions {
   cache_control_depth?: number;
   thinking?: boolean;
   budget_tokens?: number;
+  /** "adaptive" lets the model decide thinking budget. */
+  reasoning_effort?: string;
 }
 
 // ── Response and stream types (from shared types) ─────────────────────
@@ -82,11 +84,20 @@ function applyCacheControl(
 function buildThinkingConfig(
   opts: AnthropicProviderOptions | undefined,
 ): Anthropic.Messages.ThinkingConfigParam | undefined {
-  if (!opts?.thinking) return undefined;
-  return {
-    type: "enabled",
-    budget_tokens: opts.budget_tokens ?? 1024,
-  };
+  // "adaptive" mode: model decides how much to think.
+  if (opts?.reasoning_effort === "adaptive") {
+    return { type: "adaptive" };
+  }
+  // Explicit budget: enable thinking with the given token budget.
+  // Presence of budget_tokens implies thinking should be enabled,
+  // even without an explicit `thinking: true` flag.
+  if (opts?.thinking || opts?.budget_tokens != null) {
+    return {
+      type: "enabled",
+      budget_tokens: opts.budget_tokens ?? 1024,
+    };
+  }
+  return undefined;
 }
 
 function normalizeUsage(usage: Anthropic.Messages.Usage): NormalizedUsage {

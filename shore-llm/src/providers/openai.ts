@@ -156,6 +156,9 @@ export async function generate(
   if (tools) params.tools = tools;
   if (req.temperature != null) params.temperature = req.temperature;
   if (req.top_p != null) params.top_p = req.top_p;
+  if (req.provider_options?.reasoning_effort != null) {
+    params.reasoning_effort = req.provider_options.reasoning_effort;
+  }
 
   const start = performance.now();
   const completion = await client.chat.completions.create(
@@ -239,6 +242,9 @@ export async function stream(
   if (tools) params.tools = tools;
   if (req.temperature != null) params.temperature = req.temperature;
   if (req.top_p != null) params.top_p = req.top_p;
+  if (req.provider_options?.reasoning_effort != null) {
+    params.reasoning_effort = req.provider_options.reasoning_effort;
+  }
 
   const start = performance.now();
   let firstTokenMs: number | null = null;
