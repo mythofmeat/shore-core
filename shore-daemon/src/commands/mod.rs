@@ -100,6 +100,7 @@ pub async fn dispatch(
         "memory_reindex" => state::memory_reindex(engine, ctx).await,
         "config_reset" => state::config_reset(ctx),
         "diagnostics" => state::diagnostics(ctx, &cmd.args),
+        "heartbeat_log" => state::heartbeat_log(engine, ctx, &cmd.args),
 
         _ => Err((
             ErrorCode::InvalidRequest,

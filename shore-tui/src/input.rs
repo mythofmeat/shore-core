@@ -139,6 +139,7 @@ fn handle_insert_mode(app: &mut App, key: KeyEvent) -> Action {
                 stream: true,
                 images: vec![],
                 absence_seconds: None,
+                overrides: None,
             });
             Action::Send(ConnCommand::Send(msg))
         }

@@ -75,6 +75,30 @@ pub fn diagnostics(ctx: &CommandContext, args: &serde_json::Value) -> CommandRes
     Ok(diag.to_json(count))
 }
 
+/// Return heartbeat event log for the active character.
+pub fn heartbeat_log(
+    engine: &ConversationEngine,
+    ctx: &CommandContext,
+    args: &serde_json::Value,
+) -> CommandResult {
+    let limit = args
+        .get("count")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(20) as usize;
+    let events = ctx.autonomy.heartbeat_log(engine.character_name(), limit);
+    let events_json: Vec<serde_json::Value> = events
+        .iter()
+        .map(|e| {
+            json!({
+                "timestamp": e.timestamp,
+                "kind": e.kind,
+                "detail": e.detail,
+            })
+        })
+        .collect();
+    Ok(json!({ "events": events_json }))
+}
+
 /// List available model profiles from the model catalog.
 pub fn list_models(ctx: &CommandContext) -> CommandResult {
     let mut models: Vec<_> = ctx

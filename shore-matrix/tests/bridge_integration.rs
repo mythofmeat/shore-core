@@ -199,6 +199,7 @@ fn text_message_becomes_swp_user_message() {
         stream: true,
         images: vec![],
         absence_seconds: None,
+        overrides: None,
     });
 
     if let ClientMessage::Message(body) = &msg {
@@ -233,6 +234,7 @@ fn image_message_becomes_swp_message_with_image_path() {
         stream: true,
         images: vec!["/tmp/photo.jpg".to_string()],
         absence_seconds: None,
+        overrides: None,
     });
 
     if let ClientMessage::Message(body) = &msg {
@@ -627,6 +629,7 @@ fn full_bridge_message_flow() {
         stream: true,
         images: vec![],
         absence_seconds: None,
+        overrides: None,
     });
     assert!(matches!(text_swp, ClientMessage::Message(_)));
 
@@ -647,6 +650,7 @@ fn full_bridge_message_flow() {
         stream: true,
         images: vec!["/tmp/matrix_download_photo.jpg".to_string()],
         absence_seconds: None,
+        overrides: None,
     });
     if let ClientMessage::Message(body) = &img_swp {
         assert_eq!(body.images.len(), 1);

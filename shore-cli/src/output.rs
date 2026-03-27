@@ -1636,6 +1636,69 @@ pub fn print_memory_shell_response(response: &str, mutations: &str) {
     println!();
 }
 
+/// Print heartbeat event log returned by `shore log --heartbeat`.
+pub fn print_heartbeat_log(data: &serde_json::Value) {
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    let width = term_width();
+
+    let events = match data["events"].as_array() {
+        Some(arr) => arr,
+        None => {
+            print_dim_line(&mut out, "(no heartbeat events)");
+            return;
+        }
+    };
+
+    if events.is_empty() {
+        print_dim_line(&mut out, "(no heartbeat events)");
+        return;
+    }
+
+    write_section_header(&mut out, "Heartbeat Log", &format!("{} events", events.len()), width);
+
+    let mut prev_date: Option<String> = None;
+    for event in events {
+        let ts = event["timestamp"].as_str().unwrap_or("");
+        let kind = event["kind"].as_str().unwrap_or("?");
+        let detail = event["detail"].as_str().unwrap_or("");
+
+        let time_str = parse_timestamp(ts)
+            .map(|dt| {
+                let formatted = format_time(&dt, prev_date.as_deref());
+                prev_date = Some(dt.format("%Y-%m-%d").to_string());
+                formatted
+            })
+            .unwrap_or_else(|| ts.chars().take(8).collect());
+
+        // Kind label with color
+        let kind_color = match kind {
+            "probe_trigger" | "probe_result" => Color::Cyan,
+            "deferred_fire" | "social_need_fire" => Color::Yellow,
+            "message_sent" => Color::Green,
+            "message_skipped" => Color::DarkGrey,
+            "dormant" => Color::Red,
+            "wake" => Color::Green,
+            "state_change" => Color::Blue,
+            _ => Color::White,
+        };
+
+        if use_color() {
+            let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+        }
+        let _ = write!(out, "  {time_str:<14}");
+        if use_color() {
+            let _ = crossterm::execute!(out, SetForegroundColor(kind_color));
+        }
+        let _ = write!(out, "{kind:<18}");
+        if use_color() {
+            let _ = crossterm::execute!(out, ResetColor);
+        }
+        let _ = writeln!(out, "{detail}");
+    }
+    let _ = writeln!(out);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

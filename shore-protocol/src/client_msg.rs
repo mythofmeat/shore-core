@@ -12,6 +12,19 @@ pub struct ClientHello {
     pub character: Option<String>,
 }
 
+/// One-shot parameter overrides for a single message.
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct MessageOverrides {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_p: Option<f64>,
+    /// Enable extended thinking with the given budget (in tokens).
+    /// `Some(n)` enables thinking with budget `n`; omitted = use model default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking_budget: Option<u32>,
+}
+
 /// Send a user message.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ClientMessageBody {
@@ -24,6 +37,8 @@ pub struct ClientMessageBody {
     pub images: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub absence_seconds: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overrides: Option<MessageOverrides>,
 }
 
 /// Regenerate last response.

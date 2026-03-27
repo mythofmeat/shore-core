@@ -49,6 +49,7 @@ pub fn input_to_swp(input: &MatrixInput) -> ClientMessage {
             stream: true,
             images: vec![],
             absence_seconds: None,
+            overrides: None,
         }),
         MatrixInput::Command { name, args } => ClientMessage::Command(Command {
             rid: None,
@@ -61,6 +62,7 @@ pub fn input_to_swp(input: &MatrixInput) -> ClientMessage {
             stream: true,
             images: vec![path.clone()],
             absence_seconds: None,
+            overrides: None,
         }),
     }
 }

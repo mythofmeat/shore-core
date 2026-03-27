@@ -27,7 +27,7 @@ use super::heartbeat::{
     self, HeartbeatAction, HeartbeatScheduler, HeartbeatState, ProbeResult,
 };
 use super::timing::{compute_tau, TauParams};
-use super::AutonomyStatus;
+use super::{AutonomyStatus, HeartbeatEventKind, HeartbeatLog};
 use crate::notifications::{NotificationEvent, NotificationService};
 use shore_config::app::AutonomyConfig;
 use shore_config::LoadedConfig;
@@ -43,6 +43,8 @@ pub struct AutonomyState {
     pub heartbeat: HeartbeatScheduler,
     pub cache_keepalive: CacheKeepaliveScheduler,
     pub activity: ActivityTracker,
+    /// Ring buffer of heartbeat events for `shore log --heartbeat`.
+    pub heartbeat_log: HeartbeatLog,
     /// Whether state has changed since last save.
     dirty: bool,
     /// Last message activity timestamp for compaction idle trigger.
@@ -279,6 +281,7 @@ impl AutonomyManager {
             heartbeat,
             cache_keepalive,
             activity: ActivityTracker::new(),
+            heartbeat_log: HeartbeatLog::new(),
             dirty: false,
             last_compaction_activity: Instant::now(),
             compaction_triggered: false,
@@ -325,8 +328,15 @@ impl AutonomyManager {
         let states = self.states.lock().unwrap();
         if let Some(state) = states.get(character) {
             let mut s = state.lock().unwrap();
+            let was_dormant = matches!(s.heartbeat.state(), HeartbeatState::Dormant);
             let now = Instant::now();
             s.heartbeat.on_user_message(now);
+            if was_dormant {
+                s.heartbeat_log.push(
+                    HeartbeatEventKind::Wake,
+                    "User returned — woke from dormant",
+                );
+            }
             s.activity.record_message();
             s.last_compaction_activity = now;
             s.compaction_triggered = false;
@@ -443,6 +453,16 @@ impl AutonomyManager {
         })
     }
 
+    /// Return recent heartbeat events for `shore log --heartbeat`.
+    pub fn heartbeat_log(&self, character: &str, limit: usize) -> Vec<super::HeartbeatEvent> {
+        let states = self.states.lock().unwrap();
+        let Some(state_arc) = states.get(character) else {
+            return vec![];
+        };
+        let state = state_arc.lock().unwrap();
+        state.heartbeat_log.recent(limit).into_iter().cloned().collect()
+    }
+
     // -- shutdown -------------------------------------------------------------
 
     /// Wait for all per-character tick tasks to finish.
@@ -535,6 +555,7 @@ async fn tick_character(
 
         // -- heartbeat --------------------------------------------------------
         let hb_action = if config.enabled && config.heartbeat.enabled {
+            let state_before = format!("{:?}", s.heartbeat.state());
             let stats = s.activity.stats().clone();
             let tau_params = TauParams {
                 reciprocated: s.heartbeat.unanswered_count() == 0,
@@ -545,6 +566,22 @@ async fn tick_character(
             let action = s.heartbeat.tick(&stats, &tau_params, now, wall_now, random_value);
             if !matches!(action, HeartbeatAction::None) {
                 s.mark_dirty();
+            }
+            // Record state transitions and dormant entry.
+            let state_after = format!("{:?}", s.heartbeat.state());
+            if state_before != state_after {
+                if matches!(s.heartbeat.state(), HeartbeatState::Dormant) {
+                    let count = s.heartbeat.unanswered_count();
+                    s.heartbeat_log.push(
+                        HeartbeatEventKind::Dormant,
+                        format!("Entered dormant (unanswered: {count})"),
+                    );
+                } else {
+                    s.heartbeat_log.push(
+                        HeartbeatEventKind::StateChange,
+                        format!("{state_before} → {state_after}"),
+                    );
+                }
             }
             action
         } else {
@@ -602,6 +639,13 @@ async fn tick_character(
     match hb_action {
         HeartbeatAction::None => {}
         HeartbeatAction::GenerateProbe { idle_secs, current_time } => {
+            {
+                let mut s = state.lock().unwrap();
+                s.heartbeat_log.push(
+                    HeartbeatEventKind::ProbeTrigger,
+                    format!("Post-session probe after {idle_secs}s idle"),
+                );
+            }
             info!(
                 character = %character,
                 idle_secs,
@@ -611,6 +655,13 @@ async fn tick_character(
             execute_probe(character, idle_secs, current_time, now, wall_now, state, data_dir, llm_client, loaded_config).await;
         }
         HeartbeatAction::GenerateDeferredMessage { reasoning } => {
+            {
+                let mut s = state.lock().unwrap();
+                s.heartbeat_log.push(
+                    HeartbeatEventKind::DeferredFire,
+                    format!("Deferred timer fired: {reasoning}"),
+                );
+            }
             info!(
                 character = %character,
                 reasoning = %reasoning,
@@ -622,6 +673,17 @@ async fn tick_character(
             ).await;
         }
         HeartbeatAction::GenerateSocialNeedMessage { anomaly_context } => {
+            {
+                let mut s = state.lock().unwrap();
+                s.heartbeat_log.push(
+                    HeartbeatEventKind::SocialNeedFire,
+                    if anomaly_context {
+                        "Social-need message triggered (anomaly detected)"
+                    } else {
+                        "Social-need message triggered"
+                    },
+                );
+            }
             info!(
                 character = %character,
                 anomaly_context,
@@ -702,11 +764,19 @@ async fn execute_probe(
         Ok(resp) => {
             let mut s = state.lock().unwrap();
             let result = s.heartbeat.handle_probe_response(&resp.content, now, wall_now);
-            match result {
+            match &result {
                 ProbeResult::Deferred(fire_at) => {
+                    s.heartbeat_log.push(
+                        HeartbeatEventKind::ProbeResult,
+                        format!("Deferred to {fire_at}"),
+                    );
                     info!(character, fire_at = %fire_at, "Probe: character deferred to later");
                 }
                 ProbeResult::Declined => {
+                    s.heartbeat_log.push(
+                        HeartbeatEventKind::ProbeResult,
+                        "Declined to reach out",
+                    );
                     info!(character, "Probe: character declined to reach out");
                 }
             }
@@ -744,6 +814,13 @@ async fn execute_autonomous_message(
     match client.generate(&request, None).await {
         Ok(resp) => {
             if resp.content.trim().is_empty() {
+                {
+                    let mut s = state.lock().unwrap();
+                    s.heartbeat_log.push(
+                        HeartbeatEventKind::MessageSkipped,
+                        "Character chose not to respond",
+                    );
+                }
                 info!(character, "Autonomous message: character chose not to respond");
                 return;
             }
@@ -792,6 +869,11 @@ async fn execute_autonomous_message(
                 let now = Instant::now();
                 s.heartbeat.on_assistant_message(now);
                 s.activity.record_message();
+                let preview: String = msg.content.chars().take(80).collect();
+                s.heartbeat_log.push(
+                    HeartbeatEventKind::MessageSent,
+                    format!("Autonomous message sent: {preview}"),
+                );
                 s.mark_dirty();
                 save_state(data_dir, character, &mut s);
             }
@@ -1008,6 +1090,7 @@ mod tests {
             heartbeat: HeartbeatScheduler::new(),
             cache_keepalive: CacheKeepaliveScheduler::new(CacheKeepaliveConfig::default()),
             activity: ActivityTracker::new(),
+            heartbeat_log: HeartbeatLog::new(),
             dirty: true,
             last_compaction_activity: Instant::now(),
             compaction_triggered: false,
@@ -1093,6 +1176,7 @@ mod tests {
             heartbeat: HeartbeatScheduler::new(),
             cache_keepalive: CacheKeepaliveScheduler::new(CacheKeepaliveConfig::default()),
             activity: ActivityTracker::new(),
+            heartbeat_log: HeartbeatLog::new(),
             dirty: false,
             last_compaction_activity: Instant::now(),
             compaction_triggered: false,

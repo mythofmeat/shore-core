@@ -180,6 +180,17 @@ impl SWPConnection {
         stream: bool,
         images: Vec<String>,
     ) -> Result<Option<String>> {
+        self.send_message_full(text, stream, images, None).await
+    }
+
+    /// Send a user message with image attachments and parameter overrides.
+    pub async fn send_message_full(
+        &mut self,
+        text: impl Into<String>,
+        stream: bool,
+        images: Vec<String>,
+        overrides: Option<shore_protocol::client_msg::MessageOverrides>,
+    ) -> Result<Option<String>> {
         use shore_protocol::client_msg::ClientMessageBody;
         let rid = Some(uuid_v4());
         let msg = ClientMessage::Message(ClientMessageBody {
@@ -188,6 +199,7 @@ impl SWPConnection {
             stream,
             images,
             absence_seconds: None,
+            overrides,
         });
         self.send(&msg).await?;
         Ok(rid)

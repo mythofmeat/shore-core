@@ -296,7 +296,6 @@ impl MessageHandler {
                     timestamp: chrono::Utc::now().to_rfc3339(),
                 };
                 engine.append_message(user_msg.clone())?;
-                self.autonomy.notify_user_message(&char_name, engine.message_count());
 
                 // Broadcast user message so follow-mode clients see it.
                 let _ = self.push_tx.send(ServerMessage::NewMessage(
@@ -338,12 +337,20 @@ impl MessageHandler {
             .cloned();
 
         // Ensure autonomy state exists with model-specific keepalive config.
+        // Must happen before notify_user_message so session_start is set on first message.
         let keepalive_cfg = CacheKeepaliveConfig::from_resolved_model(
             &self.cmd_ctx.config.app.behavior.autonomy.cache_keepalive,
             &resolved.provider_key,
             resolved.cache_ttl.is_some(),
         );
         self.autonomy.ensure_state(&char_name, keepalive_cfg);
+
+        // Notify autonomy of the user message (must be after ensure_state).
+        if !regen && (!body.text.is_empty() || !body.images.is_empty()) {
+            let engine = self.registry.get_or_create(&char_name)
+                .map_err(|e| e.to_string())?;
+            self.autonomy.notify_user_message(&char_name, engine.message_count());
+        }
 
         // 4. Assemble prompt.
         // Load definitions before borrowing engine (avoids borrow conflicts).

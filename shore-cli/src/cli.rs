@@ -34,6 +34,18 @@ pub enum CliCommand {
         /// Attach image file(s) to the message
         #[arg(short = 'i', long = "image")]
         images: Vec<String>,
+
+        /// Override sampling temperature for this message
+        #[arg(long)]
+        temperature: Option<f64>,
+
+        /// Override nucleus sampling top-p for this message
+        #[arg(long)]
+        top_p: Option<f64>,
+
+        /// Enable extended thinking with optional budget (tokens)
+        #[arg(long, num_args = 0..=1, default_missing_value = "10240")]
+        thinking: Option<u32>,
     },
 
     /// Regenerate the last assistant response
@@ -68,6 +80,10 @@ pub enum CliCommand {
         /// Output only message content (no metadata)
         #[arg(long)]
         content: bool,
+
+        /// Show heartbeat probe decisions and timing history
+        #[arg(long)]
+        heartbeat: bool,
     },
 
     /// List or switch characters (no args = list, with name = switch)
@@ -274,6 +290,9 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
         CliCommand::Log { msg_ref: Some(r), .. } => {
             Some(("get", json!({ "ref": r })))
         }
+        CliCommand::Log { heartbeat: true, count, .. } => {
+            Some(("heartbeat_log", json!({ "count": count })))
+        }
         CliCommand::Log { count, .. } => {
             Some(("log", json!({ "count": count })))
         }
@@ -348,7 +367,7 @@ mod tests {
     fn parse_send() {
         let cli = parse(&["send", "hello", "world"]);
         match &cli.command {
-            CliCommand::Send { message, images } => {
+            CliCommand::Send { message, images, .. } => {
                 assert_eq!(message, &["hello", "world"]);
                 assert!(images.is_empty());
             }
@@ -360,7 +379,7 @@ mod tests {
     fn parse_send_with_image() {
         let cli = parse(&["send", "-i", "photo.jpg", "describe", "this"]);
         match &cli.command {
-            CliCommand::Send { message, images } => {
+            CliCommand::Send { message, images, .. } => {
                 assert_eq!(message, &["describe", "this"]);
                 assert_eq!(images, &["photo.jpg"]);
             }
@@ -372,7 +391,7 @@ mod tests {
     fn parse_send_with_multiple_images() {
         let cli = parse(&["send", "-i", "a.jpg", "-i", "b.png", "compare"]);
         match &cli.command {
-            CliCommand::Send { message, images } => {
+            CliCommand::Send { message, images, .. } => {
                 assert_eq!(message, &["compare"]);
                 assert_eq!(images, &["a.jpg", "b.png"]);
             }
@@ -410,13 +429,14 @@ mod tests {
     fn parse_log_default() {
         let cli = parse(&["log"]);
         match &cli.command {
-            CliCommand::Log { subcommand, msg_ref, count, follow, json, content } => {
+            CliCommand::Log { subcommand, msg_ref, count, follow, json, content, heartbeat } => {
                 assert!(subcommand.is_none());
                 assert!(msg_ref.is_none());
                 assert_eq!(*count, 20);
                 assert!(!follow);
                 assert!(!json);
                 assert!(!content);
+                assert!(!heartbeat);
             }
             other => panic!("expected Log, got: {other:?}"),
         }
@@ -770,6 +790,9 @@ mod tests {
         let cmd = CliCommand::Send {
             message: vec!["hi".into()],
             images: vec![],
+            temperature: None,
+            top_p: None,
+            thinking: None,
         };
         assert!(to_swp_command(&cmd).is_none());
     }
@@ -841,7 +864,7 @@ mod tests {
                 msg_ref: "m1".into(),
                 content: vec!["new".into(), "text".into()],
             }),
-            msg_ref: None, count: 20, follow: false, json: false, content: false,
+            msg_ref: None, count: 20, follow: false, json: false, content: false, heartbeat: false,
         };
         let (name, args) = to_swp_command(&cmd).unwrap();
         assert_eq!(name, "edit");
@@ -853,7 +876,7 @@ mod tests {
     fn log_delete_maps_to_delete_command() {
         let cmd = CliCommand::Log {
             subcommand: Some(LogCommand::Delete { msg_ref: "m1".into() }),
-            msg_ref: None, count: 20, follow: false, json: false, content: false,
+            msg_ref: None, count: 20, follow: false, json: false, content: false, heartbeat: false,
         };
         let (name, args) = to_swp_command(&cmd).unwrap();
         assert_eq!(name, "delete");
@@ -865,7 +888,7 @@ mod tests {
         let cmd = CliCommand::Log {
             subcommand: None,
             msg_ref: Some("last".into()),
-            count: 20, follow: false, json: false, content: false,
+            count: 20, follow: false, json: false, content: false, heartbeat: false,
         };
         let (name, args) = to_swp_command(&cmd).unwrap();
         assert_eq!(name, "get");
@@ -876,7 +899,7 @@ mod tests {
     fn log_default_maps_to_log_command() {
         let cmd = CliCommand::Log {
             subcommand: None, msg_ref: None,
-            count: 20, follow: false, json: false, content: false,
+            count: 20, follow: false, json: false, content: false, heartbeat: false,
         };
         let (name, args) = to_swp_command(&cmd).unwrap();
         assert_eq!(name, "log");
@@ -919,16 +942,16 @@ mod tests {
     fn all_non_message_commands_map() {
         // Every variant except Send, Regen, Character (no --info), Config --path, and Completions should produce Some.
         let commands: Vec<CliCommand> = vec![
-            CliCommand::Log { subcommand: None, msg_ref: None, count: 20, follow: false, json: false, content: false },
+            CliCommand::Log { subcommand: None, msg_ref: None, count: 20, follow: false, json: false, content: false, heartbeat: false },
             CliCommand::Log {
                 subcommand: Some(LogCommand::Edit { msg_ref: "m1".into(), content: vec!["text".into()] }),
-                msg_ref: None, count: 20, follow: false, json: false, content: false,
+                msg_ref: None, count: 20, follow: false, json: false, content: false, heartbeat: false,
             },
             CliCommand::Log {
                 subcommand: Some(LogCommand::Delete { msg_ref: "m1".into() }),
-                msg_ref: None, count: 20, follow: false, json: false, content: false,
+                msg_ref: None, count: 20, follow: false, json: false, content: false, heartbeat: false,
             },
-            CliCommand::Log { subcommand: None, msg_ref: Some("last".into()), count: 20, follow: false, json: false, content: false },
+            CliCommand::Log { subcommand: None, msg_ref: Some("last".into()), count: 20, follow: false, json: false, content: false, heartbeat: false },
             CliCommand::Status { section: None, diagnostics: false, count: 10, json: false },
             CliCommand::Status { section: None, diagnostics: true, count: 10, json: false },
             CliCommand::Model { name: None, info: false, reset: false, json: false },

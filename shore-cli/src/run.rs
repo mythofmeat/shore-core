@@ -30,7 +30,7 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         SWPConnection::connect(&addr, "cli", "shore-cli", character.clone()).await?;
 
     match &cli.command {
-        CliCommand::Send { message, images } => {
+        CliCommand::Send { message, images, temperature, top_p, thinking } => {
             let text = if !message.is_empty() {
                 message.join(" ")
             } else if !io::stdin().is_terminal() {
@@ -41,7 +41,16 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             if text.is_empty() && images.is_empty() {
                 return Ok(());
             }
-            conn.send_message_with_images(&text, true, images.clone()).await?;
+            let overrides = if temperature.is_some() || top_p.is_some() || thinking.is_some() {
+                Some(shore_protocol::client_msg::MessageOverrides {
+                    temperature: *temperature,
+                    top_p: *top_p,
+                    thinking_budget: *thinking,
+                })
+            } else {
+                None
+            };
+            conn.send_message_full(&text, true, images.clone(), overrides).await?;
             recv_streaming_response(&mut conn).await?;
         }
         CliCommand::Regen { guidance } => {
@@ -79,6 +88,15 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 let char_name = character.as_deref().unwrap_or("Assistant");
                 output::print_single_message(&data, char_name);
+            }
+        }
+        CliCommand::Log { heartbeat: true, count, json, .. } => {
+            conn.send_command("heartbeat_log", serde_json::json!({ "count": count })).await?;
+            let data = recv_command_data(&mut conn).await?;
+            if *json {
+                println!("{}", serde_json::to_string_pretty(&data)?);
+            } else {
+                output::print_heartbeat_log(&data);
             }
         }
         CliCommand::Log { count, follow, json, content, .. } => {
@@ -655,7 +673,7 @@ mod tests {
                 .unwrap();
 
         match &cli.command {
-            CliCommand::Send { message, images } => {
+            CliCommand::Send { message, images, .. } => {
                 let text = message.join(" ");
                 conn.send_message_with_images(&text, true, images.clone()).await.unwrap();
                 super::recv_streaming_response(&mut conn).await.unwrap();
@@ -716,6 +734,9 @@ mod tests {
         let cli = test_cli(CliCommand::Send {
             message: vec!["hello".into(), "world".into()],
             images: vec![],
+            temperature: None,
+            top_p: None,
+            thinking: None,
         });
         let received = execute_with_mock(cli, streaming_response("Hi there!")).await;
 
@@ -810,7 +831,7 @@ mod tests {
                 msg_ref: "m1".into(),
                 content: vec!["new".into(), "text".into()],
             }),
-            msg_ref: None, count: 20, follow: false, json: false, content: false,
+            msg_ref: None, count: 20, follow: false, json: false, content: false, heartbeat: false,
         });
         let received = execute_with_mock(cli, command_response("edit")).await;
 
@@ -832,7 +853,7 @@ mod tests {
             subcommand: Some(crate::cli::LogCommand::Delete {
                 msg_ref: "m1".into(),
             }),
-            msg_ref: None, count: 20, follow: false, json: false, content: false,
+            msg_ref: None, count: 20, follow: false, json: false, content: false, heartbeat: false,
         });
         let received = execute_with_mock(cli, command_response("delete")).await;
 
@@ -881,6 +902,9 @@ mod tests {
         let cli = test_cli(CliCommand::Send {
             message: vec!["test".into()],
             images: vec![],
+            temperature: None,
+            top_p: None,
+            thinking: None,
         });
         let received = execute_with_mock(cli, responses).await;
         assert!(matches!(received, ClientMessage::Message(_)));
