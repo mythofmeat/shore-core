@@ -72,6 +72,11 @@ Add items here as decisions are made.
 
 ## Not Needed
 
+- **Search conversations** (5.13) — Not needed. The memory agent already
+  covers the use case of finding whether something was discussed, in a more
+  thorough and contextual way than raw full-text search.
+
+
 - **Insert message at position** (5.19) — Never used. No practical use case.
 
 - **Detach attachment** (5.20) — Never used. No practical use case.
