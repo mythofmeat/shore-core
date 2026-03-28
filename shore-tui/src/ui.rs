@@ -73,8 +73,13 @@ fn draw_conversation(frame: &mut Frame, app: &App, area: Rect) {
                 images,
                 ..
             } => {
+                let name = if app.character_name.is_empty() {
+                    "Assistant".to_string()
+                } else {
+                    app.character_name.clone()
+                };
                 lines.push(Line::from(Span::styled(
-                    "Assistant",
+                    name,
                     Style::default()
                         .fg(Color::Green)
                         .add_modifier(Modifier::BOLD),
@@ -169,16 +174,21 @@ fn draw_conversation(frame: &mut Frame, app: &App, area: Rect) {
 
     // Append in-progress streaming text
     if app.stream.active && !app.stream.text.is_empty() {
+        let name = if app.character_name.is_empty() {
+            "Assistant"
+        } else {
+            &app.character_name
+        };
         if app.stream.regen {
             lines.push(Line::from(Span::styled(
-                "Assistant (regenerating)",
+                format!("{name} (regenerating)"),
                 Style::default()
                     .fg(Color::Green)
                     .add_modifier(Modifier::BOLD | Modifier::ITALIC),
             )));
         } else {
             lines.push(Line::from(Span::styled(
-                "Assistant",
+                name.to_string(),
                 Style::default()
                     .fg(Color::Green)
                     .add_modifier(Modifier::BOLD),

@@ -9,15 +9,16 @@ use std::io;
 use std::time::Duration;
 
 use clap::Parser;
-use crossterm::event::{self, Event};
+use crossterm::event;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use crossterm::ExecutableCommand;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
+use shore_protocol::client_msg::{ClientMessage, Command};
 use shore_protocol::server_msg::ServerMessage;
-use shore_protocol::types::Role;
+use shore_protocol::types::{Message, Role};
 
 use app::{App, ConnectionStatus, ConversationEntry};
 use connection::{ConnCommand, ConnEvent};
@@ -73,7 +74,12 @@ async fn run_tui(cli: Cli) -> io::Result<()> {
             // Connection events
             conn_event = event_rx.recv() => {
                 match conn_event {
-                    Some(event) => handle_conn_event(&mut app, event),
+                    Some(event) => {
+                        let cmds = handle_conn_event(&mut app, event);
+                        for cmd in cmds {
+                            let _ = cmd_tx.send(cmd).await;
+                        }
+                    }
                     None => {
                         // Connection task exited
                         app.connection_status = ConnectionStatus::Disconnected;
@@ -86,7 +92,10 @@ async fn run_tui(cli: Cli) -> io::Result<()> {
                 while event::poll(Duration::from_millis(0))? {
                     let ev = event::read()?;
                     match input::handle_event(&mut app, ev) {
-                        Action::Quit => break,
+                        Action::Quit => {
+                            app.should_quit = true;
+                            break;
+                        }
                         Action::Send(cmd) => {
                             let _ = cmd_tx.send(cmd).await;
                         }
@@ -98,20 +107,6 @@ async fn run_tui(cli: Cli) -> io::Result<()> {
 
         if app.should_quit {
             break Ok(());
-        }
-
-        // Check for quit from the keyboard polling above
-        // (handle_event may have been called in a nested context)
-        if event::poll(Duration::from_millis(0))? {
-            if let Event::Key(key) = event::read()? {
-                match input::handle_event(&mut app, Event::Key(key)) {
-                    Action::Quit => break Ok(()),
-                    Action::Send(cmd) => {
-                        let _ = cmd_tx.send(cmd).await;
-                    }
-                    _ => {}
-                }
-            }
         }
     };
 
@@ -125,7 +120,7 @@ async fn run_tui(cli: Cli) -> io::Result<()> {
     result
 }
 
-fn handle_conn_event(app: &mut App, event: ConnEvent) {
+fn handle_conn_event(app: &mut App, event: ConnEvent) -> Vec<ConnCommand> {
     match event {
         ConnEvent::Connected {
             characters,
@@ -146,38 +141,59 @@ fn handle_conn_event(app: &mut App, event: ConnEvent) {
                 app.is_private = private;
             }
 
-            // Load history
+            // Load any history from the handshake
             app.entries.clear();
             for msg in history {
-                let entry = match msg.role {
-                    Role::User => ConversationEntry::User {
-                        content: msg.content,
-                        images: msg.images,
-                        timestamp: msg.timestamp,
-                    },
-                    Role::Assistant => ConversationEntry::Assistant {
-                        content: msg.content,
-                        images: msg.images,
-                        timestamp: msg.timestamp,
-                        metadata: None,
-                    },
-                    Role::System => ConversationEntry::System {
-                        content: msg.content,
-                        timestamp: msg.timestamp,
-                    },
-                };
-                app.entries.push(entry);
+                app.entries.push(msg_to_entry(msg));
             }
 
             app.set_status("connected");
+
+            // Request full history and status from daemon
+            vec![
+                ConnCommand::Send(ClientMessage::Command(Command {
+                    rid: None,
+                    name: "log".into(),
+                    args: serde_json::json!({}),
+                })),
+                ConnCommand::Send(ClientMessage::Command(Command {
+                    rid: None,
+                    name: "status".into(),
+                    args: serde_json::json!({}),
+                })),
+            ]
         }
 
         ConnEvent::Disconnected(reason) => {
             app.connection_status = ConnectionStatus::Connecting;
             app.set_status(format!("reconnecting: {reason}"));
+            vec![]
         }
 
-        ConnEvent::Message(msg) => handle_server_message(app, msg),
+        ConnEvent::Message(msg) => {
+            handle_server_message(app, msg);
+            vec![]
+        }
+    }
+}
+
+fn msg_to_entry(msg: Message) -> ConversationEntry {
+    match msg.role {
+        Role::User => ConversationEntry::User {
+            content: msg.content,
+            images: msg.images,
+            timestamp: msg.timestamp,
+        },
+        Role::Assistant => ConversationEntry::Assistant {
+            content: msg.content,
+            images: msg.images,
+            timestamp: msg.timestamp,
+            metadata: None,
+        },
+        Role::System => ConversationEntry::System {
+            content: msg.content,
+            timestamp: msg.timestamp,
+        },
     }
 }
 
@@ -279,7 +295,32 @@ fn handle_server_message(app: &mut App, msg: ServerMessage) {
         }
 
         ServerMessage::CommandOutput(co) => {
-            app.set_status(format!("cmd:{} completed", co.name));
+            match co.name.as_str() {
+                "log" => {
+                    if let Some(messages) = co.data.get("messages").and_then(|v| v.as_array()) {
+                        app.entries.clear();
+                        for msg_val in messages {
+                            if let Ok(msg) = serde_json::from_value::<Message>(msg_val.clone()) {
+                                app.entries.push(msg_to_entry(msg));
+                            }
+                        }
+                        if app.auto_scroll {
+                            app.scroll_to_bottom();
+                        }
+                    }
+                }
+                "status" => {
+                    if let Some(character) = co.data.get("character").and_then(|v| v.as_str()) {
+                        app.character_name = character.to_string();
+                    }
+                    if let Some(model) = co.data.get("active_model").and_then(|v| v.as_str()) {
+                        app.model = model.to_string();
+                    }
+                }
+                _ => {
+                    app.set_status(format!("cmd:{} completed", co.name));
+                }
+            }
         }
 
         ServerMessage::Error(err) => {
@@ -294,24 +335,7 @@ fn handle_server_message(app: &mut App, msg: ServerMessage) {
             // Re-sync history
             app.entries.clear();
             for msg in hist.messages {
-                let entry = match msg.role {
-                    Role::User => ConversationEntry::User {
-                        content: msg.content,
-                        images: msg.images,
-                        timestamp: msg.timestamp,
-                    },
-                    Role::Assistant => ConversationEntry::Assistant {
-                        content: msg.content,
-                        images: msg.images,
-                        timestamp: msg.timestamp,
-                        metadata: None,
-                    },
-                    Role::System => ConversationEntry::System {
-                        content: msg.content,
-                        timestamp: msg.timestamp,
-                    },
-                };
-                app.entries.push(entry);
+                app.entries.push(msg_to_entry(msg));
             }
         }
 
