@@ -61,6 +61,7 @@ impl StreamState {
 pub enum InputMode {
     Normal,
     Insert,
+    Command,
 }
 
 /// Input editor state.
@@ -68,6 +69,9 @@ pub struct InputState {
     pub text: String,
     pub cursor: usize,
     pub mode: InputMode,
+    /// Separate buffer for command palette input.
+    pub cmd_text: String,
+    pub cmd_cursor: usize,
 }
 
 impl Default for InputState {
@@ -76,6 +80,8 @@ impl Default for InputState {
             text: String::new(),
             cursor: 0,
             mode: InputMode::Insert,
+            cmd_text: String::new(),
+            cmd_cursor: 0,
         }
     }
 }
@@ -156,6 +162,42 @@ impl InputState {
 
     pub fn line_count(&self) -> usize {
         self.text.lines().count().max(1)
+    }
+
+    pub fn enter_command_mode(&mut self) {
+        self.mode = InputMode::Command;
+        self.cmd_text.clear();
+        self.cmd_cursor = 0;
+    }
+
+    pub fn exit_command_mode(&mut self) {
+        self.mode = InputMode::Normal;
+        self.cmd_text.clear();
+        self.cmd_cursor = 0;
+    }
+
+    pub fn cmd_insert_char(&mut self, c: char) {
+        self.cmd_text.insert(self.cmd_cursor, c);
+        self.cmd_cursor += c.len_utf8();
+    }
+
+    pub fn cmd_backspace(&mut self) {
+        if self.cmd_cursor > 0 {
+            let prev = self.cmd_text[..self.cmd_cursor]
+                .char_indices()
+                .next_back()
+                .map(|(i, _)| i)
+                .unwrap_or(0);
+            self.cmd_text.drain(prev..self.cmd_cursor);
+            self.cmd_cursor = prev;
+        }
+    }
+
+    pub fn take_cmd_text(&mut self) -> String {
+        let text = std::mem::take(&mut self.cmd_text);
+        self.cmd_cursor = 0;
+        self.mode = InputMode::Normal;
+        text
     }
 }
 

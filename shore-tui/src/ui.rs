@@ -252,14 +252,38 @@ fn draw_thinking(frame: &mut Frame, app: &App, area: Rect) {
 
 /// Render the input area.
 fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
+    if app.input.mode == InputMode::Command {
+        // Command palette mode: show ":" prefix with command text
+        let display = format!(":{}", app.input.cmd_text);
+        let paragraph = Paragraph::new(display.as_str())
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Command ")
+                    .border_style(Style::default().fg(Color::Yellow)),
+            )
+            .wrap(Wrap { trim: false });
+
+        frame.render_widget(paragraph, area);
+
+        // Cursor after the ":" prefix + cmd_cursor
+        let cursor_x = 1 + unicode_width::UnicodeWidthStr::width(
+            &app.input.cmd_text[..app.input.cmd_cursor],
+        ) as u16;
+        frame.set_cursor_position((area.x + 1 + cursor_x, area.y + 1));
+        return;
+    }
+
     let mode_label = match app.input.mode {
         InputMode::Normal => " Input [NORMAL] ",
         InputMode::Insert => " Input [INSERT] ",
+        InputMode::Command => unreachable!(),
     };
 
     let border_color = match app.input.mode {
         InputMode::Normal => Color::DarkGray,
         InputMode::Insert => Color::Cyan,
+        InputMode::Command => unreachable!(),
     };
 
     let paragraph = Paragraph::new(app.input.text.as_str())

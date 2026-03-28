@@ -99,6 +99,11 @@ async fn run_tui(cli: Cli) -> io::Result<()> {
                         Action::Send(cmd) => {
                             let _ = cmd_tx.send(cmd).await;
                         }
+                        Action::SendMulti(cmds) => {
+                            for cmd in cmds {
+                                let _ = cmd_tx.send(cmd).await;
+                            }
+                        }
                         Action::Redraw | Action::None => {}
                     }
                 }
@@ -316,6 +321,69 @@ fn handle_server_message(app: &mut App, msg: ServerMessage) {
                     if let Some(model) = co.data.get("active_model").and_then(|v| v.as_str()) {
                         app.model = model.to_string();
                     }
+                }
+                "list_characters" => {
+                    if let Some(chars) = co.data.get("characters").and_then(|v| v.as_array()) {
+                        let names: Vec<&str> = chars
+                            .iter()
+                            .filter_map(|c| c.get("name").and_then(|n| n.as_str()))
+                            .collect();
+                        let active = co.data.get("active").and_then(|v| v.as_str()).unwrap_or("");
+                        let list = names
+                            .iter()
+                            .map(|n| if *n == active { format!("*{n}") } else { n.to_string() })
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        app.set_status(format!("characters: {list}"));
+                    }
+                }
+                "switch_character" => {
+                    if let Some(name) = co.data.get("character").and_then(|v| v.as_str()) {
+                        app.character_name = name.to_string();
+                        app.set_status(format!("switched to {name}"));
+                    }
+                }
+                "list_models" => {
+                    if let Some(models) = co.data.get("models").and_then(|v| v.as_array()) {
+                        let names: Vec<&str> = models
+                            .iter()
+                            .filter_map(|m| m.get("name").and_then(|n| n.as_str()))
+                            .collect();
+                        let active = co.data.get("active").and_then(|v| v.as_str()).unwrap_or("");
+                        let list = names
+                            .iter()
+                            .map(|n| if *n == active { format!("*{n}") } else { n.to_string() })
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        app.set_status(format!("models: {list}"));
+                    }
+                }
+                "switch_model" => {
+                    if let Some(name) = co.data.get("model").and_then(|v| v.as_str()) {
+                        app.model = name.to_string();
+                        app.set_status(format!("model: {name}"));
+                    }
+                }
+                "reset_model" => {
+                    app.model.clear();
+                    app.set_status("model reset to default");
+                }
+                "memory" => {
+                    let summary = serde_json::to_string_pretty(&co.data)
+                        .unwrap_or_else(|_| co.data.to_string());
+                    app.entries.push(ConversationEntry::System {
+                        content: summary,
+                        timestamp: String::new(),
+                    });
+                    if app.auto_scroll {
+                        app.scroll_to_bottom();
+                    }
+                }
+                "compact" | "collate" => {
+                    let status = co.data.get("status")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("done");
+                    app.set_status(format!("{}: {status}", co.name));
                 }
                 _ => {
                     app.set_status(format!("cmd:{} completed", co.name));
