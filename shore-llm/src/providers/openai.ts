@@ -143,6 +143,7 @@ export async function generate(
   req: ProviderRequest,
   providerName = "openai",
   reasoningField = "reasoning",
+  extraBodyParams?: Record<string, unknown>,
 ): Promise<NormalizedResponse> {
   const messages = translateMessages(req);
   const tools = translateTools(req.tools);
@@ -160,6 +161,7 @@ export async function generate(
   if (req.provider_options?.reasoning_effort != null) {
     params.reasoning_effort = req.provider_options.reasoning_effort;
   }
+  if (extraBodyParams) Object.assign(params, extraBodyParams);
 
   const GENERATE_TIMEOUT_MS = (req.provider_options?.generate_timeout_ms as number | undefined) ?? 120_000; // 2 min default
 
@@ -203,11 +205,14 @@ export async function generate(
     }
   }
 
-  // Normalize usage
+  // Normalize usage — extract cache tokens from prompt_tokens_details
+  // (reported by OpenRouter and other OpenAI-compatible APIs).
+  const usageExt = completion.usage as Record<string, unknown> | undefined;
+  const promptDetails = usageExt?.prompt_tokens_details as Record<string, number> | undefined;
   const usage: NormalizedUsage = {
     input_tokens: completion.usage?.prompt_tokens ?? 0,
     output_tokens: completion.usage?.completion_tokens ?? 0,
-    cache_read_tokens: 0,
+    cache_read_tokens: promptDetails?.cached_tokens ?? 0,
     cache_creation_tokens: 0,
   };
 
@@ -231,6 +236,7 @@ export async function stream(
   res: ServerResponse,
   providerName = "openai",
   reasoningField = "reasoning",
+  extraBodyParams?: Record<string, unknown>,
 ): Promise<void> {
   const messages = translateMessages(req);
   const tools = translateTools(req.tools);
@@ -249,6 +255,7 @@ export async function stream(
   if (req.provider_options?.reasoning_effort != null) {
     params.reasoning_effort = req.provider_options.reasoning_effort;
   }
+  if (extraBodyParams) Object.assign(params, extraBodyParams);
 
   const STREAM_TIMEOUT_MS = (req.provider_options?.stream_timeout_ms as number | undefined) ?? 300_000; // 5 min default
 
@@ -357,10 +364,12 @@ export async function stream(
 
     // Usage (final chunk with stream_options.include_usage)
     if (chunk.usage) {
+      const chunkUsageExt = chunk.usage as Record<string, unknown>;
+      const chunkPromptDetails = chunkUsageExt?.prompt_tokens_details as Record<string, number> | undefined;
       usage = {
         input_tokens: chunk.usage.prompt_tokens ?? 0,
         output_tokens: chunk.usage.completion_tokens ?? 0,
-        cache_read_tokens: 0,
+        cache_read_tokens: chunkPromptDetails?.cached_tokens ?? 0,
         cache_creation_tokens: 0,
       };
     }
