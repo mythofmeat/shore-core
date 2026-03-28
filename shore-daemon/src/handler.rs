@@ -102,6 +102,7 @@ pub struct MessageHandler {
     pub llm_client: LlmClient,
     pub push_tx: broadcast::Sender<ServerMessage>,
     pub is_first_after_restart: bool,
+    pub compaction_occurred: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub autonomy: AutonomyManager,
     pub notifier: NotificationService,
 }
@@ -448,29 +449,47 @@ impl MessageHandler {
         });
 
         // 5. Build LLM messages from assembled prompt.
+        //
+        // Anthropic requires thinking blocks from the most recent assistant
+        // turn and mandates omitting them from earlier turns.  Including old
+        // thinking changes the prefix on every new turn → cache bust.
+        let last_assistant_idx = prompt_result
+            .messages
+            .iter()
+            .rposition(|m| m.role == Role::Assistant);
+
         let llm_messages: Vec<Value> = prompt_result
             .messages
             .iter()
-            .map(|m| {
+            .enumerate()
+            .map(|(idx, m)| {
                 let role = match m.role {
                     Role::User => "user",
                     Role::Assistant => "assistant",
                     Role::System => "system",
                 };
+                let is_last_assistant = last_assistant_idx == Some(idx);
                 let content = if !m.content_blocks.is_empty() {
                     // Build payload from structured content blocks.
                     let blocks: Vec<Value> = m.content_blocks.iter().filter_map(|b| match b {
                         ContentBlock::Text { text } => Some(json!({ "type": "text", "text": text })),
                         ContentBlock::Thinking { thinking, signature } => {
+                            if !is_last_assistant {
+                                return None; // Strip thinking from older assistant turns.
+                            }
                             // Only include thinking blocks with signatures (required by Anthropic API).
-                            // Pre-signature blocks (no signature captured) are still stripped.
                             signature.as_ref().map(|sig| {
                                 json!({ "type": "thinking", "thinking": thinking, "signature": sig })
                             })
                         }
-                        ContentBlock::RedactedThinking { data } => Some(json!({
-                            "type": "redacted_thinking", "data": data,
-                        })),
+                        ContentBlock::RedactedThinking { data } => {
+                            if !is_last_assistant {
+                                return None; // Strip redacted thinking from older turns.
+                            }
+                            Some(json!({
+                                "type": "redacted_thinking", "data": data,
+                            }))
+                        }
                         ContentBlock::ToolUse { id, name, input } => Some(json!({
                             "type": "tool_use", "id": id, "name": name, "input": input,
                         })),
@@ -575,10 +594,11 @@ impl MessageHandler {
                 // prompt caching (currently only Anthropic).
                 let cache_warnings = resolved.provider_key == "anthropic"
                     && self.cmd_ctx.config.app.advanced.cache_invalidation_warnings;
+                let is_first_after_compaction = self.compaction_occurred.swap(false, std::sync::atomic::Ordering::AcqRel);
                 let cache_ctx = CacheContext {
                     conversation_turn_count: turn_count,
                     is_first_after_restart: self.is_first_after_restart,
-                    is_first_after_compaction: false,
+                    is_first_after_compaction,
                     cache_invalidation_warnings: cache_warnings,
                 };
 
@@ -835,6 +855,7 @@ mod tests {
             llm_client: LlmClient::new(tmp.path().join("dummy.sock")),
             push_tx: push_tx.clone(),
             is_first_after_restart: false,
+            compaction_occurred: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             autonomy,
             notifier: NotificationService::new(Default::default()),
         };

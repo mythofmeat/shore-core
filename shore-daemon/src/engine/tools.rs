@@ -35,22 +35,21 @@ pub struct ToolLoopResult {
 // ── Tool loop ───────────────────────────────────────────────────────────
 
 /// Convert a ContentBlock to its LLM API JSON representation.
-fn content_block_to_json(block: &ContentBlock) -> Value {
+fn content_block_to_json(block: &ContentBlock) -> Option<Value> {
     match block {
-        ContentBlock::Text { text } => json!({ "type": "text", "text": text }),
+        ContentBlock::Text { text } => Some(json!({ "type": "text", "text": text })),
         ContentBlock::Thinking { thinking, signature } => {
-            let mut block = json!({ "type": "thinking", "thinking": thinking });
-            if let Some(sig) = signature {
-                block["signature"] = json!(sig);
-            }
-            block
+            // Require signature — Anthropic API rejects unsigned thinking blocks.
+            signature.as_ref().map(|sig| {
+                json!({ "type": "thinking", "thinking": thinking, "signature": sig })
+            })
         }
-        ContentBlock::RedactedThinking { data } => json!({
+        ContentBlock::RedactedThinking { data } => Some(json!({
             "type": "redacted_thinking", "data": data,
-        }),
-        ContentBlock::ToolUse { id, name, input } => json!({
+        })),
+        ContentBlock::ToolUse { id, name, input } => Some(json!({
             "type": "tool_use", "id": id, "name": name, "input": input,
-        }),
+        })),
         ContentBlock::ToolResult { tool_use_id, content, is_error } => {
             let mut v = json!({
                 "type": "tool_result", "tool_use_id": tool_use_id, "content": content,
@@ -58,7 +57,24 @@ fn content_block_to_json(block: &ContentBlock) -> Value {
             if *is_error {
                 v["is_error"] = json!(true);
             }
-            v
+            Some(v)
+        }
+    }
+}
+
+/// Strip thinking and redacted_thinking blocks from all assistant messages
+/// in the request payload.  Called before appending a new assistant message
+/// so that only the most recent assistant turn retains its thinking blocks.
+fn strip_thinking_from_messages(messages: &mut [Value]) {
+    for msg in messages.iter_mut() {
+        if msg.get("role").and_then(|r| r.as_str()) != Some("assistant") {
+            continue;
+        }
+        if let Some(arr) = msg.get_mut("content").and_then(|c| c.as_array_mut()) {
+            arr.retain(|block| {
+                let ty = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                ty != "thinking" && ty != "redacted_thinking"
+            });
         }
     }
 }
@@ -119,8 +135,13 @@ pub async fn run_tool_loop(
         // Build LLM payload from content blocks.
         let assistant_content: Vec<Value> = assistant_blocks
             .iter()
-            .map(content_block_to_json)
+            .filter_map(content_block_to_json)
             .collect();
+
+        // Strip thinking from all previous assistant messages so only the
+        // most recent assistant turn (the one we're about to append) has
+        // thinking blocks — required by Anthropic and critical for caching.
+        strip_thinking_from_messages(&mut request.messages);
 
         request.messages.push(json!({
             "role": "assistant",

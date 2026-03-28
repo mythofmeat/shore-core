@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 
 use shore_daemon::autonomy::manager::AutonomyManager;
 use shore_daemon::characters::CharacterRegistry;
@@ -222,6 +223,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         memory_shell_sessions: std::collections::HashMap::new(),
     };
 
+    // Shared flag: compaction task sets this after successful compaction so the
+    // message handler knows the next message is the first after compaction
+    // (expected cache miss, not an invalidation).
+    let compaction_occurred = std::sync::Arc::new(AtomicBool::new(false));
+
     // Spawn background compaction task driven by autonomy idle triggers.
     let compaction_handle = {
         let config = loaded.clone();
@@ -229,8 +235,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let data_dir = loaded.dirs.data.clone();
         let compaction_push_tx = push_tx.clone();
         let compaction_notifier = notifier.clone();
+        let compaction_flag = compaction_occurred.clone();
         tokio::spawn(async move {
-            compaction_task(compaction_rx, config, compaction_llm_client, data_dir, compaction_push_tx, compaction_notifier).await;
+            compaction_task(compaction_rx, config, compaction_llm_client, data_dir, compaction_push_tx, compaction_notifier, compaction_flag).await;
         })
     };
 
@@ -240,6 +247,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         llm_client,
         push_tx,
         is_first_after_restart: true,
+        compaction_occurred,
         autonomy: autonomy.clone(),
         notifier,
     };
@@ -293,17 +301,22 @@ async fn compaction_task(
     data_dir: PathBuf,
     push_tx: broadcast::Sender<ServerMessage>,
     notifier: NotificationService,
+    compaction_occurred: std::sync::Arc<AtomicBool>,
 ) {
     while let Some(character) = rx.recv().await {
         info!(character = %character, "Background compaction triggered");
 
-        if let Err(e) = run_compaction(&character, &config, &llm_client, &data_dir, &push_tx, &notifier).await
-        {
-            warn!(
-                character = %character,
-                error = %e,
-                "Background compaction failed"
-            );
+        match run_compaction(&character, &config, &llm_client, &data_dir, &push_tx, &notifier).await {
+            Ok(()) => {
+                compaction_occurred.store(true, std::sync::atomic::Ordering::Release);
+            }
+            Err(e) => {
+                warn!(
+                    character = %character,
+                    error = %e,
+                    "Background compaction failed"
+                );
+            }
         }
     }
     info!("Background compaction task shutting down");
