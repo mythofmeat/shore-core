@@ -421,9 +421,34 @@ fn estimate_message_tokens(msg: &Message) -> usize {
         .sum()
 }
 
+/// Returns true if a message is a tool-result-only user message (no real
+/// user text — just tool_result content blocks).
+fn is_tool_loop_message(msg: &Message) -> bool {
+    if msg.content_blocks.is_empty() {
+        return false;
+    }
+    // Assistant messages with only tool_use + thinking blocks (no text) are
+    // tool-loop intermediates.  User messages with only tool_result blocks
+    // are tool-loop intermediates.
+    match msg.role {
+        Role::User => msg.content_blocks.iter().all(|b| {
+            matches!(b, ContentBlock::ToolResult { .. })
+        }),
+        Role::Assistant => {
+            let has_text = msg.content_blocks.iter().any(|b| matches!(b, ContentBlock::Text { text } if !text.is_empty()));
+            let has_tool_use = msg.content_blocks.iter().any(|b| matches!(b, ContentBlock::ToolUse { .. }));
+            !has_text && has_tool_use
+        }
+        _ => false,
+    }
+}
+
 /// Trim messages from the beginning to fit within the token budget.
 ///
-/// Keeps the most recent messages, discarding older ones first.
+/// Keeps the most recent messages, discarding older ones first. After
+/// trimming, drops any leading tool-loop messages (tool_result user
+/// messages and tool_use-only assistant messages) that would be orphaned
+/// without their preceding context.
 fn trim_messages(messages: &[Message], token_budget: usize) -> Vec<PromptMessage> {
     // Build from the end (most recent first), accumulating token cost.
     let mut result: Vec<PromptMessage> = Vec::new();
@@ -446,7 +471,34 @@ fn trim_messages(messages: &[Message], token_budget: usize) -> Vec<PromptMessage
 
     // Reverse to restore chronological order.
     result.reverse();
+
+    // Drop leading tool-loop messages that would be orphaned.
+    // A tool_result without its preceding tool_use (or a tool_use-only
+    // assistant message without its preceding user message) causes API
+    // errors.  Keep dropping from the front until we hit a real message.
+    while !result.is_empty() && is_tool_loop_msg_prompt(&result[0]) {
+        result.remove(0);
+    }
+
     result
+}
+
+/// Check if a PromptMessage is a tool-loop intermediate.
+fn is_tool_loop_msg_prompt(msg: &PromptMessage) -> bool {
+    if msg.content_blocks.is_empty() {
+        return false;
+    }
+    match msg.role {
+        Role::User => msg.content_blocks.iter().all(|b| {
+            matches!(b, ContentBlock::ToolResult { .. })
+        }),
+        Role::Assistant => {
+            let has_text = msg.content_blocks.iter().any(|b| matches!(b, ContentBlock::Text { text } if !text.is_empty()));
+            let has_tool_use = msg.content_blocks.iter().any(|b| matches!(b, ContentBlock::ToolUse { .. }));
+            !has_text && has_tool_use
+        }
+        _ => false,
+    }
 }
 
 #[cfg(test)]

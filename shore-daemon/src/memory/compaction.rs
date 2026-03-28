@@ -326,6 +326,34 @@ impl CompactionManager {
         }
     }
 
+    /// Check if a ConversationMessage is a tool-loop intermediate that
+    /// should not be split from its context during compaction.
+    ///
+    /// Tool-result user messages have content that starts with `[{"type":"tool_result"`
+    /// (serialized content_blocks). Tool-use-only assistant messages have content
+    /// that is empty (the actual tool_use lives in content_blocks, which is not
+    /// in ConversationMessage).  We detect these by checking the role and whether
+    /// the content looks like a tool_result block array or is empty for assistants
+    /// that appear right before a tool_result user message.
+    fn is_tool_loop_message(msg: &ConversationMessage) -> bool {
+        match msg.role.as_str() {
+            "user" => {
+                // Tool-result messages have empty text content (the actual
+                // tool_result blocks are in content_blocks which aren't in
+                // ConversationMessage).  However, a real user message will
+                // have non-empty content.  An empty-content user message is
+                // a tool-result intermediate.
+                msg.content.is_empty()
+            }
+            "assistant" => {
+                // Assistant messages in tool loops have empty text content
+                // (all their content is tool_use blocks).
+                msg.content.is_empty()
+            }
+            _ => false,
+        }
+    }
+
     /// Signal that a new message was received, resetting the idle timer.
     pub fn notify_activity(&self) {
         self.activity_notify.notify_one();
@@ -442,8 +470,14 @@ impl CompactionManager {
         }
 
         // Split messages: compact the older portion, retain the recent tail.
+        // Adjust the split point to avoid cutting inside a tool-use loop —
+        // move it backwards until we hit a real user message (not a
+        // tool_result-only message) to keep tool exchanges atomic.
         let keep = self.config.keep_recent.min(messages.len());
-        let split_at = messages.len() - keep;
+        let mut split_at = messages.len() - keep;
+        while split_at > 0 && Self::is_tool_loop_message(&messages[split_at]) {
+            split_at -= 1;
+        }
         if split_at == 0 {
             return Err(CompactionError::InsufficientMessages);
         }

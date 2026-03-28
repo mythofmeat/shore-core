@@ -483,7 +483,15 @@ pub async fn stream(
 
 /// Translate an SSE event into an optional NDJSON line to write to the stream.
 fn handle_sse_event(event: SseEvent, state: &mut StreamState) -> Option<String> {
-    let event_type = event.event.as_deref().unwrap_or("");
+    // Prefer the SSE `event:` field; fall back to the `type` field inside the
+    // JSON `data:` payload.  Some proxies (e.g. OpenRouter) may strip the
+    // `event:` line and only forward `data:`.
+    let event_type_owned: Option<String> = event.event.clone().or_else(|| {
+        serde_json::from_str::<serde_json::Value>(&event.data)
+            .ok()
+            .and_then(|v| v.get("type").and_then(|t| t.as_str()).map(String::from))
+    });
+    let event_type = event_type_owned.as_deref().unwrap_or("");
 
     match event_type {
         "message_start" => handle_message_start(&event.data, state),
@@ -496,7 +504,12 @@ fn handle_sse_event(event: SseEvent, state: &mut StreamState) -> Option<String> 
         }
         "message_stop" => Some(handle_message_stop(state)),
         "ping" => None,
-        _ => None,
+        other => {
+            if !other.is_empty() {
+                tracing::debug!(event_type = other, "Unknown Anthropic SSE event type");
+            }
+            None
+        }
     }
 }
 
