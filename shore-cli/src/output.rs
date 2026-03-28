@@ -5,6 +5,7 @@ use std::time::Instant;
 
 use chrono::{DateTime, FixedOffset, Local};
 use crossterm::style::{Attribute, Color, ResetColor, SetAttribute, SetForegroundColor};
+use crossterm::terminal::{Clear, ClearType};
 use shore_protocol::server_msg::{NewMessage, Phase, SendImage, StreamChunk, StreamEnd, ToolCall, ToolResult};
 use shore_protocol::types::ImageRef;
 use tokio::task::JoinHandle;
@@ -327,6 +328,7 @@ impl StreamSpinner {
         if !self.is_terminal {
             return;
         }
+        self.cleared = false;
         {
             let mut s = self.state.lock().unwrap();
             s.start = Instant::now();
@@ -348,10 +350,12 @@ impl StreamSpinner {
                 };
                 let stdout = io::stdout();
                 let mut out = stdout.lock();
+                let _ = write!(out, "\r");
+                let _ = crossterm::execute!(out, Clear(ClearType::CurrentLine));
                 if use_color() {
                     let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
                 }
-                let _ = write!(out, "\r{line}");
+                let _ = write!(out, "{line}");
                 if use_color() {
                     let _ = crossterm::execute!(out, ResetColor);
                 }
@@ -391,8 +395,8 @@ impl StreamSpinner {
         if self.is_terminal {
             let stdout = io::stdout();
             let mut out = stdout.lock();
-            // Overwrite spinner line with spaces and return to start.
-            let _ = write!(out, "\r{}\r", " ".repeat(60));
+            let _ = write!(out, "\r");
+            let _ = crossterm::execute!(out, Clear(ClearType::CurrentLine));
             let _ = out.flush();
         }
     }
