@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use chrono::Utc;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tracing::{debug, error, warn};
 
@@ -221,7 +221,8 @@ impl LlmClient {
             });
         }
 
-        // Skip remaining headers (until blank line).
+        // Skip remaining headers (until blank line). Content-Length is
+        // unused for streaming responses — we read SSE events instead.
         skip_headers(&mut reader).await?;
 
         Ok(reader)
@@ -272,18 +273,9 @@ impl LlmClient {
             });
         }
 
-        skip_headers(&mut reader).await?;
+        let content_length = skip_headers(&mut reader).await?;
 
-        // Read the full JSON body.
-        let mut body_buf = String::new();
-        loop {
-            let mut line = String::new();
-            let n = reader.read_line(&mut line).await?;
-            if n == 0 {
-                break;
-            }
-            body_buf.push_str(&line);
-        }
+        let body_buf = read_body(&mut reader, content_length).await?;
 
         self.log_payload("response", &body_buf);
 
@@ -342,17 +334,9 @@ impl LlmClient {
             });
         }
 
-        skip_headers(&mut reader).await?;
+        let content_length = skip_headers(&mut reader).await?;
 
-        let mut body_buf = String::new();
-        loop {
-            let mut line = String::new();
-            let n = reader.read_line(&mut line).await?;
-            if n == 0 {
-                break;
-            }
-            body_buf.push_str(&line);
-        }
+        let body_buf = read_body(&mut reader, content_length).await?;
 
         #[derive(serde::Deserialize)]
         struct EmbedResponse {
@@ -434,17 +418,9 @@ impl LlmClient {
             });
         }
 
-        skip_headers(&mut reader).await?;
+        let content_length = skip_headers(&mut reader).await?;
 
-        let mut body_buf = String::new();
-        loop {
-            let mut line = String::new();
-            let n = reader.read_line(&mut line).await?;
-            if n == 0 {
-                break;
-            }
-            body_buf.push_str(&line);
-        }
+        let body_buf = read_body(&mut reader, content_length).await?;
 
         self.log_payload("response", &body_buf);
 
@@ -567,17 +543,46 @@ async fn read_status_line(
 }
 
 /// Skip HTTP headers until we hit the blank line separating headers from body.
+/// Returns the Content-Length if present.
 async fn skip_headers(
     reader: &mut BufReader<UnixStream>,
-) -> Result<(), LlmError> {
+) -> Result<Option<usize>, LlmError> {
+    let mut content_length = None;
     loop {
         let mut line = String::new();
         let n = reader.read_line(&mut line).await?;
         if n == 0 || line.trim().is_empty() {
             break;
         }
+        if let Some(val) = line.strip_prefix("Content-Length:").or_else(|| line.strip_prefix("content-length:")) {
+            content_length = val.trim().parse().ok();
+        }
     }
-    Ok(())
+    Ok(content_length)
+}
+
+/// Read the response body, using Content-Length if available to avoid
+/// depending on socket close timing (which can truncate large responses).
+async fn read_body(
+    reader: &mut BufReader<UnixStream>,
+    content_length: Option<usize>,
+) -> Result<String, std::io::Error> {
+    if let Some(len) = content_length {
+        let mut buf = vec![0u8; len];
+        reader.read_exact(&mut buf).await?;
+        Ok(String::from_utf8_lossy(&buf).into_owned())
+    } else {
+        let mut body = String::new();
+        loop {
+            let mut line = String::new();
+            let n = reader.read_line(&mut line).await?;
+            if n == 0 {
+                break;
+            }
+            body.push_str(&line);
+        }
+        Ok(body)
+    }
 }
 
 /// Read remaining headers + body for error reporting.

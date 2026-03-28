@@ -28,7 +28,15 @@ function json(res: ServerResponse, status: number, data: unknown): void {
     "Content-Length": Buffer.byteLength(payload),
     "Connection": "close",
   });
-  res.end(payload);
+  // Write the payload and wait for it to drain before ending. Bun's Unix
+  // socket handling can discard buffered data if res.end(payload) is used
+  // with large payloads.
+  const flushed = res.write(payload);
+  if (flushed) {
+    res.end();
+  } else {
+    res.once("drain", () => res.end());
+  }
 }
 
 function handleHealth(_req: IncomingMessage, res: ServerResponse): void {

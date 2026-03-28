@@ -11,10 +11,21 @@ if (!socketPath) {
 }
 
 const server = createServer((req, res) => {
-  // Bun's HTTP server does not close the socket after res.end() for async
-  // streaming handlers. Since shore-llm is one-request-per-connection,
-  // destroy the socket once the response is fully flushed.
-  res.on("finish", () => req.socket?.destroy());
+  // shore-llm is one-request-per-connection. After the response is
+  // flushed, close the socket so the client sees EOF. Bun's Unix socket
+  // handling can discard buffered data on immediate close, so we set
+  // allowHalfOpen and wait for the client to close its end first.
+  if (req.socket) req.socket.allowHalfOpen = true;
+  res.on("finish", () => {
+    const sock = req.socket;
+    if (!sock) return;
+    // Signal no more writes; the client reads until EOF on its side,
+    // then closes, which triggers 'end' here.
+    sock.end();
+    sock.on("end", () => sock.destroy());
+    // Safety: if the client doesn't close promptly, destroy after 5s.
+    sock.setTimeout(5000, () => sock.destroy());
+  });
 
   dispatch(req, res).catch((err) => {
     logger.error({ err }, "unhandled error");
