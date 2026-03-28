@@ -334,6 +334,31 @@ describe("generate", () => {
     expect(result.provider).toBe("deepseek");
   });
 
+  it("extracts reasoning field for kimi", async () => {
+    const completion = makeCompletion({
+      choices: [
+        {
+          index: 0,
+          message: {
+            role: "assistant" as const,
+            content: "Here is my answer.",
+            reasoning: "Let me think about this...",
+            refusal: null,
+          },
+          finish_reason: "stop" as const,
+          logprobs: null,
+        },
+      ],
+    });
+    const client = mockClient(completion);
+    const result = await generate(client, baseRequest(), "openrouter");
+
+    expect(result.content_blocks).toEqual([
+      { type: "thinking", thinking: "Let me think about this..." },
+      { type: "text", text: "Here is my answer." },
+    ]);
+  });
+
   it("extracts reasoning_content for deepseek", async () => {
     const completion = makeCompletion({
       choices: [
@@ -351,7 +376,7 @@ describe("generate", () => {
       ],
     });
     const client = mockClient(completion);
-    const result = await generate(client, baseRequest(), "deepseek");
+    const result = await generate(client, baseRequest(), "deepseek", "reasoning_content");
 
     expect(result.content_blocks).toEqual([
       { type: "thinking", thinking: "Let me reason step by step..." },
@@ -615,6 +640,126 @@ describe("stream", () => {
     expect(res.headHeaders["Content-Type"]).toBe("application/x-ndjson");
   });
 
+  it("emits thinking events for kimi delta.reasoning", async () => {
+    const chunks = [
+      {
+        id: "chatcmpl-kimi-01",
+        object: "chat.completion.chunk",
+        created: 1234567890,
+        model: "moonshotai/kimi-k2.5",
+        choices: [
+          {
+            index: 0,
+            delta: { role: "assistant", content: "", reasoning: "Thinking step 1..." },
+            finish_reason: null,
+            logprobs: null,
+          },
+        ],
+      },
+      {
+        id: "chatcmpl-kimi-01",
+        object: "chat.completion.chunk",
+        created: 1234567890,
+        model: "moonshotai/kimi-k2.5",
+        choices: [
+          {
+            index: 0,
+            delta: { content: "", reasoning: " Thinking step 2..." },
+            finish_reason: null,
+            logprobs: null,
+          },
+        ],
+      },
+      {
+        id: "chatcmpl-kimi-01",
+        object: "chat.completion.chunk",
+        created: 1234567890,
+        model: "moonshotai/kimi-k2.5",
+        choices: [
+          {
+            index: 0,
+            delta: { content: "Here is my answer." },
+            finish_reason: null,
+            logprobs: null,
+          },
+        ],
+      },
+      {
+        id: "chatcmpl-kimi-01",
+        object: "chat.completion.chunk",
+        created: 1234567890,
+        model: "moonshotai/kimi-k2.5",
+        choices: [
+          {
+            index: 0,
+            delta: {},
+            finish_reason: "stop",
+            logprobs: null,
+          },
+        ],
+        usage: { prompt_tokens: 10, completion_tokens: 20, total_tokens: 30 },
+      },
+    ];
+
+    const client = mockStreamClient(chunks);
+    const res = mockResponse();
+    await stream(client, baseRequest(), res, "openrouter");
+
+    const lines = res.written
+      .join("")
+      .split("\n")
+      .filter((l: string) => l.length > 0)
+      .map((l: string) => JSON.parse(l));
+
+    expect(lines[0]).toMatchObject({ type: "start", model: "moonshotai/kimi-k2.5" });
+    expect(lines[1]).toEqual({ type: "thinking", text: "Thinking step 1..." });
+    expect(lines[2]).toEqual({ type: "thinking", text: " Thinking step 2..." });
+    expect(lines[3]).toEqual({ type: "text", text: "Here is my answer." });
+    expect(lines[4]).toMatchObject({ type: "done", content: "Here is my answer." });
+  });
+
+  it("does not emit text events for empty content chunks during reasoning", async () => {
+    // Kimi sends content: "" during the thinking phase — these must not emit text events.
+    const chunks = [
+      {
+        id: "chatcmpl-kimi-02",
+        object: "chat.completion.chunk",
+        created: 1234567890,
+        model: "moonshotai/kimi-k2.5",
+        choices: [
+          {
+            index: 0,
+            delta: { content: "", reasoning: "Thinking..." },
+            finish_reason: null,
+            logprobs: null,
+          },
+        ],
+      },
+      {
+        id: "chatcmpl-kimi-02",
+        object: "chat.completion.chunk",
+        created: 1234567890,
+        model: "moonshotai/kimi-k2.5",
+        choices: [{ index: 0, delta: { content: "Done." }, finish_reason: "stop", logprobs: null }],
+        usage: { prompt_tokens: 5, completion_tokens: 5, total_tokens: 10 },
+      },
+    ];
+
+    const client = mockStreamClient(chunks);
+    const res = mockResponse();
+    await stream(client, baseRequest(), res, "openrouter");
+
+    const lines = res.written
+      .join("")
+      .split("\n")
+      .filter((l: string) => l.length > 0)
+      .map((l: string) => JSON.parse(l));
+
+    const textEvents = lines.filter((l: { type: string }) => l.type === "text");
+    expect(textEvents).toHaveLength(1);
+    expect(textEvents[0]).toEqual({ type: "text", text: "Done." });
+  });
+
   it("emits thinking events for deepseek reasoning_content", async () => {
     const chunks = [
       {
@@ -678,7 +823,7 @@ describe("stream", () => {
 
     const client = mockStreamClient(chunks);
     const res = mockResponse();
-    await stream(client, baseRequest(), res, "deepseek");
+    await stream(client, baseRequest(), res, "deepseek", "reasoning_content");
 
     const lines = res.written
       .join("")

@@ -142,6 +142,7 @@ export async function generate(
   client: OpenAI,
   req: ProviderRequest,
   providerName = "openai",
+  reasoningField = "reasoning",
 ): Promise<NormalizedResponse> {
   const messages = translateMessages(req);
   const tools = translateTools(req.tools);
@@ -172,9 +173,8 @@ export async function generate(
   // Build content blocks
   const contentBlocks: NormalizedContentBlock[] = [];
 
-  // DeepSeek returns reasoning as a top-level field (not in SDK types).
-  const reasoning = (message as unknown as Record<string, unknown>)
-    ?.reasoning_content;
+  const msgExt = message as unknown as Record<string, unknown>;
+  const reasoning = reasoningField ? (typeof msgExt?.[reasoningField] === "string" ? msgExt[reasoningField] as string : null) : null;
   if (typeof reasoning === "string" && reasoning.length > 0) {
     contentBlocks.push({ type: "thinking", thinking: reasoning });
   }
@@ -227,6 +227,7 @@ export async function stream(
   req: ProviderRequest,
   res: ServerResponse,
   providerName = "openai",
+  reasoningField = "reasoning",
 ): Promise<void> {
   const messages = translateMessages(req);
   const tools = translateTools(req.tools);
@@ -289,10 +290,8 @@ export async function stream(
     if (choice) {
       const delta = choice.delta;
 
-      // DeepSeek reasoning content (not in SDK types).
-      const reasoningChunk = (
-        delta as unknown as Record<string, unknown>
-      )?.reasoning_content;
+      const deltaExt = delta as unknown as Record<string, unknown>;
+      const reasoningChunk = reasoningField ? (typeof deltaExt?.[reasoningField] === "string" ? deltaExt[reasoningField] as string : null) : null;
       if (typeof reasoningChunk === "string" && reasoningChunk.length > 0) {
         if (firstTokenMs === null) {
           firstTokenMs = performance.now() - start;

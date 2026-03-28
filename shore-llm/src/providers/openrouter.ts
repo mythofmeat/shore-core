@@ -38,7 +38,7 @@ export async function generate(
   req: ProviderRequest,
 ): Promise<NormalizedResponse> {
   const client = createOpenRouterClient(req.api_key, req.provider_options);
-  return openaiGenerate(client, req, "openrouter");
+  return openaiGenerate(client, req, "openrouter", "reasoning");
 }
 
 export async function stream(
@@ -46,7 +46,7 @@ export async function stream(
   res: ServerResponse,
 ): Promise<void> {
   const client = createOpenRouterClient(req.api_key, req.provider_options);
-  return openaiStream(client, req, res, "openrouter");
+  return openaiStream(client, req, res, "openrouter", "reasoning");
 }
 
 // ── Image generation ────────────────────────────────────────────────

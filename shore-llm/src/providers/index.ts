@@ -1,6 +1,7 @@
 import type { ServerResponse } from "node:http";
 import type { Provider, ProviderRequest, NormalizedResponse } from "./types.js";
 import * as anthropic from "./anthropic.js";
+import * as deepseek from "./deepseek.js";
 import * as gemini from "./gemini.js";
 import * as openai from "./openai.js";
 import * as openrouter from "./openrouter.js";
@@ -43,7 +44,6 @@ export function getProvider(name: string): Provider | null {
       };
 
     case "openai":
-    case "deepseek":
     case "xai":
       return {
         async generate(req: ProviderRequest): Promise<NormalizedResponse> {
@@ -57,6 +57,12 @@ export function getProvider(name: string): Provider | null {
           const client = openai.createClient(req.api_key, req.base_url);
           return openai.stream(client, req, res, name);
         },
+      };
+
+    case "deepseek":
+      return {
+        generate: (req) => deepseek.generate(req),
+        stream: (req, res) => deepseek.stream(req, res),
       };
 
     case "openrouter":
