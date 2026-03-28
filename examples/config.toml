@@ -182,8 +182,8 @@ api_payload_logging = false
 #   top_p = 1.0
 #
 #   — Reasoning / thinking —
-#   reasoning_effort = "high"               # "low", "medium", "high" — OpenAI o-series, DeepSeek
-#   budget_tokens = 8192                    # Thinking token budget — Anthropic extended thinking, Gemini
+#   reasoning_effort = "high"               # Anthropic: "low"|"medium"|"high"|"max" (adaptive) or "adaptive"; OpenAI/DeepSeek: "low"|"medium"|"high"
+#   budget_tokens = 8192                    # Thinking token budget — Anthropic (legacy), Gemini
 #
 #   — Prompt caching (Anthropic) —
 #   cache_ttl = "5m"                        # e.g. "5m", "1h"
@@ -214,22 +214,28 @@ model_id = "gemini-2.5-pro"
 
 # ── Thinking / reasoning ─────────────────────────────────────────────────
 #
-# Anthropic — budget_tokens or reasoning_effort:
-#   budget_tokens = 8192          explicit token budget; enables extended thinking
-#   reasoning_effort = "adaptive" model decides how much to think (newer models)
+# Anthropic (Opus 4.6, Sonnet 4.6) — reasoning_effort (recommended):
+#   reasoning_effort = "adaptive"  model decides whether/how much to think
+#   reasoning_effort = "high"      always think, deep reasoning (default effort)
+#   reasoning_effort = "medium"    moderate thinking, may skip for simple queries
+#   reasoning_effort = "low"       minimal thinking
+#   reasoning_effort = "max"       deepest reasoning, Opus 4.6 only
+#
+# Anthropic (legacy / older models) — budget_tokens:
+#   budget_tokens = 8192           explicit thinking token budget
 #
 # OpenAI / DeepSeek — reasoning_effort:
-#   reasoning_effort = "high"     "low" | "medium" | "high"
+#   reasoning_effort = "high"      "low" | "medium" | "high"
 #
 # Gemini — budget_tokens:
-#   budget_tokens = 8192          thinking token budget
+#   budget_tokens = 8192           thinking token budget
 #
 # Examples:
 #
 # [chat.anthropic.claude-opus-thinking]
 # model_id = "claude-opus-4-6"
 # max_tokens = 16384
-# budget_tokens = 10000
+# reasoning_effort = "high"
 #
 # [chat.anthropic.claude-sonnet-adaptive]
 # model_id = "claude-sonnet-4-6"

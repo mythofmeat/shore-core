@@ -44,6 +44,9 @@ export interface AnthropicProviderOptions {
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
+/** Effort values that map to adaptive thinking + output_config on Anthropic. */
+const ANTHROPIC_EFFORT_VALUES = new Set(["max", "high", "medium", "low"]);
+
 function applyCacheControl(
   messages: MessageParam[],
   depth: number,
@@ -85,7 +88,13 @@ function buildThinkingConfig(
   opts: AnthropicProviderOptions | undefined,
 ): Anthropic.Messages.ThinkingConfigParam | undefined {
   // "adaptive" mode: model decides how much to think.
-  if (opts?.reasoning_effort === "adaptive") {
+  // Named effort values ("high", "medium", "low", "max") also use adaptive
+  // mode; the effort level is passed separately via output_config.
+  if (
+    opts?.reasoning_effort === "adaptive" ||
+    (opts?.reasoning_effort != null &&
+      ANTHROPIC_EFFORT_VALUES.has(opts.reasoning_effort))
+  ) {
     return { type: "adaptive" };
   }
   // Explicit budget: enable thinking with the given token budget.
@@ -96,6 +105,18 @@ function buildThinkingConfig(
       type: "enabled",
       budget_tokens: opts.budget_tokens ?? 1024,
     };
+  }
+  return undefined;
+}
+
+function buildOutputConfig(
+  opts: AnthropicProviderOptions | undefined,
+): { effort: string } | undefined {
+  if (
+    opts?.reasoning_effort != null &&
+    ANTHROPIC_EFFORT_VALUES.has(opts.reasoning_effort)
+  ) {
+    return { effort: opts.reasoning_effort };
   }
   return undefined;
 }
@@ -173,6 +194,7 @@ export function buildCreateParams(
     : req.messages;
 
   const thinking = buildThinkingConfig(req.provider_options);
+  const outputConfig = buildOutputConfig(req.provider_options);
 
   const params: Record<string, unknown> = {
     model: req.model,
@@ -186,6 +208,7 @@ export function buildCreateParams(
   if (req.temperature != null) params.temperature = req.temperature;
   if (req.top_p != null) params.top_p = req.top_p;
   if (thinking) params.thinking = thinking;
+  if (outputConfig) params.output_config = outputConfig;
 
   return params as unknown as MessageCreateParamsNonStreaming | MessageCreateParamsStreaming;
 }
