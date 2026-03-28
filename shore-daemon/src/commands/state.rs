@@ -50,10 +50,14 @@ pub fn status(engine: &ConversationEngine, ctx: &CommandContext) -> CommandResul
             })
         });
 
+    // Show the effective model: runtime override → per-character/global default.
+    let effective_model = ctx.active_model.as_deref()
+        .or(ctx.config.app.defaults.model.as_deref());
+
     Ok(json!({
         "character": engine.character_name(),
         "message_count": engine.message_count(),
-        "active_model": ctx.active_model,
+        "active_model": effective_model,
         "tokens": {
             "input": ctx.session_tokens.input,
             "output": ctx.session_tokens.output,
@@ -942,20 +946,25 @@ pub async fn memory_reindex(engine: &ConversationEngine, ctx: &CommandContext) -
         .await
         .map_err(|e| (ErrorCode::InternalError, format!("Failed to open vector store: {e}")))?;
 
-    // Embed all entries and rebuild the vector index.
-    let texts: Vec<&str> = entries.iter().map(|e| e.summary_text.as_str()).collect();
-
-    // Batch embed (the embed endpoint handles batching internally).
-    let embeddings = ctx.llm_client
-        .embed(
-            &embed_config.provider,
-            &embed_config.model_id,
-            &embed_config.api_key,
-            embed_config.base_url.as_deref(),
-            &texts,
-        )
-        .await
-        .map_err(|e| (ErrorCode::InternalError, format!("Embedding failed: {e}")))?;
+    // Embed entries in batches to avoid overrunning the Unix socket with a
+    // single huge JSON response (the socket may close before the client
+    // finishes reading).
+    const EMBED_BATCH_SIZE: usize = 50;
+    let mut embeddings: Vec<Vec<f32>> = Vec::with_capacity(entries.len());
+    for chunk in entries.chunks(EMBED_BATCH_SIZE) {
+        let texts: Vec<&str> = chunk.iter().map(|e| e.summary_text.as_str()).collect();
+        let batch = ctx.llm_client
+            .embed(
+                &embed_config.provider,
+                &embed_config.model_id,
+                &embed_config.api_key,
+                embed_config.base_url.as_deref(),
+                &texts,
+            )
+            .await
+            .map_err(|e| (ErrorCode::InternalError, format!("Embedding failed: {e}")))?;
+        embeddings.extend(batch);
+    }
 
     let pairs: Vec<(&str, &[f32])> = entries
         .iter()
