@@ -1,0 +1,15 @@
+[package]
+name = "shore-tui"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+shore-protocol = { path = "../shore-protocol" }
+shore-client = { path = "../shore-client" }
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+ratatui = "0.29"
+crossterm = "0.28"
+serde_json = "1"
+base64 = "0.22"
+unicode-width = "0.2"

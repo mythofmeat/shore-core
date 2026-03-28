@@ -1,0 +1,30 @@
+[Unit]
+Description=Shore daemon — persistent AI character engine
+Documentation=https://localhost:3000/eshen/silvershore
+After=network.target
+
+[Service]
+Type=simple
+ExecSearchPath=%h/.local/bin /usr/bin
+ExecStart=shore-daemon
+Restart=on-failure
+RestartSec=5
+
+# shore-llm is managed by the daemon's built-in supervisor when
+# [services.llm].command is set in config.toml. No separate service needed.
+
+# Environment
+Environment=RUST_LOG=info
+Environment=XDG_CONFIG_HOME=%h/.config
+Environment=XDG_DATA_HOME=%h/.local/share
+Environment=XDG_RUNTIME_DIR=/run/user/%U
+
+# Hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/share/shore %h/.config/shore /run/user/%U/shore
+PrivateTmp=yes
+
+[Install]
+WantedBy=default.target

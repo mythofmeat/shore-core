@@ -1,0 +1,392 @@
+use super::{ToolCategory, ToolContext, ToolDef, ToolError};
+use serde_json::{json, Value};
+use std::time::Duration;
+
+// ---------------------------------------------------------------------------
+// Tool definitions
+// ---------------------------------------------------------------------------
+
+pub fn tool_defs() -> Vec<ToolDef> {
+    vec![
+        ToolDef {
+            name: "web_search",
+            description: "Search the web for information. Returns a list of results with titles, URLs, and content snippets. Use fetch_url to read full pages from the results.",
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The search query."
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Maximum number of results to return.",
+                        "default": 5
+                    }
+                },
+                "required": ["query"]
+            }),
+            category: ToolCategory::Web,
+        },
+        ToolDef {
+            name: "fetch_url",
+            description: "Fetch and read the content of a web page.",
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "The URL to fetch."
+                    }
+                },
+                "required": ["url"]
+            }),
+            category: ToolCategory::Web,
+        },
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// Handlers
+// ---------------------------------------------------------------------------
+
+/// Handle `web_search` — search the web via Tavily API.
+pub async fn handle_web_search(
+    input: Value,
+    ctx: &dyn ToolContext,
+) -> Result<Value, ToolError> {
+    let query = input
+        .get("query")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| ToolError::InvalidArgs("missing 'query' field".to_string()))?;
+
+    let search_cfg = ctx.search_config();
+
+    let api_key = std::env::var(&search_cfg.api_key_env).map_err(|_| {
+        ToolError::InvalidArgs(format!(
+            "web_search requires the {} environment variable to be set",
+            search_cfg.api_key_env
+        ))
+    })?;
+
+    let max_results = input
+        .get("max_results")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(search_cfg.max_results as u64);
+
+    let body = json!({
+        "api_key": api_key,
+        "query": query,
+        "max_results": max_results,
+        "search_depth": search_cfg.search_depth,
+        "include_answer": search_cfg.include_answer,
+    });
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|e| ToolError::Http(format!("failed to build HTTP client: {e}")))?;
+
+    let resp = client
+        .post("https://api.tavily.com/search")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| ToolError::Http(format!("Tavily request failed: {e}")))?;
+
+    let status = resp.status().as_u16();
+    if !resp.status().is_success() {
+        let err_body = resp.text().await.unwrap_or_default();
+        return Err(ToolError::Http(format!(
+            "Tavily API returned HTTP {status}: {err_body}"
+        )));
+    }
+
+    let tavily_resp: Value = resp
+        .json()
+        .await
+        .map_err(|e| ToolError::Http(format!("failed to parse Tavily response: {e}")))?;
+
+    // Reshape results to a clean format.
+    let results = tavily_resp
+        .get("results")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .map(|r| {
+                    json!({
+                        "title": r.get("title").and_then(|v| v.as_str()).unwrap_or(""),
+                        "url": r.get("url").and_then(|v| v.as_str()).unwrap_or(""),
+                        "content": r.get("content").and_then(|v| v.as_str()).unwrap_or(""),
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    let mut result = json!({
+        "query": query,
+        "results": results,
+    });
+
+    if let Some(answer) = tavily_resp.get("answer").and_then(|v| v.as_str()) {
+        result["answer"] = json!(answer);
+    }
+
+    Ok(result)
+}
+
+/// Maximum content length returned to the model (chars).
+const MAX_CONTENT_CHARS: usize = 50_000;
+
+/// Handle `fetch_url` — fetch a webpage and extract readable text.
+pub async fn handle_fetch_url(input: Value) -> Result<Value, ToolError> {
+    let url = input
+        .get("url")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| ToolError::InvalidArgs("missing 'url' field".to_string()))?;
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .user_agent("shore/2.0")
+        .redirect(reqwest::redirect::Policy::limited(5))
+        .build()
+        .map_err(|e| ToolError::Http(format!("failed to build HTTP client: {e}")))?;
+
+    let resp = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| ToolError::Http(format!("request failed: {e}")))?;
+
+    let status = resp.status().as_u16();
+    if !resp.status().is_success() {
+        return Err(ToolError::Http(format!(
+            "HTTP {status} for {url}"
+        )));
+    }
+
+    let content_type = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("unknown")
+        .to_string();
+
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| ToolError::Http(format!("failed to read body: {e}")))?;
+
+    let is_html = content_type.contains("html");
+    let content = if is_html {
+        strip_html(&body)
+    } else {
+        body
+    };
+
+    let truncated = content.len() > MAX_CONTENT_CHARS;
+    let content = if truncated {
+        let boundary = content.floor_char_boundary(MAX_CONTENT_CHARS);
+        content[..boundary].to_string()
+    } else {
+        content
+    };
+
+    Ok(json!({
+        "url": url,
+        "content_type": content_type,
+        "content": content,
+        "truncated": truncated,
+    }))
+}
+
+/// Strip HTML tags and extract readable text content.
+///
+/// Removes `<script>`, `<style>`, and `<head>` blocks entirely, strips remaining
+/// tags, decodes common HTML entities, and collapses whitespace.
+fn strip_html(html: &str) -> String {
+    // Phase 1: Remove script, style, and head blocks
+    let mut cleaned = String::with_capacity(html.len());
+    let lower = html.to_lowercase();
+    let lower_bytes = lower.as_bytes();
+    let mut i = 0;
+
+    while i < html.len() {
+        if lower_bytes[i] == b'<' {
+            // Check for blocks we want to skip entirely
+            let remaining = &lower[i..];
+            if let Some(tag) = ["script", "style", "head"]
+                .iter()
+                .find(|t| remaining.starts_with(&format!("<{}", t)))
+            {
+                // Find the closing tag
+                let close = format!("</{tag}");
+                if let Some(end_pos) = lower[i..].find(&close) {
+                    // Skip past the closing tag's '>'
+                    let after_close = i + end_pos + close.len();
+                    if let Some(gt) = lower[after_close..].find('>') {
+                        i = after_close + gt + 1;
+                        continue;
+                    }
+                }
+                // No closing tag found — skip to end
+                break;
+            }
+
+            // Regular tag — skip it but add a space (block elements create breaks)
+            if let Some(gt) = html[i..].find('>') {
+                cleaned.push(' ');
+                i += gt + 1;
+                continue;
+            }
+        }
+
+        // Consume one character
+        if let Some(ch) = html[i..].chars().next() {
+            cleaned.push(ch);
+            i += ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+
+    // Phase 2: Decode common HTML entities
+    let decoded = cleaned
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&apos;", "'")
+        .replace("&nbsp;", " ")
+        .replace("&#x27;", "'")
+        .replace("&#x2F;", "/");
+
+    // Phase 3: Collapse whitespace
+    let mut result = String::with_capacity(decoded.len());
+    let mut prev_whitespace = false;
+    for ch in decoded.chars() {
+        if ch.is_whitespace() {
+            if !prev_whitespace {
+                result.push(' ');
+            }
+            prev_whitespace = true;
+        } else {
+            result.push(ch);
+            prev_whitespace = false;
+        }
+    }
+
+    result.trim().to_string()
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::TestToolContext;
+
+    #[test]
+    fn test_web_tool_defs() {
+        let defs = tool_defs();
+        assert_eq!(defs.len(), 2);
+
+        let names: Vec<&str> = defs.iter().map(|d| d.name).collect();
+        assert!(names.contains(&"web_search"));
+        assert!(names.contains(&"fetch_url"));
+
+        // All web tools should have Web category.
+        for def in &defs {
+            assert_eq!(def.category, ToolCategory::Web);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_web_search_missing_query() {
+        let ctx = TestToolContext::new();
+        let result = handle_web_search(json!({}), &ctx).await;
+        assert!(matches!(result, Err(ToolError::InvalidArgs(_))));
+    }
+
+    #[tokio::test]
+    async fn test_web_search_no_api_key() {
+        // With default config, TAVILY_API_KEY is unlikely to be set in test env.
+        let ctx = TestToolContext::new();
+        let result = handle_web_search(json!({"query": "rust programming"}), &ctx).await;
+        assert!(matches!(result, Err(ToolError::InvalidArgs(_))));
+        if let Err(ToolError::InvalidArgs(msg)) = result {
+            assert!(msg.contains("TAVILY_API_KEY"), "error should name the env var: {msg}");
+        }
+    }
+
+    /// Live integration test — requires TAVILY_API_KEY env var.
+    #[tokio::test]
+    #[ignore]
+    async fn test_web_search_live() {
+        let ctx = TestToolContext::new();
+        let result = handle_web_search(
+            json!({"query": "Rust programming language", "max_results": 2}),
+            &ctx,
+        )
+        .await
+        .expect("live search should succeed");
+
+        assert_eq!(result["query"], "Rust programming language");
+        let results = result["results"].as_array().expect("results should be array");
+        assert!(!results.is_empty(), "should have at least one result");
+        // Each result should have title, url, content.
+        for r in results {
+            assert!(r["title"].as_str().is_some());
+            assert!(r["url"].as_str().is_some());
+            assert!(r["content"].as_str().is_some());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_fetch_url_missing_url() {
+        let result = handle_fetch_url(json!({})).await;
+        assert!(matches!(result, Err(ToolError::InvalidArgs(_))));
+    }
+
+    #[test]
+    fn test_strip_html_basic() {
+        let html = "<html><body><h1>Hello</h1><p>World</p></body></html>";
+        let text = strip_html(html);
+        assert!(text.contains("Hello"));
+        assert!(text.contains("World"));
+        assert!(!text.contains("<h1>"));
+    }
+
+    #[test]
+    fn test_strip_html_removes_script_and_style() {
+        let html = r#"<html><head><title>T</title></head><body>
+            <script>var x = 1;</script>
+            <style>.foo { color: red; }</style>
+            <p>Visible text</p>
+        </body></html>"#;
+        let text = strip_html(html);
+        assert!(text.contains("Visible text"));
+        assert!(!text.contains("var x"));
+        assert!(!text.contains("color: red"));
+        assert!(!text.contains("<title>"));
+    }
+
+    #[test]
+    fn test_strip_html_decodes_entities() {
+        let html = "<p>A &amp; B &lt; C &gt; D &quot;E&quot;</p>";
+        let text = strip_html(html);
+        assert!(text.contains("A & B < C > D \"E\""));
+    }
+
+    #[test]
+    fn test_strip_html_collapses_whitespace() {
+        let html = "<p>  lots   of    spaces  </p>";
+        let text = strip_html(html);
+        // Should not have runs of multiple spaces
+        assert!(!text.contains("  "));
+    }
+}

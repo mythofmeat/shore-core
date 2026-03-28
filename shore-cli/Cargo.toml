@@ -1,0 +1,25 @@
+[package]
+name = "shore-cli"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "shore"
+path = "src/main.rs"
+
+[dependencies]
+shore-protocol = { path = "../shore-protocol" }
+shore-client = { path = "../shore-client" }
+clap = { version = "4", features = ["derive", "env"] }
+clap_complete = "4"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+serde_json = "1"
+chrono = "0.4"
+crossterm = "0.28"
+base64 = "0.22"
+tempfile = "3"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+tempfile = "3"

@@ -1,0 +1,32 @@
+# Shore V2 — Example Models Include File
+#
+# This file can be included from config.toml via:
+#   include = ["models.toml"]
+#
+# Or placed in conf.d/ for automatic loading.
+
+[chat.anthropic]
+sdk = "anthropic"
+api_key_env = "ANTHROPIC_API_KEY"
+
+[chat.anthropic.claude-sonnet]
+model_id = "claude-sonnet-4-6"
+
+[chat.anthropic.claude-opus]
+model_id = "claude-opus-4-6"
+max_tokens = 8192
+
+[chat.openai]
+sdk = "openai"
+api_key_env = "OPENAI_API_KEY"
+
+[chat.openai.gpt-4o]
+model_id = "gpt-4o"
+
+[tools.openrouter]
+sdk = "openai"
+api_key_env = "OPENROUTER_API_KEY"
+temperature = 0.5
+
+[tools.openrouter.mistral-small]
+model_id = "mistralai/mistral-small-2603"

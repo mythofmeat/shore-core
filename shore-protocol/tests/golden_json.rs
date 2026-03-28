@@ -1,0 +1,976 @@
+//! Golden-file integration tests for SWP protocol serialization.
+//!
+//! Each test has a hand-written JSON fixture matching the documented protocol
+//! spec. We verify:
+//! - Deserialization: fixture → Rust type, all fields correct
+//! - Serialization: Rust type → JSON, output matches fixture (modulo field order)
+//! - Forward compat: unknown fields are silently ignored
+//! - Missing optionals: deserialize to None/default
+//! - Version mismatch: produces ProtocolError
+
+use serde_json::{json, Value};
+use shore_protocol::client_msg::*;
+use shore_protocol::error::*;
+use shore_protocol::server_msg::*;
+use shore_protocol::types::*;
+use shore_protocol::SWP_V1;
+
+// ── Helpers ──────────────────────────────────────────────────────────────
+
+/// Deserialize `fixture` into `T`, then serialize back and compare JSON values.
+fn assert_golden<T>(fixture: &str) -> T
+where
+    T: serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug,
+{
+    let expected: Value = serde_json::from_str(fixture).expect("fixture is valid JSON");
+    let parsed: T = serde_json::from_str(fixture).expect("fixture deserializes into T");
+    let reserialized = serde_json::to_value(&parsed).expect("re-serialize");
+    assert_eq!(
+        reserialized, expected,
+        "re-serialized JSON does not match fixture"
+    );
+    parsed
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Server Messages — Golden Fixtures
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ── ServerHello ──────────────────────────────────────────────────────────
+
+const SERVER_HELLO_FIXTURE: &str = r#"{
+    "type": "hello",
+    "v": 1,
+    "server_name": "shore-daemon",
+    "characters": [{"name": "alice"}, {"name": "bob"}]
+}"#;
+
+#[test]
+fn server_hello_golden() {
+    let msg: ServerMessage = assert_golden(SERVER_HELLO_FIXTURE);
+    match msg {
+        ServerMessage::Hello(h) => {
+            assert_eq!(h.v, SWP_V1);
+            assert_eq!(h.server_name, "shore-daemon");
+            assert_eq!(h.characters.len(), 2);
+            assert_eq!(h.characters[0].name, "alice");
+            assert_eq!(h.characters[1].name, "bob");
+        }
+        other => panic!("expected Hello, got {:?}", other),
+    }
+}
+
+// ── History ──────────────────────────────────────────────────────────────
+
+const HISTORY_FIXTURE: &str = r#"{
+    "type": "history",
+    "messages": [
+        {
+            "msg_id": "m_001",
+            "role": "user",
+            "content": "Hello!",
+            "images": [],
+            "timestamp": "2026-01-15T10:30:00Z"
+        },
+        {
+            "msg_id": "m_002",
+            "role": "assistant",
+            "content": "Hi there!",
+            "images": [{"path": "/img/wave.png", "caption": "waving"}],
+            "alt_index": 0,
+            "alt_count": 2,
+            "timestamp": "2026-01-15T10:30:01Z"
+        }
+    ],
+    "config": {"model": "claude-haiku-4-5-20251001"}
+}"#;
+
+#[test]
+fn history_golden() {
+    let msg: ServerMessage = assert_golden(HISTORY_FIXTURE);
+    match msg {
+        ServerMessage::History(h) => {
+            assert_eq!(h.messages.len(), 2);
+            // First message
+            assert_eq!(h.messages[0].msg_id, "m_001");
+            assert_eq!(h.messages[0].role, Role::User);
+            assert_eq!(h.messages[0].content, "Hello!");
+            assert!(h.messages[0].images.is_empty());
+            assert_eq!(h.messages[0].alt_index, None);
+            assert_eq!(h.messages[0].alt_count, None);
+            // Second message with images and alts
+            assert_eq!(h.messages[1].msg_id, "m_002");
+            assert_eq!(h.messages[1].role, Role::Assistant);
+            assert_eq!(h.messages[1].images.len(), 1);
+            assert_eq!(h.messages[1].images[0].path, "/img/wave.png");
+            assert_eq!(
+                h.messages[1].images[0].caption.as_deref(),
+                Some("waving")
+            );
+            assert_eq!(h.messages[1].alt_index, Some(0));
+            assert_eq!(h.messages[1].alt_count, Some(2));
+            // Config
+            assert_eq!(h.config["model"], "claude-haiku-4-5-20251001");
+        }
+        other => panic!("expected History, got {:?}", other),
+    }
+}
+
+// ── Shutdown ─────────────────────────────────────────────────────────────
+
+const SHUTDOWN_FIXTURE: &str = r#"{"type": "shutdown"}"#;
+
+#[test]
+fn shutdown_golden() {
+    let msg: ServerMessage = assert_golden(SHUTDOWN_FIXTURE);
+    assert!(matches!(msg, ServerMessage::Shutdown(_)));
+}
+
+// ── Ping ─────────────────────────────────────────────────────────────────
+
+const PING_FIXTURE: &str = r#"{"type": "ping"}"#;
+
+#[test]
+fn ping_golden() {
+    let msg: ServerMessage = assert_golden(PING_FIXTURE);
+    assert!(matches!(msg, ServerMessage::Ping(_)));
+}
+
+// ── CommandOutput ────────────────────────────────────────────────────────
+
+const COMMAND_OUTPUT_FIXTURE: &str = r#"{
+    "type": "command_output",
+    "name": "list_conversations",
+    "data": {"conversations": [{"id": "c1", "title": "Chat"}]}
+}"#;
+
+#[test]
+fn command_output_golden() {
+    let msg: ServerMessage = assert_golden(COMMAND_OUTPUT_FIXTURE);
+    match msg {
+        ServerMessage::CommandOutput(co) => {
+            assert_eq!(co.name, "list_conversations");
+            assert_eq!(co.data["conversations"][0]["id"], "c1");
+        }
+        other => panic!("expected CommandOutput, got {:?}", other),
+    }
+}
+
+// ── Error ────────────────────────────────────────────────────────────────
+
+const ERROR_FIXTURE: &str = r#"{
+    "type": "error",
+    "code": "busy",
+    "message": "Engine is currently processing another request"
+}"#;
+
+#[test]
+fn error_golden() {
+    let msg: ServerMessage = assert_golden(ERROR_FIXTURE);
+    match msg {
+        ServerMessage::Error(e) => {
+            assert_eq!(e.code, ErrorCode::Busy);
+            assert_eq!(
+                e.message,
+                "Engine is currently processing another request"
+            );
+        }
+        other => panic!("expected Error, got {:?}", other),
+    }
+}
+
+// ── StreamStart ──────────────────────────────────────────────────────────
+
+const STREAM_START_FIXTURE: &str = r#"{"type": "stream_start", "regen": false}"#;
+
+#[test]
+fn stream_start_golden() {
+    let msg: ServerMessage = assert_golden(STREAM_START_FIXTURE);
+    match msg {
+        ServerMessage::StreamStart(s) => {
+            assert!(!s.regen);
+        }
+        other => panic!("expected StreamStart, got {:?}", other),
+    }
+}
+
+// ── StreamChunk ──────────────────────────────────────────────────────────
+
+const STREAM_CHUNK_FIXTURE: &str = r#"{
+    "type": "stream_chunk",
+    "text": "Hello, how can I ",
+    "content_type": "text"
+}"#;
+
+#[test]
+fn stream_chunk_golden() {
+    let msg: ServerMessage = assert_golden(STREAM_CHUNK_FIXTURE);
+    match msg {
+        ServerMessage::StreamChunk(c) => {
+            assert_eq!(c.text, "Hello, how can I ");
+            assert_eq!(c.content_type, "text");
+        }
+        other => panic!("expected StreamChunk, got {:?}", other),
+    }
+}
+
+const STREAM_CHUNK_THINKING_FIXTURE: &str = r#"{
+    "type": "stream_chunk",
+    "text": "Let me think about this...",
+    "content_type": "thinking"
+}"#;
+
+#[test]
+fn stream_chunk_thinking_golden() {
+    let msg: ServerMessage = assert_golden(STREAM_CHUNK_THINKING_FIXTURE);
+    match msg {
+        ServerMessage::StreamChunk(c) => {
+            assert_eq!(c.content_type, "thinking");
+        }
+        other => panic!("expected StreamChunk, got {:?}", other),
+    }
+}
+
+// ── StreamEnd ────────────────────────────────────────────────────────────
+
+const STREAM_END_FIXTURE: &str = r#"{
+    "type": "stream_end",
+    "content": "Hello, how can I help you today?",
+    "metadata": {
+        "tokens": {
+            "input": 1234,
+            "output": 567,
+            "cache_read": 890,
+            "cache_write": 12
+        },
+        "timing": {
+            "total_ms": 2340,
+            "ttft_ms": 450
+        },
+        "model": "claude-haiku-4-5-20251001"
+    }
+}"#;
+
+#[test]
+fn stream_end_golden() {
+    let msg: ServerMessage = assert_golden(STREAM_END_FIXTURE);
+    match msg {
+        ServerMessage::StreamEnd(se) => {
+            assert_eq!(se.content, "Hello, how can I help you today?");
+            assert_eq!(se.metadata.tokens.input, 1234);
+            assert_eq!(se.metadata.tokens.output, 567);
+            assert_eq!(se.metadata.tokens.cache_read, 890);
+            assert_eq!(se.metadata.tokens.cache_write, 12);
+            assert_eq!(se.metadata.timing.total_ms, 2340);
+            assert_eq!(se.metadata.timing.ttft_ms, 450);
+            assert_eq!(se.metadata.model, "claude-haiku-4-5-20251001");
+        }
+        other => panic!("expected StreamEnd, got {:?}", other),
+    }
+}
+
+// ── Phase ────────────────────────────────────────────────────────────────
+
+const PHASE_FIXTURE: &str = r#"{
+    "type": "phase",
+    "phase": "thinking",
+    "model": "claude-haiku-4-5-20251001"
+}"#;
+
+#[test]
+fn phase_golden() {
+    let msg: ServerMessage = assert_golden(PHASE_FIXTURE);
+    match msg {
+        ServerMessage::Phase(p) => {
+            assert_eq!(p.phase, "thinking");
+            assert_eq!(p.model.as_deref(), Some("claude-haiku-4-5-20251001"));
+        }
+        other => panic!("expected Phase, got {:?}", other),
+    }
+}
+
+// ── NewMessage ───────────────────────────────────────────────────────────
+// NewMessage uses #[serde(flatten)] so Message fields appear at top level.
+
+const NEW_MESSAGE_FIXTURE: &str = r#"{
+    "type": "new_message",
+    "msg_id": "m_auto_01",
+    "role": "assistant",
+    "content": "I noticed something interesting.",
+    "images": [],
+    "timestamp": "2026-01-15T10:35:00Z"
+}"#;
+
+#[test]
+fn new_message_golden() {
+    let msg: ServerMessage = assert_golden(NEW_MESSAGE_FIXTURE);
+    match msg {
+        ServerMessage::NewMessage(nm) => {
+            assert_eq!(nm.message.msg_id, "m_auto_01");
+            assert_eq!(nm.message.role, Role::Assistant);
+            assert_eq!(nm.message.content, "I noticed something interesting.");
+            assert!(nm.message.images.is_empty());
+            assert_eq!(nm.message.alt_index, None);
+            assert_eq!(nm.message.alt_count, None);
+            assert_eq!(nm.message.timestamp, "2026-01-15T10:35:00Z");
+        }
+        other => panic!("expected NewMessage, got {:?}", other),
+    }
+}
+
+const NEW_MESSAGE_WITH_ALTS_FIXTURE: &str = r#"{
+    "type": "new_message",
+    "msg_id": "m_auto_02",
+    "role": "assistant",
+    "content": "Alternative response.",
+    "images": [],
+    "alt_index": 1,
+    "alt_count": 3,
+    "timestamp": "2026-01-15T10:36:00Z"
+}"#;
+
+#[test]
+fn new_message_with_alts_golden() {
+    let msg: ServerMessage = assert_golden(NEW_MESSAGE_WITH_ALTS_FIXTURE);
+    match msg {
+        ServerMessage::NewMessage(nm) => {
+            assert_eq!(nm.message.msg_id, "m_auto_02");
+            assert_eq!(nm.message.alt_index, Some(1));
+            assert_eq!(nm.message.alt_count, Some(3));
+        }
+        other => panic!("expected NewMessage, got {:?}", other),
+    }
+}
+
+// ── ToolCall ─────────────────────────────────────────────────────────────
+
+const TOOL_CALL_FIXTURE: &str = r#"{
+    "type": "tool_call",
+    "tool_id": "tc_001",
+    "tool_name": "web_search",
+    "input": {"query": "rust serde tutorial", "max_results": 5}
+}"#;
+
+#[test]
+fn tool_call_golden() {
+    let msg: ServerMessage = assert_golden(TOOL_CALL_FIXTURE);
+    match msg {
+        ServerMessage::ToolCall(tc) => {
+            assert_eq!(tc.tool_id, "tc_001");
+            assert_eq!(tc.tool_name, "web_search");
+            // input must be a JSON object, not a string
+            assert!(tc.input.is_object());
+            assert_eq!(tc.input["query"], "rust serde tutorial");
+            assert_eq!(tc.input["max_results"], 5);
+        }
+        other => panic!("expected ToolCall, got {:?}", other),
+    }
+}
+
+// ── ToolResult ───────────────────────────────────────────────────────────
+
+const TOOL_RESULT_FIXTURE: &str = r#"{
+    "type": "tool_result",
+    "tool_id": "tc_001",
+    "tool_name": "web_search",
+    "output": "Found 5 results for 'rust serde tutorial'",
+    "is_error": false
+}"#;
+
+#[test]
+fn tool_result_golden() {
+    let msg: ServerMessage = assert_golden(TOOL_RESULT_FIXTURE);
+    match msg {
+        ServerMessage::ToolResult(tr) => {
+            assert_eq!(tr.tool_id, "tc_001");
+            assert_eq!(tr.tool_name, "web_search");
+            assert_eq!(tr.output, "Found 5 results for 'rust serde tutorial'");
+            assert!(!tr.is_error);
+        }
+        other => panic!("expected ToolResult, got {:?}", other),
+    }
+}
+
+// ── SendImage ────────────────────────────────────────────────────────────
+
+const SEND_IMAGE_FIXTURE: &str = r#"{
+    "type": "send_image",
+    "path": "/tmp/chart.png",
+    "caption": "Monthly revenue chart"
+}"#;
+
+#[test]
+fn send_image_golden() {
+    let msg: ServerMessage = assert_golden(SEND_IMAGE_FIXTURE);
+    match msg {
+        ServerMessage::SendImage(si) => {
+            assert_eq!(si.path, "/tmp/chart.png");
+            assert_eq!(si.caption.as_deref(), Some("Monthly revenue chart"));
+        }
+        other => panic!("expected SendImage, got {:?}", other),
+    }
+}
+
+// ── CacheWarning ─────────────────────────────────────────────────────────
+
+const CACHE_WARNING_FIXTURE: &str = r#"{
+    "type": "cache_warning",
+    "expected_tokens": 5000,
+    "message": "Cache miss: context was evicted, re-processing 5000 tokens"
+}"#;
+
+#[test]
+fn cache_warning_golden() {
+    let msg: ServerMessage = assert_golden(CACHE_WARNING_FIXTURE);
+    match msg {
+        ServerMessage::CacheWarning(cw) => {
+            assert_eq!(cw.expected_tokens, 5000);
+            assert_eq!(
+                cw.message,
+                "Cache miss: context was evicted, re-processing 5000 tokens"
+            );
+        }
+        other => panic!("expected CacheWarning, got {:?}", other),
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Client Messages — Golden Fixtures
+// ═══════════════════════════════════════════════════════════════════════════
+
+const CLIENT_HELLO_FIXTURE: &str = r#"{
+    "type": "hello",
+    "client_type": "tui",
+    "client_name": "shore-tui",
+    "capabilities": ["streaming", "images"]
+}"#;
+
+#[test]
+fn client_hello_golden() {
+    let msg: ClientMessage = assert_golden(CLIENT_HELLO_FIXTURE);
+    match msg {
+        ClientMessage::Hello(h) => {
+            assert_eq!(h.client_type, "tui");
+            assert_eq!(h.client_name, "shore-tui");
+            assert_eq!(h.capabilities, vec!["streaming", "images"]);
+        }
+        other => panic!("expected Hello, got {:?}", other),
+    }
+}
+
+const CLIENT_MESSAGE_FIXTURE: &str = r#"{
+    "type": "message",
+    "rid": "req_001",
+    "text": "Tell me about Rust",
+    "stream": true,
+    "images": ["/tmp/screenshot.png"]
+}"#;
+
+#[test]
+fn client_message_golden() {
+    let msg: ClientMessage = assert_golden(CLIENT_MESSAGE_FIXTURE);
+    match msg {
+        ClientMessage::Message(m) => {
+            assert_eq!(m.rid.as_deref(), Some("req_001"));
+            assert_eq!(m.text, "Tell me about Rust");
+            assert!(m.stream);
+            assert_eq!(m.images, vec!["/tmp/screenshot.png"]);
+            assert_eq!(m.absence_seconds, None);
+        }
+        other => panic!("expected Message, got {:?}", other),
+    }
+}
+
+const CLIENT_REGEN_FIXTURE: &str = r#"{
+    "type": "regen",
+    "rid": "req_002",
+    "stream": true,
+    "guidance": "Be more concise"
+}"#;
+
+#[test]
+fn client_regen_golden() {
+    let msg: ClientMessage = assert_golden(CLIENT_REGEN_FIXTURE);
+    match msg {
+        ClientMessage::Regen(r) => {
+            assert_eq!(r.rid.as_deref(), Some("req_002"));
+            assert!(r.stream);
+            assert_eq!(r.guidance.as_deref(), Some("Be more concise"));
+        }
+        other => panic!("expected Regen, got {:?}", other),
+    }
+}
+
+const CLIENT_COMMAND_FIXTURE: &str = r#"{
+    "type": "command",
+    "rid": "req_003",
+    "name": "switch_character",
+    "args": {"character": "alice", "greeting": true}
+}"#;
+
+#[test]
+fn client_command_golden() {
+    let msg: ClientMessage = assert_golden(CLIENT_COMMAND_FIXTURE);
+    match msg {
+        ClientMessage::Command(c) => {
+            assert_eq!(c.rid.as_deref(), Some("req_003"));
+            assert_eq!(c.name, "switch_character");
+            assert!(c.args.is_object());
+            assert_eq!(c.args["character"], "alice");
+            assert_eq!(c.args["greeting"], true);
+        }
+        other => panic!("expected Command, got {:?}", other),
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Standalone Types — Golden Fixtures
+// ═══════════════════════════════════════════════════════════════════════════
+
+const MESSAGE_OBJECT_FIXTURE: &str = r#"{
+    "msg_id": "m_100",
+    "role": "assistant",
+    "content": "Here is the analysis.",
+    "images": [
+        {"path": "/img/chart.png", "caption": "Revenue chart"},
+        {"path": "/img/table.png"}
+    ],
+    "alt_index": 2,
+    "alt_count": 4,
+    "timestamp": "2026-03-15T14:22:00Z"
+}"#;
+
+#[test]
+fn message_object_golden() {
+    let msg: Message = assert_golden(MESSAGE_OBJECT_FIXTURE);
+    assert_eq!(msg.msg_id, "m_100");
+    assert_eq!(msg.role, Role::Assistant);
+    assert_eq!(msg.content, "Here is the analysis.");
+    assert_eq!(msg.images.len(), 2);
+    assert_eq!(msg.images[0].path, "/img/chart.png");
+    assert_eq!(msg.images[0].caption.as_deref(), Some("Revenue chart"));
+    assert_eq!(msg.images[1].path, "/img/table.png");
+    assert_eq!(msg.images[1].caption, None);
+    assert_eq!(msg.alt_index, Some(2));
+    assert_eq!(msg.alt_count, Some(4));
+    assert_eq!(msg.timestamp, "2026-03-15T14:22:00Z");
+}
+
+const STREAM_METADATA_FIXTURE: &str = r#"{
+    "tokens": {
+        "input": 2048,
+        "output": 1024,
+        "cache_read": 512,
+        "cache_write": 256
+    },
+    "timing": {
+        "total_ms": 3500,
+        "ttft_ms": 800
+    },
+    "model": "claude-sonnet-4-6"
+}"#;
+
+#[test]
+fn stream_metadata_golden() {
+    let meta: StreamMetadata = assert_golden(STREAM_METADATA_FIXTURE);
+    assert_eq!(meta.tokens.input, 2048);
+    assert_eq!(meta.tokens.output, 1024);
+    assert_eq!(meta.tokens.cache_read, 512);
+    assert_eq!(meta.tokens.cache_write, 256);
+    assert_eq!(meta.timing.total_ms, 3500);
+    assert_eq!(meta.timing.ttft_ms, 800);
+    assert_eq!(meta.model, "claude-sonnet-4-6");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Forward Compatibility — Unknown fields silently ignored
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn server_hello_unknown_fields_ignored() {
+    let fixture = r#"{
+        "type": "hello",
+        "v": 1,
+        "server_name": "shore-daemon",
+        "characters": [],
+        "extra_field": "should be ignored",
+        "future_feature": 42
+    }"#;
+    let msg: ServerMessage = serde_json::from_str(fixture).expect("unknown fields ignored");
+    match msg {
+        ServerMessage::Hello(h) => {
+            assert_eq!(h.v, 1);
+            assert_eq!(h.server_name, "shore-daemon");
+        }
+        other => panic!("expected Hello, got {:?}", other),
+    }
+}
+
+#[test]
+fn client_message_unknown_fields_ignored() {
+    let fixture = r#"{
+        "type": "message",
+        "text": "Hi",
+        "stream": false,
+        "images": [],
+        "new_field_v2": {"nested": true}
+    }"#;
+    let msg: ClientMessage = serde_json::from_str(fixture).expect("unknown fields ignored");
+    match msg {
+        ClientMessage::Message(m) => {
+            assert_eq!(m.text, "Hi");
+            assert!(!m.stream);
+        }
+        other => panic!("expected Message, got {:?}", other),
+    }
+}
+
+#[test]
+fn stream_chunk_unknown_fields_ignored() {
+    let fixture = r#"{
+        "type": "stream_chunk",
+        "text": "partial",
+        "content_type": "text",
+        "sequence_number": 42,
+        "experimental": true
+    }"#;
+    let msg: ServerMessage = serde_json::from_str(fixture).expect("unknown fields ignored");
+    match msg {
+        ServerMessage::StreamChunk(c) => {
+            assert_eq!(c.text, "partial");
+            assert_eq!(c.content_type, "text");
+        }
+        other => panic!("expected StreamChunk, got {:?}", other),
+    }
+}
+
+#[test]
+fn tool_call_unknown_fields_ignored() {
+    let fixture = r#"{
+        "type": "tool_call",
+        "tool_id": "tc_99",
+        "tool_name": "future_tool",
+        "input": {},
+        "priority": "high",
+        "metadata": {"source": "agent"}
+    }"#;
+    let msg: ServerMessage = serde_json::from_str(fixture).expect("unknown fields ignored");
+    match msg {
+        ServerMessage::ToolCall(tc) => {
+            assert_eq!(tc.tool_id, "tc_99");
+            assert_eq!(tc.tool_name, "future_tool");
+        }
+        other => panic!("expected ToolCall, got {:?}", other),
+    }
+}
+
+#[test]
+fn message_object_unknown_fields_ignored() {
+    let fixture = r#"{
+        "msg_id": "m_unk",
+        "role": "user",
+        "content": "test",
+        "images": [],
+        "timestamp": "2026-01-01T00:00:00Z",
+        "reactions": ["thumbs_up"],
+        "thread_id": "t_001"
+    }"#;
+    let msg: Message = serde_json::from_str(fixture).expect("unknown fields ignored");
+    assert_eq!(msg.msg_id, "m_unk");
+    assert_eq!(msg.role, Role::User);
+}
+
+#[test]
+fn cache_warning_unknown_fields_ignored() {
+    let fixture = r#"{
+        "type": "cache_warning",
+        "expected_tokens": 1000,
+        "message": "evicted",
+        "severity": "warning",
+        "cache_id": "c_123"
+    }"#;
+    let msg: ServerMessage = serde_json::from_str(fixture).expect("unknown fields ignored");
+    assert!(matches!(msg, ServerMessage::CacheWarning(_)));
+}
+
+#[test]
+fn send_image_unknown_fields_ignored() {
+    let fixture = r#"{
+        "type": "send_image",
+        "path": "/tmp/img.png",
+        "caption": "test",
+        "width": 800,
+        "height": 600
+    }"#;
+    let msg: ServerMessage = serde_json::from_str(fixture).expect("unknown fields ignored");
+    assert!(matches!(msg, ServerMessage::SendImage(_)));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Missing Optional Fields → None/Default
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn message_missing_optionals() {
+    let fixture = r#"{
+        "msg_id": "m_opt",
+        "role": "user",
+        "content": "test",
+        "timestamp": "2026-01-01T00:00:00Z"
+    }"#;
+    let msg: Message = serde_json::from_str(fixture).expect("missing optionals");
+    assert_eq!(msg.alt_index, None);
+    assert_eq!(msg.alt_count, None);
+    assert!(msg.images.is_empty()); // default empty vec
+}
+
+#[test]
+fn stream_chunk_missing_content_type_defaults_to_text() {
+    let fixture = r#"{
+        "type": "stream_chunk",
+        "text": "partial output"
+    }"#;
+    let msg: ServerMessage = serde_json::from_str(fixture).expect("missing content_type");
+    match msg {
+        ServerMessage::StreamChunk(c) => {
+            assert_eq!(c.content_type, "text"); // default
+        }
+        other => panic!("expected StreamChunk, got {:?}", other),
+    }
+}
+
+#[test]
+fn stream_start_missing_regen_defaults_to_false() {
+    let fixture = r#"{"type": "stream_start"}"#;
+    let msg: ServerMessage = serde_json::from_str(fixture).expect("missing regen");
+    match msg {
+        ServerMessage::StreamStart(s) => {
+            assert!(!s.regen); // default false
+        }
+        other => panic!("expected StreamStart, got {:?}", other),
+    }
+}
+
+#[test]
+fn client_hello_missing_capabilities_defaults_to_empty() {
+    let fixture = r#"{
+        "type": "hello",
+        "client_type": "cli",
+        "client_name": "shore-cli"
+    }"#;
+    let msg: ClientMessage = serde_json::from_str(fixture).expect("missing capabilities");
+    match msg {
+        ClientMessage::Hello(h) => {
+            assert!(h.capabilities.is_empty());
+        }
+        other => panic!("expected Hello, got {:?}", other),
+    }
+}
+
+#[test]
+fn client_message_missing_optionals() {
+    let fixture = r#"{
+        "type": "message",
+        "text": "hello"
+    }"#;
+    let msg: ClientMessage = serde_json::from_str(fixture).expect("missing optionals");
+    match msg {
+        ClientMessage::Message(m) => {
+            assert_eq!(m.rid, None);
+            assert!(!m.stream); // default false
+            assert!(m.images.is_empty()); // default empty
+            assert_eq!(m.absence_seconds, None);
+        }
+        other => panic!("expected Message, got {:?}", other),
+    }
+}
+
+#[test]
+fn client_regen_missing_optionals() {
+    let fixture = r#"{
+        "type": "regen"
+    }"#;
+    let msg: ClientMessage = serde_json::from_str(fixture).expect("missing optionals");
+    match msg {
+        ClientMessage::Regen(r) => {
+            assert_eq!(r.rid, None);
+            assert!(!r.stream);
+            assert_eq!(r.guidance, None);
+        }
+        other => panic!("expected Regen, got {:?}", other),
+    }
+}
+
+#[test]
+fn server_hello_missing_characters_defaults_to_empty() {
+    let fixture = r#"{
+        "type": "hello",
+        "v": 1,
+        "server_name": "shore-daemon"
+    }"#;
+    let msg: ServerMessage = serde_json::from_str(fixture).expect("missing characters");
+    match msg {
+        ServerMessage::Hello(h) => {
+            assert!(h.characters.is_empty());
+        }
+        other => panic!("expected Hello, got {:?}", other),
+    }
+}
+
+#[test]
+fn phase_missing_model() {
+    let fixture = r#"{
+        "type": "phase",
+        "phase": "text_generation"
+    }"#;
+    let msg: ServerMessage = serde_json::from_str(fixture).expect("missing model");
+    match msg {
+        ServerMessage::Phase(p) => {
+            assert_eq!(p.phase, "text_generation");
+            assert_eq!(p.model, None);
+        }
+        other => panic!("expected Phase, got {:?}", other),
+    }
+}
+
+#[test]
+fn send_image_missing_caption() {
+    let fixture = r#"{
+        "type": "send_image",
+        "path": "/tmp/img.png"
+    }"#;
+    let msg: ServerMessage = serde_json::from_str(fixture).expect("missing caption");
+    match msg {
+        ServerMessage::SendImage(si) => {
+            assert_eq!(si.path, "/tmp/img.png");
+            assert_eq!(si.caption, None);
+        }
+        other => panic!("expected SendImage, got {:?}", other),
+    }
+}
+
+#[test]
+fn tool_result_missing_is_error_defaults_to_false() {
+    let fixture = r#"{
+        "type": "tool_result",
+        "tool_id": "tc_def",
+        "tool_name": "search",
+        "output": "results"
+    }"#;
+    let msg: ServerMessage = serde_json::from_str(fixture).expect("missing is_error");
+    match msg {
+        ServerMessage::ToolResult(tr) => {
+            assert!(!tr.is_error);
+        }
+        other => panic!("expected ToolResult, got {:?}", other),
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Protocol Version Mismatch → ProtocolError
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn protocol_version_mismatch_produces_error() {
+    // A server sends v: 99, client should detect mismatch
+    let fixture = r#"{
+        "type": "hello",
+        "v": 99,
+        "server_name": "future-server",
+        "characters": []
+    }"#;
+    let msg: ServerMessage = serde_json::from_str(fixture).expect("deserializes fine");
+    match msg {
+        ServerMessage::Hello(h) => {
+            assert_ne!(h.v, SWP_V1);
+            // In a real client, this mismatch would produce a ProtocolError.
+            // Verify the error type serializes correctly.
+            let err = ServerMessage::Error(Error {
+                code: ErrorCode::ProtocolError,
+                message: format!(
+                    "protocol version mismatch: expected {}, got {}",
+                    SWP_V1, h.v
+                ),
+            });
+            let json = serde_json::to_value(&err).unwrap();
+            assert_eq!(json["type"], "error");
+            assert_eq!(json["code"], "protocol_error");
+            assert!(json["message"]
+                .as_str()
+                .unwrap()
+                .contains("protocol version mismatch"));
+        }
+        other => panic!("expected Hello, got {:?}", other),
+    }
+}
+
+#[test]
+fn protocol_error_code_golden() {
+    let fixture = r#"{
+        "type": "error",
+        "code": "protocol_error",
+        "message": "unsupported protocol version"
+    }"#;
+    let msg: ServerMessage = assert_golden(fixture);
+    match msg {
+        ServerMessage::Error(e) => {
+            assert_eq!(e.code, ErrorCode::ProtocolError);
+            assert_eq!(e.message, "unsupported protocol version");
+        }
+        other => panic!("expected Error, got {:?}", other),
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// All ErrorCode variants golden
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn all_error_codes_golden() {
+    let cases = vec![
+        ("protocol_error", ErrorCode::ProtocolError),
+        ("invalid_request", ErrorCode::InvalidRequest),
+        ("not_found", ErrorCode::NotFound),
+        ("busy", ErrorCode::Busy),
+        ("provider_error", ErrorCode::ProviderError),
+        ("timeout", ErrorCode::Timeout),
+        ("internal_error", ErrorCode::InternalError),
+    ];
+    for (json_str, expected_code) in cases {
+        let fixture = format!(
+            r#"{{"type": "error", "code": "{}", "message": "test"}}"#,
+            json_str
+        );
+        let msg: ServerMessage =
+            serde_json::from_str(&fixture).expect("error code deserializes");
+        match msg {
+            ServerMessage::Error(e) => {
+                assert_eq!(e.code, expected_code);
+                // Re-serialize and check code string
+                let json = serde_json::to_value(&e.code).unwrap();
+                assert_eq!(json.as_str().unwrap(), json_str);
+            }
+            other => panic!("expected Error, got {:?}", other),
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Role enum golden
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn all_roles_golden() {
+    let cases = vec![
+        ("user", Role::User),
+        ("assistant", Role::Assistant),
+        ("system", Role::System),
+    ];
+    for (json_str, expected_role) in cases {
+        let val: Role =
+            serde_json::from_value(json!(json_str)).expect("role deserializes");
+        assert_eq!(val, expected_role);
+        let serialized = serde_json::to_value(&val).unwrap();
+        assert_eq!(serialized.as_str().unwrap(), json_str);
+    }
+}

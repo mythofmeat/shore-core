@@ -1,0 +1,44 @@
+# Rust
+/target/
+**/*.rs.bk
+*.profraw
+*.profdata
+
+# Node / TypeScript
+node_modules/
+dist/
+*.js.map
+*.d.ts
+!shore-llm/tsconfig.json
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Runtime / data
+*.db
+*.sqlite
+*.sqlite3
+*.log
+*.sock
+*.pid
+
+# Task orchestration
+.ralph-tui
+*.todo.md
+todo/
+prd*.json
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
