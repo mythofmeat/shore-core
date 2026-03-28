@@ -165,7 +165,6 @@ fn openrouter_tool_model(name: &str, model_id: &str) -> ResolvedModel {
         reasoning_effort: None,
         budget_tokens: None,
         cache_ttl: None,
-        cache_control_depth: None,
         keepalive_enabled: None,
         keepalive_ttl_minutes: None,
         keepalive_max_pings: None,
@@ -315,8 +314,8 @@ async fn run_benchmark_mixed(
     char_def: &str,
 ) -> (String, usize, usize, u128) {
     let sock = socket_path();
-    let researcher_llm = InstrumentedLlm::new(LlmClient::new(sock.clone()), "researcher");
-    let agent_llm = InstrumentedLlm::new(LlmClient::new(sock.clone()), "agent");
+    let researcher_llm = InstrumentedLlm::new(LlmClient::new(), "researcher");
+    let agent_llm = InstrumentedLlm::new(LlmClient::new(), "agent");
 
     let researcher = MemoryResearcher::new(char_def.to_string(), String::new());
     let agent = MemoryAgent::one_shot(CallerIdentity::Char, "qifei", "ren");
