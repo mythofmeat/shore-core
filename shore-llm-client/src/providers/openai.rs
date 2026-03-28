@@ -371,9 +371,15 @@ fn build_chat_body(request: &LlmRequest, streaming: bool) -> Value {
     }
 
     // OpenRouter provider routing body param.
+    // The value is a TOML table (e.g. {order = ["anthropic"]}), serialized as a
+    // JSON object — use it directly rather than reading as a string.
     if pk == "openrouter" {
-        if let Some(or_provider) = provider_opt_str(request, "openrouter_provider") {
-            body["provider"] = json!({"order": [or_provider]});
+        if let Some(or_provider) = request
+            .provider_options
+            .as_ref()
+            .and_then(|opts| opts.get("openrouter_provider"))
+        {
+            body["provider"] = or_provider.clone();
         }
     }
 
