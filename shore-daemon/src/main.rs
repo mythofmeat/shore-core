@@ -32,14 +32,13 @@ use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // ── Structured JSON logging with rid propagation ─────────────────
+    // ── Human-readable logging (journalctl already adds timestamps) ──
     tracing_subscriber::fmt()
-        .json()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .with_target(true)
-        .with_thread_ids(true)
+        .without_time()
         .init();
 
     // ── Load configuration ───────────────────────────────────────────
