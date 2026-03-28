@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { unlinkSync } from "node:fs";
 import { logger } from "./logger.js";
 import { dispatch } from "./router.js";
 
@@ -18,6 +19,14 @@ const server = createServer((req, res) => {
     }
   });
 });
+
+// Remove stale socket file from a previous (unclean) run so that bind()
+// does not fail with EADDRINUSE on restart.
+try {
+  unlinkSync(socketPath);
+} catch {
+  // File does not exist — nothing to clean up.
+}
 
 server.listen(socketPath, () => {
   logger.info({ socketPath }, "shore-llm listening");

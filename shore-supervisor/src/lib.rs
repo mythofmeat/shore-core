@@ -219,13 +219,26 @@ impl Supervisor {
                         if let Some(restart_at) = svc.restart_after {
                             if now >= restart_at {
                                 svc.restart_after = None;
+                                svc.healthy_since = None;  // Not healthy until check passes.
                                 spawn_service(svc);
-                                svc.state = ServiceState::Ready;
-                                svc.healthy_since = Some(now);
-                                info!(service = %svc.name, "Service restarted");
-                                if svc.name == "shore-llm" {
-                                    let _ = self.llm_ready_tx.send(true);
-                                }
+                                let name = svc.name.clone();
+                                let socket = svc.socket.clone();
+                                // Health-check the restarted service before marking Ready.
+                                // Spawn as a task to keep the monitor loop non-blocking.
+                                let tx = self.llm_ready_tx.clone();
+                                tokio::spawn(async move {
+                                    if wait_for_health(&name, &socket).await {
+                                        info!(service = %name, "Service recovered after restart");
+                                        if name == "shore-llm" {
+                                            let _ = tx.send(true);
+                                        }
+                                    } else {
+                                        warn!(service = %name, "Service failed health check after restart");
+                                    }
+                                });
+                                // State will be updated by the monitor loop once the child
+                                // is observed as running (or exited) on subsequent ticks.
+                                svc.state = ServiceState::Starting;
                             }
                             continue;
                         }
@@ -423,7 +436,14 @@ async fn wait_for_health(service_name: &str, socket: &Path) -> bool {
 /// Perform a single health check against a Unix socket HTTP endpoint.
 ///
 /// Sends a minimal HTTP GET /v1/health request and checks for a 200 response.
+/// Times out after 5 seconds so a hung service does not block the caller.
 async fn check_health(socket: &Path) -> bool {
+    tokio::time::timeout(Duration::from_secs(5), check_health_inner(socket))
+        .await
+        .unwrap_or(false)
+}
+
+async fn check_health_inner(socket: &Path) -> bool {
     use tokio::net::UnixStream;
 
     let stream = match UnixStream::connect(socket).await {
