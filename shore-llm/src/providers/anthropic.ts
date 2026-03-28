@@ -252,6 +252,7 @@ export async function stream(
   res.chunkedEncoding = false;
   res.writeHead(200, {
     "Content-Type": "application/x-ndjson",
+    "Connection": "close",
   });
 
   // Accumulated state

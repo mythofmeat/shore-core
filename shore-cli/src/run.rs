@@ -129,6 +129,7 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                             output::print_new_message(nm, follow_char);
                         }
                         ServerMessage::StreamStart(start) => {
+                            output::reset_chunk_state();
                             if !start.regen {
                                 output::print_follow_stream_start(follow_char);
                             } else {
@@ -482,6 +483,7 @@ async fn recv_streaming_response(
         let msg = conn.recv().await?;
         match &msg {
             ServerMessage::StreamStart(start) => {
+                output::reset_chunk_state();
                 output::print_stream_start(start.regen);
                 spinner.start();
             }

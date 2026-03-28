@@ -95,13 +95,10 @@ fi
 
 # ── Temp environment ──────────────────────────────────────────────────
 TMPDIR=$(mktemp -d)
-LLM_PID=0
 DAEMON_PID=0
 cleanup() {
     kill $DAEMON_PID 2>/dev/null || true
-    kill $LLM_PID 2>/dev/null || true
     wait $DAEMON_PID 2>/dev/null || true
-    wait $LLM_PID 2>/dev/null || true
     rm -rf "$TMPDIR"
 }
 trap cleanup EXIT
@@ -145,6 +142,13 @@ activity_heatmap = false
 [memory]
 rag_results = 0
 
+[memory.collation]
+enabled = false
+
+[services.llm]
+command = "$LLM_BIN"
+socket = "$LLM_SOCK"
+
 [chat.openrouter]
 base_url = "https://openrouter.ai/api/v1"
 
@@ -170,24 +174,9 @@ export XDG_CONFIG_HOME="$TMPDIR/config"
 export XDG_DATA_HOME="$TMPDIR/data"
 export XDG_RUNTIME_DIR="$TMPDIR/runtime"
 
-# ── Start shore-llm ──────────────────────────────────────────────────
-printf "${BOLD}Starting shore-llm...${RESET}\n"
-setsid "$LLM_BIN" "$LLM_SOCK" &
-LLM_PID=$!
-
-for i in $(seq 1 30); do
-    [[ -S "$LLM_SOCK" ]] && break
-    sleep 0.1
-done
-if [[ ! -S "$LLM_SOCK" ]]; then
-    echo "shore-llm failed to start (socket not found after 3s)"
-    exit 1
-fi
-printf "${DIM}  shore-llm pid=$LLM_PID${RESET}\n"
-
-# ── Start shore-daemon ───────────────────────────────────────────────
+# ── Start shore-daemon (manages shore-llm via [services.llm]) ────────
 printf "${BOLD}Starting daemon...${RESET}\n"
-RUST_LOG=warn "$DAEMON" --config "$CONFIG_DIR/config.toml" &
+RUST_LOG=info "$DAEMON" --config "$CONFIG_DIR/config.toml" &
 DAEMON_PID=$!
 
 for i in $(seq 1 50); do
@@ -304,7 +293,7 @@ printf "${DIM}  %-50s${RESET}" "messages persist after restart"
 kill $DAEMON_PID 2>/dev/null || true
 wait $DAEMON_PID 2>/dev/null || true
 rm -f "$SOCK"
-RUST_LOG=warn "$DAEMON" --config "$CONFIG_DIR/config.toml" &
+RUST_LOG=info "$DAEMON" --config "$CONFIG_DIR/config.toml" &
 DAEMON_PID=$!
 for i in $(seq 1 50); do [[ -S "$SOCK" ]] && break; sleep 0.1; done
 
@@ -389,19 +378,11 @@ with open('$CHAR_DATA/active.jsonl', 'w') as f:
         f.write(json.dumps(m) + '\n')
 "
 
-# Ensure shore-llm is still alive (may have crashed during earlier tests).
-if ! kill -0 $LLM_PID 2>/dev/null; then
-    printf "${DIM}  restarting shore-llm...${RESET}\n"
-    node "$LLM_JS" "$LLM_SOCK" &
-    LLM_PID=$!
-    for i in $(seq 1 30); do [[ -S "$LLM_SOCK" ]] && break; sleep 0.1; done
-fi
-
 # Restart daemon to pick up the seeded messages.
 kill $DAEMON_PID 2>/dev/null || true
 wait $DAEMON_PID 2>/dev/null || true
 rm -f "$SOCK"
-RUST_LOG=warn "$DAEMON" --config "$CONFIG_DIR/config.toml" &
+RUST_LOG=info "$DAEMON" --config "$CONFIG_DIR/config.toml" &
 DAEMON_PID=$!
 for i in $(seq 1 50); do [[ -S "$SOCK" ]] && break; sleep 0.1; done
 
@@ -411,18 +392,9 @@ run_test_contains "seeded 26 messages" '"message_count": 26' $CLI status --json
 # Check memory status before compaction.
 run_test_contains "memory status (0 entries)" '"entries": 0' $CLI memory --json
 
-# Ensure shore-llm is still alive before compaction.
-if ! kill -0 $LLM_PID 2>/dev/null; then
-    printf "${DIM}  shore-llm died, restarting...${RESET}\n"
-    rm -f "$LLM_SOCK"
-    setsid "$LLM_BIN" "$LLM_SOCK" &
-    LLM_PID=$!
-    for i in $(seq 1 30); do [[ -S "$LLM_SOCK" ]] && break; sleep 0.1; done
-fi
-
 # Run compaction (requires LLM to extract memories).
 printf "${DIM}  %-50s${RESET}" "memory compact"
-output=$(timeout 120 $CLI memory compact 2>&1) || true
+output=$(timeout 480 $CLI memory compact 2>&1) || true
 if echo "$output" | grep -qiE "compact|entries|created"; then
     printf "${GREEN}PASS${RESET}\n"
     pass=$((pass + 1))
@@ -434,7 +406,7 @@ fi
 
 # Verify entries were created in the database.
 printf "${DIM}  %-50s${RESET}" "entries exist after compact"
-mem_output=$($CLI memory --json 2>&1)
+mem_output=$(timeout 60 $CLI memory --json 2>&1) || true
 entry_count=$(echo "$mem_output" | grep -o '"entries": [0-9]*' | head -1 | grep -o '[0-9]*')
 if [[ -n "$entry_count" ]] && [[ "$entry_count" -gt 0 ]]; then
     printf "${GREEN}PASS ($entry_count entries)${RESET}\n"

@@ -251,11 +251,14 @@ impl CompactionLlm for RealCompactionLlm {
             let request = LlmClient::build_request(&self.model, messages, None, None, None)
                 .map_err(|e| CompactionError::Llm(e.to_string()))?;
 
+            eprintln!("[compact-timing] summarize: starting LLM generate, prompt_len={}", prompt.len());
+            let t0 = std::time::Instant::now();
             let resp = self
                 .client
                 .generate(&request, None)
                 .await
-                .map_err(|e| CompactionError::Llm(e.to_string()))?;
+                .map_err(|e| { eprintln!("[compact-timing] summarize: LLM generate FAILED in {:?}: {}", t0.elapsed(), e); CompactionError::Llm(e.to_string()) })?;
+            eprintln!("[compact-timing] summarize: LLM generate done in {:?}, content_len={}", t0.elapsed(), resp.content.len());
 
             // Extract text from content blocks, falling back to content field.
             let text = if resp.content_blocks.is_empty() {
@@ -308,6 +311,8 @@ impl VectorIndexer for RealVectorIndexer {
         let text = text.to_string();
 
         Box::pin(async move {
+            eprintln!("[compact-timing] index_entry '{}': starting embed", &entry_id);
+            let t0 = std::time::Instant::now();
             let embedding = self
                 .client
                 .embed(
@@ -318,7 +323,8 @@ impl VectorIndexer for RealVectorIndexer {
                     &[text.as_str()],
                 )
                 .await
-                .map_err(|e| CompactionError::Indexing(e.to_string()))?;
+                .map_err(|e| { eprintln!("[compact-timing] index_entry '{}': embed FAILED in {:?}: {}", &entry_id, t0.elapsed(), e); CompactionError::Indexing(e.to_string()) })?;
+            eprintln!("[compact-timing] index_entry '{}': embed done in {:?}", &entry_id, t0.elapsed());
 
             let vec = embedding
                 .first()

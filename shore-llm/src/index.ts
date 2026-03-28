@@ -11,11 +11,21 @@ if (!socketPath) {
 }
 
 const server = createServer((req, res) => {
+  // Bun's HTTP server does not close the socket after res.end() for async
+  // streaming handlers. Since shore-llm is one-request-per-connection,
+  // destroy the socket once the response is fully flushed.
+  res.on("finish", () => req.socket?.destroy());
+
   dispatch(req, res).catch((err) => {
     logger.error({ err }, "unhandled error");
+    const errMsg = err instanceof Error ? err.message : String(err);
     if (!res.headersSent) {
-      res.writeHead(500, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "internal", message: "Internal server error" }));
+      const body = JSON.stringify({ error: "internal", message: errMsg });
+      res.writeHead(500, { "Content-Type": "application/json", "Connection": "close" });
+      res.end(body);
+    } else {
+      // Headers already sent (mid-stream error) — just close the response.
+      res.end();
     }
   });
 });

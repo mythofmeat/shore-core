@@ -26,6 +26,7 @@ function json(res: ServerResponse, status: number, data: unknown): void {
   res.writeHead(status, {
     "Content-Type": "application/json",
     "Content-Length": Buffer.byteLength(payload),
+    "Connection": "close",
   });
   res.end(payload);
 }

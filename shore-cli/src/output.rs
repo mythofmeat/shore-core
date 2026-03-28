@@ -40,15 +40,45 @@ fn abbreviate_model(model_id: &str) -> &str {
 /// Max characters to display for a tool result before truncating.
 const MAX_TOOL_OUTPUT: usize = 500;
 
+// Track whether the previous chunk was thinking, so we can insert a separator
+// when transitioning from thinking → text.
+static WAS_THINKING: AtomicBool = AtomicBool::new(false);
+
+/// Reset stream chunk state (call at the start of each new stream).
+pub fn reset_chunk_state() {
+    WAS_THINKING.store(false, Ordering::Relaxed);
+}
+
 /// Print a stream chunk to stdout. Thinking chunks are shown dimmed.
+/// A separator is printed when transitioning from thinking to text.
 pub fn print_chunk(chunk: &StreamChunk) {
     let stdout = io::stdout();
     let mut out = stdout.lock();
 
-    if chunk.content_type == "thinking" && use_color() {
-        let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
-        let _ = write!(out, "{}", chunk.text);
-        let _ = crossterm::execute!(out, ResetColor);
+    let is_thinking = chunk.content_type == "thinking";
+
+    // Insert a separator when transitioning from thinking → text.
+    if !is_thinking && WAS_THINKING.swap(false, Ordering::Relaxed) {
+        let _ = writeln!(out);
+        if use_color() {
+            let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+            let _ = write!(out, "---");
+            let _ = crossterm::execute!(out, ResetColor);
+        } else {
+            let _ = write!(out, "---");
+        }
+        let _ = writeln!(out);
+    }
+
+    if is_thinking {
+        WAS_THINKING.store(true, Ordering::Relaxed);
+        if use_color() {
+            let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+            let _ = write!(out, "{}", chunk.text);
+            let _ = crossterm::execute!(out, ResetColor);
+        } else {
+            let _ = write!(out, "{}", chunk.text);
+        }
     } else {
         let _ = write!(out, "{}", chunk.text);
     }

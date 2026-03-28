@@ -161,9 +161,12 @@ export async function generate(
     params.reasoning_effort = req.provider_options.reasoning_effort;
   }
 
+  const GENERATE_TIMEOUT_MS = (req.provider_options?.generate_timeout_ms as number | undefined) ?? 120_000; // 2 min default
+
   const start = performance.now();
   const completion = await client.chat.completions.create(
     params as unknown as OpenAI.ChatCompletionCreateParamsNonStreaming,
+    { timeout: GENERATE_TIMEOUT_MS },
   );
   const totalMs = performance.now() - start;
 
@@ -261,6 +264,7 @@ export async function stream(
   res.chunkedEncoding = false;
   res.writeHead(200, {
     "Content-Type": "application/x-ndjson",
+    "Connection": "close",
   });
 
   let textContent = "";

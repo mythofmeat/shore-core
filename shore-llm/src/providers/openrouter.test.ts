@@ -96,6 +96,7 @@ describe("OpenRouter provider", () => {
       expect.anything(),
       expect.objectContaining({ provider: "openrouter" }),
       "openrouter",
+      "reasoning",
     );
   });
 
@@ -107,6 +108,7 @@ describe("OpenRouter provider", () => {
       expect.objectContaining({ provider: "openrouter" }),
       mockRes,
       "openrouter",
+      "reasoning",
     );
   });
 });

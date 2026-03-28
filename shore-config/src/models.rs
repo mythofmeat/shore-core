@@ -445,6 +445,7 @@ fn hardcoded_defaults(provider_key: &str) -> ProviderConfig {
         "openrouter" => ProviderConfig {
             sdk: Some(Sdk::Openai),
             api_key_env: Some("OPENROUTER_API_KEY".into()),
+            base_url: Some("https://openrouter.ai/api/v1".into()),
             temperature: Some(1.0),
             max_tokens: Some(8192),
             max_context_tokens: Some(200_000),

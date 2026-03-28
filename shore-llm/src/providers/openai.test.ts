@@ -397,6 +397,7 @@ describe("generate", () => {
         top_p: 0.9,
         stream: false,
       }),
+      expect.objectContaining({ timeout: expect.any(Number) }),
     );
   });
 
@@ -412,6 +413,7 @@ describe("generate", () => {
       expect.objectContaining({
         reasoning_effort: "high",
       }),
+      expect.objectContaining({ timeout: expect.any(Number) }),
     );
   });
 });
