@@ -289,24 +289,40 @@ fn handle_server_message(app: &mut App, msg: ServerMessage) {
         }
 
         ServerMessage::NewMessage(new_msg) => {
-            let entry = match new_msg.message.role {
-                Role::User => ConversationEntry::User {
-                    content: new_msg.message.content,
-                    images: new_msg.message.images,
-                    timestamp: new_msg.message.timestamp,
-                },
-                Role::Assistant => ConversationEntry::Assistant {
-                    content: new_msg.message.content,
-                    images: new_msg.message.images,
-                    timestamp: new_msg.message.timestamp,
-                    metadata: None,
-                },
-                Role::System => ConversationEntry::System {
-                    content: new_msg.message.content,
-                    timestamp: new_msg.message.timestamp,
-                },
-            };
-            app.entries.push(entry);
+            // Deduplicate: engine.append_message broadcasts History (which
+            // clears + rebuilds entries) AND the handler broadcasts NewMessage
+            // for the same user message.  Skip if the last entry already
+            // matches this timestamp (placed there by the preceding History).
+            let dominated = app.entries.last().map_or(false, |last| {
+                let ts = match last {
+                    ConversationEntry::User { timestamp, .. }
+                    | ConversationEntry::Assistant { timestamp, .. }
+                    | ConversationEntry::System { timestamp, .. } => timestamp.as_str(),
+                    _ => "",
+                };
+                !ts.is_empty() && ts == new_msg.message.timestamp
+            });
+
+            if !dominated {
+                let entry = match new_msg.message.role {
+                    Role::User => ConversationEntry::User {
+                        content: new_msg.message.content,
+                        images: new_msg.message.images,
+                        timestamp: new_msg.message.timestamp,
+                    },
+                    Role::Assistant => ConversationEntry::Assistant {
+                        content: new_msg.message.content,
+                        images: new_msg.message.images,
+                        timestamp: new_msg.message.timestamp,
+                        metadata: None,
+                    },
+                    Role::System => ConversationEntry::System {
+                        content: new_msg.message.content,
+                        timestamp: new_msg.message.timestamp,
+                    },
+                };
+                app.entries.push(entry);
+            }
             if app.auto_scroll {
                 app.scroll_to_bottom();
             }

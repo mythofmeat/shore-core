@@ -10,12 +10,19 @@ import {
   generate as openaiGenerate,
   stream as openaiStream,
 } from "./openai.js";
+import {
+  createClient as createAnthropicClient,
+  generate as anthropicGenerate,
+  stream as anthropicStream,
+} from "./anthropic.js";
+import type { GenerateRequest } from "./anthropic.js";
 
 // ── Types ────────────────────────────────────────────────────────────
 
 export interface OpenRouterProviderOptions {
   http_referer?: string;
   x_title?: string;
+  openrouter_provider?: Record<string, unknown>;
 }
 
 // ── Client creation ──────────────────────────────────────────────────
@@ -32,21 +39,64 @@ export function createOpenRouterClient(
   return createClient(apiKey, "https://openrouter.ai/api/v1", headers);
 }
 
+// ── Helpers ─────────────────────────────────────────────────────────
+
+/** Build extra body params for the OpenRouter API (e.g. provider routing). */
+function extraBodyParams(
+  providerOptions?: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  const opts = providerOptions as OpenRouterProviderOptions | undefined;
+  if (opts?.openrouter_provider) {
+    return { provider: opts.openrouter_provider };
+  }
+  return undefined;
+}
+
 // ── Main API ────────────────────────────────────────────────────────
+
+const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
+
+/**
+ * Anthropic models on OpenRouter use the Anthropic SDK so that
+ * cache_control breakpoints, thinking config, and cache token
+ * reporting all work natively.  Non-Anthropic models use the
+ * OpenAI-compatible path.
+ */
+function isAnthropicModel(model: string): boolean {
+  return model.startsWith("anthropic/");
+}
 
 export async function generate(
   req: ProviderRequest,
 ): Promise<NormalizedResponse> {
+  if (isAnthropicModel(req.model)) {
+    const client = createAnthropicClient(req.api_key, OPENROUTER_BASE_URL);
+    return anthropicGenerate(
+      client,
+      req as unknown as GenerateRequest,
+      "openrouter",
+      extraBodyParams(req.provider_options),
+    );
+  }
   const client = createOpenRouterClient(req.api_key, req.provider_options);
-  return openaiGenerate(client, req, "openrouter", "reasoning");
+  return openaiGenerate(client, req, "openrouter", "reasoning", extraBodyParams(req.provider_options));
 }
 
 export async function stream(
   req: ProviderRequest,
   res: ServerResponse,
 ): Promise<void> {
+  if (isAnthropicModel(req.model)) {
+    const client = createAnthropicClient(req.api_key, OPENROUTER_BASE_URL);
+    return anthropicStream(
+      client,
+      req as unknown as GenerateRequest,
+      res,
+      extraBodyParams(req.provider_options),
+    );
+  }
   const client = createOpenRouterClient(req.api_key, req.provider_options);
-  return openaiStream(client, req, res, "openrouter", "reasoning");
+  return openaiStream(client, req, res, "openrouter", "reasoning", extraBodyParams(req.provider_options));
 }
 
 // ── Image generation ────────────────────────────────────────────────

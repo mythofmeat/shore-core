@@ -188,6 +188,7 @@ export function createClient(
 export function buildCreateParams(
   req: GenerateRequest,
   stream: boolean,
+  extraBodyParams?: Record<string, unknown>,
 ): MessageCreateParamsNonStreaming | MessageCreateParamsStreaming {
   const messages = req.provider_options?.cache_control_depth
     ? applyCacheControl(req.messages, req.provider_options.cache_control_depth)
@@ -209,6 +210,14 @@ export function buildCreateParams(
   if (req.top_p != null) params.top_p = req.top_p;
   if (thinking) params.thinking = thinking;
   if (outputConfig) params.output_config = outputConfig;
+  if (extraBodyParams) Object.assign(params, extraBodyParams);
+
+  // Forward OpenRouter provider routing if present (for Anthropic SDK
+  // used with OpenRouter base URL).
+  const rawOpts = req.provider_options as Record<string, unknown> | undefined;
+  if (rawOpts?.openrouter_provider && !params.provider) {
+    params.provider = rawOpts.openrouter_provider;
+  }
 
   return params as unknown as MessageCreateParamsNonStreaming | MessageCreateParamsStreaming;
 }
@@ -217,8 +226,10 @@ export function buildCreateParams(
 export async function generate(
   client: Anthropic,
   req: GenerateRequest,
+  providerName = "anthropic",
+  extraBodyParams?: Record<string, unknown>,
 ): Promise<NormalizedResponse> {
-  const params = buildCreateParams(req, false) as MessageCreateParamsNonStreaming;
+  const params = buildCreateParams(req, false, extraBodyParams) as MessageCreateParamsNonStreaming;
   const start = performance.now();
   const msg = await client.messages.create(params);
   const totalMs = performance.now() - start;
@@ -233,7 +244,7 @@ export async function generate(
       time_to_first_token_ms: Math.round(totalMs),
     },
     model: msg.model,
-    provider: "anthropic",
+    provider: providerName,
   };
 }
 
@@ -242,8 +253,9 @@ export async function stream(
   client: Anthropic,
   req: GenerateRequest,
   res: ServerResponse,
+  extraBodyParams?: Record<string, unknown>,
 ): Promise<void> {
-  const params = buildCreateParams(req, true) as MessageCreateParamsStreaming;
+  const params = buildCreateParams(req, true, extraBodyParams) as MessageCreateParamsStreaming;
   const start = performance.now();
   let firstTokenMs: number | null = null;
 

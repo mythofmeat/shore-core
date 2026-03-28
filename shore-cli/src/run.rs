@@ -478,6 +478,7 @@ async fn recv_streaming_response(
     conn: &mut SWPConnection,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut spinner = output::StreamSpinner::new();
+    spinner.start();
 
     loop {
         let msg = conn.recv().await?;
@@ -485,7 +486,6 @@ async fn recv_streaming_response(
             ServerMessage::StreamStart(start) => {
                 output::reset_chunk_state();
                 output::print_stream_start(start.regen);
-                spinner.start();
             }
             ServerMessage::StreamChunk(chunk) => {
                 spinner.clear().await;

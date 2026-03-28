@@ -49,6 +49,15 @@ pub fn handle_search_entries(db: &MemoryDB, input: &Value) -> Result<String, Str
                         m.insert("summary_text".into(), Value::String(h.summary_text));
                         m.insert("topic_tags".into(), Value::String(h.topic_tags));
                         m.insert("topic_key".into(), Value::String(h.topic_key));
+                        m.insert("status".into(), Value::String(h.status));
+                        m.insert("memory_type".into(), Value::String(h.memory_type));
+                        m.insert("created_at".into(), Value::String(h.created_at));
+                        m.insert(
+                            "confidence".into(),
+                            serde_json::Number::from_f64(h.confidence)
+                                .map(Value::Number)
+                                .unwrap_or(Value::Null),
+                        );
                         m.insert(
                             "rank".into(),
                             serde_json::Number::from_f64(h.rank)

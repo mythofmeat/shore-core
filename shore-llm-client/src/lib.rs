@@ -110,7 +110,9 @@ impl LlmClient {
                 map.insert("cache_ttl".into(), serde_json::json!(ttl));
             }
             if let Some(ref or_provider) = model.openrouter_provider {
-                map.insert("openrouter_provider".into(), serde_json::json!(or_provider.to_string()));
+                if let Ok(val) = serde_json::to_value(or_provider) {
+                    map.insert("openrouter_provider".into(), val);
+                }
             }
             if let Some(ref project) = model.vertex_project {
                 map.insert("vertex_project".into(), serde_json::json!(project));

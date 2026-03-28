@@ -106,7 +106,8 @@ impl ConversationEngine {
 
     // ── Message CRUD ────────────────────────────────────────────────────
 
-    /// Append a message to the active conversation.
+    /// Append a message to the active conversation and broadcast a `History`
+    /// snapshot so all connected clients stay in sync.
     pub fn append_message(&mut self, msg: Message) -> Result<(), EngineError> {
         self.messages.append(msg)?;
         self.broadcast_history();
