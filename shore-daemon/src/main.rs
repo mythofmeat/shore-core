@@ -24,7 +24,6 @@ use shore_daemon::memory::db::MemoryDB;
 use shore_daemon::memory::vectorstore::VectorStore;
 use shore_daemon::server::registry::{InstanceInfo, Registry};
 use shore_daemon::server::{Server, ServerConfig};
-use shore_supervisor::Supervisor;
 use shore_protocol::server_msg::{History, ServerMessage};
 use tokio::sync::{broadcast, mpsc};
 use tracing::{error, info, warn};
@@ -128,56 +127,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let _ = shutdown_tx.send(());
     });
 
-    // ── Start process supervisor ─────────────────────────────────────
-    let mut sup = Supervisor::from_config(&loaded.app.services, &loaded.dirs.runtime);
-    let has_services = !sup.states().is_empty();
-    let llm_ready_rx = sup.llm_ready();
-
-    // Determine shore-llm socket path for the LLM client.
-    let llm_socket = loaded
-        .app
-        .services
-        .llm
-        .socket
-        .as_ref()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| loaded.dirs.runtime.join("llm.sock"));
-
-    let supervisor_shutdown_rx = shutdown_rx.clone();
-    let supervisor_handle = if has_services {
-        let handle = tokio::spawn(async move {
-            sup.run(supervisor_shutdown_rx).await;
-        });
-
-        // Wait for shore-llm to become ready before accepting SWP connections.
-        if sup_has_llm(&loaded.app.services) {
-            info!("Waiting for shore-llm to become ready before accepting connections...");
-            let mut rx = llm_ready_rx;
-            loop {
-                if *rx.borrow() {
-                    break;
-                }
-                if rx.changed().await.is_err() {
-                    warn!("Supervisor shut down before shore-llm became ready");
-                    break;
-                }
-            }
-            info!("shore-llm is ready, starting SWP server");
-        }
-        Some(handle)
-    } else {
-        None
-    };
-
-    // If shore-llm is not supervisor-managed, check that the socket exists.
-    if !sup_has_llm(&loaded.app.services) && !llm_socket.exists() {
-        warn!(
-            "shore-llm socket not found at {}. Is shore-llm running? \
-             LLM requests will fail until shore-llm is started.",
-            llm_socket.display()
-        );
-    }
-
     // ── Create server and message handler ─────────────────────────────
     let server = Server::new(server_config);
     let push_tx = server.push_sender();
@@ -199,7 +148,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         shutdown_rx.clone(),
     );
 
-    let mut llm_client = LlmClient::new(llm_socket);
+    let mut llm_client = LlmClient::new();
     if loaded.app.advanced.api_payload_logging {
         llm_client.set_payload_log_dir(loaded.dirs.data.clone());
         info!("API payload logging enabled → {}/api_payloads.jsonl", loaded.dirs.data.display());
@@ -268,9 +217,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // allowing the compaction task's recv() to return None and exit.
     drop(autonomy);
     let _ = tokio::time::timeout(shutdown_timeout, compaction_handle).await;
-    if let Some(handle) = supervisor_handle {
-        let _ = tokio::time::timeout(shutdown_timeout, handle).await;
-    }
 
     // ── Cleanup ──────────────────────────────────────────────────────
     if let Err(e) = registry.unregister(&instance_id) {
@@ -547,11 +493,6 @@ async fn run_collation(
     );
 
     Ok(())
-}
-
-/// Check if shore-llm is configured as a supervised service.
-fn sup_has_llm(services: &shore_config::app::ServicesConfig) -> bool {
-    services.llm.enabled
 }
 
 /// Simple epoch-seconds timestamp without pulling in chrono.

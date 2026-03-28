@@ -59,7 +59,6 @@ pub struct ProviderConfig {
     pub reasoning_effort: Option<String>,
     pub budget_tokens: Option<u32>,
     pub cache_ttl: Option<String>,
-    pub cache_control_depth: Option<u32>,
     pub keepalive_enabled: Option<bool>,
     pub keepalive_ttl_minutes: Option<u32>,
     pub keepalive_max_pings: Option<u32>,
@@ -89,7 +88,6 @@ pub struct ModelEntry {
     pub reasoning_effort: Option<String>,
     pub budget_tokens: Option<u32>,
     pub cache_ttl: Option<String>,
-    pub cache_control_depth: Option<u32>,
     pub keepalive_enabled: Option<bool>,
     pub keepalive_ttl_minutes: Option<u32>,
     pub keepalive_max_pings: Option<u32>,
@@ -114,7 +112,6 @@ impl Default for ModelEntry {
             reasoning_effort: None,
             budget_tokens: None,
             cache_ttl: None,
-            cache_control_depth: None,
             keepalive_enabled: None,
             keepalive_ttl_minutes: None,
             keepalive_max_pings: None,
@@ -153,7 +150,6 @@ pub struct ResolvedModel {
     pub reasoning_effort: Option<String>,
     pub budget_tokens: Option<u32>,
     pub cache_ttl: Option<String>,
-    pub cache_control_depth: Option<u32>,
     pub keepalive_enabled: Option<bool>,
     pub keepalive_ttl_minutes: Option<u32>,
     pub keepalive_max_pings: Option<u32>,
@@ -392,9 +388,6 @@ fn parse_category(
                     .or(provider_config.reasoning_effort.clone()),
                 budget_tokens: entry.budget_tokens.or(provider_config.budget_tokens),
                 cache_ttl: entry.cache_ttl.or(provider_config.cache_ttl.clone()),
-                cache_control_depth: entry
-                    .cache_control_depth
-                    .or(provider_config.cache_control_depth),
                 keepalive_enabled: entry
                     .keepalive_enabled
                     .or(provider_config.keepalive_enabled),
@@ -439,7 +432,6 @@ fn hardcoded_defaults(provider_key: &str) -> ProviderConfig {
             temperature: Some(1.0),
             max_tokens: Some(8192),
             max_context_tokens: Some(200_000),
-            cache_control_depth: Some(2),
             ..Default::default()
         },
         "openrouter" => ProviderConfig {
@@ -521,7 +513,6 @@ fn merge_provider(base: &mut ProviderConfig, overlay: &ProviderConfig) {
     merge_opt!(reasoning_effort);
     merge_opt!(budget_tokens);
     merge_opt!(cache_ttl);
-    merge_opt!(cache_control_depth);
     merge_opt!(keepalive_enabled);
     merge_opt!(keepalive_ttl_minutes);
     merge_opt!(keepalive_max_pings);

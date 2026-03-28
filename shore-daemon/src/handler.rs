@@ -822,7 +822,7 @@ mod tests {
             active_model: None,
             session_tokens: Default::default(),
             autonomy: autonomy.clone(),
-            llm_client: LlmClient::new(tmp.path().join("dummy.sock")),
+            llm_client: LlmClient::new(),
             diagnostics: std::sync::Arc::new(std::sync::Mutex::new(shore_diagnostics::Diagnostics::default())),
             memory_shell_sessions: std::collections::HashMap::new(),
         };
@@ -832,7 +832,7 @@ mod tests {
         let handler = MessageHandler {
             registry,
             cmd_ctx,
-            llm_client: LlmClient::new(tmp.path().join("dummy.sock")),
+            llm_client: LlmClient::new(),
             push_tx: push_tx.clone(),
             is_first_after_restart: false,
             autonomy,

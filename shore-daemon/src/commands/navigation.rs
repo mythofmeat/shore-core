@@ -204,7 +204,7 @@ mod tests {
             active_model: None,
             session_tokens: SessionTokens::default(),
             autonomy,
-            llm_client: shore_llm_client::LlmClient::new(data_dir.join("dummy.sock")),
+            llm_client: shore_llm_client::LlmClient::new(),
             diagnostics: std::sync::Arc::new(std::sync::Mutex::new(shore_diagnostics::Diagnostics::default())),
             memory_shell_sessions: std::collections::HashMap::new(),
         };

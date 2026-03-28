@@ -5,7 +5,6 @@ members = [
     "shore-client",
     "shore-diagnostics",
     "shore-config",
-    "shore-supervisor",
     "shore-llm-client",
     "shore-daemon",
     "shore-cli",
@@ -25,8 +24,9 @@ tokio = { version = "1", features = ["full"] }
 chrono = "0.4"
 libc = "0.2"
 tempfile = "3"
+reqwest = { version = "0.12", features = ["json", "stream"] }
+futures-util = "0.3"
 shore-protocol = { path = "shore-protocol" }
 shore-config = { path = "shore-config" }
 shore-diagnostics = { path = "shore-diagnostics" }
-shore-supervisor = { path = "shore-supervisor" }
 shore-llm-client = { path = "shore-llm-client" }

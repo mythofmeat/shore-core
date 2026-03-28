@@ -27,7 +27,6 @@ use shore_config::{LoadedConfig, ShoreDirs};
 use shore_daemon::handler::MessageHandler;
 use shore_llm_client::LlmClient;
 use shore_daemon::server::{Server, ServerConfig};
-use shore_supervisor::Supervisor;
 use shore_protocol::server_msg::ServerMessage;
 use tokio::time::timeout;
 
@@ -187,35 +186,7 @@ async fn e2e_conversation_milestone() {
     let llm_socket = tmp.path().join("runtime").join("llm.sock");
     let loaded = build_test_config(&tmp, &llm_socket);
 
-    // ── Start process supervisor ───────────────────────────────────────
-    let mut sup = Supervisor::from_config(&loaded.app.services, &loaded.dirs.runtime);
-    let llm_ready_rx = sup.llm_ready();
-
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
-    let supervisor_shutdown_rx = shutdown_rx.clone();
-    let supervisor_handle = tokio::spawn(async move {
-        sup.run(supervisor_shutdown_rx).await;
-    });
-
-    // Wait for shore-llm to become ready.
-    eprintln!("Waiting for shore-llm to become ready...");
-    {
-        let mut rx = llm_ready_rx;
-        let ready = timeout(Duration::from_secs(45), async {
-            loop {
-                if *rx.borrow() {
-                    return true;
-                }
-                if rx.changed().await.is_err() {
-                    return false;
-                }
-            }
-        })
-        .await
-        .unwrap_or(false);
-        assert!(ready, "shore-llm did not become ready within 45s");
-    }
-    eprintln!("shore-llm is ready");
 
     // ── Start SWP server ───────────────────────────────────────────────
     let server_config = ServerConfig {
@@ -237,11 +208,12 @@ async fn e2e_conversation_milestone() {
 
     let (autonomy, _compaction_rx) = shore_daemon::autonomy::manager::AutonomyManager::new(
         Default::default(),
+        Default::default(),
         loaded.dirs.data.clone(),
         shutdown_rx.clone(),
     );
 
-    let llm_client = LlmClient::new(llm_socket.clone());
+    let llm_client = LlmClient::new();
 
     let cmd_ctx = CommandContext {
         config: loaded.clone(),
@@ -613,7 +585,6 @@ async fn e2e_conversation_milestone() {
     let _ = shutdown_tx.send(());
     let _ = server_handle.await;
     let _ = handler_handle.await;
-    let _ = supervisor_handle.await;
     eprintln!("=== E2E test passed ===");
 }
 
@@ -638,7 +609,6 @@ struct E2EHarness {
     shutdown_tx: tokio::sync::watch::Sender<()>,
     server_handle: tokio::task::JoinHandle<()>,
     handler_handle: tokio::task::JoinHandle<()>,
-    supervisor_handle: tokio::task::JoinHandle<()>,
     data_dir: PathBuf,
     _tmp: tempfile::TempDir,
 }
@@ -646,37 +616,8 @@ struct E2EHarness {
 impl E2EHarness {
     async fn start(loaded: LoadedConfig, tmp: tempfile::TempDir) -> Self {
         let socket_path = tmp.path().join("runtime").join("daemon.sock");
-        let llm_socket_str = loaded.app.services.llm.socket.clone().unwrap();
-        let llm_socket = PathBuf::from(&llm_socket_str);
-
-        let mut sup = Supervisor::from_config(&loaded.app.services, &loaded.dirs.runtime);
-        let llm_ready_rx = sup.llm_ready();
 
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
-        let supervisor_shutdown_rx = shutdown_rx.clone();
-        let supervisor_handle = tokio::spawn(async move {
-            sup.run(supervisor_shutdown_rx).await;
-        });
-
-        // Wait for shore-llm to become ready.
-        eprintln!("Waiting for shore-llm to become ready...");
-        {
-            let mut rx = llm_ready_rx;
-            let ready = timeout(Duration::from_secs(45), async {
-                loop {
-                    if *rx.borrow() {
-                        return true;
-                    }
-                    if rx.changed().await.is_err() {
-                        return false;
-                    }
-                }
-            })
-            .await
-            .unwrap_or(false);
-            assert!(ready, "shore-llm did not become ready within 45s");
-        }
-        eprintln!("shore-llm is ready");
 
         let server_config = ServerConfig {
             socket_path: socket_path.clone(),
@@ -693,15 +634,17 @@ impl E2EHarness {
             loaded.dirs.config.clone(),
             loaded.dirs.data.clone(),
             push_tx.clone(),
+            loaded.clone(),
         );
 
         let (autonomy, _compaction_rx) = shore_daemon::autonomy::manager::AutonomyManager::new(
+            Default::default(),
             Default::default(),
             loaded.dirs.data.clone(),
             shutdown_rx.clone(),
         );
 
-        let llm_client = LlmClient::new(llm_socket);
+        let llm_client = LlmClient::new();
 
         let cmd_ctx = CommandContext {
             config: loaded.clone(),
@@ -752,7 +695,6 @@ impl E2EHarness {
             shutdown_tx,
             server_handle,
             handler_handle,
-            supervisor_handle,
             data_dir,
             _tmp: tmp,
         }
@@ -762,7 +704,6 @@ impl E2EHarness {
         let _ = self.shutdown_tx.send(());
         let _ = self.server_handle.await;
         let _ = self.handler_handle.await;
-        let _ = self.supervisor_handle.await;
     }
 }
 

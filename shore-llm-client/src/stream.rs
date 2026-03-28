@@ -2,8 +2,7 @@ use shore_protocol::server_msg::{
     CacheWarning, ServerMessage, StreamChunk, StreamEnd, StreamStart,
 };
 use shore_protocol::types::{StreamMetadata, TimingInfo, TokenCounts};
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::net::UnixStream;
+use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::sync::broadcast;
 use tracing::{debug, error, info};
 
@@ -62,7 +61,7 @@ impl StreamConsumer {
     /// the rules in section 13.3.
     pub async fn consume(
         &self,
-        reader: &mut BufReader<UnixStream>,
+        reader: &mut BufReader<impl AsyncRead + Unpin>,
         regen: bool,
         cache_ctx: &CacheContext,
     ) -> Result<StreamResult, LlmError> {
@@ -95,7 +94,9 @@ impl StreamConsumer {
 
         loop {
             let mut line = String::new();
-            let n = reader.read_line(&mut line).await?;
+            let n = reader.read_line(&mut line).await.map_err(|e| {
+                LlmError::Provider { message: format!("stream read error: {e}") }
+            })?;
             if n == 0 {
                 // EOF — stream ended without "done" event.
                 return Err(LlmError::IncompleteStream);
@@ -299,39 +300,25 @@ fn check_cache_invalidation(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::io::AsyncWriteExt;
-    use tokio::net::{UnixListener, UnixStream};
+    use tokio::io::{AsyncWriteExt, DuplexStream};
 
-    /// Helper: set up a Unix socket pair and return (server_writer, client_reader).
-    async fn setup_stream_pair() -> (
-        tokio::io::WriteHalf<UnixStream>,
-        BufReader<UnixStream>,
+    /// Helper: set up a duplex stream pair and return (writer, reader, push_tx, push_rx).
+    fn setup_stream_pair() -> (
+        DuplexStream,
+        BufReader<DuplexStream>,
         broadcast::Sender<ServerMessage>,
         broadcast::Receiver<ServerMessage>,
     ) {
-        let tmp = tempfile::tempdir().unwrap();
-        let socket_path = tmp.path().join("stream-test.sock");
-
-        let listener = UnixListener::bind(&socket_path).unwrap();
-
-        let client_stream = UnixStream::connect(&socket_path).await.unwrap();
-        let (server_stream, _) = listener.accept().await.unwrap();
-
-        let (_, server_writer) = tokio::io::split(server_stream);
-        let client_reader = BufReader::new(client_stream);
-
+        let (client_half, server_half) = tokio::io::duplex(64 * 1024);
+        let client_reader = BufReader::new(client_half);
         let (push_tx, push_rx) = broadcast::channel(64);
-
-        // Keep tmp alive by leaking it (test-only).
-        Box::leak(Box::new(tmp));
-
-        (server_writer, client_reader, push_tx, push_rx)
+        (server_half, client_reader, push_tx, push_rx)
     }
 
     #[tokio::test]
     async fn consume_simple_stream() {
         let (mut writer, mut reader, push_tx, mut push_rx) =
-            setup_stream_pair().await;
+            setup_stream_pair();
         let consumer = StreamConsumer::new(push_tx);
 
         let ctx = CacheContext {
@@ -409,7 +396,7 @@ mod tests {
     #[tokio::test]
     async fn consume_stream_with_thinking_and_tools() {
         let (mut writer, mut reader, push_tx, mut push_rx) =
-            setup_stream_pair().await;
+            setup_stream_pair();
         let consumer = StreamConsumer::new(push_tx);
 
         let ctx = CacheContext::default();
@@ -461,7 +448,7 @@ mod tests {
     #[tokio::test]
     async fn consume_stream_with_thinking_signature() {
         let (mut writer, mut reader, push_tx, _push_rx) =
-            setup_stream_pair().await;
+            setup_stream_pair();
         let consumer = StreamConsumer::new(push_tx);
         let ctx = CacheContext::default();
 
@@ -500,7 +487,7 @@ mod tests {
     #[tokio::test]
     async fn consume_stream_with_redacted_thinking() {
         let (mut writer, mut reader, push_tx, _push_rx) =
-            setup_stream_pair().await;
+            setup_stream_pair();
         let consumer = StreamConsumer::new(push_tx);
         let ctx = CacheContext::default();
 
@@ -545,7 +532,7 @@ mod tests {
     #[tokio::test]
     async fn consume_regen_sets_flag() {
         let (mut writer, mut reader, push_tx, mut push_rx) =
-            setup_stream_pair().await;
+            setup_stream_pair();
         let consumer = StreamConsumer::new(push_tx);
         let ctx = CacheContext::default();
 
@@ -578,7 +565,7 @@ mod tests {
     #[tokio::test]
     async fn incomplete_stream_returns_error() {
         let (mut writer, mut reader, push_tx, _push_rx) =
-            setup_stream_pair().await;
+            setup_stream_pair();
         let consumer = StreamConsumer::new(push_tx);
         let ctx = CacheContext::default();
 
@@ -605,7 +592,7 @@ mod tests {
     #[tokio::test]
     async fn content_blocks_merge_consecutive_text() {
         let (mut writer, mut reader, push_tx, _push_rx) =
-            setup_stream_pair().await;
+            setup_stream_pair();
         let consumer = StreamConsumer::new(push_tx);
         let ctx = CacheContext::default();
 
@@ -637,7 +624,7 @@ mod tests {
     #[tokio::test]
     async fn content_blocks_merge_consecutive_thinking() {
         let (mut writer, mut reader, push_tx, _push_rx) =
-            setup_stream_pair().await;
+            setup_stream_pair();
         let consumer = StreamConsumer::new(push_tx);
         let ctx = CacheContext::default();
 
@@ -670,7 +657,7 @@ mod tests {
     #[tokio::test]
     async fn content_blocks_type_change_flushes_buffer() {
         let (mut writer, mut reader, push_tx, _push_rx) =
-            setup_stream_pair().await;
+            setup_stream_pair();
         let consumer = StreamConsumer::new(push_tx);
         let ctx = CacheContext::default();
 
@@ -705,7 +692,7 @@ mod tests {
     #[tokio::test]
     async fn content_blocks_text_only_stream() {
         let (mut writer, mut reader, push_tx, _push_rx) =
-            setup_stream_pair().await;
+            setup_stream_pair();
         let consumer = StreamConsumer::new(push_tx);
         let ctx = CacheContext::default();
 
@@ -734,7 +721,7 @@ mod tests {
     #[tokio::test]
     async fn content_blocks_empty_on_no_content() {
         let (mut writer, mut reader, push_tx, _push_rx) =
-            setup_stream_pair().await;
+            setup_stream_pair();
         let consumer = StreamConsumer::new(push_tx);
         let ctx = CacheContext::default();
 

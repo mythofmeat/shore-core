@@ -59,17 +59,14 @@ pub fn should_retry_error(
 
     match error {
         // Transient network/connection errors — retry.
-        LlmError::Connect { .. } | LlmError::Io(_) | LlmError::IncompleteStream => {
+        LlmError::Request(_) | LlmError::IncompleteStream => {
             warn!(attempt, error = %error, "Transient error, retrying");
             RetryDecision::Retry
         }
 
         // HTTP 5xx or 429 — retry.
         LlmError::HttpStatus { status, .. }
-            if status.contains("500")
-                || status.contains("502")
-                || status.contains("503")
-                || status.contains("429") =>
+            if *status >= 500 || *status == 429 =>
         {
             warn!(attempt, status = %status, "Server error, retrying");
             RetryDecision::Retry
@@ -79,7 +76,7 @@ pub fn should_retry_error(
         LlmError::HttpStatus { .. } => RetryDecision::Fail,
 
         // Serialization/deserialization — not transient.
-        LlmError::Serialize(_) | LlmError::Deserialize(_) | LlmError::BadResponse => {
+        LlmError::Serialize(_) | LlmError::Deserialize(_) => {
             RetryDecision::Fail
         }
 
@@ -254,12 +251,6 @@ mod tests {
     fn retries_transient_errors() {
         let policy = make_policy(3, None);
 
-        let io_err = LlmError::Io(std::io::Error::new(
-            std::io::ErrorKind::ConnectionReset,
-            "reset",
-        ));
-        assert_eq!(should_retry_error(&io_err, 0, &policy), RetryDecision::Retry);
-
         let incomplete = LlmError::IncompleteStream;
         assert_eq!(
             should_retry_error(&incomplete, 1, &policy),
@@ -272,13 +263,13 @@ mod tests {
         let policy = make_policy(3, None);
 
         let err_500 = LlmError::HttpStatus {
-            status: "HTTP/1.0 500 Internal Server Error".into(),
+            status: 500,
             body: "".into(),
         };
         assert_eq!(should_retry_error(&err_500, 0, &policy), RetryDecision::Retry);
 
         let err_429 = LlmError::HttpStatus {
-            status: "HTTP/1.0 429 Too Many Requests".into(),
+            status: 429,
             body: "".into(),
         };
         assert_eq!(should_retry_error(&err_429, 0, &policy), RetryDecision::Retry);
@@ -289,7 +280,7 @@ mod tests {
         let policy = make_policy(3, None);
 
         let err_400 = LlmError::HttpStatus {
-            status: "HTTP/1.0 400 Bad Request".into(),
+            status: 400,
             body: "invalid json".into(),
         };
         assert_eq!(should_retry_error(&err_400, 0, &policy), RetryDecision::Fail);
@@ -308,10 +299,7 @@ mod tests {
     fn falls_back_when_retries_exhausted() {
         let policy = make_policy(2, Some("fallback-model"));
 
-        let err = LlmError::Io(std::io::Error::new(
-            std::io::ErrorKind::ConnectionReset,
-            "reset",
-        ));
+        let err = LlmError::IncompleteStream;
         // attempt 0: retry
         assert_eq!(should_retry_error(&err, 0, &policy), RetryDecision::Retry);
         // attempt 1: retry
@@ -327,10 +315,7 @@ mod tests {
     fn fails_when_retries_exhausted_no_fallback() {
         let policy = make_policy(1, None);
 
-        let err = LlmError::Io(std::io::Error::new(
-            std::io::ErrorKind::ConnectionReset,
-            "reset",
-        ));
+        let err = LlmError::IncompleteStream;
         assert_eq!(should_retry_error(&err, 0, &policy), RetryDecision::Retry);
         assert_eq!(should_retry_error(&err, 1, &policy), RetryDecision::Fail);
     }

@@ -249,6 +249,8 @@ pub async fn run_tool_loop(
         });
 
         // Call LLM again with the extended conversation.
+        // Cache markers placed on the first call of the turn are preserved —
+        // the provider detects existing markers and skips re-placement.
         let mut reader = client.stream_raw(request, None).await?;
         result = consumer.consume(&mut reader, false, cache_ctx).await?;
     }
@@ -268,11 +270,98 @@ mod tests {
     use shore_llm_client::types::ToolUseEvent;
     use crate::test_support::TestToolContext;
     use tokio::io::AsyncWriteExt;
+    use tokio::net::TcpListener;
 
     fn test_diag() -> Arc<Mutex<Diagnostics>> {
         Arc::new(Mutex::new(Diagnostics::default()))
     }
-    use tokio::net::UnixListener;
+
+    /// Build a mock Anthropic SSE response that returns a text completion with end_turn.
+    fn sse_text_end_turn(text: &str) -> String {
+        format!(
+            "event: message_start\n\
+             data: {{\"type\":\"message_start\",\"message\":{{\"model\":\"test\",\"usage\":{{\"input_tokens\":20}}}}}}\n\n\
+             event: content_block_start\n\
+             data: {{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{{\"type\":\"text\",\"text\":\"\"}}}}\n\n\
+             event: content_block_delta\n\
+             data: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"text_delta\",\"text\":\"{text}\"}}}}\n\n\
+             event: content_block_stop\n\
+             data: {{\"type\":\"content_block_stop\",\"index\":0}}\n\n\
+             event: message_delta\n\
+             data: {{\"type\":\"message_delta\",\"delta\":{{\"stop_reason\":\"end_turn\"}},\"usage\":{{\"output_tokens\":10}}}}\n\n\
+             event: message_stop\n\
+             data: {{\"type\":\"message_stop\"}}\n\n"
+        )
+    }
+
+    /// Build a mock Anthropic SSE response that returns a tool_use with end_turn.
+    fn sse_tool_use(tool_id: &str, tool_name: &str) -> String {
+        format!(
+            "event: message_start\n\
+             data: {{\"type\":\"message_start\",\"message\":{{\"model\":\"test\",\"usage\":{{\"input_tokens\":10}}}}}}\n\n\
+             event: content_block_start\n\
+             data: {{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{{\"type\":\"tool_use\",\"id\":\"{tool_id}\",\"name\":\"{tool_name}\"}}}}\n\n\
+             event: content_block_delta\n\
+             data: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"input_json_delta\",\"partial_json\":\"{{}}\"}}}}\n\n\
+             event: content_block_stop\n\
+             data: {{\"type\":\"content_block_stop\",\"index\":0}}\n\n\
+             event: message_delta\n\
+             data: {{\"type\":\"message_delta\",\"delta\":{{\"stop_reason\":\"tool_use\"}},\"usage\":{{\"output_tokens\":5}}}}\n\n\
+             event: message_stop\n\
+             data: {{\"type\":\"message_stop\"}}\n\n"
+        )
+    }
+
+    /// Spawn a mock HTTP server that serves an SSE response for each connection.
+    /// Returns the base URL (e.g. "http://127.0.0.1:PORT") and the server handle.
+    async fn mock_sse_server(
+        sse_body: String,
+        accept_count: usize,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let base_url = format!("http://127.0.0.1:{port}");
+
+        let handle = tokio::spawn(async move {
+            for _ in 0..accept_count {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let (mut reader, mut writer) = stream.split();
+
+                // Drain the HTTP request.
+                let mut buf = vec![0u8; 16384];
+                let _ = tokio::io::AsyncReadExt::read(&mut reader, &mut buf).await;
+
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\n\
+                     Content-Type: text/event-stream\r\n\
+                     \r\n\
+                     {sse_body}"
+                );
+                writer.write_all(response.as_bytes()).await.unwrap();
+                writer.shutdown().await.unwrap();
+            }
+        });
+
+        (base_url, handle)
+    }
+
+    /// Build a test LlmRequest pointing at a mock server.
+    fn test_request(base_url: &str, messages: Vec<Value>) -> LlmRequest {
+        LlmRequest {
+            provider: "anthropic".into(),
+            model: "test".into(),
+            api_key: "sk-test".into(),
+            base_url: Some(base_url.to_string()),
+            messages,
+            system: None,
+            tools: None,
+            max_tokens: 4096,
+            temperature: None,
+            top_p: None,
+            provider_options: None,
+            provider_key: None,
+        }
+    }
 
     // ── Tool loop ───────────────────────────────────────────────────
 
@@ -280,24 +369,12 @@ mod tests {
     fn tool_loop_returns_immediately_on_end_turn() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let client = LlmClient::new("/tmp/unused.sock".into());
+            let client = LlmClient::new();
             let (push_tx, _rx) = broadcast::channel(16);
             let ctx = TestToolContext::new();
             let cache_ctx = CacheContext::default();
 
-            let mut request = LlmRequest {
-                provider: "anthropic".into(),
-                model: "test".into(),
-                api_key: "sk-test".into(),
-                base_url: None,
-                messages: vec![],
-                system: None,
-                tools: None,
-                max_tokens: 4096,
-                temperature: None,
-                top_p: None,
-                provider_options: None,
-            };
+            let mut request = test_request("http://unused", vec![]);
 
             let result = StreamResult {
                 content: "Hello".into(),
@@ -329,44 +406,18 @@ mod tests {
 
     #[tokio::test]
     async fn tool_loop_executes_tool_and_continues() {
-        let tmp = tempfile::tempdir().unwrap();
-        let socket_path = tmp.path().join("mock-llm.sock");
-        let listener = UnixListener::bind(&socket_path).unwrap();
+        let sse = sse_text_end_turn("The current time is shown above.");
+        let (base_url, server) = mock_sse_server(sse, 1).await;
 
-        let server = tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.unwrap();
-            let (mut reader, mut writer) = tokio::io::split(stream);
-            let mut buf = vec![0u8; 16384];
-            let _ = tokio::io::AsyncReadExt::read(&mut reader, &mut buf).await;
-
-            let response = "HTTP/1.0 200 OK\r\n\
-                            Content-Type: application/x-ndjson\r\n\
-                            \r\n\
-                            {\"type\":\"start\",\"model\":\"test\"}\n\
-                            {\"type\":\"text\",\"text\":\"The current time is shown above.\"}\n\
-                            {\"type\":\"done\",\"content\":\"The current time is shown above.\",\"finish_reason\":\"end_turn\",\"usage\":{\"input_tokens\":20,\"output_tokens\":10},\"timing\":{\"total_ms\":200}}\n";
-            writer.write_all(response.as_bytes()).await.unwrap();
-            writer.shutdown().await.unwrap();
-        });
-
-        let client = LlmClient::new(socket_path);
+        let client = LlmClient::new();
         let (push_tx, mut push_rx) = broadcast::channel(64);
         let ctx = TestToolContext::new();
         let cache_ctx = CacheContext::default();
 
-        let mut request = LlmRequest {
-            provider: "anthropic".into(),
-            model: "test".into(),
-            api_key: "sk-test".into(),
-            base_url: None,
-            messages: vec![json!({"role": "user", "content": "What time is it?"})],
-            system: None,
-            tools: None,
-            max_tokens: 4096,
-            temperature: None,
-            top_p: None,
-            provider_options: None,
-        };
+        let mut request = test_request(
+            &base_url,
+            vec![json!({"role": "user", "content": "What time is it?"})],
+        );
 
         let initial = StreamResult {
             content: String::new(),
@@ -441,44 +492,15 @@ mod tests {
 
     #[tokio::test]
     async fn tool_loop_respects_max_iterations() {
-        let tmp = tempfile::tempdir().unwrap();
-        let socket_path = tmp.path().join("mock-llm-loop.sock");
-        let listener = UnixListener::bind(&socket_path).unwrap();
+        let sse = sse_tool_use("t1", "check_time");
+        let (base_url, server) = mock_sse_server(sse, 3).await;
 
-        let server = tokio::spawn(async move {
-            for _ in 0..3 {
-                let (stream, _) = listener.accept().await.unwrap();
-                let (mut reader, mut writer) = tokio::io::split(stream);
-                let mut buf = vec![0u8; 16384];
-                let _ = tokio::io::AsyncReadExt::read(&mut reader, &mut buf).await;
-
-                let response = "HTTP/1.0 200 OK\r\n\r\n\
-                    {\"type\":\"start\",\"model\":\"test\"}\n\
-                    {\"type\":\"tool_use\",\"id\":\"t1\",\"name\":\"check_time\",\"input\":{}}\n\
-                    {\"type\":\"done\",\"content\":\"\",\"finish_reason\":\"tool_use\",\"usage\":{\"input_tokens\":10,\"output_tokens\":5},\"timing\":{\"total_ms\":50}}\n";
-                writer.write_all(response.as_bytes()).await.unwrap();
-                writer.shutdown().await.unwrap();
-            }
-        });
-
-        let client = LlmClient::new(socket_path);
+        let client = LlmClient::new();
         let (push_tx, _rx) = broadcast::channel(64);
         let ctx = TestToolContext::new();
         let cache_ctx = CacheContext::default();
 
-        let mut request = LlmRequest {
-            provider: "anthropic".into(),
-            model: "test".into(),
-            api_key: "sk-test".into(),
-            base_url: None,
-            messages: vec![],
-            system: None,
-            tools: None,
-            max_tokens: 4096,
-            temperature: None,
-            top_p: None,
-            provider_options: None,
-        };
+        let mut request = test_request(&base_url, vec![]);
 
         let initial = StreamResult {
             content: String::new(),
@@ -514,42 +536,15 @@ mod tests {
     #[tokio::test]
     async fn tool_loop_handles_tool_error() {
         // generate_image always returns NotImplemented.
-        let tmp = tempfile::tempdir().unwrap();
-        let socket_path = tmp.path().join("mock-llm-err.sock");
-        let listener = UnixListener::bind(&socket_path).unwrap();
+        let sse = sse_text_end_turn("Image generation is not available.");
+        let (base_url, server) = mock_sse_server(sse, 1).await;
 
-        let server = tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.unwrap();
-            let (mut reader, mut writer) = tokio::io::split(stream);
-            let mut buf = vec![0u8; 16384];
-            let _ = tokio::io::AsyncReadExt::read(&mut reader, &mut buf).await;
-
-            let response = "HTTP/1.0 200 OK\r\n\r\n\
-                {\"type\":\"start\",\"model\":\"test\"}\n\
-                {\"type\":\"text\",\"text\":\"Image generation is not available.\"}\n\
-                {\"type\":\"done\",\"content\":\"Image generation is not available.\",\"finish_reason\":\"end_turn\",\"usage\":{\"input_tokens\":10,\"output_tokens\":5},\"timing\":{\"total_ms\":50}}\n";
-            writer.write_all(response.as_bytes()).await.unwrap();
-            writer.shutdown().await.unwrap();
-        });
-
-        let client = LlmClient::new(socket_path);
+        let client = LlmClient::new();
         let (push_tx, mut push_rx) = broadcast::channel(64);
         let ctx = TestToolContext::new();
         let cache_ctx = CacheContext::default();
 
-        let mut request = LlmRequest {
-            provider: "anthropic".into(),
-            model: "test".into(),
-            api_key: "sk-test".into(),
-            base_url: None,
-            messages: vec![],
-            system: None,
-            tools: None,
-            max_tokens: 4096,
-            temperature: None,
-            top_p: None,
-            provider_options: None,
-        };
+        let mut request = test_request(&base_url, vec![]);
 
         let initial = StreamResult {
             content: String::new(),
@@ -608,27 +603,15 @@ mod tests {
         // appear in the assistant message.
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let client = LlmClient::new("/tmp/unused.sock".into());
+            let client = LlmClient::new();
             let (push_tx, _rx) = broadcast::channel(16);
             let ctx = TestToolContext::new();
             let cache_ctx = CacheContext::default();
 
-            let mut request = LlmRequest {
-                provider: "anthropic".into(),
-                model: "test".into(),
-                api_key: "sk-test".into(),
-                base_url: None,
-                messages: vec![],
-                system: None,
-                tools: None,
-                max_tokens: 4096,
-                temperature: None,
-                top_p: None,
-                provider_options: None,
-            };
+            let mut request = test_request("http://unused", vec![]);
 
-            // Result with both text content and tool_uses, but no LLM socket
-            // to call — the tool_uses are empty, so it should return immediately.
+            // Result with both text content and tool_uses, but no LLM server
+            // to call -- the tool_uses are empty, so it should return immediately.
             let result = StreamResult {
                 content: "Let me check the time...".into(),
                 model: "test".into(),
@@ -658,42 +641,15 @@ mod tests {
 
     #[tokio::test]
     async fn tool_loop_multiple_tools_single_response() {
-        let tmp = tempfile::tempdir().unwrap();
-        let socket_path = tmp.path().join("mock-llm-multi.sock");
-        let listener = UnixListener::bind(&socket_path).unwrap();
+        let sse = sse_text_end_turn("Done.");
+        let (base_url, server) = mock_sse_server(sse, 1).await;
 
-        let server = tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.unwrap();
-            let (mut reader, mut writer) = tokio::io::split(stream);
-            let mut buf = vec![0u8; 16384];
-            let _ = tokio::io::AsyncReadExt::read(&mut reader, &mut buf).await;
-
-            let response = "HTTP/1.0 200 OK\r\n\r\n\
-                {\"type\":\"start\",\"model\":\"test\"}\n\
-                {\"type\":\"text\",\"text\":\"Done.\"}\n\
-                {\"type\":\"done\",\"content\":\"Done.\",\"finish_reason\":\"end_turn\",\"usage\":{\"input_tokens\":10,\"output_tokens\":5},\"timing\":{\"total_ms\":50}}\n";
-            writer.write_all(response.as_bytes()).await.unwrap();
-            writer.shutdown().await.unwrap();
-        });
-
-        let client = LlmClient::new(socket_path);
+        let client = LlmClient::new();
         let (push_tx, mut push_rx) = broadcast::channel(64);
         let ctx = TestToolContext::new();
         let cache_ctx = CacheContext::default();
 
-        let mut request = LlmRequest {
-            provider: "anthropic".into(),
-            model: "test".into(),
-            api_key: "sk-test".into(),
-            base_url: None,
-            messages: vec![],
-            system: None,
-            tools: None,
-            max_tokens: 4096,
-            temperature: None,
-            top_p: None,
-            provider_options: None,
-        };
+        let mut request = test_request(&base_url, vec![]);
 
         // Two tools in one response.
         let initial = StreamResult {

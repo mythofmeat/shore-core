@@ -45,6 +45,11 @@ pub struct LlmRequest {
     /// Provider-specific options (cache_ttl, thinking, budget_tokens, etc.).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider_options: Option<serde_json::Value>,
+
+    /// Provider key from models.toml (e.g. "openrouter", "deepseek", "xai").
+    /// Distinct from `provider` (SDK protocol). Used for provider-specific behavior.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_key: Option<String>,
 }
 
 /// Token usage counts from shore-llm's normalized response.
@@ -189,6 +194,7 @@ mod tests {
             temperature: Some(0.7),
             top_p: None,
             provider_options: None,
+            provider_key: None,
         };
         let json = serde_json::to_value(&req).unwrap();
         assert!(!json.as_object().unwrap().contains_key("base_url"));

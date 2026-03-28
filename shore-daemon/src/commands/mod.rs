@@ -182,7 +182,7 @@ mod tests {
             active_model: None,
             session_tokens: Default::default(),
             autonomy,
-            llm_client: LlmClient::new(data_dir.join("dummy.sock")),
+            llm_client: LlmClient::new(),
             diagnostics: Arc::new(Mutex::new(Diagnostics::default())),
             memory_shell_sessions: HashMap::new(),
         };

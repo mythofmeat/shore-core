@@ -38,7 +38,6 @@ pub fn test_model() -> ResolvedModel {
         reasoning_effort: None,
         budget_tokens: None,
         cache_ttl: None,
-        cache_control_depth: None,
         keepalive_enabled: None,
         keepalive_ttl_minutes: None,
         keepalive_max_pings: None,
