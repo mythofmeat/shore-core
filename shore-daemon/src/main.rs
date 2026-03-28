@@ -551,7 +551,7 @@ async fn run_collation(
 
 /// Check if shore-llm is configured as a supervised service.
 fn sup_has_llm(services: &shore_config::app::ServicesConfig) -> bool {
-    services.llm.enabled && services.llm.command.is_some()
+    services.llm.enabled
 }
 
 /// Simple epoch-seconds timestamp without pulling in chrono.

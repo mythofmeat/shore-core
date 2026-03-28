@@ -136,8 +136,8 @@ model = "claude-sonnet"            # Must match a key in [chat.*.*] below
 # ── Services ─────────────────────────────────────────────────────────────
 
 # [services.llm]
-# enabled = true
-# command = "node /path/to/shore-llm/dist/index.js"
+# enabled = true                 # shore-llm is auto-managed when enabled
+# command = "shore-llm"          # Default: "shore-llm" (must be on PATH)
 # socket = "/run/user/1000/shore/llm.sock"
 
 # [services.matrix]

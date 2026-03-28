@@ -68,21 +68,25 @@ impl Supervisor {
     ) -> Self {
         let mut specs = Vec::new();
 
-        // shore-llm is always required if it has a command.
+        // shore-llm: defaults to "shore-llm" on PATH when no command is set.
         if services_config.llm.enabled {
-            if let Some(ref cmd) = services_config.llm.command {
-                let socket = services_config
-                    .llm
-                    .socket
-                    .as_ref()
-                    .map(PathBuf::from)
-                    .unwrap_or_else(|| runtime_dir.join("llm.sock"));
-                specs.push(ServiceSpec {
-                    name: "shore-llm".into(),
-                    command: cmd.clone(),
-                    socket,
-                });
-            }
+            let cmd = services_config
+                .llm
+                .command
+                .as_deref()
+                .unwrap_or("shore-llm")
+                .to_string();
+            let socket = services_config
+                .llm
+                .socket
+                .as_ref()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| runtime_dir.join("llm.sock"));
+            specs.push(ServiceSpec {
+                name: "shore-llm".into(),
+                command: cmd,
+                socket,
+            });
         }
 
         // Optional bridges.
@@ -528,7 +532,7 @@ mod tests {
     async fn supervisor_from_config_parses_services() {
         let config = shore_config::app::ServicesConfig {
             llm: ServiceEntry {
-                command: Some("node shore-llm/dist/index.js".into()),
+                command: Some("shore-llm".into()),
                 socket: Some("/tmp/llm.sock".into()),
                 enabled: true,
             },
@@ -550,10 +554,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn supervisor_from_config_defaults_command_to_shore_llm() {
+        let config = shore_config::app::ServicesConfig {
+            llm: ServiceEntry {
+                command: None, // No explicit command — should default to "shore-llm".
+                socket: None,
+                enabled: true,
+            },
+            matrix: None,
+        };
+
+        let runtime_dir = PathBuf::from("/tmp/shore");
+        let sup = Supervisor::from_config(&config, &runtime_dir);
+
+        assert_eq!(sup.services.len(), 1);
+        assert_eq!(sup.services[0].command, "shore-llm");
+    }
+
+    #[tokio::test]
     async fn supervisor_from_config_respects_enabled() {
         let config = shore_config::app::ServicesConfig {
             llm: ServiceEntry {
-                command: Some("node shore-llm/dist/index.js".into()),
+                command: None,
                 socket: None,
                 enabled: false, // Disabled.
             },
