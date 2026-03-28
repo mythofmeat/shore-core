@@ -13,9 +13,11 @@ jobs:
           fetch-depth: 0  # full history needed for pkgver()
 
       - name: Build package
+        working-directory: contrib
         run: makepkg -sf --noconfirm
 
       - name: Upload to Gitea package registry
+        working-directory: contrib
         run: |
           for pkg in *.pkg.tar.zst; do
             curl --fail --user "eshen:${{ secrets.PACKAGE_TOKEN }}" \
