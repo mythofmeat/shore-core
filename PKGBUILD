@@ -6,8 +6,8 @@ pkgdesc='Persistent AI character engine — daemon, CLI, and LLM provider proxy'
 arch=('x86_64')
 url='http://localhost:3000/eshen/silvershore'
 license=('custom')
-depends=('gcc-libs' 'nodejs')
-makedepends=('cargo' 'npm' 'git')
+depends=('gcc-libs')
+makedepends=('cargo' 'bun' 'git')
 provides=('shore')
 conflicts=('shore')
 source=("${pkgname}::git+http://localhost:3000/eshen/silvershore.git")
@@ -27,7 +27,7 @@ prepare() {
     cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
 
     cd shore-llm
-    npm install
+    bun install --frozen-lockfile
 }
 
 build() {
@@ -37,7 +37,7 @@ build() {
     cargo build --workspace --release --frozen
 
     cd shore-llm
-    npm run build
+    bun run build
 }
 
 package() {
@@ -49,17 +49,8 @@ package() {
     install -Dm755 target/release/shore-tui    "$pkgdir/usr/bin/shore-tui"
     install -Dm755 target/release/shore-matrix  "$pkgdir/usr/bin/shore-matrix"
 
-    # shore-llm (Node.js)
-    install -dm755 "$pkgdir/usr/lib/shore-llm"
-    cp -a shore-llm/dist "$pkgdir/usr/lib/shore-llm/"
-    cp -a shore-llm/node_modules "$pkgdir/usr/lib/shore-llm/"
-    install -Dm644 shore-llm/package.json "$pkgdir/usr/lib/shore-llm/package.json"
-
-    # Wrapper script for shore-llm (so the daemon can find it)
-    install -Dm755 /dev/stdin "$pkgdir/usr/bin/shore-llm" <<'EOF'
-#!/bin/sh
-exec node /usr/lib/shore-llm/dist/index.js "$@"
-EOF
+    # shore-llm — standalone binary (no Node.js runtime required)
+    install -Dm755 shore-llm/dist/shore-llm "$pkgdir/usr/bin/shore-llm"
 
     # Systemd user service
     install -Dm644 contrib/shore-daemon.service \

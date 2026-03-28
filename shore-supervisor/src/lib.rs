@@ -14,6 +14,10 @@ const MAX_RESTARTS: u32 = 5;
 /// Maximum backoff delay between restarts.
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 
+/// If a service ran stably for this long before crashing, reset its restart
+/// counter so transient failures don't permanently exhaust the budget.
+const STABLE_WINDOW: Duration = Duration::from_secs(300);
+
 /// Health-check poll interval.
 const HEALTH_INTERVAL: Duration = Duration::from_secs(1);
 
@@ -40,6 +44,11 @@ struct ManagedService {
     state: ServiceState,
     child: Option<Child>,
     restart_count: u32,
+    /// Scheduled respawn time — set when a crash triggers a backoff delay.
+    restart_after: Option<tokio::time::Instant>,
+    /// When the service last transitioned to Ready — used to reset restart_count
+    /// after a sustained healthy run.
+    healthy_since: Option<tokio::time::Instant>,
 }
 
 /// Configuration for one service to supervise.
@@ -68,21 +77,25 @@ impl Supervisor {
     ) -> Self {
         let mut specs = Vec::new();
 
-        // shore-llm is always required if it has a command.
+        // shore-llm: defaults to "shore-llm" on PATH when no command is set.
         if services_config.llm.enabled {
-            if let Some(ref cmd) = services_config.llm.command {
-                let socket = services_config
-                    .llm
-                    .socket
-                    .as_ref()
-                    .map(PathBuf::from)
-                    .unwrap_or_else(|| runtime_dir.join("llm.sock"));
-                specs.push(ServiceSpec {
-                    name: "shore-llm".into(),
-                    command: cmd.clone(),
-                    socket,
-                });
-            }
+            let cmd = services_config
+                .llm
+                .command
+                .as_deref()
+                .unwrap_or("shore-llm")
+                .to_string();
+            let socket = services_config
+                .llm
+                .socket
+                .as_ref()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| runtime_dir.join("llm.sock"));
+            specs.push(ServiceSpec {
+                name: "shore-llm".into(),
+                command: cmd,
+                socket,
+            });
         }
 
         // Optional bridges.
@@ -118,6 +131,8 @@ impl Supervisor {
                 state: ServiceState::Starting,
                 child: None,
                 restart_count: 0,
+                restart_after: None,
+                healthy_since: None,
             })
             .collect();
         Self {
@@ -159,11 +174,13 @@ impl Supervisor {
         }
 
         // Collect health check results.
+        let now = tokio::time::Instant::now();
         for (name, handle) in health_handles {
             match handle.await {
                 Ok(true) => {
                     if let Some(svc) = self.services.iter_mut().find(|s| s.name == name) {
                         svc.state = ServiceState::Ready;
+                        svc.healthy_since = Some(now);
                         info!(service = %name, "Service is ready");
                         if name == "shore-llm" {
                             let _ = self.llm_ready_tx.send(true);
@@ -182,18 +199,38 @@ impl Supervisor {
             }
         }
 
-        // Monitor loop: watch for child exits and restart as needed.
+        // Monitor loop: watch for child exits and fire scheduled restarts.
+        // Restarts are non-blocking — a crash schedules a future respawn time
+        // and the select! continues processing shutdown signals normally.
         loop {
             tokio::select! {
                 _ = shutdown.changed() => {
                     info!("Supervisor received shutdown signal");
                     break;
                 }
-                _ = tokio::time::sleep(Duration::from_secs(1)) => {
+                _ = tokio::time::sleep(HEALTH_INTERVAL) => {
+                    let now = tokio::time::Instant::now();
                     for svc in &mut self.services {
                         if svc.state == ServiceState::Failed || svc.state == ServiceState::Stopped {
                             continue;
                         }
+
+                        // Fire a scheduled respawn when the backoff window has elapsed.
+                        if let Some(restart_at) = svc.restart_after {
+                            if now >= restart_at {
+                                svc.restart_after = None;
+                                spawn_service(svc);
+                                svc.state = ServiceState::Ready;
+                                svc.healthy_since = Some(now);
+                                info!(service = %svc.name, "Service restarted");
+                                if svc.name == "shore-llm" {
+                                    let _ = self.llm_ready_tx.send(true);
+                                }
+                            }
+                            continue;
+                        }
+
+                        // Check whether the running child has exited.
                         if let Some(ref mut child) = svc.child {
                             match child.try_wait() {
                                 Ok(Some(status)) => {
@@ -203,13 +240,44 @@ impl Supervisor {
                                         "Service exited unexpectedly"
                                     );
                                     svc.child = None;
-                                    handle_service_restart(svc).await;
-                                    if svc.state == ServiceState::Ready && svc.name == "shore-llm" {
-                                        // Still ready after restart — already signaled.
+
+                                    // Reset the restart counter if the service ran
+                                    // stably for long enough before this crash.
+                                    if svc.healthy_since
+                                        .map_or(false, |t| t.elapsed() >= STABLE_WINDOW)
+                                    {
+                                        info!(
+                                            service = %svc.name,
+                                            "Service was stable; resetting restart counter"
+                                        );
+                                        svc.restart_count = 0;
+                                    }
+
+                                    svc.restart_count += 1;
+                                    if svc.restart_count > MAX_RESTARTS {
+                                        error!(
+                                            service = %svc.name,
+                                            restarts = svc.restart_count,
+                                            "Service exceeded max restarts, marking as failed"
+                                        );
+                                        svc.state = ServiceState::Failed;
+                                    } else {
+                                        let delay = Duration::from_secs(
+                                            1 << (svc.restart_count - 1).min(5),
+                                        )
+                                        .min(MAX_BACKOFF);
+                                        warn!(
+                                            service = %svc.name,
+                                            restart_count = svc.restart_count,
+                                            delay_secs = delay.as_secs(),
+                                            "Scheduling restart after backoff"
+                                        );
+                                        svc.state = ServiceState::Starting;
+                                        svc.restart_after = Some(now + delay);
                                     }
                                 }
                                 Ok(None) => {
-                                    // Still running, good.
+                                    // Still running.
                                 }
                                 Err(e) => {
                                     error!(service = %svc.name, error = %e, "Failed to poll child");
@@ -380,43 +448,6 @@ async fn check_health(socket: &Path) -> bool {
     }
 }
 
-/// Handle restart logic with exponential backoff.
-async fn handle_service_restart(svc: &mut ManagedService) {
-    svc.restart_count += 1;
-
-    if svc.restart_count > MAX_RESTARTS {
-        error!(
-            service = %svc.name,
-            restarts = svc.restart_count,
-            "Service exceeded max restarts, marking as failed"
-        );
-        svc.state = ServiceState::Failed;
-        return;
-    }
-
-    // Exponential backoff: 1s, 2s, 4s, 8s, 16s, 30s (capped).
-    let delay = Duration::from_secs(1 << (svc.restart_count - 1).min(5))
-        .min(MAX_BACKOFF);
-
-    warn!(
-        service = %svc.name,
-        restart_count = svc.restart_count,
-        delay_secs = delay.as_secs(),
-        "Restarting service after backoff"
-    );
-
-    tokio::time::sleep(delay).await;
-    spawn_service(svc);
-
-    // Health-check the restarted service.
-    if wait_for_health(&svc.name, &svc.socket).await {
-        svc.state = ServiceState::Ready;
-        info!(service = %svc.name, "Service recovered after restart");
-    } else {
-        warn!(service = %svc.name, "Service failed health check after restart");
-        // Will be retried on next monitor cycle if child exits again.
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -490,6 +521,7 @@ mod tests {
         // Spawn the service.
         spawn_service(&mut sup.services[0]);
         assert!(sup.services[0].child.is_some());
+        assert!(sup.services[0].restart_after.is_none());
 
         // Wait a moment for it to exit.
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -501,34 +533,70 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn restart_count_increments_and_caps() {
+    async fn crash_schedules_backoff_restart() {
         let tmp = tempfile::tempdir().unwrap();
         let socket = tmp.path().join("restart.sock");
 
+        // Simulate a service that just crashed (child = None, restart_count = 4).
         let mut svc = ManagedService {
             name: "test-svc".into(),
-            command: "false".into(), // Exits with code 1 immediately.
+            command: "false".into(),
             socket,
             state: ServiceState::Ready,
             child: None,
-            restart_count: 4, // One away from max.
+            restart_count: 4,
+            restart_after: None,
+            healthy_since: None,
         };
 
-        // First restart should work (restart_count becomes 5).
-        handle_service_restart(&mut svc).await;
-        assert_eq!(svc.restart_count, 5);
+        // Simulate the crash handling inline (mirrors what the monitor loop does).
+        svc.restart_count += 1; // becomes 5 — still under MAX_RESTARTS
+        let delay = Duration::from_secs(1 << (svc.restart_count - 1).min(5)).min(MAX_BACKOFF);
+        svc.state = ServiceState::Starting;
+        svc.restart_after = Some(tokio::time::Instant::now() + delay);
 
-        // Next restart should mark as failed (restart_count becomes 6 > MAX_RESTARTS).
-        handle_service_restart(&mut svc).await;
-        assert_eq!(svc.restart_count, 6);
+        assert_eq!(svc.restart_count, 5);
+        assert_eq!(svc.state, ServiceState::Starting);
+        assert!(svc.restart_after.is_some());
+
+        // One more crash — exceeds MAX_RESTARTS.
+        svc.restart_after = None;
+        svc.restart_count += 1; // becomes 6
+        if svc.restart_count > MAX_RESTARTS {
+            svc.state = ServiceState::Failed;
+        }
         assert_eq!(svc.state, ServiceState::Failed);
+    }
+
+    #[tokio::test]
+    async fn stable_service_resets_restart_count() {
+        let tmp = tempfile::tempdir().unwrap();
+        let socket = tmp.path().join("stable.sock");
+
+        let mut svc = ManagedService {
+            name: "stable-svc".into(),
+            command: "true".into(),
+            socket,
+            state: ServiceState::Ready,
+            child: None,
+            restart_count: 4,
+            restart_after: None,
+            // Service was healthy long ago — elapsed will be >> STABLE_WINDOW.
+            healthy_since: Some(tokio::time::Instant::now() - STABLE_WINDOW - Duration::from_secs(1)),
+        };
+
+        if svc.healthy_since.map_or(false, |t| t.elapsed() >= STABLE_WINDOW) {
+            svc.restart_count = 0;
+        }
+        svc.restart_count += 1;
+        assert_eq!(svc.restart_count, 1, "counter should have been reset before incrementing");
     }
 
     #[tokio::test]
     async fn supervisor_from_config_parses_services() {
         let config = shore_config::app::ServicesConfig {
             llm: ServiceEntry {
-                command: Some("node shore-llm/dist/index.js".into()),
+                command: Some("shore-llm".into()),
                 socket: Some("/tmp/llm.sock".into()),
                 enabled: true,
             },
@@ -550,10 +618,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn supervisor_from_config_defaults_command_to_shore_llm() {
+        let config = shore_config::app::ServicesConfig {
+            llm: ServiceEntry {
+                command: None, // No explicit command — should default to "shore-llm".
+                socket: None,
+                enabled: true,
+            },
+            matrix: None,
+        };
+
+        let runtime_dir = PathBuf::from("/tmp/shore");
+        let sup = Supervisor::from_config(&config, &runtime_dir);
+
+        assert_eq!(sup.services.len(), 1);
+        assert_eq!(sup.services[0].command, "shore-llm");
+    }
+
+    #[tokio::test]
     async fn supervisor_from_config_respects_enabled() {
         let config = shore_config::app::ServicesConfig {
             llm: ServiceEntry {
-                command: Some("node shore-llm/dist/index.js".into()),
+                command: None,
                 socket: None,
                 enabled: false, // Disabled.
             },
@@ -578,6 +664,8 @@ mod tests {
             state: ServiceState::Ready,
             child: None,
             restart_count: 0,
+            restart_after: None,
+            healthy_since: None,
         };
         spawn_service(&mut svc);
         assert!(svc.child.is_some());

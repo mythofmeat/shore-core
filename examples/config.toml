@@ -7,49 +7,45 @@
 # include = ["models.toml"]   # Optional explicit includes
                                # conf.d/*.toml is also auto-loaded
 
-[daemon]
-# socket_path = "/tmp/shore.sock"   # Override Unix socket path (auto-generated if omitted)
+# ── Daemon ───────────────────────────────────────────────────────────────
+
+# [daemon]
+# socket_path = "/tmp/shore.sock"   # Auto-generated if omitted
+
+# ── Defaults ─────────────────────────────────────────────────────────────
 
 [defaults]
-# model = "claude-sonnet"           # Must match a model key below
+model = "claude-sonnet"            # Must match a key in [chat.*.*] below
 # tool_model = "mistral-small"      # Default model for tool-use calls
+# memory_agent = "mistral-small"    # Default model for memory agent calls
 # embedding = "text-large"          # Default embedding profile
 # image_generation = "gemini-flash" # Default image generation profile
 # display_name = "Your Name"        # {{user}} in templates; falls back to $USER
-stream = true
+# stream = true
 
-[behavior.autonomy]
-enabled = false
-personality = 0.5                    # 0.0–1.0
-max_unanswered = 1
-max_deferral_hours = 24.0
+# ── Autonomy ─────────────────────────────────────────────────────────────
+# Controls the character's autonomous behavior — what makes it feel present
+# and real. Disabled by default; enable to allow unprompted messages.
 
-[behavior.autonomy.heartbeat]
-enabled = true                       # Set false to disable heartbeat scheduling
-session_gap_secs = 1800              # 30 min — idle gap marking session boundary
-session_probe_floor_secs = 180       # 3 min — minimum idle before post-session probe
-dormant_threshold = 8                # Max consecutive unanswered probes
+# [behavior.autonomy]
+# enabled = false
+# personality = 0.5          # 0.0 (reserved) → 1.0 (proactive); shapes probe frequency
+# max_unanswered = 1         # Back off after this many unanswered autonomous messages
+# max_deferral_hours = 24.0  # Maximum hours the character will wait before sending
 
-[behavior.autonomy.compaction]
-enabled = true                       # Set false to disable compaction triggers
-idle_trigger_minutes = 30
-min_messages = 20                    # Minimum messages before any compaction trigger
-max_messages = 60                    # Force compaction at this message count
+# [behavior.autonomy.heartbeat]
+# enabled = true
+# session_gap_secs = 1800         # 30 min idle marks a session boundary
+# session_probe_floor_secs = 180  # Minimum idle before a post-session probe fires
+# dormant_threshold = 1           # Consecutive unanswered probes before going dormant
 
-[behavior.autonomy.collation]
-enabled = true                       # Master kill switch for collation
-auto_run = true                      # Run automatically after compaction
+# ── Tool use ─────────────────────────────────────────────────────────────
 
-[behavior.autonomy.cache_keepalive]
-enabled = true
-ttl_minutes = 5
-max_pings = 12
+# [behavior.tool_use]
+# enabled = true
+# max_iterations = 10  # Max tool-call rounds per turn before forcing a final response
 
-[behavior.tool_use]
-enabled = true
-max_iterations = 10
-
-# Per-tool toggles — set to false to disable individual tools.
+# Per-tool toggles — all enabled by default; set to false to disable.
 # [behavior.tool_use.tools]
 # memory = true
 # send_image = true
@@ -63,23 +59,45 @@ max_iterations = 10
 # activity_heatmap = true
 
 # [behavior.tool_use.search]
-# api_key_env = "TAVILY_API_KEY"     # Env var holding the Tavily API key
-# max_results = 5                     # Default results per search
-# search_depth = "basic"              # "basic" or "advanced"
-# include_answer = true               # Include Tavily's synthesized answer
+# api_key_env = "TAVILY_API_KEY"  # Env var holding the Tavily API key
+# max_results = 5
+# search_depth = "basic"          # "basic" or "advanced"
+# include_answer = true           # Include Tavily's synthesized answer
+
+# ── Memory & context management ──────────────────────────────────────────
+
+# [memory]
+# rag_results = 5        # Number of memory entries injected into each prompt
+# rag_threshold = 0.3    # Minimum relevance score (0.0–1.0) to include an entry
+# image_enabled = true   # Set false to disable image memory subsystem
+
+# Compaction — trims the active conversation when it grows too long.
+# [memory.compaction]
+# enabled = true
+# idle_trigger_minutes = 30  # Trigger after this many minutes of inactivity
+# min_messages = 20          # Don't compact below this count
+# max_messages = 60          # Force compaction when this count is reached
+# keep_recent = 4            # Messages to retain verbatim after compaction
+
+# Collation — periodically re-synthesises the memory store for quality.
+# [memory.collation]
+# enabled = true
+# auto_run = true  # Run automatically after each compaction
+
+# ── Notifications ────────────────────────────────────────────────────────
 
 # [notifications]
 # enabled = false
-# backend = "notify_send"           # "notify_send", "ntfy", or "command"
-#
+# backend = "notify_send"  # "notify_send", "ntfy", or "command"
+
 # [notifications.ntfy]
 # url = "https://ntfy.sh"
 # topic = ""
-# token = ""                        # Optional auth token for self-hosted
-#
+# token = ""  # Optional auth token for self-hosted instances
+
 # [notifications.command]
-# template = ""                     # Use {title} and {body} placeholders
-#
+# template = ""  # Shell command; use {title} and {body} as placeholders
+
 # [notifications.events]
 # autonomous_message = true
 # cache_warning = true
@@ -87,90 +105,137 @@ max_iterations = 10
 # collation_complete = true
 # error = true
 
-[memory]
-rag_results = 5
-rag_threshold = 0.3
-image_enabled = true                 # Set false to disable image memory subsystem
+# ── Connections ──────────────────────────────────────────────────────────
 
 # [connections.tcp]
-# enabled = false                    # Set true to enable TCP listener
+# enabled = false
 # addr = "127.0.0.1:7320"
-# allowed_hosts = []                 # Empty = allow all; otherwise list of allowed IPs
+# allowed_hosts = []  # Empty = allow all; otherwise list allowed IPs
 
-# ── Matrix: External mode (connect to existing homeserver) ─────────────
+# ── Matrix: External mode (connect to an existing homeserver) ─────────────
 # [connections.matrix]
+# enabled = true
 # homeserver = "https://matrix.example.com"
 # user_id = "@shore:example.com"
 # room_id = "!abc123:example.com"
 # trusted_user = "@user:example.com"
 
-# ── Matrix: Embedded mode (shore-matrix manages a local homeserver) ────
+# ── Matrix: Embedded mode (shore-matrix manages a local homeserver) ───────
 # Uses a conduwuit-compatible server (continuwuity, conduwuit, or tuwunel).
 # [connections.matrix]
 # trusted_user = "@user:shore.local"
 #
 # [connections.matrix.embedded]
-# server_name = "shore.local"          # Default: "localhost"
+# server_name = "shore.local"          # Cannot be changed after first run. Default: "localhost"
 # admin_password = "your-admin-pass"   # Required
-# # port = 6167                        # Default: 6167
-# # admin_user = "shore-admin"         # Default: "shore-admin"
+# port = 6167
+# admin_user = "shore-admin"
 # # data_dir = "..."                   # Default: $XDG_DATA_HOME/shore/matrix-server/
 # # binary = "continuwuity"            # Default: auto-detect
 
-[services.llm]
-# command = "node /path/to/shore-llm/dist/index.js"
+# ── Services ─────────────────────────────────────────────────────────────
+
+# [services.llm]
+# enabled = true                 # shore-llm is auto-managed when enabled
+# command = "shore-llm"          # Default: "shore-llm" (must be on PATH)
 # socket = "/run/user/1000/shore/llm.sock"
 
-[advanced]
-cache_invalidation_warnings = true
-# editor = "nvim"                    # Override $VISUAL / $EDITOR
-# max_retries = 2                    # LLM retry attempts (default: 2)
-# retry_backoff_seconds = 0.5        # Base delay between retries (exponential backoff)
-# Data directory: use $XDG_DATA_HOME to override (default: ~/.local/share/shore)
+# [services.matrix]
+# enabled = true
+# command = "shore-mx"
+# socket = "/run/user/1000/shore/matrix.sock"
 
-# ── Chat models ─────────────────────────────────────────────────────────
-# Provider-level defaults cascade into every model under that provider.
-# Model-level values take precedence.
+# ── Advanced ─────────────────────────────────────────────────────────────
+
+# [advanced]
+# cache_invalidation_warnings = true
+# api_payload_logging = false
+# editor = "nvim"                   # Override $VISUAL / $EDITOR
+# max_retries = 2
+# retry_backoff_seconds = 0.5       # Base delay; doubles on each retry
+# Data directory: override via $XDG_DATA_HOME (default: ~/.local/share/shore)
+
+# ── Chat models ──────────────────────────────────────────────────────────
+# Provider-level settings cascade into all models under that provider.
+# Model-level values take precedence over provider-level values.
 #
-# `sdk` selects the wire protocol (anthropic, openai, gemini, deepseek, zhipuai).
-# Known providers (anthropic, openrouter, deepseek, gemini, xai, zhipuai) have
-# hardcoded defaults for sdk, api_key_env, temperature, max_tokens, etc.
+# Known providers with hardcoded defaults:
+#   anthropic  — sdk: anthropic, api_key_env: ANTHROPIC_API_KEY,  temp: 1.0, max_tokens: 8192, max_context: 200000
+#   openrouter — sdk: openai,     api_key_env: OPENROUTER_API_KEY, temp: 1.0, max_tokens: 8192, max_context: 200000
+#   deepseek   — sdk: deepseek,   api_key_env: DEEPSEEK_API_KEY,   temp: 1.0, max_tokens: 8192, max_context: 200000
+#   gemini     — sdk: gemini,     api_key_env: GEMINI_API_KEY,     temp: 1.0, max_tokens: 8192, max_context: 200000
+#   xai        — sdk: openai,     api_key_env: XAI_API_KEY,        temp: 1.0, max_tokens: 8192, max_context: 200000
+#   zhipuai    — sdk: zhipuai,    api_key_env: ZAI_API_KEY,        temp: 1.0, max_tokens: 8192, max_context: 200000
+#
+# Available fields (provider- or model-level):
+#
+#   — Auth & connection —
+#   sdk = "anthropic"                        # Wire protocol: anthropic, openai, gemini, deepseek, zhipuai
+#   api_key_env = "MY_API_KEY"               # Env var holding the API key
+#   base_url = "https://..."                 # Override the API base URL
+#   keepalive_enabled = false                # Keep the HTTP connection alive between requests
+#
+#   — Sampling —
+#   max_context_tokens = 200000              # Context window size
+#   max_tokens = 8192                        # Maximum output tokens
+#   temperature = 1.0
+#   top_p = 1.0
+#
+#   — Reasoning / thinking —
+#   reasoning_effort = "high"               # Anthropic: "low"|"medium"|"high"|"max" (adaptive) or "adaptive"; OpenAI/DeepSeek: "low"|"medium"|"high"
+#   budget_tokens = 8192                    # Thinking token budget — Anthropic (legacy), Gemini
+#
+#   — Prompt caching (Anthropic) —
+#   cache_ttl = "5m"                        # e.g. "5m", "1h"
+#   cache_control_depth = 2                 # Number of cache breakpoints to insert
+#   keepalive_enabled = true                # Send periodic pings to keep the cache alive (cost-saving)
+#   keepalive_ttl_minutes = 5              # Derive ping interval from TTL (default: 4 min)
+#   keepalive_max_pings = 15               # Stop after this many pings to avoid runaway cost
+#
+#   — Provider-specific —
+#   openrouter_provider = {order = ["anthropic"]}  # OpenRouter provider routing hints
+#   vertex_project = "my-gcp-project"       # GCP project for Vertex AI
+#   vertex_location = "us-central1"         # GCP region for Vertex AI
+#   gemini_generation = 2
+#   gemini_web_search = false               # Enable Gemini's built-in web search
 
 [chat.anthropic.claude-sonnet]
 model_id = "claude-sonnet-4-6"
 
-[chat.anthropic.claude-opus]
-model_id = "claude-opus-4-6"
-max_tokens = 16384
+# [chat.anthropic.claude-opus]
+# model_id = "claude-opus-4-6"
+# max_tokens = 16384
 
-[chat.openai.gpt-4o]
-model_id = "gpt-4o"
+# [chat.openai.gpt-4o]
+# model_id = "gpt-4o"
 
-[chat.gemini.gemini-pro]
-model_id = "gemini-2.5-pro"
+# [chat.gemini.gemini-pro]
+# model_id = "gemini-2.5-pro"
 
-# ── Thinking / reasoning configuration ─────────────────────────────────
-# Each provider handles reasoning differently. Use the fields below
-# on any model entry to configure thinking/reasoning output.
+# ── Thinking / reasoning ─────────────────────────────────────────────────
 #
-# Anthropic (budget_tokens or reasoning_effort):
-#   budget_tokens = 8192        — explicit token budget, enables extended thinking
-#   reasoning_effort = "adaptive" — model decides how much to think (newer models)
+# Anthropic (Opus 4.6, Sonnet 4.6) — reasoning_effort (recommended):
+#   reasoning_effort = "adaptive"  model decides whether/how much to think
+#   reasoning_effort = "high"      always think, deep reasoning (default effort)
+#   reasoning_effort = "medium"    moderate thinking, may skip for simple queries
+#   reasoning_effort = "low"       minimal thinking
+#   reasoning_effort = "max"       deepest reasoning, Opus 4.6 only
 #
-# OpenAI / DeepSeek (reasoning_effort):
-#   reasoning_effort = "high"   — valid: "low", "medium", "high"
-#   Reasoning output is captured automatically when the model returns it.
+# Anthropic (legacy / older models) — budget_tokens:
+#   budget_tokens = 8192           explicit thinking token budget
 #
-# Gemini (budget_tokens):
-#   budget_tokens = 8192        — token budget for Gemini thinking
-#   Thinking output (thought-flagged parts) is captured automatically.
+# OpenAI / DeepSeek — reasoning_effort:
+#   reasoning_effort = "high"      "low" | "medium" | "high"
+#
+# Gemini — budget_tokens:
+#   budget_tokens = 8192           thinking token budget
 #
 # Examples:
 #
 # [chat.anthropic.claude-opus-thinking]
 # model_id = "claude-opus-4-6"
 # max_tokens = 16384
-# budget_tokens = 10000
+# reasoning_effort = "high"
 #
 # [chat.anthropic.claude-sonnet-adaptive]
 # model_id = "claude-sonnet-4-6"
@@ -189,7 +254,7 @@ model_id = "gemini-2.5-pro"
 # model_id = "gemini-2.5-pro"
 # budget_tokens = 8192
 
-# ── Tool models ─────────────────────────────────────────────────────────
+# ── Tool models ──────────────────────────────────────────────────────────
 
 # [tools.openrouter]
 # api_key_env = "OPENROUTER_API_KEY"
@@ -198,15 +263,15 @@ model_id = "gemini-2.5-pro"
 # [tools.openrouter.mistral-small]
 # model_id = "mistralai/mistral-small-2603"
 
-# ── Embedding ───────────────────────────────────────────────────────────
+# ── Embedding ────────────────────────────────────────────────────────────
 
 # [embedding.text-large]
 # api_key_env = "OPENAI_API_KEY"
 # model_id = "text-embedding-3-large"
 
-# ── Image generation ────────────────────────────────────────────────────
+# ── Image generation ─────────────────────────────────────────────────────
 
-# OpenAI DALL-E (direct):
+# OpenAI DALL-E:
 # [image_generation.dalle]
 # provider = "openai"
 # model_id = "dall-e-3"

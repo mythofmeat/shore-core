@@ -339,9 +339,11 @@ impl MessageHandler {
         // Ensure autonomy state exists with model-specific keepalive config.
         // Must happen before notify_user_message so session_start is set on first message.
         let keepalive_cfg = CacheKeepaliveConfig::from_resolved_model(
-            &self.cmd_ctx.config.app.behavior.autonomy.cache_keepalive,
             &resolved.provider_key,
             resolved.cache_ttl.is_some(),
+            resolved.keepalive_enabled,
+            resolved.keepalive_ttl_minutes,
+            resolved.keepalive_max_pings,
         );
         self.autonomy.ensure_state(&char_name, keepalive_cfg);
 
@@ -756,6 +758,7 @@ mod tests {
 
         let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
         let (autonomy, _compaction_rx) = AutonomyManager::new(
+            Default::default(),
             Default::default(),
             data_dir.clone(),
             shutdown_rx,

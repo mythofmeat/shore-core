@@ -129,15 +129,6 @@ pub struct AutonomyConfig {
 
     #[serde(default)]
     pub heartbeat: HeartbeatConfig,
-
-    #[serde(default)]
-    pub compaction: CompactionConfig,
-
-    #[serde(default)]
-    pub collation: CollationConfig,
-
-    #[serde(default)]
-    pub cache_keepalive: CacheKeepaliveConfig,
 }
 
 fn default_personality() -> f64 {
@@ -158,9 +149,6 @@ impl Default for AutonomyConfig {
             max_unanswered: default_max_unanswered(),
             max_deferral_hours: default_max_deferral_hours(),
             heartbeat: HeartbeatConfig::default(),
-            compaction: CompactionConfig::default(),
-            collation: CollationConfig::default(),
-            cache_keepalive: CacheKeepaliveConfig::default(),
         }
     }
 }
@@ -271,39 +259,6 @@ impl Default for CollationConfig {
         Self {
             enabled: true,
             auto_run: true,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct CacheKeepaliveConfig {
-    /// Whether cache keepalive is enabled.
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-
-    /// Cache TTL in minutes.
-    #[serde(default = "default_cache_ttl_minutes")]
-    pub ttl_minutes: u32,
-
-    /// Max keepalive pings before giving up.
-    #[serde(default = "default_max_pings")]
-    pub max_pings: u32,
-}
-
-fn default_cache_ttl_minutes() -> u32 {
-    5
-}
-fn default_max_pings() -> u32 {
-    12
-}
-
-impl Default for CacheKeepaliveConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            ttl_minutes: default_cache_ttl_minutes(),
-            max_pings: default_max_pings(),
         }
     }
 }
@@ -462,6 +417,12 @@ pub struct MemoryConfig {
     /// Whether the image memory subsystem is enabled.
     #[serde(default = "default_true")]
     pub image_enabled: bool,
+
+    #[serde(default)]
+    pub compaction: CompactionConfig,
+
+    #[serde(default)]
+    pub collation: CollationConfig,
 }
 
 fn default_rag_results() -> u32 {
@@ -477,6 +438,8 @@ impl Default for MemoryConfig {
             rag_results: default_rag_results(),
             rag_threshold: default_rag_threshold(),
             image_enabled: true,
+            compaction: CompactionConfig::default(),
+            collation: CollationConfig::default(),
         }
     }
 }
@@ -831,8 +794,8 @@ mod tests {
         assert!(config.behavior.tool_use.enabled);
         // Sub-toggles default to true.
         assert!(config.behavior.autonomy.heartbeat.enabled);
-        assert!(config.behavior.autonomy.compaction.enabled);
-        assert!(config.behavior.autonomy.collation.enabled);
+        assert!(config.memory.compaction.enabled);
+        assert!(config.memory.collation.enabled);
         assert!(config.memory.image_enabled);
         // Tool toggles default to true.
         assert!(config.behavior.tool_use.tools.is_enabled("memory"));

@@ -3,6 +3,7 @@ pub mod stream;
 pub mod types;
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use chrono::Utc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -175,7 +176,7 @@ impl LlmClient {
 
         self.log_payload("request", &body);
 
-        let mut stream = UnixStream::connect(&self.socket_path)
+        let mut stream = connect_with_retry(&self.socket_path)
             .await
             .map_err(|e| LlmError::Connect {
                 path: self.socket_path.clone(),
@@ -237,7 +238,7 @@ impl LlmClient {
 
         self.log_payload("request", &body);
 
-        let mut stream = UnixStream::connect(&self.socket_path)
+        let mut stream = connect_with_retry(&self.socket_path)
             .await
             .map_err(|e| LlmError::Connect {
                 path: self.socket_path.clone(),
@@ -310,7 +311,7 @@ impl LlmClient {
         let body = serde_json::to_string(&payload)
         .map_err(LlmError::Serialize)?;
 
-        let mut stream = UnixStream::connect(&self.socket_path)
+        let mut stream = connect_with_retry(&self.socket_path)
             .await
             .map_err(|e| LlmError::Connect {
                 path: self.socket_path.clone(),
@@ -402,7 +403,7 @@ impl LlmClient {
 
         self.log_payload("request", &body);
 
-        let mut stream = UnixStream::connect(&self.socket_path)
+        let mut stream = connect_with_retry(&self.socket_path)
             .await
             .map_err(|e| LlmError::Connect {
                 path: self.socket_path.clone(),
@@ -490,6 +491,34 @@ impl LlmClient {
             warn!(error = %e, path = %path.display(), "Failed to write API payload log");
         }
     }
+}
+
+/// Attempts to connect to the shore-llm Unix socket, retrying briefly on
+/// transient failures. This covers the window during startup or restart where
+/// the socket doesn't exist yet or isn't accepting connections.
+async fn connect_with_retry(path: &Path) -> Result<UnixStream, std::io::Error> {
+    const ATTEMPTS: u32 = 4;
+    const DELAY: Duration = Duration::from_millis(500);
+
+    let mut last_err = None;
+    for attempt in 0..ATTEMPTS {
+        match UnixStream::connect(path).await {
+            Ok(stream) => return Ok(stream),
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+                ) =>
+            {
+                if attempt < ATTEMPTS - 1 {
+                    tokio::time::sleep(DELAY).await;
+                }
+                last_err = Some(e);
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Err(last_err.unwrap())
 }
 
 /// Generate an actionable error message for connection failures.

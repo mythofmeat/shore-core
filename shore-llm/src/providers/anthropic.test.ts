@@ -212,10 +212,21 @@ describe("buildCreateParams", () => {
       provider_options: { reasoning_effort: "adaptive" },
     });
     const params = buildCreateParams(req, false) as Record<string, unknown>;
-    expect(params.thinking).toEqual({
-      type: "adaptive",
-    });
+    expect(params.thinking).toEqual({ type: "adaptive" });
+    expect(params).not.toHaveProperty("output_config");
   });
+
+  it.each(["high", "medium", "low", "max"])(
+    "enables adaptive thinking + output_config when reasoning_effort is '%s'",
+    (effort) => {
+      const req = baseRequest({
+        provider_options: { reasoning_effort: effort },
+      });
+      const params = buildCreateParams(req, false) as Record<string, unknown>;
+      expect(params.thinking).toEqual({ type: "adaptive" });
+      expect(params.output_config).toEqual({ effort });
+    },
+  );
 
   it("applies cache_control to last N messages", () => {
     const req = baseRequest({
