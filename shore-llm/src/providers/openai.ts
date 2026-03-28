@@ -247,10 +247,15 @@ export async function stream(
     params.reasoning_effort = req.provider_options.reasoning_effort;
   }
 
+  const STREAM_TIMEOUT_MS = (req.provider_options?.stream_timeout_ms as number | undefined) ?? 300_000; // 5 min default
+
   const start = performance.now();
   let firstTokenMs: number | null = null;
+
+  const controller = new AbortController();
   const sdkStream = await client.chat.completions.create(
     params as unknown as OpenAI.ChatCompletionCreateParamsStreaming,
+    { signal: controller.signal },
   );
 
   res.chunkedEncoding = false;
@@ -268,6 +273,7 @@ export async function stream(
   };
   let model = req.model;
   let startSent = false;
+  let timedOut = false;
 
   // Track tool call accumulation
   const toolCalls = new Map<
@@ -279,7 +285,19 @@ export async function stream(
     res.write(JSON.stringify(event) + "\n");
   }
 
+  // Idle timeout: abort if no chunk arrives within STREAM_TIMEOUT_MS
+  let timeoutId = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, STREAM_TIMEOUT_MS);
+
+  try {
   for await (const chunk of sdkStream as AsyncIterable<OpenAI.ChatCompletionChunk>) {
+    clearTimeout(timeoutId);
+    timeoutId = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, STREAM_TIMEOUT_MS);
     if (!startSent) {
       model = chunk.model ?? model;
       writeLine({ type: "start", model });
@@ -343,6 +361,15 @@ export async function stream(
       };
     }
   }
+  } catch (err: unknown) {
+    clearTimeout(timeoutId);
+    const isAbort = err instanceof Error && err.name === "AbortError";
+    if (!isAbort) throw err;
+    // On timeout/abort: fall through to emit done with whatever we accumulated
+    finishReason = timedOut ? "timeout" : "aborted";
+  } finally {
+    clearTimeout(timeoutId);
+  }
 
   // Emit accumulated tool calls
   for (const [, tc] of toolCalls) {
@@ -361,6 +388,11 @@ export async function stream(
       name: tc.name,
       input,
     });
+  }
+
+  // Ensure start was emitted (may be missing if timeout fired before first chunk)
+  if (!startSent) {
+    writeLine({ type: "start", model });
   }
 
   // Done event

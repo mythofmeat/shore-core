@@ -81,14 +81,15 @@ fi
 if [[ "$SKIP_BUILD" == false ]]; then
     printf "${BOLD}Building...${RESET}\n"
     cargo build --workspace --quiet 2>&1
+    (cd "$REPO_ROOT/shore-llm" && bun run build --silent 2>&1)
 fi
 
 SHORE="$REPO_ROOT/target/debug/shore"
 DAEMON="$REPO_ROOT/target/debug/shore-daemon"
-LLM_JS="$REPO_ROOT/shore-llm/dist/index.js"
+LLM_BIN="$REPO_ROOT/shore-llm/dist/shore-llm"
 
-if [[ ! -x "$SHORE" ]] || [[ ! -x "$DAEMON" ]] || [[ ! -f "$LLM_JS" ]]; then
-    echo "Binaries not found. Run without --skip-build first."
+if [[ ! -x "$SHORE" ]] || [[ ! -x "$DAEMON" ]] || [[ ! -x "$LLM_BIN" ]]; then
+    echo "Binaries not found. Run without --skip-build or build shore-llm first (cd shore-llm && bun run build)."
     exit 1
 fi
 
@@ -171,7 +172,7 @@ export XDG_RUNTIME_DIR="$TMPDIR/runtime"
 
 # ── Start shore-llm ──────────────────────────────────────────────────
 printf "${BOLD}Starting shore-llm...${RESET}\n"
-setsid node "$LLM_JS" "$LLM_SOCK" &
+setsid "$LLM_BIN" "$LLM_SOCK" &
 LLM_PID=$!
 
 for i in $(seq 1 30); do
@@ -414,7 +415,7 @@ run_test_contains "memory status (0 entries)" '"entries": 0' $CLI memory --json
 if ! kill -0 $LLM_PID 2>/dev/null; then
     printf "${DIM}  shore-llm died, restarting...${RESET}\n"
     rm -f "$LLM_SOCK"
-    setsid node "$LLM_JS" "$LLM_SOCK" &
+    setsid "$LLM_BIN" "$LLM_SOCK" &
     LLM_PID=$!
     for i in $(seq 1 30); do [[ -S "$LLM_SOCK" ]] && break; sleep 0.1; done
 fi
