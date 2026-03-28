@@ -421,28 +421,6 @@ fn estimate_message_tokens(msg: &Message) -> usize {
         .sum()
 }
 
-/// Returns true if a message is a tool-result-only user message (no real
-/// user text — just tool_result content blocks).
-fn is_tool_loop_message(msg: &Message) -> bool {
-    if msg.content_blocks.is_empty() {
-        return false;
-    }
-    // Assistant messages with only tool_use + thinking blocks (no text) are
-    // tool-loop intermediates.  User messages with only tool_result blocks
-    // are tool-loop intermediates.
-    match msg.role {
-        Role::User => msg.content_blocks.iter().all(|b| {
-            matches!(b, ContentBlock::ToolResult { .. })
-        }),
-        Role::Assistant => {
-            let has_text = msg.content_blocks.iter().any(|b| matches!(b, ContentBlock::Text { text } if !text.is_empty()));
-            let has_tool_use = msg.content_blocks.iter().any(|b| matches!(b, ContentBlock::ToolUse { .. }));
-            !has_text && has_tool_use
-        }
-        _ => false,
-    }
-}
-
 /// Trim messages from the beginning to fit within the token budget.
 ///
 /// Keeps the most recent messages, discarding older ones first. After
