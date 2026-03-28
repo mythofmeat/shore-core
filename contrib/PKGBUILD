@@ -11,6 +11,7 @@ makedepends=('cargo' 'bun' 'git')
 provides=('shore')
 conflicts=('shore')
 source=("${pkgname}::git+http://localhost:3000/eshen/silvershore.git")
+options=('!lto')
 sha256sums=('SKIP')
 
 pkgver() {
