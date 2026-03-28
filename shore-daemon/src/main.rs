@@ -188,6 +188,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         loaded.dirs.config.clone(),
         loaded.dirs.data.clone(),
         push_tx.clone(),
+        loaded.clone(),
     );
 
     // Create autonomy manager (shared between handler, commands, and per-character tick tasks).

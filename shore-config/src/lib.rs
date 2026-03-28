@@ -87,6 +87,9 @@ pub struct LoadedConfig {
     pub app: AppConfig,
     pub models: ModelCatalog,
     pub dirs: ShoreDirs,
+    /// Raw global TOML table (after include/conf.d merging, before model extraction).
+    /// Preserved for per-character config merging.
+    raw_table: Option<toml::Table>,
 }
 
 impl LoadedConfig {
@@ -98,7 +101,13 @@ impl LoadedConfig {
             app,
             models,
             dirs,
-}
+            raw_table: None,
+        }
+    }
+
+    /// Access the raw TOML table for per-character merging.
+    pub fn raw_table(&self) -> Option<&toml::Table> {
+        self.raw_table.as_ref()
     }
 }
 
@@ -114,14 +123,20 @@ impl LoadedConfig {
 /// 2. Extract model sections (`chat`, `tools`, `embedding`, `image_generation`),
 ///    then deserialize the remainder into `AppConfig` (preserving `deny_unknown_fields`).
 pub fn load_config(config_path: Option<&Path>) -> Result<LoadedConfig, ConfigError> {
-    let dirs = ShoreDirs::resolve();
+    let mut dirs = ShoreDirs::resolve();
 
     // Determine the config directory (either from --config path or XDG).
     let config_dir = match config_path {
-        Some(p) => p
-            .parent()
-            .unwrap_or(Path::new("."))
-            .to_path_buf(),
+        Some(p) => {
+            let dir = p
+                .parent()
+                .unwrap_or(Path::new("."))
+                .to_path_buf();
+            // When a custom config path is provided, use its parent as the
+            // config directory so that character lookups etc. are relative to it.
+            dirs.config = dir.clone();
+            dir
+        }
         None => dirs.config.clone(),
     };
 
@@ -178,7 +193,19 @@ pub fn load_config(config_path: Option<&Path>) -> Result<LoadedConfig, ConfigErr
     let conf_d = config_dir.join("conf.d");
     load_conf_d(&conf_d, &mut table)?;
 
-    // ── Phase 2: Extract model sections before AppConfig parse ────────
+    // Phase 2: parse the merged table into LoadedConfig.
+    parse_config_table(table, dirs)
+}
+
+/// Parse a merged TOML table into a `LoadedConfig`.
+///
+/// Extracts model sections (`chat`, `tools`, `embedding`, `image_generation`),
+/// deserializes the remainder into `AppConfig`, builds `ModelCatalog`, validates.
+fn parse_config_table(table: toml::Table, dirs: ShoreDirs) -> Result<LoadedConfig, ConfigError> {
+    // Preserve the raw table for per-character merging.
+    let raw_table = table.clone();
+
+    let mut table = table;
     let chat_section = table.remove("chat");
     let tools_section = table.remove("tools");
     let embedding_section = table.remove("embedding");
@@ -197,14 +224,60 @@ pub fn load_config(config_path: Option<&Path>) -> Result<LoadedConfig, ConfigErr
         image_generation_section.as_ref().and_then(|v| v.as_table()),
     )?;
 
-    // ── Validate ──────────────────────────────────────────────────────
     validate_config(&app, &catalog)?;
 
     Ok(LoadedConfig {
         app,
         models: catalog,
         dirs,
-})
+        raw_table: Some(raw_table),
+    })
+}
+
+/// Load a per-character config overlay and deep-merge it over the global config.
+///
+/// Reads `{config_dir}/characters/{name}/config.toml`. If the file doesn't
+/// exist, returns `Ok(None)`. If it does, deep-merges the character TOML
+/// over the global raw table, then runs the full two-phase parse.
+pub fn load_character_config(
+    global: &LoadedConfig,
+    character_name: &str,
+) -> Result<Option<LoadedConfig>, ConfigError> {
+    let config_dir = &global.dirs.config;
+    let char_config_path = config_dir
+        .join("characters")
+        .join(character_name)
+        .join("config.toml");
+
+    if !char_config_path.exists() {
+        return Ok(None);
+    }
+
+    let content = std::fs::read_to_string(&char_config_path).map_err(|e| ConfigError::ReadFile {
+        path: char_config_path.clone(),
+        source: e,
+    })?;
+
+    let char_table: toml::Table = content
+        .parse()
+        .map_err(|e| ConfigError::ParseInclude {
+            path: char_config_path.clone(),
+            source: e,
+        })?;
+
+    info!(
+        character = character_name,
+        path = %char_config_path.display(),
+        "Merging per-character config override"
+    );
+
+    // Clone the global raw table and deep-merge the character overlay.
+    let base = global.raw_table.as_ref().cloned().unwrap_or_default();
+    let mut merged = base;
+    deep_merge(&mut merged, &char_table);
+
+    parse_config_table(merged, global.dirs.clone())
+        .map(Some)
 }
 
 /// Recursively deep-merge `overlay` into `base`.
@@ -907,5 +980,113 @@ c = 4
         assert!(dirs.config.ends_with("shore"));
         assert!(dirs.data.ends_with("shore"));
         assert!(dirs.runtime.ends_with("shore"));
+    }
+
+    // ── Per-character config override tests ───────────────────────────
+
+    #[test]
+    fn character_config_override_merges_over_global() {
+        let tmp = setup_config_dir(&[
+            (
+                "config.toml",
+                r#"
+[defaults]
+model = "sonnet"
+
+[behavior.autonomy]
+enabled = false
+personality = 0.5
+
+[chat.anthropic.sonnet]
+model_id = "claude-sonnet-4-6"
+
+[chat.anthropic.opus]
+model_id = "claude-opus-4-6"
+"#,
+            ),
+            (
+                "characters/Alice/character.md",
+                "You are Alice.",
+            ),
+            (
+                "characters/Alice/config.toml",
+                r#"
+[defaults]
+model = "opus"
+
+[behavior.autonomy]
+enabled = true
+personality = 0.8
+"#,
+            ),
+        ]);
+
+        let config_path = tmp.path().join("config.toml");
+        let global = load_config(Some(&config_path)).unwrap();
+
+        // Global config should be unchanged.
+        assert_eq!(global.app.defaults.model.as_deref(), Some("sonnet"));
+        assert!(!global.app.behavior.autonomy.enabled);
+        assert_eq!(global.app.behavior.autonomy.personality, 0.5);
+
+        // Character config should override specific keys.
+        let alice = load_character_config(&global, "Alice").unwrap().unwrap();
+        assert_eq!(alice.app.defaults.model.as_deref(), Some("opus"));
+        assert!(alice.app.behavior.autonomy.enabled);
+        assert_eq!(alice.app.behavior.autonomy.personality, 0.8);
+
+        // Models should still be available (inherited from global).
+        assert!(alice.models.find_model("sonnet").is_ok());
+        assert!(alice.models.find_model("opus").is_ok());
+    }
+
+    #[test]
+    fn character_config_no_override_returns_none() {
+        let tmp = setup_config_dir(&[
+            ("config.toml", ""),
+            ("characters/Bob/character.md", "You are Bob."),
+        ]);
+
+        let config_path = tmp.path().join("config.toml");
+        let global = load_config(Some(&config_path)).unwrap();
+
+        assert!(load_character_config(&global, "Bob").unwrap().is_none());
+    }
+
+    #[test]
+    fn character_config_adds_models() {
+        let tmp = setup_config_dir(&[
+            (
+                "config.toml",
+                r#"
+[chat.anthropic.sonnet]
+model_id = "claude-sonnet-4-6"
+"#,
+            ),
+            (
+                "characters/Alice/character.md",
+                "You are Alice.",
+            ),
+            (
+                "characters/Alice/config.toml",
+                r#"
+[defaults]
+model = "opus"
+
+[chat.anthropic.opus]
+model_id = "claude-opus-4-6"
+max_tokens = 16384
+"#,
+            ),
+        ]);
+
+        let config_path = tmp.path().join("config.toml");
+        let global = load_config(Some(&config_path)).unwrap();
+        assert!(global.models.find_model("opus").is_err());
+
+        let alice = load_character_config(&global, "Alice").unwrap().unwrap();
+        assert!(alice.models.find_model("sonnet").is_ok());
+        assert!(alice.models.find_model("opus").is_ok());
+        assert_eq!(alice.models.find_model("opus").unwrap().max_tokens, Some(16384));
     }
 }

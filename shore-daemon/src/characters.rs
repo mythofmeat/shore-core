@@ -9,9 +9,9 @@ use std::path::PathBuf;
 
 use shore_protocol::server_msg::ServerMessage;
 use tokio::sync::broadcast;
-use tracing::info;
+use tracing::{info, warn};
 
-use shore_config::{discover_characters, load_character_definition, resolve_user_definition};
+use shore_config::{discover_characters, load_character_config, load_character_definition, resolve_user_definition, LoadedConfig};
 use crate::engine::{ConversationEngine, EngineError};
 
 /// Manages multiple character engines with lazy initialization.
@@ -26,6 +26,10 @@ pub struct CharacterRegistry {
     engines: HashMap<String, ConversationEngine>,
     /// Cached list of available character names (from filesystem scan).
     available: Vec<String>,
+    /// Global config (base for per-character merging).
+    global_config: LoadedConfig,
+    /// Cached per-character configs. `Some(config)` = has override, `None` = no override file.
+    char_configs: HashMap<String, Option<LoadedConfig>>,
 }
 
 impl CharacterRegistry {
@@ -34,6 +38,7 @@ impl CharacterRegistry {
         config_dir: PathBuf,
         data_dir: PathBuf,
         push_tx: broadcast::Sender<ServerMessage>,
+        global_config: LoadedConfig,
     ) -> Self {
         let available = discover_characters(&config_dir);
         info!(
@@ -48,6 +53,8 @@ impl CharacterRegistry {
             push_tx,
             engines: HashMap::new(),
             available,
+            global_config,
+            char_configs: HashMap::new(),
         }
     }
 
@@ -100,6 +107,49 @@ impl CharacterRegistry {
     /// Load the user definition for a given character (character-specific → global fallback).
     pub fn user_definition(&self, name: &str) -> Option<String> {
         resolve_user_definition(&self.config_dir, name)
+    }
+
+    /// Get the effective config for a character.
+    ///
+    /// Returns the per-character merged config if `characters/{name}/config.toml`
+    /// exists, otherwise the global config. Results are cached.
+    pub fn effective_config(&mut self, name: &str) -> &LoadedConfig {
+        if !self.char_configs.contains_key(name) {
+            let merged = load_character_config(&self.global_config, name);
+            match merged {
+                Ok(Some(config)) => {
+                    info!(character = name, "Loaded per-character config override");
+                    self.char_configs.insert(name.to_string(), Some(config));
+                }
+                Ok(None) => {
+                    self.char_configs.insert(name.to_string(), None);
+                }
+                Err(e) => {
+                    warn!(character = name, error = %e, "Failed to load character config, using global");
+                    self.char_configs.insert(name.to_string(), None);
+                }
+            }
+        }
+        self.char_configs
+            .get(name)
+            .and_then(|opt| opt.as_ref())
+            .unwrap_or(&self.global_config)
+    }
+
+    /// Invalidate all cached per-character configs (e.g. on config_reset).
+    pub fn invalidate_configs(&mut self) {
+        self.char_configs.clear();
+    }
+
+    /// Update the global config reference and invalidate per-character caches.
+    pub fn set_global_config(&mut self, config: LoadedConfig) {
+        self.global_config = config;
+        self.char_configs.clear();
+    }
+
+    /// Access the global config.
+    pub fn global_config(&self) -> &LoadedConfig {
+        &self.global_config
     }
 
     /// Select a character by name or auto-select if there's only one.
@@ -172,8 +222,18 @@ mod tests {
             .unwrap();
         }
 
+        let global_config = shore_config::LoadedConfig::new_for_test(
+            shore_config::app::AppConfig::default(),
+            shore_config::models::ModelCatalog::default(),
+            shore_config::ShoreDirs {
+                config: config_dir.clone(),
+                data: data_dir.clone(),
+                runtime: tmp.path().join("runtime"),
+            },
+        );
+
         let (tx, _rx) = broadcast::channel(16);
-        CharacterRegistry::new(config_dir, data_dir, tx)
+        CharacterRegistry::new(config_dir, data_dir, tx, global_config)
     }
 
     #[test]

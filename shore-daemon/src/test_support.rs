@@ -40,6 +40,8 @@ pub fn test_model() -> ResolvedModel {
         cache_ttl: None,
         cache_control_depth: None,
         keepalive_enabled: None,
+        keepalive_ttl_minutes: None,
+        keepalive_max_pings: None,
         openrouter_provider: None,
         vertex_project: None,
         vertex_location: None,

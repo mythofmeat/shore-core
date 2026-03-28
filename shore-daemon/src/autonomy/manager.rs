@@ -260,16 +260,32 @@ impl AutonomyManager {
     /// character, creates the state (restoring from disk if available) and
     /// spawns a per-character tick task.
     pub fn ensure_state(&self, character: &str, keepalive_config: CacheKeepaliveConfig) {
+        self.ensure_state_with_config(character, keepalive_config, None);
+    }
+
+    /// Like `ensure_state`, but accepts an optional per-character effective config
+    /// that overrides the global config for model resolution and autonomy settings.
+    pub fn ensure_state_with_config(
+        &self,
+        character: &str,
+        keepalive_config: CacheKeepaliveConfig,
+        effective_config: Option<&LoadedConfig>,
+    ) {
         let mut states = self.states.lock().unwrap();
         if states.contains_key(character) {
             return;
         }
 
+        // Use per-character autonomy config if available, otherwise global.
+        let autonomy_cfg = effective_config
+            .map(|c| Arc::new(c.app.behavior.autonomy.clone()))
+            .unwrap_or_else(|| self.config.clone());
+
         // Create scheduler state with config values.
         let mut heartbeat = HeartbeatScheduler::with_config(
-            self.config.heartbeat.dormant_threshold,
-            self.config.heartbeat.session_gap_secs,
-            self.config.heartbeat.session_probe_floor_secs,
+            autonomy_cfg.heartbeat.dormant_threshold,
+            autonomy_cfg.heartbeat.session_gap_secs,
+            autonomy_cfg.heartbeat.session_probe_floor_secs,
         );
         let mut cache_keepalive = CacheKeepaliveScheduler::new(keepalive_config);
 
@@ -297,16 +313,18 @@ impl AutonomyManager {
 
         states.insert(character.to_string(), state.clone());
 
-        // Spawn per-character tick task.
+        // Spawn per-character tick task. Use per-character effective config if available.
         let name = character.to_string();
-        let config = self.config.clone();
+        let config = autonomy_cfg;
         let compaction = self.compaction.clone();
         let data_dir = self.data_dir.clone();
         let shutdown_rx = self.shutdown_rx.clone();
         let compaction_tx = self.compaction_tx.clone();
         let llm_client = self.llm_client.clone();
         let push_tx = self.push_tx.clone();
-        let loaded_config = self.loaded_config.clone();
+        let loaded_config = effective_config
+            .map(|c| Arc::new(c.clone()))
+            .or_else(|| self.loaded_config.clone());
         let notifier = self.notifier.clone();
 
         let handle = tokio::spawn(async move {

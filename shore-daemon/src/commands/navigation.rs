@@ -76,6 +76,9 @@ pub fn character_info(
         vec![]
     };
 
+    let config_override_path = char_dir.join("config.toml");
+    let has_config_override = config_override_path.exists();
+
     let data_dir = ctx.data_dir.join(name);
     let has_data = data_dir.exists();
 
@@ -86,6 +89,7 @@ pub fn character_info(
         "has_definition": has_definition,
         "definition_preview": definition_preview,
         "has_user_definition": has_user_definition,
+        "has_config_override": has_config_override,
         "prompt_overrides": prompt_overrides,
         "data_dir": data_dir.display().to_string(),
         "has_data": has_data,

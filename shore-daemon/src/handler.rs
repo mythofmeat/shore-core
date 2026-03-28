@@ -213,9 +213,14 @@ impl MessageHandler {
             }
         };
 
+        // Swap in per-character effective config for the duration of this dispatch.
+        let effective = self.registry.effective_config(&char_name).clone();
+        let original = std::mem::replace(&mut self.cmd_ctx.config, effective);
+
         let engine = match self.registry.get_or_create(&char_name) {
             Ok(engine) => engine,
             Err(e) => {
+                self.cmd_ctx.config = original;
                 return ServerMessage::Error(SwpError {
                     code: ErrorCode::InternalError,
                     message: e.to_string(),
@@ -223,7 +228,17 @@ impl MessageHandler {
             }
         };
 
-        commands::dispatch(engine, &mut self.cmd_ctx, cmd).await
+        let result = commands::dispatch(engine, &mut self.cmd_ctx, cmd).await;
+
+        // config_reset reloads the global config — keep the new value and
+        // invalidate the per-character cache so future lookups re-merge.
+        if cmd.name == "config_reset" {
+            self.registry.set_global_config(self.cmd_ctx.config.clone());
+        } else {
+            self.cmd_ctx.config = original;
+        }
+
+        result
     }
 
     async fn handle_engine_message(
@@ -264,6 +279,22 @@ impl MessageHandler {
         let char_name = self.registry.resolve_character(character)
             .map_err(|e| e.to_string())?;
 
+        // Swap in per-character effective config for the duration of this message.
+        let effective = self.registry.effective_config(&char_name).clone();
+        let original = std::mem::replace(&mut self.cmd_ctx.config, effective);
+        // Use a closure-like pattern: restore on all exit paths.
+        let result = self.handle_user_message_inner(body, regen, &char_name, rid).await;
+        self.cmd_ctx.config = original;
+        result
+    }
+
+    async fn handle_user_message_inner(
+        &mut self,
+        body: ClientMessageBody,
+        regen: bool,
+        char_name: &str,
+        rid: Option<String>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         {
             // Get engine for this character (scoped borrow).
             let engine = self.registry.get_or_create(&char_name)
@@ -345,7 +376,11 @@ impl MessageHandler {
             resolved.keepalive_ttl_minutes,
             resolved.keepalive_max_pings,
         );
-        self.autonomy.ensure_state(&char_name, keepalive_cfg);
+        self.autonomy.ensure_state_with_config(
+            char_name,
+            keepalive_cfg,
+            Some(&self.cmd_ctx.config),
+        );
 
         // Notify autonomy of the user message (must be after ensure_state).
         if !regen && (!body.text.is_empty() || !body.images.is_empty()) {
@@ -628,7 +663,7 @@ impl MessageHandler {
                 image_gen_config_val: image_gen_config,
                 search_config_val: self.cmd_ctx.config.app.behavior.tool_use.search.clone(),
                 autonomy_val: self.autonomy.clone(),
-                character_name_val: char_name.clone(),
+                character_name_val: char_name.to_string(),
             };
 
             let tool_loop_result = tools::run_tool_loop(
@@ -765,7 +800,7 @@ mod tests {
         );
 
         let cmd_ctx = CommandContext {
-            config: loaded_config,
+            config: loaded_config.clone(),
             push_tx: push_tx.clone(),
             data_dir: data_dir.clone(),
             active_model: None,
@@ -776,7 +811,7 @@ mod tests {
             memory_shell_sessions: std::collections::HashMap::new(),
         };
 
-        let registry = CharacterRegistry::new(config_dir, data_dir, push_tx.clone());
+        let registry = CharacterRegistry::new(config_dir, data_dir, push_tx.clone(), loaded_config);
 
         let handler = MessageHandler {
             registry,

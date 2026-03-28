@@ -1156,6 +1156,10 @@ fn print_character_info(data: &serde_json::Value) {
         write_row(&mut out, "User def", "yes");
     }
 
+    if data["has_config_override"].as_bool().unwrap_or(false) {
+        write_row_colored(&mut out, "Config override", "yes", Color::Yellow);
+    }
+
     if let Some(overrides) = data["prompt_overrides"].as_array() {
         if !overrides.is_empty() {
             let names: Vec<&str> = overrides.iter().filter_map(|v| v.as_str()).collect();

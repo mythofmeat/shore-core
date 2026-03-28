@@ -232,6 +232,7 @@ async fn e2e_conversation_milestone() {
         loaded.dirs.config.clone(),
         loaded.dirs.data.clone(),
         push_tx.clone(),
+        loaded.clone(),
     );
 
     let (autonomy, _compaction_rx) = shore_daemon::autonomy::manager::AutonomyManager::new(
