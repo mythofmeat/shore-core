@@ -17,7 +17,7 @@ set -euo pipefail
 
 GITEA_URL="${GITEA_URL:-http://localhost:3000}"
 GITEA_OWNER="${GITEA_OWNER:-eshen}"
-GITEA_REPO_NAME="shore"  # pacman repo name (the [section] in pacman.conf)
+GITEA_REPO_NAME="eshen"  # pacman repo name (the [section] in pacman.conf)
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
 if [[ -z "${GITEA_TOKEN:-}" ]]; then

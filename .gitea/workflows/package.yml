@@ -19,8 +19,13 @@ jobs:
       - name: Upload to Gitea package registry
         working-directory: contrib
         run: |
-          for pkg in *.pkg.tar.zst; do
-            curl --fail --user "eshen:${{ secrets.PACKAGE_TOKEN }}" \
-                 --upload-file "$pkg" \
-                 "${{ gitea.server_url }}/api/packages/eshen/arch/shore"
-          done
+          ls -la *.pkg.tar.zst 2>/dev/null || echo "No packages in contrib/, checking PKGDEST..."
+          pkg=$(find . /home -maxdepth 3 -name '*.pkg.tar.zst' -newer PKGBUILD 2>/dev/null | head -1)
+          if [ -z "$pkg" ]; then
+            echo "ERROR: No .pkg.tar.zst found anywhere"
+            exit 1
+          fi
+          echo "Uploading $pkg..."
+          curl --fail --user "eshen:${{ secrets.PACKAGE_TOKEN }}" \
+               --upload-file "$pkg" \
+               "${{ gitea.server_url }}/api/packages/eshen/arch/eshen"
