@@ -206,6 +206,7 @@ fn handle_conn_event(app: &mut App, event: ConnEvent) -> Vec<ConnCommand> {
 
         ConnEvent::Disconnected(reason) => {
             app.connection_status = ConnectionStatus::Connecting;
+            app.stream.reset(); // clear stale streaming state
             app.set_status(format!("reconnecting: {reason}"));
             vec![]
         }

@@ -164,6 +164,25 @@ impl InputState {
         self.text.lines().count().max(1)
     }
 
+    /// Visual line count accounting for word-wrap at the given content width.
+    pub fn visual_line_count(&self, content_width: usize) -> usize {
+        if content_width == 0 {
+            return self.line_count();
+        }
+        self.text
+            .split('\n')
+            .map(|line| {
+                let w = unicode_width::UnicodeWidthStr::width(line);
+                if w == 0 {
+                    1
+                } else {
+                    (w + content_width - 1) / content_width // ceil division
+                }
+            })
+            .sum::<usize>()
+            .max(1)
+    }
+
     pub fn enter_command_mode(&mut self) {
         self.mode = InputMode::Command;
         self.cmd_text.clear();

@@ -143,6 +143,8 @@ fn handle_insert_mode(app: &mut App, key: KeyEvent) -> Action {
                 return Action::None;
             }
             app.scroll_to_bottom();
+            // Show typing indicator immediately (don't wait for StreamStart)
+            app.stream.active = true;
             let msg = ClientMessage::Message(ClientMessageBody {
                 rid: None,
                 text,
