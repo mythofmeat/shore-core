@@ -61,6 +61,8 @@ pub struct ProviderConfig {
     pub cache_ttl: Option<String>,
     pub cache_control_depth: Option<u32>,
     pub keepalive_enabled: Option<bool>,
+    pub keepalive_ttl_minutes: Option<u32>,
+    pub keepalive_max_pings: Option<u32>,
     pub openrouter_provider: Option<toml::Value>,
     pub vertex_project: Option<String>,
     pub vertex_location: Option<String>,
@@ -89,6 +91,8 @@ pub struct ModelEntry {
     pub cache_ttl: Option<String>,
     pub cache_control_depth: Option<u32>,
     pub keepalive_enabled: Option<bool>,
+    pub keepalive_ttl_minutes: Option<u32>,
+    pub keepalive_max_pings: Option<u32>,
     pub openrouter_provider: Option<toml::Value>,
     pub vertex_project: Option<String>,
     pub vertex_location: Option<String>,
@@ -112,6 +116,8 @@ impl Default for ModelEntry {
             cache_ttl: None,
             cache_control_depth: None,
             keepalive_enabled: None,
+            keepalive_ttl_minutes: None,
+            keepalive_max_pings: None,
             openrouter_provider: None,
             vertex_project: None,
             vertex_location: None,
@@ -149,6 +155,8 @@ pub struct ResolvedModel {
     pub cache_ttl: Option<String>,
     pub cache_control_depth: Option<u32>,
     pub keepalive_enabled: Option<bool>,
+    pub keepalive_ttl_minutes: Option<u32>,
+    pub keepalive_max_pings: Option<u32>,
     pub openrouter_provider: Option<toml::Value>,
     pub vertex_project: Option<String>,
     pub vertex_location: Option<String>,
@@ -390,6 +398,12 @@ fn parse_category(
                 keepalive_enabled: entry
                     .keepalive_enabled
                     .or(provider_config.keepalive_enabled),
+                keepalive_ttl_minutes: entry
+                    .keepalive_ttl_minutes
+                    .or(provider_config.keepalive_ttl_minutes),
+                keepalive_max_pings: entry
+                    .keepalive_max_pings
+                    .or(provider_config.keepalive_max_pings),
                 openrouter_provider: entry
                     .openrouter_provider
                     .or(provider_config.openrouter_provider.clone()),
@@ -508,6 +522,8 @@ fn merge_provider(base: &mut ProviderConfig, overlay: &ProviderConfig) {
     merge_opt!(cache_ttl);
     merge_opt!(cache_control_depth);
     merge_opt!(keepalive_enabled);
+    merge_opt!(keepalive_ttl_minutes);
+    merge_opt!(keepalive_max_pings);
     merge_opt!(openrouter_provider);
     merge_opt!(vertex_project);
     merge_opt!(vertex_location);

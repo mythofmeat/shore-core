@@ -194,6 +194,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create autonomy manager (shared between handler, commands, and per-character tick tasks).
     let (mut autonomy, compaction_rx) = AutonomyManager::new(
         loaded.app.behavior.autonomy.clone(),
+        loaded.app.memory.compaction.clone(),
         loaded.dirs.data.clone(),
         shutdown_rx.clone(),
     );
@@ -385,7 +386,7 @@ async fn run_compaction(
     let indexer = RealVectorIndexer::new(store, llm_client.clone(), embed_config);
     let conv_mgr = RealConversationManager::new(&character_dir);
 
-    let app_compaction = &config.app.behavior.autonomy.compaction;
+    let app_compaction = &config.app.memory.compaction;
     let mgr_config = CompactionConfig {
         idle_trigger_minutes: app_compaction.idle_trigger_minutes as u64,
         min_messages: app_compaction.min_messages,
@@ -451,8 +452,8 @@ async fn run_compaction(
             );
 
             // Run collation after successful compaction if configured.
-            if config.app.behavior.autonomy.collation.enabled
-                && config.app.behavior.autonomy.collation.auto_run {
+            if config.app.memory.collation.enabled
+                && config.app.memory.collation.auto_run {
                 info!(character = %character, "Running auto-collation after compaction");
                 match run_collation(character, config, llm_client, data_dir).await {
                     Ok(()) => {

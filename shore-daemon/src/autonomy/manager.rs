@@ -29,7 +29,7 @@ use super::heartbeat::{
 use super::timing::{compute_tau, TauParams};
 use super::{AutonomyStatus, HeartbeatEventKind, HeartbeatLog};
 use crate::notifications::{NotificationEvent, NotificationService};
-use shore_config::app::AutonomyConfig;
+use shore_config::app::{AutonomyConfig, CompactionConfig};
 use shore_config::LoadedConfig;
 use shore_llm_client::types::LlmRequest;
 use shore_llm_client::LlmClient;
@@ -202,6 +202,7 @@ pub struct AutonomyManager {
     states: Arc<Mutex<HashMap<String, Arc<Mutex<AutonomyState>>>>>,
     handles: Arc<Mutex<Vec<JoinHandle<()>>>>,
     config: Arc<AutonomyConfig>,
+    compaction: Arc<CompactionConfig>,
     data_dir: PathBuf,
     shutdown_rx: tokio::sync::watch::Receiver<()>,
     /// Channel for sending compaction trigger signals (character name).
@@ -219,6 +220,7 @@ pub struct AutonomyManager {
 impl AutonomyManager {
     pub fn new(
         config: AutonomyConfig,
+        compaction: CompactionConfig,
         data_dir: PathBuf,
         shutdown_rx: tokio::sync::watch::Receiver<()>,
     ) -> (Self, mpsc::Receiver<String>) {
@@ -227,6 +229,7 @@ impl AutonomyManager {
             states: Arc::new(Mutex::new(HashMap::new())),
             handles: Arc::new(Mutex::new(Vec::new())),
             config: Arc::new(config),
+            compaction: Arc::new(compaction),
             data_dir,
             shutdown_rx,
             compaction_tx,
@@ -297,6 +300,7 @@ impl AutonomyManager {
         // Spawn per-character tick task.
         let name = character.to_string();
         let config = self.config.clone();
+        let compaction = self.compaction.clone();
         let data_dir = self.data_dir.clone();
         let shutdown_rx = self.shutdown_rx.clone();
         let compaction_tx = self.compaction_tx.clone();
@@ -310,6 +314,7 @@ impl AutonomyManager {
                 name,
                 state,
                 config,
+                compaction,
                 data_dir,
                 shutdown_rx,
                 compaction_tx,
@@ -493,6 +498,7 @@ async fn character_tick_loop(
     character: String,
     state: Arc<Mutex<AutonomyState>>,
     config: Arc<AutonomyConfig>,
+    compaction: Arc<CompactionConfig>,
     data_dir: PathBuf,
     mut shutdown_rx: tokio::sync::watch::Receiver<()>,
     compaction_tx: mpsc::Sender<String>,
@@ -517,6 +523,7 @@ async fn character_tick_loop(
                     &character,
                     &state,
                     &config,
+                    &compaction,
                     &data_dir,
                     &compaction_tx,
                     llm_client.as_ref(),
@@ -542,6 +549,7 @@ async fn tick_character(
     character: &str,
     state: &Arc<Mutex<AutonomyState>>,
     config: &AutonomyConfig,
+    compaction: &CompactionConfig,
     data_dir: &Path,
     compaction_tx: &mpsc::Sender<String>,
     llm_client: Option<&LlmClient>,
@@ -599,10 +607,10 @@ async fn tick_character(
 
         // -- compaction triggers ---------------------------------------------
         let mut compaction_needed = false;
-        if config.enabled && config.compaction.enabled && !s.compaction_triggered {
-            let min_total = config.compaction.min_messages + config.compaction.keep_recent;
-            if config.compaction.max_messages > 0
-                && s.active_message_count >= config.compaction.max_messages
+        if config.enabled && compaction.enabled && !s.compaction_triggered {
+            let min_total = compaction.min_messages + compaction.keep_recent;
+            if compaction.max_messages > 0
+                && s.active_message_count >= compaction.max_messages
                 && s.active_message_count >= min_total
             {
                 s.compaction_triggered = true;
@@ -610,12 +618,12 @@ async fn tick_character(
                 info!(
                     character = %character,
                     message_count = s.active_message_count,
-                    max_messages = config.compaction.max_messages,
+                    max_messages = compaction.max_messages,
                     "Compaction: max messages trigger fired"
                 );
             } else if s.active_message_count >= min_total {
                 let idle_secs = now.duration_since(s.last_compaction_activity).as_secs();
-                let threshold_secs = config.compaction.idle_trigger_minutes as u64 * 60;
+                let threshold_secs = compaction.idle_trigger_minutes as u64 * 60;
                 if threshold_secs > 0 && idle_secs >= threshold_secs {
                     s.compaction_triggered = true;
                     compaction_needed = true;
@@ -1001,7 +1009,7 @@ mod tests {
 
     fn test_manager(data_dir: &Path) -> AutonomyManager {
         let (_tx, rx) = tokio::sync::watch::channel(());
-        let (mgr, _compaction_rx) = AutonomyManager::new(test_config(), data_dir.to_path_buf(), rx);
+        let (mgr, _compaction_rx) = AutonomyManager::new(test_config(), Default::default(), data_dir.to_path_buf(), rx);
         mgr
     }
 
@@ -1046,7 +1054,7 @@ mod tests {
     fn notify_without_state_is_noop() {
         let tmp = tempfile::tempdir().unwrap();
         let (_tx, rx) = tokio::sync::watch::channel(());
-        let (mgr, _compaction_rx) = AutonomyManager::new(test_config(), tmp.path().to_path_buf(), rx);
+        let (mgr, _compaction_rx) = AutonomyManager::new(test_config(), Default::default(), tmp.path().to_path_buf(), rx);
         // Should not panic.
         mgr.notify_user_message("nobody", 0);
         mgr.notify_assistant_message("nobody", 0);
@@ -1059,7 +1067,7 @@ mod tests {
     fn status_returns_none_for_unknown() {
         let tmp = tempfile::tempdir().unwrap();
         let (_tx, rx) = tokio::sync::watch::channel(());
-        let (mgr, _compaction_rx) = AutonomyManager::new(test_config(), tmp.path().to_path_buf(), rx);
+        let (mgr, _compaction_rx) = AutonomyManager::new(test_config(), Default::default(), tmp.path().to_path_buf(), rx);
         assert!(mgr.status("nobody").is_none());
     }
 
@@ -1194,6 +1202,6 @@ mod tests {
             s.activity.record_message();
         }
 
-        tick_character("alice", &state, &config, tmp.path(), &compaction_tx, None, None, None, None).await;
+        tick_character("alice", &state, &config, &Default::default(), tmp.path(), &compaction_tx, None, None, None, None).await;
     }
 }

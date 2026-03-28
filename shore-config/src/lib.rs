@@ -546,8 +546,8 @@ model_id = "claude-opus-4-6"
         );
         // New defaults: sub-toggles, image_enabled, tcp, retry.
         assert!(loaded.app.behavior.autonomy.heartbeat.enabled);
-        assert!(loaded.app.behavior.autonomy.compaction.enabled);
-        assert!(loaded.app.behavior.autonomy.collation.enabled);
+        assert!(loaded.app.memory.compaction.enabled);
+        assert!(loaded.app.memory.collation.enabled);
         assert!(loaded.app.memory.image_enabled);
         assert!(loaded.app.connections.tcp.is_none());
         assert!(loaded.app.advanced.editor.is_none());

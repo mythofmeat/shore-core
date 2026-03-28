@@ -898,9 +898,9 @@ Loaded by daemon on startup. Key changes from V1:
   - `max_unanswered` (int, default 1)
   - `max_deferral_hours` (float, default 24)
 - `[behavior.autonomy.heartbeat]` — heartbeat-specific config
-- `[behavior.autonomy.compaction]` — compaction triggers
-- `[behavior.autonomy.collation]` — collation settings
 - `[behavior.autonomy.cache_keepalive]` — cache TTL refresh
+- `[memory.compaction]` — compaction triggers
+- `[memory.collation]` — collation settings
 - **No `[behavior.autonomy.interiority]`** — interiority (journal/story) is
   removed entirely.
 - `[connections.matrix]` — replaces `matrix_external` and `matrix_embedded`

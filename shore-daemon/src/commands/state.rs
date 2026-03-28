@@ -563,7 +563,7 @@ pub async fn compact(
     let conv_mgr = RealConversationManager::new(engine.character_dir());
 
     // Create compaction manager with config.
-    let app_compaction = &ctx.config.app.behavior.autonomy.compaction;
+    let app_compaction = &ctx.config.app.memory.compaction;
     let config = CompactionConfig {
         idle_trigger_minutes: app_compaction.idle_trigger_minutes as u64,
         min_messages: app_compaction.min_messages,
@@ -614,7 +614,7 @@ pub async fn compact(
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
             let collation_result = if do_collate
-                && ctx.config.app.behavior.autonomy.collation.enabled
+                && ctx.config.app.memory.collation.enabled
             {
                 let collation_model = ctx
                     .config
@@ -1020,15 +1020,9 @@ fn config_set(ctx: &mut CommandContext, key: &str, value: &str) -> CommandResult
             ctx.config.app.behavior.autonomy.enabled = v;
             Ok(json!({ "set": "autonomy.enabled", "value": v }))
         }
-        "cache_keepalive.enabled" | "behavior.autonomy.cache_keepalive.enabled" => {
-            let v: bool = value.parse()
-                .map_err(|_| (ErrorCode::InvalidRequest, "expected true or false".into()))?;
-            ctx.config.app.behavior.autonomy.cache_keepalive.enabled = v;
-            Ok(json!({ "set": "cache_keepalive.enabled", "value": v }))
-        }
         _ => Err((
             ErrorCode::InvalidRequest,
-            format!("Config key not settable at runtime: {key}. Supported: defaults.model, defaults.stream, autonomy.enabled, cache_keepalive.enabled"),
+            format!("Config key not settable at runtime: {key}. Supported: defaults.model, defaults.stream, autonomy.enabled"),
         )),
     }
 }
@@ -1091,7 +1085,7 @@ mod tests {
         );
 
         let (_tx, rx) = tokio::sync::watch::channel(());
-        let (autonomy, _compaction_rx) = crate::autonomy::manager::AutonomyManager::new(Default::default(), data_dir.clone(), rx);
+        let (autonomy, _compaction_rx) = crate::autonomy::manager::AutonomyManager::new(Default::default(), Default::default(), data_dir.clone(), rx);
 
         let ctx = CommandContext {
             config,

@@ -41,26 +41,33 @@ impl CacheKeepaliveConfig {
         self.provider == "anthropic" && self.cache_ttl_configured
     }
 
-    /// Build runtime config from the TOML config and resolved model info.
+    /// Build runtime config from resolved model fields.
     ///
-    /// `app_cfg` — the `[behavior.autonomy.cache_keepalive]` section.
     /// `provider` — provider key from the resolved model (e.g. `"anthropic"`).
     /// `has_cache_ttl` — whether the resolved model has a `cache_ttl` value.
+    /// `keepalive_enabled` — explicit opt-out if `Some(false)`.
+    /// `ttl_minutes` — cache TTL in minutes; used to derive ping interval.
+    /// `max_pings` — maximum keepalive pings before stopping.
     pub fn from_resolved_model(
-        app_cfg: &shore_config::app::CacheKeepaliveConfig,
         provider: &str,
         has_cache_ttl: bool,
+        keepalive_enabled: Option<bool>,
+        ttl_minutes: Option<u32>,
+        max_pings: Option<u32>,
     ) -> Self {
         // Ping slightly before TTL expires: (ttl - 60s), floored to the default.
-        let ping_interval_secs = (app_cfg.ttl_minutes as u64 * 60)
-            .saturating_sub(60)
-            .max(DEFAULT_PING_INTERVAL_SECS);
+        let ping_interval_secs = ttl_minutes
+            .map(|m| (m as u64 * 60).saturating_sub(60).max(DEFAULT_PING_INTERVAL_SECS))
+            .unwrap_or(DEFAULT_PING_INTERVAL_SECS);
+
+        // Treat explicit keepalive_enabled = false as disabling keepalive entirely.
+        let effective_provider = if keepalive_enabled == Some(false) { "" } else { provider };
 
         Self {
-            provider: provider.to_string(),
+            provider: effective_provider.to_string(),
             cache_ttl_configured: has_cache_ttl,
             ping_interval_secs,
-            max_pings: app_cfg.max_pings,
+            max_pings: max_pings.unwrap_or(MAX_PINGS),
         }
     }
 }

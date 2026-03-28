@@ -159,7 +159,7 @@ mod tests {
         );
 
         let (_tx, rx) = tokio::sync::watch::channel(());
-        let (autonomy, _compaction_rx) = AutonomyManager::new(Default::default(), data_dir.clone(), rx);
+        let (autonomy, _compaction_rx) = AutonomyManager::new(Default::default(), Default::default(), data_dir.clone(), rx);
 
         let ctx = CommandContext {
             config,
