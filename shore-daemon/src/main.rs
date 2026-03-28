@@ -214,7 +214,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config: loaded.clone(),
         push_tx: push_tx.clone(),
         data_dir: loaded.dirs.data.clone(),
-        active_model: loaded.app.defaults.model.clone(),
+        active_model: None,
         session_tokens: SessionTokens::default(),
         autonomy: autonomy.clone(),
         llm_client: llm_client.clone(),

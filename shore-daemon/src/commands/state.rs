@@ -1040,7 +1040,7 @@ fn config_set(ctx: &mut CommandContext, key: &str, value: &str) -> CommandResult
 pub fn config_reset(ctx: &mut CommandContext) -> CommandResult {
     match shore_config::load_config(None) {
         Ok(fresh) => {
-            ctx.active_model = fresh.app.defaults.model.clone();
+            ctx.active_model = None;
             ctx.config = fresh;
             Ok(json!({ "reset": true, "message": "Configuration reloaded from disk" }))
         }

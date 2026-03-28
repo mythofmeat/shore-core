@@ -1089,4 +1089,49 @@ max_tokens = 16384
         assert!(alice.models.find_model("opus").is_ok());
         assert_eq!(alice.models.find_model("opus").unwrap().max_tokens, Some(16384));
     }
+
+    #[test]
+    fn character_config_with_conf_d_models() {
+        // Simulates: global config defines model in conf.d, character overrides default model.
+        let tmp = setup_config_dir(&[
+            (
+                "config.toml",
+                r#"
+[defaults]
+model = "kimi"
+"#,
+            ),
+            (
+                "conf.d/models.toml",
+                r#"
+[chat.anthropic.opus]
+model_id = "claude-opus-4-6"
+
+[chat.openrouter.kimi]
+model_id = "kimi-k2"
+"#,
+            ),
+            (
+                "characters/qifei/character.md",
+                "You are qifei.",
+            ),
+            (
+                "characters/qifei/config.toml",
+                r#"
+[defaults]
+model = "chat.anthropic.opus"
+"#,
+            ),
+        ]);
+
+        let config_path = tmp.path().join("config.toml");
+        let global = load_config(Some(&config_path)).unwrap();
+        assert_eq!(global.app.defaults.model.as_deref(), Some("kimi"));
+
+        let qifei = load_character_config(&global, "qifei").unwrap().unwrap();
+        assert_eq!(qifei.app.defaults.model.as_deref(), Some("chat.anthropic.opus"));
+        // conf.d models should still be available after merge.
+        assert!(qifei.models.find_model("opus").is_ok());
+        assert!(qifei.models.find_model("kimi").is_ok());
+    }
 }
