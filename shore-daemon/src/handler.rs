@@ -202,6 +202,22 @@ impl MessageHandler {
         cmd: &shore_protocol::client_msg::Command,
         character: Option<&str>,
     ) -> ServerMessage {
+        // list_characters doesn't need a resolved character — handle it
+        // before character resolution so it works when multiple characters
+        // are available and none is explicitly selected.
+        if cmd.name == "list_characters" {
+            return match commands::dispatch_characterless(&self.cmd_ctx, cmd) {
+                Ok(data) => ServerMessage::CommandOutput(shore_protocol::server_msg::CommandOutput {
+                    name: cmd.name.clone(),
+                    data,
+                }),
+                Err((code, msg)) => ServerMessage::Error(SwpError {
+                    code,
+                    message: msg,
+                }),
+            };
+        }
+
         // Resolve character and get engine.
         let char_name = match self.registry.resolve_character(character) {
             Ok(name) => name,

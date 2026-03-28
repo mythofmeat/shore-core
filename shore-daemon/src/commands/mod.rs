@@ -117,6 +117,20 @@ pub async fn dispatch(
     }
 }
 
+/// Dispatch commands that don't require a character/engine (e.g. list_characters).
+pub fn dispatch_characterless(
+    ctx: &CommandContext,
+    cmd: &Command,
+) -> CommandResult {
+    match cmd.name.as_str() {
+        "list_characters" => navigation::list_characters_standalone(ctx),
+        _ => Err((
+            ErrorCode::InvalidRequest,
+            format!("Command '{}' requires a character", cmd.name),
+        )),
+    }
+}
+
 /// Convert an EngineError to a command error tuple.
 pub fn engine_err(e: EngineError) -> (ErrorCode, String) {
     match &e {

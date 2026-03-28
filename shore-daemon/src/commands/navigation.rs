@@ -27,6 +27,36 @@ pub fn list_characters(engine: &ConversationEngine, ctx: &CommandContext) -> Com
     Ok(json!({ "characters": characters }))
 }
 
+/// List characters without requiring an active engine (for use before
+/// character resolution, e.g. when multiple characters are available).
+pub fn list_characters_standalone(ctx: &CommandContext) -> CommandResult {
+    let characters_dir = ctx.config.dirs.config.join("characters");
+    let mut characters = Vec::new();
+
+    if let Ok(entries) = std::fs::read_dir(&characters_dir) {
+        for entry in entries.flatten() {
+            if entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
+                let name = entry.file_name().to_string_lossy().to_string();
+                characters.push(CharacterInfo { name });
+            }
+        }
+    }
+
+    // Also check data dir for characters that have data but no config dir.
+    if let Ok(entries) = std::fs::read_dir(&ctx.data_dir) {
+        for entry in entries.flatten() {
+            if entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if !characters.iter().any(|c| c.name == name) {
+                    characters.push(CharacterInfo { name });
+                }
+            }
+        }
+    }
+
+    Ok(json!({ "characters": characters }))
+}
+
 /// Show detailed info about a character: definition path, user.md presence,
 /// prompt override files, and a preview of the character definition.
 pub fn character_info(
