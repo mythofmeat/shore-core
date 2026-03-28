@@ -1,13 +1,12 @@
 # Shore V2
 
-Shore is a modular AI character engine built on a Rust core with a TypeScript LLM provider proxy. It provides persistent memory, autonomous behaviour, and multi-platform connectivity through a clean wire protocol.
+Shore is a modular AI character engine built entirely in Rust. It provides persistent memory, autonomous behaviour, and multi-platform connectivity through a clean wire protocol.
 
 ## Architecture
 
 | Binary | Language | Role |
 |--------|----------|------|
-| `shore-daemon` | Rust | Persistent daemon — engine, memory, autonomy, tool loop |
-| `shore-llm` | TypeScript | LLM provider proxy — wraps official SDKs, streams completions |
+| `shore-daemon` | Rust | Persistent daemon — engine, memory, autonomy, tool loop, LLM providers |
 | `shore` | Rust | CLI — stateless commands |
 | `shore-tui` | Rust | TUI — persistent connection, full terminal UI |
 | `shore-matrix` | Rust | Matrix bridge (includes embedded homeserver management) |
@@ -17,7 +16,6 @@ All Rust services communicate via the Shore Wire Protocol (SWP) over Unix socket
 ## Prerequisites
 
 - **Rust** 1.75+ (stable)
-- **Node.js** 20+ and **npm**
 - **SQLite** development headers (bundled via `rusqlite`)
 
 ## Build
@@ -29,14 +27,6 @@ cargo build --workspace --release
 ```
 
 Produces four binaries in `target/release/`: `shore-daemon`, `shore`, `shore-tui`, `shore-matrix`.
-
-### LLM provider proxy
-
-```sh
-cd shore-llm
-npm install
-npm run build
-```
 
 ## Configuration
 
@@ -86,10 +76,9 @@ Characters are discovered automatically by scanning `characters/` for subdirecto
    She has a dry sense of humour and remembers everything you've told her.
    ```
 
-4. Start the services and talk:
+4. Start the daemon and talk:
    ```sh
    shore-daemon &
-   cd shore-llm && npm start &
    shore send "Hello!"
    ```
 
@@ -176,12 +165,10 @@ Per-model options include `temperature`, `max_tokens`, `max_context_tokens`, `re
 
 ## Usage
 
-Start the daemon and LLM proxy:
+Start the daemon:
 
 ```sh
 shore-daemon
-# in another terminal (or configure as a service):
-cd shore-llm && npm start
 ```
 
 ### CLI reference
@@ -245,11 +232,7 @@ See `examples/config.toml` for Matrix connection configuration.
 ## Running Tests
 
 ```sh
-# Rust
 cargo test --workspace
-
-# TypeScript
-cd shore-llm && npm test
 ```
 
 ## Linting

@@ -104,20 +104,19 @@ shore memory --reindex
 ```
 
 This extracts active and protected entries from SQLite, computes
-embeddings via `shore-llm`, and populates the vector store.
+embeddings, and populates the vector store.
 
 ## Binary Changes
 
 | V1 Binary     | V2 Binary       | Notes                                    |
 |--------------|-----------------|------------------------------------------|
-| `shore` (Python) | `shore-daemon` | Persistent daemon process.              |
+| `shore` (Python) | `shore-daemon` | Persistent daemon process (includes native LLM providers). |
 |              | `shore`         | Stateless CLI commands.                   |
 |              | `shore-tui`     | Terminal UI with persistent connection.   |
 |              | `shore-mx`      | Matrix bridge (replaces Python bridge).   |
-|              | `shore-llm`     | TypeScript LLM provider proxy (Node.js).  |
 
 ## Removed Features
 
 The V1 Python codebase has been fully retired. All functionality is
-implemented in the V2 Rust/TypeScript stack. The V1 Python code has been
-removed from the active repository.
+implemented in the V2 Rust stack. The V1 Python code has been removed
+from the active repository.

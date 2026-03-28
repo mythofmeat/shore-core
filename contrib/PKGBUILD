@@ -7,7 +7,7 @@ arch=('x86_64')
 url='http://localhost:3000/eshen/silvershore'
 license=('custom')
 depends=('gcc-libs')
-makedepends=('cargo' 'bun' 'git')
+makedepends=('cargo' 'git')
 provides=('shore')
 conflicts=('shore')
 source=("${pkgname}::git+http://localhost:3000/eshen/silvershore.git")
@@ -26,9 +26,6 @@ prepare() {
     cd "${pkgname}"
     export RUSTUP_TOOLCHAIN=stable
     cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
-
-    cd shore-llm
-    bun install --frozen-lockfile
 }
 
 build() {
@@ -36,9 +33,6 @@ build() {
     export RUSTUP_TOOLCHAIN=stable
     export CARGO_TARGET_DIR=target
     cargo build --workspace --release --frozen
-
-    cd shore-llm
-    bun run build
 }
 
 package() {
@@ -49,9 +43,6 @@ package() {
     install -Dm755 target/release/shore         "$pkgdir/usr/bin/shore"
     install -Dm755 target/release/shore-tui    "$pkgdir/usr/bin/shore-tui"
     install -Dm755 target/release/shore-matrix  "$pkgdir/usr/bin/shore-matrix"
-
-    # shore-llm — standalone binary (no Node.js runtime required)
-    install -Dm755 shore-llm/dist/shore-llm "$pkgdir/usr/bin/shore-llm"
 
     # Systemd user service
     install -Dm644 contrib/shore-daemon.service \

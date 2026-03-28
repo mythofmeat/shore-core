@@ -9,11 +9,10 @@
    daemon).
 3. **Rust core** — compiler-enforced correctness, no runtime dependencies for
    the daemon, CLI, and bridges.
-4. **TypeScript for LLM providers** — use official first-party SDKs
-   (`@anthropic-ai/sdk`, `openai`, `@google/generative-ai`) for all LLM API
-   calls. These are better documented, get features on day one, and handle
-   provider-specific complexity (cache control, streaming, extended thinking).
-5. **Separate binaries** for daemon, CLI/TUI, LLM service, and each bridge —
+4. **Native LLM providers** — the `shore-llm-client` crate implements all
+   provider integrations (Anthropic, OpenAI-compat, Gemini, DeepSeek, ZhipuAI)
+   directly in Rust using `reqwest`. No separate process or TypeScript runtime.
+5. **Separate binaries** for daemon, CLI/TUI, and each bridge —
    independent development, deployment, and restart.
 6. **Build it right from the start** — incorporate planned redesigns (heartbeat,
    private conversations) into the V2 architecture rather than porting V1 bugs.
@@ -23,23 +22,10 @@
 ## 2. System Overview
 
 ```
-                                                    ┌──────────────┐
-                                                    │  shore-llm   │
-                                                    │  (TypeScript) │
-                                                    │              │
-                                                    │  Anthropic   │
-                                                    │  OpenAI      │──── LLM APIs
-                                                    │  Gemini      │
-                                                    │  OpenRouter  │
-                                                    │  ZhipuAI     │
-                                                    └──────┬───────┘
-                                                           │
-                                                      HTTP/Unix
-                                                           │
-                            ┌──────────────────────────────┼───────┐
-                            │         shore-daemon (Rust)   │       │
-                            │                               │       │
-┌──────────────┐  SWP/Unix  │  ┌───────────┐  ┌────────────▼──┐    │
+                            ┌──────────────────────────────────────┐
+                            │         shore-daemon (Rust)           │
+                            │                                       │
+┌──────────────┐  SWP/Unix  │  ┌───────────┐  ┌───────────────┐    │
 │  shore       │───────────▶│  │  Server    │──│  Engine        │   │
 │  (CLI/TUI)   │◀───────────│  │  (accept,  │  │  (prompt asm,  │   │
 └──────────────┘            │  │   route)   │  │   tool loop,   │   │
@@ -49,22 +35,24 @@
 │  (bridge)    │◀───────────│  ┌─────────────┐    │     │           │
 └──────────────┘            │  │ Autonomy     │◀──┘     │           │
                             │  │ (heartbeat,  │         │           │
-                            │  │  cache)      │         │           │
-                            │  └─────────────┘         │           │
-                            │                   ┌──────▼────────┐  │
-                            │                   │  Memory        │  │
-                            │                   │  (SQLite, RAG, │  │
-                            │                   │   LanceDB)     │  │
-                            │                   └───────────────┘  │
+                            │  │  cache)      │    ┌────▼───────┐   │
+                            │  └─────────────┘    │ LLM Client  │   │
+                            │                     │ (reqwest,    │──── LLM APIs
+                            │                     │  Anthropic,  │   │
+                            │                     │  OpenAI,     │   │
+                            │  ┌───────────────┐  │  Gemini,     │   │
+                            │  │  Memory        │  │  etc.)       │   │
+                            │  │  (SQLite, RAG, │  └─────────────┘   │
+                            │  │   LanceDB)     │                    │
+                            │  └───────────────┘                    │
                             └──────────────────────────────────────┘
 ```
 
-**Five binaries at launch** (more bridges/clients added later):
+**Four binaries at launch** (more bridges/clients added later):
 
 | Binary | Language | Role |
 |--------|----------|------|
-| `shore-daemon` | Rust | Persistent daemon — engine, memory, autonomy, tool loop |
-| `shore-llm` | TypeScript | LLM provider proxy — wraps official SDKs, streams completions |
+| `shore-daemon` | Rust | Persistent daemon — engine, memory, autonomy, tool loop, LLM providers |
 | `shore` | Rust | CLI — stateless commands |
 | `shore-tui` | Rust | TUI — persistent connection, full terminal UI |
 | `shore-matrix` | Rust | Matrix bridge (includes Synapse management) |
@@ -376,7 +364,7 @@ binary in the workspace.
 |-----------|-------------|------------|
 | **Server** | Accept connections (Unix/TCP), route requests, broadcast push messages | `tokio`, `serde_json` |
 | **Engine** | Per-character conversation state machine: prompt assembly, tool loop, message persistence | — |
-| **LLM Client** | Thin HTTP client that calls `shore-llm` for completions | `reqwest` |
+| **LLM Client** | Native provider integrations via `shore-llm-client` crate (Anthropic, OpenAI-compat, Gemini, DeepSeek, ZhipuAI) | `reqwest` |
 | **Memory** | SQLite database (entries, entities, flags, changelog), CRUD operations | `rusqlite` |
 | **RAG** | Vector search (LanceDB) + BM25 keyword retrieval + embedding via HTTP | `lancedb`, custom BM25 |
 | **Compaction** | Conversation → memory entries (via LLM). Proactive idle timer fires at `idle_trigger_minutes` after last activity — no waiting for next user message. | — |
@@ -388,10 +376,9 @@ binary in the workspace.
 | **Commands** | Command handlers dispatched by name+subcmd | — |
 | **Registry** | Instance registry in `$XDG_RUNTIME_DIR` with file locking | — |
 
-The daemon does **not** contain any LLM provider SDKs. All LLM API calls go
-through `shore-llm` (see §4.4 shore-llm). The daemon's `llm_client` module is a thin
-HTTP client that sends normalized requests and receives normalized streaming
-responses.
+The daemon's LLM provider integrations live in the `shore-llm-client` crate,
+which implements direct HTTP calls to each provider's API using `reqwest`.
+There is no separate LLM proxy process.
 
 #### Internal Module Layout
 
@@ -412,8 +399,8 @@ shore-daemon/
 │   │   └── tools.rs            # Tool use agentic loop
 │   │
 │   ├── llm_client/
-│   │   ├── mod.rs              # Client for shore-llm service
-│   │   ├── types.rs            # Request/response types for LLM proxy
+│   │   ├── mod.rs              # Client using shore-llm-client crate
+│   │   ├── types.rs            # Request/response types
 │   │   ├── retry.rs            # Application-level retry (refusal detection, model fallback)
 │   │   └── stream.rs           # Streaming response consumer
 │   │
@@ -513,216 +500,32 @@ Receives most config from daemon via SWP `hello` exchange. Bridge only needs:
 - For external Matrix: access_token, homeserver_url, device_id (env/flags)
 - For embedded Synapse: admin credentials (env/flags)
 
-### 4.4 shore-llm (LLM Provider Proxy)
+### 4.4 shore-llm-client (LLM Provider Crate)
 
-**Language:** TypeScript (Node or Bun)
-**Process:** Long-running HTTP server on a Unix socket
+**Language:** Rust
+**Type:** Library crate (workspace member)
 
 #### Purpose
 
-`shore-llm` is a stateless LLM proxy that wraps all official provider SDKs
-and exposes a single normalized HTTP API. The Rust daemon calls it for every
-LLM completion — the daemon never talks to LLM provider APIs directly.
-
-#### Why TypeScript
-
-- **First-party SDKs** — `@anthropic-ai/sdk`, `openai`, `@google/generative-ai`
-  are maintained by the providers themselves. They handle streaming, retries,
-  auth, and provider-specific features (cache control, extended thinking,
-  reasoning mode) out of the box.
-- **Day-one feature support** — when Anthropic ships a new feature, the SDK
-  supports it immediately. No waiting for a Rust community crate to catch up.
-- **Battle-tested** — these SDKs are what most production apps use. The edge
-  cases are already handled.
+`shore-llm-client` implements all LLM provider integrations natively in Rust.
+The daemon calls it as a library — there is no separate process, no IPC, and
+no TypeScript runtime.
 
 #### Responsibilities
 
 | What | Description |
 |------|-------------|
-| Provider SDKs | Wraps Anthropic, OpenAI-compat, Gemini, OpenRouter, ZhipuAI |
-| Streaming | Chunked newline-delimited JSON back to the daemon |
-| Provider retries | 429 rate limits, 503 transient errors (handled by SDKs) |
+| Provider implementations | Anthropic, OpenAI-compat, Gemini, DeepSeek, OpenRouter, ZhipuAI |
+| Streaming | Async streaming via `reqwest` + SSE parsing |
+| Provider retries | 429 rate limits, 503 transient errors |
 | Response normalization | Every provider's response mapped to a common format |
 | Timing + metrics | Reports latency, time-to-first-token, cache hit status per call |
+| Embeddings | Text embedding via OpenAI-compatible endpoints |
+| Image generation | DALL-E, Flux, Gemini image generation |
 
-**shore-llm is zero-config.** It does not read `models.toml` or any config
-file. The daemon owns all configuration and passes the fully resolved model
-profile (provider, model name, API key, base URL, and all provider-specific
-options) in every request. This eliminates config drift between services.
-
-#### What it does NOT own
-
-- Prompt assembly (daemon)
-- Tool execution (daemon)
-- The tool use loop (daemon orchestrates: call LLM → execute tools → call LLM)
-- Application-level retry / refusal detection / model fallback (daemon)
-- Message history or state (daemon)
-- Configuration files (daemon)
-
-#### HTTP API (daemon ↔ shore-llm)
-
-Exposed on a Unix socket (e.g., `$XDG_RUNTIME_DIR/shore/llm.sock`).
-
-##### POST /v1/generate
-
-Non-streaming completion.
-
-**Request:**
-```json
-{
-  "provider": "anthropic",
-  "model": "claude-sonnet-4-6",
-  "api_key": "sk-ant-...",
-  "base_url": null,
-  "messages": [...],
-  "system": [...],
-  "tools": [...],
-  "max_tokens": 4096,
-  "temperature": 0.7,
-  "top_p": null,
-  "provider_options": {
-    "cache_ttl": "1h",
-    "cache_control_depth": 5,
-    "thinking": true,
-    "budget_tokens": 10000,
-    "reasoning_effort": "high"
-  }
-}
-```
-
-- The daemon resolves the model profile from `models.toml` and sends the
-  fully expanded provider + credentials + options. shore-llm never needs to
-  look anything up.
-- `messages` use a provider-agnostic format (close to Anthropic/OpenAI format).
-- `provider_options` contains provider-specific knobs from the model profile.
-  shore-llm interprets these into the correct SDK calls.
-
-**Response:**
-```json
-{
-  "content": "...",
-  "content_blocks": [...],
-  "finish_reason": "end_turn" | "tool_use" | "max_tokens",
-  "usage": {
-    "input_tokens": 1234,
-    "output_tokens": 567,
-    "cache_read_tokens": 890,
-    "cache_creation_tokens": 0
-  },
-  "timing": {
-    "total_ms": 2340,
-    "time_to_first_token_ms": 450
-  },
-  "model": "claude-sonnet-4-6",
-  "provider": "anthropic"
-}
-```
-
-##### POST /v1/stream
-
-Streaming completion. Same request format. Response is newline-delimited JSON:
-
-```
-{"type": "start", "model": "claude-sonnet-4-6"}
-{"type": "text", "text": "Hello"}
-{"type": "text", "text": " there"}
-{"type": "thinking", "text": "Let me consider..."}
-{"type": "tool_use", "id": "tool_01", "name": "memory", "input": {...}}
-{"type": "done", "content": "Hello there", "finish_reason": "end_turn", "usage": {...}, "timing": {...}}
-```
-
-The daemon consumes this stream, relays text chunks to SWP clients, and handles
-tool_use blocks by executing tools and issuing a new /v1/stream request with
-the tool results appended.
-
-##### POST /v1/embed
-
-Generate embeddings for text. Used by the daemon's RAG pipeline.
-
-**Request:**
-```json
-{
-  "provider": "openai",
-  "model": "text-embedding-3-small",
-  "api_key": "sk-...",
-  "base_url": null,
-  "input": ["text to embed", "another text"]
-}
-```
-
-**Response:**
-```json
-{
-  "embeddings": [[0.123, -0.456, ...], [0.789, -0.012, ...]],
-  "usage": {"total_tokens": 42},
-  "timing": {"total_ms": 150}
-}
-```
-
-##### POST /v1/image/generate
-
-Generate an image (DALL-E 3, Flux, etc.).
-
-**Request:**
-```json
-{
-  "provider": "openai",
-  "model": "dall-e-3",
-  "api_key": "sk-...",
-  "base_url": null,
-  "prompt": "a cat wearing a top hat",
-  "size": "1024x1024",
-  "quality": "standard"
-}
-```
-
-**Response:**
-```json
-{
-  "url": "https://...",
-  "revised_prompt": "...",
-  "timing": {"total_ms": 8500}
-}
-```
-
-The daemon downloads the image from the URL and stores it locally.
-
-##### GET /v1/health
-
-Health check. Returns `200 OK`.
-
-#### Project Structure
-
-```
-shore-llm/
-├── src/
-│   ├── index.ts               # HTTP server setup, Unix socket listener
-│   ├── router.ts              # Route handlers
-│   ├── providers/
-│   │   ├── index.ts           # Provider registry, factory
-│   │   ├── anthropic.ts       # @anthropic-ai/sdk wrapper
-│   │   ├── openai.ts          # openai SDK wrapper (OpenAI, DeepSeek, xAI)
-│   │   ├── gemini.ts          # @google/generative-ai wrapper
-│   │   ├── openrouter.ts      # OpenRouter (uses openai SDK with custom base)
-│   │   └── zhipuai.ts         # ZhipuAI wrapper
-│   └── types.ts               # Shared request/response types
-├── package.json
-└── tsconfig.json
-```
-
-Each provider file is ~100-200 lines: construct the SDK client from the
-per-request credentials, translate the normalized request into provider-specific
-format, translate the response back. No config files, no state.
-
-#### Lifecycle
-
-Managed by the daemon's process supervisor (see §5). The daemon:
-1. Spawns shore-llm as a child process
-2. Waits for `/v1/health` to return 200 before accepting client connections
-3. Monitors the process — if it crashes, restarts it automatically
-4. Sends SIGTERM on daemon shutdown
-
-shore-llm is fully stateless — restarting it loses nothing.
+The crate is zero-config. The daemon owns all configuration and passes the
+fully resolved model profile (provider, model name, API key, base URL, and
+all provider-specific options) in every call.
 
 ### 4.5 Future Bridges (deferred)
 
@@ -736,23 +539,23 @@ designed so adding a new bridge requires zero daemon changes.
 
 ---
 
-## 5. Process Supervision
+## 5. Service Management
 
-The daemon acts as a lightweight process supervisor for companion services.
-You run one command (`shore-daemon`) and everything comes up.
+The daemon can optionally manage companion services (e.g., the Matrix bridge)
+as child processes via the `[services]` config section.
 
 ### 5.1 Config
 
 ```toml
 [services]
-# shore-llm is always required — daemon won't start without it
-llm = { command = "node shore-llm/dist/index.js", socket = "llm.sock" }
-
 # Bridges are optional
 matrix = { command = "shore-matrix", socket = "matrix.sock", enabled = false }
 ```
 
-### 5.2 Supervisor Behavior
+LLM provider calls are handled natively by the `shore-llm-client` crate
+within the daemon process — no external LLM service is needed.
+
+### 5.2 Behavior
 
 For each enabled service:
 1. **Spawn** the process as a child of the daemon
@@ -764,17 +567,7 @@ For each enabled service:
    - Cap at 5 restart attempts, then log an error and mark the service as failed
 5. **Shutdown** — on daemon exit, send SIGTERM to all children, wait 10s, SIGKILL
 
-The daemon does **not** accept SWP client connections until `shore-llm` is
-ready. Bridges are non-blocking — the daemon runs fine without them.
-
-### 5.3 Why Not Systemd?
-
-Systemd is an option for production, but the supervisor approach is better for
-development and single-user deployment:
-- One command to start everything, one Ctrl-C to stop
-- No systemd unit files to maintain
-- Works identically on any Linux/macOS
-- Logs from all processes are correlated in the same output
+Bridges are non-blocking — the daemon runs fine without them.
 
 ---
 
@@ -799,13 +592,9 @@ All services emit structured JSON logs to stderr. Every log entry includes:
 
 - `service` — which process emitted the log
 - `rid` — request ID from the SWP message that triggered this work (propagated
-  through shore-llm calls via an `X-Request-ID` header). Enables tracing a
-  user message through daemon → shore-llm → provider and back.
-- Rust uses `tracing` + `tracing-subscriber` with JSON formatting
-- TypeScript uses `pino` (structured JSON by default)
-
-The daemon collects stderr from supervised child processes and can interleave
-them with its own logs, giving a single unified log stream.
+  through LLM calls via an `X-Request-ID` header). Enables tracing a
+  user message through daemon → LLM provider and back.
+- Rust uses `tracing` + `tracing-subscriber` with human-readable formatting
 
 ---
 
@@ -879,7 +668,6 @@ top-level `matrix/` directory.
 ```
 $XDG_RUNTIME_DIR/shore/            (/run/user/{uid}/shore/)
 ├── shore.sock                     # Daemon SWP socket
-├── llm.sock                       # shore-llm HTTP socket
 ├── instances.json                 # Instance registry
 └── instances.lock                 # File lock for concurrent access
 ```
@@ -980,15 +768,15 @@ reason TEXT, resolved_at TEXT, resolution TEXT, created_at TEXT)
 | Message CRUD | engine_messages.py | engine/messages.rs | |
 | Conversation lifecycle | engine_conversations.py, conversations.py | engine/conversations.rs | Adds private flag |
 | Tool use loop | tool_use.py | engine/tools.rs | |
-| LLM client | providers/*.py | llm_client/mod.rs | Thin HTTP client to shore-llm |
+| LLM client | providers/*.py | llm_client/mod.rs | Uses shore-llm-client crate |
 | Refusal detection + fallback | llm_retry.py | llm_client/retry.rs | Application-level (daemon-side) |
-| Anthropic provider | providers/anthropic.py | **shore-llm** providers/anthropic.ts | |
-| Gemini provider | providers/gemini.py | **shore-llm** providers/gemini.ts | |
-| OpenAI-compat provider | providers/openai_compatible.py | **shore-llm** providers/openai.ts | |
-| OpenRouter provider | providers/openrouter.py | **shore-llm** providers/openrouter.ts | |
-| ZhipuAI provider | providers/zhipuai.py | **shore-llm** providers/zhipuai.ts | |
-| Provider trait + factory | providers/_base.py, _factory.py | **shore-llm** providers/index.ts | |
-| Provider-level retry | llm_retry.py | **shore-llm** (SDK-handled) | 429, 503, transient |
+| Anthropic provider | providers/anthropic.py | **shore-llm-client** | |
+| Gemini provider | providers/gemini.py | **shore-llm-client** | |
+| OpenAI-compat provider | providers/openai_compatible.py | **shore-llm-client** | |
+| OpenRouter provider | providers/openrouter.py | **shore-llm-client** | |
+| ZhipuAI provider | providers/zhipuai.py | **shore-llm-client** | |
+| Provider trait + factory | providers/_base.py, _factory.py | **shore-llm-client** | |
+| Provider-level retry | llm_retry.py | **shore-llm-client** (reqwest) | 429, 503, transient |
 | Model selector | model_selector.py | engine/mod.rs (inline) | |
 | Memory DB (SQLite) | db.py | memory/db.rs | |
 | RAG pipeline | rag.py | memory/rag.rs | |
@@ -1406,20 +1194,10 @@ shore/                              # Git root
 │   │   └── format.rs              # HTML formatting
 │   └── Cargo.toml
 │
-├── shore-llm/                      # TypeScript — LLM provider proxy
+├── shore-llm-client/               # Rust lib — native LLM provider integrations
 │   ├── src/
-│   │   ├── index.ts               # HTTP server, Unix socket listener
-│   │   ├── router.ts              # Route handlers
-│   │   ├── providers/
-│   │   │   ├── index.ts           # Provider registry + factory
-│   │   │   ├── anthropic.ts       # @anthropic-ai/sdk
-│   │   │   ├── openai.ts          # openai (OpenAI, DeepSeek, xAI)
-│   │   │   ├── gemini.ts          # @google/generative-ai
-│   │   │   ├── openrouter.ts      # OpenRouter (openai SDK + custom base)
-│   │   │   └── zhipuai.ts         # ZhipuAI
-│   │   └── types.ts               # Request/response types
-│   ├── package.json
-│   └── tsconfig.json
+│   │   └── lib.rs                 # Provider trait, implementations, streaming
+│   └── Cargo.toml
 │
 ├── Cargo.toml                      # Workspace root
 ├── docs/
@@ -1443,6 +1221,8 @@ Adding future components is just another top-level directory:
 members = [
     "shore-protocol",
     "shore-client",
+    "shore-config",
+    "shore-llm-client",
     "shore-daemon",
     "shore-cli",
     "shore-tui",
@@ -1450,8 +1230,6 @@ members = [
 ]
 resolver = "2"
 ```
-
-Non-Rust directories are not workspace members. Each has its own build system.
 
 ### 15.2 Why Monorepo
 
@@ -1468,21 +1246,19 @@ in `docs/` — they don't depend on the Rust crate.
 
 ```
 Rust (compile-time):
-  shore-protocol  ← shore-client  ← shore-cli
-                                   ← shore-tui
-                                   ← shore-matrix
-                  ← shore-daemon
-
-TypeScript (standalone):
-  shore-llm  (no Rust deps — communicates via HTTP)
+  shore-protocol    ← shore-client  ← shore-cli
+                                     ← shore-tui
+                                     ← shore-matrix
+  shore-llm-client  ← shore-daemon
+  shore-config      ← shore-daemon
+  shore-protocol    ← shore-daemon
 
 Runtime:
-  shore-daemon ──HTTP/Unix──▶ shore-llm ──HTTPS──▶ LLM APIs
+  shore-daemon ──HTTPS──▶ LLM APIs (Anthropic, OpenAI, Gemini, etc.)
 ```
 
 `cargo build --release` produces four Rust binaries: `shore-daemon`, `shore`
-(CLI), `shore-tui`, `shore-matrix`. `shore-llm` is built separately
-(`npm run build` or `bun build`).
+(CLI), `shore-tui`, `shore-matrix`.
 
 ---
 
@@ -1490,8 +1266,8 @@ Runtime:
 
 | Aspect | V1 | V2 |
 |--------|-----|-----|
-| Language | Python (everything) | Rust (daemon, CLI, bridges) + TypeScript (LLM providers) |
-| LLM providers | Python SDKs in daemon process | TypeScript SDKs in separate `shore-llm` service |
+| Language | Python (everything) | Rust (everything) |
+| LLM providers | Python SDKs in daemon process | Native Rust implementations in `shore-llm-client` crate |
 | Daemon binary | `uv run shore serve` | `shore-daemon` |
 | CLI binary | Same as daemon | `shore` (separate binary) |
 | Bridge architecture | In-process plugins | Out-of-process via SWP |
@@ -1527,16 +1303,15 @@ JSONL, config) are compatible — V2 reads V1 data.
 - [ ] `shore-client` crate: connection management, instance discovery, streaming
 - [ ] Integration tests: validate SWP JSON matches V1 protocol
 
-### Phase 2: shore-llm + Daemon Core
-- [ ] `shore-llm`: TypeScript HTTP server, all provider wrappers (zero-config — receives credentials per-request)
-- [ ] Provider wrappers: Anthropic, Gemini, OpenAI-compat, OpenRouter, ZhipuAI
-- [ ] Streaming endpoint (newline-delimited JSON)
+### Phase 2: LLM Providers + Daemon Core
+- [ ] `shore-llm-client`: native Rust provider implementations (Anthropic, Gemini, OpenAI-compat, OpenRouter, ZhipuAI)
+- [ ] Streaming via reqwest + SSE parsing
 - [ ] `shore-daemon`: server (accept, route, broadcast), config loading
 - [ ] Engine: message lifecycle, prompt assembly, persistence
-- [ ] `llm_client` module: HTTP client that calls shore-llm
-- [ ] Tool use loop (daemon calls shore-llm → gets tool_use → executes tool → repeats)
+- [ ] `llm_client` module: uses shore-llm-client crate
+- [ ] Tool use loop (daemon calls LLM → gets tool_use → executes tool → repeats)
 - [ ] Command dispatch (basic set: send, regen, log, status, tokens, model)
-- [ ] **Milestone: daemon + shore-llm can hold a basic conversation**
+- [ ] **Milestone: daemon can hold a basic conversation**
 
 ### Phase 3: Memory & RAG
 - [ ] SQLite layer (rusqlite, full schema)
@@ -1576,8 +1351,7 @@ JSONL, config) are compatible — V2 reads V1 data.
 - [ ] Remove Python codebase
 - [ ] **Milestone: V1 retired, single `cargo build --release`**
 
-**Each phase produces a testable artifact.** Phases 2-4 can be validated
-against the V1 daemon by running both and comparing behavior.
+**Each phase produces a testable artifact.**
 
 ---
 

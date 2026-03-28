@@ -10,9 +10,6 @@ ExecStart=shore-daemon
 Restart=on-failure
 RestartSec=5
 
-# shore-llm is managed by the daemon's built-in supervisor when
-# [services.llm].command is set in config.toml. No separate service needed.
-
 # Environment
 Environment=RUST_LOG=info
 Environment=XDG_CONFIG_HOME=%h/.config

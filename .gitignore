@@ -4,13 +4,6 @@
 *.profraw
 *.profdata
 
-# Node / TypeScript
-node_modules/
-dist/
-*.js.map
-*.d.ts
-!shore-llm/tsconfig.json
-
 # IDE
 .idea/
 .vscode/

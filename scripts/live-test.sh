@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
-# Shore live test — starts shore-llm + shore-daemon and runs real API tests.
+# Shore live test — starts shore-daemon and runs real API tests.
 #
-# Requires: ANTHROPIC_API_KEY set in environment.
+# Requires: OPENROUTER_API_KEY set in environment.
 #
 # Usage:
 #   ./scripts/live-test.sh              # build + test
@@ -81,15 +81,13 @@ fi
 if [[ "$SKIP_BUILD" == false ]]; then
     printf "${BOLD}Building...${RESET}\n"
     cargo build --workspace --quiet 2>&1
-    (cd "$REPO_ROOT/shore-llm" && bun run build --silent 2>&1)
 fi
 
 SHORE="$REPO_ROOT/target/debug/shore"
 DAEMON="$REPO_ROOT/target/debug/shore-daemon"
-LLM_BIN="$REPO_ROOT/shore-llm/dist/shore-llm"
 
-if [[ ! -x "$SHORE" ]] || [[ ! -x "$DAEMON" ]] || [[ ! -x "$LLM_BIN" ]]; then
-    echo "Binaries not found. Run without --skip-build or build shore-llm first (cd shore-llm && bun run build)."
+if [[ ! -x "$SHORE" ]] || [[ ! -x "$DAEMON" ]]; then
+    echo "Binaries not found. Run without --skip-build first."
     exit 1
 fi
 
@@ -107,7 +105,6 @@ CONFIG_DIR="$TMPDIR/config/shore"
 DATA_DIR="$TMPDIR/data/shore"
 RUNTIME_DIR="$TMPDIR/runtime/shore"
 SOCK="$RUNTIME_DIR/test.sock"
-LLM_SOCK="$RUNTIME_DIR/llm.sock"
 
 mkdir -p "$CONFIG_DIR/characters/TestChar" "$DATA_DIR" "$RUNTIME_DIR"
 
@@ -145,10 +142,6 @@ rag_results = 0
 [memory.collation]
 enabled = false
 
-[services.llm]
-command = "$LLM_BIN"
-socket = "$LLM_SOCK"
-
 [chat.openrouter]
 base_url = "https://openrouter.ai/api/v1"
 
@@ -174,7 +167,7 @@ export XDG_CONFIG_HOME="$TMPDIR/config"
 export XDG_DATA_HOME="$TMPDIR/data"
 export XDG_RUNTIME_DIR="$TMPDIR/runtime"
 
-# ── Start shore-daemon (manages shore-llm via [services.llm]) ────────
+# ── Start shore-daemon ────────────────────────────────────────────────
 printf "${BOLD}Starting daemon...${RESET}\n"
 RUST_LOG=info "$DAEMON" --config "$CONFIG_DIR/config.toml" &
 DAEMON_PID=$!

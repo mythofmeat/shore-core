@@ -135,11 +135,6 @@ model = "claude-sonnet"            # Must match a key in [chat.*.*] below
 
 # ── Services ─────────────────────────────────────────────────────────────
 
-# [services.llm]
-# enabled = true                 # shore-llm is auto-managed when enabled
-# command = "shore-llm"          # Default: "shore-llm" (must be on PATH)
-# socket = "/run/user/1000/shore/llm.sock"
-
 # [services.matrix]
 # enabled = true
 # command = "shore-mx"
@@ -187,7 +182,6 @@ model = "claude-sonnet"            # Must match a key in [chat.*.*] below
 #
 #   — Prompt caching (Anthropic) —
 #   cache_ttl = "5m"                        # e.g. "5m", "1h"
-#   cache_control_depth = 2                 # Number of cache breakpoints to insert
 #   keepalive_enabled = true                # Send periodic pings to keep the cache alive (cost-saving)
 #   keepalive_ttl_minutes = 5              # Derive ping interval from TTL (default: 4 min)
 #   keepalive_max_pings = 15               # Stop after this many pings to avoid runaway cost
