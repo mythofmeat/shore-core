@@ -267,7 +267,7 @@ fn parse_command(app: &mut App, input: &str) -> Action {
             Action::Quit
         }
 
-        "char" | "character" => {
+        "character" => {
             if arg.is_empty() {
                 // List characters
                 Action::Send(ConnCommand::Send(ClientMessage::Command(Command {
