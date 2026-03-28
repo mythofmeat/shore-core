@@ -69,6 +69,7 @@ pub fn print_chunk(chunk: &StreamChunk) {
             let _ = write!(out, "---");
         }
         let _ = writeln!(out);
+        let _ = writeln!(out); // breathing room before response
     }
 
     if is_thinking {
@@ -194,7 +195,23 @@ pub fn print_follow_stream_start(character_name: &str) {
     write_header(&mut out, character_name, &time_str, color, width);
 }
 
-/// Print a tool call notification.
+/// Format a tool input value for display. Compact single-line for simple
+/// values, truncated if too long.
+fn format_tool_input(input: &serde_json::Value) -> Option<String> {
+    // Skip empty objects (no arguments).
+    if input.as_object().is_some_and(|o| o.is_empty()) {
+        return None;
+    }
+    let s = serde_json::to_string(input).ok()?;
+    if s.len() > MAX_TOOL_OUTPUT {
+        let end = s.floor_char_boundary(MAX_TOOL_OUTPUT);
+        Some(format!("{}...", &s[..end]))
+    } else {
+        Some(s)
+    }
+}
+
+/// Print a tool call notification with its input arguments.
 pub fn print_tool_call(call: &ToolCall) {
     let stdout = io::stdout();
     let mut out = stdout.lock();
@@ -206,6 +223,15 @@ pub fn print_tool_call(call: &ToolCall) {
     let _ = write!(out, "[tool: {}]", call.tool_name);
     if use_color() {
         let _ = crossterm::execute!(out, ResetColor);
+    }
+    if let Some(input) = format_tool_input(&call.input) {
+        if use_color() {
+            let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+        }
+        let _ = write!(out, " {input}");
+        if use_color() {
+            let _ = crossterm::execute!(out, ResetColor);
+        }
     }
     let _ = writeln!(out);
 }
@@ -337,8 +363,13 @@ impl StreamSpinner {
 
         let state = Arc::clone(&self.state);
         self.handle = Some(tokio::spawn(async move {
+            let mut first = true;
             loop {
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                if first {
+                    first = false;
+                } else {
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                }
                 let line = {
                     let s = state.lock().unwrap();
                     if !s.active {
