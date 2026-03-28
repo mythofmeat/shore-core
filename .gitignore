@@ -36,6 +36,15 @@ Thumbs.db
 todo/
 prd*.json
 
+# makepkg build artifacts
+/src/
+/pkg/
+/shore-git/
+*.pkg.tar.zst
+
+# Gitea runner
+.runner
+
 # Environment / secrets
 .env
 .env.*

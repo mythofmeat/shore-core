@@ -1,18 +1,28 @@
 # Maintainer: eshen
-pkgname=shore
-pkgver=0.1.0
+pkgname=shore-git
+pkgver=.r96.4df5d05
 pkgrel=1
 pkgdesc='Persistent AI character engine — daemon, CLI, and LLM provider proxy'
 arch=('x86_64')
 url='http://localhost:3000/eshen/silvershore'
 license=('custom')
 depends=('gcc-libs' 'nodejs')
-makedepends=('cargo' 'npm')
-source=("git+http://localhost:3000/eshen/silvershore.git")
+makedepends=('cargo' 'npm' 'git')
+provides=('shore')
+conflicts=('shore')
+source=("${pkgname}::git+http://localhost:3000/eshen/silvershore.git")
 sha256sums=('SKIP')
 
+pkgver() {
+    cd "${pkgname}"
+    printf "%s.r%s.%s" \
+        "$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')" \
+        "$(git rev-list --count HEAD)" \
+        "$(git rev-parse --short HEAD)"
+}
+
 prepare() {
-    cd silvershore
+    cd "${pkgname}"
     export RUSTUP_TOOLCHAIN=stable
     cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
 
@@ -21,7 +31,7 @@ prepare() {
 }
 
 build() {
-    cd silvershore
+    cd "${pkgname}"
     export RUSTUP_TOOLCHAIN=stable
     export CARGO_TARGET_DIR=target
     cargo build --workspace --release --frozen
@@ -31,11 +41,12 @@ build() {
 }
 
 package() {
-    cd silvershore
+    cd "${pkgname}"
 
     # Rust binaries
     install -Dm755 target/release/shore-daemon "$pkgdir/usr/bin/shore-daemon"
     install -Dm755 target/release/shore         "$pkgdir/usr/bin/shore"
+    install -Dm755 target/release/shore-tui    "$pkgdir/usr/bin/shore-tui"
     install -Dm755 target/release/shore-matrix  "$pkgdir/usr/bin/shore-matrix"
 
     # shore-llm (Node.js)
