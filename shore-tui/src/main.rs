@@ -34,6 +34,10 @@ struct Cli {
     /// Config path to select daemon instance
     #[arg(long)]
     config: Option<String>,
+
+    /// Character to connect as
+    #[arg(short, long)]
+    character: Option<String>,
 }
 
 fn main() -> io::Result<()> {
@@ -47,12 +51,38 @@ fn main() -> io::Result<()> {
     rt.block_on(run_tui(cli))
 }
 
+/// Resolve the initial character: --character flag > SHORE_CHARACTER env > state file.
+fn resolve_character(cli_character: Option<String>) -> Option<String> {
+    if cli_character.is_some() {
+        return cli_character;
+    }
+    if let Ok(val) = std::env::var("SHORE_CHARACTER") {
+        if !val.is_empty() {
+            return Some(val);
+        }
+    }
+    // Try the CLI's active_character state file.
+    let runtime_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into());
+    let state_path = std::path::Path::new(&runtime_dir)
+        .join("shore")
+        .join("active_character");
+    if let Ok(name) = std::fs::read_to_string(state_path) {
+        let name = name.trim().to_string();
+        if !name.is_empty() {
+            return Some(name);
+        }
+    }
+    None
+}
+
 async fn run_tui(cli: Cli) -> io::Result<()> {
     // Set up terminal
     enable_raw_mode()?;
     io::stdout().execute(EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
+
+    let character = resolve_character(cli.character);
 
     let mut app = App {
         connection_status: ConnectionStatus::Connecting,
@@ -61,7 +91,7 @@ async fn run_tui(cli: Cli) -> io::Result<()> {
 
     // Spawn connection manager
     let (cmd_tx, mut event_rx) =
-        connection::spawn_connection(cli.socket, cli.config);
+        connection::spawn_connection(cli.socket, cli.config, character);
 
     // Main event loop
     let result = loop {
@@ -154,7 +184,7 @@ fn handle_conn_event(app: &mut App, event: ConnEvent) -> Vec<ConnCommand> {
 
             app.set_status("connected");
 
-            // Request full history and status from daemon
+            // Request full history, status, and model list from daemon
             vec![
                 ConnCommand::Send(ClientMessage::Command(Command {
                     rid: None,
@@ -164,6 +194,11 @@ fn handle_conn_event(app: &mut App, event: ConnEvent) -> Vec<ConnCommand> {
                 ConnCommand::Send(ClientMessage::Command(Command {
                     rid: None,
                     name: "status".into(),
+                    args: serde_json::json!({}),
+                })),
+                ConnCommand::Send(ClientMessage::Command(Command {
+                    rid: None,
+                    name: "list_models".into(),
                     args: serde_json::json!({}),
                 })),
             ]
@@ -349,6 +384,8 @@ fn handle_server_message(app: &mut App, msg: ServerMessage) {
                             .iter()
                             .filter_map(|m| m.get("name").and_then(|n| n.as_str()))
                             .collect();
+                        // Cache model names for tab completion
+                        app.model_names = names.iter().map(|n| n.to_string()).collect();
                         let active = co.data.get("active").and_then(|v| v.as_str()).unwrap_or("");
                         let list = names
                             .iter()

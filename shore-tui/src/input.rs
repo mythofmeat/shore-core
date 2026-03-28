@@ -120,6 +120,7 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) -> Action {
         // Command palette
         (KeyModifiers::SHIFT, KeyCode::Char(':')) | (KeyModifiers::NONE, KeyCode::Char(':')) => {
             app.input.enter_command_mode();
+            app.update_completions();
             Action::Redraw
         }
 
@@ -221,11 +222,21 @@ fn handle_command_mode(app: &mut App, key: KeyEvent) -> Action {
         // Cancel
         (KeyModifiers::NONE, KeyCode::Esc) => {
             app.input.exit_command_mode();
+            app.completion.candidates.clear();
+            app.completion.selected = None;
+            Action::Redraw
+        }
+
+        // Tab — cycle completions
+        (KeyModifiers::NONE, KeyCode::Tab) => {
+            app.next_completion();
             Action::Redraw
         }
 
         // Execute command
         (KeyModifiers::NONE, KeyCode::Enter) => {
+            app.completion.candidates.clear();
+            app.completion.selected = None;
             let text = app.input.take_cmd_text();
             parse_command(app, &text)
         }
@@ -234,8 +245,11 @@ fn handle_command_mode(app: &mut App, key: KeyEvent) -> Action {
         (_, KeyCode::Backspace) => {
             if app.input.cmd_text.is_empty() {
                 app.input.exit_command_mode();
+                app.completion.candidates.clear();
+                app.completion.selected = None;
             } else {
                 app.input.cmd_backspace();
+                app.update_completions();
             }
             Action::Redraw
         }
@@ -243,6 +257,7 @@ fn handle_command_mode(app: &mut App, key: KeyEvent) -> Action {
         // Character input
         (KeyModifiers::NONE | KeyModifiers::SHIFT, KeyCode::Char(c)) => {
             app.input.cmd_insert_char(c);
+            app.update_completions();
             Action::Redraw
         }
 

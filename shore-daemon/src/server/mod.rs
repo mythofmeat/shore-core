@@ -325,7 +325,7 @@ async fn message_loop<R, W>(
     push_rx: &mut broadcast::Receiver<ServerMessage>,
     route_tx: &tokio::sync::mpsc::Sender<RoutedMessage>,
     shutdown: &mut tokio::sync::watch::Receiver<()>,
-    character: Option<String>,
+    mut character: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
 where
     R: tokio::io::AsyncRead + Unpin + Send,
@@ -337,7 +337,7 @@ where
             msg = read_message(reader) => {
                 match msg? {
                     Some(client_msg) => {
-                        route_client_message(client_id, client_msg, route_tx, writer, &character).await?;
+                        route_client_message(client_id, client_msg, route_tx, writer, &mut character).await?;
                     }
                     None => {
                         // Client closed the connection.
@@ -376,7 +376,7 @@ async fn route_client_message<W>(
     msg: ClientMessage,
     route_tx: &tokio::sync::mpsc::Sender<RoutedMessage>,
     writer: &mut W,
-    character: &Option<String>,
+    character: &mut Option<String>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
 where
     W: tokio::io::AsyncWrite + Unpin + Send,
@@ -400,6 +400,13 @@ where
                 .await?;
         }
         ClientMessage::Command(cmd) => {
+            // Update per-connection character when switching.
+            if cmd.name == "switch_character" {
+                if let Some(name) = cmd.args.get("name").and_then(|v| v.as_str()) {
+                    info!(client_id, new_character = name, "Updating connection character");
+                    *character = Some(name.to_string());
+                }
+            }
             info!(client_id, command = %cmd.name, "Routing to command dispatcher");
             route_tx
                 .send(RoutedMessage::Command {

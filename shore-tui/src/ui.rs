@@ -38,6 +38,11 @@ pub fn draw(frame: &mut Frame, app: &App) {
 
     draw_input(frame, app, chunks[2]);
     draw_status_bar(frame, app, chunks[3]);
+
+    // Draw completion popup over conversation area when in command mode
+    if app.input.mode == InputMode::Command && !app.completion.candidates.is_empty() {
+        draw_completions(frame, app, chunks[2]);
+    }
 }
 
 /// Render the scrollable conversation log.
@@ -400,4 +405,64 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         .style(Style::default().bg(Color::Rgb(30, 30, 30)));
 
     frame.render_widget(bar, area);
+}
+
+/// Render completion candidates as a popup above the input area.
+fn draw_completions(frame: &mut Frame, app: &App, input_area: Rect) {
+    let candidates = &app.completion.candidates;
+    let max_visible = 8u16;
+    let count = (candidates.len() as u16).min(max_visible);
+    if count == 0 {
+        return;
+    }
+
+    // Calculate max width from candidates
+    let max_width = candidates
+        .iter()
+        .take(max_visible as usize)
+        .map(|c| c.len() as u16)
+        .max()
+        .unwrap_or(10)
+        + 4; // padding + borders
+    let width = max_width.min(input_area.width);
+    let height = count + 2; // borders
+
+    // Position above the input area
+    let y = input_area.y.saturating_sub(height);
+    let popup_area = Rect::new(input_area.x, y, width, height);
+
+    // Build lines with highlighting
+    let lines: Vec<Line<'static>> = candidates
+        .iter()
+        .take(max_visible as usize)
+        .enumerate()
+        .map(|(i, c)| {
+            let selected = app.completion.selected == Some(i);
+            if selected {
+                Line::from(Span::styled(
+                    format!(" {c} "),
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(Color::Yellow),
+                ))
+            } else {
+                Line::from(Span::styled(
+                    format!(" {c} "),
+                    Style::default().fg(Color::White),
+                ))
+            }
+        })
+        .collect();
+
+    // Clear background and render
+    let popup = Paragraph::new(Text::from(lines))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::DarkGray)),
+        )
+        .style(Style::default().bg(Color::Rgb(40, 40, 40)));
+
+    frame.render_widget(ratatui::widgets::Clear, popup_area);
+    frame.render_widget(popup, popup_area);
 }

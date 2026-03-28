@@ -209,15 +209,34 @@ pub enum ConnectionStatus {
     Connected,
 }
 
+/// Completion state for the command palette.
+pub struct CompletionState {
+    /// Filtered candidates matching current input.
+    pub candidates: Vec<String>,
+    /// Currently selected index (None = no selection).
+    pub selected: Option<usize>,
+}
+
+impl Default for CompletionState {
+    fn default() -> Self {
+        Self {
+            candidates: Vec::new(),
+            selected: None,
+        }
+    }
+}
+
 /// Main application state.
 pub struct App {
     pub entries: Vec<ConversationEntry>,
     pub stream: StreamState,
     pub input: InputState,
+    pub completion: CompletionState,
     pub scroll_offset: u16,
     pub connection_status: ConnectionStatus,
     pub character_name: String,
     pub characters: Vec<CharacterInfo>,
+    pub model_names: Vec<String>,
     pub model: String,
     pub tokens: TokenCounts,
     pub is_private: bool,
@@ -232,10 +251,12 @@ impl Default for App {
             entries: Vec::new(),
             stream: StreamState::default(),
             input: InputState::default(),
+            completion: CompletionState::default(),
             scroll_offset: 0,
             connection_status: ConnectionStatus::Disconnected,
             character_name: String::new(),
             characters: Vec::new(),
+            model_names: Vec::new(),
             model: String::new(),
             tokens: TokenCounts {
                 input: 0,
@@ -271,6 +292,93 @@ impl App {
 
     pub fn set_status(&mut self, msg: impl Into<String>) {
         self.status_message = Some(msg.into());
+    }
+
+    /// Static command names for completion.
+    const COMMANDS: &'static [&'static str] = &[
+        "character", "compact", "config", "diag", "diagnostics",
+        "log", "memory", "model", "quit", "status",
+    ];
+
+    /// Update completion candidates based on current command input.
+    pub fn update_completions(&mut self) {
+        let input = &self.input.cmd_text;
+        self.completion.selected = None;
+
+        if input.is_empty() {
+            // Show all commands
+            self.completion.candidates = Self::COMMANDS.iter().map(|s| s.to_string()).collect();
+            return;
+        }
+
+        let mut parts = input.splitn(2, ' ');
+        let cmd = parts.next().unwrap_or("");
+        let has_space = parts.next().is_some();
+
+        if !has_space {
+            // Completing the command name
+            self.completion.candidates = Self::COMMANDS
+                .iter()
+                .filter(|c| c.starts_with(cmd))
+                .map(|s| s.to_string())
+                .collect();
+        } else {
+            // Completing arguments
+            let arg = input.splitn(2, ' ').nth(1).unwrap_or("").trim();
+            match cmd {
+                "character" => {
+                    self.completion.candidates = self
+                        .characters
+                        .iter()
+                        .map(|c| c.name.clone())
+                        .filter(|n| arg.is_empty() || n.to_lowercase().starts_with(&arg.to_lowercase()))
+                        .map(|n| format!("character {n}"))
+                        .collect();
+                }
+                "model" => {
+                    let mut candidates: Vec<String> = self
+                        .model_names
+                        .iter()
+                        .filter(|n| arg.is_empty() || n.to_lowercase().starts_with(&arg.to_lowercase()))
+                        .map(|n| format!("model {n}"))
+                        .collect();
+                    if "reset".starts_with(&arg.to_lowercase()) {
+                        candidates.push("model reset".into());
+                    }
+                    self.completion.candidates = candidates;
+                }
+                _ => {
+                    self.completion.candidates.clear();
+                }
+            }
+        }
+    }
+
+    /// Apply the currently selected completion to the command input.
+    pub fn apply_completion(&mut self) {
+        if let Some(idx) = self.completion.selected {
+            if let Some(text) = self.completion.candidates.get(idx) {
+                self.input.cmd_text = text.clone();
+                self.input.cmd_cursor = text.len();
+                // If completing a command name (no space), add a space
+                if !text.contains(' ') {
+                    self.input.cmd_text.push(' ');
+                    self.input.cmd_cursor += 1;
+                }
+            }
+        }
+    }
+
+    /// Cycle to the next completion candidate.
+    pub fn next_completion(&mut self) {
+        if self.completion.candidates.is_empty() {
+            return;
+        }
+        self.completion.selected = Some(match self.completion.selected {
+            Some(i) => (i + 1) % self.completion.candidates.len(),
+            None => 0,
+        });
+        self.apply_completion();
     }
 
     pub fn cache_hit_ratio(&self) -> Option<f64> {

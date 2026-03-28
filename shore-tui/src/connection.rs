@@ -32,11 +32,12 @@ pub enum ConnCommand {
 pub fn spawn_connection(
     socket: Option<String>,
     config: Option<String>,
+    character: Option<String>,
 ) -> (mpsc::Sender<ConnCommand>, mpsc::Receiver<ConnEvent>) {
     let (event_tx, event_rx) = mpsc::channel(256);
     let (cmd_tx, cmd_rx) = mpsc::channel(64);
 
-    tokio::spawn(connection_loop(socket, config, event_tx, cmd_rx));
+    tokio::spawn(connection_loop(socket, config, character, event_tx, cmd_rx));
 
     (cmd_tx, event_rx)
 }
@@ -54,6 +55,7 @@ fn resolve_addr(socket: &Option<String>, config: &Option<String>) -> ServerAddr 
 async fn connection_loop(
     socket: Option<String>,
     config: Option<String>,
+    character: Option<String>,
     event_tx: mpsc::Sender<ConnEvent>,
     mut cmd_rx: mpsc::Receiver<ConnCommand>,
 ) {
@@ -63,7 +65,7 @@ async fn connection_loop(
     loop {
         let addr = resolve_addr(&socket, &config);
 
-        match SWPConnection::connect(&addr, "tui", "shore-tui", None).await {
+        match SWPConnection::connect(&addr, "tui", "shore-tui", character.clone()).await {
             Ok((mut conn, hello, history)) => {
                 backoff = Duration::from_millis(500);
 
