@@ -549,6 +549,46 @@ async fn memory_mixed_model_benchmark() {
     eprintln!("\n{}", "=".repeat(90));
 }
 
+/// Rerun specific pairs with full output (no truncation).
+#[tokio::test]
+#[ignore = "Requires running shore-llm and OPENROUTER keys"]
+async fn memory_bench_finalists() {
+    let db_path = memory_db_path();
+    let db = MemoryDB::open(&db_path).expect("Failed to open memory DB");
+    let char_def = char_definition();
+
+    let kimi = openrouter_primary_model("kimi-k2.5", "moonshotai/kimi-k2.5");
+    let qwen_flash = openrouter_tool_model("qwen3.5-flash", "qwen/qwen3.5-flash-02-23");
+    let gemini = openrouter_tool_model("gemini-3.1-flash-lite", "google/gemini-3.1-flash-lite-preview");
+    let qwen_moe = openrouter_tool_model("qwen3-235b", "qwen/qwen3-235b-a22b-2507");
+
+    let pairs: Vec<(&str, &ResolvedModel, &ResolvedModel)> = vec![
+        ("kimi→qwen-flash", &kimi, &qwen_flash),
+        ("kimi→gemini", &kimi, &gemini),
+        ("qwen-moe→gemini", &qwen_moe, &gemini),
+    ];
+
+    let query = "What has ren been up to recently? I want to know about TV shows, \
+                 music, gaming, and anything else interesting from March 2026.";
+
+    for (label, r_model, a_model) in &pairs {
+        eprintln!("\n{}", "━".repeat(80));
+        eprintln!(">>> {} (R={}, A={}) <<<", label, r_model.model_id, a_model.model_id);
+
+        let db = MemoryDB::open(&db_path).expect("Failed to open memory DB");
+        let (output, rc, ac, ms) =
+            run_benchmark_mixed(label, r_model, a_model, query, &db, &char_def).await;
+
+        eprintln!("\n  {} | {} calls (R:{} A:{}) | {}ms | {} chars",
+            label, rc + ac, rc, ac, ms, output.len());
+        eprintln!("{}", "─".repeat(80));
+        eprintln!("{output}");
+        eprintln!("{}", "─".repeat(80));
+
+        restore_db();
+    }
+}
+
 /// Quick single-model test for iteration during development.
 #[tokio::test]
 #[ignore = "Requires running shore-llm and OPENROUTER keys"]
