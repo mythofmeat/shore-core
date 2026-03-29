@@ -11,7 +11,7 @@ use shore_llm_client::types::{LlmRequest, StreamResult};
 use shore_llm_client::{LlmClient, LlmError};
 use crate::tools::{self as tool_system, ToolContext};
 use shore_protocol::server_msg::{ServerMessage, ToolCall, ToolResult as SwpToolResult};
-use shore_protocol::types::{ContentBlock, Message, Role};
+use shore_protocol::types::{derive_content_from_blocks, ContentBlock, Message, Role};
 
 // ── Errors ──────────────────────────────────────────────────────────────
 
@@ -149,15 +149,10 @@ pub async fn run_tool_loop(
         }));
 
         // Persist assistant message with content_blocks.
-        let assistant_text: String = assistant_blocks.iter().filter_map(|b| match b {
-            ContentBlock::Text { text } => Some(text.as_str()),
-            _ => None,
-        }).collect::<Vec<_>>().join("");
-
         intermediate_messages.push(Message {
             msg_id: format!("m_{}", uuid::Uuid::new_v4()),
             role: Role::Assistant,
-            content: assistant_text,
+            content: derive_content_from_blocks(&assistant_blocks),
             images: vec![],
             content_blocks: assistant_blocks,
             alt_index: None,
@@ -261,7 +256,7 @@ pub async fn run_tool_loop(
         intermediate_messages.push(Message {
             msg_id: format!("m_{}", uuid::Uuid::new_v4()),
             role: Role::User,
-            content: String::new(),
+            content: derive_content_from_blocks(&tool_result_blocks),
             images: vec![],
             content_blocks: tool_result_blocks,
             alt_index: None,

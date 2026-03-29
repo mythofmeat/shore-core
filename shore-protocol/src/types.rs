@@ -86,8 +86,131 @@ pub struct StreamMetadata {
     pub model: String,
 }
 
+/// Derive a human-readable text summary from content blocks.
+///
+/// Joins all `Text` and `ToolResult` block contents (trimmed), skipping
+/// thinking, redacted thinking, and tool use blocks which are not
+/// user-visible text. This is the canonical way to produce `Message.content`.
+pub fn derive_content_from_blocks(blocks: &[ContentBlock]) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+
+    for block in blocks {
+        match block {
+            ContentBlock::Text { text } => {
+                let trimmed = text.trim();
+                if !trimmed.is_empty() {
+                    parts.push(trimmed);
+                }
+            }
+            ContentBlock::ToolResult { content, .. } => {
+                let trimmed = content.trim();
+                if !trimmed.is_empty() {
+                    parts.push(trimmed);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    parts.join("\n")
+}
+
 /// Information about a character.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct CharacterInfo {
     pub name: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn derive_content_empty_blocks() {
+        assert_eq!(derive_content_from_blocks(&[]), "");
+    }
+
+    #[test]
+    fn derive_content_text_only() {
+        let blocks = vec![ContentBlock::Text {
+            text: "hello world".into(),
+        }];
+        assert_eq!(derive_content_from_blocks(&blocks), "hello world");
+    }
+
+    #[test]
+    fn derive_content_trims_whitespace() {
+        let blocks = vec![ContentBlock::Text {
+            text: "\n\n".into(),
+        }];
+        assert_eq!(derive_content_from_blocks(&blocks), "");
+    }
+
+    #[test]
+    fn derive_content_tool_result() {
+        let blocks = vec![ContentBlock::ToolResult {
+            tool_use_id: "t1".into(),
+            content: "2026-03-29T10:00:00Z".into(),
+            is_error: false,
+        }];
+        assert_eq!(
+            derive_content_from_blocks(&blocks),
+            "2026-03-29T10:00:00Z"
+        );
+    }
+
+    #[test]
+    fn derive_content_skips_thinking_and_tool_use() {
+        let blocks = vec![
+            ContentBlock::Thinking {
+                thinking: "Let me think...".into(),
+                signature: None,
+            },
+            ContentBlock::ToolUse {
+                id: "t1".into(),
+                name: "check_time".into(),
+                input: serde_json::json!({}),
+            },
+            ContentBlock::RedactedThinking {
+                data: "opaque".into(),
+            },
+            ContentBlock::Text {
+                text: "The answer".into(),
+            },
+        ];
+        assert_eq!(derive_content_from_blocks(&blocks), "The answer");
+    }
+
+    #[test]
+    fn derive_content_multiple_text_blocks() {
+        let blocks = vec![
+            ContentBlock::Text {
+                text: "first".into(),
+            },
+            ContentBlock::Text {
+                text: "second".into(),
+            },
+        ];
+        assert_eq!(derive_content_from_blocks(&blocks), "first\nsecond");
+    }
+
+    #[test]
+    fn derive_content_mixed_text_and_tool_result() {
+        let blocks = vec![
+            ContentBlock::ToolResult {
+                tool_use_id: "t1".into(),
+                content: "tool output".into(),
+                is_error: false,
+            },
+            ContentBlock::ToolResult {
+                tool_use_id: "t2".into(),
+                content: "more output".into(),
+                is_error: false,
+            },
+        ];
+        assert_eq!(
+            derive_content_from_blocks(&blocks),
+            "tool output\nmore output"
+        );
+    }
 }

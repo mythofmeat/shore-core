@@ -164,15 +164,18 @@ fn apply_breakpoint_to_message(msg: &mut Value) {
     }
 }
 
-/// Apply multi-breakpoint cache_control to messages and system.
+/// Apply cache_control breakpoints to messages.
 ///
-/// Places up to 4 breakpoints total:
-/// - **System breakpoint:** on the second-to-last system block (if system is
-///   an array with 2+ blocks), caching the stable system content before the
-///   recap.
-/// - **Message breakpoints (up to 3):** at depths 2, 4, and 8 from the last
-///   real user message, each at a stable turn boundary.  Duplicate positions
-///   are deduplicated.
+/// Places up to 3 message breakpoints at depths 2, 4, and 8 from the last
+/// real user message, each at a stable turn boundary.  Duplicate positions
+/// are deduplicated.
+///
+/// **No system breakpoint** is placed.  serde_json serialises keys
+/// alphabetically (BTreeMap), so "messages" appears before "system" on the
+/// wire.  A cache_control marker on a system block would create a prefix
+/// that includes the ENTIRE messages array; any change to the messages tail
+/// (e.g. tool-loop iterations) would then invalidate that prefix, causing a
+/// full cache miss every turn.
 fn apply_cache_control(messages: &[Value], system: &Value) -> (Vec<Value>, Value) {
     if messages.is_empty() {
         return (messages.to_vec(), system.clone());
@@ -183,7 +186,19 @@ fn apply_cache_control(messages: &[Value], system: &Value) -> (Vec<Value>, Value
     // Step 1: Strip all existing cache_control from all content blocks.
     strip_cache_control(&mut result);
 
-    // Step 2: Find the last real (non-tool-result) user message.
+    // Step 2: Normalize all plain-string content to array format so the
+    // serialised payload structure is identical regardless of where the
+    // cache breakpoint lands.  Without this, breakpoint placement converts
+    // string → array, and when the breakpoint shifts on the next turn the
+    // message reverts to string — changing the prefix bytes and busting
+    // every cache entry.
+    for msg in result.iter_mut() {
+        if let Some(Value::String(text)) = msg.get("content").cloned() {
+            msg["content"] = json!([{ "type": "text", "text": text }]);
+        }
+    }
+
+    // Step 3: Find the last real (non-tool-result) user message.
     let last_real_user: Option<usize> = result
         .iter()
         .rposition(|m| {
@@ -191,7 +206,7 @@ fn apply_cache_control(messages: &[Value], system: &Value) -> (Vec<Value>, Value
                 && !is_tool_result_message(m)
         });
 
-    // Step 3: Place message breakpoints at depths 2, 4, 8.
+    // Step 4: Place message breakpoints at depths 2, 4, 8.
     if let Some(last_real_user_idx) = last_real_user {
         let depths = [2usize, 4, 8];
         let mut placed_positions: Vec<usize> = Vec::new();
@@ -209,18 +224,7 @@ fn apply_cache_control(messages: &[Value], system: &Value) -> (Vec<Value>, Value
         }
     }
 
-    // Step 4: Apply system breakpoint on the second-to-last block.
-    let mut sys = system.clone();
-    if let Some(arr) = sys.as_array_mut() {
-        if arr.len() >= 2 {
-            let target_idx = arr.len() - 2;
-            if let Some(obj) = arr[target_idx].as_object_mut() {
-                obj.insert("cache_control".into(), json!({ "type": "ephemeral" }));
-            }
-        }
-    }
-
-    (result, sys)
+    (result, system.clone())
 }
 
 /// Build the `thinking` config param from provider_options.
@@ -562,6 +566,12 @@ fn handle_content_block_start(data: &str, state: &mut StreamState) -> Option<Str
         }
         "redacted_thinking" => {
             let data_str = block.get("data").and_then(Value::as_str).unwrap_or("").to_string();
+            // OpenRouter injects bogus redacted_thinking blocks that duplicate
+            // real thinking content. Filter them at the source.
+            if data_str.starts_with("openrouter.reasoning:") {
+                tracing::debug!("Filtered OpenRouter redacted_thinking wrapper");
+                return None;
+            }
             state.redacted_thinking_blocks.insert(index, data_str);
             None
         }
@@ -811,7 +821,9 @@ pub async fn generate(
                         .and_then(Value::as_str)
                         .unwrap_or("")
                         .to_string();
-                    content_blocks.push(ContentBlock::RedactedThinking { data });
+                    if !data.starts_with("openrouter.reasoning:") {
+                        content_blocks.push(ContentBlock::RedactedThinking { data });
+                    }
                 }
                 "tool_use" => {
                     let id = block

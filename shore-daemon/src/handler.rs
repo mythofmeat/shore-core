@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use shore_protocol::client_msg::{ClientMessage, ClientMessageBody};
 use shore_protocol::error::ErrorCode;
 use shore_protocol::server_msg::{Error as SwpError, ServerMessage};
-use shore_protocol::types::{ContentBlock, ImageRef, Message, Role};
+use shore_protocol::types::{derive_content_from_blocks, ContentBlock, ImageRef, Message, Role};
 use tokio::sync::{broadcast, Mutex};
 use tracing::{error, info, instrument, warn};
 
@@ -768,10 +768,15 @@ impl MessageHandler {
 
         // 12. Append final assistant message with content_blocks to conversation.
         let content_blocks = result.content_blocks.clone();
+        let content = if content_blocks.is_empty() {
+            result.content.clone()
+        } else {
+            derive_content_from_blocks(&content_blocks)
+        };
         let assistant_msg = Message {
             msg_id: format!("m_{}", uuid::Uuid::new_v4()),
             role: Role::Assistant,
-            content: result.content.clone(),
+            content,
             images: vec![],
             content_blocks,
             alt_index: None,
