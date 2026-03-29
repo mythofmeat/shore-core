@@ -52,7 +52,7 @@ pub struct AutonomyState {
     /// Whether compaction was already triggered for this idle period.
     compaction_triggered: bool,
     /// Current number of messages in active.jsonl (updated on each message notification).
-    active_message_count: usize,
+    active_turn_count: usize,
     /// Cached last LLM request for cache keepalive pings.
     last_request: Option<LlmRequest>,
 }
@@ -307,7 +307,7 @@ impl AutonomyManager {
             dirty: false,
             last_compaction_activity: Instant::now(),
             compaction_triggered: false,
-            active_message_count: 0,
+            active_turn_count: 0,
             last_request: None,
         }));
 
@@ -366,7 +366,7 @@ impl AutonomyManager {
             s.activity.record_message();
             s.last_compaction_activity = now;
             s.compaction_triggered = false;
-            s.active_message_count = message_count;
+            s.active_turn_count = message_count;
             s.mark_dirty();
         }
     }
@@ -381,7 +381,7 @@ impl AutonomyManager {
             s.activity.record_message();
             s.last_compaction_activity = now;
             s.compaction_triggered = false;
-            s.active_message_count = message_count;
+            s.active_turn_count = message_count;
         }
     }
 
@@ -628,18 +628,18 @@ async fn tick_character(
         if config.enabled && compaction.enabled && !s.compaction_triggered {
             let min_total = compaction.min_messages + compaction.keep_recent;
             if compaction.max_messages > 0
-                && s.active_message_count >= compaction.max_messages
-                && s.active_message_count >= min_total
+                && s.active_turn_count >= compaction.max_messages
+                && s.active_turn_count >= min_total
             {
                 s.compaction_triggered = true;
                 compaction_needed = true;
                 info!(
                     character = %character,
-                    message_count = s.active_message_count,
+                    turn_count = s.active_turn_count,
                     max_messages = compaction.max_messages,
-                    "Compaction: max messages trigger fired"
+                    "Compaction: max turns trigger fired"
                 );
-            } else if s.active_message_count >= min_total {
+            } else if s.active_turn_count >= min_total {
                 let idle_secs = now.duration_since(s.last_compaction_activity).as_secs();
                 let threshold_secs = compaction.idle_trigger_minutes as u64 * 60;
                 if threshold_secs > 0 && idle_secs >= threshold_secs {
@@ -649,7 +649,7 @@ async fn tick_character(
                         character = %character,
                         idle_secs,
                         threshold_secs,
-                        message_count = s.active_message_count,
+                        turn_count = s.active_turn_count,
                         "Compaction: idle trigger fired"
                     );
                 }
@@ -1123,7 +1123,7 @@ mod tests {
             dirty: true,
             last_compaction_activity: Instant::now(),
             compaction_triggered: false,
-            active_message_count: 0,
+            active_turn_count: 0,
             last_request: None,
         };
         save_state(data_dir, "alice", &mut state);
@@ -1209,7 +1209,7 @@ mod tests {
             dirty: false,
             last_compaction_activity: Instant::now(),
             compaction_triggered: false,
-            active_message_count: 0,
+            active_turn_count: 0,
             last_request: None,
         }));
 

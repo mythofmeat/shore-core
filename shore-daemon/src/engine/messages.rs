@@ -59,9 +59,31 @@ impl MessageStore {
         &self.messages
     }
 
-    /// Number of messages in the store.
+    /// Number of raw messages in the store.
     pub fn message_count(&self) -> usize {
         self.messages.len()
+    }
+
+    /// Number of user turns in the store.
+    ///
+    /// A turn is a real user message — one that is NOT purely tool_result
+    /// content.  Tool exchanges (assistant tool_use + user tool_result) are
+    /// part of the same turn as the preceding real user message.
+    pub fn turn_count(&self) -> usize {
+        use shore_protocol::types::{ContentBlock, Role};
+        self.messages.iter().filter(|m| {
+            if m.role != Role::User {
+                return false;
+            }
+            // A user message whose content_blocks are ALL ToolResult is a
+            // tool-loop message, not a real turn.
+            if !m.content_blocks.is_empty()
+                && m.content_blocks.iter().all(|b| matches!(b, ContentBlock::ToolResult { .. }))
+            {
+                return false;
+            }
+            true
+        }).count()
     }
 
     /// Clear all messages and truncate the backing file.

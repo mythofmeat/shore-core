@@ -25,6 +25,10 @@ pub struct CacheContext {
 
     /// Whether cache invalidation warnings are enabled ([advanced] config).
     pub cache_invalidation_warnings: bool,
+
+    /// Whether a cache read has been observed this session.  When false, a
+    /// cache_write with no read is expected (first-time cache creation).
+    pub has_seen_cache_read: bool,
 }
 
 impl Default for CacheContext {
@@ -34,6 +38,7 @@ impl Default for CacheContext {
             is_first_after_restart: true,
             is_first_after_compaction: false,
             cache_invalidation_warnings: true,
+            has_seen_cache_read: false,
         }
     }
 }
@@ -280,12 +285,22 @@ fn check_cache_invalidation(
         return;
     }
 
-    if usage.cache_read_tokens == 0 {
+    // Only warn when a cache was CREATED but nothing was READ — that means
+    // the previous cache was invalidated and had to be rebuilt.  When both
+    // are zero (e.g. OpenRouter doesn't report cache metrics) there is
+    // nothing actionable to warn about.
+    //
+    // Also suppress when no cache read has been observed this session — the
+    // first cache creation is always a cold start, not an invalidation.
+    if usage.cache_creation_tokens > 0
+        && usage.cache_read_tokens == 0
+        && ctx.has_seen_cache_read
+    {
         let expected = usage.input_tokens;
         let message = format!(
-            "Unexpected cache invalidation: cache_read_tokens=0 with {} input tokens \
+            "Unexpected cache invalidation: cache_read=0 cache_write={} with {} input tokens \
              on turn {}. The prompt cache may have been evicted.",
-            expected, ctx.conversation_turn_count
+            usage.cache_creation_tokens, expected, ctx.conversation_turn_count
         );
 
         error!("{}", message);
@@ -326,6 +341,7 @@ mod tests {
             is_first_after_restart: false,
             is_first_after_compaction: false,
             cache_invalidation_warnings: true,
+            has_seen_cache_read: false,
         };
 
         // Write stream events from "server".
@@ -757,13 +773,16 @@ mod tests {
             is_first_after_restart: false,
             is_first_after_compaction: false,
             cache_invalidation_warnings: true,
+            has_seen_cache_read: true, // Previous cache reads existed.
         };
 
+        // Warning fires when cache was CREATED (write>0) but nothing READ (read=0)
+        // — the previous cache was invalidated and rebuilt from scratch.
         let usage = crate::types::Usage {
             input_tokens: 5000,
             output_tokens: 100,
-            cache_read_tokens: 0, // Unexpected!
-            cache_creation_tokens: 0,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 4000, // Cache was recreated — old one invalidated.
         };
 
         check_cache_invalidation(&push_tx, &ctx, &usage);
@@ -772,7 +791,7 @@ mod tests {
         match msg {
             ServerMessage::CacheWarning(warning) => {
                 assert_eq!(warning.expected_tokens, 5000);
-                assert!(warning.message.contains("cache_read_tokens=0"));
+                assert!(warning.message.contains("cache_read=0"));
                 assert!(warning.message.contains("turn 5"));
             }
             other => panic!("Expected CacheWarning, got {:?}", other),
@@ -788,6 +807,7 @@ mod tests {
             is_first_after_restart: false,
             is_first_after_compaction: false,
             cache_invalidation_warnings: true,
+            has_seen_cache_read: false,
         };
 
         let usage = crate::types::Usage {
@@ -812,6 +832,7 @@ mod tests {
             is_first_after_restart: true, // First message after restart.
             is_first_after_compaction: false,
             cache_invalidation_warnings: true,
+            has_seen_cache_read: false,
         };
 
         let usage = crate::types::Usage {
@@ -834,6 +855,7 @@ mod tests {
             is_first_after_restart: false,
             is_first_after_compaction: true,
             cache_invalidation_warnings: true,
+            has_seen_cache_read: false,
         };
 
         let usage = crate::types::Usage {
@@ -856,6 +878,7 @@ mod tests {
             is_first_after_restart: false,
             is_first_after_compaction: false,
             cache_invalidation_warnings: false, // Disabled!
+            has_seen_cache_read: false,
         };
 
         let usage = crate::types::Usage {
@@ -878,6 +901,7 @@ mod tests {
             is_first_after_restart: false,
             is_first_after_compaction: false,
             cache_invalidation_warnings: true,
+            has_seen_cache_read: false,
         };
 
         let usage = crate::types::Usage {

@@ -379,7 +379,16 @@ fn build_chat_body(request: &LlmRequest, streaming: bool) -> Value {
             .as_ref()
             .and_then(|opts| opts.get("openrouter_provider"))
         {
-            body["provider"] = or_provider.clone();
+            let mut provider = or_provider.clone();
+            // When order is specified, default allow_fallbacks to false so
+            // OpenRouter actually respects the preferred provider list.
+            if let Some(obj) = provider.as_object_mut() {
+                if obj.contains_key("order") {
+                    obj.entry("allow_fallbacks".to_string())
+                        .or_insert(json!(false));
+                }
+            }
+            body["provider"] = provider;
         }
     }
 

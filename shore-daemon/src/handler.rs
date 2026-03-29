@@ -102,6 +102,7 @@ pub struct MessageHandler {
     pub llm_client: LlmClient,
     pub push_tx: broadcast::Sender<ServerMessage>,
     pub is_first_after_restart: bool,
+    pub has_seen_cache_read: bool,
     pub compaction_occurred: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub autonomy: AutonomyManager,
     pub notifier: NotificationService,
@@ -403,7 +404,7 @@ impl MessageHandler {
         if !regen && (!body.text.is_empty() || !body.images.is_empty()) {
             let engine = self.registry.get_or_create(&char_name)
                 .map_err(|e| e.to_string())?;
-            self.autonomy.notify_user_message(&char_name, engine.message_count());
+            self.autonomy.notify_user_message(&char_name, engine.turn_count());
         }
 
         // 4. Assemble prompt.
@@ -450,45 +451,33 @@ impl MessageHandler {
 
         // 5. Build LLM messages from assembled prompt.
         //
-        // Anthropic requires thinking blocks from the most recent assistant
-        // turn and mandates omitting them from earlier turns.  Including old
-        // thinking changes the prefix on every new turn → cache bust.
-        let last_assistant_idx = prompt_result
-            .messages
-            .iter()
-            .rposition(|m| m.role == Role::Assistant);
-
+        // Build LLM messages with ALL content blocks intact — including
+        // thinking/redacted_thinking on every assistant message.  Thinking
+        // stripping is deferred to build_body (strip_thinking_from_prior_assistants)
+        // which operates on a clone, ensuring the request messages are
+        // deterministic regardless of which assistant is "last".  This is
+        // critical for cache stability: if the handler strips thinking based
+        // on is_last_assistant, the same message's content changes between
+        // turns as new messages are added, busting the cache prefix.
         let llm_messages: Vec<Value> = prompt_result
             .messages
             .iter()
-            .enumerate()
-            .map(|(idx, m)| {
+            .map(|m| {
                 let role = match m.role {
                     Role::User => "user",
                     Role::Assistant => "assistant",
                     Role::System => "system",
                 };
-                let is_last_assistant = last_assistant_idx == Some(idx);
                 let content = if !m.content_blocks.is_empty() {
-                    // Build payload from structured content blocks.
                     let blocks: Vec<Value> = m.content_blocks.iter().filter_map(|b| match b {
                         ContentBlock::Text { text } => Some(json!({ "type": "text", "text": text })),
                         ContentBlock::Thinking { thinking, signature } => {
-                            if !is_last_assistant {
-                                return None; // Strip thinking from older assistant turns.
-                            }
-                            // Only include thinking blocks with signatures (required by Anthropic API).
                             signature.as_ref().map(|sig| {
                                 json!({ "type": "thinking", "thinking": thinking, "signature": sig })
                             })
                         }
                         ContentBlock::RedactedThinking { data } => {
-                            if !is_last_assistant {
-                                return None; // Strip redacted thinking from older turns.
-                            }
-                            Some(json!({
-                                "type": "redacted_thinking", "data": data,
-                            }))
+                            Some(json!({ "type": "redacted_thinking", "data": data }))
                         }
                         ContentBlock::ToolUse { id, name, input } => Some(json!({
                             "type": "tool_use", "id": id, "name": name, "input": input,
@@ -505,7 +494,6 @@ impl MessageHandler {
                     }).collect();
                     json!(blocks)
                 } else {
-                    // Legacy messages without content_blocks — use text + images.
                     build_content(&m.content, &m.images)
                 };
                 json!({ "role": role, "content": content })
@@ -600,6 +588,7 @@ impl MessageHandler {
                     is_first_after_restart: self.is_first_after_restart,
                     is_first_after_compaction,
                     cache_invalidation_warnings: cache_warnings,
+                    has_seen_cache_read: self.has_seen_cache_read,
                 };
 
                 consumer.consume(&mut reader, regen, &cache_ctx).await
@@ -608,6 +597,9 @@ impl MessageHandler {
 
             match stream_result {
                 Ok(r) => {
+                    if r.usage.cache_read_tokens > 0 {
+                        self.has_seen_cache_read = true;
+                    }
                     result = r;
                     break;
                 }
@@ -646,6 +638,7 @@ impl MessageHandler {
             is_first_after_restart: self.is_first_after_restart,
             is_first_after_compaction: false,
             cache_invalidation_warnings: tool_cache_warnings,
+            has_seen_cache_read: self.has_seen_cache_read,
         };
 
         self.is_first_after_restart = false;
@@ -784,7 +777,7 @@ impl MessageHandler {
             timestamp: chrono::Utc::now().to_rfc3339(),
         };
         engine.append_message(assistant_msg)?;
-        self.autonomy.notify_assistant_message(&char_name, engine.message_count());
+        self.autonomy.notify_assistant_message(&char_name, engine.turn_count());
 
         Ok(())
     }
@@ -860,6 +853,7 @@ mod tests {
             llm_client: LlmClient::new(),
             push_tx: push_tx.clone(),
             is_first_after_restart: false,
+            has_seen_cache_read: false,
             compaction_occurred: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             autonomy,
             notifier: NotificationService::new(Default::default()),

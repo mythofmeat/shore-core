@@ -196,6 +196,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         llm_client,
         push_tx,
         is_first_after_restart: true,
+        has_seen_cache_read: false,
         compaction_occurred,
         autonomy: autonomy.clone(),
         notifier,

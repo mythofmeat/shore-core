@@ -56,18 +56,27 @@ fn strip_cache_control(messages: &mut [Value]) {
 /// payload match the API's internal representation so the cache key stays
 /// stable across tool-loop iterations.
 fn strip_thinking_from_prior_assistants(messages: &[Value]) -> Vec<Value> {
-    // Find the index of the last assistant message.
-    let last_assistant_idx = messages
+    // Find the last real (non-tool-result) user message.  All assistant
+    // messages BEFORE it are "prior turns" whose thinking can be stripped.
+    // All assistant messages AT or AFTER it are part of the current exchange
+    // (tool-use loop) and must keep their thinking — the Anthropic API
+    // requires thinking continuity within a tool-use exchange, and stripping
+    // would change the prefix bytes and bust the cache.
+    let last_real_user_idx = messages
         .iter()
-        .rposition(|m| m.get("role").and_then(Value::as_str) == Some("assistant"));
+        .rposition(|m| {
+            m.get("role").and_then(Value::as_str) == Some("user")
+                && !is_tool_result_message(m)
+        })
+        .unwrap_or(0);
 
     let mut result = messages.to_vec();
 
     for (i, msg) in result.iter_mut().enumerate() {
-        if msg.get("role").and_then(Value::as_str) != Some("assistant") {
-            continue;
+        if i >= last_real_user_idx {
+            break; // Don't touch the current exchange.
         }
-        if Some(i) == last_assistant_idx {
+        if msg.get("role").and_then(Value::as_str) != Some("assistant") {
             continue;
         }
         let Some(arr) = msg.get("content").and_then(Value::as_array) else {
@@ -105,37 +114,43 @@ fn messages_have_cache_control(messages: &[Value]) -> bool {
     })
 }
 
-/// Find the stable turn-boundary position for a given depth from the last
-/// real user message.  Walks backwards from `last_real_user_idx - depth` to
-/// find a position where the NEXT message is a real user message.
-fn find_breakpoint_position(
-    messages: &[Value],
-    last_real_user_idx: usize,
-    depth: usize,
-) -> Option<usize> {
-    let naive_idx = last_real_user_idx as isize - depth as isize;
-    let search_start = naive_idx.min(messages.len() as isize - 1);
-
-    let mut i = search_start;
-    while i >= 0 {
-        let idx = i as usize;
-        let next_i = idx + 1;
-        if next_i < messages.len() {
-            let next_msg = &messages[next_i];
-            if next_msg.get("role").and_then(Value::as_str) == Some("user")
-                && !is_tool_result_message(next_msg)
-            {
-                return Some(idx);
+/// Find the turn-boundary position for a cache breakpoint.
+///
+/// A "turn" is a real user message plus everything through the final
+/// assistant response (including any tool-use exchanges).  `depth` counts
+/// in turns, not messages.  The breakpoint lands on the last message of the
+/// turn that is `depth` turns before the current one — always at a stable
+/// turn boundary regardless of how many tool exchanges occurred within each
+/// turn.
+fn find_turn_boundary(messages: &[Value], depth: usize) -> Option<usize> {
+    let mut real_user_count = 0;
+    for i in (0..messages.len()).rev() {
+        if messages[i].get("role").and_then(Value::as_str) == Some("user")
+            && !is_tool_result_message(&messages[i])
+        {
+            real_user_count += 1;
+            // depth+1: skip the current turn, then count `depth` more turns.
+            if real_user_count == depth + 1 && i > 0 {
+                // Place the breakpoint on the message just before this turn's
+                // user message — that's the last message of the preceding turn.
+                return Some(i - 1);
             }
         }
-        i -= 1;
     }
     None
 }
 
+/// Build a cache_control value, including TTL if non-default.
+fn make_cache_control(cache_ttl: &str) -> Value {
+    let mut cc = json!({ "type": "ephemeral" });
+    if !cache_ttl.is_empty() && cache_ttl != "5m" {
+        cc["ttl"] = json!(cache_ttl);
+    }
+    cc
+}
+
 /// Apply cache_control breakpoint to the last text block of a message.
-fn apply_breakpoint_to_message(msg: &mut Value) {
-    let cc = json!({ "type": "ephemeral" });
+fn apply_breakpoint_to_message(msg: &mut Value, cc: &Value) {
 
     let content = msg.get("content").cloned();
     match content {
@@ -153,7 +168,7 @@ fn apply_breakpoint_to_message(msg: &mut Value) {
                     if let Some(obj) = block.as_object_mut() {
                         let btype = obj.get("type").and_then(Value::as_str).unwrap_or("");
                         if btype == "text" || btype == "tool_result" {
-                            obj.insert("cache_control".into(), cc);
+                            obj.insert("cache_control".into(), cc.clone());
                             break;
                         }
                     }
@@ -164,19 +179,15 @@ fn apply_breakpoint_to_message(msg: &mut Value) {
     }
 }
 
-/// Apply cache_control breakpoints to messages.
+/// Apply cache_control breakpoints to messages and system.
 ///
-/// Places up to 3 message breakpoints at depths 2, 4, and 8 from the last
-/// real user message, each at a stable turn boundary.  Duplicate positions
-/// are deduplicated.
-///
-/// **No system breakpoint** is placed.  serde_json serialises keys
-/// alphabetically (BTreeMap), so "messages" appears before "system" on the
-/// wire.  A cache_control marker on a system block would create a prefix
-/// that includes the ENTIRE messages array; any change to the messages tail
-/// (e.g. tool-loop iterations) would then invalidate that prefix, causing a
-/// full cache miss every turn.
-fn apply_cache_control(messages: &[Value], system: &Value) -> (Vec<Value>, Value) {
+/// Places up to 4 breakpoints:
+/// - **System breakpoint:** on the second-to-last system block (caches the
+///   stable system content before the recap, which changes on compaction).
+/// - **Message breakpoints (up to 3):** at depths 2, 4, and 8 from the last
+///   real user message, each at a stable turn boundary.  Duplicate positions
+///   are deduplicated.
+fn apply_cache_control(messages: &[Value], system: &Value, cache_ttl: &str) -> (Vec<Value>, Value) {
     if messages.is_empty() {
         return (messages.to_vec(), system.clone());
     }
@@ -206,25 +217,20 @@ fn apply_cache_control(messages: &[Value], system: &Value) -> (Vec<Value>, Value
                 && !is_tool_result_message(m)
         });
 
-    // Step 4: Place message breakpoints at depths 2, 4, 8.
-    if let Some(last_real_user_idx) = last_real_user {
-        let depths = [2usize, 4, 8];
-        let mut placed_positions: Vec<usize> = Vec::new();
-
-        for depth in depths {
-            if let Some(pos) = find_breakpoint_position(&result, last_real_user_idx, depth) {
-                if !placed_positions.contains(&pos) {
-                    placed_positions.push(pos);
-                }
-            }
-        }
-
-        for pos in placed_positions {
-            apply_breakpoint_to_message(&mut result[pos]);
+    // Step 4: Place a single message breakpoint at a turn boundary.
+    // Depth 2 = the breakpoint is at the end of the turn that is 2 turns
+    // before the current one.  This matches Python V1's conversation_depth=2.
+    {
+        let cc = make_cache_control(cache_ttl);
+        if let Some(pos) = find_turn_boundary(&result, 2) {
+            apply_breakpoint_to_message(&mut result[pos], &cc);
         }
     }
 
-    (result, system.clone())
+    // No system breakpoint — testing if it interferes with message caching.
+    let sys = system.clone();
+
+    (result, sys)
 }
 
 /// Build the `thinking` config param from provider_options.
@@ -267,10 +273,11 @@ fn build_body(request: &LlmRequest, streaming: bool) -> Value {
     let opts_ref = opts.unwrap_or(&empty_opts);
 
     // Cache is enabled when cache_ttl is present and non-empty.
-    let cache_enabled = opts_ref
+    let cache_ttl = opts_ref
         .get("cache_ttl")
         .and_then(Value::as_str)
-        .map_or(false, |s| !s.is_empty());
+        .unwrap_or("");
+    let cache_enabled = !cache_ttl.is_empty();
     let has_existing_markers = messages_have_cache_control(&request.messages);
 
     // When cache is enabled, strip thinking blocks from prior assistant
@@ -285,6 +292,7 @@ fn build_body(request: &LlmRequest, streaming: bool) -> Value {
         apply_cache_control(
             &stripped,
             request.system.as_ref().unwrap_or(&json!(null)),
+            cache_ttl,
         )
     } else if cache_enabled {
         (
@@ -336,6 +344,29 @@ fn build_body(request: &LlmRequest, streaming: bool) -> Value {
 
     if let Some(output_config) = output_config {
         body["output_config"] = output_config;
+    }
+
+    // Debug: dump body
+    {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static SEQ: AtomicU32 = AtomicU32::new(0);
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        if let Ok(s) = serde_json::to_string_pretty(&body) {
+            let _ = std::fs::write(format!("/tmp/shore_body_{:04}.json", n), s);
+        }
+    }
+
+    // OpenRouter provider routing (e.g. {order: ["anthropic"]}).
+    // Equivalent to Python's extra_body={"provider": ...}.
+    if let Some(or_provider) = opts_ref.get("openrouter_provider") {
+        let mut provider = or_provider.clone();
+        if let Some(obj) = provider.as_object_mut() {
+            if obj.contains_key("order") {
+                obj.entry("allow_fallbacks".to_string())
+                    .or_insert(json!(false));
+            }
+        }
+        body["provider"] = provider;
     }
 
     body
@@ -690,6 +721,12 @@ fn handle_message_delta(data: &str, state: &mut StreamState) {
     }
 
     if let Some(usage) = parsed.get("usage") {
+        // OpenRouter sends actual input_tokens in message_delta (0 in message_start).
+        if let Some(inp) = usage.get("input_tokens").and_then(Value::as_u64) {
+            if inp > 0 {
+                state.usage.input_tokens = inp as u32;
+            }
+        }
         if let Some(out) = usage.get("output_tokens").and_then(Value::as_u64) {
             state.usage.output_tokens = out as u32;
         }

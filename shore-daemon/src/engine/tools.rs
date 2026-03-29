@@ -138,10 +138,10 @@ pub async fn run_tool_loop(
             .filter_map(content_block_to_json)
             .collect();
 
-        // Strip thinking from all previous assistant messages so only the
-        // most recent assistant turn (the one we're about to append) has
-        // thinking blocks — required by Anthropic and critical for caching.
-        strip_thinking_from_messages(&mut request.messages);
+        // NOTE: thinking stripping is handled by build_body's
+        // strip_thinking_from_prior_assistants, not here.  Mutating
+        // request.messages in-place would change the content of earlier
+        // messages, breaking the cache prefix on subsequent calls.
 
         request.messages.push(json!({
             "role": "assistant",

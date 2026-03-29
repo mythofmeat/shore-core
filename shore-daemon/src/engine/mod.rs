@@ -99,6 +99,11 @@ impl ConversationEngine {
         self.messages.message_count()
     }
 
+    /// Number of user turns in the active context window.
+    pub fn turn_count(&self) -> usize {
+        self.messages.turn_count()
+    }
+
     /// Access the segment reader for historical messages.
     pub fn segments(&self) -> &SegmentReader {
         &self.segments
