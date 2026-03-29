@@ -2,6 +2,8 @@ use shore_protocol::types::{
     CharacterInfo, ImageRef, StreamMetadata, TokenCounts,
 };
 
+use crate::images::ImageCache;
+
 /// A single entry in the conversation log.
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
@@ -262,6 +264,7 @@ pub struct App {
     pub should_quit: bool,
     pub status_message: Option<String>,
     pub auto_scroll: bool,
+    pub image_cache: ImageCache,
 }
 
 impl Default for App {
@@ -287,6 +290,7 @@ impl Default for App {
             should_quit: false,
             status_message: None,
             auto_scroll: true,
+            image_cache: ImageCache::new(),
         }
     }
 }

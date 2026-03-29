@@ -5,6 +5,7 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::app::{App, ConnectionStatus, ConversationEntry, InputMode};
+use crate::images;
 use crate::markdown;
 
 /// Render the full TUI layout.
@@ -62,15 +63,7 @@ fn draw_conversation(frame: &mut Frame, app: &App, area: Rect) {
                         .add_modifier(Modifier::BOLD),
                 )));
                 lines.extend(markdown::render_markdown(content));
-                for img in images {
-                    lines.push(Line::from(Span::styled(
-                        format!(
-                            "  [img: {}]",
-                            img.caption.as_deref().unwrap_or(&img.path)
-                        ),
-                        Style::default().fg(Color::DarkGray),
-                    )));
-                }
+                render_images(&mut lines, images, &app.image_cache);
                 lines.push(Line::from(""));
             }
             ConversationEntry::Assistant {
@@ -91,15 +84,7 @@ fn draw_conversation(frame: &mut Frame, app: &App, area: Rect) {
                         .add_modifier(Modifier::BOLD),
                 )));
                 lines.extend(markdown::render_markdown(content));
-                for img in images {
-                    lines.push(Line::from(Span::styled(
-                        format!(
-                            "  [img: {}]",
-                            img.caption.as_deref().unwrap_or(&img.path)
-                        ),
-                        Style::default().fg(Color::DarkGray),
-                    )));
-                }
+                render_images(&mut lines, images, &app.image_cache);
                 if let Some(meta) = metadata {
                     lines.push(Line::from(Span::styled(
                         format!(
@@ -283,6 +268,33 @@ fn draw_conversation(frame: &mut Frame, app: &App, area: Rect) {
         .scroll((scroll, 0));
 
     frame.render_widget(paragraph, area);
+}
+
+/// Render image entries — kitty placeholders when available, text fallback otherwise.
+fn render_images(
+    lines: &mut Vec<Line<'static>>,
+    img_refs: &[shore_protocol::types::ImageRef],
+    cache: &images::ImageCache,
+) {
+    for img in img_refs {
+        if let Some(transmitted) = cache.get(&img.path) {
+            if let Some(cap) = &img.caption {
+                lines.push(Line::from(Span::styled(
+                    format!("  {cap}"),
+                    Style::default().fg(Color::DarkGray),
+                )));
+            }
+            lines.extend(images::placeholder_lines(transmitted));
+        } else {
+            lines.push(Line::from(Span::styled(
+                format!(
+                    "  [img: {}]",
+                    img.caption.as_deref().unwrap_or(&img.path)
+                ),
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+    }
 }
 
 /// Render the collapsible thinking panel.

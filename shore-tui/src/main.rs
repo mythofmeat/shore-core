@@ -181,6 +181,7 @@ fn handle_conn_event(app: &mut App, event: ConnEvent) -> Vec<ConnCommand> {
             for msg in history {
                 app.entries.push(msg_to_entry(msg));
             }
+            transmit_entry_images(app);
 
             app.set_status("connected");
 
@@ -235,6 +236,28 @@ fn msg_to_entry(msg: Message) -> ConversationEntry {
             content: msg.content,
             timestamp: msg.timestamp,
         },
+    }
+}
+
+/// Max display columns for images (terminal width minus borders/indent).
+fn image_max_cols() -> u16 {
+    crossterm::terminal::size()
+        .map(|(w, _)| w.saturating_sub(4))
+        .unwrap_or(76)
+}
+
+/// Transmit images from a conversation entry to kitty.
+fn transmit_entry_images(app: &mut App) {
+    let max_cols = image_max_cols();
+    for entry in &app.entries {
+        let imgs = match entry {
+            ConversationEntry::User { images, .. }
+            | ConversationEntry::Assistant { images, .. } => images,
+            _ => continue,
+        };
+        for img in imgs {
+            app.image_cache.ensure_transmitted(&img.path, max_cols);
+        }
     }
 }
 
@@ -305,6 +328,10 @@ fn handle_server_message(app: &mut App, msg: ServerMessage) {
             });
 
             if !dominated {
+                let max_cols = image_max_cols();
+                for img in &new_msg.message.images {
+                    app.image_cache.ensure_transmitted(&img.path, max_cols);
+                }
                 let entry = match new_msg.message.role {
                     Role::User => ConversationEntry::User {
                         content: new_msg.message.content,
@@ -347,20 +374,22 @@ fn handle_server_message(app: &mut App, msg: ServerMessage) {
         }
 
         ServerMessage::SendImage(img) => {
-            // Attempt inline rendering
-            images::render_image(&img.path, img.caption.as_deref());
+            app.image_cache
+                .ensure_transmitted(&img.path, image_max_cols());
         }
 
         ServerMessage::CommandOutput(co) => {
             match co.name.as_str() {
                 "log" => {
                     if let Some(messages) = co.data.get("messages").and_then(|v| v.as_array()) {
+                        app.image_cache.clear();
                         app.entries.clear();
                         for msg_val in messages {
                             if let Ok(msg) = serde_json::from_value::<Message>(msg_val.clone()) {
                                 app.entries.push(msg_to_entry(msg));
                             }
                         }
+                        transmit_entry_images(app);
                         if app.auto_scroll {
                             app.scroll_to_bottom();
                         }
@@ -455,10 +484,12 @@ fn handle_server_message(app: &mut App, msg: ServerMessage) {
 
         ServerMessage::History(hist) => {
             // Re-sync history
+            app.image_cache.clear();
             app.entries.clear();
             for msg in hist.messages {
                 app.entries.push(msg_to_entry(msg));
             }
+            transmit_entry_images(app);
         }
 
         // Ignore unexpected messages
