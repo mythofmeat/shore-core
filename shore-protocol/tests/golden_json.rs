@@ -70,6 +70,7 @@ const HISTORY_FIXTURE: &str = r#"{
             "role": "user",
             "content": "Hello!",
             "images": [],
+            "content_blocks": [],
             "timestamp": "2026-01-15T10:30:00Z"
         },
         {
@@ -77,6 +78,7 @@ const HISTORY_FIXTURE: &str = r#"{
             "role": "assistant",
             "content": "Hi there!",
             "images": [{"path": "/img/wave.png", "caption": "waving"}],
+            "content_blocks": [],
             "alt_index": 0,
             "alt_count": 2,
             "timestamp": "2026-01-15T10:30:01Z"
@@ -298,6 +300,7 @@ const NEW_MESSAGE_FIXTURE: &str = r#"{
     "role": "assistant",
     "content": "I noticed something interesting.",
     "images": [],
+    "content_blocks": [],
     "timestamp": "2026-01-15T10:35:00Z"
 }"#;
 
@@ -324,6 +327,7 @@ const NEW_MESSAGE_WITH_ALTS_FIXTURE: &str = r#"{
     "role": "assistant",
     "content": "Alternative response.",
     "images": [],
+    "content_blocks": [],
     "alt_index": 1,
     "alt_count": 3,
     "timestamp": "2026-01-15T10:36:00Z"
@@ -535,6 +539,7 @@ const MESSAGE_OBJECT_FIXTURE: &str = r#"{
         {"path": "/img/chart.png", "caption": "Revenue chart"},
         {"path": "/img/table.png"}
     ],
+    "content_blocks": [],
     "alt_index": 2,
     "alt_count": 4,
     "timestamp": "2026-03-15T14:22:00Z"

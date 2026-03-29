@@ -203,12 +203,17 @@ mod tests {
     }
 
     fn make_msg(id: &str, role: Role, content: &str) -> Message {
+        use shore_protocol::types::ContentBlock;
         Message {
             msg_id: id.to_string(),
             role,
             content: content.to_string(),
             images: vec![],
-            content_blocks: vec![],
+            content_blocks: if content.is_empty() {
+                vec![]
+            } else {
+                vec![ContentBlock::Text { text: content.to_string() }]
+            },
             alt_index: None,
             alt_count: None,
             timestamp: "2026-01-01T00:00:00Z".to_string(),

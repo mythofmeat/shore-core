@@ -38,12 +38,13 @@ impl MessageStore {
                 if line.is_empty() {
                     continue;
                 }
-                let msg: Message = serde_json::from_str(line).map_err(|e| {
+                let mut msg: Message = serde_json::from_str(line).map_err(|e| {
                     EngineError::JsonParse {
                         path: path.clone(),
                         source: e,
                     }
                 })?;
+                msg.normalize();
                 msgs.push(msg);
             }
             msgs
@@ -105,7 +106,10 @@ impl MessageStore {
     }
 
     /// Edit the content of a message by `msg_id`. Returns an error if not found.
+    ///
+    /// Updates both `content` and `content_blocks` to keep them in sync.
     pub fn edit(&mut self, msg_id: &str, new_content: &str) -> Result<(), EngineError> {
+        use shore_protocol::types::ContentBlock;
         let msg = self
             .messages
             .iter_mut()
@@ -113,6 +117,9 @@ impl MessageStore {
             .ok_or_else(|| EngineError::MessageNotFound(msg_id.to_string()))?;
         info!(msg_id, "Editing message");
         msg.content = new_content.to_string();
+        msg.content_blocks = vec![ContentBlock::Text {
+            text: new_content.to_string(),
+        }];
         self.persist()
     }
 
@@ -159,6 +166,8 @@ impl MessageStore {
     }
 
     /// Write all messages to the JSONL file (full rewrite).
+    ///
+    /// Uses `serialize_for_storage()` to omit the derived `content` field.
     fn persist(&self) -> Result<(), EngineError> {
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| EngineError::Io {
@@ -168,7 +177,7 @@ impl MessageStore {
         }
         let mut buf = String::new();
         for msg in &self.messages {
-            let line = serde_json::to_string(msg).map_err(|e| EngineError::JsonSerialize {
+            let line = msg.serialize_for_storage().map_err(|e| EngineError::JsonSerialize {
                 context: "message".into(),
                 source: e,
             })?;
@@ -190,12 +199,17 @@ mod tests {
     use tempfile::TempDir;
 
     fn make_msg(id: &str, role: Role, content: &str) -> Message {
+        use shore_protocol::types::ContentBlock;
         Message {
             msg_id: id.to_string(),
             role,
             content: content.to_string(),
             images: vec![],
-            content_blocks: vec![],
+            content_blocks: if content.is_empty() {
+                vec![]
+            } else {
+                vec![ContentBlock::Text { text: content.to_string() }]
+            },
             alt_index: None,
             alt_count: None,
             timestamp: "2026-01-01T00:00:00Z".to_string(),

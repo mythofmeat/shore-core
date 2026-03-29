@@ -554,7 +554,7 @@ mod tests {
     }
 
     #[test]
-    fn message_without_content_blocks_omits_field() {
+    fn message_always_includes_content_blocks() {
         let msg = Message {
             msg_id: "m_old".into(),
             role: Role::User,
@@ -566,7 +566,7 @@ mod tests {
             timestamp: "2026-01-01T00:00:00Z".into(),
         };
         let json = serde_json::to_value(&msg).unwrap();
-        assert!(json.get("content_blocks").is_none(), "Empty content_blocks should be omitted via skip_serializing_if");
+        assert!(json.get("content_blocks").is_some(), "content_blocks should always be serialized");
     }
 
     #[test]

@@ -46,20 +46,56 @@ pub enum ContentBlock {
 }
 
 /// A chat message. One shape everywhere — no polymorphism.
+///
+/// `content_blocks` is the canonical content representation.
+/// `content` is a derived convenience field (human-readable text summary).
+/// On disk, only `content_blocks` is stored; `content` is derived on load.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Message {
     pub msg_id: String,
     pub role: Role,
+    #[serde(default)]
     pub content: String,
     #[serde(default)]
     pub images: Vec<ImageRef>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub content_blocks: Vec<ContentBlock>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub alt_index: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub alt_count: Option<u32>,
     pub timestamp: String,
+}
+
+impl Message {
+    /// Ensure `content` and `content_blocks` are consistent after deserialization.
+    ///
+    /// Handles both old format (content only) and new format (content_blocks only):
+    /// - Old: wraps `content` in a `Text` block
+    /// - New: derives `content` from blocks
+    pub fn normalize(&mut self) {
+        if self.content_blocks.is_empty() && !self.content.is_empty() {
+            // Legacy format: content present but no blocks.
+            self.content_blocks = vec![ContentBlock::Text {
+                text: self.content.clone(),
+            }];
+        } else if !self.content_blocks.is_empty() {
+            // Canonical: derive content from blocks.
+            self.content = derive_content_from_blocks(&self.content_blocks);
+        }
+    }
+
+    /// Serialize for disk storage, omitting the redundant `content` field.
+    ///
+    /// The wire protocol (History, log command) still includes `content` via
+    /// normal serde serialization. This method is only for JSONL persistence.
+    pub fn serialize_for_storage(&self) -> Result<String, serde_json::Error> {
+        let mut val = serde_json::to_value(self)?;
+        if let Some(obj) = val.as_object_mut() {
+            obj.remove("content");
+        }
+        serde_json::to_string(&val)
+    }
 }
 
 /// Token usage counts from a generation.

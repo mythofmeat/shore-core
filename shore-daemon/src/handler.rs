@@ -339,7 +339,9 @@ impl MessageHandler {
                     role: Role::User,
                     content: body.text.clone(),
                     images,
-                    content_blocks: vec![],
+                    content_blocks: vec![ContentBlock::Text {
+                        text: body.text.clone(),
+                    }],
                     alt_index: None,
                     alt_count: None,
                     timestamp: chrono::Utc::now().to_rfc3339(),
@@ -760,12 +762,12 @@ impl MessageHandler {
         );
 
         // 12. Append final assistant message with content_blocks to conversation.
-        let content_blocks = result.content_blocks.clone();
-        let content = if content_blocks.is_empty() {
-            result.content.clone()
+        let content_blocks = if result.content_blocks.is_empty() && !result.content.is_empty() {
+            vec![ContentBlock::Text { text: result.content.clone() }]
         } else {
-            derive_content_from_blocks(&content_blocks)
+            result.content_blocks.clone()
         };
+        let content = derive_content_from_blocks(&content_blocks);
         let assistant_msg = Message {
             msg_id: format!("m_{}", uuid::Uuid::new_v4()),
             role: Role::Assistant,

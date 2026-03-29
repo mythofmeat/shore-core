@@ -14,7 +14,7 @@ use rand::Rng;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use shore_protocol::server_msg::{CacheWarning, NewMessage, ServerMessage};
-use shore_protocol::types::{Message, Role};
+use shore_protocol::types::{derive_content_from_blocks, ContentBlock, Message, Role};
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
@@ -855,19 +855,25 @@ async fn execute_autonomous_message(
             }
 
             // Append to conversation file directly (like compaction_task does).
+            let content_blocks = if resp.content_blocks.is_empty() {
+                vec![ContentBlock::Text { text: resp.content.clone() }]
+            } else {
+                resp.content_blocks.clone()
+            };
+            let content = derive_content_from_blocks(&content_blocks);
             let msg = Message {
                 msg_id: format!("m_{}", uuid::Uuid::new_v4()),
                 role: Role::Assistant,
-                content: resp.content,
+                content,
                 images: vec![],
-                content_blocks: vec![],
+                content_blocks,
                 alt_index: None,
                 alt_count: None,
                 timestamp: chrono::Utc::now().to_rfc3339(),
             };
 
             let active_path = data_dir.join(character).join("active.jsonl");
-            if let Ok(line) = serde_json::to_string(&msg) {
+            if let Ok(line) = msg.serialize_for_storage() {
                 use std::io::Write;
                 if let Ok(mut f) = std::fs::OpenOptions::new()
                     .create(true)
