@@ -213,8 +213,7 @@ fn handle_conn_event(app: &mut App, event: ConnEvent) -> Vec<ConnCommand> {
         }
 
         ConnEvent::Message(msg) => {
-            handle_server_message(app, msg);
-            vec![]
+            handle_server_message(app, msg)
         }
     }
 }
@@ -336,7 +335,7 @@ fn transmit_entry_images(app: &mut App) {
     }
 }
 
-fn handle_server_message(app: &mut App, msg: ServerMessage) {
+fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<ConnCommand> {
     match msg {
         ServerMessage::StreamStart(start) => {
             app.stream.reset();
@@ -378,6 +377,14 @@ fn handle_server_message(app: &mut App, msg: ServerMessage) {
             });
 
             app.stream.reset();
+
+            // Re-request log to guard against stale History broadcasts
+            // (e.g. from background compaction) overwriting this response.
+            return vec![ConnCommand::Send(ClientMessage::Command(Command {
+                rid: None,
+                name: "log".into(),
+                args: serde_json::json!({}),
+            }))];
         }
 
         ServerMessage::Phase(phase) => {
@@ -403,6 +410,16 @@ fn handle_server_message(app: &mut App, msg: ServerMessage) {
             });
 
             if !dominated {
+                // Check if the last entry is an optimistic user echo (empty
+                // timestamp) that matches this incoming NewMessage.  If so,
+                // replace it with the server-authoritative version instead of
+                // pushing a duplicate.
+                let is_optimistic_echo = new_msg.message.role == Role::User
+                    && app.entries.last().map_or(false, |last| {
+                        matches!(last, ConversationEntry::User { timestamp, content, .. }
+                            if timestamp.is_empty() && *content == new_msg.message.content)
+                    });
+
                 let max_cols = image_max_cols();
                 for img in &new_msg.message.images {
                     app.image_cache.ensure_transmitted(&img.path, max_cols);
@@ -424,7 +441,13 @@ fn handle_server_message(app: &mut App, msg: ServerMessage) {
                         timestamp: new_msg.message.timestamp,
                     },
                 };
-                app.entries.push(entry);
+                if is_optimistic_echo {
+                    // Replace optimistic entry with authoritative version
+                    let last = app.entries.len() - 1;
+                    app.entries[last] = entry;
+                } else {
+                    app.entries.push(entry);
+                }
             }
             if app.auto_scroll {
                 app.scroll_to_bottom();
@@ -570,4 +593,5 @@ fn handle_server_message(app: &mut App, msg: ServerMessage) {
         // Ignore unexpected messages
         _ => {}
     }
+    vec![]
 }

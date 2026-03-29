@@ -47,15 +47,129 @@ pub fn draw(frame: &mut Frame, app: &App) {
     }
 }
 
+/// Render accumulated thinking blocks as dimmed text under the character name.
+fn flush_thinking(lines: &mut Vec<Line<'static>>, pending: &mut Vec<String>) {
+    if pending.is_empty() {
+        return;
+    }
+    let header_style = Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD);
+    let content_style = Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC);
+    lines.push(Line::from(Span::styled("  ◆ thinking", header_style)));
+    for thought in pending.drain(..) {
+        for tline in thought.lines() {
+            lines.push(Line::from(Span::styled(
+                format!("    {tline}"),
+                content_style,
+            )));
+        }
+    }
+    lines.push(Line::from(Span::styled(
+        "  ───",
+        Style::default().fg(Color::DarkGray),
+    )));
+}
+
+fn flush_tools(lines: &mut Vec<Line<'static>>, pending: &mut Vec<&ConversationEntry>) {
+    for entry in pending.drain(..) {
+        match entry {
+            ConversationEntry::ToolCall { tool_name, input, .. } => {
+                lines.push(Line::from(vec![
+                    Span::styled("  ▶ ", Style::default().fg(Color::Magenta)),
+                    Span::styled(
+                        tool_name.clone(),
+                        Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+                    ),
+                ]));
+                let json = serde_json::to_string_pretty(input).unwrap_or_default();
+                for jline in json.lines() {
+                    lines.push(Line::from(Span::styled(
+                        format!("    {jline}"),
+                        Style::default().fg(Color::DarkGray),
+                    )));
+                }
+            }
+            ConversationEntry::ToolResult { tool_name, output, is_error, .. } => {
+                let header_color = if *is_error { Color::Red } else { Color::Cyan };
+                lines.push(Line::from(vec![
+                    Span::styled("  ◀ ", Style::default().fg(header_color)),
+                    Span::styled(
+                        tool_name.clone(),
+                        Style::default().fg(header_color).add_modifier(Modifier::BOLD),
+                    ),
+                ]));
+                for oline in output.lines() {
+                    lines.push(Line::from(Span::styled(
+                        format!("    {oline}"),
+                        Style::default().fg(Color::DarkGray),
+                    )));
+                }
+                lines.push(Line::from(""));
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Squeeze runs of >2 consecutive blank lines down to at most 1.
+fn squeeze_blank_lines(lines: &mut Vec<Line<'static>>) {
+    let mut i = 0;
+    let mut consecutive_blanks = 0u32;
+    while i < lines.len() {
+        if lines[i].width() == 0 {
+            consecutive_blanks += 1;
+            if consecutive_blanks > 2 {
+                lines.remove(i);
+                continue;
+            }
+        } else {
+            consecutive_blanks = 0;
+        }
+        i += 1;
+    }
+}
+
 /// Render the scrollable conversation log.
 fn draw_conversation(frame: &mut Frame, app: &App, area: Rect) {
     let mut lines: Vec<Line<'static>> = Vec::new();
 
-    for (entry_idx, entry) in app.entries.iter().enumerate() {
+    // When streaming, skip trailing Thinking entries — they're already shown
+    // in the dedicated thinking panel below the conversation.
+    let entry_count = if app.stream.active {
+        let trailing_thinking = app
+            .entries
+            .iter()
+            .rev()
+            .take_while(|e| matches!(e, ConversationEntry::Thinking { .. }))
+            .count();
+        app.entries.len() - trailing_thinking
+    } else {
+        app.entries.len()
+    };
+
+    // Thinking and tool entries are deferred so they render under the assistant
+    // name, not floating above it as if they're part of the user's message.
+    let mut pending_thinking: Vec<String> = Vec::new();
+    let mut pending_tools: Vec<&ConversationEntry> = Vec::new();
+
+    for entry in app.entries[..entry_count].iter() {
+        match entry {
+            ConversationEntry::Thinking { content } => {
+                pending_thinking.push(content.clone());
+                continue;
+            }
+            ConversationEntry::ToolCall { .. } | ConversationEntry::ToolResult { .. } => {
+                pending_tools.push(entry);
+                continue;
+            }
+            _ => {}
+        }
+
         match entry {
             ConversationEntry::User {
                 content, images, ..
             } => {
+                flush_thinking(&mut lines, &mut pending_thinking);
+                flush_tools(&mut lines, &mut pending_tools);
                 lines.push(Line::from(Span::styled(
                     "You",
                     Style::default()
@@ -83,6 +197,9 @@ fn draw_conversation(frame: &mut Frame, app: &App, area: Rect) {
                         .fg(Color::Green)
                         .add_modifier(Modifier::BOLD),
                 )));
+                // Render thinking and tool calls under the character name
+                flush_thinking(&mut lines, &mut pending_thinking);
+                flush_tools(&mut lines, &mut pending_tools);
                 lines.extend(markdown::render_markdown(content));
                 render_images(&mut lines, images, &app.image_cache);
                 if let Some(meta) = metadata {
@@ -101,6 +218,8 @@ fn draw_conversation(frame: &mut Frame, app: &App, area: Rect) {
                 lines.push(Line::from(""));
             }
             ConversationEntry::System { content, .. } => {
+                flush_thinking(&mut lines, &mut pending_thinking);
+                flush_tools(&mut lines, &mut pending_tools);
                 lines.push(Line::from(Span::styled(
                     "System",
                     Style::default()
@@ -113,70 +232,15 @@ fn draw_conversation(frame: &mut Frame, app: &App, area: Rect) {
                 )));
                 lines.push(Line::from(""));
             }
-            ConversationEntry::Thinking { content } => {
-                let dim = Style::default().fg(Color::DarkGray);
-                for tline in content.lines() {
-                    lines.push(Line::from(Span::styled(tline.to_string(), dim)));
-                }
-                // Add separator if next entry is not also Thinking.
-                let next_is_thinking = app
-                    .entries
-                    .get(entry_idx + 1)
-                    .is_some_and(|e| matches!(e, ConversationEntry::Thinking { .. }));
-                if !next_is_thinking {
-                    lines.push(Line::from(Span::styled("---", dim)));
-                }
-            }
-            ConversationEntry::ToolCall {
-                tool_name, input, ..
-            } => {
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        "  ▶ ",
-                        Style::default().fg(Color::Magenta),
-                    ),
-                    Span::styled(
-                        tool_name.clone(),
-                        Style::default()
-                            .fg(Color::Magenta)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                ]));
-                let json = serde_json::to_string_pretty(input).unwrap_or_default();
-                for jline in json.lines().take(5) {
-                    lines.push(Line::from(Span::styled(
-                        format!("    {jline}"),
-                        Style::default().fg(Color::DarkGray),
-                    )));
-                }
-            }
-            ConversationEntry::ToolResult {
-                tool_name,
-                output,
-                is_error,
-                ..
-            } => {
-                let color = if *is_error { Color::Red } else { Color::DarkGray };
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        "  ◀ ",
-                        Style::default().fg(color),
-                    ),
-                    Span::styled(
-                        tool_name.clone(),
-                        Style::default().fg(color),
-                    ),
-                ]));
-                for oline in output.lines().take(3) {
-                    lines.push(Line::from(Span::styled(
-                        format!("    {oline}"),
-                        Style::default().fg(color),
-                    )));
-                }
-                lines.push(Line::from(""));
-            }
+            ConversationEntry::Thinking { .. }
+            | ConversationEntry::ToolCall { .. }
+            | ConversationEntry::ToolResult { .. } => unreachable!(),
         }
     }
+
+    // Flush orphaned pending entries (e.g. tools mid-stream before response starts)
+    flush_thinking(&mut lines, &mut pending_thinking);
+    flush_tools(&mut lines, &mut pending_tools);
 
     // Append in-progress streaming text (or typing indicator)
     if app.stream.active {
@@ -234,19 +298,29 @@ fn draw_conversation(frame: &mut Frame, app: &App, area: Rect) {
         )));
     }
 
-    // Bottom-anchor: pad short conversations so content sits near the input
+    // Squeeze runs of blank lines (max 2 consecutive)
+    squeeze_blank_lines(&mut lines);
+
+    let content_width = area.width.saturating_sub(2) as u16;
     let visible_height = area.height.saturating_sub(2); // account for borders
-    let content_lines = lines.len() as u16;
-    if content_lines < visible_height {
-        let padding = (visible_height - content_lines) as usize;
+
+    // Use Paragraph::line_count for accurate visual line count that accounts
+    // for ratatui's word-wrap algorithm (manual char-width division undershoots).
+    let content_visual = Paragraph::new(Text::from(lines.clone()))
+        .wrap(Wrap { trim: false })
+        .line_count(content_width) as u16;
+
+    // Bottom-anchor: pad short conversations so content sits near the input
+    if content_visual < visible_height {
+        let padding = (visible_height - content_visual) as usize;
         let mut padded = vec![Line::from(""); padding];
         padded.append(&mut lines);
         lines = padded;
     }
 
-    // Calculate scroll
-    let total_lines = lines.len() as u16;
-    let max_scroll = total_lines.saturating_sub(visible_height);
+    // After padding, total visual = max(content_visual, visible_height)
+    let total_visual = content_visual.max(visible_height);
+    let max_scroll = total_visual.saturating_sub(visible_height);
     let scroll = if app.auto_scroll {
         max_scroll
     } else {
@@ -396,6 +470,12 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
                 cx += w;
             }
         }
+    }
+
+    // If cursor lands exactly at the right edge, wrap to next line
+    if content_width > 0 && cx >= content_width {
+        cy += 1;
+        cx = 0;
     }
 
     // Scroll input so cursor line is always visible
@@ -741,26 +821,6 @@ mod scenario_tests {
             self.frames.last().unwrap().lines().nth(idx).unwrap_or("")
         }
 
-        /// The last rendered frame as &str.
-        fn last_frame(&self) -> &str {
-            self.frames.last().unwrap()
-        }
-    }
-
-    // ── UX checks ───────────────────────────────────────────────────────────
-
-    /// Count how many lines changed between two frames, restricted to a row range.
-    fn count_changes_in_region(
-        prev: &str,
-        curr: &str,
-        row_start: usize,
-        row_end: usize,
-    ) -> usize {
-        let prev: Vec<&str> = prev.lines().collect();
-        let curr: Vec<&str> = curr.lines().collect();
-        (row_start..row_end.min(prev.len()).min(curr.len()))
-            .filter(|&i| prev.get(i) != curr.get(i))
-            .count()
     }
 
     // ── Scenario: empty state ───────────────────────────────────────────────
@@ -990,7 +1050,7 @@ mod scenario_tests {
 
         // New chunk arrives while scrolled up
         h.stream_chunk(" More text arrives.");
-        let f = h.render("chunk while scrolled up");
+        let _f = h.render("chunk while scrolled up");
         // The viewport should NOT jump — the user scrolled away intentionally
         // (The content is still being buffered, just not forced into view)
 
@@ -1049,19 +1109,19 @@ mod scenario_tests {
 
         // Disconnected
         h.app.connection_status = ConnectionStatus::Disconnected;
-        let f = h.render("disconnected");
+        let _f = h.render("disconnected");
         let status = h.row(H as usize - 1);
         assert!(status.contains('○'), "disconnected shows empty circle");
 
         // Connecting
         h.app.connection_status = ConnectionStatus::Connecting;
-        let f = h.render("connecting");
+        let _f = h.render("connecting");
         let status = h.row(H as usize - 1);
         assert!(status.contains('◌'), "connecting shows dotted circle");
 
         // Connected
         h.app.connection_status = ConnectionStatus::Connected;
-        let f = h.render("connected");
+        let _f = h.render("connected");
         let status = h.row(H as usize - 1);
         assert!(status.contains('●'), "connected shows filled circle");
     }
@@ -1087,7 +1147,7 @@ mod scenario_tests {
 
         // Type a long input too
         h.type_str("Another really long input message that should cause the input area to grow taller as the text wraps to accommodate");
-        let f = h.render("long input");
+        let _f = h.render("long input");
         // Input area should have grown
         // The input constraint is (line_count + 2).min(8)
     }
@@ -1122,6 +1182,56 @@ mod scenario_tests {
         assert!(f.contains("▶"), "tool call arrow present");
         assert!(f.contains("web_search"), "tool name present");
         assert!(f.contains("◀"), "tool result arrow present");
+    }
+
+    // ── Scenario: tool calls render under assistant name ─────────────────────
+
+    #[test]
+    fn scenario_tool_calls_under_assistant_name() {
+        let mut h = Harness::new();
+        h.app.connection_status = ConnectionStatus::Connected;
+        h.app.character_name = "Alice".into();
+
+        h.app.entries.push(ConversationEntry::User {
+            content: "Search for foo".into(),
+            images: vec![],
+            timestamp: "t1".into(),
+        });
+        // Tool entries come before the Assistant entry (as expand_msg produces them)
+        h.app.entries.push(ConversationEntry::ToolCall {
+            tool_id: "tc1".into(),
+            tool_name: "web_search".into(),
+            input: serde_json::json!({"query": "foo"}),
+        });
+        h.app.entries.push(ConversationEntry::ToolResult {
+            tool_id: "tc1".into(),
+            tool_name: "web_search".into(),
+            output: "Result: foo page".into(),
+            is_error: false,
+        });
+        h.app.entries.push(ConversationEntry::Assistant {
+            content: "I found foo.".into(),
+            images: vec![],
+            timestamp: "t2".into(),
+            metadata: None,
+        });
+
+        let f = h.render("tools under assistant name");
+
+        // Find line positions
+        let lines: Vec<&str> = f.lines().collect();
+        let alice_line = lines.iter().position(|l| l.contains("Alice"))
+            .expect("Alice name must appear");
+        let tool_line = lines.iter().position(|l| l.contains("▶"))
+            .expect("tool call arrow must appear");
+        let result_line = lines.iter().position(|l| l.contains("◀"))
+            .expect("tool result arrow must appear");
+        let content_line = lines.iter().position(|l| l.contains("I found foo"))
+            .expect("assistant content must appear");
+
+        assert!(tool_line > alice_line, "tool call must appear after assistant name");
+        assert!(result_line > tool_line, "tool result must appear after tool call");
+        assert!(content_line > result_line, "assistant text must appear after tool result");
     }
 
     // ── Scenario: narrow terminal ───────────────────────────────────────────
@@ -1228,12 +1338,12 @@ mod scenario_tests {
 
         // First chunk arrives
         h.stream_chunk("The answer is...");
-        let f_first = h.render("first chunk arrives");
+        let _f_first = h.render("first chunk arrives");
 
         // Check the transition from "stream started, no text" to "first chunk"
         let diffs = h.changed_lines();
         eprintln!("Lines changed on first chunk arrival: {}", diffs.len());
-        for (i, prev, curr) in &diffs {
+        for (i, _prev, curr) in &diffs {
             eprintln!("  L{i}: → {curr:?}");
         }
     }
@@ -1270,12 +1380,12 @@ mod scenario_tests {
             h.press_mod(KeyModifiers::SHIFT, KeyCode::Enter);
             h.type_str(&format!("line {i}"));
         }
-        let f = h.render("7 line input (near max)");
+        let _f = h.render("7 line input (near max)");
 
         // Add one more — should cap at 8 total height
         h.press_mod(KeyModifiers::SHIFT, KeyCode::Enter);
         h.type_str("line 8");
-        let f = h.render("8 line input (at max)");
+        let _f = h.render("8 line input (at max)");
 
         // And another — shouldn't grow past 8
         h.press_mod(KeyModifiers::SHIFT, KeyCode::Enter);
@@ -1549,6 +1659,93 @@ mod scenario_tests {
         );
     }
 
+    // ── Scenario: cursor at exact boundary ────────────────────────────────
+
+    #[test]
+    fn scenario_cursor_at_exact_boundary() {
+        // Use 30-wide terminal → content_width = 28 (minus 2 borders)
+        let mut h = Harness::with_size(30, 15);
+        h.app.connection_status = ConnectionStatus::Connected;
+
+        // Type exactly 28 characters to fill the first line
+        let exact_line = "a".repeat(28);
+        h.type_str(&exact_line);
+        let _f = h.render("cursor at exact boundary");
+
+        // The cursor should be on line 2, column 0 (wrapped), not on the border.
+        // The terminal's cursor_position is set by set_cursor_position.
+        // We can't directly read cursor_position from TestBackend, but we can
+        // verify that typing one more char doesn't produce visual artifacts.
+        h.type_str("x");
+        let f = h.render("one char past boundary");
+        // "x" should appear on its own wrapped line
+        let has_wrapped_x = f.lines().any(|l| l.trim_start_matches('│').starts_with('x'));
+        assert!(
+            has_wrapped_x,
+            "character after boundary should appear on new wrapped line"
+        );
+    }
+
+    // ── Scenario: optimistic user message echo ──────────────────────────────
+
+    #[test]
+    fn scenario_optimistic_user_echo() {
+        let mut h = Harness::new();
+        h.app.connection_status = ConnectionStatus::Connected;
+
+        // Type and send a message
+        h.type_str("hello world");
+        h.press(KeyCode::Enter);
+        let f = h.render("after send");
+
+        // User's message should appear immediately in conversation
+        assert!(
+            f.contains("hello world"),
+            "user's message should be visible immediately after send"
+        );
+        assert!(f.contains("You"), "user label should be visible");
+        // Typing indicator should also show
+        assert!(
+            f.contains("···"),
+            "typing indicator should show alongside user message"
+        );
+    }
+
+    // ── Scenario: thinking deduplication during streaming ───────────────────
+
+    #[test]
+    fn scenario_thinking_not_duplicated() {
+        let mut h = Harness::new();
+        h.app.connection_status = ConnectionStatus::Connected;
+        h.app.character_name = "Alice".into();
+
+        // Add a user message
+        h.app.entries.push(ConversationEntry::User {
+            content: "hi".into(),
+            images: vec![],
+            timestamp: "t1".into(),
+        });
+
+        // Add thinking entry (as if from History rebuild during streaming)
+        h.app.entries.push(ConversationEntry::Thinking {
+            content: "thinking about response".into(),
+        });
+
+        // Start streaming with same thinking text
+        h.stream_start();
+        h.thinking_chunk("thinking about response");
+
+        let f = h.render("streaming with thinking entries");
+
+        // Thinking text should appear ONLY in the thinking panel, not in conversation
+        let thinking_occurrences = f.matches("thinking about response").count();
+        assert_eq!(
+            thinking_occurrences, 1,
+            "thinking text should appear exactly once (in thinking panel), not duplicated in conversation. Found {} occurrences",
+            thinking_occurrences
+        );
+    }
+
     // ── Scenario: regeneration flow ─────────────────────────────────────────
 
     #[test]
@@ -1642,7 +1839,7 @@ mod scenario_tests {
         h.app.is_private = true;
         h.app.set_status("conversation loaded");
 
-        let f = h.render("full status bar");
+        let _f = h.render("full status bar");
         let status = h.row(H as usize - 1);
         eprintln!("Status bar: {status:?}");
 
@@ -1664,7 +1861,7 @@ mod scenario_tests {
         };
         h2.app.set_status("loaded");
 
-        let f = h2.render("narrow status bar");
+        let _f = h2.render("narrow status bar");
         // Should not panic even if elements overflow
         let status = h2.row(19);
         eprintln!("Narrow status: {status:?}");
@@ -1833,7 +2030,7 @@ mod scenario_tests {
         assert!(f.contains("A4"), "most recent response visible");
 
         // Check layout stability: render again, nothing should change
-        let f2 = h.render("same state re-render");
+        let _f2 = h.render("same state re-render");
         let diffs = h.changed_lines();
         assert_eq!(
             diffs.len(), 0,

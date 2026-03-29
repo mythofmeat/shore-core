@@ -25,7 +25,7 @@ use shore_daemon::memory::db::MemoryDB;
 use shore_daemon::memory::vectorstore::VectorStore;
 use shore_daemon::server::registry::{InstanceInfo, Registry};
 use shore_daemon::server::{Server, ServerConfig};
-use shore_protocol::server_msg::{History, ServerMessage};
+use shore_protocol::server_msg::ServerMessage;
 use tokio::sync::{broadcast, mpsc};
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
@@ -275,7 +275,7 @@ async fn run_compaction(
     config: &LoadedConfig,
     llm_client: &LlmClient,
     data_dir: &std::path::Path,
-    push_tx: &broadcast::Sender<ServerMessage>,
+    _push_tx: &broadcast::Sender<ServerMessage>,
     notifier: &NotificationService,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let character_dir = data_dir.join(character);
@@ -388,22 +388,11 @@ async fn run_compaction(
                 "Background compaction completed"
             );
 
-            // Re-read active.jsonl to get retained messages for the broadcast.
-            let retained_messages = match tokio::fs::read_to_string(&active_path).await {
-                Ok(content) => {
-                    content
-                        .lines()
-                        .filter(|l| !l.trim().is_empty())
-                        .filter_map(|l| serde_json::from_str::<shore_protocol::types::Message>(l).ok())
-                        .collect()
-                }
-                Err(_) => vec![],
-            };
-
-            let _ = push_tx.send(ServerMessage::History(History {
-                messages: retained_messages,
-                config: serde_json::json!({}),
-            }));
+            // Don't broadcast History here — the disk file may be stale
+            // relative to the engine's in-memory state (race with concurrent
+            // message appends).  The handler will reload the engine on the
+            // next message via the compaction_occurred flag, and the TUI
+            // re-requests log after StreamEnd as a safety net.
 
             notifier.notify(
                 shore_daemon::notifications::NotificationEvent::CompactionComplete,

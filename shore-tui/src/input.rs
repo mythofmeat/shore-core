@@ -142,6 +142,12 @@ fn handle_insert_mode(app: &mut App, key: KeyEvent) -> Action {
             if text.trim().is_empty() {
                 return Action::None;
             }
+            // Optimistic: show user's message in conversation immediately
+            app.entries.push(crate::app::ConversationEntry::User {
+                content: text.clone(),
+                images: vec![],
+                timestamp: String::new(),
+            });
             app.scroll_to_bottom();
             // Show typing indicator immediately (don't wait for StreamStart)
             app.stream.active = true;
