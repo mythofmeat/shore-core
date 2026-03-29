@@ -573,8 +573,21 @@ pub fn print_log(messages: &[serde_json::Value], character_name: &str) {
         // Render content blocks if present, otherwise fall back to plain content.
         if let Some(blocks) = content_blocks {
             if !blocks.is_empty() {
+                let mut was_thinking = false;
                 for block in blocks {
-                    match block["type"].as_str().unwrap_or("text") {
+                    let block_type = block["type"].as_str().unwrap_or("text");
+                    // Insert separator when transitioning from thinking → non-thinking.
+                    if was_thinking && block_type != "thinking" && block_type != "redacted_thinking" {
+                        was_thinking = false;
+                        if use_color() {
+                            let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+                        }
+                        let _ = writeln!(out, "---");
+                        if use_color() {
+                            let _ = crossterm::execute!(out, ResetColor);
+                        }
+                    }
+                    match block_type {
                         "text" => {
                             let text = block["text"].as_str().unwrap_or("");
                             if !text.is_empty() {
@@ -582,6 +595,7 @@ pub fn print_log(messages: &[serde_json::Value], character_name: &str) {
                             }
                         }
                         "thinking" => {
+                            was_thinking = true;
                             let thinking = block["thinking"].as_str().unwrap_or("");
                             if !thinking.is_empty() {
                                 if use_color() {
@@ -593,6 +607,16 @@ pub fn print_log(messages: &[serde_json::Value], character_name: &str) {
                                 }
                             }
                         }
+                        "redacted_thinking" => {
+                            was_thinking = true;
+                            if use_color() {
+                                let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+                            }
+                            let _ = writeln!(out, "[redacted thinking]");
+                            if use_color() {
+                                let _ = crossterm::execute!(out, ResetColor);
+                            }
+                        }
                         "tool_use" => {
                             let name = block["name"].as_str().unwrap_or("?");
                             if use_color() {
@@ -601,6 +625,15 @@ pub fn print_log(messages: &[serde_json::Value], character_name: &str) {
                             let _ = write!(out, "[tool: {name}]");
                             if use_color() {
                                 let _ = crossterm::execute!(out, ResetColor);
+                            }
+                            if let Some(input_str) = format_tool_input(&block["input"]) {
+                                if use_color() {
+                                    let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+                                }
+                                let _ = write!(out, " {input_str}");
+                                if use_color() {
+                                    let _ = crossterm::execute!(out, ResetColor);
+                                }
                             }
                             let _ = writeln!(out);
                         }
