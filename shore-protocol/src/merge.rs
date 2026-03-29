@@ -114,7 +114,7 @@ pub fn merge_tool_loop_messages(messages: &[Message]) -> Vec<Message> {
 
         // ── Tool loop detected ──────────────────────────────────────────
         let mut merged_blocks: Vec<ContentBlock> = Vec::new();
-        let mut last_assistant = &messages[i];
+        let mut last_assistant;
 
         loop {
             let current = &messages[i];
@@ -431,7 +431,7 @@ mod tests {
             user_msg("u1", "test"),
         ];
         // Assistant with redacted thinking + tool use.
-        let mut blocks = vec![
+        let blocks = vec![
             ContentBlock::RedactedThinking { data: "opaque".into() },
             ContentBlock::ToolUse { id: "t1".into(), name: "search".into(), input: json!({}) },
         ];

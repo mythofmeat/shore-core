@@ -210,7 +210,7 @@ fn apply_cache_control(messages: &[Value], system: &Value, cache_ttl: &str) -> (
     }
 
     // Step 3: Find the last real (non-tool-result) user message.
-    let last_real_user: Option<usize> = result
+    let _last_real_user: Option<usize> = result
         .iter()
         .rposition(|m| {
             m.get("role").and_then(Value::as_str) == Some("user")

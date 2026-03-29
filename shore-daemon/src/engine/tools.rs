@@ -62,22 +62,6 @@ fn content_block_to_json(block: &ContentBlock) -> Option<Value> {
     }
 }
 
-/// Strip thinking and redacted_thinking blocks from all assistant messages
-/// in the request payload.  Called before appending a new assistant message
-/// so that only the most recent assistant turn retains its thinking blocks.
-fn strip_thinking_from_messages(messages: &mut [Value]) {
-    for msg in messages.iter_mut() {
-        if msg.get("role").and_then(|r| r.as_str()) != Some("assistant") {
-            continue;
-        }
-        if let Some(arr) = msg.get_mut("content").and_then(|c| c.as_array_mut()) {
-            arr.retain(|block| {
-                let ty = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                ty != "thinking" && ty != "redacted_thinking"
-            });
-        }
-    }
-}
 
 /// Run the tool use agentic loop.
 ///

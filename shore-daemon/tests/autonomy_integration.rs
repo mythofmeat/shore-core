@@ -2,7 +2,7 @@
 // These tests used the old trait-based CommandContext; the real dispatch now takes
 // a concrete struct backed by ConversationEngine. Subsystem unit tests still cover
 // the individual handler logic.
-#![cfg(ignore)]
+#![cfg(any())]
 //! US-030: Autonomy milestone — end-to-end integration test.
 //!
 //! Exercises the complete autonomy subsystem with all components wired together:

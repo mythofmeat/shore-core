@@ -46,8 +46,6 @@ pub fn write_active_character(name: &str) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn round_trip_with_custom_dir() {
         let tmp = tempfile::TempDir::new().unwrap();

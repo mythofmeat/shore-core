@@ -41,7 +41,6 @@ struct InstrumentedLlm {
 
 #[derive(Debug, Clone)]
 struct CallRecord {
-    model_id: String,
     finish_reason: String,
     tool_calls: Vec<String>,
     elapsed_ms: u128,
@@ -128,7 +127,6 @@ impl AgentLlm for InstrumentedLlm {
                     );
 
                     self.calls.lock().unwrap().push(CallRecord {
-                        model_id: model.model_id.clone(),
                         finish_reason: resp.finish_reason.clone(),
                         tool_calls,
                         elapsed_ms: elapsed,
@@ -313,7 +311,7 @@ async fn run_benchmark_mixed(
     db: &MemoryDB,
     char_def: &str,
 ) -> (String, usize, usize, u128) {
-    let sock = socket_path();
+    let _sock = socket_path();
     let researcher_llm = InstrumentedLlm::new(LlmClient::new(), "researcher");
     let agent_llm = InstrumentedLlm::new(LlmClient::new(), "agent");
 
@@ -554,7 +552,7 @@ async fn memory_mixed_model_benchmark() {
 #[ignore = "Requires running shore-llm and OPENROUTER keys"]
 async fn memory_bench_finalists() {
     let db_path = memory_db_path();
-    let db = MemoryDB::open(&db_path).expect("Failed to open memory DB");
+    let _db = MemoryDB::open(&db_path).expect("Failed to open memory DB");
     let char_def = char_definition();
 
     let kimi = openrouter_primary_model("kimi-k2.5", "moonshotai/kimi-k2.5");
