@@ -11,16 +11,14 @@
 
 use crate::types::{ContentBlock, Message, Role};
 
-/// A "tool loop assistant" has ToolUse blocks but no substantive Text blocks.
+/// A "tool loop assistant" has ToolUse blocks.
 ///
-/// Whitespace-only Text blocks (e.g. `"\n\n"` emitted before thinking) are
-/// ignored — only non-whitespace Text counts as real content that would
-/// prevent merging.
+/// The model may emit text before calling tools ("let me check...") — this
+/// text is still part of the tool loop and gets merged into the final
+/// assistant message's content_blocks.
 fn is_tool_loop_assistant(msg: &Message) -> bool {
     msg.role == Role::Assistant
-        && !msg.content_blocks.is_empty()
         && msg.content_blocks.iter().any(|b| matches!(b, ContentBlock::ToolUse { .. }))
-        && !msg.content_blocks.iter().any(|b| matches!(b, ContentBlock::Text { text } if !text.trim().is_empty()))
 }
 
 /// A "tool result user" message has ONLY ToolResult blocks.
@@ -51,30 +49,33 @@ fn derive_content_text_only(blocks: &[ContentBlock]) -> String {
 
 /// Collect blocks from one tool-loop round (assistant + user result pair).
 ///
-/// Emits thinking/redacted blocks first, then interleaves each ToolUse with
-/// its matching ToolResult (matched by `id` == `tool_use_id`).
+/// Preserves block ordering: text and thinking blocks are emitted in their
+/// original position, while each ToolUse is followed by its matching
+/// ToolResult (matched by `id` == `tool_use_id`).
 fn collect_round(
     assistant: &Message,
     results: Option<&Message>,
     out: &mut Vec<ContentBlock>,
 ) {
-    // Emit non-ToolUse blocks first (Thinking, RedactedThinking).
     for block in &assistant.content_blocks {
-        if matches!(block, ContentBlock::Thinking { .. } | ContentBlock::RedactedThinking { .. }) {
-            out.push(block.clone());
-        }
-    }
-
-    // Interleave each ToolUse with its matching ToolResult.
-    for block in &assistant.content_blocks {
-        if let ContentBlock::ToolUse { id, .. } = block {
-            out.push(block.clone());
-            if let Some(result_msg) = results {
-                if let Some(tr) = result_msg.content_blocks.iter().find(|b| {
-                    matches!(b, ContentBlock::ToolResult { tool_use_id, .. } if tool_use_id == id)
-                }) {
-                    out.push(tr.clone());
+        match block {
+            ContentBlock::ToolUse { id, .. } => {
+                out.push(block.clone());
+                // Find and emit the matching tool result.
+                if let Some(result_msg) = results {
+                    if let Some(tr) = result_msg.content_blocks.iter().find(|b| {
+                        matches!(b, ContentBlock::ToolResult { tool_use_id, .. } if tool_use_id == id)
+                    }) {
+                        out.push(tr.clone());
+                    }
                 }
+            }
+            // Text, Thinking, RedactedThinking — emit in place.
+            ContentBlock::Text { text } if text.trim().is_empty() => {
+                // Skip whitespace-only text blocks (LLM noise).
+            }
+            _ => {
+                out.push(block.clone());
             }
         }
     }
@@ -307,6 +308,40 @@ mod tests {
         assert!(matches!(&blocks[3], ContentBlock::ToolUse { name, .. } if name == "check_time"));
         assert!(matches!(&blocks[4], ContentBlock::ToolResult { .. }));
         assert!(matches!(&blocks[5], ContentBlock::Text { text } if text == "Hey there!"));
+    }
+
+    #[test]
+    fn text_before_tool_calls_merged() {
+        // Real-world: model says "let me check" then calls tools.
+        let mut asst = assistant_tool_use("a1", vec![("t1", "memory"), ("t2", "check_time")]);
+        asst.content_blocks.insert(
+            0,
+            ContentBlock::Text { text: "let me look that up!".into() },
+        );
+
+        let msgs = vec![
+            user_msg("u1", "what do you know about me?"),
+            asst,
+            user_tool_results("u2", vec![("t1", "Trevor", false), ("t2", "3:22 PM", false)]),
+            assistant_text("a2", "You're Trevor!"),
+        ];
+        let merged = merge_tool_loop_messages(&msgs);
+        assert_eq!(merged.len(), 2, "should merge into user + assistant");
+        assert_eq!(merged[1].msg_id, "a2");
+
+        // Blocks: text("let me look..."), tu(memory), tr(memory), tu(check_time), tr(check_time), text("You're Trevor!")
+        let blocks = &merged[1].content_blocks;
+        assert_eq!(blocks.len(), 6);
+        assert!(matches!(&blocks[0], ContentBlock::Text { text } if text == "let me look that up!"));
+        assert!(matches!(&blocks[1], ContentBlock::ToolUse { name, .. } if name == "memory"));
+        assert!(matches!(&blocks[2], ContentBlock::ToolResult { .. }));
+        assert!(matches!(&blocks[3], ContentBlock::ToolUse { name, .. } if name == "check_time"));
+        assert!(matches!(&blocks[4], ContentBlock::ToolResult { .. }));
+        assert!(matches!(&blocks[5], ContentBlock::Text { text } if text == "You're Trevor!"));
+
+        // content includes both text blocks
+        assert!(merged[1].content.contains("let me look that up!"));
+        assert!(merged[1].content.contains("You're Trevor!"));
     }
 
     #[test]
