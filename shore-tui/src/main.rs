@@ -20,7 +20,7 @@ use shore_protocol::client_msg::{ClientMessage, Command};
 use shore_protocol::server_msg::ServerMessage;
 use shore_protocol::types::{ContentBlock, Message, Role};
 
-use app::{App, ConnectionStatus, ConversationEntry};
+use app::{App, ConnectionStatus, ConversationEntry, InputState};
 use connection::{ConnCommand, ConnEvent};
 use input::Action;
 
@@ -73,6 +73,29 @@ fn resolve_character(cli_character: Option<String>) -> Option<String> {
         }
     }
     None
+}
+
+fn open_in_editor(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    input: &mut InputState,
+) -> io::Result<()> {
+    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".to_string());
+    let tmp = std::env::temp_dir().join("shore_input.md");
+    std::fs::write(&tmp, input.text.as_str())?;
+
+    disable_raw_mode()?;
+    io::stdout().execute(LeaveAlternateScreen)?;
+
+    let _ = std::process::Command::new(&editor).arg(&tmp).status();
+
+    enable_raw_mode()?;
+    io::stdout().execute(EnterAlternateScreen)?;
+    terminal.clear()?;
+
+    if let Ok(contents) = std::fs::read_to_string(&tmp) {
+        input.set_text(contents.trim_end_matches('\n').to_string());
+    }
+    Ok(())
 }
 
 async fn run_tui(cli: Cli) -> io::Result<()> {
@@ -133,6 +156,9 @@ async fn run_tui(cli: Cli) -> io::Result<()> {
                             for cmd in cmds {
                                 let _ = cmd_tx.send(cmd).await;
                             }
+                        }
+                        Action::OpenInEditor => {
+                            let _ = open_in_editor(&mut terminal, &mut app.input);
                         }
                         Action::Redraw | Action::None => {}
                     }
@@ -530,13 +556,6 @@ fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<ConnCommand> 
                             .collect();
                         // Cache model names for tab completion
                         app.model_names = names.iter().map(|n| n.to_string()).collect();
-                        let active = co.data.get("active").and_then(|v| v.as_str()).unwrap_or("");
-                        let list = names
-                            .iter()
-                            .map(|n| if *n == active { format!("*{n}") } else { n.to_string() })
-                            .collect::<Vec<_>>()
-                            .join(", ");
-                        app.set_status(format!("models: {list}"));
                     }
                 }
                 "switch_model" => {

@@ -165,6 +165,11 @@ impl InputState {
         text
     }
 
+    pub fn set_text(&mut self, text: String) {
+        self.cursor = text.len();
+        self.text = text;
+    }
+
     pub fn line_count(&self) -> usize {
         self.text.lines().count().max(1)
     }
@@ -268,6 +273,9 @@ pub struct App {
     pub status_message: Option<String>,
     pub auto_scroll: bool,
     pub image_cache: ImageCache,
+    pub show_thinking: bool,
+    pub show_tools: bool,
+    pub show_help: bool,
 }
 
 impl Default for App {
@@ -294,6 +302,9 @@ impl Default for App {
             status_message: None,
             auto_scroll: true,
             image_cache: ImageCache::new(),
+            show_thinking: true,
+            show_tools: true,
+            show_help: false,
         }
     }
 }
@@ -323,7 +334,7 @@ impl App {
     /// Static command names for completion.
     const COMMANDS: &'static [&'static str] = &[
         "character", "compact", "config", "diag", "diagnostics",
-        "log", "memory", "model", "quit", "status",
+        "help", "log", "memory", "model", "quit", "status",
     ];
 
     /// Update completion candidates based on current command input.
@@ -407,13 +418,6 @@ impl App {
         self.apply_completion();
     }
 
-    pub fn cache_hit_ratio(&self) -> Option<f64> {
-        let total = self.tokens.input + self.tokens.cache_read;
-        if total == 0 {
-            return None;
-        }
-        Some(self.tokens.cache_read as f64 / total as f64)
-    }
 }
 
 #[cfg(test)]
@@ -496,13 +500,4 @@ mod tests {
         assert!(app.auto_scroll);
     }
 
-    #[test]
-    fn cache_hit_ratio() {
-        let mut app = App::default();
-        assert_eq!(app.cache_hit_ratio(), None);
-        app.tokens.input = 100;
-        app.tokens.cache_read = 400;
-        let ratio = app.cache_hit_ratio().unwrap();
-        assert!((ratio - 0.8).abs() < 0.001);
-    }
 }

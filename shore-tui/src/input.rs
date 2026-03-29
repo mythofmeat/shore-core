@@ -12,6 +12,7 @@ pub enum Action {
     SendMulti(Vec<ConnCommand>),
     Quit,
     Redraw,
+    OpenInEditor,
 }
 
 /// Handle a crossterm input event and return the resulting action.
@@ -24,6 +25,12 @@ pub fn handle_event(app: &mut App, event: Event) -> Action {
 }
 
 fn handle_key(app: &mut App, key: KeyEvent) -> Action {
+    // Close help overlay on any keypress
+    if app.show_help {
+        app.show_help = false;
+        return Action::Redraw;
+    }
+
     // Global shortcuts (work in any mode)
     match (key.modifiers, key.code) {
         (KeyModifiers::CONTROL, KeyCode::Char('c')) => return Action::Quit,
@@ -88,11 +95,11 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) -> Action {
             app.scroll_down(1);
             Action::Redraw
         }
-        (KeyModifiers::CONTROL, KeyCode::Char('u')) => {
+        (KeyModifiers::NONE, KeyCode::Char('u')) => {
             app.scroll_up(10);
             Action::Redraw
         }
-        (KeyModifiers::CONTROL, KeyCode::Char('d')) => {
+        (KeyModifiers::NONE, KeyCode::Char('d')) => {
             app.scroll_down(10);
             Action::Redraw
         }
@@ -106,6 +113,21 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) -> Action {
             app.stream.thinking_collapsed = !app.stream.thinking_collapsed;
             Action::Redraw
         }
+
+        // Toggle thinking blocks in history
+        (KeyModifiers::NONE, KeyCode::Char('t')) => {
+            app.show_thinking = !app.show_thinking;
+            Action::Redraw
+        }
+
+        // Toggle tool-use blocks in history
+        (KeyModifiers::SHIFT, KeyCode::Char('T')) => {
+            app.show_tools = !app.show_tools;
+            Action::Redraw
+        }
+
+        // Open input in $EDITOR
+        (KeyModifiers::CONTROL, KeyCode::Char('g')) => Action::OpenInEditor,
 
         // Regen
         (KeyModifiers::NONE, KeyCode::Char('r')) => {
@@ -215,6 +237,9 @@ fn handle_insert_mode(app: &mut App, key: KeyEvent) -> Action {
             Action::Redraw
         }
 
+        // Open input in $EDITOR
+        (KeyModifiers::CONTROL, KeyCode::Char('g')) => Action::OpenInEditor,
+
         // Regular character input
         (KeyModifiers::NONE | KeyModifiers::SHIFT, KeyCode::Char(c)) => {
             app.input.insert_char(c);
@@ -288,6 +313,11 @@ fn parse_command(app: &mut App, input: &str) -> Action {
         "q" | "quit" => {
             app.should_quit = true;
             Action::Quit
+        }
+
+        "help" => {
+            app.show_help = true;
+            Action::Redraw
         }
 
         "character" => {

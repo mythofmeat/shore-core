@@ -4,7 +4,7 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 
-use crate::app::{App, ConnectionStatus, ConversationEntry, InputMode};
+use crate::app::{App, ConversationEntry, InputMode};
 use crate::images;
 use crate::markdown;
 
@@ -12,9 +12,9 @@ use crate::markdown;
 pub fn draw(frame: &mut Frame, app: &App) {
     let size = frame.area();
 
-    // Main layout: conversation | thinking (optional) | input | status
-    let input_content_width = size.width.saturating_sub(2) as usize; // borders
-    let input_height = (app.input.visual_line_count(input_content_width) as u16 + 2).min(8);
+    // Main layout: conversation | thinking (optional) | input
+    let input_content_width = size.width as usize;
+    let input_height = (app.input.visual_line_count(input_content_width) as u16 + 1).min(8);
     let has_thinking = app.stream.active && !app.stream.thinking.is_empty();
     let thinking_height = if has_thinking && !app.stream.thinking_collapsed {
         6
@@ -25,10 +25,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(3),             // conversation
+            Constraint::Min(3),                  // conversation
             Constraint::Length(thinking_height), // thinking panel
-            Constraint::Length(input_height), // input
-            Constraint::Length(1),           // status bar
+            Constraint::Length(input_height),    // input
         ])
         .split(size);
 
@@ -39,17 +38,24 @@ pub fn draw(frame: &mut Frame, app: &App) {
     }
 
     draw_input(frame, app, chunks[2]);
-    draw_status_bar(frame, app, chunks[3]);
 
     // Draw completion popup over conversation area when in command mode
     if app.input.mode == InputMode::Command && !app.completion.candidates.is_empty() {
         draw_completions(frame, app, chunks[2]);
     }
+
+    if app.show_help {
+        draw_help(frame, size);
+    }
 }
 
 /// Render accumulated thinking blocks as dimmed text under the character name.
-fn flush_thinking(lines: &mut Vec<Line<'static>>, pending: &mut Vec<String>) {
+fn flush_thinking(lines: &mut Vec<Line<'static>>, pending: &mut Vec<String>, show: bool) {
     if pending.is_empty() {
+        return;
+    }
+    if !show {
+        pending.clear();
         return;
     }
     let header_style = Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD);
@@ -69,7 +75,11 @@ fn flush_thinking(lines: &mut Vec<Line<'static>>, pending: &mut Vec<String>) {
     )));
 }
 
-fn flush_tools(lines: &mut Vec<Line<'static>>, pending: &mut Vec<&ConversationEntry>) {
+fn flush_tools(lines: &mut Vec<Line<'static>>, pending: &mut Vec<&ConversationEntry>, show: bool) {
+    if !show {
+        pending.clear();
+        return;
+    }
     for entry in pending.drain(..) {
         match entry {
             ConversationEntry::ToolCall { tool_name, input, .. } => {
@@ -130,6 +140,29 @@ fn squeeze_blank_lines(lines: &mut Vec<Line<'static>>) {
 
 /// Render the scrollable conversation log.
 fn draw_conversation(frame: &mut Frame, app: &App, area: Rect) {
+    // Build the border title
+    let char_label = if app.character_name.is_empty() {
+        " Conversation ".to_string()
+    } else {
+        format!(" {} ", app.character_name)
+    };
+    let base_title = if let Some(msg) = &app.status_message {
+        format!(" {msg} ")
+    } else if app.stream.active {
+        if app.stream.phase.is_empty() {
+            format!("{char_label} [streaming...]")
+        } else {
+            format!("{char_label} [{}]", app.stream.phase)
+        }
+    } else {
+        char_label
+    };
+    let title = if !app.auto_scroll {
+        format!("{base_title}  ↑ scrolled · G to return ")
+    } else {
+        base_title
+    };
+
     let mut lines: Vec<Line<'static>> = Vec::new();
 
     // When streaming, skip trailing Thinking entries — they're already shown
@@ -168,8 +201,8 @@ fn draw_conversation(frame: &mut Frame, app: &App, area: Rect) {
             ConversationEntry::User {
                 content, images, ..
             } => {
-                flush_thinking(&mut lines, &mut pending_thinking);
-                flush_tools(&mut lines, &mut pending_tools);
+                flush_thinking(&mut lines, &mut pending_thinking, app.show_thinking);
+                flush_tools(&mut lines, &mut pending_tools, app.show_tools);
                 lines.push(Line::from(Span::styled(
                     "You",
                     Style::default()
@@ -198,8 +231,8 @@ fn draw_conversation(frame: &mut Frame, app: &App, area: Rect) {
                         .add_modifier(Modifier::BOLD),
                 )));
                 // Render thinking and tool calls under the character name
-                flush_thinking(&mut lines, &mut pending_thinking);
-                flush_tools(&mut lines, &mut pending_tools);
+                flush_thinking(&mut lines, &mut pending_thinking, app.show_thinking);
+                flush_tools(&mut lines, &mut pending_tools, app.show_tools);
                 lines.extend(markdown::render_markdown(content));
                 render_images(&mut lines, images, &app.image_cache);
                 if let Some(meta) = metadata {
@@ -218,8 +251,8 @@ fn draw_conversation(frame: &mut Frame, app: &App, area: Rect) {
                 lines.push(Line::from(""));
             }
             ConversationEntry::System { content, .. } => {
-                flush_thinking(&mut lines, &mut pending_thinking);
-                flush_tools(&mut lines, &mut pending_tools);
+                flush_thinking(&mut lines, &mut pending_thinking, app.show_thinking);
+                flush_tools(&mut lines, &mut pending_tools, app.show_tools);
                 lines.push(Line::from(Span::styled(
                     "System",
                     Style::default()
@@ -239,8 +272,8 @@ fn draw_conversation(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     // Flush orphaned pending entries (e.g. tools mid-stream before response starts)
-    flush_thinking(&mut lines, &mut pending_thinking);
-    flush_tools(&mut lines, &mut pending_tools);
+    flush_thinking(&mut lines, &mut pending_thinking, app.show_thinking);
+    flush_tools(&mut lines, &mut pending_tools, app.show_tools);
 
     // Append in-progress streaming text (or typing indicator)
     if app.stream.active {
@@ -302,7 +335,7 @@ fn draw_conversation(frame: &mut Frame, app: &App, area: Rect) {
     squeeze_blank_lines(&mut lines);
 
     let content_width = area.width.saturating_sub(2) as u16;
-    let visible_height = area.height.saturating_sub(2); // account for borders
+    let visible_height = area.height.saturating_sub(1); // account for TOP border
 
     // Use Paragraph::line_count for accurate visual line count that accounts
     // for ratatui's word-wrap algorithm (manual char-width division undershoots).
@@ -327,30 +360,12 @@ fn draw_conversation(frame: &mut Frame, app: &App, area: Rect) {
         max_scroll.saturating_sub(app.scroll_offset)
     };
 
-    // Dynamic title: character name + scroll indicator
-    let title = if !app.auto_scroll {
-        if !app.character_name.is_empty() {
-            format!(" {} ── ↑ scrolled (G to return) ", app.character_name)
-        } else {
-            " Conversation ── ↑ scrolled (G to return) ".to_string()
-        }
-    } else if !app.character_name.is_empty() {
-        format!(" {} ", app.character_name)
-    } else {
-        " Conversation ".to_string()
-    };
-
-    let title_style = if !app.auto_scroll {
-        Style::default().fg(Color::Yellow)
-    } else {
-        Style::default()
-    };
-
     let paragraph = Paragraph::new(Text::from(lines))
         .block(
             Block::default()
-                .borders(Borders::ALL)
-                .title(Span::styled(title, title_style)),
+                .borders(Borders::TOP)
+                .title(title)
+                .border_style(Style::default().fg(Color::DarkGray)),
         )
         .wrap(Wrap { trim: false })
         .scroll((scroll, 0));
@@ -424,8 +439,8 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
         let paragraph = Paragraph::new(display.as_str())
             .block(
                 Block::default()
-                    .borders(Borders::ALL)
-                    .title(" Command ")
+                    .borders(Borders::TOP)
+                    .title(" [COMMAND] ")
                     .border_style(Style::default().fg(Color::Yellow)),
             )
             .wrap(Wrap { trim: false });
@@ -436,24 +451,12 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
         let cursor_x = 1 + unicode_width::UnicodeWidthStr::width(
             &app.input.cmd_text[..app.input.cmd_cursor],
         ) as u16;
-        frame.set_cursor_position((area.x + 1 + cursor_x, area.y + 1));
+        frame.set_cursor_position((area.x + cursor_x, area.y + 1));
         return;
     }
 
-    let mode_label = match app.input.mode {
-        InputMode::Normal => " Input [NORMAL] ",
-        InputMode::Insert => " Input [INSERT] ",
-        InputMode::Command => unreachable!(),
-    };
-
-    let border_color = match app.input.mode {
-        InputMode::Normal => Color::DarkGray,
-        InputMode::Insert => Color::Cyan,
-        InputMode::Command => unreachable!(),
-    };
-
     // Calculate cursor visual position (needed for both scrolling and placement)
-    let content_width = area.width.saturating_sub(2) as usize;
+    let content_width = area.width as usize;
     let text_before_cursor = &app.input.text[..app.input.cursor];
     let mut cx: usize = 0;
     let mut cy: u16 = 0;
@@ -479,7 +482,7 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     // Scroll input so cursor line is always visible
-    let content_height = area.height.saturating_sub(2);
+    let content_height = area.height.saturating_sub(1);
     let input_scroll = if cy >= content_height {
         cy - content_height + 1
     } else {
@@ -497,12 +500,17 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
         Text::from(app.input.text.as_str())
     };
 
+    let mode_label = match app.input.mode {
+        InputMode::Insert => " [INSERT] ",
+        InputMode::Normal => " [NORMAL] ",
+        InputMode::Command => unreachable!(),
+    };
     let paragraph = Paragraph::new(input_content)
         .block(
             Block::default()
-                .borders(Borders::ALL)
+                .borders(Borders::TOP)
                 .title(mode_label)
-                .border_style(Style::default().fg(border_color)),
+                .border_style(Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM)),
         )
         .wrap(Wrap { trim: false })
         .scroll((input_scroll, 0));
@@ -512,103 +520,70 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
     // Show cursor in insert mode
     if app.input.mode == InputMode::Insert {
         frame.set_cursor_position((
-            area.x + 1 + cx as u16,
+            area.x + cx as u16,
             area.y + 1 + cy - input_scroll,
         ));
     }
 }
 
-/// Render the status bar.
-fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
-    let conn_indicator = match app.connection_status {
-        ConnectionStatus::Connected => Span::styled(
-            " ● ",
-            Style::default().fg(Color::Green),
-        ),
-        ConnectionStatus::Connecting => Span::styled(
-            " ◌ ",
-            Style::default().fg(Color::Yellow),
-        ),
-        ConnectionStatus::Disconnected => Span::styled(
-            " ○ ",
-            Style::default().fg(Color::Red),
-        ),
-    };
+/// Render the keyboard shortcuts help overlay.
+fn draw_help(frame: &mut Frame, area: Rect) {
+    let lines = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Navigation", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        ]),
+        Line::from(Span::styled("    j / k           scroll down / up", Style::default().fg(Color::White))),
+        Line::from(Span::styled("    d / u           scroll down / up (10 lines)", Style::default().fg(Color::White))),
+        Line::from(Span::styled("    G               jump to bottom", Style::default().fg(Color::White))),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Input", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        ]),
+        Line::from(Span::styled("    i / a / I / A   enter insert mode", Style::default().fg(Color::White))),
+        Line::from(Span::styled("    Enter           send message", Style::default().fg(Color::White))),
+        Line::from(Span::styled("    Shift+Enter     newline", Style::default().fg(Color::White))),
+        Line::from(Span::styled("    Ctrl+G          open input in $EDITOR", Style::default().fg(Color::White))),
+        Line::from(Span::styled("    Esc             normal mode", Style::default().fg(Color::White))),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Toggles", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        ]),
+        Line::from(Span::styled("    Tab             toggle live thinking panel", Style::default().fg(Color::White))),
+        Line::from(Span::styled("    t               toggle thinking blocks", Style::default().fg(Color::White))),
+        Line::from(Span::styled("    T               toggle tool-use blocks", Style::default().fg(Color::White))),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Commands  ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Span::styled("(press : to open)", Style::default().fg(Color::DarkGray)),
+        ]),
+        Line::from(Span::styled("    :help           this screen", Style::default().fg(Color::White))),
+        Line::from(Span::styled("    :character      switch character", Style::default().fg(Color::White))),
+        Line::from(Span::styled("    :model          switch model", Style::default().fg(Color::White))),
+        Line::from(Span::styled("    :quit           exit", Style::default().fg(Color::White))),
+        Line::from(Span::styled("    :log  :memory  :compact  :config  :diag", Style::default().fg(Color::DarkGray))),
+        Line::from(""),
+        Line::from(Span::styled("  Press any key to close", Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC))),
+        Line::from(""),
+    ];
 
-    let mut spans = vec![conn_indicator];
+    let height = lines.len() as u16 + 2;
+    let width = 56u16.min(area.width);
+    let x = area.x + area.width.saturating_sub(width) / 2;
+    let y = area.y + area.height.saturating_sub(height) / 2;
+    let popup_area = Rect::new(x, y, width, height);
 
-    // Character name
-    if !app.character_name.is_empty() {
-        spans.push(Span::styled(
-            app.character_name.clone(),
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ));
-        spans.push(Span::raw(" "));
-    }
+    let popup = Paragraph::new(Text::from(lines))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Keyboard Shortcuts ")
+                .border_style(Style::default().fg(Color::Yellow)),
+        )
+        .style(Style::default().bg(Color::Rgb(20, 20, 30)));
 
-    // Model
-    if !app.model.is_empty() {
-        spans.push(Span::styled(
-            format!("[{}] ", app.model),
-            Style::default().fg(Color::DarkGray),
-        ));
-    }
-
-    // Token count
-    let total_tokens = app.tokens.input + app.tokens.output;
-    if total_tokens > 0 {
-        spans.push(Span::styled(
-            format!("{}tok ", total_tokens),
-            Style::default().fg(Color::DarkGray),
-        ));
-    }
-
-    // Cache hit indicator
-    if let Some(ratio) = app.cache_hit_ratio() {
-        let color = if ratio > 0.5 { Color::Green } else { Color::Yellow };
-        spans.push(Span::styled(
-            format!("cache:{:.0}% ", ratio * 100.0),
-            Style::default().fg(color),
-        ));
-    }
-
-    // Private indicator
-    if app.is_private {
-        spans.push(Span::styled(
-            "[private] ",
-            Style::default().fg(Color::Red),
-        ));
-    }
-
-    // Status message (right-aligned conceptually, appended)
-    if let Some(msg) = &app.status_message {
-        spans.push(Span::styled(
-            format!("│ {msg}"),
-            Style::default().fg(Color::Yellow),
-        ));
-    }
-
-    // Streaming / phase indicator
-    if app.stream.active {
-        let label = if !app.stream.phase.is_empty() {
-            format!(" [{}]", app.stream.phase)
-        } else {
-            " [streaming...]".to_string()
-        };
-        spans.push(Span::styled(
-            label,
-            Style::default()
-                .fg(Color::Magenta)
-                .add_modifier(Modifier::ITALIC),
-        ));
-    }
-
-    let bar = Paragraph::new(Line::from(spans))
-        .style(Style::default().bg(Color::Rgb(30, 30, 30)));
-
-    frame.render_widget(bar, area);
+    frame.render_widget(ratatui::widgets::Clear, popup_area);
+    frame.render_widget(popup, popup_area);
 }
 
 /// Render completion candidates as a popup above the input area.
@@ -816,11 +791,6 @@ mod scenario_tests {
                 .join("\n")
         }
 
-        /// Get the content of a specific row in the last frame.
-        fn row(&self, idx: usize) -> &str {
-            self.frames.last().unwrap().lines().nth(idx).unwrap_or("")
-        }
-
     }
 
     // ── Scenario: empty state ───────────────────────────────────────────────
@@ -833,12 +803,6 @@ mod scenario_tests {
         h.app.character_name = "Alice".into();
 
         let f = h.render("empty state: connected, no messages");
-
-        // Status bar (last row)
-        let status = h.row(H as usize - 1);
-        assert!(status.contains('●'), "should show connected dot");
-        assert!(status.contains("Alice"), "should show character name");
-        assert!(status.contains("gpt-4"), "should show model name");
 
         // Input area shows INSERT mode
         assert!(f.contains("[INSERT]"), "default mode is INSERT");
@@ -887,7 +851,7 @@ mod scenario_tests {
         let f = h.render("stream started");
         assert!(
             f.contains("[streaming...]"),
-            "streaming indicator in status bar"
+            "streaming indicator in conversation title"
         );
 
         // 5. First chunk
@@ -945,10 +909,7 @@ mod scenario_tests {
         // Render with thinking visible
         let f1 = h.render("thinking visible");
         assert!(f1.contains("Thinking"), "thinking panel header visible");
-        assert!(
-            f1.contains("[streaming...]"),
-            "streaming indicator present"
-        );
+        assert!(f1.contains("[streaming...]"), "streaming indicator in conversation title");
 
         // Toggle thinking off (Tab)
         h.press(KeyCode::Tab);
@@ -987,7 +948,7 @@ mod scenario_tests {
         // Open command palette with ':'
         h.press_mod(KeyModifiers::SHIFT, KeyCode::Char(':'));
         let f = h.render("command palette open");
-        assert!(f.contains("Command"), "command mode title visible");
+        assert!(f.contains("COMMAND"), "command mode title visible");
 
         // Type a partial command
         h.type_str("mod");
@@ -1004,10 +965,7 @@ mod scenario_tests {
         // Escape to cancel
         h.press(KeyCode::Esc);
         let f = h.render("after escape");
-        assert!(
-            !f.contains("Command"),
-            "command palette hidden after escape"
-        );
+        assert!(!f.contains("COMMAND"), "command palette hidden after escape");
     }
 
     // ── Scenario: scroll during stream ──────────────────────────────────────
@@ -1075,8 +1033,6 @@ mod scenario_tests {
         // Default is Insert
         let f = h.render("insert mode");
         assert!(f.contains("[INSERT]"), "starts in INSERT mode");
-        // Border should be cyan (we can't check color in text, but we can
-        // check the title)
 
         // Esc → Normal
         h.press(KeyCode::Esc);
@@ -1089,15 +1045,11 @@ mod scenario_tests {
         let f = h.render("back to insert");
         assert!(f.contains("[INSERT]"), "shows INSERT after 'i'");
 
-        // Check that ONLY the input area changed (no conversation area flicker)
+        // The only changes should be the mode label and placeholder.
         let diffs = h.changed_lines();
-        let conversation_changes = diffs
-            .iter()
-            .filter(|(line, _, _)| *line < (H as usize - 4))
-            .count();
-        assert_eq!(
-            conversation_changes, 0,
-            "mode switch should not change conversation area"
+        assert!(
+            diffs.iter().all(|(_, _, curr)| curr.contains("INSERT") || curr.contains("Type a message")),
+            "mode switch should only change the input area"
         );
     }
 
@@ -1105,25 +1057,18 @@ mod scenario_tests {
 
     #[test]
     fn scenario_connection_states() {
+        // Connection status indicators were in the removed status bar.
+        // Just verify the layout renders without panic across all states.
         let mut h = Harness::new();
 
-        // Disconnected
         h.app.connection_status = ConnectionStatus::Disconnected;
-        let _f = h.render("disconnected");
-        let status = h.row(H as usize - 1);
-        assert!(status.contains('○'), "disconnected shows empty circle");
+        h.render("disconnected");
 
-        // Connecting
         h.app.connection_status = ConnectionStatus::Connecting;
-        let _f = h.render("connecting");
-        let status = h.row(H as usize - 1);
-        assert!(status.contains('◌'), "connecting shows dotted circle");
+        h.render("connecting");
 
-        // Connected
         h.app.connection_status = ConnectionStatus::Connected;
-        let _f = h.render("connected");
-        let status = h.row(H as usize - 1);
-        assert!(status.contains('●'), "connected shows filled circle");
+        h.render("connected");
     }
 
     // ── Scenario: long message wrapping ─────────────────────────────────────
@@ -1318,23 +1263,13 @@ mod scenario_tests {
 
         // The typing indicator (···) should appear immediately after send,
         // before StreamStart arrives from the daemon.
-        assert!(
-            f_sent.contains("···"),
-            "typing indicator should appear immediately after send"
-        );
-        assert!(
-            f_sent.contains("[streaming...]"),
-            "streaming indicator should appear immediately after send"
-        );
+        assert!(f_sent.contains("···"), "typing indicator should appear immediately after send");
+        assert!(f_sent.contains("[streaming...]"), "streaming indicator in conversation title after send");
 
         // Stream starts (but no text yet)
         h.stream_start();
         let f_started = h.render("stream started, no text yet");
-        // The [streaming...] indicator should be visible
-        assert!(
-            f_started.contains("[streaming...]"),
-            "streaming indicator visible even before first chunk"
-        );
+        assert!(f_started.contains("[streaming...]"), "streaming indicator visible even before first chunk");
 
         // First chunk arrives
         h.stream_chunk("The answer is...");
@@ -1369,11 +1304,8 @@ mod scenario_tests {
         let f = h.render("3 line input");
 
         // The input area should have grown, eating into conversation space
-        // Check that conversation area is still functional
-        assert!(
-            f.contains("Conversation"),
-            "conversation still has title with multi-line input"
-        );
+        // Check that conversation area still has its title
+        assert!(f.contains("Conversation"), "conversation title still present with multi-line input");
 
         // Keep adding lines up to the max (8 - 2 borders = 6 content lines)
         for i in 4..=7 {
@@ -1394,10 +1326,7 @@ mod scenario_tests {
 
         // The input area should be capped at 8 rows total
         // Conversation area must still have at least 3 rows (Min constraint)
-        assert!(
-            f.contains("Conversation"),
-            "conversation still visible at max input height"
-        );
+        assert!(f.contains("Conversation"), "conversation still visible at max input height");
     }
 
     // ── Scenario: empty state welcome ───────────────────────────────────────
@@ -1448,34 +1377,19 @@ mod scenario_tests {
         }
 
         let f = h.render("at bottom");
-        assert!(
-            f.contains(" Alice "),
-            "title should show character name when at bottom"
-        );
-        assert!(
-            !f.contains("scrolled"),
-            "no scroll indicator when at bottom"
-        );
+        assert!(f.contains(" Alice "), "title shows character name when at bottom");
+        assert!(!f.contains("scrolled"), "no scroll indicator when at bottom");
 
         // Scroll up
         h.app.scroll_up(5);
         let f = h.render("scrolled up");
-        assert!(
-            f.contains("↑ scrolled"),
-            "should show scroll indicator when scrolled up"
-        );
-        assert!(
-            f.contains("G to return"),
-            "should hint how to get back"
-        );
+        assert!(f.contains("↑ scrolled"), "scroll indicator in conversation title");
+        assert!(f.contains("G to return"), "hint how to get back");
 
         // Scroll back to bottom
         h.app.scroll_to_bottom();
         let f = h.render("back at bottom");
-        assert!(
-            !f.contains("scrolled"),
-            "scroll indicator gone when back at bottom"
-        );
+        assert!(!f.contains("scrolled"), "scroll indicator gone when back at bottom");
     }
 
     // ── Scenario: input placeholder ─────────────────────────────────────────
@@ -1520,16 +1434,13 @@ mod scenario_tests {
         // Stream with no phase
         h.stream_start();
         let f = h.render("streaming, no phase");
-        assert!(f.contains("[streaming...]"), "default streaming indicator");
+        assert!(f.contains("[streaming...]"), "default streaming indicator in conversation title");
 
         // Set phase
         h.app.stream.phase = "thinking".into();
         let f = h.render("thinking phase");
-        assert!(f.contains("[thinking]"), "should show phase name");
-        assert!(
-            !f.contains("[streaming...]"),
-            "should replace generic indicator with phase"
-        );
+        assert!(f.contains("[thinking]"), "should show phase name in title");
+        assert!(!f.contains("[streaming...]"), "should replace generic indicator with phase");
 
         // Phase changes
         h.app.stream.phase = "responding".into();
@@ -1559,15 +1470,15 @@ mod scenario_tests {
 
         let f = h.render("short terminal with messages");
         // Should not panic and should show something useful
-        assert!(f.contains("Bob"), "title or message should be visible");
-        assert!(f.contains("[INSERT]"), "input still functional");
+        assert!(f.contains("Bob"), "conversation title shows character name");
+        assert!(f.contains("[INSERT]"), "input mode indicator visible");
 
         // Streaming in short terminal
         h.stream_start();
         h.stream_chunk("Response text");
         let f = h.render("streaming in short terminal");
         assert!(f.contains("[streaming...]") || f.contains("Response"),
-            "should show either status or content");
+            "should show either streaming indicator or content");
     }
 
     // ── Scenario: multiple tool calls ───────────────────────────────────────
@@ -1647,10 +1558,12 @@ mod scenario_tests {
         h.type_str("abcdefghijklmnopqrstuvwxyz12345678");
         let f = h.render("wrapped input text");
 
-        // The text should visually wrap across multiple lines
-        // With 28 chars content width, 34 chars should wrap to 2 lines
+        // The text should visually wrap across multiple lines.
+        // With 30-wide terminal and no side borders, 34 chars wraps after col 30:
+        //   line 1: "abcdefghijklmnopqrstuvwxyz1234" (30 chars)
+        //   line 2: "5678" (4 chars)
         let input_lines: Vec<&str> = f.lines()
-            .filter(|l| l.contains("abcdef") || l.contains("345678"))
+            .filter(|l| l.contains("abcdef") || l.contains("5678"))
             .collect();
         assert!(
             input_lines.len() >= 2,
@@ -1663,27 +1576,20 @@ mod scenario_tests {
 
     #[test]
     fn scenario_cursor_at_exact_boundary() {
-        // Use 30-wide terminal → content_width = 28 (minus 2 borders)
+        // Use 30-wide terminal → input content_width = 30 (Borders::TOP has no side borders)
         let mut h = Harness::with_size(30, 15);
         h.app.connection_status = ConnectionStatus::Connected;
 
-        // Type exactly 28 characters to fill the first line
-        let exact_line = "a".repeat(28);
+        // Type exactly 30 characters to fill the first line
+        let exact_line = "a".repeat(30);
         h.type_str(&exact_line);
         let _f = h.render("cursor at exact boundary");
 
-        // The cursor should be on line 2, column 0 (wrapped), not on the border.
-        // The terminal's cursor_position is set by set_cursor_position.
-        // We can't directly read cursor_position from TestBackend, but we can
-        // verify that typing one more char doesn't produce visual artifacts.
+        // Type one more character — it should appear on its own wrapped line
         h.type_str("x");
         let f = h.render("one char past boundary");
-        // "x" should appear on its own wrapped line
-        let has_wrapped_x = f.lines().any(|l| l.trim_start_matches('│').starts_with('x'));
-        assert!(
-            has_wrapped_x,
-            "character after boundary should appear on new wrapped line"
-        );
+        let has_wrapped_x = f.lines().any(|l| l.starts_with('x'));
+        assert!(has_wrapped_x, "character after boundary should appear on new wrapped line");
     }
 
     // ── Scenario: optimistic user message echo ──────────────────────────────
@@ -1825,46 +1731,35 @@ mod scenario_tests {
         assert!(f.contains("That should work"), "text after code block visible");
     }
 
-    // ── Scenario: status bar overflow ────────────────────────────────────────
+    // ── Scenario: status message in conversation title ────────────────────────
 
     #[test]
     fn scenario_status_bar_populated() {
+        // The status bar was removed. Status messages now appear in the
+        // conversation title. This test verifies the layout renders without panic
+        // and status messages are visible.
         let mut h = Harness::new();
         h.app.connection_status = ConnectionStatus::Connected;
         h.app.character_name = "Alice".into();
-        h.app.model = "claude-sonnet-4-20250514".into();
-        h.app.tokens.input = 15000;
-        h.app.tokens.output = 2000;
-        h.app.tokens.cache_read = 12000;
-        h.app.is_private = true;
         h.app.set_status("conversation loaded");
 
-        let _f = h.render("full status bar");
-        let status = h.row(H as usize - 1);
-        eprintln!("Status bar: {status:?}");
+        let f = h.render("with status message");
+        assert!(f.contains("conversation loaded"), "status message visible in title");
 
-        assert!(status.contains('●'), "connection indicator");
-        assert!(status.contains("Alice"), "character name");
-        assert!(status.contains("claude"), "model name (possibly truncated)");
-        assert!(status.contains("tok"), "token count");
-        assert!(status.contains("cache:"), "cache ratio");
-        assert!(status.contains("[private]"), "private indicator");
+        // Clearing status restores character name
+        h.app.status_message = None;
+        let f = h.render("status cleared");
+        assert!(f.contains(" Alice "), "character name visible after status cleared");
 
-        // Now in a narrow terminal
+        // Narrow terminal — should not panic
         let mut h2 = Harness::with_size(50, 20);
         h2.app = App {
             connection_status: ConnectionStatus::Connected,
             character_name: "Alice".into(),
-            model: "claude-sonnet-4-20250514".into(),
-            is_private: true,
             ..App::default()
         };
         h2.app.set_status("loaded");
-
-        let _f = h2.render("narrow status bar");
-        // Should not panic even if elements overflow
-        let status = h2.row(19);
-        eprintln!("Narrow status: {status:?}");
+        h2.render("narrow terminal with status");
     }
 
     // ── Scenario: conversation title shows character name ────────────────────
@@ -1881,22 +1776,17 @@ mod scenario_tests {
             timestamp: "t1".into(),
         });
         let f = h.render("no character");
-        assert!(
-            f.contains(" Conversation "),
-            "generic title when no character set"
-        );
+        assert!(f.contains(" Conversation "), "generic title when no character set");
 
         // With character
         h.app.character_name = "Luna".into();
         let f = h.render("with character");
-        assert!(
-            f.contains(" Luna "),
-            "title should show character name"
-        );
-        assert!(
-            !f.contains("Conversation"),
-            "generic title should be replaced by character name"
-        );
+        assert!(f.contains(" Luna "), "title should show character name");
+        // "Conversation" welcome hints still appear in empty state, but we have a
+        // User entry so only the title-based "Conversation" string is affected.
+        // Check specifically that the border title changed:
+        let title_line = f.lines().next().unwrap_or("");
+        assert!(!title_line.contains("Conversation"), "border title replaced by character name");
     }
 
     // ── Scenario: system messages ───────────────────────────────────────────
@@ -1945,19 +1835,10 @@ mod scenario_tests {
         h.app.set_status("error: rate_limit - Too many requests");
 
         let f = h.render("after error");
-        assert!(
-            !f.contains("[streaming...]"),
-            "streaming indicator should be gone after error"
-        );
-        assert!(
-            f.contains("rate_limit"),
-            "error should be visible in status bar"
-        );
+        assert!(!f.contains("[streaming...]"), "streaming indicator gone after error");
+        assert!(f.contains("rate_limit"), "error visible in conversation title");
         // The partial response is lost — this is the current behavior
-        assert!(
-            !f.contains("Starting to respond"),
-            "partial stream text should be gone after reset"
-        );
+        assert!(!f.contains("Starting to respond"), "partial stream text gone after reset");
     }
 
     // ── Scenario: reconnection during streaming ─────────────────────────────
@@ -1983,22 +1864,11 @@ mod scenario_tests {
         h.app.set_status("reconnecting: connection lost");
 
         let f = h.render("disconnected while streaming");
-        let status = h.row(H as usize - 1);
-        assert!(status.contains('◌'), "should show connecting indicator");
-        assert!(
-            f.contains("reconnecting"),
-            "should show reconnection status"
-        );
+        assert!(f.contains("reconnecting"), "reconnection status in conversation title");
         // Streaming indicator should be gone (stream was reset)
-        assert!(
-            !f.contains("[streaming...]"),
-            "streaming indicator should be cleared on disconnect"
-        );
+        assert!(!f.contains("[streaming...]"), "streaming indicator cleared on disconnect");
         // Partial stream text is lost on disconnect
-        assert!(
-            !f.contains("Partial response"),
-            "partial stream text should be cleared on disconnect"
-        );
+        assert!(!f.contains("Partial response"), "partial stream text cleared on disconnect");
     }
 
     // ── Scenario: rapid message exchange ────────────────────────────────────
