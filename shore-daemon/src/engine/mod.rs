@@ -170,9 +170,13 @@ impl ConversationEngine {
     // ── Internal ────────────────────────────────────────────────────────
 
     /// Broadcast the current History snapshot to all connected clients.
+    ///
+    /// Tool-loop messages are merged into single assistant turns so clients
+    /// receive clean, logical messages rather than raw protocol intermediates.
     pub fn broadcast_history(&self) {
+        let merged = shore_protocol::merge::merge_tool_loop_messages(self.messages.messages());
         let history = ServerMessage::History(History {
-            messages: self.messages.messages().to_vec(),
+            messages: merged,
             config: serde_json::json!({}),
         });
 

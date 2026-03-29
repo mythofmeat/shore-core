@@ -52,6 +52,8 @@ fn resolve_ref(messages: &[Message], reference: &str) -> Result<String, (ErrorCo
 }
 
 /// Get a single message by index or reference.
+///
+/// Refs resolve against the merged (client-visible) message list.
 pub fn get(
     engine: &ConversationEngine,
     _ctx: &CommandContext,
@@ -64,9 +66,9 @@ pub fn get(
         )
     })?;
 
-    let msg_id = resolve_ref(engine.messages(), raw_ref)?;
-    let msg = engine
-        .messages()
+    let merged = shore_protocol::merge::merge_tool_loop_messages(engine.messages());
+    let msg_id = resolve_ref(&merged, raw_ref)?;
+    let msg = merged
         .iter()
         .find(|m| m.msg_id == msg_id)
         .ok_or_else(|| (ErrorCode::NotFound, format!("Message not found: {msg_id}")))?;
@@ -77,24 +79,30 @@ pub fn get(
 
 
 /// Show conversation history, optionally limited to the last N messages.
+///
+/// Tool-loop messages are merged into single assistant turns. The `count`
+/// parameter applies to the merged (logical) message list.
 pub fn log(
     engine: &ConversationEngine,
     _ctx: &CommandContext,
     args: &serde_json::Value,
 ) -> CommandResult {
-    let messages = engine.messages();
+    let merged = shore_protocol::merge::merge_tool_loop_messages(engine.messages());
 
     let count = args.get("count").and_then(|v| v.as_u64()).map(|c| c as usize);
 
     let result: Vec<_> = match count {
-        Some(n) => messages.iter().rev().take(n).rev().collect(),
-        None => messages.iter().collect(),
+        Some(n) => merged.iter().rev().take(n).rev().collect(),
+        None => merged.iter().collect(),
     };
 
     Ok(json!({ "messages": result }))
 }
 
 /// Edit a message by ID.
+///
+/// Refs resolve against the merged (client-visible) message list, then the
+/// edit is applied to the raw store by msg_id.
 pub fn edit(
     engine: &mut ConversationEngine,
     _ctx: &mut CommandContext,
@@ -117,7 +125,8 @@ pub fn edit(
             )
         })?;
 
-    let msg_id = resolve_ref(engine.messages(), raw_ref)?;
+    let merged = shore_protocol::merge::merge_tool_loop_messages(engine.messages());
+    let msg_id = resolve_ref(&merged, raw_ref)?;
     engine.edit_message(&msg_id, content).map_err(engine_err)?;
 
     Ok(json!({ "ref": msg_id, "edited": true }))
@@ -151,10 +160,11 @@ pub fn delete(
         ));
     };
 
-    // Resolve all refs up front before mutating, so indices stay stable.
+    // Resolve all refs against merged list, so indices match what users see.
+    let merged = shore_protocol::merge::merge_tool_loop_messages(engine.messages());
     let resolved: Vec<String> = raw_refs
         .iter()
-        .map(|r| resolve_ref(engine.messages(), r))
+        .map(|r| resolve_ref(&merged, r))
         .collect::<Result<Vec<_>, _>>()?;
 
     let mut deleted = Vec::new();
