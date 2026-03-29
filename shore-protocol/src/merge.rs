@@ -11,12 +11,16 @@
 
 use crate::types::{ContentBlock, Message, Role};
 
-/// A "tool loop assistant" has ToolUse blocks but NO Text blocks.
+/// A "tool loop assistant" has ToolUse blocks but no substantive Text blocks.
+///
+/// Whitespace-only Text blocks (e.g. `"\n\n"` emitted before thinking) are
+/// ignored — only non-whitespace Text counts as real content that would
+/// prevent merging.
 fn is_tool_loop_assistant(msg: &Message) -> bool {
     msg.role == Role::Assistant
         && !msg.content_blocks.is_empty()
         && msg.content_blocks.iter().any(|b| matches!(b, ContentBlock::ToolUse { .. }))
-        && !msg.content_blocks.iter().any(|b| matches!(b, ContentBlock::Text { .. }))
+        && !msg.content_blocks.iter().any(|b| matches!(b, ContentBlock::Text { text } if !text.trim().is_empty()))
 }
 
 /// A "tool result user" message has ONLY ToolResult blocks.
@@ -267,6 +271,42 @@ mod tests {
         assert_eq!(merged.len(), 2);
         assert_eq!(merged[0].msg_id, "u1");
         assert_eq!(merged[1].msg_id, "a1");
+    }
+
+    #[test]
+    fn whitespace_text_block_does_not_prevent_merge() {
+        // Real-world: LLM emits "\n\n" text block before thinking/tool_use.
+        let mut asst = assistant_thinking_and_tool_use(
+            "a1",
+            "Let me check",
+            vec![("t1", "memory"), ("t2", "check_time")],
+        );
+        // Insert a whitespace-only Text block at the front (as the LLM does).
+        asst.content_blocks.insert(
+            0,
+            ContentBlock::Text { text: "\n\n".into() },
+        );
+
+        let msgs = vec![
+            user_msg("u1", "hello"),
+            asst,
+            user_tool_results("u2", vec![("t1", "mem result", false), ("t2", "3:22 PM", false)]),
+            assistant_text("a2", "Hey there!"),
+        ];
+        let merged = merge_tool_loop_messages(&msgs);
+        assert_eq!(merged.len(), 2, "should merge into user + assistant");
+        assert_eq!(merged[1].msg_id, "a2");
+        assert_eq!(merged[1].content, "Hey there!");
+
+        // Blocks: thinking, tu(memory), tr(memory), tu(check_time), tr(check_time), text
+        let blocks = &merged[1].content_blocks;
+        assert_eq!(blocks.len(), 6);
+        assert!(matches!(&blocks[0], ContentBlock::Thinking { .. }));
+        assert!(matches!(&blocks[1], ContentBlock::ToolUse { name, .. } if name == "memory"));
+        assert!(matches!(&blocks[2], ContentBlock::ToolResult { .. }));
+        assert!(matches!(&blocks[3], ContentBlock::ToolUse { name, .. } if name == "check_time"));
+        assert!(matches!(&blocks[4], ContentBlock::ToolResult { .. }));
+        assert!(matches!(&blocks[5], ContentBlock::Text { text } if text == "Hey there!"));
     }
 
     #[test]
