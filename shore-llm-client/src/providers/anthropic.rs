@@ -217,9 +217,7 @@ fn apply_cache_control(messages: &[Value], system: &Value, cache_ttl: &str) -> (
                 && !is_tool_result_message(m)
         });
 
-    // Step 4: Place a single message breakpoint at a turn boundary.
-    // Depth 2 = the breakpoint is at the end of the turn that is 2 turns
-    // before the current one.  This matches Python V1's conversation_depth=2.
+    // Step 4: Single message breakpoint at depth 2.
     {
         let cc = make_cache_control(cache_ttl);
         if let Some(pos) = find_turn_boundary(&result, 2) {
@@ -227,8 +225,18 @@ fn apply_cache_control(messages: &[Value], system: &Value, cache_ttl: &str) -> (
         }
     }
 
-    // No system breakpoint — testing if it interferes with message caching.
-    let sys = system.clone();
+    // System breakpoint: cache the stable system content.  The recap
+    // (if present) is always the last block and changes on compaction,
+    // so place the breakpoint on the block just before it.  When there
+    // is no recap (≤1 block, or all blocks are stable), cache everything.
+    let cc_sys = make_cache_control(cache_ttl);
+    let mut sys = system.clone();
+    if let Some(arr) = sys.as_array_mut() {
+        let target_idx = if arr.len() >= 2 { arr.len() - 2 } else if arr.len() == 1 { 0 } else { usize::MAX };
+        if let Some(obj) = arr.get_mut(target_idx).and_then(Value::as_object_mut) {
+            obj.insert("cache_control".into(), cc_sys);
+        }
+    }
 
     (result, sys)
 }
