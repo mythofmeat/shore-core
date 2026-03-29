@@ -9,7 +9,7 @@ use crate::images;
 use crate::markdown;
 
 /// Render the full TUI layout.
-pub fn draw(frame: &mut Frame, app: &App) {
+pub fn draw(frame: &mut Frame, app: &mut App) {
     let size = frame.area();
 
     // Main layout: conversation | thinking (optional) | input
@@ -31,7 +31,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         ])
         .split(size);
 
-    draw_conversation(frame, app, chunks[0]);
+    draw_conversation(frame, &mut *app, chunks[0]);
 
     if thinking_height > 0 {
         draw_thinking(frame, app, chunks[1]);
@@ -139,7 +139,7 @@ fn squeeze_blank_lines(lines: &mut Vec<Line<'static>>) {
 }
 
 /// Render the scrollable conversation log.
-fn draw_conversation(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_conversation(frame: &mut Frame, app: &mut App, area: Rect) {
     // Build the border title
     let char_label = if app.character_name.is_empty() {
         " Conversation ".to_string()
@@ -354,6 +354,14 @@ fn draw_conversation(frame: &mut Frame, app: &App, area: Rect) {
     // After padding, total visual = max(content_visual, visible_height)
     let total_visual = content_visual.max(visible_height);
     let max_scroll = total_visual.saturating_sub(visible_height);
+    // Clamp scroll_offset so it never drifts past max_scroll (e.g. after
+    // toggling thinking/tool blocks reduces content height).
+    if app.scroll_offset > max_scroll {
+        app.scroll_offset = max_scroll;
+        if max_scroll == 0 {
+            app.auto_scroll = true;
+        }
+    }
     let scroll = if app.auto_scroll {
         max_scroll
     } else {
@@ -686,7 +694,7 @@ mod scenario_tests {
         /// Render current app state and return the frame as text.
         fn render(&mut self, label: &str) -> String {
             self.terminal
-                .draw(|frame| draw(frame, &self.app))
+                .draw(|frame| draw(frame, &mut self.app))
                 .unwrap();
             let buf = self.terminal.backend().buffer();
             let area = buf.area;

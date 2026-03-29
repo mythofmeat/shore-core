@@ -148,7 +148,7 @@ async fn run_tui(cli: Cli) -> io::Result<()> {
     // Main event loop
     let result = loop {
         // Draw
-        terminal.draw(|frame| ui::draw(frame, &app))?;
+        terminal.draw(|frame| ui::draw(frame, &mut app))?;
 
         // Poll for events (crossterm keyboard or connection events)
         tokio::select! {

@@ -117,14 +117,12 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) -> Action {
         // Toggle thinking blocks in history
         (KeyModifiers::NONE, KeyCode::Char('t')) => {
             app.show_thinking = !app.show_thinking;
-            app.scroll_to_bottom();
             Action::Redraw
         }
 
         // Toggle tool-use blocks in history
         (KeyModifiers::SHIFT, KeyCode::Char('T')) => {
             app.show_tools = !app.show_tools;
-            app.scroll_to_bottom();
             Action::Redraw
         }
 
