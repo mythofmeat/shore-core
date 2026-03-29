@@ -18,7 +18,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use shore_protocol::client_msg::{ClientMessage, Command};
 use shore_protocol::server_msg::ServerMessage;
-use shore_protocol::types::{Message, Role};
+use shore_protocol::types::{ContentBlock, Message, Role};
 
 use app::{App, ConnectionStatus, ConversationEntry};
 use connection::{ConnCommand, ConnEvent};
@@ -179,7 +179,7 @@ fn handle_conn_event(app: &mut App, event: ConnEvent) -> Vec<ConnCommand> {
             // Load any history from the handshake
             app.entries.clear();
             for msg in history {
-                app.entries.push(msg_to_entry(msg));
+                expand_msg(msg, &mut app.entries);
             }
             transmit_entry_images(app);
 
@@ -219,23 +219,98 @@ fn handle_conn_event(app: &mut App, event: ConnEvent) -> Vec<ConnCommand> {
     }
 }
 
-fn msg_to_entry(msg: Message) -> ConversationEntry {
-    match msg.role {
-        Role::User => ConversationEntry::User {
-            content: msg.content,
-            images: msg.images,
-            timestamp: msg.timestamp,
-        },
-        Role::Assistant => ConversationEntry::Assistant {
-            content: msg.content,
+/// Expand a protocol Message into one or more ConversationEntry items.
+///
+/// Assistant messages with content_blocks are expanded so that thinking,
+/// tool_use, and tool_result blocks become distinct entries (matching the
+/// visual style used during streaming), with the text becoming the final
+/// Assistant entry.
+fn expand_msg(msg: Message, entries: &mut Vec<ConversationEntry>) {
+    // Non-assistant or no content_blocks: simple conversion.
+    if msg.role != Role::Assistant || msg.content_blocks.is_empty() {
+        entries.push(match msg.role {
+            Role::User => ConversationEntry::User {
+                content: msg.content,
+                images: msg.images,
+                timestamp: msg.timestamp,
+            },
+            Role::Assistant => ConversationEntry::Assistant {
+                content: msg.content,
+                images: msg.images,
+                timestamp: msg.timestamp,
+                metadata: None,
+            },
+            Role::System => ConversationEntry::System {
+                content: msg.content,
+                timestamp: msg.timestamp,
+            },
+        });
+        return;
+    }
+
+    // Build tool_use_id → tool_name map for ToolResult labels.
+    let tool_names: std::collections::HashMap<&str, &str> = msg
+        .content_blocks
+        .iter()
+        .filter_map(|b| match b {
+            ContentBlock::ToolUse { id, name, .. } => Some((id.as_str(), name.as_str())),
+            _ => None,
+        })
+        .collect();
+
+    let mut text_parts: Vec<String> = Vec::new();
+
+    for block in &msg.content_blocks {
+        match block {
+            ContentBlock::Thinking { thinking, .. } => {
+                if !thinking.is_empty() {
+                    entries.push(ConversationEntry::Thinking {
+                        content: thinking.clone(),
+                    });
+                }
+            }
+            ContentBlock::RedactedThinking { .. } => {
+                entries.push(ConversationEntry::Thinking {
+                    content: "[redacted thinking]".into(),
+                });
+            }
+            ContentBlock::ToolUse { id, name, input } => {
+                entries.push(ConversationEntry::ToolCall {
+                    tool_id: id.clone(),
+                    tool_name: name.clone(),
+                    input: input.clone(),
+                });
+            }
+            ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            } => {
+                let name = tool_names
+                    .get(tool_use_id.as_str())
+                    .unwrap_or(&"tool");
+                entries.push(ConversationEntry::ToolResult {
+                    tool_id: tool_use_id.clone(),
+                    tool_name: name.to_string(),
+                    output: content.clone(),
+                    is_error: *is_error,
+                });
+            }
+            ContentBlock::Text { text } => {
+                text_parts.push(text.clone());
+            }
+        }
+    }
+
+    // Emit the text content as the final Assistant entry.
+    let content = text_parts.join("\n");
+    if !content.trim().is_empty() {
+        entries.push(ConversationEntry::Assistant {
+            content,
             images: msg.images,
             timestamp: msg.timestamp,
             metadata: None,
-        },
-        Role::System => ConversationEntry::System {
-            content: msg.content,
-            timestamp: msg.timestamp,
-        },
+        });
     }
 }
 
@@ -386,7 +461,7 @@ fn handle_server_message(app: &mut App, msg: ServerMessage) {
                         app.entries.clear();
                         for msg_val in messages {
                             if let Ok(msg) = serde_json::from_value::<Message>(msg_val.clone()) {
-                                app.entries.push(msg_to_entry(msg));
+                                expand_msg(msg, &mut app.entries);
                             }
                         }
                         transmit_entry_images(app);
@@ -487,7 +562,7 @@ fn handle_server_message(app: &mut App, msg: ServerMessage) {
             app.image_cache.clear();
             app.entries.clear();
             for msg in hist.messages {
-                app.entries.push(msg_to_entry(msg));
+                expand_msg(msg, &mut app.entries);
             }
             transmit_entry_images(app);
         }

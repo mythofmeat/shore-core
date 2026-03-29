@@ -23,6 +23,9 @@ pub enum ConversationEntry {
         content: String,
         timestamp: String,
     },
+    Thinking {
+        content: String,
+    },
     ToolCall {
         tool_id: String,
         tool_name: String,

@@ -51,7 +51,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
 fn draw_conversation(frame: &mut Frame, app: &App, area: Rect) {
     let mut lines: Vec<Line<'static>> = Vec::new();
 
-    for entry in &app.entries {
+    for (entry_idx, entry) in app.entries.iter().enumerate() {
         match entry {
             ConversationEntry::User {
                 content, images, ..
@@ -112,6 +112,20 @@ fn draw_conversation(frame: &mut Frame, app: &App, area: Rect) {
                     Style::default().fg(Color::Yellow),
                 )));
                 lines.push(Line::from(""));
+            }
+            ConversationEntry::Thinking { content } => {
+                let dim = Style::default().fg(Color::DarkGray);
+                for tline in content.lines() {
+                    lines.push(Line::from(Span::styled(tline.to_string(), dim)));
+                }
+                // Add separator if next entry is not also Thinking.
+                let next_is_thinking = app
+                    .entries
+                    .get(entry_idx + 1)
+                    .is_some_and(|e| matches!(e, ConversationEntry::Thinking { .. }));
+                if !next_is_thinking {
+                    lines.push(Line::from(Span::styled("---", dim)));
+                }
             }
             ConversationEntry::ToolCall {
                 tool_name, input, ..
