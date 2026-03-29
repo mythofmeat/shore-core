@@ -500,9 +500,9 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
         Text::from(app.input.text.as_str())
     };
 
-    let mode_label = match app.input.mode {
-        InputMode::Insert => " [INSERT] ",
-        InputMode::Normal => " [NORMAL] ",
+    let (mode_label, border_color) = match app.input.mode {
+        InputMode::Insert => (" [INSERT] ", Color::Cyan),
+        InputMode::Normal => (" [NORMAL] ", Color::DarkGray),
         InputMode::Command => unreachable!(),
     };
     let paragraph = Paragraph::new(input_content)
@@ -510,7 +510,7 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
             Block::default()
                 .borders(Borders::TOP)
                 .title(mode_label)
-                .border_style(Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM)),
+                .border_style(Style::default().fg(border_color)),
         )
         .wrap(Wrap { trim: false })
         .scroll((input_scroll, 0));

@@ -75,6 +75,34 @@ fn resolve_character(cli_character: Option<String>) -> Option<String> {
     None
 }
 
+fn prefs_path() -> std::path::PathBuf {
+    let runtime_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into());
+    std::path::Path::new(&runtime_dir)
+        .join("shore")
+        .join("tui_prefs.json")
+}
+
+fn load_prefs(app: &mut App) {
+    if let Ok(data) = std::fs::read_to_string(prefs_path()) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) {
+            if let Some(b) = v.get("show_thinking").and_then(|v| v.as_bool()) {
+                app.show_thinking = b;
+            }
+            if let Some(b) = v.get("show_tools").and_then(|v| v.as_bool()) {
+                app.show_tools = b;
+            }
+        }
+    }
+}
+
+fn save_prefs(app: &App) {
+    let v = serde_json::json!({
+        "show_thinking": app.show_thinking,
+        "show_tools": app.show_tools,
+    });
+    let _ = std::fs::write(prefs_path(), v.to_string());
+}
+
 fn open_in_editor(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     input: &mut InputState,
@@ -111,6 +139,7 @@ async fn run_tui(cli: Cli) -> io::Result<()> {
         connection_status: ConnectionStatus::Connecting,
         ..App::default()
     };
+    load_prefs(&mut app);
 
     // Spawn connection manager
     let (cmd_tx, mut event_rx) =
@@ -171,7 +200,8 @@ async fn run_tui(cli: Cli) -> io::Result<()> {
         }
     };
 
-    // Shutdown
+    // Save preferences and shutdown
+    save_prefs(&app);
     let _ = cmd_tx.send(ConnCommand::Shutdown).await;
 
     // Restore terminal
