@@ -1,7 +1,7 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Padding, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::app::{App, ConversationEntry, InputMode};
@@ -50,7 +50,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 }
 
 /// Render accumulated thinking blocks as dimmed text under the character name.
-fn flush_thinking(lines: &mut Vec<Line<'static>>, pending: &mut Vec<String>, show: bool) {
+fn flush_thinking(lines: &mut Vec<Line<'static>>, pending: &mut Vec<String>, show: bool, wrap_width: u16) {
     if pending.is_empty() {
         return;
     }
@@ -60,22 +60,29 @@ fn flush_thinking(lines: &mut Vec<Line<'static>>, pending: &mut Vec<String>, sho
     }
     let header_style = Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD);
     let content_style = Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC);
+    let bar_style = Style::default().fg(Color::DarkGray);
     lines.push(Line::from(Span::styled("  ◆ thinking", header_style)));
+    let text_width = wrap_width.saturating_sub(4) as usize; // "  │ " = 4 cols
     for thought in pending.drain(..) {
         for tline in thought.lines() {
-            lines.push(Line::from(Span::styled(
-                format!("    {tline}"),
-                content_style,
-            )));
+            for wline in word_wrap(tline, text_width) {
+                lines.push(Line::from(vec![
+                    Span::styled("  │ ".to_string(), bar_style),
+                    Span::styled(wline, content_style),
+                ]));
+            }
         }
     }
+    lines.push(Line::from(""));
 }
 
-fn flush_tools(lines: &mut Vec<Line<'static>>, pending: &mut Vec<&ConversationEntry>, show: bool) {
+fn flush_tools(lines: &mut Vec<Line<'static>>, pending: &mut Vec<&ConversationEntry>, show: bool, wrap_width: u16) {
     if !show {
         pending.clear();
         return;
     }
+    let bar_style = Style::default().fg(Color::DarkGray);
+    let text_width = wrap_width.saturating_sub(4) as usize; // "  │ " = 4 cols
     for entry in pending.drain(..) {
         match entry {
             ConversationEntry::ToolCall { tool_name, input, .. } => {
@@ -88,11 +95,14 @@ fn flush_tools(lines: &mut Vec<Line<'static>>, pending: &mut Vec<&ConversationEn
                 ]));
                 let json = serde_json::to_string_pretty(input).unwrap_or_default();
                 for jline in json.lines() {
-                    lines.push(Line::from(Span::styled(
-                        format!("    {jline}"),
-                        Style::default().fg(Color::DarkGray),
-                    )));
+                    for wline in word_wrap(jline, text_width) {
+                        lines.push(Line::from(vec![
+                            Span::styled("  │ ".to_string(), bar_style),
+                            Span::styled(wline, Style::default().fg(Color::DarkGray)),
+                        ]));
+                    }
                 }
+                lines.push(Line::from(""));
             }
             ConversationEntry::ToolResult { tool_name, output, is_error, .. } => {
                 let header_color = if *is_error { Color::Red } else { Color::Cyan };
@@ -104,10 +114,12 @@ fn flush_tools(lines: &mut Vec<Line<'static>>, pending: &mut Vec<&ConversationEn
                     ),
                 ]));
                 for oline in output.lines() {
-                    lines.push(Line::from(Span::styled(
-                        format!("    {oline}"),
-                        Style::default().fg(Color::DarkGray),
-                    )));
+                    for wline in word_wrap(oline, text_width) {
+                        lines.push(Line::from(vec![
+                            Span::styled("  │ ".to_string(), bar_style),
+                            Span::styled(wline, Style::default().fg(Color::DarkGray)),
+                        ]));
+                    }
                 }
                 lines.push(Line::from(""));
             }
@@ -132,6 +144,88 @@ fn squeeze_blank_lines(lines: &mut Vec<Line<'static>>) {
         }
         i += 1;
     }
+}
+
+/// Word-wrap a single line of text to fit within `max_width` columns.
+fn word_wrap(text: &str, max_width: usize) -> Vec<String> {
+    use unicode_width::UnicodeWidthStr;
+
+    if max_width == 0 || UnicodeWidthStr::width(text) <= max_width {
+        return vec![text.to_string()];
+    }
+
+    let mut result = Vec::new();
+    let mut current = String::new();
+    let mut current_width: usize = 0;
+
+    for word in text.split_whitespace() {
+        let w = UnicodeWidthStr::width(word);
+        if current.is_empty() {
+            current = word.to_string();
+            current_width = w;
+        } else if current_width + 1 + w <= max_width {
+            current.push(' ');
+            current.push_str(word);
+            current_width += 1 + w;
+        } else {
+            result.push(std::mem::take(&mut current));
+            current = word.to_string();
+            current_width = w;
+        }
+    }
+    if !current.is_empty() {
+        result.push(current);
+    }
+    if result.is_empty() {
+        result.push(String::new());
+    }
+    result
+}
+
+/// Prepend 2-space indent to each line (for content under a name header).
+fn indent_lines(src: Vec<Line<'static>>) -> Vec<Line<'static>> {
+    src.into_iter()
+        .map(|line| {
+            if line.spans.is_empty() {
+                return line;
+            }
+            let mut spans = vec![Span::raw("  ")];
+            spans.extend(line.spans);
+            Line::from(spans)
+        })
+        .collect()
+}
+
+/// Pre-wrap raw text so each line fits within `max_width` columns.
+/// Preserves code blocks, headings, and blockquotes as-is.
+/// Regular text lines are word-wrapped before markdown rendering,
+/// so ratatui's Wrap won't break them (which would lose the indent).
+fn pre_wrap_text(text: &str, max_width: usize) -> String {
+    let mut result = String::new();
+    let mut in_code_block = false;
+
+    for line in text.lines() {
+        if line.starts_with("```") {
+            in_code_block = !in_code_block;
+            if !result.is_empty() { result.push('\n'); }
+            result.push_str(line);
+            continue;
+        }
+
+        // Don't wrap inside code blocks, headings, or blockquotes
+        if in_code_block || line.starts_with('#') || line.starts_with("> ") {
+            if !result.is_empty() { result.push('\n'); }
+            result.push_str(line);
+            continue;
+        }
+
+        for wrapped in word_wrap(line, max_width) {
+            if !result.is_empty() { result.push('\n'); }
+            result.push_str(&wrapped);
+        }
+    }
+
+    result
 }
 
 /// Render the scrollable conversation log.
@@ -160,6 +254,7 @@ fn draw_conversation(frame: &mut Frame, app: &mut App, area: Rect) {
     };
 
     let mut lines: Vec<Line<'static>> = Vec::new();
+    let content_width = area.width;
 
     // When streaming, skip trailing Thinking entries — they're already shown
     // in the dedicated thinking panel below the conversation.
@@ -197,15 +292,17 @@ fn draw_conversation(frame: &mut Frame, app: &mut App, area: Rect) {
             ConversationEntry::User {
                 content, images, ..
             } => {
-                flush_thinking(&mut lines, &mut pending_thinking, app.show_thinking);
-                flush_tools(&mut lines, &mut pending_tools, app.show_tools);
+                flush_thinking(&mut lines, &mut pending_thinking, app.show_thinking, content_width);
+                flush_tools(&mut lines, &mut pending_tools, app.show_tools, content_width);
                 lines.push(Line::from(Span::styled(
                     "You",
                     Style::default()
                         .fg(Color::Blue)
                         .add_modifier(Modifier::BOLD),
                 )));
-                lines.extend(markdown::render_markdown(content));
+                lines.push(Line::from(""));
+                let wrap_w = content_width.saturating_sub(2) as usize;
+                lines.extend(indent_lines(markdown::render_markdown(&pre_wrap_text(content, wrap_w))));
                 render_images(&mut lines, images, &app.image_cache);
                 lines.push(Line::from(""));
             }
@@ -226,10 +323,12 @@ fn draw_conversation(frame: &mut Frame, app: &mut App, area: Rect) {
                         .fg(Color::Green)
                         .add_modifier(Modifier::BOLD),
                 )));
+                lines.push(Line::from(""));
                 // Render thinking and tool calls under the character name
-                flush_thinking(&mut lines, &mut pending_thinking, app.show_thinking);
-                flush_tools(&mut lines, &mut pending_tools, app.show_tools);
-                lines.extend(markdown::render_markdown(content));
+                flush_thinking(&mut lines, &mut pending_thinking, app.show_thinking, content_width);
+                flush_tools(&mut lines, &mut pending_tools, app.show_tools, content_width);
+                let wrap_w = content_width.saturating_sub(2) as usize;
+                lines.extend(indent_lines(markdown::render_markdown(&pre_wrap_text(content, wrap_w))));
                 render_images(&mut lines, images, &app.image_cache);
                 if let Some(meta) = metadata {
                     lines.push(Line::from(Span::styled(
@@ -247,18 +346,25 @@ fn draw_conversation(frame: &mut Frame, app: &mut App, area: Rect) {
                 lines.push(Line::from(""));
             }
             ConversationEntry::System { content, .. } => {
-                flush_thinking(&mut lines, &mut pending_thinking, app.show_thinking);
-                flush_tools(&mut lines, &mut pending_tools, app.show_tools);
+                flush_thinking(&mut lines, &mut pending_thinking, app.show_thinking, content_width);
+                flush_tools(&mut lines, &mut pending_tools, app.show_tools, content_width);
                 lines.push(Line::from(Span::styled(
                     "System",
                     Style::default()
                         .fg(Color::Yellow)
                         .add_modifier(Modifier::BOLD),
                 )));
-                lines.push(Line::from(Span::styled(
-                    content.clone(),
-                    Style::default().fg(Color::Yellow),
-                )));
+                lines.push(Line::from(""));
+                let sys_style = Style::default().fg(Color::Yellow);
+                let sys_wrap_w = content_width.saturating_sub(2) as usize;
+                for sline in content.lines() {
+                    for wline in word_wrap(sline, sys_wrap_w) {
+                        lines.push(Line::from(vec![
+                            Span::raw("  "),
+                            Span::styled(wline, sys_style),
+                        ]));
+                    }
+                }
                 lines.push(Line::from(""));
             }
             ConversationEntry::Thinking { .. }
@@ -268,8 +374,8 @@ fn draw_conversation(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 
     // Flush orphaned pending entries (e.g. tools mid-stream before response starts)
-    flush_thinking(&mut lines, &mut pending_thinking, app.show_thinking);
-    flush_tools(&mut lines, &mut pending_tools, app.show_tools);
+    flush_thinking(&mut lines, &mut pending_thinking, app.show_thinking, content_width);
+    flush_tools(&mut lines, &mut pending_tools, app.show_tools, content_width);
 
     // Append in-progress streaming text (or typing indicator)
     if app.stream.active {
@@ -294,7 +400,9 @@ fn draw_conversation(frame: &mut Frame, app: &mut App, area: Rect) {
                         .add_modifier(Modifier::BOLD),
                 )));
             }
-            lines.extend(markdown::render_markdown(&app.stream.text));
+            lines.push(Line::from(""));
+            let wrap_w = content_width.saturating_sub(2) as usize;
+            lines.extend(indent_lines(markdown::render_markdown(&pre_wrap_text(&app.stream.text, wrap_w))));
             lines.push(Line::from("")); // match trailing blank of finalized entries
         } else {
             // Typing indicator — stream started but no text yet
@@ -304,12 +412,16 @@ fn draw_conversation(frame: &mut Frame, app: &mut App, area: Rect) {
                     .fg(Color::Green)
                     .add_modifier(Modifier::BOLD),
             )));
-            lines.push(Line::from(Span::styled(
-                "···",
-                Style::default()
-                    .fg(Color::DarkGray)
-                    .add_modifier(Modifier::ITALIC),
-            )));
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(
+                    "···",
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::ITALIC),
+                ),
+            ]));
             lines.push(Line::from("")); // match trailing blank of finalized entries
         }
     }
@@ -317,20 +429,19 @@ fn draw_conversation(frame: &mut Frame, app: &mut App, area: Rect) {
     // Empty state: show a welcome hint
     if lines.is_empty() && !app.stream.active {
         let hint_style = Style::default().fg(Color::DarkGray);
-        lines.push(Line::from(Span::styled(
-            "Press i to start typing, Enter to send",
-            hint_style,
-        )));
-        lines.push(Line::from(Span::styled(
-            "Esc for normal mode · : for commands",
-            hint_style,
-        )));
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled("Press i to start typing, Enter to send", hint_style),
+        ]));
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled("Esc for normal mode · : for commands", hint_style),
+        ]));
     }
 
     // Squeeze runs of blank lines (max 2 consecutive)
     squeeze_blank_lines(&mut lines);
 
-    let content_width = area.width.saturating_sub(4) as u16; // 2-char padding each side
     let visible_height = area.height.saturating_sub(1); // account for TOP border
 
     // Use Paragraph::line_count for accurate visual line count that accounts
@@ -369,8 +480,7 @@ fn draw_conversation(frame: &mut Frame, app: &mut App, area: Rect) {
             Block::default()
                 .borders(Borders::TOP)
                 .title(title)
-                .border_style(Style::default().fg(Color::DarkGray))
-                .padding(Padding::horizontal(2)),
+                .border_style(Style::default().fg(Color::DarkGray)),
         )
         .wrap(Wrap { trim: false })
         .scroll((scroll, 0));

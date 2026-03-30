@@ -79,15 +79,6 @@ pub fn render_markdown(text: &str) -> Vec<Line<'static>> {
         lines.push(Line::from(spans));
     }
 
-    // Handle unclosed code block
-
-    // Indent the first content line
-    if let Some(line) = lines.first_mut() {
-        let mut spans = vec![Span::raw("  ")];
-        spans.append(&mut line.spans);
-        line.spans = spans;
-    }
-
     lines
 }
 
@@ -196,8 +187,8 @@ mod tests {
     fn blockquote() {
         let lines = render_markdown("> quoted text");
         assert_eq!(lines.len(), 1);
-        // First span is paragraph indent, second is the bar character
-        assert!(lines[0].spans[1].content.contains('▎'));
+        // First span is the bar character
+        assert!(lines[0].spans[0].content.contains('▎'));
     }
 
     #[test]
