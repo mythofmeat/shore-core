@@ -116,14 +116,14 @@ fn flush_tools(lines: &mut Vec<Line<'static>>, pending: &mut Vec<&ConversationEn
     }
 }
 
-/// Squeeze runs of >2 consecutive blank lines down to at most 1.
+/// Squeeze runs of >1 consecutive blank lines down to at most 1.
 fn squeeze_blank_lines(lines: &mut Vec<Line<'static>>) {
     let mut i = 0;
     let mut consecutive_blanks = 0u32;
     while i < lines.len() {
         if lines[i].width() == 0 {
             consecutive_blanks += 1;
-            if consecutive_blanks > 2 {
+            if consecutive_blanks > 1 {
                 lines.remove(i);
                 continue;
             }
