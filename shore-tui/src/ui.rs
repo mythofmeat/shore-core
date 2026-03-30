@@ -612,7 +612,28 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(Color::DarkGray),
         )))
     } else {
-        Text::from(app.input.text.as_str())
+        // Pre-wrap at character boundaries to match cursor position calc
+        let mut lines: Vec<String> = Vec::new();
+        let mut current = String::new();
+        let mut col: usize = 0;
+        for ch in app.input.text.chars() {
+            if ch == '\n' {
+                lines.push(std::mem::take(&mut current));
+                col = 0;
+            } else {
+                let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+                if content_width > 0 && col + w > content_width {
+                    lines.push(std::mem::take(&mut current));
+                    col = w;
+                    current.push(ch);
+                } else {
+                    col += w;
+                    current.push(ch);
+                }
+            }
+        }
+        lines.push(current);
+        Text::from(lines.into_iter().map(Line::from).collect::<Vec<_>>())
     };
 
     let (mode_label, border_color) = match app.input.mode {
@@ -627,7 +648,6 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
                 .title(mode_label)
                 .border_style(Style::default().fg(border_color)),
         )
-        .wrap(Wrap { trim: false })
         .scroll((input_scroll, 0));
 
     frame.render_widget(paragraph, area);

@@ -431,6 +431,15 @@ fn parse_command(app: &mut App, input: &str) -> Action {
             })))
         }
 
+        "regen" => {
+            let msg = ClientMessage::Regen(Regen {
+                rid: None,
+                stream: true,
+                guidance: if arg.is_empty() { None } else { Some(arg.to_string()) },
+            });
+            Action::Send(ConnCommand::Send(msg))
+        }
+
         "diag" | "diagnostics" => {
             let args = if let Ok(n) = arg.parse::<u64>() {
                 serde_json::json!({ "count": n })

@@ -559,17 +559,20 @@ fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<ConnCommand> 
                 }
                 "list_characters" => {
                     if let Some(chars) = co.data.get("characters").and_then(|v| v.as_array()) {
-                        let names: Vec<&str> = chars
+                        let active = co.data.get("active").and_then(|v| v.as_str()).unwrap_or("");
+                        let list = chars
                             .iter()
                             .filter_map(|c| c.get("name").and_then(|n| n.as_str()))
-                            .collect();
-                        let active = co.data.get("active").and_then(|v| v.as_str()).unwrap_or("");
-                        let list = names
-                            .iter()
-                            .map(|n| if *n == active { format!("*{n}") } else { n.to_string() })
+                            .map(|n| if n == active { format!("  * {n}") } else { format!("    {n}") })
                             .collect::<Vec<_>>()
-                            .join(", ");
-                        app.set_status(format!("characters: {list}"));
+                            .join("\n");
+                        app.entries.push(ConversationEntry::System {
+                            content: format!("Characters:\n{list}"),
+                            timestamp: String::new(),
+                        });
+                        if app.auto_scroll {
+                            app.scroll_to_bottom();
+                        }
                     }
                 }
                 "switch_character" => {
@@ -586,6 +589,19 @@ fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<ConnCommand> 
                             .collect();
                         // Cache model names for tab completion
                         app.model_names = names.iter().map(|n| n.to_string()).collect();
+                        let active = &app.model;
+                        let list = names
+                            .iter()
+                            .map(|n| if *n == active { format!("  * {n}") } else { format!("    {n}") })
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        app.entries.push(ConversationEntry::System {
+                            content: format!("Models:\n{list}"),
+                            timestamp: String::new(),
+                        });
+                        if app.auto_scroll {
+                            app.scroll_to_bottom();
+                        }
                     }
                 }
                 "switch_model" => {

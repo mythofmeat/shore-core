@@ -334,7 +334,7 @@ impl App {
     /// Static command names for completion.
     const COMMANDS: &'static [&'static str] = &[
         "character", "compact", "config", "diag", "diagnostics",
-        "help", "log", "memory", "model", "quit", "status",
+        "help", "log", "memory", "model", "quit", "regen", "status",
     ];
 
     /// Update completion candidates based on current command input.
