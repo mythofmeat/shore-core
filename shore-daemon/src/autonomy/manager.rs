@@ -943,7 +943,6 @@ async fn execute_keepalive_ping(
             Some(req) => {
                 let mut ping = req.clone();
                 ping.max_tokens = 1;
-                ping.tools = None;
                 Some(ping)
             }
             None => None,

@@ -394,6 +394,7 @@ impl MessageHandler {
             resolved.cache_ttl.is_some(),
             resolved.keepalive_enabled,
             resolved.keepalive_ttl_minutes,
+            resolved.cache_ttl.as_deref(),
             resolved.keepalive_max_pings,
         );
         self.autonomy.ensure_state_with_config(

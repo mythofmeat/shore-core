@@ -46,17 +46,25 @@ impl CacheKeepaliveConfig {
     /// `provider` — provider key from the resolved model (e.g. `"anthropic"`).
     /// `has_cache_ttl` — whether the resolved model has a `cache_ttl` value.
     /// `keepalive_enabled` — explicit opt-out if `Some(false)`.
-    /// `ttl_minutes` — cache TTL in minutes; used to derive ping interval.
+    /// `ttl_minutes` — explicit keepalive TTL override in minutes.
+    /// `cache_ttl` — the `cache_ttl` string (e.g. `"1h"`, `"5m"`); parsed as
+    ///   fallback when `ttl_minutes` is `None`.
     /// `max_pings` — maximum keepalive pings before stopping.
     pub fn from_resolved_model(
         provider: &str,
         has_cache_ttl: bool,
         keepalive_enabled: Option<bool>,
         ttl_minutes: Option<u32>,
+        cache_ttl: Option<&str>,
         max_pings: Option<u32>,
     ) -> Self {
+        // Derive effective TTL minutes: explicit override > parsed cache_ttl string.
+        let effective_ttl_minutes = ttl_minutes.or_else(|| {
+            cache_ttl.and_then(parse_cache_ttl_minutes)
+        });
+
         // Ping slightly before TTL expires: (ttl - 60s), floored to the default.
-        let ping_interval_secs = ttl_minutes
+        let ping_interval_secs = effective_ttl_minutes
             .map(|m| (m as u64 * 60).saturating_sub(60).max(DEFAULT_PING_INTERVAL_SECS))
             .unwrap_or(DEFAULT_PING_INTERVAL_SECS);
 
@@ -69,6 +77,19 @@ impl CacheKeepaliveConfig {
             ping_interval_secs,
             max_pings: max_pings.unwrap_or(MAX_PINGS),
         }
+    }
+}
+
+/// Parse a `cache_ttl` duration string (e.g. `"1h"`, `"5m"`, `"30m"`) into minutes.
+/// Returns `None` for unrecognised formats.
+fn parse_cache_ttl_minutes(s: &str) -> Option<u32> {
+    let s = s.trim();
+    if let Some(h) = s.strip_suffix('h') {
+        h.parse::<u32>().ok().map(|v| v * 60)
+    } else if let Some(m) = s.strip_suffix('m') {
+        m.parse::<u32>().ok()
+    } else {
+        None
     }
 }
 
@@ -225,16 +246,10 @@ impl CacheKeepaliveScheduler {
             self.estimated_cache_tokens = input_tokens;
         }
 
-        // If we were pinging and a real API call came in with cache hits,
-        // the cache is sustained — return to monitoring.
-        if matches!(self.state, KeepaliveState::Pinging) && cache_read_tokens > 0 {
-            self.state = KeepaliveState::Monitoring;
-            self.reset_ping_state();
-        }
-
-        // If we were stopped, a new API call with cache hits means cache
-        // was re-established — resume monitoring.
-        if matches!(self.state, KeepaliveState::Stopped { .. }) && cache_read_tokens > 0 {
+        // Any real API call (user message, heartbeat, regen) means the
+        // conversation is active again — return to monitoring regardless of
+        // cache hits.  The next response will re-establish the cache prefix.
+        if matches!(self.state, KeepaliveState::Pinging | KeepaliveState::Stopped { .. }) {
             self.state = KeepaliveState::Monitoring;
             self.reset_ping_state();
         }
@@ -600,8 +615,8 @@ mod tests {
         assert_eq!(sched.tick(t1), KeepaliveAction::SendPing);
         assert_eq!(*sched.state(), KeepaliveState::Pinging);
 
-        // User sends a message → real API call with cache hits.
-        sched.on_api_response(t1 + Duration::from_secs(5), 1000, 1500);
+        // User sends a message → real API call (even with 0 cache hits).
+        sched.on_api_response(t1 + Duration::from_secs(5), 0, 1500);
         assert_eq!(*sched.state(), KeepaliveState::Monitoring);
         assert_eq!(sched.ping_count(), 0);
     }
@@ -622,9 +637,11 @@ mod tests {
             KeepaliveState::Stopped { reason: StopReason::CacheMiss }
         ));
 
-        // New user message re-establishes cache.
-        sched.on_api_response(t1 + Duration::from_secs(60), 800, 1200);
+        // New user message recovers to monitoring even with 0 cache hits
+        // (the next response will re-establish the cache prefix).
+        sched.on_api_response(t1 + Duration::from_secs(60), 0, 1200);
         assert_eq!(*sched.state(), KeepaliveState::Monitoring);
+        assert_eq!(sched.ping_count(), 0);
     }
 
     // -- config update ----------------------------------------------------
@@ -645,6 +662,55 @@ mod tests {
 
         sched.update_config(openai_config());
         assert_eq!(*sched.state(), KeepaliveState::Inactive);
+    }
+
+    // -- parse_cache_ttl_minutes ------------------------------------------
+
+    #[test]
+    fn test_parse_cache_ttl_minutes_hours() {
+        assert_eq!(parse_cache_ttl_minutes("1h"), Some(60));
+        assert_eq!(parse_cache_ttl_minutes("2h"), Some(120));
+    }
+
+    #[test]
+    fn test_parse_cache_ttl_minutes_minutes() {
+        assert_eq!(parse_cache_ttl_minutes("5m"), Some(5));
+        assert_eq!(parse_cache_ttl_minutes("30m"), Some(30));
+    }
+
+    #[test]
+    fn test_parse_cache_ttl_minutes_invalid() {
+        assert_eq!(parse_cache_ttl_minutes(""), None);
+        assert_eq!(parse_cache_ttl_minutes("abc"), None);
+    }
+
+    // -- from_resolved_model interval derivation --------------------------
+
+    #[test]
+    fn test_from_resolved_model_uses_cache_ttl_fallback() {
+        // No explicit keepalive_ttl_minutes — should parse "1h" → 60 min → 3540s interval.
+        let cfg = CacheKeepaliveConfig::from_resolved_model(
+            "anthropic", true, None, None, Some("1h"), None,
+        );
+        assert_eq!(cfg.ping_interval_secs, 60 * 60 - 60); // 3540
+    }
+
+    #[test]
+    fn test_from_resolved_model_explicit_ttl_overrides_cache_ttl() {
+        // Explicit keepalive_ttl_minutes=30 should win over cache_ttl="1h".
+        let cfg = CacheKeepaliveConfig::from_resolved_model(
+            "anthropic", true, None, Some(30), Some("1h"), None,
+        );
+        assert_eq!(cfg.ping_interval_secs, 30 * 60 - 60); // 1740
+    }
+
+    #[test]
+    fn test_from_resolved_model_no_ttl_uses_default() {
+        // No keepalive_ttl_minutes, no cache_ttl → default interval.
+        let cfg = CacheKeepaliveConfig::from_resolved_model(
+            "anthropic", true, None, None, None, None,
+        );
+        assert_eq!(cfg.ping_interval_secs, DEFAULT_PING_INTERVAL_SECS);
     }
 
     // -- cache token estimate tracking ------------------------------------
