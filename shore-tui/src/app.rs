@@ -270,7 +270,6 @@ pub struct App {
     pub tokens: TokenCounts,
     pub is_private: bool,
     pub should_quit: bool,
-    pub status_message: Option<String>,
     pub auto_scroll: bool,
     pub image_cache: ImageCache,
     pub show_thinking: bool,
@@ -299,7 +298,6 @@ impl Default for App {
             },
             is_private: false,
             should_quit: false,
-            status_message: None,
             auto_scroll: true,
             image_cache: ImageCache::new(),
             show_thinking: true,
@@ -328,7 +326,13 @@ impl App {
     }
 
     pub fn set_status(&mut self, msg: impl Into<String>) {
-        self.status_message = Some(msg.into());
+        self.entries.push(ConversationEntry::System {
+            content: msg.into(),
+            timestamp: String::new(),
+        });
+        if self.auto_scroll {
+            self.scroll_to_bottom();
+        }
     }
 
     /// Static command names for completion.

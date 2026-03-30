@@ -230,29 +230,6 @@ fn pre_wrap_text(text: &str, max_width: usize) -> String {
 
 /// Render the scrollable conversation log.
 fn draw_conversation(frame: &mut Frame, app: &mut App, area: Rect) {
-    // Build the border title
-    let char_label = if app.character_name.is_empty() {
-        " Conversation ".to_string()
-    } else {
-        format!(" {} ", app.character_name)
-    };
-    let base_title = if let Some(msg) = &app.status_message {
-        format!(" {msg} ")
-    } else if app.stream.active {
-        if app.stream.phase.is_empty() {
-            format!("{char_label} [streaming...]")
-        } else {
-            format!("{char_label} [{}]", app.stream.phase)
-        }
-    } else {
-        char_label
-    };
-    let title = if !app.auto_scroll {
-        format!("{base_title}  ↑ scrolled · G to return ")
-    } else {
-        base_title
-    };
-
     let mut lines: Vec<Line<'static>> = Vec::new();
     let content_width = area.width;
 
@@ -442,7 +419,7 @@ fn draw_conversation(frame: &mut Frame, app: &mut App, area: Rect) {
     // Squeeze runs of blank lines (max 2 consecutive)
     squeeze_blank_lines(&mut lines);
 
-    let visible_height = area.height.saturating_sub(1); // account for TOP border
+    let visible_height = area.height;
 
     // Use Paragraph::line_count for accurate visual line count that accounts
     // for ratatui's word-wrap algorithm (manual char-width division undershoots).
@@ -476,12 +453,6 @@ fn draw_conversation(frame: &mut Frame, app: &mut App, area: Rect) {
     };
 
     let paragraph = Paragraph::new(Text::from(lines))
-        .block(
-            Block::default()
-                .borders(Borders::TOP)
-                .title(title)
-                .border_style(Style::default().fg(Color::DarkGray)),
-        )
         .wrap(Wrap { trim: false })
         .scroll((scroll, 0));
 
@@ -941,9 +912,6 @@ mod scenario_tests {
 
         // Input area shows INSERT mode
         assert!(f.contains("[INSERT]"), "default mode is INSERT");
-
-        // Conversation area shows character name in title
-        assert!(f.contains(" Alice "), "conversation title shows character name");
     }
 
     // ── Scenario: type, send, stream, complete ──────────────────────────────
@@ -983,11 +951,7 @@ mod scenario_tests {
 
         // 4. Stream starts
         h.stream_start();
-        let f = h.render("stream started");
-        assert!(
-            f.contains("[streaming...]"),
-            "streaming indicator in conversation title"
-        );
+        h.render("stream started");
 
         // 5. First chunk
         h.stream_chunk("Hi there");
@@ -1044,7 +1008,6 @@ mod scenario_tests {
         // Render with thinking visible
         let f1 = h.render("thinking visible");
         assert!(f1.contains("Thinking"), "thinking panel header visible");
-        assert!(f1.contains("[streaming...]"), "streaming indicator in conversation title");
 
         // Toggle thinking off (Tab)
         h.press(KeyCode::Tab);
@@ -1399,12 +1362,10 @@ mod scenario_tests {
         // The typing indicator (···) should appear immediately after send,
         // before StreamStart arrives from the daemon.
         assert!(f_sent.contains("···"), "typing indicator should appear immediately after send");
-        assert!(f_sent.contains("[streaming...]"), "streaming indicator in conversation title after send");
 
         // Stream starts (but no text yet)
         h.stream_start();
-        let f_started = h.render("stream started, no text yet");
-        assert!(f_started.contains("[streaming...]"), "streaming indicator visible even before first chunk");
+        h.render("stream started, no text yet");
 
         // First chunk arrives
         h.stream_chunk("The answer is...");
@@ -1436,11 +1397,9 @@ mod scenario_tests {
 
         h.press_mod(KeyModifiers::SHIFT, KeyCode::Enter);
         h.type_str("line 3");
-        let f = h.render("3 line input");
+        h.render("3 line input");
 
         // The input area should have grown, eating into conversation space
-        // Check that conversation area still has its title
-        assert!(f.contains("Conversation"), "conversation title still present with multi-line input");
 
         // Keep adding lines up to the max (8 - 2 borders = 6 content lines)
         for i in 4..=7 {
@@ -1461,7 +1420,7 @@ mod scenario_tests {
 
         // The input area should be capped at 8 rows total
         // Conversation area must still have at least 3 rows (Min constraint)
-        assert!(f.contains("Conversation"), "conversation still visible at max input height");
+        assert!(f.contains("Press i"), "conversation still visible at max input height");
     }
 
     // ── Scenario: empty state welcome ───────────────────────────────────────
@@ -1494,7 +1453,7 @@ mod scenario_tests {
         );
     }
 
-    // ── Scenario: scroll-up indicator ───────────────────────────────────────
+    // ── Scenario: scrolling ──────────────────────────────────────────────────
 
     #[test]
     fn scenario_scroll_indicator() {
@@ -1511,20 +1470,19 @@ mod scenario_tests {
             });
         }
 
+        // At bottom — latest messages visible
         let f = h.render("at bottom");
-        assert!(f.contains(" Alice "), "title shows character name when at bottom");
-        assert!(!f.contains("scrolled"), "no scroll indicator when at bottom");
+        assert!(f.contains("Msg 19"), "latest message visible at bottom");
 
-        // Scroll up
+        // Scroll up — earlier messages visible
         h.app.scroll_up(5);
         let f = h.render("scrolled up");
-        assert!(f.contains("↑ scrolled"), "scroll indicator in conversation title");
-        assert!(f.contains("G to return"), "hint how to get back");
+        assert!(!f.contains("Msg 19"), "latest message not visible when scrolled up");
 
         // Scroll back to bottom
         h.app.scroll_to_bottom();
         let f = h.render("back at bottom");
-        assert!(!f.contains("scrolled"), "scroll indicator gone when back at bottom");
+        assert!(f.contains("Msg 19"), "latest message visible after scrolling back");
     }
 
     // ── Scenario: input placeholder ─────────────────────────────────────────
@@ -1566,21 +1524,15 @@ mod scenario_tests {
         let mut h = Harness::new();
         h.app.connection_status = ConnectionStatus::Connected;
 
-        // Stream with no phase
+        // Stream with no phase — typing indicator visible
         h.stream_start();
         let f = h.render("streaming, no phase");
-        assert!(f.contains("[streaming...]"), "default streaming indicator in conversation title");
+        assert!(f.contains("···"), "typing indicator visible during stream");
 
-        // Set phase
-        h.app.stream.phase = "thinking".into();
-        let f = h.render("thinking phase");
-        assert!(f.contains("[thinking]"), "should show phase name in title");
-        assert!(!f.contains("[streaming...]"), "should replace generic indicator with phase");
-
-        // Phase changes
-        h.app.stream.phase = "responding".into();
-        let f = h.render("responding phase");
-        assert!(f.contains("[responding]"), "should update to new phase");
+        // Stream text appears
+        h.stream_chunk("Hello!");
+        let f = h.render("streaming with text");
+        assert!(f.contains("Hello!"), "streamed text visible");
     }
 
     // ── Scenario: very short terminal ───────────────────────────────────────
@@ -1605,15 +1557,14 @@ mod scenario_tests {
 
         let f = h.render("short terminal with messages");
         // Should not panic and should show something useful
-        assert!(f.contains("Bob"), "conversation title shows character name");
+        assert!(f.contains("Bob"), "character name in assistant entry");
         assert!(f.contains("[INSERT]"), "input mode indicator visible");
 
         // Streaming in short terminal
         h.stream_start();
         h.stream_chunk("Response text");
         let f = h.render("streaming in short terminal");
-        assert!(f.contains("[streaming...]") || f.contains("Response"),
-            "should show either streaming indicator or content");
+        assert!(f.contains("Response"), "streamed content visible in short terminal");
     }
 
     // ── Scenario: multiple tool calls ───────────────────────────────────────
@@ -1866,25 +1817,17 @@ mod scenario_tests {
         assert!(f.contains("That should work"), "text after code block visible");
     }
 
-    // ── Scenario: status message in conversation title ────────────────────────
+    // ── Scenario: status messages appear as system entries ──────────────────────
 
     #[test]
     fn scenario_status_bar_populated() {
-        // The status bar was removed. Status messages now appear in the
-        // conversation title. This test verifies the layout renders without panic
-        // and status messages are visible.
         let mut h = Harness::new();
         h.app.connection_status = ConnectionStatus::Connected;
         h.app.character_name = "Alice".into();
         h.app.set_status("conversation loaded");
 
         let f = h.render("with status message");
-        assert!(f.contains("conversation loaded"), "status message visible in title");
-
-        // Clearing status restores character name
-        h.app.status_message = None;
-        let f = h.render("status cleared");
-        assert!(f.contains(" Alice "), "character name visible after status cleared");
+        assert!(f.contains("conversation loaded"), "status message visible as system entry");
 
         // Narrow terminal — should not panic
         let mut h2 = Harness::with_size(50, 20);
@@ -1897,31 +1840,23 @@ mod scenario_tests {
         h2.render("narrow terminal with status");
     }
 
-    // ── Scenario: conversation title shows character name ────────────────────
+    // ── Scenario: character name shows in assistant responses ─────────────────
 
     #[test]
     fn scenario_dynamic_title() {
         let mut h = Harness::new();
         h.app.connection_status = ConnectionStatus::Connected;
 
-        // No character — generic title
-        h.app.entries.push(ConversationEntry::User {
-            content: "Hi".into(),
+        // With character name set, assistant entries use it
+        h.app.character_name = "Luna".into();
+        h.app.entries.push(ConversationEntry::Assistant {
+            content: "Hello!".into(),
             images: vec![],
             timestamp: "t1".into(),
+            metadata: None,
         });
-        let f = h.render("no character");
-        assert!(f.contains(" Conversation "), "generic title when no character set");
-
-        // With character
-        h.app.character_name = "Luna".into();
         let f = h.render("with character");
-        assert!(f.contains(" Luna "), "title should show character name");
-        // "Conversation" welcome hints still appear in empty state, but we have a
-        // User entry so only the title-based "Conversation" string is affected.
-        // Check specifically that the border title changed:
-        let title_line = f.lines().next().unwrap_or("");
-        assert!(!title_line.contains("Conversation"), "border title replaced by character name");
+        assert!(f.contains("Luna"), "character name shown in assistant entry");
     }
 
     // ── Scenario: system messages ───────────────────────────────────────────
@@ -1971,7 +1906,7 @@ mod scenario_tests {
 
         let f = h.render("after error");
         assert!(!f.contains("[streaming...]"), "streaming indicator gone after error");
-        assert!(f.contains("rate_limit"), "error visible in conversation title");
+        assert!(f.contains("rate_limit"), "error visible as system entry");
         // The partial response is lost — this is the current behavior
         assert!(!f.contains("Starting to respond"), "partial stream text gone after reset");
     }
@@ -1999,7 +1934,7 @@ mod scenario_tests {
         h.app.set_status("reconnecting: connection lost");
 
         let f = h.render("disconnected while streaming");
-        assert!(f.contains("reconnecting"), "reconnection status in conversation title");
+        assert!(f.contains("reconnecting"), "reconnection status visible as system entry");
         // Streaming indicator should be gone (stream was reset)
         assert!(!f.contains("[streaming...]"), "streaming indicator cleared on disconnect");
         // Partial stream text is lost on disconnect
