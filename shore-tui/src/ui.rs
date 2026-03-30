@@ -69,10 +69,6 @@ fn flush_thinking(lines: &mut Vec<Line<'static>>, pending: &mut Vec<String>, sho
             )));
         }
     }
-    lines.push(Line::from(Span::styled(
-        "  ───",
-        Style::default().fg(Color::DarkGray),
-    )));
 }
 
 fn flush_tools(lines: &mut Vec<Line<'static>>, pending: &mut Vec<&ConversationEntry>, show: bool) {
