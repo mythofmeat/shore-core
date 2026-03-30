@@ -353,9 +353,9 @@ async fn run_compaction(
     let app_compaction = &config.app.memory.compaction;
     let mgr_config = CompactionConfig {
         idle_trigger_minutes: app_compaction.idle_trigger_minutes as u64,
-        min_messages: app_compaction.min_messages,
-        max_messages: app_compaction.max_messages,
-        keep_recent: app_compaction.keep_recent,
+        min_turns: app_compaction.min_turns,
+        max_turns: app_compaction.max_turns,
+        keep_recent_turns: app_compaction.keep_recent_turns,
     };
     let mgr = CompactionManager::new(mgr_config);
 

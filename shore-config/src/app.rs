@@ -203,31 +203,31 @@ pub struct CompactionConfig {
     /// Minutes of idle before compaction triggers.
     #[serde(default = "default_idle_trigger_minutes")]
     pub idle_trigger_minutes: u32,
-    /// Minimum messages before any compaction trigger fires.
-    #[serde(default = "default_min_messages")]
-    pub min_messages: usize,
-    /// Force compaction when this message count is reached.
-    #[serde(default = "default_max_messages")]
-    pub max_messages: usize,
-    /// Messages retained in active.jsonl after compaction.
-    #[serde(default = "default_keep_recent")]
-    pub keep_recent: usize,
+    /// Minimum user turns before any compaction trigger fires.
+    #[serde(default = "default_min_turns")]
+    pub min_turns: usize,
+    /// Force compaction when this user turn count is reached.
+    #[serde(default = "default_max_turns")]
+    pub max_turns: usize,
+    /// User turns retained in active.jsonl after compaction.
+    #[serde(default = "default_keep_recent_turns")]
+    pub keep_recent_turns: usize,
 }
 
 fn default_idle_trigger_minutes() -> u32 {
     30
 }
 
-fn default_min_messages() -> usize {
-    20
+fn default_min_turns() -> usize {
+    8
 }
 
-fn default_max_messages() -> usize {
-    60
+fn default_max_turns() -> usize {
+    16
 }
 
-fn default_keep_recent() -> usize {
-    4
+fn default_keep_recent_turns() -> usize {
+    2
 }
 
 impl Default for CompactionConfig {
@@ -235,9 +235,9 @@ impl Default for CompactionConfig {
         Self {
             enabled: true,
             idle_trigger_minutes: default_idle_trigger_minutes(),
-            min_messages: default_min_messages(),
-            max_messages: default_max_messages(),
-            keep_recent: default_keep_recent(),
+            min_turns: default_min_turns(),
+            max_turns: default_max_turns(),
+            keep_recent_turns: default_keep_recent_turns(),
         }
     }
 }

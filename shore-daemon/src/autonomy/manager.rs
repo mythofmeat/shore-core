@@ -220,10 +220,25 @@ pub struct AutonomyManager {
 impl AutonomyManager {
     pub fn new(
         config: AutonomyConfig,
-        compaction: CompactionConfig,
+        mut compaction: CompactionConfig,
         data_dir: PathBuf,
         shutdown_rx: tokio::sync::watch::Receiver<()>,
     ) -> (Self, mpsc::Receiver<String>) {
+        // Validate: turns thresholds must exceed keep_recent_turns, otherwise
+        // there would never be anything to actually compact.
+        if compaction.enabled {
+            let k = compaction.keep_recent_turns;
+            if compaction.min_turns <= k || compaction.max_turns <= k {
+                tracing::error!(
+                    min_turns = compaction.min_turns,
+                    max_turns = compaction.max_turns,
+                    keep_recent_turns = k,
+                    "Compaction disabled: min_turns and max_turns must be greater than keep_recent_turns"
+                );
+                compaction.enabled = false;
+            }
+        }
+
         let (compaction_tx, compaction_rx) = mpsc::channel(16);
         let mgr = Self {
             states: Arc::new(Mutex::new(HashMap::new())),
@@ -626,20 +641,19 @@ async fn tick_character(
         // -- compaction triggers ---------------------------------------------
         let mut compaction_needed = false;
         if config.enabled && compaction.enabled && !s.compaction_triggered {
-            let min_total = compaction.min_messages + compaction.keep_recent;
-            if compaction.max_messages > 0
-                && s.active_turn_count >= compaction.max_messages
-                && s.active_turn_count >= min_total
+            if compaction.max_turns > 0
+                && s.active_turn_count >= compaction.max_turns
+                && s.active_turn_count >= compaction.min_turns
             {
                 s.compaction_triggered = true;
                 compaction_needed = true;
                 info!(
                     character = %character,
                     turn_count = s.active_turn_count,
-                    max_messages = compaction.max_messages,
+                    max_turns = compaction.max_turns,
                     "Compaction: max turns trigger fired"
                 );
-            } else if s.active_turn_count >= min_total {
+            } else if s.active_turn_count >= compaction.min_turns {
                 let idle_secs = now.duration_since(s.last_compaction_activity).as_secs();
                 let threshold_secs = compaction.idle_trigger_minutes as u64 * 60;
                 if threshold_secs > 0 && idle_secs >= threshold_secs {

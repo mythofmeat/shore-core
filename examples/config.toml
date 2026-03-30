@@ -75,9 +75,9 @@ model = "claude-sonnet"            # Must match a key in [chat.*.*] below
 # [memory.compaction]
 # enabled = true
 # idle_trigger_minutes = 30  # Trigger after this many minutes of inactivity
-# min_messages = 20          # Don't compact below this count
-# max_messages = 60          # Force compaction when this count is reached
-# keep_recent = 4            # Messages to retain verbatim after compaction
+# min_turns = 8              # Don't compact below this many user turns
+# max_turns = 16             # Force compaction when this many user turns is reached
+# keep_recent_turns = 2      # User turns to retain verbatim after compaction
 
 # Collation — periodically re-synthesises the memory store for quality.
 # [memory.collation]

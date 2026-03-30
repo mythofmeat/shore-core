@@ -11,30 +11,30 @@ use tokio::time::Duration;
 // ---------------------------------------------------------------------------
 
 const DEFAULT_IDLE_TRIGGER_MINUTES: u64 = 15;
-const DEFAULT_MIN_MESSAGES: usize = 20;
-const DEFAULT_MAX_MESSAGES: usize = 60;
-const DEFAULT_KEEP_RECENT: usize = 4;
+const DEFAULT_MIN_TURNS: usize = 8;
+const DEFAULT_MAX_TURNS: usize = 16;
+const DEFAULT_KEEP_RECENT_TURNS: usize = 2;
 
 /// Configuration for compaction triggers.
 #[derive(Debug, Clone)]
 pub struct CompactionConfig {
     /// Minutes of idle time before proactive compaction fires.
     pub idle_trigger_minutes: u64,
-    /// Minimum messages before any compaction trigger fires.
-    pub min_messages: usize,
-    /// Force compaction when this message count is reached.
-    pub max_messages: usize,
-    /// Messages retained in active conversation after compaction.
-    pub keep_recent: usize,
+    /// Minimum user turns before any compaction trigger fires.
+    pub min_turns: usize,
+    /// Force compaction when this user turn count is reached.
+    pub max_turns: usize,
+    /// User turns retained in active conversation after compaction.
+    pub keep_recent_turns: usize,
 }
 
 impl Default for CompactionConfig {
     fn default() -> Self {
         Self {
             idle_trigger_minutes: DEFAULT_IDLE_TRIGGER_MINUTES,
-            min_messages: DEFAULT_MIN_MESSAGES,
-            max_messages: DEFAULT_MAX_MESSAGES,
-            keep_recent: DEFAULT_KEEP_RECENT,
+            min_turns: DEFAULT_MIN_TURNS,
+            max_turns: DEFAULT_MAX_TURNS,
+            keep_recent_turns: DEFAULT_KEEP_RECENT_TURNS,
         }
     }
 }
@@ -354,21 +354,37 @@ impl CompactionManager {
         }
     }
 
+    /// Find the split index that retains `keep_turns` complete user turns
+    /// at the tail.  Returns the index of the first retained message.
+    /// Returns 0 if there aren't enough messages to compact anything.
+    fn find_turn_split(messages: &[ConversationMessage], keep_turns: usize) -> usize {
+        let mut turns_seen = 0usize;
+        for i in (0..messages.len()).rev() {
+            if messages[i].role == "user" && !Self::is_tool_loop_message(&messages[i]) {
+                turns_seen += 1;
+                if turns_seen >= keep_turns {
+                    return i;
+                }
+            }
+        }
+        0
+    }
+
     /// Signal that a new message was received, resetting the idle timer.
     pub fn notify_activity(&self) {
         self.activity_notify.notify_one();
     }
 
-    /// Check if forced compaction should trigger (max_messages reached).
-    pub fn should_force_compact(&self, message_count: usize) -> bool {
-        self.config.max_messages > 0
-            && message_count >= self.config.max_messages
-            && self.has_enough_messages(message_count)
+    /// Check if forced compaction should trigger (max turns reached).
+    pub fn should_force_compact(&self, turn_count: usize) -> bool {
+        self.config.max_turns > 0
+            && turn_count >= self.config.max_turns
+            && self.has_enough_turns(turn_count)
     }
 
-    /// Check minimum message gating for any trigger.
-    pub fn has_enough_messages(&self, message_count: usize) -> bool {
-        message_count >= self.config.min_messages + self.config.keep_recent
+    /// Check minimum turn gating for any trigger.
+    pub fn has_enough_turns(&self, turn_count: usize) -> bool {
+        turn_count >= self.config.min_turns
     }
 
     /// Build a compaction prompt from a template and conversation messages.
@@ -470,14 +486,9 @@ impl CompactionManager {
         }
 
         // Split messages: compact the older portion, retain the recent tail.
-        // Adjust the split point to avoid cutting inside a tool-use loop —
-        // move it backwards until we hit a real user message (not a
-        // tool_result-only message) to keep tool exchanges atomic.
-        let keep = self.config.keep_recent.min(messages.len());
-        let mut split_at = messages.len() - keep;
-        while split_at > 0 && Self::is_tool_loop_message(&messages[split_at]) {
-            split_at -= 1;
-        }
+        // Count backward by user turns (skipping tool-loop messages) to find
+        // the split point, so `keep_recent_turns` whole turns are preserved.
+        let split_at = Self::find_turn_split(messages, self.config.keep_recent_turns);
         if split_at == 0 {
             return Err(CompactionError::InsufficientMessages);
         }
@@ -496,7 +507,7 @@ impl CompactionManager {
                 would_create_entries: compacted.len(),
                 entries_preview: compacted,
                 message_count: split_at,
-                retained_count: keep,
+                retained_count: messages.len() - split_at,
                 recap_preview: recap,
             }));
         }
@@ -564,10 +575,11 @@ impl CompactionManager {
         }
 
         // Archive compacted messages, retain recent, write recap.
+        let retained = messages.len() - split_at;
         let new_conversation_id = conversation_mgr.archive_and_retain(
             conversation_id,
             RetentionParams {
-                keep_last_n: keep,
+                keep_last_n: retained,
                 recap: recap.clone(),
             },
         )?;
@@ -577,7 +589,7 @@ impl CompactionManager {
             conversation_id: conversation_id.to_string(),
             new_conversation_id,
             message_count: split_at,
-            retained_count: keep,
+            retained_count: retained,
             recap_generated: recap.is_some(),
         }))
     }
@@ -751,9 +763,9 @@ They discussed daily activities and the user's beverage preferences.
             .to_string()
     }
 
-    fn make_config_with_keep(keep_recent: usize) -> CompactionConfig {
+    fn make_config_with_keep(keep_recent_turns: usize) -> CompactionConfig {
         CompactionConfig {
-            keep_recent,
+            keep_recent_turns,
             ..Default::default()
         }
     }
@@ -878,14 +890,14 @@ They discussed daily activities and the user's beverage preferences.
     #[test]
     fn test_should_force_compact() {
         let mgr = CompactionManager::new(CompactionConfig {
-            max_messages: 60,
-            min_messages: 20,
-            keep_recent: 4,
+            max_turns: 60,
+            min_turns: 20,
+            keep_recent_turns: 2,
             ..Default::default()
         });
 
         assert!(!mgr.should_force_compact(0));
-        assert!(!mgr.should_force_compact(23)); // below min+keep
+        assert!(!mgr.should_force_compact(19)); // below min
         assert!(!mgr.should_force_compact(59)); // below max
         assert!(mgr.should_force_compact(60));
         assert!(mgr.should_force_compact(100));
@@ -894,24 +906,24 @@ They discussed daily activities and the user's beverage preferences.
     #[test]
     fn test_should_force_compact_disabled() {
         let mgr = CompactionManager::new(CompactionConfig {
-            max_messages: 0,
+            max_turns: 0,
             ..Default::default()
         });
         assert!(!mgr.should_force_compact(1000));
     }
 
     #[test]
-    fn test_has_enough_messages() {
+    fn test_has_enough_turns() {
         let mgr = CompactionManager::new(CompactionConfig {
-            min_messages: 20,
-            keep_recent: 4,
+            min_turns: 20,
+            keep_recent_turns: 2,
             ..Default::default()
         });
 
-        assert!(!mgr.has_enough_messages(0));
-        assert!(!mgr.has_enough_messages(23));
-        assert!(mgr.has_enough_messages(24));
-        assert!(mgr.has_enough_messages(100));
+        assert!(!mgr.has_enough_turns(0));
+        assert!(!mgr.has_enough_turns(19));
+        assert!(mgr.has_enough_turns(20));
+        assert!(mgr.has_enough_turns(100));
     }
 
     // -- Tests: compaction with retention -------------------------------------
@@ -950,8 +962,8 @@ They discussed daily activities and the user's beverage preferences.
                 assert_eq!(r.entries_created.len(), 2);
                 assert_eq!(r.conversation_id, "conv-1");
                 assert_eq!(r.new_conversation_id, "new-conv-1");
-                assert_eq!(r.message_count, 8); // 10 - 2 retained
-                assert_eq!(r.retained_count, 2);
+                assert_eq!(r.message_count, 6); // 10 - 4 retained (2 turns = 4 msgs)
+                assert_eq!(r.retained_count, 4);
                 assert!(r.recap_generated);
 
                 for id in &r.entries_created {
@@ -959,7 +971,7 @@ They discussed daily activities and the user's beverage preferences.
                     assert_eq!(entry.reason, "compaction");
                     assert_eq!(entry.source, "summary");
                     assert_eq!(entry.status, "active");
-                    assert_eq!(entry.message_count, 8);
+                    assert_eq!(entry.message_count, 6);
                 }
             }
             _ => panic!("Expected Compacted outcome"),
@@ -1063,7 +1075,7 @@ They discussed daily activities and the user's beverage preferences.
         match result {
             CompactionOutcome::Compacted(r) => {
                 assert_eq!(r.new_conversation_id, "new-conv-2");
-                assert_eq!(r.retained_count, 3);
+                assert_eq!(r.retained_count, 6); // 3 turns × 2 msgs each
             }
             _ => panic!("Expected Compacted outcome"),
         }
@@ -1071,7 +1083,7 @@ They discussed daily activities and the user's beverage preferences.
         let calls = conv_mgr.archived_calls();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0, "old-conv");
-        assert_eq!(calls[0].1, 3); // keep_last_n
+        assert_eq!(calls[0].1, 6); // keep_last_n (3 turns = 6 raw messages)
     }
 
     // -- Tests: private conversation skips compaction -------------------------
@@ -1144,8 +1156,8 @@ They discussed daily activities and the user's beverage preferences.
         match result {
             CompactionOutcome::DryRun(r) => {
                 assert_eq!(r.would_create_entries, 2);
-                assert_eq!(r.message_count, 8);
-                assert_eq!(r.retained_count, 2);
+                assert_eq!(r.message_count, 6);
+                assert_eq!(r.retained_count, 4);
                 assert_eq!(r.entries_preview.len(), 2);
                 assert!(r.recap_preview.is_some());
             }
@@ -1191,7 +1203,7 @@ They discussed daily activities and the user's beverage preferences.
     }
 
     #[tokio::test]
-    async fn test_compact_fewer_than_keep_recent() {
+    async fn test_compact_fewer_than_keep_recent_turns() {
         let db = MemoryDB::open_in_memory().unwrap();
         let llm = MockLlm {
             response: String::new(),
@@ -1200,7 +1212,7 @@ They discussed daily activities and the user's beverage preferences.
         let conv_mgr = MockConversationMgr::new("new-conv-1");
         let mgr = CompactionManager::new(make_config_with_keep(10));
 
-        // Only 5 messages but keep_recent=10 — nothing to compact.
+        // Only 5 messages but keep_recent_turns=10 — nothing to compact.
         let result = mgr
             .compact(
                 "conv-1",
