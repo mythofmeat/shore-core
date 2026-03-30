@@ -1,7 +1,7 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Padding, Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::app::{App, ConversationEntry, InputMode};
@@ -334,7 +334,7 @@ fn draw_conversation(frame: &mut Frame, app: &mut App, area: Rect) {
     // Squeeze runs of blank lines (max 2 consecutive)
     squeeze_blank_lines(&mut lines);
 
-    let content_width = area.width.saturating_sub(2) as u16;
+    let content_width = area.width.saturating_sub(4) as u16; // 2-char padding each side
     let visible_height = area.height.saturating_sub(1); // account for TOP border
 
     // Use Paragraph::line_count for accurate visual line count that accounts
@@ -373,7 +373,8 @@ fn draw_conversation(frame: &mut Frame, app: &mut App, area: Rect) {
             Block::default()
                 .borders(Borders::TOP)
                 .title(title)
-                .border_style(Style::default().fg(Color::DarkGray)),
+                .border_style(Style::default().fg(Color::DarkGray))
+                .padding(Padding::horizontal(2)),
         )
         .wrap(Wrap { trim: false })
         .scroll((scroll, 0));
