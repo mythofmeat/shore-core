@@ -1406,3 +1406,47 @@ Standard bridge pattern. `shore-discord` binary using serenity + poise.
    sufficient data even when the user has far exceeded the threshold. Root
    cause TBD during implementation — likely a data accounting bug, not a
    threshold problem.
+
+## 20. Async Generation Architecture (2026-03-31)
+
+### Handler Concurrency Model
+
+Previously, `MessageHandler::run()` processed all messages sequentially from a single
+`RoutedMessage` channel. Both Commands and Engine messages (Message/Regen) shared this
+channel, so a long LLM stream would block `shore status` and other commands.
+
+**Current model:**
+
+- **Commands** (`shore status`, `shore log`, etc.) are processed inline by the handler
+  loop — they never do LLM I/O and return in microseconds.
+
+- **Engine messages** (Message/Regen) are spawned as independent `tokio` tasks via
+  `tokio::spawn`. The handler loop returns immediately after spawning and can process
+  the next message (usually a command).
+
+- A `GenContext` struct (Clone-able, Arc-backed) passes shared state to generation
+  tasks: registry, llm_client, push_tx, autonomy, session_tokens, diagnostics, and
+  the `is_first_after_restart` / `has_seen_cache_read` atomic flags.
+
+- `CharacterRegistry.engines` stores `Arc<tokio::sync::Mutex<ConversationEngine>>`.
+  The registry lock is held only briefly (to look up or create an engine Arc); the
+  engine lock is independent and only held for brief mutations (message append/delete).
+  It is never held during LLM streaming.
+
+### Lock Ordering
+
+To prevent deadlocks:
+1. Never hold registry lock while waiting for engine lock.
+2. Never hold engine lock across an `await` point in generation tasks.
+   (The engine lock IS held across awaits in the `dispatch` command handler, which
+   uses `tokio::sync::Mutex` for correctness. This is intentional — commands are
+   sequential and user-initiated.)
+
+### Concurrency Guarantees
+
+- `shore status` always responds immediately, even during active generation.
+- Multiple characters can generate in parallel (separate engine locks).
+- Session token counts are updated atomically via `Arc<std::sync::Mutex<SessionTokens>>`.
+- Per-character serialization of mutations (append/delete/edit) is enforced by the
+  engine's tokio Mutex — generating and editing the same character's history at the
+  same time will serialize, not corrupt.

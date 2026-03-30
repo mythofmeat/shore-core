@@ -6,9 +6,10 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use shore_protocol::server_msg::ServerMessage;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, Mutex};
 use tracing::{info, warn};
 
 use shore_config::{discover_characters, load_character_config, load_character_definition, resolve_user_definition, LoadedConfig};
@@ -23,7 +24,7 @@ pub struct CharacterRegistry {
     /// Broadcast sender passed to new engines.
     push_tx: broadcast::Sender<ServerMessage>,
     /// Lazily-created engines keyed by character name.
-    engines: HashMap<String, ConversationEngine>,
+    engines: HashMap<String, Arc<Mutex<ConversationEngine>>>,
     /// Cached list of available character names (from filesystem scan).
     available: Vec<String>,
     /// Global config (base for per-character merging).
@@ -75,12 +76,13 @@ impl CharacterRegistry {
 
     /// Get the engine for a character, creating it lazily if needed.
     ///
-    /// Returns an error if the character is not in the available list or if
-    /// engine creation fails.
+    /// Returns an Arc<Mutex<ConversationEngine>> so callers can hold independent
+    /// locks without blocking on the registry. The registry lock only needs to be
+    /// held briefly to call this; the returned Arc stays valid after release.
     pub fn get_or_create(
         &mut self,
         name: &str,
-    ) -> Result<&mut ConversationEngine, EngineError> {
+    ) -> Result<Arc<Mutex<ConversationEngine>>, EngineError> {
         if !self.has_character(name) {
             return Err(EngineError::CharacterNotFound(name.to_string()));
         }
@@ -93,10 +95,10 @@ impl CharacterRegistry {
                 self.push_tx.clone(),
             )?;
             info!(character = name, "Created engine for character");
-            self.engines.insert(name.to_string(), engine);
+            self.engines.insert(name.to_string(), Arc::new(Mutex::new(engine)));
         }
 
-        Ok(self.engines.get_mut(name).unwrap())
+        Ok(self.engines[name].clone())
     }
 
     /// Load the character definition (system prompt) for a given character.
@@ -311,9 +313,9 @@ mod tests {
         let mut reg = make_registry(&tmp, &["Alice"]);
 
         // First call creates the engine.
-        let name1 = reg.get_or_create("Alice").unwrap().character_name().to_string();
+        let name1 = reg.get_or_create("Alice").unwrap().blocking_lock().character_name().to_string();
         // Second call returns the same engine (cached).
-        let name2 = reg.get_or_create("Alice").unwrap().character_name().to_string();
+        let name2 = reg.get_or_create("Alice").unwrap().blocking_lock().character_name().to_string();
         assert_eq!(name1, "Alice");
         assert_eq!(name2, "Alice");
     }

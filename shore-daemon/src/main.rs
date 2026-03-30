@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use shore_daemon::autonomy::manager::AutonomyManager;
@@ -134,12 +135,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let route_rx = server.take_route_rx();
 
     // Create character registry for multi-character management.
-    let char_registry = CharacterRegistry::new(
+    let char_registry = Arc::new(tokio::sync::Mutex::new(CharacterRegistry::new(
         loaded.dirs.config.clone(),
         loaded.dirs.data.clone(),
         push_tx.clone(),
         loaded.clone(),
-    );
+    )));
 
     // Create autonomy manager (shared between handler, commands, and per-character tick tasks).
     let (mut autonomy, compaction_rx) = AutonomyManager::new(
@@ -158,14 +159,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Provide the autonomy manager with resources for heartbeat/keepalive execution.
     autonomy.set_resources(llm_client.clone(), push_tx.clone(), loaded.clone(), notifier.clone());
 
-    let diagnostics = std::sync::Arc::new(std::sync::Mutex::new(Diagnostics::default()));
+    let diagnostics = Arc::new(std::sync::Mutex::new(Diagnostics::default()));
+    let session_tokens = Arc::new(std::sync::Mutex::new(SessionTokens::default()));
 
     let cmd_ctx = CommandContext {
         config: loaded.clone(),
         push_tx: push_tx.clone(),
         data_dir: loaded.dirs.data.clone(),
         active_model: None,
-        session_tokens: SessionTokens::default(),
+        session_tokens: session_tokens.clone(),
         autonomy: autonomy.clone(),
         llm_client: llm_client.clone(),
         diagnostics: diagnostics.clone(),
@@ -175,7 +177,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Shared flag: compaction task sets this after successful compaction so the
     // message handler knows the next message is the first after compaction
     // (expected cache miss, not an invalidation).
-    let compaction_occurred = std::sync::Arc::new(AtomicBool::new(false));
+    let compaction_occurred = Arc::new(AtomicBool::new(false));
+    let is_first_after_restart = Arc::new(AtomicBool::new(true));
+    let has_seen_cache_read = Arc::new(AtomicBool::new(false));
 
     // Spawn background compaction task driven by autonomy idle triggers.
     let compaction_handle = {
@@ -195,8 +199,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         cmd_ctx,
         llm_client,
         push_tx,
-        is_first_after_restart: true,
-        has_seen_cache_read: false,
+        is_first_after_restart,
+        has_seen_cache_read,
         compaction_occurred,
         autonomy: autonomy.clone(),
         notifier,

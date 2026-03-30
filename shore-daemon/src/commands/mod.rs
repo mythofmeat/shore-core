@@ -21,7 +21,7 @@ use shore_llm_client::LlmClient;
 use crate::memory::agent::MemoryAgent;
 
 /// Cumulative token usage tracked across the daemon session.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Default)]
 pub struct SessionTokens {
     pub input: u32,
     pub output: u32,
@@ -47,8 +47,8 @@ pub struct CommandContext {
     pub data_dir: PathBuf,
     /// Currently active model name.
     pub active_model: Option<String>,
-    /// Cumulative token usage for the session.
-    pub session_tokens: SessionTokens,
+    /// Cumulative token usage for the session (shared with generation tasks).
+    pub session_tokens: Arc<Mutex<SessionTokens>>,
     /// Shared autonomy manager for scheduler state.
     pub autonomy: AutonomyManager,
     /// LLM client for commands that need model access (e.g. memory query).
@@ -64,11 +64,14 @@ pub type CommandResult = Result<serde_json::Value, (ErrorCode, String)>;
 
 /// Dispatch a command to the appropriate handler.
 pub async fn dispatch(
-    engine: &mut ConversationEngine,
+    engine: Arc<tokio::sync::Mutex<ConversationEngine>>,
     ctx: &mut CommandContext,
     cmd: &Command,
 ) -> ServerMessage {
     info!(command = %cmd.name, "Dispatching command");
+
+    let mut guard = engine.lock().await;
+    let engine = &mut *guard;
 
     let result = match cmd.name.as_str() {
         // Navigation
@@ -180,7 +183,7 @@ mod tests {
             push_tx,
             data_dir: data_dir.clone(),
             active_model: None,
-            session_tokens: Default::default(),
+            session_tokens: Arc::new(Mutex::new(SessionTokens::default())),
             autonomy,
             llm_client: LlmClient::new(),
             diagnostics: Arc::new(Mutex::new(Diagnostics::default())),
@@ -192,7 +195,8 @@ mod tests {
     #[tokio::test]
     async fn unknown_command_returns_invalid_request() {
         let tmp = tempfile::tempdir().unwrap();
-        let (mut engine, mut ctx, _rx) = make_ctx(&tmp);
+        let (engine, mut ctx, _rx) = make_ctx(&tmp);
+        let engine_arc = Arc::new(tokio::sync::Mutex::new(engine));
 
         let cmd = Command {
             rid: None,
@@ -200,7 +204,7 @@ mod tests {
             args: serde_json::json!({}),
         };
 
-        let result = dispatch(&mut engine, &mut ctx, &cmd).await;
+        let result = dispatch(engine_arc, &mut ctx, &cmd).await;
         match result {
             ServerMessage::Error(e) => {
                 assert_eq!(e.code, ErrorCode::InvalidRequest);
@@ -213,7 +217,8 @@ mod tests {
     #[tokio::test]
     async fn dispatch_returns_command_output_with_name() {
         let tmp = tempfile::tempdir().unwrap();
-        let (mut engine, mut ctx, _rx) = make_ctx(&tmp);
+        let (engine, mut ctx, _rx) = make_ctx(&tmp);
+        let engine_arc = Arc::new(tokio::sync::Mutex::new(engine));
 
         let cmd = Command {
             rid: None,
@@ -221,7 +226,7 @@ mod tests {
             args: serde_json::json!({}),
         };
 
-        let result = dispatch(&mut engine, &mut ctx, &cmd).await;
+        let result = dispatch(engine_arc, &mut ctx, &cmd).await;
         match result {
             ServerMessage::CommandOutput(output) => {
                 assert_eq!(output.name, "status");

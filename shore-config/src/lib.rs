@@ -145,6 +145,15 @@ pub fn load_config(config_path: Option<&Path>) -> Result<LoadedConfig, ConfigErr
         None => config_dir.join("config.toml"),
     };
 
+    // ── Load .env from config directory ───────────────────────────────
+    let env_path = config_dir.join(".env");
+    if env_path.exists() {
+        match dotenvy::from_path(&env_path) {
+            Ok(()) => info!(path = %env_path.display(), "Loaded .env file"),
+            Err(e) => warn!(path = %env_path.display(), error = %e, "Failed to load .env file"),
+        }
+    }
+
     // ── Phase 1: Load raw TOML table ──────────────────────────────────
     let mut table: toml::Table = if config_file.exists() {
         let content = std::fs::read_to_string(&config_file).map_err(|e| ConfigError::ReadFile {

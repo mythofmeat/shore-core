@@ -54,15 +54,16 @@ pub fn status(engine: &ConversationEngine, ctx: &CommandContext) -> CommandResul
     let effective_model = ctx.active_model.as_deref()
         .or(ctx.config.app.defaults.model.as_deref());
 
+    let tokens = ctx.session_tokens.lock().unwrap();
     Ok(json!({
         "character": engine.character_name(),
         "message_count": engine.message_count(),
         "active_model": effective_model,
         "tokens": {
-            "input": ctx.session_tokens.input,
-            "output": ctx.session_tokens.output,
-            "cache_read": ctx.session_tokens.cache_read,
-            "cache_write": ctx.session_tokens.cache_write,
+            "input": tokens.input,
+            "output": tokens.output,
+            "cache_read": tokens.cache_read,
+            "cache_write": tokens.cache_write,
         },
         "autonomy": ctx.autonomy.status(engine.character_name()),
         "activity": activity,
@@ -1101,7 +1102,7 @@ mod tests {
             push_tx,
             data_dir: data_dir.clone(),
             active_model: None,
-            session_tokens: Default::default(),
+            session_tokens: std::sync::Arc::new(std::sync::Mutex::new(crate::commands::SessionTokens::default())),
             autonomy,
             llm_client: shore_llm_client::LlmClient::new(),
             diagnostics: std::sync::Arc::new(std::sync::Mutex::new(shore_diagnostics::Diagnostics::default())),

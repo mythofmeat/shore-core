@@ -216,7 +216,7 @@ mod tests {
             push_tx,
             data_dir: data_dir.clone(),
             active_model: None,
-            session_tokens: SessionTokens::default(),
+            session_tokens: std::sync::Arc::new(std::sync::Mutex::new(SessionTokens::default())),
             autonomy,
             llm_client: shore_llm_client::LlmClient::new(),
             diagnostics: std::sync::Arc::new(std::sync::Mutex::new(shore_diagnostics::Diagnostics::default())),

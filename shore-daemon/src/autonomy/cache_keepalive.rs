@@ -177,9 +177,12 @@ impl CacheKeepaliveScheduler {
         }
     }
 
-    /// Restore persisted counters.
-    pub fn restore_counters(&mut self, ping_count: u32, estimated_cache_tokens: u32) {
-        self.ping_count = ping_count;
+    /// Restore persisted state across daemon restarts.
+    ///
+    /// `ping_count` is intentionally not restored: max_pings applies per-session,
+    /// and `last_api_call` (an Instant) resets on restart so pinging cannot resume
+    /// until a real API call arrives anyway.
+    pub fn restore_counters(&mut self, estimated_cache_tokens: u32) {
         self.estimated_cache_tokens = estimated_cache_tokens;
     }
 

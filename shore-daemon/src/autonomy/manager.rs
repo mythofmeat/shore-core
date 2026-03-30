@@ -293,7 +293,7 @@ impl AutonomyManager {
         if let Some(persisted) = load_state(&self.data_dir, character) {
             let (hb_state, unanswered) = restore_heartbeat(&persisted);
             heartbeat.restore(hb_state, unanswered);
-            cache_keepalive.restore_counters(persisted.cache_ping_count, persisted.cache_estimated_tokens);
+            cache_keepalive.restore_counters(persisted.cache_estimated_tokens);
             info!(character, "Autonomy state restored from disk");
         } else {
             info!(character, "Autonomy state created (no prior state)");

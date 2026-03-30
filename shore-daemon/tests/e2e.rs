@@ -199,12 +199,12 @@ async fn e2e_conversation_milestone() {
     let route_rx = server.take_route_rx();
 
     // Create character registry.
-    let char_registry = CharacterRegistry::new(
+    let char_registry = std::sync::Arc::new(tokio::sync::Mutex::new(CharacterRegistry::new(
         loaded.dirs.config.clone(),
         loaded.dirs.data.clone(),
         push_tx.clone(),
         loaded.clone(),
-    );
+    )));
 
     let (autonomy, _compaction_rx) = shore_daemon::autonomy::manager::AutonomyManager::new(
         Default::default(),
@@ -220,7 +220,7 @@ async fn e2e_conversation_milestone() {
         push_tx: push_tx.clone(),
         data_dir: loaded.dirs.data.clone(),
         active_model: loaded.app.defaults.model.clone(),
-        session_tokens: SessionTokens::default(),
+        session_tokens: std::sync::Arc::new(std::sync::Mutex::new(SessionTokens::default())),
         autonomy: autonomy.clone(),
         llm_client: llm_client.clone(),
         diagnostics: std::sync::Arc::new(std::sync::Mutex::new(shore_diagnostics::Diagnostics::default())),
@@ -232,8 +232,8 @@ async fn e2e_conversation_milestone() {
         cmd_ctx,
         llm_client,
         push_tx: push_tx.clone(),
-        is_first_after_restart: true,
-        has_seen_cache_read: false,
+        is_first_after_restart: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        has_seen_cache_read: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         compaction_occurred: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         autonomy,
         notifier: shore_daemon::notifications::NotificationService::new(Default::default()),
@@ -632,12 +632,12 @@ impl E2EHarness {
 
         let data_dir = loaded.dirs.data.clone();
 
-        let char_registry = CharacterRegistry::new(
+        let char_registry = std::sync::Arc::new(tokio::sync::Mutex::new(CharacterRegistry::new(
             loaded.dirs.config.clone(),
             loaded.dirs.data.clone(),
             push_tx.clone(),
             loaded.clone(),
-        );
+        )));
 
         let (autonomy, _compaction_rx) = shore_daemon::autonomy::manager::AutonomyManager::new(
             Default::default(),
@@ -653,7 +653,7 @@ impl E2EHarness {
             push_tx: push_tx.clone(),
             data_dir: loaded.dirs.data.clone(),
             active_model: loaded.app.defaults.model.clone(),
-            session_tokens: SessionTokens::default(),
+            session_tokens: std::sync::Arc::new(std::sync::Mutex::new(SessionTokens::default())),
             autonomy: autonomy.clone(),
             llm_client: llm_client.clone(),
             diagnostics: std::sync::Arc::new(std::sync::Mutex::new(shore_diagnostics::Diagnostics::default())),
@@ -665,8 +665,8 @@ impl E2EHarness {
             cmd_ctx,
             llm_client,
             push_tx: push_tx.clone(),
-            is_first_after_restart: true,
-            has_seen_cache_read: false,
+            is_first_after_restart: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            has_seen_cache_read: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             compaction_occurred: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             autonomy,
             notifier: shore_daemon::notifications::NotificationService::new(Default::default()),

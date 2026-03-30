@@ -95,3 +95,30 @@ Add items here as decisions are made.
 - **Interiority — journal writing** (2.4) — Failed concept in V1. Not porting.
 - **Interiority — story writing** (2.5) — Failed concept in V1. Not porting.
 - **Interiority scheduling** (2.6) — Depended on interiority. Not porting.
+
+## Async Message Generation (2026-03-31)
+
+**Decision**: Message generation (Message/Regen) now runs in spawned `tokio` tasks
+rather than blocking the handler loop. Commands (status, log, diagnostics, etc.)
+are processed inline and always return immediately.
+
+**What changed**:
+- `CharacterRegistry.engines` now stores `Arc<tokio::sync::Mutex<ConversationEngine>>`
+  instead of bare `ConversationEngine`. The registry lock only needs to be held
+  briefly to retrieve an engine Arc; the engine lock is independent.
+- A `GenContext` struct (Clone-able, all Arc-backed) holds everything a generation
+  task needs: registry, llm_client, push_tx, autonomy, atomics, session_tokens, diagnostics.
+- `MessageHandler::run()` spawns `tokio::spawn` for every Engine message and processes
+  Commands inline. The handler loop never blocks on LLM streaming.
+- `session_tokens` is now `Arc<std::sync::Mutex<SessionTokens>>` shared between
+  `CommandContext` and generation tasks so the status command always sees live counts.
+- `is_first_after_restart` and `has_seen_cache_read` are now `Arc<AtomicBool>` so
+  generation tasks can update them without coordinating with the handler.
+
+**Why**: A long LLM generation was blocking `shore status`, `shore log`, and any other
+command that arrived while streaming. This was user-visible friction.
+
+**Trade-off**: A mutating command (edit, delete, compact) acquires the engine lock and
+holds it for the command's duration. If a generation task is also waiting to append
+to the same engine, it waits. This is intentional serialization — coherent state
+is more important than latency for mutating operations.
