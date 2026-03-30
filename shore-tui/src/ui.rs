@@ -186,7 +186,7 @@ fn word_wrap(text: &str, max_width: usize) -> Vec<String> {
 fn indent_lines(src: Vec<Line<'static>>) -> Vec<Line<'static>> {
     src.into_iter()
         .map(|line| {
-            if line.spans.is_empty() {
+            if line.width() == 0 {
                 return line;
             }
             let mut spans = vec![Span::raw("  ")];
