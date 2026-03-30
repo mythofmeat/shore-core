@@ -96,6 +96,32 @@ Add items here as decisions are made.
 - **Interiority — story writing** (2.5) — Failed concept in V1. Not porting.
 - **Interiority scheduling** (2.6) — Depended on interiority. Not porting.
 
+## Compaction: Turn-Based Semantics (2026-03-31)
+
+**Decision**: Compaction config fields renamed from message-based to turn-based
+(`min_messages` → `min_turns`, `max_messages` → `max_turns`, `keep_recent` →
+`keep_recent_turns`). Defaults lowered from 20/60/4 to 8/16/2.
+
+**What changed**:
+- All config fields and internal structs renamed to reflect that compaction
+  tracks user turns (excluding tool-result-only messages), not raw messages.
+- `has_enough_messages()` → `has_enough_turns()` — gate is now simply
+  `turn_count >= min_turns` with no invisible addition of `keep_recent_turns`.
+- Retention split (`find_turn_split`) counts backward by real user turns
+  instead of slicing by raw message count, so `keep_recent_turns` preserves
+  complete turn pairs (user + assistant).
+- Startup validation in `AutonomyManager::new`: if `min_turns <= keep_recent_turns`
+  or `max_turns <= keep_recent_turns`, compaction is disabled with an error log.
+
+**Why**: The old naming caused compaction to appear broken — a user with
+`max_messages = 26` at 66 raw messages wouldn't trigger compaction because the
+engine tracked 23 real user turns. The names implied total messages but the
+logic counted turns. Renaming eliminates the mismatch.
+
+**Trade-off**: Breaking config change — old field names (`min_messages`, etc.)
+will fail to parse due to `deny_unknown_fields`. Accepted because Shore V2 is
+pre-release and the old names were actively misleading.
+
 ## Async Message Generation (2026-03-31)
 
 **Decision**: Message generation (Message/Regen) now runs in spawned `tokio` tasks
