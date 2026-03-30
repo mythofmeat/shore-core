@@ -241,10 +241,6 @@ cargo test --workspace
 cargo clippy --workspace
 ```
 
-## Migrating from V1
-
-If upgrading from Shore V1 (Python), see [docs/V1-MIGRATION.md](docs/past_versions/V1-MIGRATION.md) for a complete mapping of config keys, data paths, and binary names. The daemon automatically detects V1-style configuration and prints migration guidance at startup.
-
 ## License
 
 Private — all rights reserved.
