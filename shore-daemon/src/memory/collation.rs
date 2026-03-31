@@ -219,6 +219,7 @@ pub struct CollationOutcome {
     pub entities_normalized: usize,
     pub entries_decayed: usize,
     pub entries_skipped: usize,
+    pub timestamps_backfilled: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -303,6 +304,9 @@ impl CollationManager {
         // This ensures all phases within one run see the same candidate set.
         let pipeline_start = Utc::now().to_rfc3339();
 
+        // Phase 0: Backfill missing timestamps (incremental, no LLM)
+        self.phase_backfill_timestamps(db, 20, &mut outcome)?;
+
         // Phase 1: Collate (merge similar entries first to reduce count)
         self.phase_collate(db, llm, collate_template, vars, &mut outcome, &mut id_counter, indexer, &pipeline_start)
             .await?;
@@ -331,6 +335,144 @@ impl CollationManager {
         }
 
         Ok(outcome)
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 0: Backfill missing timestamps (incremental, no LLM)
+    // -----------------------------------------------------------------------
+
+    fn phase_backfill_timestamps(
+        &self,
+        db: &MemoryDB,
+        batch_size: usize,
+        outcome: &mut CollationOutcome,
+    ) -> Result<(), CollationError> {
+        let entries = db
+            .get_entries_by_status("active")
+            .map_err(|e| CollationError::Db(e.to_string()))?;
+
+        let candidates: Vec<&Entry> = entries
+            .iter()
+            .filter(|e| e.start_timestamp.is_empty())
+            .take(batch_size)
+            .collect();
+
+        if candidates.is_empty() {
+            return Ok(());
+        }
+
+        for entry in &candidates {
+            let (start, end, source) =
+                self.resolve_timestamps_from_ancestors(db, entry)?;
+
+            let mut updated = (*entry).clone();
+            updated.start_timestamp = start.clone();
+            updated.end_timestamp = end.clone();
+            updated.updated_at = Utc::now().to_rfc3339();
+            db.update_entry(&updated)
+                .map_err(|e| CollationError::Db(e.to_string()))?;
+
+            let log_id = db
+                .append_changelog(
+                    "backfill_timestamp",
+                    &format!(
+                        "Backfill timestamps: {} -> {} / {} (from {})",
+                        entry.id, start, end, source
+                    ),
+                )
+                .map_err(|e| CollationError::Db(e.to_string()))?;
+            let _ = db.link_changelog_entry(log_id, &entry.id);
+
+            outcome.timestamps_backfilled += 1;
+        }
+
+        Ok(())
+    }
+
+    /// Walk the source_entry_ids chain to find ancestor timestamps.
+    /// Returns (start, end, source_description).
+    fn resolve_timestamps_from_ancestors(
+        &self,
+        db: &MemoryDB,
+        entry: &Entry,
+    ) -> Result<(String, String, String), CollationError> {
+        // Try to find timestamps by walking source_entry_ids
+        if !entry.source_entry_ids.is_empty() {
+            let mut min_start = String::new();
+            let mut max_end = String::new();
+            let mut found_any = false;
+
+            let mut to_visit: Vec<String> = entry
+                .source_entry_ids
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+
+            let mut visited = std::collections::HashSet::new();
+            // Cap traversal depth to avoid runaway chains
+            let mut depth = 0;
+            const MAX_DEPTH: usize = 10;
+
+            while !to_visit.is_empty() && depth < MAX_DEPTH {
+                depth += 1;
+                let mut next_visit = Vec::new();
+
+                for id in &to_visit {
+                    if !visited.insert(id.clone()) {
+                        continue;
+                    }
+                    if let Some(ancestor) = db
+                        .get_entry(id)
+                        .map_err(|e| CollationError::Db(e.to_string()))?
+                    {
+                        if !ancestor.start_timestamp.is_empty() {
+                            if min_start.is_empty()
+                                || ancestor.start_timestamp.as_str() < min_start.as_str()
+                            {
+                                min_start = ancestor.start_timestamp.clone();
+                            }
+                            found_any = true;
+                        }
+                        if !ancestor.end_timestamp.is_empty() {
+                            if max_end.is_empty()
+                                || ancestor.end_timestamp.as_str() > max_end.as_str()
+                            {
+                                max_end = ancestor.end_timestamp.clone();
+                            }
+                        }
+                        // If this ancestor also lacks timestamps, walk its sources
+                        if ancestor.start_timestamp.is_empty()
+                            && !ancestor.source_entry_ids.is_empty()
+                        {
+                            for src in ancestor.source_entry_ids.split(',') {
+                                let src = src.trim().to_string();
+                                if !src.is_empty() && !visited.contains(&src) {
+                                    next_visit.push(src);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                to_visit = next_visit;
+            }
+
+            if found_any {
+                // If we found start but not end, use start as end too
+                if max_end.is_empty() {
+                    max_end = min_start.clone();
+                }
+                return Ok((min_start, max_end, "ancestors".to_string()));
+            }
+        }
+
+        // Fallback: use created_at
+        Ok((
+            entry.created_at.clone(),
+            entry.created_at.clone(),
+            "created_at".to_string(),
+        ))
     }
 
     // -----------------------------------------------------------------------
@@ -1462,5 +1604,113 @@ mod tests {
         assert!(prompt.contains("Shore and Alice:"));
         assert!(!prompt.contains("{{char}}"));
         assert!(!prompt.contains("{{user}}"));
+    }
+
+    // -- Backfill timestamp tests -------------------------------------------
+
+    #[tokio::test]
+    async fn test_backfill_from_ancestors() {
+        let db = MemoryDB::open_in_memory().unwrap();
+        let now = Utc::now().to_rfc3339();
+
+        // Parent with timestamps
+        let parent = make_entry("parent1", "Parent entry", 0.9, &now);
+        db.create_entry(&parent).unwrap();
+
+        // Child with no timestamps, pointing to parent
+        let mut child = make_entry("child1", "Child entry", 0.8, &now);
+        child.start_timestamp = String::new();
+        child.end_timestamp = String::new();
+        child.source_entry_ids = "parent1".to_string();
+        db.create_entry(&child).unwrap();
+
+        let mgr = CollationManager::new(CollationConfig::default());
+        let mut outcome = CollationOutcome::default();
+        mgr.phase_backfill_timestamps(&db, 20, &mut outcome).unwrap();
+
+        assert_eq!(outcome.timestamps_backfilled, 1);
+
+        let updated = db.get_entry("child1").unwrap().unwrap();
+        assert_eq!(updated.start_timestamp, now);
+        assert_eq!(updated.end_timestamp, now);
+    }
+
+    #[tokio::test]
+    async fn test_backfill_falls_back_to_created_at() {
+        let db = MemoryDB::open_in_memory().unwrap();
+        let now = Utc::now().to_rfc3339();
+
+        // Entry with no timestamps and no source entries (V1 import)
+        let mut entry = make_entry("orphan1", "Orphan entry", 0.8, &now);
+        entry.start_timestamp = String::new();
+        entry.end_timestamp = String::new();
+        db.create_entry(&entry).unwrap();
+
+        let mgr = CollationManager::new(CollationConfig::default());
+        let mut outcome = CollationOutcome::default();
+        mgr.phase_backfill_timestamps(&db, 20, &mut outcome).unwrap();
+
+        assert_eq!(outcome.timestamps_backfilled, 1);
+
+        let updated = db.get_entry("orphan1").unwrap().unwrap();
+        assert_eq!(updated.start_timestamp, now);
+        assert_eq!(updated.end_timestamp, now);
+    }
+
+    #[tokio::test]
+    async fn test_backfill_respects_batch_size() {
+        let db = MemoryDB::open_in_memory().unwrap();
+        let now = Utc::now().to_rfc3339();
+
+        // Create 5 entries with no timestamps
+        for i in 0..5 {
+            let mut entry = make_entry(&format!("e{i}"), &format!("Entry {i}"), 0.8, &now);
+            entry.start_timestamp = String::new();
+            entry.end_timestamp = String::new();
+            db.create_entry(&entry).unwrap();
+        }
+
+        let mgr = CollationManager::new(CollationConfig::default());
+        let mut outcome = CollationOutcome::default();
+        // Batch size of 3: should only process 3 of 5
+        mgr.phase_backfill_timestamps(&db, 3, &mut outcome).unwrap();
+
+        assert_eq!(outcome.timestamps_backfilled, 3);
+    }
+
+    #[tokio::test]
+    async fn test_backfill_walks_chain() {
+        let db = MemoryDB::open_in_memory().unwrap();
+        let ts = "2026-01-15T12:00:00Z".to_string();
+
+        // Grandparent with timestamps
+        let grandparent = make_entry("gp1", "Grandparent", 0.9, &ts);
+        db.create_entry(&grandparent).unwrap();
+
+        // Parent with no timestamps, pointing to grandparent
+        let mut parent = make_entry("p1", "Parent", 0.8, &ts);
+        parent.start_timestamp = String::new();
+        parent.end_timestamp = String::new();
+        parent.source_entry_ids = "gp1".to_string();
+        db.create_entry(&parent).unwrap();
+
+        // Child with no timestamps, pointing to parent (which also has none)
+        let mut child = make_entry("c1", "Child", 0.7, &ts);
+        child.start_timestamp = String::new();
+        child.end_timestamp = String::new();
+        child.source_entry_ids = "p1".to_string();
+        db.create_entry(&child).unwrap();
+
+        let mgr = CollationManager::new(CollationConfig::default());
+        let mut outcome = CollationOutcome::default();
+        mgr.phase_backfill_timestamps(&db, 20, &mut outcome).unwrap();
+
+        // Both parent and child should be backfilled
+        assert_eq!(outcome.timestamps_backfilled, 2);
+
+        // Child should have inherited grandparent's timestamps via chain walk
+        let updated_child = db.get_entry("c1").unwrap().unwrap();
+        assert_eq!(updated_child.start_timestamp, ts);
+        assert_eq!(updated_child.end_timestamp, ts);
     }
 }

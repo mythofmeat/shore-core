@@ -720,6 +720,7 @@ pub async fn compact(
                         .await
                     {
                         Ok(outcome) => Some(json!({
+                            "timestamps_backfilled": outcome.timestamps_backfilled,
                             "tidy_splits": outcome.tidy_splits,
                             "tidy_new_entries": outcome.tidy_new_entries,
                             "collate_merges": outcome.collate_merges,
@@ -860,6 +861,7 @@ pub async fn collate(
     Ok(json!({
         "status": "collated",
         "character": char_name,
+        "timestamps_backfilled": outcome.timestamps_backfilled,
         "tidy_splits": outcome.tidy_splits,
         "tidy_new_entries": outcome.tidy_new_entries,
         "collate_merges": outcome.collate_merges,
