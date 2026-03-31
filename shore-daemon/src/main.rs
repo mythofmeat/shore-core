@@ -494,7 +494,7 @@ async fn run_collation(
     collation_vars.insert("user".to_string(), collation_display_name);
 
     let outcome = mgr
-        .run(&db, &llm, &tidy_template, &collate_template, &normalize_template, &collation_vars, None)
+        .run(&db, &llm, &tidy_template, &collate_template, &normalize_template, &collation_vars, None, None)
         .await?;
 
     info!(

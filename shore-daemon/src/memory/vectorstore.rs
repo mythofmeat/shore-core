@@ -183,6 +183,64 @@ impl VectorStore {
         Ok(())
     }
 
+    /// Retrieve stored embeddings for a set of entry IDs.
+    /// Returns a map of entry_id -> embedding for entries that exist in the store.
+    /// Entries not in the store are silently omitted.
+    pub async fn get_embeddings(
+        &self,
+        entry_ids: &[&str],
+    ) -> Result<std::collections::HashMap<String, Vec<f32>>, VectorStoreError> {
+        let mut result = std::collections::HashMap::new();
+        if entry_ids.is_empty() {
+            return Ok(result);
+        }
+
+        let table = match self.db.open_table(TABLE_NAME).execute().await {
+            Ok(t) => t,
+            Err(_) => return Ok(result),
+        };
+
+        // Build a SQL filter for the entry IDs.
+        let id_list: Vec<String> = entry_ids.iter().map(|id| format!("'{id}'")).collect();
+        let filter = format!("entry_id IN ({})", id_list.join(", "));
+
+        let mut stream: SendableRecordBatchStream = table
+            .query()
+            .only_if(filter)
+            .execute()
+            .await?;
+
+        while let Some(rb) = stream.try_next().await? {
+            let ids: &StringArray = rb
+                .column_by_name("entry_id")
+                .expect("missing entry_id column")
+                .as_any()
+                .downcast_ref()
+                .expect("entry_id not StringArray");
+            let vectors: &FixedSizeListArray = rb
+                .column_by_name("vector")
+                .expect("missing vector column")
+                .as_any()
+                .downcast_ref()
+                .expect("vector not FixedSizeListArray");
+
+            for i in 0..rb.num_rows() {
+                let entry_id = ids.value(i).to_string();
+                let vec_array = vectors.value(i);
+                let float_array: &Float32Array = vec_array
+                    .as_any()
+                    .downcast_ref()
+                    .expect("vector values not Float32Array");
+                let embedding: Vec<f32> = (0..float_array.len())
+                    .map(|j| float_array.value(j))
+                    .collect();
+                result.insert(entry_id, embedding);
+            }
+        }
+
+        Ok(result)
+    }
+
     // -----------------------------------------------------------------------
     // Helpers
     // -----------------------------------------------------------------------
@@ -406,5 +464,48 @@ mod tests {
         let err = result.unwrap_err().to_string();
         assert!(err.contains("3 dimensions"), "error should mention actual dimensions: {err}");
         assert!(err.contains("expected 4"), "error should mention expected dimensions: {err}");
+    }
+
+    #[tokio::test]
+    async fn test_get_embeddings() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = open_temp_store(tmp.path(), 4).await;
+
+        store.index_entry("e1", &[1.0, 0.0, 0.0, 0.0]).await.unwrap();
+        store.index_entry("e2", &[0.0, 1.0, 0.0, 0.0]).await.unwrap();
+        store.index_entry("e3", &[0.0, 0.0, 1.0, 0.0]).await.unwrap();
+
+        // Retrieve a subset.
+        let result = store.get_embeddings(&["e1", "e3"]).await.unwrap();
+        assert_eq!(result.len(), 2);
+        assert!(result.contains_key("e1"));
+        assert!(result.contains_key("e3"));
+        assert!(!result.contains_key("e2"));
+
+        // Verify actual values.
+        assert_eq!(result["e1"], vec![1.0, 0.0, 0.0, 0.0]);
+        assert_eq!(result["e3"], vec![0.0, 0.0, 1.0, 0.0]);
+    }
+
+    #[tokio::test]
+    async fn test_get_embeddings_missing_ids() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = open_temp_store(tmp.path(), 4).await;
+
+        store.index_entry("e1", &[1.0, 0.0, 0.0, 0.0]).await.unwrap();
+
+        // Request includes non-existent ID.
+        let result = store.get_embeddings(&["e1", "nonexistent"]).await.unwrap();
+        assert_eq!(result.len(), 1);
+        assert!(result.contains_key("e1"));
+    }
+
+    #[tokio::test]
+    async fn test_get_embeddings_empty_store() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = open_temp_store(tmp.path(), 4).await;
+
+        let result = store.get_embeddings(&["e1"]).await.unwrap();
+        assert!(result.is_empty());
     }
 }

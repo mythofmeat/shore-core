@@ -716,6 +716,7 @@ pub async fn compact(
                             &normalize_template,
                             &collation_vars,
                             None,
+                            None,
                         )
                         .await
                     {
@@ -861,7 +862,7 @@ pub async fn collate(
     loop {
         passes += 1;
         let outcome = mgr
-            .run(&db, &llm, &tidy_template, &collate_template, &normalize_template, &collation_vars, None)
+            .run(&db, &llm, &tidy_template, &collate_template, &normalize_template, &collation_vars, None, None)
             .await
             .map_err(collation_err)?;
 
