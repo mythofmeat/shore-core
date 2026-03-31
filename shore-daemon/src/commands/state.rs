@@ -7,7 +7,7 @@ use crate::engine::ConversationEngine;
 use crate::memory::agent::{AgentSearchContext, CallerIdentity, MemoryAgent, RealAgentIndexer};
 use crate::memory::agent_llm::RealAgentLlm;
 use crate::memory::collation::{
-    CollationConfig as LibCollationConfig, CollationError, CollationManager,
+    CollationConfig as LibCollationConfig, CollationError, CollationManager, CollationOutcome,
     DEFAULT_COLLATE_PROMPT, DEFAULT_NORMALIZE_PROMPT, DEFAULT_TIDY_PROMPT,
 };
 use crate::memory::collation_impls::RealCollationLlm;
@@ -804,9 +804,10 @@ fn compaction_err(e: CompactionError) -> (ErrorCode, String) {
 pub async fn collate(
     engine: &mut ConversationEngine,
     ctx: &CommandContext,
-    _args: &serde_json::Value,
+    args: &serde_json::Value,
 ) -> CommandResult {
     let char_name = engine.character_name().to_string();
+    let full_mode = args.get("full").and_then(|v| v.as_bool()).unwrap_or(false);
 
     // Open the memory database.
     let db_path = ctx
@@ -853,22 +854,46 @@ pub async fn collate(
     collation_vars.insert("char".to_string(), char_name.clone());
     collation_vars.insert("user".to_string(), collation_display_name);
 
-    let outcome = mgr
-        .run(&db, &llm, &tidy_template, &collate_template, &normalize_template, &collation_vars, None)
-        .await
-        .map_err(collation_err)?;
+    const MAX_PASSES: usize = 10;
+    let mut total = CollationOutcome::default();
+    let mut passes: usize = 0;
+
+    loop {
+        passes += 1;
+        let outcome = mgr
+            .run(&db, &llm, &tidy_template, &collate_template, &normalize_template, &collation_vars, None)
+            .await
+            .map_err(collation_err)?;
+
+        total.timestamps_backfilled += outcome.timestamps_backfilled;
+        total.tidy_splits += outcome.tidy_splits;
+        total.tidy_new_entries += outcome.tidy_new_entries;
+        total.collate_merges += outcome.collate_merges;
+        total.collate_new_entries += outcome.collate_new_entries;
+        total.entities_normalized += outcome.entities_normalized;
+        total.entries_decayed += outcome.entries_decayed;
+        total.entries_skipped += outcome.entries_skipped;
+
+        if !full_mode
+            || (outcome.collate_merges == 0 && outcome.tidy_splits == 0)
+            || passes >= MAX_PASSES
+        {
+            break;
+        }
+    }
 
     Ok(json!({
         "status": "collated",
         "character": char_name,
-        "timestamps_backfilled": outcome.timestamps_backfilled,
-        "tidy_splits": outcome.tidy_splits,
-        "tidy_new_entries": outcome.tidy_new_entries,
-        "collate_merges": outcome.collate_merges,
-        "collate_new_entries": outcome.collate_new_entries,
-        "entities_normalized": outcome.entities_normalized,
-        "entries_decayed": outcome.entries_decayed,
-        "entries_skipped": outcome.entries_skipped,
+        "passes": passes,
+        "timestamps_backfilled": total.timestamps_backfilled,
+        "tidy_splits": total.tidy_splits,
+        "tidy_new_entries": total.tidy_new_entries,
+        "collate_merges": total.collate_merges,
+        "collate_new_entries": total.collate_new_entries,
+        "entities_normalized": total.entities_normalized,
+        "entries_decayed": total.entries_decayed,
+        "entries_skipped": total.entries_skipped,
     }))
 }
 

@@ -242,6 +242,13 @@ pub enum MemoryCommand {
         limit: u32,
     },
 
+    /// Run memory collation (merge, split, normalize, decay)
+    Collate {
+        /// Run convergence mode: repeat until no merges/splits occur
+        #[arg(long)]
+        full: bool,
+    },
+
     /// Rebuild FTS and vector indexes
     Reindex,
 
@@ -321,6 +328,9 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
         // Memory: subcommands (compact/changelog/reindex) or status/query.
         CliCommand::Memory { subcommand: Some(MemoryCommand::Compact), .. } => {
             Some(("compact", json!({ "collate": true })))
+        }
+        CliCommand::Memory { subcommand: Some(MemoryCommand::Collate { full }), .. } => {
+            Some(("collate", json!({ "full": full })))
         }
         CliCommand::Memory { subcommand: Some(MemoryCommand::Changelog { limit }), .. } => {
             Some(("memory_changelog", json!({ "limit": limit })))
