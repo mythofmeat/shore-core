@@ -102,19 +102,19 @@ pub struct EntityNormalization {
 
 /// LLM client for collation phases. Uses cheap tool_model, falls back to primary.
 pub trait CollationLlm: Send + Sync {
-    /// Phase 1: Given entries, identify which are overly broad and split them.
+    /// Given entries, identify which are overly broad and split them.
     fn tidy(
         &self,
         prompt: &str,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<TidySplit>, CollationError>> + Send + '_>>;
 
-    /// Phase 2: Given entries, identify semantically similar groups and merge them.
+    /// Given entries, identify semantically similar groups and merge them.
     fn collate(
         &self,
         prompt: &str,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<CollateMerge>, CollationError>> + Send + '_>>;
 
-    /// Phase 3: Given entities, identify duplicates and normalize names.
+    /// Given entities, identify duplicates and normalize names.
     fn normalize_entities(
         &self,
         prompt: &str,
@@ -303,12 +303,12 @@ impl CollationManager {
         // This ensures all phases within one run see the same candidate set.
         let pipeline_start = Utc::now().to_rfc3339();
 
-        // Phase 1: Tidy
-        self.phase_tidy(db, llm, tidy_template, vars, &mut outcome, &mut id_counter, indexer, &pipeline_start)
+        // Phase 1: Collate (merge similar entries first to reduce count)
+        self.phase_collate(db, llm, collate_template, vars, &mut outcome, &mut id_counter, indexer, &pipeline_start)
             .await?;
 
-        // Phase 2: Collate
-        self.phase_collate(db, llm, collate_template, vars, &mut outcome, &mut id_counter, indexer, &pipeline_start)
+        // Phase 2: Tidy (split overly broad entries, including merged results)
+        self.phase_tidy(db, llm, tidy_template, vars, &mut outcome, &mut id_counter, indexer, &pipeline_start)
             .await?;
 
         // Phase 3: Normalize entities
@@ -334,7 +334,7 @@ impl CollationManager {
     }
 
     // -----------------------------------------------------------------------
-    // Phase 1: Tidy — split overly broad entries
+    // Phase 2: Tidy — split overly broad entries
     // -----------------------------------------------------------------------
 
     async fn phase_tidy(
@@ -471,7 +471,7 @@ impl CollationManager {
     }
 
     // -----------------------------------------------------------------------
-    // Phase 2: Collate — merge semantically similar entries
+    // Phase 1: Collate — merge semantically similar entries
     // -----------------------------------------------------------------------
 
     async fn phase_collate(
@@ -1404,13 +1404,13 @@ mod tests {
             .await
             .unwrap();
 
-        // Phase 1: 1 split producing 2 entries.
-        assert_eq!(outcome.tidy_splits, 1);
-        assert_eq!(outcome.tidy_new_entries, 2);
-
-        // Phase 2: 1 merge producing 1 entry.
+        // Phase 1: 1 merge producing 1 entry.
         assert_eq!(outcome.collate_merges, 1);
         assert_eq!(outcome.collate_new_entries, 1);
+
+        // Phase 2: 1 split producing 2 entries.
+        assert_eq!(outcome.tidy_splits, 1);
+        assert_eq!(outcome.tidy_new_entries, 2);
 
         // Phase 3: 1 entity normalized.
         assert_eq!(outcome.entities_normalized, 1);
