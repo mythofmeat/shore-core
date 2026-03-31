@@ -28,7 +28,8 @@ CREATE TABLE IF NOT EXISTS entries (
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL,
     entry_type      TEXT NOT NULL DEFAULT '',
-    image_path      TEXT NOT NULL DEFAULT ''
+    image_path      TEXT NOT NULL DEFAULT '',
+    collated_at     TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS entities (
@@ -90,6 +91,12 @@ CREATE TABLE IF NOT EXISTS collation_skip (
 );
 ";
 
+/// Migrations for existing databases. Safe to run repeatedly (uses IF NOT EXISTS / try-ignore).
+const MIGRATIONS_SQL: &str = "
+-- v2.1: Add collated_at column to entries (tracks when an entry was last processed by collation).
+ALTER TABLE entries ADD COLUMN collated_at TEXT NOT NULL DEFAULT '';
+";
+
 /// FTS5 virtual table for full-text search over entries.
 /// Created separately because FTS5 may not be available in all builds.
 const FTS_SCHEMA_SQL: &str = "
@@ -144,6 +151,8 @@ pub struct Entry {
     pub updated_at: String,
     pub entry_type: String,
     pub image_path: String,
+    /// When this entry was last processed by collation. Empty = never collated.
+    pub collated_at: String,
 }
 
 #[derive(Debug, Clone)]
@@ -226,6 +235,7 @@ impl MemoryDB {
         let conn = Connection::open(path)?;
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
         conn.execute_batch(SCHEMA_SQL)?;
+        Self::run_migrations(&conn);
         // FTS5 is best-effort — don't fail if the extension isn't available.
         let _ = conn.execute_batch(FTS_SCHEMA_SQL);
         Ok(Self { conn })
@@ -236,6 +246,7 @@ impl MemoryDB {
         let conn = Connection::open_in_memory()?;
         conn.execute_batch("PRAGMA foreign_keys=ON;")?;
         conn.execute_batch(SCHEMA_SQL)?;
+        Self::run_migrations(&conn);
         let _ = conn.execute_batch(FTS_SCHEMA_SQL);
         Ok(Self { conn })
     }
@@ -247,8 +258,21 @@ impl MemoryDB {
         // V1 schema is identical — no migration needed.
         // We still run CREATE IF NOT EXISTS so missing tables are harmless.
         conn.execute_batch(SCHEMA_SQL)?;
+        Self::run_migrations(&conn);
         let _ = conn.execute_batch(FTS_SCHEMA_SQL);
         Ok(Self { conn })
+    }
+
+    /// Run idempotent migrations. Each statement is tried individually;
+    /// failures (e.g. "duplicate column") are silently ignored.
+    fn run_migrations(conn: &Connection) {
+        for stmt in MIGRATIONS_SQL.lines() {
+            let trimmed = stmt.trim();
+            if trimmed.is_empty() || trimmed.starts_with("--") {
+                continue;
+            }
+            let _ = conn.execute_batch(trimmed);
+        }
     }
 
     /// Resolve the default database path for a character.
@@ -271,12 +295,12 @@ impl MemoryDB {
                 id, memory_type, source, reason, status, canonical, confidence,
                 summary_text, topic_tags, topic_key, start_timestamp, end_timestamp,
                 message_count, source_entry_ids, related_entry_ids, superseded_by,
-                created_at, updated_at, entry_type, image_path
+                created_at, updated_at, entry_type, image_path, collated_at
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7,
                 ?8, ?9, ?10, ?11, ?12,
                 ?13, ?14, ?15, ?16,
-                ?17, ?18, ?19, ?20
+                ?17, ?18, ?19, ?20, ?21
             )",
             params![
                 entry.id,
@@ -299,6 +323,7 @@ impl MemoryDB {
                 entry.updated_at,
                 entry.entry_type,
                 entry.image_path,
+                entry.collated_at,
             ],
         )?;
         Ok(())
@@ -309,7 +334,7 @@ impl MemoryDB {
             "SELECT id, memory_type, source, reason, status, canonical, confidence,
                     summary_text, topic_tags, topic_key, start_timestamp, end_timestamp,
                     message_count, source_entry_ids, related_entry_ids, superseded_by,
-                    created_at, updated_at, entry_type, image_path
+                    created_at, updated_at, entry_type, image_path, collated_at
              FROM entries WHERE id = ?1",
         )?;
         let mut rows = stmt.query_map(params![id], row_to_entry)?;
@@ -324,7 +349,7 @@ impl MemoryDB {
             "SELECT id, memory_type, source, reason, status, canonical, confidence,
                     summary_text, topic_tags, topic_key, start_timestamp, end_timestamp,
                     message_count, source_entry_ids, related_entry_ids, superseded_by,
-                    created_at, updated_at, entry_type, image_path
+                    created_at, updated_at, entry_type, image_path, collated_at
              FROM entries WHERE status = ?1 ORDER BY created_at DESC",
         )?;
         let rows = stmt.query_map(params![status], row_to_entry)?;
@@ -357,7 +382,7 @@ impl MemoryDB {
             "SELECT id, memory_type, source, reason, status, canonical, confidence,
                     summary_text, topic_tags, topic_key, start_timestamp, end_timestamp,
                     message_count, source_entry_ids, related_entry_ids, superseded_by,
-                    created_at, updated_at, entry_type, image_path
+                    created_at, updated_at, entry_type, image_path, collated_at
              FROM entries WHERE memory_type = ?1 ORDER BY created_at DESC",
         )?;
         let rows = stmt.query_map(params![memory_type], row_to_entry)?;
@@ -372,7 +397,8 @@ impl MemoryDB {
                 topic_tags = ?9, topic_key = ?10, start_timestamp = ?11,
                 end_timestamp = ?12, message_count = ?13, source_entry_ids = ?14,
                 related_entry_ids = ?15, superseded_by = ?16,
-                updated_at = ?17, entry_type = ?18, image_path = ?19
+                updated_at = ?17, entry_type = ?18, image_path = ?19,
+                collated_at = ?20
              WHERE id = ?1",
             params![
                 entry.id,
@@ -394,6 +420,7 @@ impl MemoryDB {
                 entry.updated_at,
                 entry.entry_type,
                 entry.image_path,
+                entry.collated_at,
             ],
         )
     }
@@ -822,6 +849,15 @@ impl MemoryDB {
         }
     }
 
+    /// Stamp an entry as collated at the given timestamp.
+    /// This marks the entry as processed by collation in its current form.
+    pub fn stamp_collated(&self, entry_id: &str, timestamp: &str) -> SqlResult<usize> {
+        self.conn.execute(
+            "UPDATE entries SET collated_at = ?2 WHERE id = ?1",
+            params![entry_id, timestamp],
+        )
+    }
+
     /// Update an entry's confidence score.
     pub fn set_confidence(&self, entry_id: &str, confidence: f64) -> SqlResult<usize> {
         let now = Utc::now().to_rfc3339();
@@ -837,7 +873,7 @@ impl MemoryDB {
             "SELECT e.id, e.memory_type, e.source, e.reason, e.status, e.canonical, e.confidence,
                     e.summary_text, e.topic_tags, e.topic_key, e.start_timestamp, e.end_timestamp,
                     e.message_count, e.source_entry_ids, e.related_entry_ids, e.superseded_by,
-                    e.created_at, e.updated_at, e.entry_type, e.image_path
+                    e.created_at, e.updated_at, e.entry_type, e.image_path, e.collated_at
              FROM entries e
              JOIN entry_entities ee ON e.id = ee.entry_id
              WHERE ee.entity_id = ?1",
@@ -873,6 +909,7 @@ fn row_to_entry(row: &rusqlite::Row<'_>) -> SqlResult<Entry> {
         updated_at: row.get(17)?,
         entry_type: row.get(18)?,
         image_path: row.get(19)?,
+        collated_at: row.get(20)?,
     })
 }
 
@@ -960,6 +997,7 @@ mod tests {
             updated_at: now,
             entry_type: String::new(),
             image_path: String::new(),
+            collated_at: String::new(),
         }
     }
 
@@ -1200,12 +1238,12 @@ mod tests {
                     id, memory_type, source, reason, status, canonical, confidence,
                     summary_text, topic_tags, topic_key, start_timestamp, end_timestamp,
                     message_count, source_entry_ids, related_entry_ids, superseded_by,
-                    created_at, updated_at, entry_type, image_path
+                    created_at, updated_at, entry_type, image_path, collated_at
                 ) VALUES (
                     '20240601_100000_0', 'episodic', 'summary', 'compaction', 'active', 0, 0.85,
                     'V1 memory content', 'v1,test', 'legacy', '2024-06-01T10:00:00Z', '2024-06-01T10:30:00Z',
                     10, '', '', '',
-                    '2024-06-01T10:00:00Z', '2024-06-01T10:00:00Z', '', ''
+                    '2024-06-01T10:00:00Z', '2024-06-01T10:00:00Z', '', '', ''
                 )",
                 [],
             )

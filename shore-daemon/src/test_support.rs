@@ -212,5 +212,6 @@ pub fn make_image_entry(id: &str, summary: &str, image_path: &str) -> crate::mem
         updated_at: now,
         entry_type: String::new(),
         image_path: image_path.to_string(),
+        collated_at: String::new(),
     }
 }

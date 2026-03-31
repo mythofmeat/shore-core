@@ -338,6 +338,7 @@ pub async fn handle_create_entry(
         updated_at: now_str,
         entry_type: String::new(),
         image_path: String::new(),
+        collated_at: String::new(),
     };
 
     db.create_entry(&entry)
@@ -700,6 +701,7 @@ mod tests {
             updated_at: now,
             entry_type: String::new(),
             image_path: String::new(),
+            collated_at: String::new(),
         };
         db.create_entry(&entry).unwrap();
     }

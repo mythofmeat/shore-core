@@ -829,6 +829,8 @@ async fn test_full_memory_system_e2e() {
             DEFAULT_TIDY_PROMPT,
             DEFAULT_COLLATE_PROMPT,
             DEFAULT_NORMALIZE_PROMPT,
+            &std::collections::HashMap::new(),
+            None,
         )
         .await
         .unwrap();

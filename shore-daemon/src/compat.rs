@@ -1095,6 +1095,7 @@ provider = "anthropic"
             updated_at: now.clone(),
             entry_type: String::new(),
             image_path: String::new(),
+            collated_at: String::new(),
         };
 
         db.create_entry(&make("e1", "active", "Active entry")).unwrap();

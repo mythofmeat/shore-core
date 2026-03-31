@@ -550,6 +550,7 @@ impl CompactionManager {
                 updated_at: now_str.clone(),
                 entry_type: String::new(),
                 image_path: String::new(),
+                collated_at: String::new(),
             };
 
             db.create_entry(&entry)

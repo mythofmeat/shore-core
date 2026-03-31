@@ -715,6 +715,7 @@ pub async fn compact(
                             &collate_template,
                             &normalize_template,
                             &collation_vars,
+                            None,
                         )
                         .await
                     {
@@ -852,7 +853,7 @@ pub async fn collate(
     collation_vars.insert("user".to_string(), collation_display_name);
 
     let outcome = mgr
-        .run(&db, &llm, &tidy_template, &collate_template, &normalize_template, &collation_vars)
+        .run(&db, &llm, &tidy_template, &collate_template, &normalize_template, &collation_vars, None)
         .await
         .map_err(collation_err)?;
 
@@ -1347,6 +1348,7 @@ model_id = "gpt-4o"
             updated_at: "2026-01-01T00:00:00Z".into(),
             entry_type: String::new(),
             image_path: String::new(),
+            collated_at: String::new(),
         })
         .unwrap();
         drop(db);

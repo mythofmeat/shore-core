@@ -1,3 +1,4 @@
+use crate::memory::agent::AgentIndexer;
 use crate::memory::db::{Entry, MemoryDB};
 use chrono::Utc;
 use std::collections::HashMap;
@@ -31,14 +32,6 @@ impl Default for CollationConfig {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Phase names (used as collation_skip phase keys)
-// ---------------------------------------------------------------------------
-
-const PHASE_TIDY: &str = "tidy";
-const PHASE_COLLATE: &str = "collate";
-const PHASE_DECAY: &str = "confidence_decay";
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -301,17 +294,21 @@ impl CollationManager {
         collate_template: &str,
         normalize_template: &str,
         vars: &HashMap<String, String>,
+        indexer: Option<&dyn AgentIndexer>,
     ) -> Result<CollationOutcome, CollationError> {
         let mut outcome = CollationOutcome::default();
         // Shared counter to avoid entry ID collisions across phases.
         let mut id_counter: usize = 0;
+        // Snapshot time: entries with collated_at before this are candidates.
+        // This ensures all phases within one run see the same candidate set.
+        let pipeline_start = Utc::now().to_rfc3339();
 
         // Phase 1: Tidy
-        self.phase_tidy(db, llm, tidy_template, vars, &mut outcome, &mut id_counter)
+        self.phase_tidy(db, llm, tidy_template, vars, &mut outcome, &mut id_counter, indexer, &pipeline_start)
             .await?;
 
         // Phase 2: Collate
-        self.phase_collate(db, llm, collate_template, vars, &mut outcome, &mut id_counter)
+        self.phase_collate(db, llm, collate_template, vars, &mut outcome, &mut id_counter, indexer, &pipeline_start)
             .await?;
 
         // Phase 3: Normalize entities
@@ -320,6 +317,18 @@ impl CollationManager {
 
         // Phase 4: Confidence decay
         self.phase_confidence_decay(db, &mut outcome)?;
+
+        // Stamp all active entries as collated at pipeline_start.
+        // This marks them as processed in their current form for this run.
+        let active = db
+            .get_entries_by_status("active")
+            .map_err(|e| CollationError::Db(e.to_string()))?;
+        for e in &active {
+            if e.collated_at.is_empty() || e.collated_at.as_str() < pipeline_start.as_str() {
+                db.stamp_collated(&e.id, &pipeline_start)
+                    .map_err(|e| CollationError::Db(e.to_string()))?;
+            }
+        }
 
         Ok(outcome)
     }
@@ -336,17 +345,23 @@ impl CollationManager {
         vars: &HashMap<String, String>,
         outcome: &mut CollationOutcome,
         id_counter: &mut usize,
+        indexer: Option<&dyn AgentIndexer>,
+        pipeline_start: &str,
     ) -> Result<(), CollationError> {
         let entries = db
             .get_entries_by_status("active")
             .map_err(|e| CollationError::Db(e.to_string()))?;
 
-        // Filter to entries not already processed for this phase.
+        // Filter to entries eligible for tidy:
+        // - not an image entry (image_path is the primary data)
+        // - not canonical (user-verified, do not modify)
+        // - never collated, or collated before this pipeline run started
         let candidates: Vec<&Entry> = entries
             .iter()
             .filter(|e| {
-                !db.is_collation_skipped(&e.id, PHASE_TIDY)
-                    .unwrap_or(true)
+                e.image_path.is_empty()
+                    && !e.canonical
+                    && (e.collated_at.is_empty() || e.collated_at.as_str() < pipeline_start)
             })
             .collect();
 
@@ -412,11 +427,17 @@ impl CollationManager {
                     updated_at: now_str.clone(),
                     entry_type: original.entry_type.clone(),
                     image_path: String::new(),
+                    collated_at: String::new(),
                 };
 
                 db.create_entry(&entry)
                     .map_err(|e| CollationError::Db(e.to_string()))?;
                 new_ids.push(new_id.clone());
+
+                // Index new entry into vector store + BM25 if available.
+                if let Some(idx) = indexer {
+                    let _ = idx.index_entry(&new_id, &replacement.summary_text).await;
+                }
 
                 // Changelog for each new entry.
                 let cl_id = db
@@ -432,9 +453,10 @@ impl CollationManager {
                     .map_err(|e| CollationError::Db(e.to_string()))?;
             }
 
-            // Supersede the original entry (point to first replacement).
-            if let Some(first_new) = new_ids.first() {
-                db.supersede_entry(&split.original_entry_id, first_new)
+            // Supersede the original entry (point to all replacements).
+            if !new_ids.is_empty() {
+                let all_ids = new_ids.join(",");
+                db.supersede_entry(&split.original_entry_id, &all_ids)
                     .map_err(|e| CollationError::Db(e.to_string()))?;
             }
 
@@ -442,13 +464,8 @@ impl CollationManager {
             outcome.tidy_new_entries += new_ids.len();
         }
 
-        // Mark all candidates as processed for this phase.
         let skipped = candidates.len() - splits.len();
         outcome.entries_skipped += skipped;
-        for e in &candidates {
-            db.add_collation_skip(&e.id, PHASE_TIDY)
-                .map_err(|e| CollationError::Db(e.to_string()))?;
-        }
 
         Ok(())
     }
@@ -465,16 +482,22 @@ impl CollationManager {
         vars: &HashMap<String, String>,
         outcome: &mut CollationOutcome,
         id_counter: &mut usize,
+        indexer: Option<&dyn AgentIndexer>,
+        pipeline_start: &str,
     ) -> Result<(), CollationError> {
         let entries = db
             .get_entries_by_status("active")
             .map_err(|e| CollationError::Db(e.to_string()))?;
 
+        // Filter to entries eligible for collation:
+        // - not an image entry, not canonical
+        // - never collated, or collated before this pipeline run started
         let candidates: Vec<&Entry> = entries
             .iter()
             .filter(|e| {
-                !db.is_collation_skipped(&e.id, PHASE_COLLATE)
-                    .unwrap_or(true)
+                e.image_path.is_empty()
+                    && !e.canonical
+                    && (e.collated_at.is_empty() || e.collated_at.as_str() < pipeline_start)
             })
             .collect();
 
@@ -511,11 +534,32 @@ impl CollationManager {
                 continue;
             }
 
-            // Get the first source for metadata inheritance.
-            let first_source = db
-                .get_entry(&merge.source_entry_ids[0])
-                .map_err(|e| CollationError::Db(e.to_string()))?
-                .unwrap();
+            // Collect all source entries for metadata computation.
+            let sources: Vec<Entry> = merge
+                .source_entry_ids
+                .iter()
+                .filter_map(|id| db.get_entry(id).ok().flatten())
+                .collect();
+            let first_source = &sources[0];
+
+            // Compute merged timestamps: min(start), max(end), skipping empty strings.
+            let start_timestamp = sources
+                .iter()
+                .map(|e| e.start_timestamp.as_str())
+                .filter(|t| !t.is_empty())
+                .min()
+                .unwrap_or("")
+                .to_string();
+            let end_timestamp = sources
+                .iter()
+                .map(|e| e.end_timestamp.as_str())
+                .filter(|t| !t.is_empty())
+                .max()
+                .unwrap_or("")
+                .to_string();
+
+            // Sum message counts across sources.
+            let message_count: i64 = sources.iter().map(|e| e.message_count).sum();
 
             let new_id = Self::generate_entry_id(*id_counter);
             *id_counter += 1;
@@ -531,9 +575,9 @@ impl CollationManager {
                 summary_text: merge.merged_summary.clone(),
                 topic_tags: merge.merged_topic_tags.clone(),
                 topic_key: merge.merged_topic_key.clone(),
-                start_timestamp: first_source.start_timestamp.clone(),
-                end_timestamp: first_source.end_timestamp.clone(),
-                message_count: first_source.message_count,
+                start_timestamp,
+                end_timestamp,
+                message_count,
                 source_entry_ids: merge.source_entry_ids.join(","),
                 related_entry_ids: String::new(),
                 superseded_by: String::new(),
@@ -541,10 +585,16 @@ impl CollationManager {
                 updated_at: now_str.clone(),
                 entry_type: first_source.entry_type.clone(),
                 image_path: String::new(),
+                collated_at: String::new(),
             };
 
             db.create_entry(&entry)
                 .map_err(|e| CollationError::Db(e.to_string()))?;
+
+            // Index new entry into vector store + BM25 if available.
+            if let Some(idx) = indexer {
+                let _ = idx.index_entry(&new_id, &merge.merged_summary).await;
+            }
 
             // Supersede all source entries.
             for source_id in &merge.source_entry_ids {
@@ -568,12 +618,6 @@ impl CollationManager {
 
             outcome.collate_merges += 1;
             outcome.collate_new_entries += 1;
-        }
-
-        // Mark candidates as processed.
-        for e in &candidates {
-            db.add_collation_skip(&e.id, PHASE_COLLATE)
-                .map_err(|e| CollationError::Db(e.to_string()))?;
         }
 
         Ok(())
@@ -675,19 +719,8 @@ impl CollationManager {
         let now = Utc::now();
 
         for entry in &entries {
-            // Skip entries already processed for decay this cycle.
-            if db
-                .is_collation_skipped(&entry.id, PHASE_DECAY)
-                .unwrap_or(true)
-            {
-                outcome.entries_skipped += 1;
-                continue;
-            }
-
             // Skip entries already at or below floor.
             if entry.confidence <= self.config.decay_floor {
-                db.add_collation_skip(&entry.id, PHASE_DECAY)
-                    .map_err(|e| CollationError::Db(e.to_string()))?;
                 outcome.entries_skipped += 1;
                 continue;
             }
@@ -700,8 +733,6 @@ impl CollationManager {
                 / 86400.0;
 
             if days_since <= 0.0 {
-                db.add_collation_skip(&entry.id, PHASE_DECAY)
-                    .map_err(|e| CollationError::Db(e.to_string()))?;
                 outcome.entries_skipped += 1;
                 continue;
             }
@@ -712,8 +743,6 @@ impl CollationManager {
 
             // Only update if confidence actually changed meaningfully.
             if (entry.confidence - new_confidence).abs() < 0.001 {
-                db.add_collation_skip(&entry.id, PHASE_DECAY)
-                    .map_err(|e| CollationError::Db(e.to_string()))?;
                 outcome.entries_skipped += 1;
                 continue;
             }
@@ -736,9 +765,6 @@ impl CollationManager {
                 )
                 .map_err(|e| CollationError::Db(e.to_string()))?;
             db.link_changelog_entry(cl_id, &entry.id)
-                .map_err(|e| CollationError::Db(e.to_string()))?;
-
-            db.add_collation_skip(&entry.id, PHASE_DECAY)
                 .map_err(|e| CollationError::Db(e.to_string()))?;
 
             outcome.entries_decayed += 1;
@@ -830,6 +856,7 @@ mod tests {
             updated_at: updated_at.to_string(),
             entry_type: String::new(),
             image_path: String::new(),
+            collated_at: String::new(),
         }
     }
 
@@ -876,6 +903,7 @@ mod tests {
                 DEFAULT_COLLATE_PROMPT,
                 DEFAULT_NORMALIZE_PROMPT,
                 &HashMap::new(),
+                None,
             )
             .await
             .unwrap();
@@ -923,6 +951,7 @@ mod tests {
                 DEFAULT_COLLATE_PROMPT,
                 DEFAULT_NORMALIZE_PROMPT,
                 &HashMap::new(),
+                None,
             )
             .await
             .unwrap();
@@ -968,6 +997,7 @@ mod tests {
                 DEFAULT_COLLATE_PROMPT,
                 DEFAULT_NORMALIZE_PROMPT,
                 &HashMap::new(),
+                None,
             )
             .await
             .unwrap();
@@ -1028,6 +1058,7 @@ mod tests {
                 DEFAULT_COLLATE_PROMPT,
                 DEFAULT_NORMALIZE_PROMPT,
                 &HashMap::new(),
+                None,
             )
             .await
             .unwrap();
@@ -1075,6 +1106,7 @@ mod tests {
                 DEFAULT_COLLATE_PROMPT,
                 DEFAULT_NORMALIZE_PROMPT,
                 &HashMap::new(),
+                None,
             )
             .await
             .unwrap();
@@ -1114,6 +1146,7 @@ mod tests {
                 DEFAULT_COLLATE_PROMPT,
                 DEFAULT_NORMALIZE_PROMPT,
                 &HashMap::new(),
+                None,
             )
             .await
             .unwrap();
@@ -1148,6 +1181,7 @@ mod tests {
                 DEFAULT_COLLATE_PROMPT,
                 DEFAULT_NORMALIZE_PROMPT,
                 &HashMap::new(),
+                None,
             )
             .await
             .unwrap();
@@ -1180,6 +1214,7 @@ mod tests {
                 DEFAULT_COLLATE_PROMPT,
                 DEFAULT_NORMALIZE_PROMPT,
                 &HashMap::new(),
+                None,
             )
             .await
             .unwrap();
@@ -1207,6 +1242,7 @@ mod tests {
             DEFAULT_COLLATE_PROMPT,
             DEFAULT_NORMALIZE_PROMPT,
             &HashMap::new(),
+            None,
         )
         .await
         .unwrap();
@@ -1218,14 +1254,14 @@ mod tests {
     // -- Skip optimization tests ------------------------------------------
 
     #[tokio::test]
-    async fn test_skip_prevents_reprocessing_tidy() {
+    async fn test_collated_at_prevents_reprocessing_tidy() {
         let db = MemoryDB::open_in_memory().unwrap();
         let now = now_str();
-        db.create_entry(&make_entry("e1", "A fact", 0.9, &now))
-            .unwrap();
-
-        // Pre-mark as processed for tidy.
-        db.add_collation_skip("e1", PHASE_TIDY).unwrap();
+        let mut entry = make_entry("e1", "A fact", 0.9, &now);
+        // Mark as already collated with a future timestamp so it's always >= pipeline_start.
+        let future = (Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+        entry.collated_at = future;
+        db.create_entry(&entry).unwrap();
 
         let llm = MockCollationLlm {
             tidy_response: vec![TidySplit {
@@ -1249,29 +1285,29 @@ mod tests {
                 DEFAULT_COLLATE_PROMPT,
                 DEFAULT_NORMALIZE_PROMPT,
                 &HashMap::new(),
+                None,
             )
             .await
             .unwrap();
 
-        // Tidy should have skipped e1 since it was pre-marked.
+        // Tidy should have skipped e1 since it was already collated.
         assert_eq!(outcome.tidy_splits, 0);
         assert_eq!(outcome.tidy_new_entries, 0);
 
         // e1 should still be active and unchanged.
-        let entry = db.get_entry("e1").unwrap().unwrap();
-        assert_eq!(entry.status, "active");
-        assert_eq!(entry.summary_text, "A fact");
+        let fetched = db.get_entry("e1").unwrap().unwrap();
+        assert_eq!(fetched.status, "active");
+        assert_eq!(fetched.summary_text, "A fact");
     }
 
     #[tokio::test]
-    async fn test_skip_prevents_reprocessing_decay() {
+    async fn test_decay_runs_every_time_regardless_of_collated_at() {
         let db = MemoryDB::open_in_memory().unwrap();
         let old = (Utc::now() - chrono::Duration::days(30)).to_rfc3339();
-        db.create_entry(&make_entry("old_e", "Old fact", 0.8, &old))
-            .unwrap();
-
-        // Pre-mark as processed for decay.
-        db.add_collation_skip("old_e", PHASE_DECAY).unwrap();
+        let mut entry = make_entry("old_e", "Old fact", 0.8, &old);
+        // Even with collated_at set, decay should still run.
+        entry.collated_at = old.clone();
+        db.create_entry(&entry).unwrap();
 
         let llm = MockCollationLlm::empty();
         let mgr = CollationManager::new(CollationConfig::default());
@@ -1283,16 +1319,18 @@ mod tests {
                 DEFAULT_COLLATE_PROMPT,
                 DEFAULT_NORMALIZE_PROMPT,
                 &HashMap::new(),
+                None,
             )
             .await
             .unwrap();
 
-        // Decay should have skipped this entry.
-        assert_eq!(outcome.entries_decayed, 0);
+        // Decay should run on all entries regardless of collated_at.
+        assert_eq!(outcome.entries_decayed, 1);
 
-        // Confidence should be unchanged.
-        let entry = db.get_entry("old_e").unwrap().unwrap();
-        assert!((entry.confidence - 0.8).abs() < 0.001);
+        let fetched = db.get_entry("old_e").unwrap().unwrap();
+        // After one half-life, confidence should be ~0.4 (0.8 * 0.5).
+        assert!(fetched.confidence > 0.35 && fetched.confidence < 0.45,
+            "Expected ~0.4, got {}", fetched.confidence);
     }
 
     // -- Full pipeline test -----------------------------------------------
@@ -1361,6 +1399,7 @@ mod tests {
                 DEFAULT_COLLATE_PROMPT,
                 DEFAULT_NORMALIZE_PROMPT,
                 &HashMap::new(),
+                None,
             )
             .await
             .unwrap();
