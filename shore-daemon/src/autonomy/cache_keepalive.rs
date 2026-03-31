@@ -9,10 +9,8 @@ use std::time::Instant;
 // Constants
 // ---------------------------------------------------------------------------
 
-/// Idle threshold before keepalive pings begin (seconds).
-pub const IDLE_THRESHOLD_SECS: u64 = 600; // 10 minutes
-
 /// Default interval between keepalive pings (seconds).
+/// Also used as the idle threshold before the first ping.
 pub const DEFAULT_PING_INTERVAL_SECS: u64 = 240; // 4 minutes
 
 /// Maximum number of keepalive pings before stopping.
@@ -309,7 +307,7 @@ impl CacheKeepaliveScheduler {
             None => return KeepaliveAction::None, // No API calls yet.
         };
 
-        if idle_secs >= IDLE_THRESHOLD_SECS {
+        if idle_secs >= self.config.ping_interval_secs {
             // Transition to pinging and send the first ping.
             self.state = KeepaliveState::Pinging;
             self.ping_count = 1;
@@ -428,7 +426,7 @@ mod tests {
         sched.on_api_response(t0, 1000, 1500);
 
         // Tick before idle threshold.
-        let action = sched.tick(t0 + Duration::from_secs(IDLE_THRESHOLD_SECS - 1));
+        let action = sched.tick(t0 + Duration::from_secs(DEFAULT_PING_INTERVAL_SECS - 1));
         assert_eq!(action, KeepaliveAction::None);
         assert_eq!(*sched.state(), KeepaliveState::Monitoring);
     }
@@ -440,7 +438,7 @@ mod tests {
 
         sched.on_api_response(t0, 1000, 1500);
 
-        let action = sched.tick(t0 + Duration::from_secs(IDLE_THRESHOLD_SECS));
+        let action = sched.tick(t0 + Duration::from_secs(DEFAULT_PING_INTERVAL_SECS));
         assert_eq!(action, KeepaliveAction::SendPing);
         assert_eq!(*sched.state(), KeepaliveState::Pinging);
         assert_eq!(sched.ping_count(), 1);
@@ -451,7 +449,7 @@ mod tests {
         let mut sched = CacheKeepaliveScheduler::new(anthropic_config());
         let t0 = Instant::now();
 
-        let action = sched.tick(t0 + Duration::from_secs(IDLE_THRESHOLD_SECS + 100));
+        let action = sched.tick(t0 + Duration::from_secs(DEFAULT_PING_INTERVAL_SECS + 100));
         assert_eq!(action, KeepaliveAction::None);
         assert_eq!(*sched.state(), KeepaliveState::Monitoring);
     }
@@ -466,7 +464,7 @@ mod tests {
         sched.on_api_response(t0, 1000, 1500);
 
         // First ping.
-        let t1 = t0 + Duration::from_secs(IDLE_THRESHOLD_SECS);
+        let t1 = t0 + Duration::from_secs(DEFAULT_PING_INTERVAL_SECS);
         let action = sched.tick(t1);
         assert_eq!(action, KeepaliveAction::SendPing);
 
@@ -497,7 +495,7 @@ mod tests {
         sched.on_api_response(t0, 1000, 1500);
 
         // Ping 1.
-        let t1 = t0 + Duration::from_secs(IDLE_THRESHOLD_SECS);
+        let t1 = t0 + Duration::from_secs(DEFAULT_PING_INTERVAL_SECS);
         assert_eq!(sched.tick(t1), KeepaliveAction::SendPing);
         sched.on_ping_response(t1, 1000);
 
@@ -530,7 +528,7 @@ mod tests {
         sched.on_api_response(t0, 1000, 1500);
 
         // First ping.
-        let t1 = t0 + Duration::from_secs(IDLE_THRESHOLD_SECS);
+        let t1 = t0 + Duration::from_secs(DEFAULT_PING_INTERVAL_SECS);
         assert_eq!(sched.tick(t1), KeepaliveAction::SendPing);
 
         // Ping response with cache miss.
@@ -563,7 +561,7 @@ mod tests {
         sched.set_paused(true);
 
         // Even past idle threshold, should return None when paused.
-        let action = sched.tick(t0 + Duration::from_secs(IDLE_THRESHOLD_SECS + 100));
+        let action = sched.tick(t0 + Duration::from_secs(DEFAULT_PING_INTERVAL_SECS + 100));
         assert_eq!(action, KeepaliveAction::None);
         // State should still be Monitoring (not advanced while paused).
         assert_eq!(*sched.state(), KeepaliveState::Monitoring);
@@ -577,7 +575,7 @@ mod tests {
         sched.on_api_response(t0, 1000, 1500);
         sched.set_paused(true);
 
-        let t1 = t0 + Duration::from_secs(IDLE_THRESHOLD_SECS);
+        let t1 = t0 + Duration::from_secs(DEFAULT_PING_INTERVAL_SECS);
         assert_eq!(sched.tick(t1), KeepaliveAction::None);
 
         sched.set_paused(false);
@@ -594,14 +592,14 @@ mod tests {
         sched.on_api_response(t0, 1000, 1500);
 
         // Almost at idle threshold.
-        let t1 = t0 + Duration::from_secs(IDLE_THRESHOLD_SECS - 10);
+        let t1 = t0 + Duration::from_secs(DEFAULT_PING_INTERVAL_SECS - 10);
         assert_eq!(sched.tick(t1), KeepaliveAction::None);
 
         // Non-user API call (e.g. heartbeat) resets the timer.
         sched.on_api_response(t1, 1000, 1500);
 
         // Now idle threshold is measured from t1, not t0.
-        let t2 = t1 + Duration::from_secs(IDLE_THRESHOLD_SECS - 1);
+        let t2 = t1 + Duration::from_secs(DEFAULT_PING_INTERVAL_SECS - 1);
         assert_eq!(sched.tick(t2), KeepaliveAction::None);
         assert_eq!(*sched.state(), KeepaliveState::Monitoring);
     }
@@ -614,7 +612,7 @@ mod tests {
         sched.on_api_response(t0, 1000, 1500);
 
         // Enter pinging state.
-        let t1 = t0 + Duration::from_secs(IDLE_THRESHOLD_SECS);
+        let t1 = t0 + Duration::from_secs(DEFAULT_PING_INTERVAL_SECS);
         assert_eq!(sched.tick(t1), KeepaliveAction::SendPing);
         assert_eq!(*sched.state(), KeepaliveState::Pinging);
 
@@ -632,7 +630,7 @@ mod tests {
         sched.on_api_response(t0, 1000, 1500);
 
         // Enter pinging, then cache miss → stopped.
-        let t1 = t0 + Duration::from_secs(IDLE_THRESHOLD_SECS);
+        let t1 = t0 + Duration::from_secs(DEFAULT_PING_INTERVAL_SECS);
         sched.tick(t1);
         sched.on_ping_response(t1, 0);
         assert!(matches!(
@@ -749,7 +747,7 @@ mod tests {
 
         sched.on_api_response(t0, 1234, 2000);
 
-        let t1 = t0 + Duration::from_secs(IDLE_THRESHOLD_SECS);
+        let t1 = t0 + Duration::from_secs(DEFAULT_PING_INTERVAL_SECS);
         sched.tick(t1);
 
         let action = sched.on_ping_response(t1, 0);
