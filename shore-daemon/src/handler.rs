@@ -380,16 +380,11 @@ async fn handle_generation(
         registry.get_or_create(&char_name).map_err(|e| e.to_string())?
     };
 
-    // 1. Append user message or delete last assistant message for regen.
+    // 1. Append user message or truncate after last user turn for regen.
     {
         let mut engine = engine_arc.lock().await;
         if regen {
-            let last_id = engine.messages().last()
-                .filter(|m| m.role == Role::Assistant)
-                .map(|m| m.msg_id.clone());
-            if let Some(id) = last_id {
-                engine.delete_message(&id)?;
-            }
+            engine.truncate_after_last_user_turn()?;
         } else if !body.text.is_empty() || !body.images.is_empty() {
             let images: Vec<ImageRef> = body.images.iter()
                 .map(|p| ImageRef { path: p.clone(), caption: None })

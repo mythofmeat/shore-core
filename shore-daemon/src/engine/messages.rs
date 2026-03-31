@@ -123,6 +123,28 @@ impl MessageStore {
         self.persist()
     }
 
+    /// Remove every message after the last real user turn.
+    ///
+    /// A "real user turn" is a User message that is NOT purely tool_result
+    /// content.  This wipes assistant replies, tool-use exchanges, and
+    /// tool-result messages that followed the last genuine user input.
+    /// Returns the number of messages removed.
+    pub fn truncate_after_last_user_turn(&mut self) -> Result<usize, EngineError> {
+        use shore_protocol::types::{ContentBlock, Role};
+        let keep = self.messages.iter().rposition(|m| {
+            m.role == Role::User
+                && (m.content_blocks.is_empty()
+                    || !m.content_blocks.iter().all(|b| matches!(b, ContentBlock::ToolResult { .. })))
+        }).map_or(0, |i| i + 1);
+        let removed = self.messages.len() - keep;
+        if removed > 0 {
+            info!(removed, "Truncating messages after last user turn");
+            self.messages.truncate(keep);
+            self.persist()?;
+        }
+        Ok(removed)
+    }
+
     /// Delete a message by `msg_id`. Returns an error if not found.
     pub fn delete(&mut self, msg_id: &str) -> Result<(), EngineError> {
         let idx = self

@@ -133,6 +133,15 @@ impl ConversationEngine {
         Ok(())
     }
 
+    /// Remove every message after the last real user turn (for regen).
+    pub fn truncate_after_last_user_turn(&mut self) -> Result<usize, EngineError> {
+        let removed = self.messages.truncate_after_last_user_turn()?;
+        if removed > 0 {
+            self.broadcast_history();
+        }
+        Ok(removed)
+    }
+
     /// Set swipe state on a message.
     pub fn set_swipe(
         &mut self,
