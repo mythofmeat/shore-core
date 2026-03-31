@@ -435,6 +435,18 @@ impl MemoryDB {
         )
     }
 
+    /// Permanently delete an entry by ID.
+    pub fn delete_entry(&self, id: &str) -> SqlResult<usize> {
+        self.conn
+            .execute("DELETE FROM entries WHERE id = ?1", params![id])
+    }
+
+    /// Run VACUUM to reclaim disk space after bulk deletes.
+    pub fn vacuum(&self) -> SqlResult<()> {
+        self.conn.execute_batch("VACUUM")?;
+        Ok(())
+    }
+
     // ------------------------------------------------------------------
     // Entities
     // ------------------------------------------------------------------

@@ -902,6 +902,126 @@ fn collation_err(e: CollationError) -> (ErrorCode, String) {
     (ErrorCode::InternalError, e.to_string())
 }
 
+/// Purge old superseded entries to reclaim space.
+pub async fn memory_purge(
+    engine: &mut ConversationEngine,
+    ctx: &CommandContext,
+    args: &serde_json::Value,
+) -> CommandResult {
+    let char_name = engine.character_name().to_string();
+    let older_than_str = args
+        .get("older_than")
+        .and_then(|v| v.as_str())
+        .unwrap_or("30d");
+
+    // Parse duration string (e.g., "30d", "7d").
+    let days = parse_duration_days(older_than_str).ok_or_else(|| {
+        (
+            ErrorCode::InvalidRequest,
+            format!("Invalid duration: {older_than_str}. Use format like '30d' or '7d'."),
+        )
+    })?;
+
+    let db_path = ctx
+        .data_dir
+        .join(&char_name)
+        .join("memory")
+        .join("memory.db");
+    let db = MemoryDB::open(&db_path)
+        .map_err(|e| (ErrorCode::InternalError, format!("Failed to open memory DB: {e}")))?;
+
+    let cutoff = (chrono::Utc::now() - chrono::Duration::days(days))
+        .to_rfc3339();
+
+    let superseded = db
+        .get_entries_by_status("superseded")
+        .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
+
+    let mut deleted = 0u64;
+    let mut skipped_image = 0u64;
+    let mut skipped_no_replacement = 0u64;
+
+    for entry in &superseded {
+        // Only purge entries older than the cutoff.
+        if entry.updated_at.as_str() >= cutoff.as_str() {
+            continue;
+        }
+
+        // Don't delete image entries — attachment files need separate handling.
+        if !entry.image_path.is_empty() {
+            skipped_image += 1;
+            continue;
+        }
+
+        // Verify replacement(s) still exist and are active.
+        if entry.superseded_by.is_empty() {
+            skipped_no_replacement += 1;
+            continue;
+        }
+
+        let replacements_ok = entry
+            .superseded_by
+            .split(',')
+            .map(|id| id.trim())
+            .filter(|id| !id.is_empty())
+            .all(|id| {
+                db.get_entry(id)
+                    .ok()
+                    .flatten()
+                    .map(|e| e.status == "active")
+                    .unwrap_or(false)
+            });
+
+        if !replacements_ok {
+            skipped_no_replacement += 1;
+            continue;
+        }
+
+        // Log to changelog before deleting.
+        let log_id = db
+            .append_changelog(
+                "purge",
+                &format!(
+                    "Purge superseded entry: {} (replaced by {})",
+                    entry.id, entry.superseded_by
+                ),
+            )
+            .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
+        let _ = db.link_changelog_entry(log_id, &entry.id);
+
+        db.delete_entry(&entry.id)
+            .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
+
+        deleted += 1;
+    }
+
+    // VACUUM to reclaim space after bulk deletes.
+    if deleted > 0 {
+        db.vacuum()
+            .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
+    }
+
+    Ok(json!({
+        "status": "purged",
+        "character": char_name,
+        "deleted": deleted,
+        "skipped_image": skipped_image,
+        "skipped_no_replacement": skipped_no_replacement,
+        "older_than": older_than_str,
+    }))
+}
+
+/// Parse a duration string like "30d" into days.
+fn parse_duration_days(s: &str) -> Option<i64> {
+    let s = s.trim();
+    if s.ends_with('d') {
+        s[..s.len() - 1].parse::<i64>().ok().filter(|&d| d > 0)
+    } else {
+        // Try plain number as days.
+        s.parse::<i64>().ok().filter(|&d| d > 0)
+    }
+}
+
 /// Validate configuration and return warnings/info.
 pub fn config_check(ctx: &CommandContext) -> CommandResult {
     let mut warnings: Vec<String> = Vec::new();

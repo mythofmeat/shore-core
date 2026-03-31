@@ -1041,6 +1041,7 @@ pub fn format_command(name: &str, data: &serde_json::Value) {
         "memory" => print_memory(data),
         "compact" => print_compact_result(data),
         "collate" => print_collate_result(data),
+        "memory_purge" => print_purge_result(data),
         "memory_changelog" => print_changelog(data),
         "memory_reindex" => print_reindex(data),
         "config" => print_config(data),
@@ -1462,6 +1463,35 @@ fn print_collate_result(data: &serde_json::Value) {
 
     if tidy_splits == 0 && merges == 0 && normalized == 0 && decayed == 0 && backfilled == 0 {
         write_row(&mut out, "Result", "no changes");
+    }
+
+    let _ = writeln!(out);
+}
+
+/// Print purge result.
+fn print_purge_result(data: &serde_json::Value) {
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    let width = term_width();
+
+    let char_name = data["character"].as_str().unwrap_or("unknown");
+    let older_than = data["older_than"].as_str().unwrap_or("?");
+
+    write_section_header(&mut out, "Purge", char_name, width);
+
+    write_row(&mut out, "Threshold", &format!("older than {older_than}"));
+
+    let deleted = data["deleted"].as_u64().unwrap_or(0);
+    write_row(&mut out, "Deleted", &format!("{deleted} entries"));
+
+    let skipped_image = data["skipped_image"].as_u64().unwrap_or(0);
+    if skipped_image > 0 {
+        write_row(&mut out, "Skipped (image)", &format!("{skipped_image} entries"));
+    }
+
+    let skipped_no_repl = data["skipped_no_replacement"].as_u64().unwrap_or(0);
+    if skipped_no_repl > 0 {
+        write_row(&mut out, "Skipped (no repl)", &format!("{skipped_no_repl} entries"));
     }
 
     let _ = writeln!(out);

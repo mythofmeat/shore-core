@@ -98,6 +98,7 @@ pub async fn dispatch(
         "memory_shell_end" => state::memory_shell_end(ctx, &cmd.args),
         "compact" => state::compact(engine, ctx, &cmd.args).await,
         "collate" => state::collate(engine, ctx, &cmd.args).await,
+        "memory_purge" => state::memory_purge(engine, ctx, &cmd.args).await,
         "config" => state::config(ctx, &cmd.args),
         "config_check" => state::config_check(ctx),
         "memory_reindex" => state::memory_reindex(engine, ctx).await,

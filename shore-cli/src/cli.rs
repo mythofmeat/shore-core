@@ -249,6 +249,13 @@ pub enum MemoryCommand {
         full: bool,
     },
 
+    /// Delete old superseded entries to reclaim space
+    Purge {
+        /// Minimum age of superseded entries to delete (e.g., 30d, 7d)
+        #[arg(long, default_value = "30d")]
+        older_than: String,
+    },
+
     /// Rebuild FTS and vector indexes
     Reindex,
 
@@ -331,6 +338,9 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
         }
         CliCommand::Memory { subcommand: Some(MemoryCommand::Collate { full }), .. } => {
             Some(("collate", json!({ "full": full })))
+        }
+        CliCommand::Memory { subcommand: Some(MemoryCommand::Purge { older_than }), .. } => {
+            Some(("memory_purge", json!({ "older_than": older_than })))
         }
         CliCommand::Memory { subcommand: Some(MemoryCommand::Changelog { limit }), .. } => {
             Some(("memory_changelog", json!({ "limit": limit })))
