@@ -27,7 +27,7 @@ use serde_json::{json, Value};
 use shore_daemon::autonomy::activity::{ActivityTracker, HourClassification, SESSION_GAP};
 use shore_daemon::autonomy::cache_keepalive::{
     CacheKeepaliveConfig, CacheKeepaliveScheduler, KeepaliveAction, KeepaliveState,
-    IDLE_THRESHOLD_SECS,
+    DEFAULT_PING_INTERVAL_SECS,
 };
 use shore_daemon::autonomy::heartbeat::{
     HeartbeatAction, HeartbeatScheduler, HeartbeatState, ProbeResult, DORMANT_THRESHOLD,
@@ -322,12 +322,12 @@ fn test_cache_keepalive_pings_during_idle() {
     keepalive.on_api_response(t0, 1000, 1500);
 
     // Before idle threshold — no ping.
-    let action = keepalive.tick(t0 + Duration::from_secs(IDLE_THRESHOLD_SECS - 1));
+    let action = keepalive.tick(t0 + Duration::from_secs(DEFAULT_PING_INTERVAL_SECS - 1));
     assert_eq!(action, KeepaliveAction::None);
     assert_eq!(*keepalive.state(), KeepaliveState::Monitoring);
 
     // At idle threshold — first ping.
-    let t1 = t0 + Duration::from_secs(IDLE_THRESHOLD_SECS);
+    let t1 = t0 + Duration::from_secs(DEFAULT_PING_INTERVAL_SECS);
     let action = keepalive.tick(t1);
     assert_eq!(action, KeepaliveAction::SendPing);
     assert_eq!(*keepalive.state(), KeepaliveState::Pinging);
