@@ -1,6 +1,16 @@
 //! Types shared across the memory agent module.
 
+use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+
 use serde_json::Value;
+use shore_llm_client::LlmClient;
+
+use crate::memory::compaction_impls::EmbedConfig;
+use crate::memory::db::MemoryDB;
+use crate::memory::search::Bm25Index;
+use crate::memory::vectorstore::VectorStore;
 
 // ---------------------------------------------------------------------------
 // Caller identity
@@ -133,7 +143,136 @@ pub trait AgentIndexer: Send + Sync {
         &self,
         entry_id: &str,
         text: &str,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<(), AgentError>> + Send + '_>,
-    >;
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<(), AgentError>> + Send + '_>>;
+}
+
+// ---------------------------------------------------------------------------
+// Semantic search context
+// ---------------------------------------------------------------------------
+
+/// Dependencies for semantic search within the agent tool loop.
+///
+/// When present, enables the `semantic_search` tool (hybrid vector + BM25
+/// with reciprocal rank fusion). When absent, the tool returns an error
+/// and the agent falls back to FTS5-only `search_entries`.
+pub struct AgentSearchContext {
+    pub vector_store: VectorStore,
+    pub bm25: Mutex<Bm25Index>,
+    pub llm_client: LlmClient,
+    pub embed_config: EmbedConfig,
+    bm25_populated: AtomicBool,
+}
+
+impl AgentSearchContext {
+    pub fn new(
+        vector_store: VectorStore,
+        llm_client: LlmClient,
+        embed_config: EmbedConfig,
+    ) -> Self {
+        Self {
+            vector_store,
+            bm25: Mutex::new(Bm25Index::new()),
+            llm_client,
+            embed_config,
+            bm25_populated: AtomicBool::new(false),
+        }
+    }
+
+    /// Lazy-populate the BM25 index from all active entries on first search.
+    pub fn populate_bm25_if_needed(&self, db: &MemoryDB) -> Result<(), AgentError> {
+        if self.bm25_populated.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+
+        let entries = db
+            .get_entries_by_status("active")
+            .map_err(|e| AgentError::Db(e.to_string()))?;
+
+        let mut index = self.bm25.lock().unwrap();
+        for entry in &entries {
+            index.add_document(&entry.id, &entry.summary_text);
+        }
+        drop(index);
+
+        self.bm25_populated.store(true, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Embed a query string via the configured embedding model.
+    pub async fn embed_query(&self, text: &str) -> Result<Vec<f32>, AgentError> {
+        let result = self
+            .llm_client
+            .embed(
+                &self.embed_config.provider,
+                &self.embed_config.model_id,
+                &self.embed_config.api_key,
+                self.embed_config.base_url.as_deref(),
+                &[text],
+            )
+            .await
+            .map_err(|e| AgentError::Rag(format!("embedding failed: {e}")))?;
+
+        result
+            .into_iter()
+            .next()
+            .ok_or_else(|| AgentError::Rag("empty embedding response".to_string()))
+    }
+
+    /// Update the BM25 index for a single entry (after create/update).
+    pub fn bm25_update(&self, entry_id: &str, text: &str) {
+        if let Ok(mut index) = self.bm25.lock() {
+            if text.is_empty() {
+                index.remove_document(entry_id);
+            } else {
+                index.add_document(entry_id, text);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Real agent indexer (vector + BM25)
+// ---------------------------------------------------------------------------
+
+/// Production `AgentIndexer` that embeds text and indexes into both the
+/// vector store and the BM25 index via a shared `AgentSearchContext`.
+pub struct RealAgentIndexer<'a> {
+    ctx: &'a AgentSearchContext,
+}
+
+impl<'a> RealAgentIndexer<'a> {
+    pub fn new(ctx: &'a AgentSearchContext) -> Self {
+        Self { ctx }
+    }
+}
+
+impl<'a> AgentIndexer for RealAgentIndexer<'a> {
+    fn index_entry(
+        &self,
+        entry_id: &str,
+        text: &str,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<(), AgentError>> + Send + '_>> {
+        let entry_id = entry_id.to_string();
+        let text = text.to_string();
+
+        Box::pin(async move {
+            // Update BM25 index synchronously.
+            self.ctx.bm25_update(&entry_id, &text);
+
+            // Embed and store in vector store (best-effort for empty text).
+            if text.is_empty() {
+                return Ok(());
+            }
+
+            let embedding = self.ctx.embed_query(&text).await?;
+
+            self.ctx
+                .vector_store
+                .index_entry(&entry_id, &embedding)
+                .await
+                .map_err(|e| AgentError::Indexing(e.to_string()))?;
+
+            Ok(())
+        })
+    }
 }

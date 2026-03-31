@@ -1,4 +1,4 @@
-//! Individual tool handler functions for the memory agent's 9 tools.
+//! Individual tool handler functions for the memory agent's 10 tools.
 //!
 //! Each handler takes a reference to the DB, an optional vector indexer, and the
 //! tool input as a JSON value. Returns `Ok(description)` on success or
@@ -8,11 +8,64 @@
 
 use chrono::Utc;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::memory::db::{Entry, MemoryDB};
+use crate::memory::rag::{EntryMeta, RagPipeline, SourceResult};
 
-use super::types::AgentIndexer;
+use super::types::{AgentIndexer, AgentSearchContext};
+
+// ---------------------------------------------------------------------------
+// FTS5 query sanitization
+// ---------------------------------------------------------------------------
+
+/// FTS5 operators that should be stripped from natural language queries.
+const FTS_OPERATORS: &[&str] = &["AND", "OR", "NOT", "NEAR"];
+
+/// Common stop words that add noise to FTS5 queries without helping relevance.
+const STOP_WORDS: &[&str] = &[
+    "a", "an", "the", "is", "was", "are", "were", "be", "been", "being",
+    "have", "has", "had", "do", "does", "did", "will", "would", "could",
+    "should", "may", "might", "shall", "can", "to", "of", "in", "for",
+    "on", "with", "at", "by", "from", "as", "into", "about", "between",
+    "through", "during", "before", "after", "above", "below", "up", "down",
+    "out", "off", "over", "under", "again", "then", "once", "here", "there",
+    "when", "where", "why", "how", "all", "each", "every", "both", "few",
+    "more", "most", "other", "some", "such", "no", "nor", "only", "own",
+    "same", "so", "than", "too", "very", "just", "because", "but", "if",
+    "while", "that", "this", "these", "those", "what", "which", "who",
+    "whom", "its", "it", "he", "she", "they", "them", "his", "her",
+    "their", "my", "your", "our", "me", "him", "us", "i", "we", "you",
+    "trying", "like", "also", "any", "get",
+];
+
+/// Sanitize a natural language query for FTS5.
+///
+/// FTS5 implicitly ANDs all tokens, which causes natural language queries to
+/// return zero results (every term must appear in the entry). This function
+/// strips stop words and FTS5 operators, then joins remaining terms with OR
+/// so any matching term contributes to ranking via bm25().
+fn sanitize_fts_query(raw: &str) -> String {
+    // If the query looks like it was already written as an FTS5 query
+    // (contains explicit quoted phrases or boolean operators used intentionally),
+    // pass it through as-is.
+    if raw.contains('"') {
+        return raw.to_string();
+    }
+
+    let terms: Vec<&str> = raw
+        .split(|c: char| !c.is_alphanumeric() && c != '_' && c != '\'')
+        .filter(|s| !s.is_empty())
+        .filter(|s| !FTS_OPERATORS.contains(&s.to_uppercase().as_str()))
+        .filter(|s| !STOP_WORDS.contains(&s.to_lowercase().as_str()))
+        .collect();
+
+    if terms.is_empty() {
+        return String::new();
+    }
+
+    terms.join(" OR ")
+}
 
 // ---------------------------------------------------------------------------
 // search_entries
@@ -35,7 +88,12 @@ pub fn handle_search_entries(db: &MemoryDB, input: &Value) -> Result<String, Str
         Some(status_raw)
     };
 
-    match db.search_entries_fts(&query, status, 20) {
+    let fts_query = sanitize_fts_query(&query);
+    if fts_query.is_empty() {
+        return Err("Error: query produced no searchable terms".into());
+    }
+
+    match db.search_entries_fts(&fts_query, status, 20) {
         Ok(hits) => {
             if hits.is_empty() {
                 Ok("No results.".into())
@@ -72,6 +130,134 @@ pub fn handle_search_entries(db: &MemoryDB, input: &Value) -> Result<String, Str
         }
         Err(e) => Err(format!("Search error: {e}")),
     }
+}
+
+// ---------------------------------------------------------------------------
+// semantic_search
+// ---------------------------------------------------------------------------
+
+pub async fn handle_semantic_search(
+    db: &MemoryDB,
+    search_ctx: Option<&AgentSearchContext>,
+    input: &Value,
+) -> Result<String, String> {
+    let ctx = search_ctx.ok_or_else(|| {
+        "Semantic search unavailable: no embedding model configured. Use search_entries instead."
+            .to_string()
+    })?;
+
+    let query = input["query"].as_str().unwrap_or("").trim();
+    if query.is_empty() {
+        return Err("Error: empty search query".into());
+    }
+    let top_k = input["top_k"]
+        .as_u64()
+        .unwrap_or(20)
+        .min(50) as usize;
+
+    // 1. Lazy-populate BM25 index.
+    ctx.populate_bm25_if_needed(db)
+        .map_err(|e| format!("BM25 init error: {e}"))?;
+
+    // 2. Embed the query.
+    let query_embedding = ctx
+        .embed_query(query)
+        .await
+        .map_err(|e| format!("Embedding error: {e}"))?;
+
+    // 3. Vector search (over-retrieve for RRF fusion).
+    let fetch_k = top_k * 3;
+    let vector_hits = ctx
+        .vector_store
+        .search(&query_embedding, fetch_k)
+        .await
+        .map_err(|e| format!("Vector search error: {e}"))?;
+
+    let vector_source: Vec<SourceResult> = vector_hits
+        .iter()
+        .map(|r| SourceResult {
+            entry_id: r.entry_id.clone(),
+            score: r.score as f64,
+        })
+        .collect();
+
+    // 4. BM25 search.
+    let bm25_hits = ctx.bm25.lock().unwrap().search(query, fetch_k);
+    let bm25_source: Vec<SourceResult> = bm25_hits
+        .iter()
+        .map(|r| SourceResult {
+            entry_id: r.entry_id.clone(),
+            score: r.score,
+        })
+        .collect();
+
+    // 5. Collect entry IDs from both sources.
+    let all_ids: HashSet<&str> = vector_source
+        .iter()
+        .map(|r| r.entry_id.as_str())
+        .chain(bm25_source.iter().map(|r| r.entry_id.as_str()))
+        .collect();
+
+    if all_ids.is_empty() {
+        return Ok("No results.".into());
+    }
+
+    // 6. Fetch metadata for lifecycle scoring.
+    let metadata: Vec<EntryMeta> = all_ids
+        .iter()
+        .filter_map(|id| {
+            db.get_entry(id).ok().flatten().map(|e| EntryMeta {
+                entry_id: e.id,
+                status: e.status,
+                confidence: e.confidence,
+                created_at: e.created_at,
+            })
+        })
+        .collect();
+
+    // 7. RRF fusion + lifecycle scoring.
+    let pipeline = RagPipeline::new(top_k);
+    let ranked = pipeline.retrieve(&vector_source, &bm25_source, &metadata, false);
+
+    if ranked.is_empty() {
+        return Ok("No results.".into());
+    }
+
+    // 8. Fetch full entries and format output (same format as search_entries).
+    let results: Vec<HashMap<String, Value>> = ranked
+        .iter()
+        .filter_map(|r| {
+            db.get_entry(&r.entry_id).ok().flatten().map(|e| {
+                let mut m = HashMap::new();
+                m.insert("id".into(), Value::String(e.id));
+                m.insert("summary_text".into(), Value::String(e.summary_text));
+                m.insert("topic_tags".into(), Value::String(e.topic_tags));
+                m.insert("topic_key".into(), Value::String(e.topic_key));
+                m.insert("status".into(), Value::String(e.status));
+                m.insert("memory_type".into(), Value::String(e.memory_type));
+                m.insert("created_at".into(), Value::String(e.created_at));
+                m.insert(
+                    "confidence".into(),
+                    serde_json::Number::from_f64(e.confidence)
+                        .map(Value::Number)
+                        .unwrap_or(Value::Null),
+                );
+                m.insert(
+                    "relevance_score".into(),
+                    serde_json::Number::from_f64(r.score)
+                        .map(Value::Number)
+                        .unwrap_or(Value::Null),
+                );
+                m
+            })
+        })
+        .collect();
+
+    if results.is_empty() {
+        return Ok("No results.".into());
+    }
+
+    serde_json::to_string_pretty(&results).map_err(|e| format!("JSON error: {e}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -420,10 +606,15 @@ pub async fn execute_tool(
     name: &str,
     db: &MemoryDB,
     indexer: Option<&dyn AgentIndexer>,
+    search_ctx: Option<&AgentSearchContext>,
     input: &Value,
 ) -> String {
     let result = match name {
         "search_entries" => handle_search_entries(db, input),
+        "semantic_search" => return match handle_semantic_search(db, search_ctx, input).await {
+            Ok(s) => s,
+            Err(e) => e,
+        },
         "query_db" => handle_query_db(db, input),
         "create_entry" => handle_create_entry(db, indexer, input).await,
         "update_entry" => handle_update_entry(db, indexer, input).await,
@@ -528,6 +719,60 @@ mod tests {
         let db = test_db();
         let result = handle_search_entries(&db, &json!({"query": "nonexistent"}));
         assert_eq!(result.unwrap(), "No results.");
+    }
+
+    // -- sanitize_fts_query ---------------------------------------------------
+
+    #[test]
+    fn sanitize_simple_keywords() {
+        assert_eq!(sanitize_fts_query("gemini live"), "gemini OR live");
+    }
+
+    #[test]
+    fn sanitize_strips_stop_words() {
+        let result = sanitize_fts_query("ren trying voice or video chat with qifei");
+        // "trying", "or", "with" stripped; "ren", "voice", "video", "chat", "qifei" kept
+        assert_eq!(result, "ren OR voice OR video OR chat OR qifei");
+    }
+
+    #[test]
+    fn sanitize_strips_fts_operators() {
+        assert_eq!(sanitize_fts_query("cats AND dogs"), "cats OR dogs");
+        assert_eq!(sanitize_fts_query("NOT bad"), "bad");
+    }
+
+    #[test]
+    fn sanitize_preserves_quoted_phrases() {
+        let q = r#""gemini live" voice"#;
+        assert_eq!(sanitize_fts_query(q), q);
+    }
+
+    #[test]
+    fn sanitize_all_stop_words_returns_empty() {
+        assert_eq!(sanitize_fts_query("the is a"), "");
+    }
+
+    #[test]
+    fn sanitize_natural_language_query() {
+        let result = sanitize_fts_query(
+            "ren trying voice or video chat with qifei, streaming video, voice interaction",
+        );
+        assert!(result.contains("voice"));
+        assert!(result.contains("video"));
+        assert!(result.contains("qifei"));
+        assert!(result.contains("streaming"));
+        assert!(result.contains("interaction"));
+        assert!(!result.contains("trying"));
+        assert!(!result.contains("with"));
+        // All terms joined with OR
+        for part in result.split(" OR ") {
+            assert!(!part.is_empty());
+        }
+    }
+
+    #[test]
+    fn sanitize_handles_punctuation() {
+        assert_eq!(sanitize_fts_query("hello, world!"), "hello OR world");
     }
 
     // -- query_db -------------------------------------------------------------

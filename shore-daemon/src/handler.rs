@@ -26,10 +26,12 @@ use crate::characters::CharacterRegistry;
 use crate::commands::{self, CommandContext, SessionTokens};
 use crate::engine::prompt::{self, CapabilitiesConfig, PromptParams};
 use crate::engine::tools;
-use crate::memory::agent::{AgentError, AgentIndexer, AgentRag, CallerIdentity, MemoryAgent, RagHit};
+use crate::memory::agent::{AgentError, AgentIndexer, AgentRag, AgentSearchContext, CallerIdentity, MemoryAgent, RagHit};
 use crate::memory::agent_llm::{AgentLlm, RealAgentLlm};
+use crate::memory::compaction_impls::resolve_embed_config;
 use crate::memory::db::MemoryDB;
 use crate::memory::researcher::MemoryResearcher;
+use crate::memory::vectorstore::VectorStore;
 use crate::tools::{self as tool_system, ToolContext};
 use shore_llm_client::retry::{self, RetryDecision, RetryPolicy};
 use shore_llm_client::stream::{CacheContext, StreamConsumer};
@@ -67,6 +69,7 @@ struct HandlerToolContext {
     researcher_llm_val: Option<RealAgentLlm>,
     researcher_model_val: Option<shore_config::models::ResolvedModel>,
     rag: NoopRag,
+    search_ctx: Option<AgentSearchContext>,
     image_dir_val: String,
     llm_client_val: LlmClient,
     image_gen_config_val: Option<ImageGenConfig>,
@@ -90,6 +93,7 @@ impl ToolContext for HandlerToolContext {
         self.researcher.as_ref()
     }
     fn indexer(&self) -> Option<&dyn AgentIndexer> { None }
+    fn search_context(&self) -> Option<&AgentSearchContext> { self.search_ctx.as_ref() }
     fn rag(&self) -> &dyn AgentRag { &self.rag }
     fn image_dir(&self) -> &str { &self.image_dir_val }
     fn llm_client(&self) -> Option<&LlmClient> { Some(&self.llm_client_val) }
@@ -677,6 +681,27 @@ async fn handle_generation(
             &effective_config.models.image_generation,
         ).ok();
 
+        // Build semantic search context (graceful: None if no embedding model configured).
+        let search_ctx = match resolve_embed_config(
+            effective_config.app.defaults.embedding.as_deref(),
+            &effective_config.models.embedding,
+        ) {
+            Ok(embed_config) => {
+                let vs_path = data_dir
+                    .join(&char_name)
+                    .join("memory")
+                    .join("vectorstore");
+                match VectorStore::open(&vs_path, embed_config.dimensions).await {
+                    Ok(vs) => Some(AgentSearchContext::new(vs, ctx.llm_client.clone(), embed_config)),
+                    Err(e) => {
+                        warn!("Failed to open vector store for semantic search: {e}");
+                        None
+                    }
+                }
+            }
+            Err(_) => None, // No embedding model configured — semantic search unavailable.
+        };
+
         let tool_ctx = HandlerToolContext {
             db: memory_db,
             agent: MemoryAgent::one_shot(
@@ -694,6 +719,7 @@ async fn handle_generation(
             }),
             researcher_model_val: researcher_model.clone(),
             rag: NoopRag,
+            search_ctx,
             image_dir_val: data_dir
                 .join(&char_name)
                 .join("images")

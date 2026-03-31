@@ -83,8 +83,9 @@ Audit trail of all mutations (operation, description, timestamp).
 
 You have these tools for interacting with the memory database:
 
-- **search_entries**: Full-text search over memory entries. Uses stemming (e.g. "running" matches "run") and relevance ranking. Much better than SQL LIKE for finding entries by content, topic, or person name. Supports words, "quoted phrases", and boolean operators (AND, OR, NOT). Returns up to 20 results ranked by relevance. **Use this as your first choice for finding entries.**
-- **query_db**: Run a read-only SQL SELECT query (max 50 rows). Use this for structured queries: counts, date ranges, joins, aggregations, and queries that search_entries can't handle. Do NOT use `LIKE '%keyword%'` for content search — use search_entries instead.
+- **semantic_search**: Natural language search using vector similarity and keyword matching (hybrid search). Pass a query in natural language and it returns entries ranked by semantic relevance. **Use this as your first choice for natural language queries** — it finds conceptually related entries even when exact keywords don't match. Optional `top_k` parameter (default 10).
+- **search_entries**: Full-text search over memory entries. Uses stemming (e.g. "running" matches "run") and relevance ranking. Supports words, "quoted phrases", and boolean operators (AND, OR, NOT). Returns up to 20 results ranked by relevance. Best for **keyword-specific** searches where you know the exact terms to look for.
+- **query_db**: Run a read-only SQL SELECT query (max 50 rows). Use this for structured queries: counts, date ranges, joins, aggregations, and queries that search_entries can't handle. Do NOT use `LIKE '%keyword%'` for content search — use semantic_search or search_entries instead.
 - **update_entry**: Update fields on an existing entry.
 - **supersede_entry**: Mark an entry as superseded (replaced by a newer one).
 - **create_entry**: Create a new memory entry.
@@ -119,15 +120,16 @@ When confirming writes:
 
 When looking up information, follow this order:
 
-1. **Start with `search_entries`** — it handles stemming, relevance ranking, and partial matches. Use simple keywords first (e.g. `Sam Okafor`), then refine with boolean operators if needed (`Sam AND job`).
-2. **Fall back to `query_db`** only when you need:
+1. **Start with `semantic_search`** for natural language queries — it combines vector similarity with keyword matching to find conceptually related entries even when exact terms don't appear. Use this for questions like "what does she think about her job?" or "who are her close friends?".
+2. **Use `search_entries`** for keyword-specific lookups where you know the exact terms — names, places, specific phrases. It handles stemming and boolean operators (`Sam AND job`).
+3. **Fall back to `query_db`** only when you need:
    - Exact field matching (`WHERE status = 'superseded'`)
    - Date range filters (`WHERE created_at > '2026-01-01'`)
    - Counts or aggregations (`SELECT COUNT(*)`)
    - Joins across tables (entities, flags, changelog)
-3. **Combine both** for complex lookups: use `search_entries` to find relevant entry IDs, then `query_db` to get related entities or flags for those entries.
+4. **Combine tools** for complex lookups: use `semantic_search` to find relevant entries, then `query_db` to get related entities or flags for those entry IDs.
 
-Never use `LIKE '%keyword%'` in `query_db` for content search — `search_entries` is strictly better for this (it uses stemming and relevance ranking).
+Never use `LIKE '%keyword%'` in `query_db` for content search — `semantic_search` and `search_entries` are strictly better.
 
 ## Consolidation: Avoid Duplicates
 

@@ -330,6 +330,7 @@ async fn run_benchmark_mixed(
             agent_model,
             db,
             None,
+            None,
         )
         .await;
 

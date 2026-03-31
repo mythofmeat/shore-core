@@ -174,6 +174,24 @@ pub fn tool_definitions() -> Vec<Value> {
                 "required": ["entry_id", "flag_type", "reason"]
             }
         }),
+        json!({
+            "name": "semantic_search",
+            "description": "Semantic similarity search over memory entries. Embeds the query and finds entries with similar meaning, even when exact keywords don't match. Best for natural language queries, paraphrases, and conceptual searches. Returns up to 20 results ranked by combined relevance (vector similarity + keyword match + recency + confidence). If unavailable (no embedding model configured), returns an error — fall back to search_entries.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Natural language query describing what you're looking for."
+                    },
+                    "top_k": {
+                        "type": "integer",
+                        "description": "Maximum results to return. Default: 20, max: 50."
+                    }
+                },
+                "required": ["query"]
+            }
+        }),
     ]
 }
 
@@ -182,9 +200,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tool_definitions_returns_9_tools() {
+    fn tool_definitions_returns_10_tools() {
         let tools = tool_definitions();
-        assert_eq!(tools.len(), 9);
+        assert_eq!(tools.len(), 10);
 
         let names: Vec<&str> = tools
             .iter()
@@ -199,6 +217,7 @@ mod tests {
         assert!(names.contains(&"merge_entity"));
         assert!(names.contains(&"resolve_flag"));
         assert!(names.contains(&"create_flag"));
+        assert!(names.contains(&"semantic_search"));
     }
 
     #[test]

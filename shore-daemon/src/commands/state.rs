@@ -4,7 +4,7 @@ use shore_protocol::types::{ContentBlock, Role};
 
 use shore_config::resolve_prompt_template;
 use crate::engine::ConversationEngine;
-use crate::memory::agent::{CallerIdentity, MemoryAgent};
+use crate::memory::agent::{AgentSearchContext, CallerIdentity, MemoryAgent, RealAgentIndexer};
 use crate::memory::agent_llm::RealAgentLlm;
 use crate::memory::collation::{
     CollationConfig as LibCollationConfig, CollationError, CollationManager,
@@ -335,8 +335,28 @@ async fn memory_query(
     let agent = MemoryAgent::one_shot(CallerIdentity::User, &display_name, char_name);
     let agent_llm = RealAgentLlm::new(ctx.llm_client.clone());
 
+    // Build semantic search context (graceful: None if no embedding model).
+    let search_ctx = match resolve_embed_config(
+        ctx.config.app.defaults.embedding.as_deref(),
+        &ctx.config.models.embedding,
+    ) {
+        Ok(embed_config) => {
+            let vs_path = ctx.data_dir
+                .join(char_name)
+                .join("memory")
+                .join("vectorstore");
+            VectorStore::open(&vs_path, embed_config.dimensions)
+                .await
+                .ok()
+                .map(|vs| AgentSearchContext::new(vs, ctx.llm_client.clone(), embed_config))
+        }
+        Err(_) => None,
+    };
+    let real_indexer = search_ctx.as_ref().map(RealAgentIndexer::new);
+    let indexer = real_indexer.as_ref().map(|i| i as &dyn crate::memory::agent::AgentIndexer);
+
     let result = agent
-        .ask(query, &agent_llm, &db, None, &agent_model)
+        .ask(query, &agent_llm, &db, indexer, search_ctx.as_ref(), &agent_model)
         .await
         .map_err(|e| (ErrorCode::InternalError, format!("Memory query failed: {e}")))?;
 
@@ -428,6 +448,26 @@ pub async fn memory_shell_query(
 
     let agent_llm = RealAgentLlm::new(ctx.llm_client.clone());
 
+    // Build semantic search context (graceful: None if no embedding model).
+    let search_ctx = match resolve_embed_config(
+        ctx.config.app.defaults.embedding.as_deref(),
+        &ctx.config.models.embedding,
+    ) {
+        Ok(embed_config) => {
+            let vs_path = ctx.data_dir
+                .join(&session.character)
+                .join("memory")
+                .join("vectorstore");
+            VectorStore::open(&vs_path, embed_config.dimensions)
+                .await
+                .ok()
+                .map(|vs| AgentSearchContext::new(vs, ctx.llm_client.clone(), embed_config))
+        }
+        Err(_) => None,
+    };
+    let real_indexer = search_ctx.as_ref().map(RealAgentIndexer::new);
+    let indexer = real_indexer.as_ref().map(|i| i as &dyn crate::memory::agent::AgentIndexer);
+
     let mutations = session
         .agent
         .run_query(
@@ -435,7 +475,8 @@ pub async fn memory_shell_query(
             &mut session.history,
             &agent_llm,
             &db,
-            None,
+            indexer,
+            search_ctx.as_ref(),
             &session.model,
             None, // no confirmation callback
         )
