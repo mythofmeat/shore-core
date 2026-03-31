@@ -49,6 +49,9 @@ pub struct ConversationMessage {
     pub role: String,
     pub content: String,
     pub timestamp: String,
+    /// True when a user message's content_blocks are ALL ToolResult
+    /// (i.e. a tool-loop intermediate, not a real user turn).
+    pub is_tool_result_only: bool,
 }
 
 /// A memory entry extracted by the LLM during compaction.
@@ -76,6 +79,7 @@ pub struct CompactionResult {
     pub new_conversation_id: String,
     pub message_count: usize,
     pub retained_count: usize,
+    pub retained_turns: usize,
     pub recap_generated: bool,
 }
 
@@ -86,6 +90,7 @@ pub struct DryRunResult {
     pub entries_preview: Vec<CompactedEntry>,
     pub message_count: usize,
     pub retained_count: usize,
+    pub retained_turns: usize,
     pub recap_preview: Option<String>,
 }
 
@@ -337,14 +342,7 @@ impl CompactionManager {
     /// that appear right before a tool_result user message.
     fn is_tool_loop_message(msg: &ConversationMessage) -> bool {
         match msg.role.as_str() {
-            "user" => {
-                // Tool-result messages have empty text content (the actual
-                // tool_result blocks are in content_blocks which aren't in
-                // ConversationMessage).  However, a real user message will
-                // have non-empty content.  An empty-content user message is
-                // a tool-result intermediate.
-                msg.content.is_empty()
-            }
+            "user" => msg.is_tool_result_only,
             "assistant" => {
                 // Assistant messages in tool loops have empty text content
                 // (all their content is tool_use blocks).
@@ -501,6 +499,8 @@ impl CompactionManager {
         // Parse recap + entries from LLM response.
         let (recap, compacted) = parse_compaction_response(&raw_response)?;
 
+        let retained_turns = self.config.keep_recent_turns;
+
         // Dry run: return preview without side effects.
         if dry_run {
             return Ok(CompactionOutcome::DryRun(DryRunResult {
@@ -508,6 +508,7 @@ impl CompactionManager {
                 entries_preview: compacted,
                 message_count: split_at,
                 retained_count: messages.len() - split_at,
+                retained_turns,
                 recap_preview: recap,
             }));
         }
@@ -590,6 +591,7 @@ impl CompactionManager {
             new_conversation_id,
             message_count: split_at,
             retained_count: retained,
+            retained_turns,
             recap_generated: recap.is_some(),
         }))
     }
@@ -732,6 +734,7 @@ mod tests {
                 },
                 content: format!("Message {i}"),
                 timestamp: Utc::now().to_rfc3339(),
+                is_tool_result_only: false,
             })
             .collect()
     }
@@ -844,11 +847,13 @@ They discussed daily activities and the user's beverage preferences.
                 role: "user".to_string(),
                 content: "Hello!".to_string(),
                 timestamp: "2026-03-25T10:00:00Z".to_string(),
+                is_tool_result_only: false,
             },
             ConversationMessage {
                 role: "assistant".to_string(),
                 content: "Hi there!".to_string(),
                 timestamp: "2026-03-25T10:00:01Z".to_string(),
+                is_tool_result_only: false,
             },
         ];
 
@@ -924,6 +929,79 @@ They discussed daily activities and the user's beverage preferences.
         assert!(!mgr.has_enough_turns(19));
         assert!(mgr.has_enough_turns(20));
         assert!(mgr.has_enough_turns(100));
+    }
+
+    // -- Tests: find_turn_split with tool-result messages ----------------------
+
+    #[test]
+    fn test_find_turn_split_skips_tool_result_messages() {
+        // Simulate: user, assistant, tool-result-user, assistant, user, assistant
+        // Real user turns: index 0 and index 4.  With keep_turns=1, we should
+        // retain from index 4 onward (the last real turn + its assistant reply).
+        let messages = vec![
+            ConversationMessage {
+                role: "user".to_string(),
+                content: "Hello".to_string(),
+                timestamp: "t0".to_string(),
+                is_tool_result_only: false,
+            },
+            ConversationMessage {
+                role: "assistant".to_string(),
+                content: "".to_string(), // tool_use only
+                timestamp: "t1".to_string(),
+                is_tool_result_only: false,
+            },
+            ConversationMessage {
+                role: "user".to_string(),
+                content: "tool output here".to_string(),
+                timestamp: "t2".to_string(),
+                is_tool_result_only: true, // tool-result intermediate
+            },
+            ConversationMessage {
+                role: "assistant".to_string(),
+                content: "Based on the tool result...".to_string(),
+                timestamp: "t3".to_string(),
+                is_tool_result_only: false,
+            },
+            ConversationMessage {
+                role: "user".to_string(),
+                content: "Thanks!".to_string(),
+                timestamp: "t4".to_string(),
+                is_tool_result_only: false,
+            },
+            ConversationMessage {
+                role: "assistant".to_string(),
+                content: "You're welcome!".to_string(),
+                timestamp: "t5".to_string(),
+                is_tool_result_only: false,
+            },
+        ];
+
+        // keep 1 turn → split at index 4 (the last real user turn)
+        assert_eq!(CompactionManager::find_turn_split(&messages, 1), 4);
+        // keep 2 turns → split at index 0 (both real user turns retained)
+        assert_eq!(CompactionManager::find_turn_split(&messages, 2), 0);
+    }
+
+    #[test]
+    fn test_find_turn_split_all_tool_results_returns_zero() {
+        // Edge case: only tool-result user messages, no real turns.
+        let messages = vec![
+            ConversationMessage {
+                role: "user".to_string(),
+                content: "tool output".to_string(),
+                timestamp: "t0".to_string(),
+                is_tool_result_only: true,
+            },
+            ConversationMessage {
+                role: "assistant".to_string(),
+                content: "response".to_string(),
+                timestamp: "t1".to_string(),
+                is_tool_result_only: false,
+            },
+        ];
+
+        assert_eq!(CompactionManager::find_turn_split(&messages, 1), 0);
     }
 
     // -- Tests: compaction with retention -------------------------------------

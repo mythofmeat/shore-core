@@ -378,42 +378,49 @@ fn make_conversation() -> Vec<ConversationMessage> {
             content: "Hi! I just got back from Tokyo. The ramen there was incredible."
                 .to_string(),
             timestamp: (base - chrono::Duration::minutes(10)).to_rfc3339(),
+            is_tool_result_only: false,
         },
         ConversationMessage {
             role: "assistant".to_string(),
             content: "Welcome back! Tokyo ramen is legendary. Did you have a favorite spot?"
                 .to_string(),
             timestamp: (base - chrono::Duration::minutes(9)).to_rfc3339(),
+            is_tool_result_only: false,
         },
         ConversationMessage {
             role: "user".to_string(),
             content: "Ichiran in Shibuya was the best. I prefer tonkotsu broth over miso."
                 .to_string(),
             timestamp: (base - chrono::Duration::minutes(8)).to_rfc3339(),
+            is_tool_result_only: false,
         },
         ConversationMessage {
             role: "assistant".to_string(),
             content: "Ichiran is a classic choice! Tonkotsu is rich and creamy. Did you try any other food?"
                 .to_string(),
             timestamp: (base - chrono::Duration::minutes(7)).to_rfc3339(),
+            is_tool_result_only: false,
         },
         ConversationMessage {
             role: "user".to_string(),
             content: "Yes, I had amazing sushi at Tsukiji market. Also tried takoyaki in Osaka on the way back."
                 .to_string(),
             timestamp: (base - chrono::Duration::minutes(6)).to_rfc3339(),
+            is_tool_result_only: false,
         },
         ConversationMessage {
             role: "user".to_string(),
             content: "By the way, I'm working on a Rust project for my company ACME Corp."
                 .to_string(),
             timestamp: (base - chrono::Duration::minutes(5)).to_rfc3339(),
+            is_tool_result_only: false,
         },
         ConversationMessage {
             role: "assistant".to_string(),
             content: "That sounds great! What kind of Rust project is it?"
                 .to_string(),
             timestamp: (base - chrono::Duration::minutes(4)).to_rfc3339(),
+            is_tool_result_only: false,
         },
     ]
 }

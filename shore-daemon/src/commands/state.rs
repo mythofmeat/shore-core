@@ -1,6 +1,6 @@
 use serde_json::json;
 use shore_protocol::error::ErrorCode;
-use shore_protocol::types::Role;
+use shore_protocol::types::{ContentBlock, Role};
 
 use shore_config::resolve_prompt_template;
 use crate::engine::ConversationEngine;
@@ -501,6 +501,11 @@ pub async fn compact(
             },
             content: m.content.clone(),
             timestamp: m.timestamp.clone(),
+            is_tool_result_only: m.role == Role::User
+                && !m.content_blocks.is_empty()
+                && m.content_blocks
+                    .iter()
+                    .all(|b| matches!(b, ContentBlock::ToolResult { .. })),
         })
         .collect();
 
@@ -704,6 +709,7 @@ pub async fn compact(
                 "entry_ids": result.entries_created,
                 "message_count": result.message_count,
                 "retained_count": result.retained_count,
+                "retained_turns": result.retained_turns,
                 "recap_generated": result.recap_generated,
                 "new_conversation_id": result.new_conversation_id,
                 "collation": collation_result,
@@ -731,6 +737,7 @@ pub async fn compact(
                 "entries_preview": previews,
                 "message_count": result.message_count,
                 "retained_count": result.retained_count,
+                "retained_turns": result.retained_turns,
                 "recap_preview": result.recap_preview,
             }))
         }

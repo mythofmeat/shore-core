@@ -376,29 +376,7 @@ impl ConversationManager for RealConversationManager {
             .collect();
 
         let keep = params.keep_last_n.min(lines.len());
-        let mut split_at = lines.len() - keep;
-
-        // Don't split inside a tool-use loop.  Walk backwards from the
-        // split point until we hit a line that isn't a tool-loop
-        // intermediate (empty-content user or assistant message).
-        while split_at > 0 && split_at < lines.len() {
-            if let Ok(msg) = serde_json::from_str::<serde_json::Value>(lines[split_at]) {
-                let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
-                let content = msg.get("content").and_then(|c| c.as_str()).unwrap_or("");
-                let has_content_blocks = msg.get("content_blocks")
-                    .and_then(|b| b.as_array())
-                    .map_or(false, |a| !a.is_empty());
-                // A tool-loop intermediate: empty text content but has content_blocks
-                let is_tool_intermediate = content.is_empty() && has_content_blocks
-                    && (role == "user" || role == "assistant");
-                if !is_tool_intermediate {
-                    break;
-                }
-            } else {
-                break;
-            }
-            split_at -= 1;
-        }
+        let split_at = lines.len() - keep;
 
         let archive_lines = &lines[..split_at];
         let retained_lines = &lines[split_at..];

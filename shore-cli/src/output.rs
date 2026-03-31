@@ -1358,14 +1358,14 @@ fn print_compact_result(data: &serde_json::Value) {
         let would = data["would_create_entries"].as_u64().unwrap_or(0);
         write_row(&mut out, "Would create", &format!("{would} entries"));
         let msgs = data["message_count"].as_u64().unwrap_or(0);
-        let retained = data["retained_count"].as_u64().unwrap_or(0);
-        write_row(&mut out, "Messages", &format!("{msgs} → {retained} retained"));
+        let retained_turns = data["retained_turns"].as_u64().unwrap_or(0);
+        write_row(&mut out, "Messages", &format!("{msgs} compacted, {retained_turns} turns retained"));
     } else {
         let entries = data["entries_created"].as_u64().unwrap_or(0);
         write_row(&mut out, "Entries", &format!("{entries} new"));
         let msgs = data["message_count"].as_u64().unwrap_or(0);
-        let retained = data["retained_count"].as_u64().unwrap_or(0);
-        write_row(&mut out, "Messages", &format!("{msgs} → {retained} retained"));
+        let retained_turns = data["retained_turns"].as_u64().unwrap_or(0);
+        write_row(&mut out, "Messages", &format!("{msgs} compacted, {retained_turns} turns retained"));
         if data["recap_generated"].as_bool().unwrap_or(false) {
             write_row(&mut out, "Recap", "generated");
         }

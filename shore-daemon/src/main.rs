@@ -27,6 +27,7 @@ use shore_daemon::memory::vectorstore::VectorStore;
 use shore_daemon::server::registry::{InstanceInfo, Registry};
 use shore_daemon::server::{Server, ServerConfig};
 use shore_protocol::server_msg::ServerMessage;
+use shore_protocol::types::ContentBlock;
 use tokio::sync::{broadcast, mpsc};
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
@@ -294,10 +295,16 @@ async fn run_compaction(
             continue;
         }
         let msg: shore_protocol::types::Message = serde_json::from_str(line)?;
+        let is_tool_result_only = msg.role == shore_protocol::types::Role::User
+            && !msg.content_blocks.is_empty()
+            && msg.content_blocks
+                .iter()
+                .all(|b| matches!(b, ContentBlock::ToolResult { .. }));
         messages.push(ConversationMessage {
             role: format!("{:?}", msg.role).to_lowercase(),
             content: msg.content,
             timestamp: msg.timestamp,
+            is_tool_result_only,
         });
     }
 
@@ -386,8 +393,8 @@ async fn run_compaction(
             info!(
                 character = %character,
                 entries = result.entries_created.len(),
-                messages = result.message_count,
-                retained = result.retained_count,
+                compacted_messages = result.message_count,
+                retained_turns = result.retained_turns,
                 recap = result.recap_generated,
                 "Background compaction completed"
             );
