@@ -169,3 +169,17 @@ Rewrote the memory collation pipeline to fix multiple design flaws in the origin
 **Why**: The `collation_skip` table made collation permanently one-shot per entry — confidence decay ran once and never again, entries left alone could never be reconsidered. Batch LLM calls didn't scale (all candidates in one prompt). 74% of entries had empty timestamps from V1 import propagating through collation. Image and canonical entries had no protection from merge/split.
 
 **Trade-off**: The `collation_skip` table and its DB methods still exist (no destructive removal) but are no longer called by collation. The vector store parameter is optional — clustering falls back to sequential chunking without it. The `collated_at` watermark uses string comparison of RFC3339 timestamps, which is correct for lexicographic ordering but fragile if non-RFC3339 values are stored.
+
+### OpenRouter proxy removed from Anthropic SDK (2026-04-01)
+
+**Decision:** The Anthropic SDK (`sdk = "anthropic"`) no longer supports custom `base_url`. Setting one is a runtime error with a message pointing to the `openrouter` SDK. Localhost is exempted for unit tests.
+
+**Changes made:**
+- Removed `base_url()`, `is_native_anthropic()`, and Bearer auth fallback from `anthropic.rs`
+- Removed OpenRouter `provider` routing block from `build_body()`
+- Removed `strip_thinking_from_prior_assistants()` — the Anthropic API handles thinking block stripping internally (confirmed via live testing with adaptive thinking on direct Anthropic)
+- Added race condition guard in `execute_keepalive_ping()` — re-checks keepalive state under the lock before sending to prevent stale pings when a concurrent handler transitions state
+
+**Why:** A/B testing with identical request bodies showed OpenRouter intermittently drops prompt cache hits even with static, never-changing system prompt breakpoints and 1h TTL. Direct Anthropic API gets 100% cache hits with the exact same code. Client-side thinking stripping was also unnecessary — the API strips prior-turn thinking internally and the cache key accounts for it. Supporting a proxy path that silently degrades caching is worse than not supporting it.
+
+**Trade-off:** Users who were routing Anthropic models through OpenRouter must switch to using the `openrouter` SDK (which uses the OpenAI-compatible path). This is the correct approach anyway — OpenRouter's API is OpenAI-compatible, not Anthropic-compatible.

@@ -21,7 +21,7 @@ use tracing::{debug, error, info, warn};
 
 use super::activity::{ActivityTracker, HourClassification};
 use super::cache_keepalive::{
-    CacheKeepaliveConfig, CacheKeepaliveScheduler, KeepaliveAction,
+    CacheKeepaliveConfig, CacheKeepaliveScheduler, KeepaliveAction, KeepaliveState,
 };
 use super::heartbeat::{
     self, HeartbeatAction, HeartbeatScheduler, HeartbeatState, ProbeResult,
@@ -945,9 +945,16 @@ async fn execute_keepalive_ping(
 ) {
     let Some(client) = llm_client else { return };
 
-    // Clone the last request from state (if available), with max_tokens=1.
+    // Re-check state under the lock before sending.  The tick loop decides
+    // the keepalive action inside the lock, but executes the ping outside it.
+    // A concurrent handler notify_api_response() can transition state between
+    // the decision and execution — this guard prevents stale pings.
     let request = {
         let s = state.lock().unwrap();
+        if !matches!(s.cache_keepalive.state(), &KeepaliveState::Pinging) {
+            debug!(character, "Cache keepalive: state changed since tick, skipping ping");
+            return;
+        }
         info!(
             character = %character,
             ping_count = s.cache_keepalive.ping_count(),

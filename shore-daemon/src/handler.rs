@@ -485,14 +485,8 @@ async fn handle_generation(
 
     // 7. Build LLM messages from assembled prompt.
     //
-    // Build LLM messages with ALL content blocks intact — including
-    // thinking/redacted_thinking on every assistant message.  Thinking
-    // stripping is deferred to build_body (strip_thinking_from_prior_assistants)
-    // which operates on a clone, ensuring the request messages are
-    // deterministic regardless of which assistant is "last".  This is
-    // critical for cache stability: if the handler strips thinking based
-    // on is_last_assistant, the same message's content changes between
-    // turns as new messages are added, busting the cache prefix.
+    // All content blocks are sent intact — the Anthropic API handles
+    // thinking block stripping for prior turns internally.
     let llm_messages: Vec<Value> = prompt_result
         .messages
         .iter()

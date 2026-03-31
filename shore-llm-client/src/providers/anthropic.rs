@@ -49,60 +49,6 @@ fn strip_cache_control(messages: &mut [Value]) {
     }
 }
 
-/// Strip `thinking` and `redacted_thinking` blocks from all assistant
-/// messages except the last one.  The Anthropic API removes thinking from
-/// "previous turns" internally, but this removal changes the effective
-/// prefix content and busts the cache.  Pre-stripping makes the wire
-/// payload match the API's internal representation so the cache key stays
-/// stable across tool-loop iterations.
-fn strip_thinking_from_prior_assistants(messages: &[Value]) -> Vec<Value> {
-    // Find the last real (non-tool-result) user message.  All assistant
-    // messages BEFORE it are "prior turns" whose thinking can be stripped.
-    // All assistant messages AT or AFTER it are part of the current exchange
-    // (tool-use loop) and must keep their thinking — the Anthropic API
-    // requires thinking continuity within a tool-use exchange, and stripping
-    // would change the prefix bytes and bust the cache.
-    let last_real_user_idx = messages
-        .iter()
-        .rposition(|m| {
-            m.get("role").and_then(Value::as_str) == Some("user")
-                && !is_tool_result_message(m)
-        })
-        .unwrap_or(0);
-
-    let mut result = messages.to_vec();
-
-    for (i, msg) in result.iter_mut().enumerate() {
-        if i >= last_real_user_idx {
-            break; // Don't touch the current exchange.
-        }
-        if msg.get("role").and_then(Value::as_str) != Some("assistant") {
-            continue;
-        }
-        let Some(arr) = msg.get("content").and_then(Value::as_array) else {
-            continue;
-        };
-        let stripped: Vec<Value> = arr
-            .iter()
-            .filter(|b| {
-                let t = b.get("type").and_then(Value::as_str).unwrap_or("");
-                t != "thinking" && t != "redacted_thinking"
-            })
-            .cloned()
-            .collect();
-        if stripped.len() != arr.len() {
-            let new_content = if stripped.is_empty() {
-                json!([{"type": "text", "text": ""}])
-            } else {
-                Value::Array(stripped)
-            };
-            msg["content"] = new_content;
-        }
-    }
-
-    result
-}
-
 /// Check whether any message already has cache_control markers on its content
 /// blocks.  Used to detect tool-loop continuations where breakpoints were
 /// already placed on the first call of the turn.
@@ -288,24 +234,14 @@ fn build_body(request: &LlmRequest, streaming: bool) -> Value {
     let cache_enabled = !cache_ttl.is_empty();
     let has_existing_markers = messages_have_cache_control(&request.messages);
 
-    // When cache is enabled, strip thinking blocks from prior assistant
-    // messages (the API does this internally, so pre-stripping keeps the
-    // wire payload stable for cache key computation), then apply breakpoints.
-    //
-    // On the first call of a turn (no existing markers), strip thinking and
-    // apply all breakpoints.  On tool-loop continuations (markers already
-    // present), only strip thinking — keep existing breakpoints immutable.
+    // On the first call of a turn (no existing markers), apply cache
+    // breakpoints.  On tool-loop continuations (markers already present),
+    // keep existing breakpoints immutable.
     let (messages, system) = if cache_enabled && !has_existing_markers {
-        let stripped = strip_thinking_from_prior_assistants(&request.messages);
         apply_cache_control(
-            &stripped,
+            &request.messages,
             request.system.as_ref().unwrap_or(&json!(null)),
             cache_ttl,
-        )
-    } else if cache_enabled {
-        (
-            strip_thinking_from_prior_assistants(&request.messages),
-            request.system.clone().unwrap_or(json!(null)),
         )
     } else {
         (
@@ -354,7 +290,7 @@ fn build_body(request: &LlmRequest, streaming: bool) -> Value {
         body["output_config"] = output_config;
     }
 
-    // Debug: dump body
+    // Debug: dump body (after all modifications)
     {
         use std::sync::atomic::{AtomicU32, Ordering};
         static SEQ: AtomicU32 = AtomicU32::new(0);
@@ -364,59 +300,39 @@ fn build_body(request: &LlmRequest, streaming: bool) -> Value {
         }
     }
 
-    // OpenRouter provider routing (e.g. {order: ["anthropic"]}).
-    // Equivalent to Python's extra_body={"provider": ...}.
-    if let Some(or_provider) = opts_ref.get("openrouter_provider") {
-        let mut provider = or_provider.clone();
-        if let Some(obj) = provider.as_object_mut() {
-            if obj.contains_key("order") {
-                obj.entry("allow_fallbacks".to_string())
-                    .or_insert(json!(false));
-            }
-        }
-        body["provider"] = provider;
-    }
-
     body
 }
 
-/// Resolve the base URL for the Anthropic API.
-fn base_url(request: &LlmRequest) -> &str {
-    request
-        .base_url
-        .as_deref()
-        .unwrap_or(DEFAULT_BASE_URL)
-}
-
-/// Returns true if the request targets the native Anthropic API (no custom
-/// base_url, or base_url contains "anthropic.com").  Third-party proxies
-/// (OpenRouter, etc.) expect standard Bearer auth instead of x-api-key.
-fn is_native_anthropic(request: &LlmRequest) -> bool {
-    match &request.base_url {
-        None => true,
-        Some(url) => url.contains("anthropic.com"),
-    }
-}
-
 /// Build the reqwest request with Anthropic-specific headers.
+///
+/// Always targets the native Anthropic API. Proxying Anthropic requests
+/// through OpenRouter is not supported — use the OpenAI-compatible SDK
+/// for OpenRouter models instead.
 fn build_http_request(
     client: &reqwest::Client,
     request: &LlmRequest,
     streaming: bool,
 ) -> Result<reqwest::RequestBuilder, LlmError> {
-    let url = format!("{}/v1/messages", base_url(request));
+    let url = match &request.base_url {
+        Some(url) if url.starts_with("http://127.0.0.1") || url.starts_with("http://localhost") => {
+            format!("{url}/v1/messages")
+        }
+        Some(_) => {
+            return Err(LlmError::Provider {
+                message: "Anthropic SDK does not support custom base_url. \
+                          Use the openrouter SDK for OpenRouter models."
+                    .into(),
+            });
+        }
+        None => format!("{DEFAULT_BASE_URL}/v1/messages"),
+    };
     let body = build_body(request, streaming);
 
-    let mut builder = client
+    let builder = client
         .post(&url)
         .header("anthropic-version", ANTHROPIC_VERSION)
-        .header("content-type", "application/json");
-
-    if is_native_anthropic(request) {
-        builder = builder.header("x-api-key", &request.api_key);
-    } else {
-        builder = builder.header("Authorization", format!("Bearer {}", request.api_key));
-    }
+        .header("content-type", "application/json")
+        .header("x-api-key", &request.api_key);
 
     Ok(builder.json(&body))
 }
