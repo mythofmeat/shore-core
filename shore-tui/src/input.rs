@@ -352,6 +352,7 @@ fn parse_command(app: &mut App, input: &str) -> Action {
 
         "model" => {
             if arg.is_empty() {
+                app.show_model_list = true;
                 Action::Send(ConnCommand::Send(ClientMessage::Command(Command {
                     rid: None,
                     name: "list_models".into(),

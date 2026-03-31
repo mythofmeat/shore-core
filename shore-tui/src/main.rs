@@ -589,18 +589,22 @@ fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<ConnCommand> 
                             .collect();
                         // Cache model names for tab completion
                         app.model_names = names.iter().map(|n| n.to_string()).collect();
-                        let active = &app.model;
-                        let list = names
-                            .iter()
-                            .map(|n| if *n == active { format!("  * {n}") } else { format!("    {n}") })
-                            .collect::<Vec<_>>()
-                            .join("\n");
-                        app.entries.push(ConversationEntry::System {
-                            content: format!("Models:\n{list}"),
-                            timestamp: String::new(),
-                        });
-                        if app.auto_scroll {
-                            app.scroll_to_bottom();
+                        // Only show the list if the user explicitly requested it
+                        if app.show_model_list {
+                            app.show_model_list = false;
+                            let active = &app.model;
+                            let list = names
+                                .iter()
+                                .map(|n| if *n == active { format!("  * {n}") } else { format!("    {n}") })
+                                .collect::<Vec<_>>()
+                                .join("\n");
+                            app.entries.push(ConversationEntry::System {
+                                content: format!("Models:\n{list}"),
+                                timestamp: String::new(),
+                            });
+                            if app.auto_scroll {
+                                app.scroll_to_bottom();
+                            }
                         }
                     }
                 }

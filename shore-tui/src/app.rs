@@ -266,6 +266,7 @@ pub struct App {
     pub character_name: String,
     pub characters: Vec<CharacterInfo>,
     pub model_names: Vec<String>,
+    pub show_model_list: bool,
     pub model: String,
     pub tokens: TokenCounts,
     pub is_private: bool,
@@ -289,6 +290,7 @@ impl Default for App {
             character_name: String::new(),
             characters: Vec::new(),
             model_names: Vec::new(),
+            show_model_list: false,
             model: String::new(),
             tokens: TokenCounts {
                 input: 0,
