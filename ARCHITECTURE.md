@@ -316,7 +316,8 @@ thing, bare verb/noun when unambiguous.
 | `memory` | `query?` | No arg = status; with arg = search memories |
 | `toggle_private` | — | Toggle private mode on active conversation → server re-sends `history` |
 | `compact` | `dry_run?` | Trigger compaction |
-| `collate` | — | Run 4-phase collation pipeline |
+| `collate` | `full?` | Run 5-phase collation pipeline (backfill → collate → tidy → normalize → decay). `full=true` loops until stable |
+| `memory_purge` | `older_than?` | Delete old superseded entries (default 30d) |
 | `toggle_autonomy` | — | Toggle autonomy pause/resume |
 | `config` | `section?` | Show effective configuration |
 
@@ -368,7 +369,7 @@ binary in the workspace.
 | **Memory** | SQLite database (entries, entities, flags, changelog), CRUD operations | `rusqlite` |
 | **RAG** | Vector search (LanceDB) + BM25 keyword retrieval + embedding via HTTP | `lancedb`, custom BM25 |
 | **Compaction** | Conversation → memory entries (via LLM). Proactive idle timer fires at `idle_trigger_minutes` after last activity — no waiting for next user message. | — |
-| **Collation** | 4-phase memory pipeline: tidy, collate, normalize entities, confidence decay | — |
+| **Collation** | 5-phase memory pipeline: timestamp backfill → collate (merge) → tidy (split) → normalize entities → confidence decay. Embedding-driven clustering groups related entries before LLM calls. `collated_at` watermark tracks processing state. | — |
 | **Heartbeat** | Redesigned character-driven scheduling (see §13.1) | — |
 | **Cache Keepalive** | Anthropic prompt cache TTL refresh pings | — |
 | **Activity Tracker** | Session tempo, hour histograms, engagement scoring | — |
@@ -739,6 +740,7 @@ Carried forward from V1 with no changes.
 | updated_at | TEXT | ISO timestamp |
 | entry_type | TEXT | `""` / `"image"` |
 | image_path | TEXT | Filesystem path if image |
+| collated_at | TEXT | Last collation pipeline timestamp (empty = never) |
 
 **entities** — Entity registry (entity_id INT PK, name TEXT UNIQUE NOCASE,
 type TEXT, description TEXT, created_at TEXT, updated_at TEXT)
@@ -753,7 +755,7 @@ TEXT, timestamp TEXT)
 **flags** — Issue tracking (flag_id INT PK, entry_id TEXT FK, flag_type TEXT,
 reason TEXT, resolved_at TEXT, resolution TEXT, created_at TEXT)
 
-**collation_skip** — Optimization (entry_id TEXT, phase TEXT, skipped_at TEXT)
+**collation_skip** — ~~Optimization~~ Legacy table, no longer used by collation pipeline (replaced by `collated_at` column on entries)
 
 ---
 

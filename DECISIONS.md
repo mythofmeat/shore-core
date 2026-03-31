@@ -148,3 +148,24 @@ command that arrived while streaming. This was user-visible friction.
 holds it for the command's duration. If a generation task is also waiting to append
 to the same engine, it waits. This is intentional serialization — coherent state
 is more important than latency for mutating operations.
+
+## Collation Pipeline Rewrite (2026-03-31)
+
+Rewrote the memory collation pipeline to fix multiple design flaws in the original implementation.
+
+**Changes made:**
+- Replaced one-shot `collation_skip` table with `collated_at` timestamp watermark on entries
+- Reordered phases: merge-then-split (collate → tidy) instead of split-then-merge
+- Protected image entries (`image_path` non-empty) and canonical entries from collation
+- Fixed merge timestamps to use `min(sources)/max(sources)` instead of first-source copy
+- Fixed split supersession to store all replacement IDs, not just the first
+- Added embedding-driven clustering: reads existing vectors from the vector store, clusters by cosine similarity in-memory, sends focused 5-15 entry batches to the LLM instead of one giant prompt
+- Added incremental timestamp backfill phase (20 entries per run, walks ancestry chain)
+- Added `shore memory collate --full` convergence mode (loops until stable, max 10 passes)
+- Added `shore memory purge --older-than 30d` to delete verified superseded entries
+- Added `collated_at` column via idempotent migration, `delete_entry()` and `vacuum()` DB methods
+- Added optional `AgentIndexer` and `VectorStore` params to collation pipeline
+
+**Why**: The `collation_skip` table made collation permanently one-shot per entry — confidence decay ran once and never again, entries left alone could never be reconsidered. Batch LLM calls didn't scale (all candidates in one prompt). 74% of entries had empty timestamps from V1 import propagating through collation. Image and canonical entries had no protection from merge/split.
+
+**Trade-off**: The `collation_skip` table and its DB methods still exist (no destructive removal) but are no longer called by collation. The vector store parameter is optional — clustering falls back to sequential chunking without it. The `collated_at` watermark uses string comparison of RFC3339 timestamps, which is correct for lexicographic ordering but fragile if non-RFC3339 values are stored.
