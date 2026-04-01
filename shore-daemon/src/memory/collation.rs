@@ -284,6 +284,15 @@ impl CollationManager {
     }
 
     /// Run the full 4-phase collation pipeline.
+    /// Check if an entry is eligible for collation processing.
+    /// Candidates are non-image, non-canonical entries that have either never
+    /// been collated, or have been modified (updated_at) since their last collation.
+    fn is_collation_candidate(e: &Entry) -> bool {
+        e.image_path.is_empty()
+            && !e.canonical
+            && (e.collated_at.is_empty() || e.updated_at.as_str() > e.collated_at.as_str())
+    }
+
     ///
     /// `vars` provides template variables like `{{char}}` and `{{user}}`.
     /// Phase-specific variables (entry_count, max_entries, topic_landscape)
@@ -304,17 +313,15 @@ impl CollationManager {
         let mut id_counter: usize = 0;
         // Snapshot time: entries with collated_at before this are candidates.
         // This ensures all phases within one run see the same candidate set.
-        let pipeline_start = Utc::now().to_rfc3339();
-
         // Phase 0: Backfill missing timestamps (incremental, no LLM)
         self.phase_backfill_timestamps(db, 20, &mut outcome)?;
 
         // Phase 1: Collate (merge similar entries first to reduce count)
-        self.phase_collate(db, llm, collate_template, vars, &mut outcome, &mut id_counter, indexer, &pipeline_start, vector_store)
+        self.phase_collate(db, llm, collate_template, vars, &mut outcome, &mut id_counter, indexer, vector_store)
             .await?;
 
         // Phase 2: Tidy (split overly broad entries, including merged results)
-        self.phase_tidy(db, llm, tidy_template, vars, &mut outcome, &mut id_counter, indexer, &pipeline_start)
+        self.phase_tidy(db, llm, tidy_template, vars, &mut outcome, &mut id_counter, indexer)
             .await?;
 
         // Phase 3: Normalize entities
@@ -324,16 +331,16 @@ impl CollationManager {
         // Phase 4: Confidence decay
         self.phase_confidence_decay(db, &mut outcome)?;
 
-        // Stamp all active entries as collated at pipeline_start.
-        // This marks them as processed in their current form for this run.
+        // Stamp all active entries with current time as collated_at.
+        // Entries won't be reconsidered until updated_at > collated_at
+        // (i.e., they are modified by compaction, user edit, or another process).
+        let stamp = Utc::now().to_rfc3339();
         let active = db
             .get_entries_by_status("active")
             .map_err(|e| CollationError::Db(e.to_string()))?;
         for e in &active {
-            if e.collated_at.is_empty() || e.collated_at.as_str() < pipeline_start.as_str() {
-                db.stamp_collated(&e.id, &pipeline_start)
-                    .map_err(|e| CollationError::Db(e.to_string()))?;
-            }
+            db.stamp_collated(&e.id, &stamp)
+                .map_err(|e| CollationError::Db(e.to_string()))?;
         }
 
         Ok(outcome)
@@ -490,23 +497,14 @@ impl CollationManager {
         outcome: &mut CollationOutcome,
         id_counter: &mut usize,
         indexer: Option<&dyn AgentIndexer>,
-        pipeline_start: &str,
     ) -> Result<(), CollationError> {
         let entries = db
             .get_entries_by_status("active")
             .map_err(|e| CollationError::Db(e.to_string()))?;
 
-        // Filter to entries eligible for tidy:
-        // - not an image entry (image_path is the primary data)
-        // - not canonical (user-verified, do not modify)
-        // - never collated, or collated before this pipeline run started
         let candidates: Vec<&Entry> = entries
             .iter()
-            .filter(|e| {
-                e.image_path.is_empty()
-                    && !e.canonical
-                    && (e.collated_at.is_empty() || e.collated_at.as_str() < pipeline_start)
-            })
+            .filter(|e| Self::is_collation_candidate(e))
             .collect();
 
         if candidates.is_empty() {
@@ -754,23 +752,15 @@ impl CollationManager {
         outcome: &mut CollationOutcome,
         id_counter: &mut usize,
         indexer: Option<&dyn AgentIndexer>,
-        pipeline_start: &str,
         vector_store: Option<&VectorStore>,
     ) -> Result<(), CollationError> {
         let entries = db
             .get_entries_by_status("active")
             .map_err(|e| CollationError::Db(e.to_string()))?;
 
-        // Filter to entries eligible for collation:
-        // - not an image entry, not canonical
-        // - never collated, or collated before this pipeline run started
         let candidates: Vec<&Entry> = entries
             .iter()
-            .filter(|e| {
-                e.image_path.is_empty()
-                    && !e.canonical
-                    && (e.collated_at.is_empty() || e.collated_at.as_str() < pipeline_start)
-            })
+            .filter(|e| Self::is_collation_candidate(e))
             .collect();
 
         if candidates.is_empty() {
@@ -1560,9 +1550,9 @@ mod tests {
         let db = MemoryDB::open_in_memory().unwrap();
         let now = now_str();
         let mut entry = make_entry("e1", "A fact", 0.9, &now);
-        // Mark as already collated with a future timestamp so it's always >= pipeline_start.
-        let future = (Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
-        entry.collated_at = future;
+        // Mark as already collated AFTER updated_at, so it's not a candidate.
+        let later = (Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+        entry.collated_at = later;
         db.create_entry(&entry).unwrap();
 
         let llm = MockCollationLlm {

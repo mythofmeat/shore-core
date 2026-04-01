@@ -237,7 +237,9 @@ impl MemoryDB {
         conn.execute_batch(SCHEMA_SQL)?;
         Self::run_migrations(&conn);
         // FTS5 is best-effort — don't fail if the extension isn't available.
-        let _ = conn.execute_batch(FTS_SCHEMA_SQL);
+        if conn.execute_batch(FTS_SCHEMA_SQL).is_ok() {
+            Self::populate_fts_if_empty(&conn);
+        }
         Ok(Self { conn })
     }
 
@@ -259,7 +261,9 @@ impl MemoryDB {
         // We still run CREATE IF NOT EXISTS so missing tables are harmless.
         conn.execute_batch(SCHEMA_SQL)?;
         Self::run_migrations(&conn);
-        let _ = conn.execute_batch(FTS_SCHEMA_SQL);
+        if conn.execute_batch(FTS_SCHEMA_SQL).is_ok() {
+            Self::populate_fts_if_empty(&conn);
+        }
         Ok(Self { conn })
     }
 
@@ -272,6 +276,45 @@ impl MemoryDB {
                 continue;
             }
             let _ = conn.execute_batch(trimmed);
+        }
+
+        // v2.2: Fix FTS schema mismatch. Old databases may have a 5-column FTS
+        // table (entry_id, summary_text, topic_tags, topic_key, entities_text)
+        // from V1 import. The current schema uses 3 columns. Detect by checking
+        // if the creation SQL contains "entry_id" and drop/recreate if so.
+        let needs_fts_rebuild: bool = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'entries_fts'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .map(|sql| sql.contains("entry_id"))
+            .unwrap_or(false);
+
+        if needs_fts_rebuild {
+            let _ = conn.execute_batch(
+                "DROP TRIGGER IF EXISTS entries_fts_insert;
+                 DROP TRIGGER IF EXISTS entries_fts_update;
+                 DROP TRIGGER IF EXISTS entries_fts_delete;
+                 DROP TABLE IF EXISTS entries_fts;",
+            );
+        }
+    }
+
+    /// Populate FTS index from entries if the index is empty but entries exist.
+    /// This handles the case where the FTS table was just recreated by migration.
+    fn populate_fts_if_empty(conn: &Connection) {
+        let fts_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM entries_fts", [], |r| r.get(0))
+            .unwrap_or(0);
+        let entry_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM entries", [], |r| r.get(0))
+            .unwrap_or(0);
+        if fts_count == 0 && entry_count > 0 {
+            let _ = conn.execute_batch(
+                "INSERT INTO entries_fts(rowid, summary_text, topic_tags, topic_key)
+                   SELECT rowid, summary_text, topic_tags, topic_key FROM entries;",
+            );
         }
     }
 
@@ -437,6 +480,10 @@ impl MemoryDB {
 
     /// Permanently delete an entry by ID.
     pub fn delete_entry(&self, id: &str) -> SqlResult<usize> {
+        // Clean up FK references before deleting.
+        self.conn.execute("DELETE FROM entry_entities WHERE entry_id = ?1", params![id])?;
+        self.conn.execute("DELETE FROM changelog_entries WHERE entry_id = ?1", params![id])?;
+        self.conn.execute("DELETE FROM flags WHERE entry_id = ?1", params![id])?;
         self.conn
             .execute("DELETE FROM entries WHERE id = ?1", params![id])
     }
