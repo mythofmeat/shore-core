@@ -535,7 +535,6 @@ impl CompactionManager {
                 source: "summary".to_string(),
                 reason: "compaction".to_string(),
                 status: "active".to_string(),
-                canonical: false,
                 confidence: ce.confidence,
                 summary_text: ce.summary_text.clone(),
                 topic_tags: ce.topic_tags.clone(),
@@ -550,6 +549,7 @@ impl CompactionManager {
                 updated_at: now_str.clone(),
                 entry_type: String::new(),
                 image_path: String::new(),
+                collated_at: String::new(),
             };
 
             db.create_entry(&entry)

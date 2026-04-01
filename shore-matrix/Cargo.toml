@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 shore-protocol = { path = "../shore-protocol" }
+shore-config = { path = "../shore-config" }
 shore-client = { path = "../shore-client" }
 matrix-sdk = { version = "0.16", default-features = false, features = ["e2e-encryption", "markdown", "native-tls"] }
 tokio = { version = "1", features = ["full"] }
@@ -15,7 +16,6 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 mime = "0.3"
 mime_guess = "2"
-dirs = "5"
 reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls"] }
 toml = "0.8"
 urlencoding = "2"

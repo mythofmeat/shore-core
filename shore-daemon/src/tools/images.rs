@@ -265,7 +265,6 @@ pub async fn handle_generate_image(input: Value, ctx: &dyn ToolContext) -> Resul
         source: "tool".into(),
         reason: "generate_image".into(),
         status: "active".into(),
-        canonical: false,
         confidence: 1.0,
         summary_text: summary,
         topic_tags: "generated,image".into(),
@@ -280,6 +279,7 @@ pub async fn handle_generate_image(input: Value, ctx: &dyn ToolContext) -> Resul
         updated_at: now,
         entry_type: String::new(),
         image_path: relative_path.clone(),
+        collated_at: String::new(),
     };
     ctx.memory_db()
         .create_entry(&entry)

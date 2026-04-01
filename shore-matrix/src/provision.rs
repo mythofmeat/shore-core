@@ -36,15 +36,17 @@ pub struct CharacterPaths {
 }
 
 impl CharacterPaths {
-    /// Compute paths for a character, using the standard XDG data directory.
+    /// Compute paths for a character, using the resolved Shore data directory.
     pub fn new(character: &str) -> Self {
-        let data_dir = dirs::data_dir().unwrap_or_else(|| PathBuf::from(".local/share"));
+        let data_dir = shore_config::data_dir();
         Self::with_base(data_dir, character)
     }
 
     /// Compute paths with an explicit base data directory (useful for testing).
+    ///
+    /// Note: `base` is treated as the Shore data root directly (no `/shore` appended).
     pub fn with_base(base: PathBuf, character: &str) -> Self {
-        let character_dir = base.join("shore").join(character);
+        let character_dir = base.join(character);
         let matrix_dir = character_dir.join("matrix");
         let provision_file = matrix_dir.join("provision.json");
         let crypto_store = matrix_dir.join("crypto_store");
@@ -292,16 +294,16 @@ impl std::error::Error for ProvisionError {}
 /// Paths for the global embedded Matrix homeserver instance.
 #[derive(Debug, Clone)]
 pub struct HomeserverPaths {
-    /// $XDG_DATA_HOME/shore/matrix-server/
+    /// $SHORE_DATA_DIR/matrix-server/
     pub server_dir: PathBuf,
-    /// $XDG_DATA_HOME/shore/matrix-server/embedded_state.json
+    /// $SHORE_DATA_DIR/matrix-server/embedded_state.json
     pub state_file: PathBuf,
 }
 
 impl HomeserverPaths {
-    /// Compute paths using the standard XDG data directory.
+    /// Compute paths using the resolved Shore data directory.
     pub fn new() -> Self {
-        let data_dir = dirs::data_dir().unwrap_or_else(|| PathBuf::from(".local/share"));
+        let data_dir = shore_config::data_dir();
         Self::with_base(data_dir)
     }
 
@@ -313,9 +315,9 @@ impl HomeserverPaths {
         }
     }
 
-    /// Compute paths with an explicit base data directory.
+    /// Compute paths with an explicit base data directory (Shore root, not XDG parent).
     pub fn with_base(base: PathBuf) -> Self {
-        let server_dir = base.join("shore").join("matrix-server");
+        let server_dir = base.join("matrix-server");
         let state_file = server_dir.join("embedded_state.json");
         Self {
             server_dir,
@@ -549,7 +551,7 @@ mod tests {
 
     #[test]
     fn character_paths_structure() {
-        let base = PathBuf::from("/home/user/.local/share");
+        let base = PathBuf::from("/home/user/.local/share/shore");
         let paths = CharacterPaths::with_base(base, "alice");
 
         assert_eq!(
@@ -624,7 +626,7 @@ mod tests {
 
     #[test]
     fn homeserver_paths_structure() {
-        let base = PathBuf::from("/home/user/.local/share");
+        let base = PathBuf::from("/home/user/.local/share/shore");
         let paths = HomeserverPaths::with_base(base);
 
         assert_eq!(

@@ -57,6 +57,9 @@ pub struct DefaultsConfig {
     /// Default memory agent model name.
     pub memory_agent: Option<String>,
 
+    /// Default collation model name (for merge/split/normalize decisions).
+    pub collation: Option<String>,
+
     /// Default embedding profile name.
     pub embedding: Option<String>,
 
@@ -88,6 +91,7 @@ impl Default for DefaultsConfig {
             model: None,
             tool_model: None,
             memory_agent: None,
+            collation: None,
             embedding: None,
             image_generation: None,
             display_name: None,
@@ -252,6 +256,14 @@ pub struct CollationConfig {
     /// Whether collation runs automatically after compaction.
     #[serde(default = "default_true")]
     pub auto_run: bool,
+
+    /// Maximum entries to process per collation run. Controls LLM cost.
+    #[serde(default = "default_batch_limit")]
+    pub batch_limit: usize,
+}
+
+fn default_batch_limit() -> usize {
+    10
 }
 
 impl Default for CollationConfig {
@@ -259,6 +271,7 @@ impl Default for CollationConfig {
         Self {
             enabled: true,
             auto_run: true,
+            batch_limit: default_batch_limit(),
         }
     }
 }
@@ -628,6 +641,11 @@ pub struct NotificationsConfig {
     #[serde(default)]
     pub command: CommandNotifyConfig,
 
+    /// Only fire `message_complete` notifications when generation takes longer
+    /// than this many seconds. 0 means always notify.
+    #[serde(default)]
+    pub generation_threshold_secs: u64,
+
     /// Per-event toggles.
     #[serde(default)]
     pub events: NotificationEventsConfig,
@@ -640,6 +658,7 @@ impl Default for NotificationsConfig {
             backend: NotificationBackend::default(),
             ntfy: NtfyConfig::default(),
             command: CommandNotifyConfig::default(),
+            generation_threshold_secs: 0,
             events: NotificationEventsConfig::default(),
         }
     }
@@ -723,6 +742,8 @@ pub struct NotificationEventsConfig {
     pub collation_complete: bool,
     #[serde(default = "default_true")]
     pub error: bool,
+    #[serde(default)]
+    pub message_complete: bool,
 }
 
 impl Default for NotificationEventsConfig {
@@ -733,6 +754,7 @@ impl Default for NotificationEventsConfig {
             compaction_complete: true,
             collation_complete: true,
             error: true,
+            message_complete: false,
         }
     }
 }

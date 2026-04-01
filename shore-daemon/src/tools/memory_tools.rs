@@ -1,4 +1,5 @@
 use super::{ToolCategory, ToolContext, ToolDef, ToolError};
+use crate::memory::agent::RealAgentIndexer;
 use serde_json::{json, Value};
 
 // ---------------------------------------------------------------------------
@@ -44,7 +45,10 @@ pub async fn handle_memory(input: Value, ctx: &dyn ToolContext) -> Result<Value,
     let db = ctx.memory_db();
     let agent_llm = ctx.agent_llm();
     let agent_model = ctx.agent_model();
-    let indexer = ctx.indexer();
+    let search_ctx = ctx.search_context();
+    // Build a real indexer from the search context when available; falls back to None.
+    let real_indexer = search_ctx.map(RealAgentIndexer::new);
+    let indexer = real_indexer.as_ref().map(|i| i as &dyn crate::memory::agent::AgentIndexer);
 
     let result_text = if let Some(researcher) = ctx.memory_researcher() {
         // Tier 2: cheap model drives the inner agent
@@ -65,13 +69,14 @@ pub async fn handle_memory(input: Value, ctx: &dyn ToolContext) -> Result<Value,
                 agent_model,
                 db,
                 indexer,
+                search_ctx,
             )
             .await
             .map_err(|e| ToolError::Agent(e))?
     } else {
         // Direct agent query (no researcher)
         agent
-            .ask(request, agent_llm, db, indexer, agent_model)
+            .ask(request, agent_llm, db, indexer, search_ctx, agent_model)
             .await
             .map_err(|e| ToolError::Agent(e))?
     };

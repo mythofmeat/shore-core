@@ -18,8 +18,8 @@ use crate::memory::agent_llm::AgentLlm;
 use crate::memory::db::MemoryDB;
 
 pub use types::{
-    AgentError, AgentIndexer, AgentMode, AgentRag, CallerIdentity, ConfirmCallback,
-    ProposedOperation, RagHit, ToolResult,
+    AgentError, AgentIndexer, AgentMode, AgentRag, AgentSearchContext, CallerIdentity,
+    ConfirmCallback, ProposedOperation, RagHit, RealAgentIndexer, ToolResult,
 };
 
 // ---------------------------------------------------------------------------
@@ -150,6 +150,7 @@ impl MemoryAgent {
         llm: &dyn AgentLlm,
         db: &MemoryDB,
         indexer: Option<&dyn AgentIndexer>,
+        search_ctx: Option<&AgentSearchContext>,
         model: &ResolvedModel,
     ) -> Result<String, AgentError> {
         let messages = vec![json!({"role": "user", "content": question})];
@@ -157,6 +158,7 @@ impl MemoryAgent {
             llm,
             db,
             indexer,
+            search_ctx,
             model,
             &self.system_prompt,
             messages,
@@ -176,6 +178,7 @@ impl MemoryAgent {
         llm: &dyn AgentLlm,
         db: &MemoryDB,
         indexer: Option<&dyn AgentIndexer>,
+        search_ctx: Option<&AgentSearchContext>,
         model: &ResolvedModel,
         confirm_callback: Option<&dyn ConfirmCallback>,
     ) -> Result<String, AgentError> {
@@ -185,6 +188,7 @@ impl MemoryAgent {
             llm,
             db,
             indexer,
+            search_ctx,
             model,
             &self.system_prompt,
             history.clone(),
@@ -360,7 +364,7 @@ mod tests {
 
         let agent = MemoryAgent::one_shot(CallerIdentity::Char, "Alice", "Bob");
         let result = agent
-            .ask("What do I know about chocolate?", &mock, &db, None, &model)
+            .ask("What do I know about chocolate?", &mock, &db, None, None, &model)
             .await
             .unwrap();
 

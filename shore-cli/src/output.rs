@@ -1040,6 +1040,8 @@ pub fn format_command(name: &str, data: &serde_json::Value) {
         "model_info" => print_model_info(data),
         "memory" => print_memory(data),
         "compact" => print_compact_result(data),
+        "collate" => print_collate_result(data),
+        "memory_purge" => print_purge_result(data),
         "memory_changelog" => print_changelog(data),
         "memory_reindex" => print_reindex(data),
         "config" => print_config(data),
@@ -1410,6 +1412,89 @@ fn print_compact_result(data: &serde_json::Value) {
 fn print_reindex(data: &serde_json::Value) {
     let msg = data["message"].as_str().unwrap_or("Reindex complete");
     println!("{msg}");
+}
+
+/// Print standalone collation result.
+fn print_collate_result(data: &serde_json::Value) {
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    let width = term_width();
+
+    let char_name = data["character"].as_str().unwrap_or("unknown");
+    let passes = data["passes"].as_u64().unwrap_or(1);
+
+    write_section_header(&mut out, "Collation", char_name, width);
+
+    if passes > 1 {
+        write_row(&mut out, "Passes", &format!("{passes}"));
+    }
+
+    let backfilled = data["timestamps_backfilled"].as_u64().unwrap_or(0);
+    if backfilled > 0 {
+        write_row(&mut out, "Backfill", &format!("{backfilled} timestamps"));
+    }
+
+    let tidy_splits = data["tidy_splits"].as_u64().unwrap_or(0);
+    let tidy_new = data["tidy_new_entries"].as_u64().unwrap_or(0);
+    if tidy_splits > 0 {
+        write_row(&mut out, "Tidy", &format!("{tidy_splits} splits → {tidy_new} new"));
+    }
+
+    let merges = data["collate_merges"].as_u64().unwrap_or(0);
+    let merge_new = data["collate_new_entries"].as_u64().unwrap_or(0);
+    if merges > 0 {
+        write_row(&mut out, "Merge", &format!("{merges} merges → {merge_new} new"));
+    }
+
+    let normalized = data["entities_normalized"].as_u64().unwrap_or(0);
+    if normalized > 0 {
+        write_row(&mut out, "Normalize", &format!("{normalized} entities"));
+    }
+
+    let decayed = data["entries_decayed"].as_u64().unwrap_or(0);
+    if decayed > 0 {
+        write_row(&mut out, "Decay", &format!("{decayed} entries"));
+    }
+
+    let skipped = data["entries_skipped"].as_u64().unwrap_or(0);
+    if skipped > 0 {
+        write_row(&mut out, "Skipped", &format!("{skipped} entries"));
+    }
+
+    if tidy_splits == 0 && merges == 0 && normalized == 0 && decayed == 0 && backfilled == 0 {
+        write_row(&mut out, "Result", "no changes");
+    }
+
+    let _ = writeln!(out);
+}
+
+/// Print purge result.
+fn print_purge_result(data: &serde_json::Value) {
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    let width = term_width();
+
+    let char_name = data["character"].as_str().unwrap_or("unknown");
+    let older_than = data["older_than"].as_str().unwrap_or("?");
+
+    write_section_header(&mut out, "Purge", char_name, width);
+
+    write_row(&mut out, "Threshold", &format!("older than {older_than}"));
+
+    let deleted = data["deleted"].as_u64().unwrap_or(0);
+    write_row(&mut out, "Deleted", &format!("{deleted} entries"));
+
+    let skipped_image = data["skipped_image"].as_u64().unwrap_or(0);
+    if skipped_image > 0 {
+        write_row(&mut out, "Skipped (image)", &format!("{skipped_image} entries"));
+    }
+
+    let skipped_no_repl = data["skipped_no_replacement"].as_u64().unwrap_or(0);
+    if skipped_no_repl > 0 {
+        write_row(&mut out, "Skipped (no repl)", &format!("{skipped_no_repl} entries"));
+    }
+
+    let _ = writeln!(out);
 }
 
 /// Print config display.

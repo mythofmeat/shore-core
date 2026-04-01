@@ -18,6 +18,7 @@ pub enum NotificationEvent {
     CompactionComplete,
     CollationComplete,
     Error,
+    MessageComplete,
 }
 
 /// Daemon-side notification dispatcher.
@@ -68,7 +69,18 @@ impl NotificationService {
             NotificationEvent::CompactionComplete => self.config.events.compaction_complete,
             NotificationEvent::CollationComplete => self.config.events.collation_complete,
             NotificationEvent::Error => self.config.events.error,
+            NotificationEvent::MessageComplete => self.config.events.message_complete,
         }
+    }
+
+    /// Fire a `MessageComplete` notification, but only if generation time
+    /// exceeds the configured threshold (0 = always notify).
+    pub fn notify_message_complete(&self, title: &str, body: &str, total_ms: u32) {
+        let threshold = self.config.generation_threshold_secs;
+        if threshold > 0 && (total_ms as u64) < threshold * 1000 {
+            return;
+        }
+        self.notify(NotificationEvent::MessageComplete, title, body);
     }
 }
 
@@ -166,6 +178,7 @@ mod tests {
             backend: NotificationBackend::NotifySend,
             ntfy: NtfyConfig::default(),
             command: CommandNotifyConfig::default(),
+            generation_threshold_secs: 0,
             events,
         })
     }
@@ -187,6 +200,7 @@ mod tests {
             compaction_complete: true,
             collation_complete: false,
             error: true,
+            message_complete: true,
         };
         let svc = make_service(true, events);
         assert!(svc.is_event_enabled(NotificationEvent::AutonomousMessage));
@@ -194,6 +208,7 @@ mod tests {
         assert!(svc.is_event_enabled(NotificationEvent::CompactionComplete));
         assert!(!svc.is_event_enabled(NotificationEvent::CollationComplete));
         assert!(svc.is_event_enabled(NotificationEvent::Error));
+        assert!(svc.is_event_enabled(NotificationEvent::MessageComplete));
     }
 
     #[test]

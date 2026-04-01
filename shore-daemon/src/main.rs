@@ -6,15 +6,15 @@ use shore_daemon::autonomy::manager::AutonomyManager;
 use shore_daemon::characters::CharacterRegistry;
 use shore_daemon::commands::{CommandContext, SessionTokens};
 use shore_diagnostics::Diagnostics;
-use shore_config::{load_config, resolve_prompt_template, LoadedConfig};
+use shore_config::{load_config, load_character_definition, resolve_prompt_template, resolve_user_definition, LoadedConfig};
 use shore_daemon::handler::MessageHandler;
 use shore_llm_client::LlmClient;
 use shore_daemon::notifications::NotificationService;
 use shore_daemon::memory::collation::{
-    CollationConfig as LibCollationConfig, CollationManager, DEFAULT_COLLATE_PROMPT,
-    DEFAULT_NORMALIZE_PROMPT, DEFAULT_TIDY_PROMPT,
+    CollationConfig as LibCollationConfig, CollationManager, DEFAULT_REFINE_PROMPT,
 };
 use shore_daemon::memory::collation_impls::RealCollationLlm;
+use shore_daemon::commands::state::resolve_collation_model;
 use shore_daemon::memory::compaction::{
     CompactionConfig, CompactionManager, CompactionOutcome, ConversationMessage,
     DEFAULT_COMPACT_PROMPT,
@@ -322,23 +322,14 @@ async fn run_compaction(
     let prompt_template = resolve_prompt_template(&config.dirs.config, character, "compact.md")
         .unwrap_or_else(|| DEFAULT_COMPACT_PROMPT.to_string());
 
-    // Resolve model.
+    // Resolve model: use defaults.model for background compaction.
     let model = config
         .app
         .defaults
-        .memory_agent
+        .model
         .as_deref()
         .and_then(|name| config.models.find_model(name).ok())
-        .or_else(|| {
-            config
-                .app
-                .defaults
-                .model
-                .as_deref()
-                .and_then(|name| config.models.find_model(name).ok())
-        })
-        .or_else(|| config.models.first_chat_model())
-        .ok_or("No model configured")?
+        .ok_or("No default model configured for background compaction")?
         .clone();
 
     // Resolve embedding config.
@@ -457,51 +448,66 @@ async fn run_collation(
     let db = MemoryDB::open(&db_path)
         .map_err(|e| format!("Failed to open memory DB: {e}"))?;
 
-    // Resolve model.
-    let model = config
-        .app
-        .defaults
-        .memory_agent
-        .as_deref()
-        .and_then(|name| config.models.find_model(name).ok())
-        .or_else(|| {
-            config
-                .app
-                .defaults
-                .model
-                .as_deref()
-                .and_then(|name| config.models.find_model(name).ok())
-        })
-        .or_else(|| config.models.first_chat_model())
-        .ok_or("No model configured")?
-        .clone();
+    let model = resolve_collation_model(config)
+        .ok_or("No model configured")?;
 
     let llm = RealCollationLlm::new(llm_client.clone(), model);
 
-    // Resolve prompt templates.
-    let tidy_template = resolve_prompt_template(&config.dirs.config, character, "tidy.md")
-        .unwrap_or_else(|| DEFAULT_TIDY_PROMPT.to_string());
-    let collate_template = resolve_prompt_template(&config.dirs.config, character, "collate.md")
-        .unwrap_or_else(|| DEFAULT_COLLATE_PROMPT.to_string());
-    let normalize_template =
-        resolve_prompt_template(&config.dirs.config, character, "normalize.md")
-            .unwrap_or_else(|| DEFAULT_NORMALIZE_PROMPT.to_string());
+    // Resolve prompt template.
+    let refine_template = resolve_prompt_template(&config.dirs.config, character, "refine.md")
+        .unwrap_or_else(|| DEFAULT_REFINE_PROMPT.to_string());
 
     let mgr = CollationManager::new(LibCollationConfig::default());
+    let collation_limit = config.app.memory.collation.batch_limit;
+
+    // Construct vector store + indexer for clustering and indexing (optional).
+    let search_ctx = match resolve_embed_config(
+        config.app.defaults.embedding.as_deref(),
+        &config.models.embedding,
+    ) {
+        Ok(embed_config) => {
+            let vs_path = character_dir.join("memory").join("vectorstore");
+            match VectorStore::open(&vs_path, embed_config.dimensions).await {
+                Ok(vs) => Some(shore_daemon::memory::agent::AgentSearchContext::new(
+                    vs, llm_client.clone(), embed_config,
+                )),
+                Err(e) => {
+                    tracing::warn!("Vector store unavailable for auto-collation: {e}");
+                    None
+                }
+            }
+        }
+        Err(_) => None,
+    };
+    let indexer = search_ctx.as_ref().map(|ctx| {
+        shore_daemon::memory::agent::RealAgentIndexer::new(ctx)
+    });
+
     let collation_display_name = config.app.defaults.resolve_display_name();
     let mut collation_vars = std::collections::HashMap::new();
     collation_vars.insert("char".to_string(), character.to_string());
     collation_vars.insert("user".to_string(), collation_display_name);
+    if let Some(cd) = load_character_definition(&config.dirs.config, character) {
+        collation_vars.insert("char_description".to_string(), cd);
+    }
+    if let Some(ud) = resolve_user_definition(&config.dirs.config, character) {
+        collation_vars.insert("user_description".to_string(), ud);
+    }
 
     let outcome = mgr
-        .run(&db, &llm, &tidy_template, &collate_template, &normalize_template, &collation_vars)
+        .run(
+            &db, &llm, &refine_template, &collation_vars,
+            indexer.as_ref().map(|i| i as &dyn shore_daemon::memory::agent::AgentIndexer),
+            search_ctx.as_ref().map(|ctx| &ctx.vector_store),
+            Some(collation_limit),
+        )
         .await?;
 
     info!(
         character = %character,
-        tidy_splits = outcome.tidy_splits,
-        collate_merges = outcome.collate_merges,
-        entities_normalized = outcome.entities_normalized,
+        refine_merges = outcome.refine_merges,
+        refine_splits = outcome.refine_splits,
+        refine_updates = outcome.refine_updates,
         entries_decayed = outcome.entries_decayed,
         "Auto-collation completed"
     );

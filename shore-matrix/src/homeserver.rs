@@ -22,10 +22,7 @@ pub struct HomeserverConfig {
 
 impl Default for HomeserverConfig {
     fn default() -> Self {
-        let data_dir = dirs::data_dir()
-            .unwrap_or_else(|| PathBuf::from(".local/share"))
-            .join("shore")
-            .join("matrix-server");
+        let data_dir = shore_config::data_dir().join("matrix-server");
         Self {
             server_name: "localhost".to_string(),
             port: 6167,

@@ -197,7 +197,6 @@ pub fn make_image_entry(id: &str, summary: &str, image_path: &str) -> crate::mem
         source: "user".to_string(),
         reason: "upload".to_string(),
         status: "active".to_string(),
-        canonical: false,
         confidence: 1.0,
         summary_text: summary.to_string(),
         topic_tags: "image".to_string(),
@@ -212,5 +211,6 @@ pub fn make_image_entry(id: &str, summary: &str, image_path: &str) -> crate::mem
         updated_at: now,
         entry_type: String::new(),
         image_path: image_path.to_string(),
+        collated_at: String::new(),
     }
 }

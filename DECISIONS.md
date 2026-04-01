@@ -149,6 +149,43 @@ holds it for the command's duration. If a generation task is also waiting to app
 to the same engine, it waits. This is intentional serialization — coherent state
 is more important than latency for mutating operations.
 
+## Collation Pipeline Rewrite (2026-03-31)
+
+Rewrote the memory collation pipeline to fix multiple design flaws in the original implementation.
+
+**Changes made:**
+- Replaced one-shot `collation_skip` table with `collated_at` timestamp watermark on entries
+- Reordered phases: merge-then-split (collate → tidy) instead of split-then-merge
+- Protected image entries (`image_path` non-empty) and canonical entries from collation
+- Fixed merge timestamps to use `min(sources)/max(sources)` instead of first-source copy
+- Fixed split supersession to store all replacement IDs, not just the first
+- Added embedding-driven clustering: reads existing vectors from the vector store, clusters by cosine similarity in-memory, sends focused 5-15 entry batches to the LLM instead of one giant prompt
+- Added incremental timestamp backfill phase (20 entries per run, walks ancestry chain)
+- Added `shore memory collate --full` convergence mode (loops until stable, max 10 passes)
+- Added `shore memory purge --older-than 30d` to delete verified superseded entries
+- Added `collated_at` column via idempotent migration, `delete_entry()` and `vacuum()` DB methods
+- Added optional `AgentIndexer` and `VectorStore` params to collation pipeline
+
+**Why**: The `collation_skip` table made collation permanently one-shot per entry — confidence decay ran once and never again, entries left alone could never be reconsidered. Batch LLM calls didn't scale (all candidates in one prompt). 74% of entries had empty timestamps from V1 import propagating through collation. Image and canonical entries had no protection from merge/split.
+
+**Trade-off**: The `collation_skip` table and its DB methods still exist (no destructive removal) but are no longer called by collation. The vector store parameter is optional — clustering falls back to sequential chunking without it. The `collated_at` watermark uses string comparison of RFC3339 timestamps, which is correct for lexicographic ordering but fragile if non-RFC3339 values are stored.
+
+### Collation Candidate Selection and Model Config (2026-04-01)
+
+**Decision:** Collation candidate selection uses TTL-based reconsideration instead of one-shot watermark. A dedicated `defaults.collation` model config controls which LLM is used.
+
+**Changes made:**
+- Replaced simple `updated_at > collated_at` watermark with two-tier selection: new entries (`collated_at` empty) are always candidates; previously-collated entries become candidates when their TTL expires (default 7 days)
+- Added `defaults.collation` config field with fallback chain: `collation` → `memory_agent` → `model` → first chat model. Removed `active_model` (runtime session state) from the resolution chain.
+- Added `memory.collation.batch_limit` (default 10) to cap entries processed per run, controlling LLM cost
+- Added `--limit` CLI override for manual `shore collate` runs
+- Wired `AgentSearchContext` + `RealAgentIndexer` at all 3 collation call sites (manual, post-compact inline, auto-collation) — enables embedding-driven clustering and indexes collation outputs into vector store + BM25
+- Changed post-pipeline stamping to only stamp entries that were actually examined as candidates, preserving TTL clocks on unexamined entries
+- Unified model resolution across all 3 call sites via shared `resolve_collation_model()` helper
+
+**Why:** The original watermark (`updated_at > collated_at`) was permanently one-shot — once stamped, entries were never reconsidered unless externally modified. TTL-based reconsideration allows incremental refinement: `shore collate` can be run repeatedly to work through the backlog, and entries naturally come up for re-evaluation as their TTL expires. The separate model config exists because collation is synthesis/judgment work (merge decisions, split decisions, entity normalization) that benefits from a more capable model than memory retrieval.
+
+**Trade-off:** With `batch_limit = 10`, convergence mode (`--full`) may take many passes. The existing 10-pass cap prevents runaway, but a single `--full` invocation could process up to 100 entries. This is acceptable since the user explicitly opts into convergence mode.
 ### OpenRouter proxy removed from Anthropic SDK (2026-04-01)
 
 **Decision:** The Anthropic SDK (`sdk = "anthropic"`) no longer supports custom `base_url`. Setting one is a runtime error with a message pointing to the `openrouter` SDK. Localhost is exempted for unit tests.
@@ -162,3 +199,27 @@ is more important than latency for mutating operations.
 **Why:** A/B testing with identical request bodies showed OpenRouter intermittently drops prompt cache hits even with static, never-changing system prompt breakpoints and 1h TTL. Direct Anthropic API gets 100% cache hits with the exact same code. Client-side thinking stripping was also unnecessary — the API strips prior-turn thinking internally and the cache key accounts for it. Supporting a proxy path that silently degrades caching is worse than not supporting it.
 
 **Trade-off:** Users who were routing Anthropic models through OpenRouter must switch to using the `openrouter` SDK (which uses the OpenAI-compatible path). This is the correct approach anyway — OpenRouter's API is OpenAI-compatible, not Anthropic-compatible.
+
+### Unified Refine Phase — Collation Redesign (2026-04-01)
+
+**Decision:** Replace the 3 separate LLM phases (collate/merge, tidy/split, normalize entities) with a single unified "refine" phase. Drop entity normalization entirely.
+
+**Changes made:**
+- Replaced `phase_collate`, `phase_tidy`, `phase_normalize_entities` with single `phase_refine`
+- Replaced 3 prompt templates (`DEFAULT_COLLATE_PROMPT`, `DEFAULT_TIDY_PROMPT`, `DEFAULT_NORMALIZE_PROMPT`) with `DEFAULT_REFINE_PROMPT`
+- Replaced 3-method `CollationLlm` trait with single `refine()` method returning `Vec<RefineAction>`
+- `RefineAction` is a `#[serde(tag = "action")]` enum with `Merge`, `Split`, `Update` variants — the LLM returns a JSON array of actions it wants to take
+- Added context entries: vector store centroid search fetches up to 10 non-candidate entries near each cluster for reference (labeled `[CONTEXT]` in the prompt, read-only)
+- Added `Update` action type — in-place rewrite of summary/tags/confidence without creating new entries
+- Every action requires a `reason` field that goes directly into changelog entries
+- Validation guards: merge requires ≥2 sources, split requires ≥2 results, only candidate entries can be acted on, confidence clamped to [0.0, 1.0]
+- `run()` signature takes 1 template instead of 3; `CollationOutcome` fields renamed to `refine_merges`, `refine_splits`, `refine_updates`, `refine_kept`
+
+**Why:** Live testing on real character data revealed three fundamental flaws in the multi-phase approach:
+1. **Merge-then-split churn**: Phase 1 merged entries → Phase 2 split them → next run merged them back. The phases fought each other in a loop.
+2. **Dangerous entity normalization**: Phase 3 merged "christina" (ex-girlfriend) into "christine" (mother) because it only saw name/type pairs with no semantic context. This is a data-corruption-level bug.
+3. **Narrow isolated decisions**: Each LLM phase lacked context about what the other phases did. The collate phase might merge entries that the tidy phase would then immediately split.
+
+A single holistic call lets the LLM see all candidates + nearby context and make coherent merge/split/update decisions in one pass.
+
+**Trade-off:** The single prompt is larger (candidates + context entries), increasing token cost per call. Accepted because: (a) the multi-phase approach made 3 separate LLM calls anyway, (b) context entries provide critical disambiguation that prevents data corruption, (c) batch_limit caps total candidates per run. Entity normalization is permanently dropped — the risk of incorrect merges (christina→christine) outweighs the benefit of consistent naming.

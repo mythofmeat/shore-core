@@ -5,14 +5,11 @@
 //! state — cleared on reboot — which matches the intent: character selection
 //! is session-level, not permanent config.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// Return the directory used for Shore runtime state.
 fn runtime_dir() -> PathBuf {
-    if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR") {
-        return Path::new(&dir).join("shore");
-    }
-    PathBuf::from("/tmp/shore")
+    shore_config::runtime_dir()
 }
 
 /// Return the path to the active character state file.

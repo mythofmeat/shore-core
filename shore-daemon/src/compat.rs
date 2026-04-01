@@ -1080,7 +1080,6 @@ provider = "anthropic"
             source: "summary".to_string(),
             reason: "compaction".to_string(),
             status: status.to_string(),
-            canonical: false,
             confidence: 0.9,
             summary_text: text.to_string(),
             topic_tags: String::new(),
@@ -1095,6 +1094,7 @@ provider = "anthropic"
             updated_at: now.clone(),
             entry_type: String::new(),
             image_path: String::new(),
+            collated_at: String::new(),
         };
 
         db.create_entry(&make("e1", "active", "Active entry")).unwrap();
@@ -1203,7 +1203,7 @@ model = "gpt-4"
                 "CREATE TABLE IF NOT EXISTS entries (
                     id TEXT PRIMARY KEY, memory_type TEXT NOT NULL,
                     source TEXT NOT NULL DEFAULT '', reason TEXT NOT NULL DEFAULT '',
-                    status TEXT NOT NULL DEFAULT 'active', canonical INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL DEFAULT 'active',
                     confidence REAL NOT NULL DEFAULT 1.0, summary_text TEXT NOT NULL DEFAULT '',
                     topic_tags TEXT NOT NULL DEFAULT '', topic_key TEXT NOT NULL DEFAULT '',
                     start_timestamp TEXT NOT NULL DEFAULT '', end_timestamp TEXT NOT NULL DEFAULT '',

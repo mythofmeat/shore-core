@@ -11,7 +11,7 @@ use crate::memory::db::MemoryDB;
 
 use super::tool_handlers::execute_tool;
 use super::tool_schemas::{is_write_tool, tool_definitions};
-use super::types::{AgentError, AgentIndexer, ConfirmCallback, ProposedOperation, ToolResult};
+use super::types::{AgentError, AgentIndexer, AgentSearchContext, ConfirmCallback, ProposedOperation, ToolResult};
 
 const MAX_ITERATIONS: usize = 40;
 
@@ -33,6 +33,7 @@ pub async fn run_agent_loop(
     llm: &dyn AgentLlm,
     db: &MemoryDB,
     indexer: Option<&dyn AgentIndexer>,
+    search_ctx: Option<&AgentSearchContext>,
     model: &ResolvedModel,
     system_prompt: &str,
     initial_messages: Vec<Value>,
@@ -86,7 +87,7 @@ pub async fn run_agent_loop(
 
         // --- Execute read ops immediately ---
         for (id, name, input) in &read_ops {
-            let result = execute_tool(name, db, indexer, input).await;
+            let result = execute_tool(name, db, indexer, search_ctx, input).await;
             tool_results.push(ToolResult {
                 tool_use_id: id.clone(),
                 content: result,
@@ -124,7 +125,7 @@ pub async fn run_agent_loop(
                 continue;
             }
 
-            let result = execute_tool(name, db, indexer, input).await;
+            let result = execute_tool(name, db, indexer, search_ctx, input).await;
             // Track successful mutations
             if !result.starts_with("Error") {
                 mutations.push(result.clone());
@@ -266,6 +267,7 @@ mod tests {
             &mock,
             &db,
             None,
+            None,
             &model,
             "You are a memory agent.",
             vec![json!({"role": "user", "content": "What do I know?"})],
@@ -309,6 +311,7 @@ mod tests {
         let (text, mutations) = run_agent_loop(
             &mock,
             &db,
+            None,
             None,
             &model,
             "You are a memory agent.",
@@ -364,6 +367,7 @@ mod tests {
         let (text, mutations) = run_agent_loop(
             &mock,
             &db,
+            None,
             None,
             &model,
             "You are a memory agent.",
@@ -433,6 +437,7 @@ mod tests {
             &mock,
             &db,
             None,
+            None,
             &model,
             "You are a memory agent.",
             vec![json!({"role": "user", "content": "Save something"})],
@@ -496,6 +501,7 @@ mod tests {
         let (text, mutations) = run_agent_loop(
             &mock,
             &db,
+            None,
             None,
             &model,
             "system",

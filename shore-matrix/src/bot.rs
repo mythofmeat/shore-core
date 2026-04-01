@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use matrix_sdk::config::SyncSettings;
 use matrix_sdk::event_handler::Ctx;
 use matrix_sdk::media::{MediaFormat, MediaRequestParameters};
@@ -170,8 +168,7 @@ impl MatrixBot {
         }
 
         // Look for avatar image in standard data directory
-        let data_dir = dirs::data_dir().unwrap_or_else(|| PathBuf::from(".local/share"));
-        let char_dir = data_dir.join("shore").join(character);
+        let char_dir = shore_config::data_dir().join(character);
 
         for ext in &["png", "jpg", "jpeg", "webp"] {
             let path = char_dir.join(format!("avatar.{ext}"));

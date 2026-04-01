@@ -14,7 +14,6 @@ CREATE TABLE IF NOT EXISTS entries (
     source          TEXT NOT NULL DEFAULT '',
     reason          TEXT NOT NULL DEFAULT '',
     status          TEXT NOT NULL DEFAULT 'active',
-    canonical       INTEGER NOT NULL DEFAULT 0,
     confidence      REAL NOT NULL DEFAULT 1.0,
     summary_text    TEXT NOT NULL DEFAULT '',
     topic_tags      TEXT NOT NULL DEFAULT '',
@@ -28,7 +27,8 @@ CREATE TABLE IF NOT EXISTS entries (
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL,
     entry_type      TEXT NOT NULL DEFAULT '',
-    image_path      TEXT NOT NULL DEFAULT ''
+    image_path      TEXT NOT NULL DEFAULT '',
+    collated_at     TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS entities (
@@ -90,6 +90,14 @@ CREATE TABLE IF NOT EXISTS collation_skip (
 );
 ";
 
+/// Migrations for existing databases. Safe to run repeatedly (uses IF NOT EXISTS / try-ignore).
+const MIGRATIONS_SQL: &str = "
+-- v2.1: Add collated_at column to entries (tracks when an entry was last processed by collation).
+ALTER TABLE entries ADD COLUMN collated_at TEXT NOT NULL DEFAULT '';
+-- v2.3: Drop canonical column (never used by users, blocked collation on 95% of entries).
+ALTER TABLE entries DROP COLUMN canonical;
+";
+
 /// FTS5 virtual table for full-text search over entries.
 /// Created separately because FTS5 may not be available in all builds.
 const FTS_SCHEMA_SQL: &str = "
@@ -129,7 +137,6 @@ pub struct Entry {
     pub source: String,
     pub reason: String,
     pub status: String,
-    pub canonical: bool,
     pub confidence: f64,
     pub summary_text: String,
     pub topic_tags: String,
@@ -144,6 +151,8 @@ pub struct Entry {
     pub updated_at: String,
     pub entry_type: String,
     pub image_path: String,
+    /// When this entry was last processed by collation. Empty = never collated.
+    pub collated_at: String,
 }
 
 #[derive(Debug, Clone)]
@@ -226,8 +235,11 @@ impl MemoryDB {
         let conn = Connection::open(path)?;
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
         conn.execute_batch(SCHEMA_SQL)?;
+        Self::run_migrations(&conn);
         // FTS5 is best-effort — don't fail if the extension isn't available.
-        let _ = conn.execute_batch(FTS_SCHEMA_SQL);
+        if conn.execute_batch(FTS_SCHEMA_SQL).is_ok() {
+            Self::populate_fts_if_empty(&conn);
+        }
         Ok(Self { conn })
     }
 
@@ -236,6 +248,7 @@ impl MemoryDB {
         let conn = Connection::open_in_memory()?;
         conn.execute_batch("PRAGMA foreign_keys=ON;")?;
         conn.execute_batch(SCHEMA_SQL)?;
+        Self::run_migrations(&conn);
         let _ = conn.execute_batch(FTS_SCHEMA_SQL);
         Ok(Self { conn })
     }
@@ -247,15 +260,67 @@ impl MemoryDB {
         // V1 schema is identical — no migration needed.
         // We still run CREATE IF NOT EXISTS so missing tables are harmless.
         conn.execute_batch(SCHEMA_SQL)?;
-        let _ = conn.execute_batch(FTS_SCHEMA_SQL);
+        Self::run_migrations(&conn);
+        if conn.execute_batch(FTS_SCHEMA_SQL).is_ok() {
+            Self::populate_fts_if_empty(&conn);
+        }
         Ok(Self { conn })
+    }
+
+    /// Run idempotent migrations. Each statement is tried individually;
+    /// failures (e.g. "duplicate column") are silently ignored.
+    fn run_migrations(conn: &Connection) {
+        for stmt in MIGRATIONS_SQL.lines() {
+            let trimmed = stmt.trim();
+            if trimmed.is_empty() || trimmed.starts_with("--") {
+                continue;
+            }
+            let _ = conn.execute_batch(trimmed);
+        }
+
+        // v2.2: Fix FTS schema mismatch. Old databases may have a 5-column FTS
+        // table (entry_id, summary_text, topic_tags, topic_key, entities_text)
+        // from V1 import. The current schema uses 3 columns. Detect by checking
+        // if the creation SQL contains "entry_id" and drop/recreate if so.
+        let needs_fts_rebuild: bool = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'entries_fts'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .map(|sql| sql.contains("entry_id"))
+            .unwrap_or(false);
+
+        if needs_fts_rebuild {
+            let _ = conn.execute_batch(
+                "DROP TRIGGER IF EXISTS entries_fts_insert;
+                 DROP TRIGGER IF EXISTS entries_fts_update;
+                 DROP TRIGGER IF EXISTS entries_fts_delete;
+                 DROP TABLE IF EXISTS entries_fts;",
+            );
+        }
+    }
+
+    /// Populate FTS index from entries if the index is empty but entries exist.
+    /// This handles the case where the FTS table was just recreated by migration.
+    fn populate_fts_if_empty(conn: &Connection) {
+        let fts_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM entries_fts", [], |r| r.get(0))
+            .unwrap_or(0);
+        let entry_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM entries", [], |r| r.get(0))
+            .unwrap_or(0);
+        if fts_count == 0 && entry_count > 0 {
+            let _ = conn.execute_batch(
+                "INSERT INTO entries_fts(rowid, summary_text, topic_tags, topic_key)
+                   SELECT rowid, summary_text, topic_tags, topic_key FROM entries;",
+            );
+        }
     }
 
     /// Resolve the default database path for a character.
     pub fn default_path(character: &str) -> PathBuf {
-        let data_dir = dirs::data_dir().unwrap_or_else(|| PathBuf::from(".local/share"));
-        data_dir
-            .join("shore")
+        shore_config::data_dir()
             .join(character)
             .join("memory")
             .join("memory.db")
@@ -268,15 +333,15 @@ impl MemoryDB {
     pub fn create_entry(&self, entry: &Entry) -> SqlResult<()> {
         self.conn.execute(
             "INSERT INTO entries (
-                id, memory_type, source, reason, status, canonical, confidence,
+                id, memory_type, source, reason, status, confidence,
                 summary_text, topic_tags, topic_key, start_timestamp, end_timestamp,
                 message_count, source_entry_ids, related_entry_ids, superseded_by,
-                created_at, updated_at, entry_type, image_path
+                created_at, updated_at, entry_type, image_path, collated_at
             ) VALUES (
-                ?1, ?2, ?3, ?4, ?5, ?6, ?7,
-                ?8, ?9, ?10, ?11, ?12,
-                ?13, ?14, ?15, ?16,
-                ?17, ?18, ?19, ?20
+                ?1, ?2, ?3, ?4, ?5, ?6,
+                ?7, ?8, ?9, ?10, ?11,
+                ?12, ?13, ?14, ?15,
+                ?16, ?17, ?18, ?19, ?20
             )",
             params![
                 entry.id,
@@ -284,7 +349,6 @@ impl MemoryDB {
                 entry.source,
                 entry.reason,
                 entry.status,
-                entry.canonical as i32,
                 entry.confidence,
                 entry.summary_text,
                 entry.topic_tags,
@@ -299,6 +363,7 @@ impl MemoryDB {
                 entry.updated_at,
                 entry.entry_type,
                 entry.image_path,
+                entry.collated_at,
             ],
         )?;
         Ok(())
@@ -306,10 +371,10 @@ impl MemoryDB {
 
     pub fn get_entry(&self, id: &str) -> SqlResult<Option<Entry>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, memory_type, source, reason, status, canonical, confidence,
+            "SELECT id, memory_type, source, reason, status, confidence,
                     summary_text, topic_tags, topic_key, start_timestamp, end_timestamp,
                     message_count, source_entry_ids, related_entry_ids, superseded_by,
-                    created_at, updated_at, entry_type, image_path
+                    created_at, updated_at, entry_type, image_path, collated_at
              FROM entries WHERE id = ?1",
         )?;
         let mut rows = stmt.query_map(params![id], row_to_entry)?;
@@ -321,10 +386,10 @@ impl MemoryDB {
 
     pub fn get_entries_by_status(&self, status: &str) -> SqlResult<Vec<Entry>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, memory_type, source, reason, status, canonical, confidence,
+            "SELECT id, memory_type, source, reason, status, confidence,
                     summary_text, topic_tags, topic_key, start_timestamp, end_timestamp,
                     message_count, source_entry_ids, related_entry_ids, superseded_by,
-                    created_at, updated_at, entry_type, image_path
+                    created_at, updated_at, entry_type, image_path, collated_at
              FROM entries WHERE status = ?1 ORDER BY created_at DESC",
         )?;
         let rows = stmt.query_map(params![status], row_to_entry)?;
@@ -354,10 +419,10 @@ impl MemoryDB {
 
     pub fn get_entries_by_type(&self, memory_type: &str) -> SqlResult<Vec<Entry>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, memory_type, source, reason, status, canonical, confidence,
+            "SELECT id, memory_type, source, reason, status, confidence,
                     summary_text, topic_tags, topic_key, start_timestamp, end_timestamp,
                     message_count, source_entry_ids, related_entry_ids, superseded_by,
-                    created_at, updated_at, entry_type, image_path
+                    created_at, updated_at, entry_type, image_path, collated_at
              FROM entries WHERE memory_type = ?1 ORDER BY created_at DESC",
         )?;
         let rows = stmt.query_map(params![memory_type], row_to_entry)?;
@@ -368,11 +433,12 @@ impl MemoryDB {
         self.conn.execute(
             "UPDATE entries SET
                 memory_type = ?2, source = ?3, reason = ?4, status = ?5,
-                canonical = ?6, confidence = ?7, summary_text = ?8,
-                topic_tags = ?9, topic_key = ?10, start_timestamp = ?11,
-                end_timestamp = ?12, message_count = ?13, source_entry_ids = ?14,
-                related_entry_ids = ?15, superseded_by = ?16,
-                updated_at = ?17, entry_type = ?18, image_path = ?19
+                confidence = ?6, summary_text = ?7,
+                topic_tags = ?8, topic_key = ?9, start_timestamp = ?10,
+                end_timestamp = ?11, message_count = ?12, source_entry_ids = ?13,
+                related_entry_ids = ?14, superseded_by = ?15,
+                updated_at = ?16, entry_type = ?17, image_path = ?18,
+                collated_at = ?19
              WHERE id = ?1",
             params![
                 entry.id,
@@ -380,7 +446,6 @@ impl MemoryDB {
                 entry.source,
                 entry.reason,
                 entry.status,
-                entry.canonical as i32,
                 entry.confidence,
                 entry.summary_text,
                 entry.topic_tags,
@@ -394,6 +459,7 @@ impl MemoryDB {
                 entry.updated_at,
                 entry.entry_type,
                 entry.image_path,
+                entry.collated_at,
             ],
         )
     }
@@ -406,6 +472,22 @@ impl MemoryDB {
              WHERE id = ?1",
             params![old_id, new_id, now],
         )
+    }
+
+    /// Permanently delete an entry by ID.
+    pub fn delete_entry(&self, id: &str) -> SqlResult<usize> {
+        // Clean up FK references before deleting.
+        self.conn.execute("DELETE FROM entry_entities WHERE entry_id = ?1", params![id])?;
+        self.conn.execute("DELETE FROM changelog_entries WHERE entry_id = ?1", params![id])?;
+        self.conn.execute("DELETE FROM flags WHERE entry_id = ?1", params![id])?;
+        self.conn
+            .execute("DELETE FROM entries WHERE id = ?1", params![id])
+    }
+
+    /// Run VACUUM to reclaim disk space after bulk deletes.
+    pub fn vacuum(&self) -> SqlResult<()> {
+        self.conn.execute_batch("VACUUM")?;
+        Ok(())
     }
 
     // ------------------------------------------------------------------
@@ -736,11 +818,19 @@ impl MemoryDB {
     // FTS maintenance
     // ------------------------------------------------------------------
 
-    /// Rebuild the FTS index from the entries table.
+    /// Rebuild the FTS index from scratch (drop + recreate + repopulate).
+    /// This is more robust than DELETE + INSERT when the existing FTS data
+    /// is corrupted or was built by an incompatible SQLite version.
     pub fn rebuild_fts(&self) -> SqlResult<()> {
         self.conn.execute_batch(
-            "DELETE FROM entries_fts;
-             INSERT INTO entries_fts(rowid, summary_text, topic_tags, topic_key)
+            "DROP TRIGGER IF EXISTS entries_fts_insert;
+             DROP TRIGGER IF EXISTS entries_fts_update;
+             DROP TRIGGER IF EXISTS entries_fts_delete;
+             DROP TABLE IF EXISTS entries_fts;",
+        )?;
+        self.conn.execute_batch(FTS_SCHEMA_SQL)?;
+        self.conn.execute_batch(
+            "INSERT INTO entries_fts(rowid, summary_text, topic_tags, topic_key)
                SELECT rowid, summary_text, topic_tags, topic_key FROM entries;",
         )
     }
@@ -822,6 +912,15 @@ impl MemoryDB {
         }
     }
 
+    /// Stamp an entry as collated at the given timestamp.
+    /// This marks the entry as processed by collation in its current form.
+    pub fn stamp_collated(&self, entry_id: &str, timestamp: &str) -> SqlResult<usize> {
+        self.conn.execute(
+            "UPDATE entries SET collated_at = ?2 WHERE id = ?1",
+            params![entry_id, timestamp],
+        )
+    }
+
     /// Update an entry's confidence score.
     pub fn set_confidence(&self, entry_id: &str, confidence: f64) -> SqlResult<usize> {
         let now = Utc::now().to_rfc3339();
@@ -834,10 +933,10 @@ impl MemoryDB {
     /// Get all entries linked to a specific entity.
     pub fn get_entries_for_entity(&self, entity_id: i64) -> SqlResult<Vec<Entry>> {
         let mut stmt = self.conn.prepare(
-            "SELECT e.id, e.memory_type, e.source, e.reason, e.status, e.canonical, e.confidence,
+            "SELECT e.id, e.memory_type, e.source, e.reason, e.status, e.confidence,
                     e.summary_text, e.topic_tags, e.topic_key, e.start_timestamp, e.end_timestamp,
                     e.message_count, e.source_entry_ids, e.related_entry_ids, e.superseded_by,
-                    e.created_at, e.updated_at, e.entry_type, e.image_path
+                    e.created_at, e.updated_at, e.entry_type, e.image_path, e.collated_at
              FROM entries e
              JOIN entry_entities ee ON e.id = ee.entry_id
              WHERE ee.entity_id = ?1",
@@ -858,21 +957,21 @@ fn row_to_entry(row: &rusqlite::Row<'_>) -> SqlResult<Entry> {
         source: row.get(2)?,
         reason: row.get(3)?,
         status: row.get(4)?,
-        canonical: row.get::<_, i32>(5)? != 0,
-        confidence: row.get(6)?,
-        summary_text: row.get(7)?,
-        topic_tags: row.get(8)?,
-        topic_key: row.get(9)?,
-        start_timestamp: row.get(10)?,
-        end_timestamp: row.get(11)?,
-        message_count: row.get(12)?,
-        source_entry_ids: row.get(13)?,
-        related_entry_ids: row.get(14)?,
-        superseded_by: row.get(15)?,
-        created_at: row.get(16)?,
-        updated_at: row.get(17)?,
-        entry_type: row.get(18)?,
-        image_path: row.get(19)?,
+        confidence: row.get(5)?,
+        summary_text: row.get(6)?,
+        topic_tags: row.get(7)?,
+        topic_key: row.get(8)?,
+        start_timestamp: row.get(9)?,
+        end_timestamp: row.get(10)?,
+        message_count: row.get(11)?,
+        source_entry_ids: row.get(12)?,
+        related_entry_ids: row.get(13)?,
+        superseded_by: row.get(14)?,
+        created_at: row.get(15)?,
+        updated_at: row.get(16)?,
+        entry_type: row.get(17)?,
+        image_path: row.get(18)?,
+        collated_at: row.get(19)?,
     })
 }
 
@@ -945,7 +1044,7 @@ mod tests {
             source: "summary".to_string(),
             reason: "compaction".to_string(),
             status: "active".to_string(),
-            canonical: false,
+
             confidence: 0.9,
             summary_text: "Test memory entry".to_string(),
             topic_tags: "test,memory".to_string(),
@@ -960,6 +1059,7 @@ mod tests {
             updated_at: now,
             entry_type: String::new(),
             image_path: String::new(),
+            collated_at: String::new(),
         }
     }
 
@@ -1197,15 +1297,15 @@ mod tests {
             // Insert a V1-style entry.
             conn.execute(
                 "INSERT INTO entries (
-                    id, memory_type, source, reason, status, canonical, confidence,
+                    id, memory_type, source, reason, status, confidence,
                     summary_text, topic_tags, topic_key, start_timestamp, end_timestamp,
                     message_count, source_entry_ids, related_entry_ids, superseded_by,
-                    created_at, updated_at, entry_type, image_path
+                    created_at, updated_at, entry_type, image_path, collated_at
                 ) VALUES (
-                    '20240601_100000_0', 'episodic', 'summary', 'compaction', 'active', 0, 0.85,
+                    '20240601_100000_0', 'episodic', 'summary', 'compaction', 'active', 0.85,
                     'V1 memory content', 'v1,test', 'legacy', '2024-06-01T10:00:00Z', '2024-06-01T10:30:00Z',
                     10, '', '', '',
-                    '2024-06-01T10:00:00Z', '2024-06-01T10:00:00Z', '', ''
+                    '2024-06-01T10:00:00Z', '2024-06-01T10:00:00Z', '', '', ''
                 )",
                 [],
             )

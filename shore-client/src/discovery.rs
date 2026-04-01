@@ -26,19 +26,13 @@ type InstancesFile = Vec<InstanceEntry>;
 
 /// Return the default path to the Shore instances file.
 ///
-/// Prefers `$XDG_RUNTIME_DIR/shore/instances.json`, falls back to
-/// `$HOME/.local/share/shore/instances.json`.
+/// Uses `shore_config::runtime_dir()` so that `SHORE_RUNTIME_DIR`,
+/// `XDG_RUNTIME_DIR`, and platform defaults are respected consistently.
 pub fn instances_path() -> PathBuf {
-    if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
-        return Path::new(&runtime_dir).join("shore/instances.json");
-    }
-    if let Ok(home) = std::env::var("HOME") {
-        return Path::new(&home).join(".local/share/shore/instances.json");
-    }
-    PathBuf::from("/tmp/shore/instances.json")
+    shore_config::runtime_dir().join("instances.json")
 }
 
-/// Read the instances file and return all entries.
+/// Read the instances file and return all live entries (dead PIDs are skipped).
 pub fn read_instances() -> Result<Vec<InstanceEntry>> {
     let path = instances_path();
     let data = std::fs::read_to_string(&path).map_err(|e| {
@@ -48,7 +42,15 @@ pub fn read_instances() -> Result<Vec<InstanceEntry>> {
         serde_json::from_str(&data).map_err(|e| {
             ClientError::Discovery(format!("invalid JSON in {}: {e}", path.display()))
         })?;
-    Ok(entries)
+    Ok(entries.into_iter().filter(|e| entry_alive(e)).collect())
+}
+
+/// Check whether an instance entry's PID is still running.
+fn entry_alive(entry: &InstanceEntry) -> bool {
+    match entry.pid {
+        Some(pid) => Path::new(&format!("/proc/{pid}")).exists(),
+        None => true, // no PID recorded — can't prune, assume alive
+    }
 }
 
 /// Find the `ServerAddr` for a daemon whose config matches `config_path`.
@@ -87,10 +89,7 @@ fn addr_from_socket(socket: &str) -> ServerAddr {
 
 /// Return the default socket path used when no instances file is present.
 pub fn default_socket_path() -> PathBuf {
-    if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
-        return Path::new(&runtime_dir).join("shore/shore.sock");
-    }
-    PathBuf::from("/tmp/shore/shore.sock")
+    shore_config::runtime_dir().join("shore.sock")
 }
 
 /// Convenience: discover or fall back to the default Unix socket.

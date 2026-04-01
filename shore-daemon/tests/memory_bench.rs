@@ -254,9 +254,7 @@ fn socket_path() -> PathBuf {
 }
 
 fn memory_db_path() -> PathBuf {
-    dirs::data_dir()
-        .unwrap_or_else(|| PathBuf::from("/home/eshen/.local/share"))
-        .join("shore/qifei/memory/memory.db")
+    shore_config::data_dir().join("qifei/memory/memory.db")
 }
 
 fn backup_db_path() -> PathBuf {
@@ -275,9 +273,7 @@ fn restore_db() {
 
 fn char_definition() -> String {
     // Read a trimmed version — just enough for researcher context.
-    let path = dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("/home/eshen/.config"))
-        .join("shore/characters/qifei/character.md");
+    let path = shore_config::config_dir().join("characters/qifei/character.md");
     match std::fs::read_to_string(&path) {
         Ok(s) => {
             // Take first 2000 chars to keep context reasonable.
@@ -329,6 +325,7 @@ async fn run_benchmark_mixed(
             &agent_llm,
             agent_model,
             db,
+            None,
             None,
         )
         .await;

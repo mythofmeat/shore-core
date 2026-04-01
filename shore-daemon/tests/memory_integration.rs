@@ -433,7 +433,6 @@ fn make_entry(id: &str, summary: &str, confidence: f64) -> Entry {
         source: "summary".to_string(),
         reason: "compaction".to_string(),
         status: "active".to_string(),
-        canonical: false,
         confidence,
         summary_text: summary.to_string(),
         topic_tags: "test".to_string(),
@@ -735,7 +734,6 @@ async fn test_full_memory_system_e2e() {
         source: "summary".to_string(),
         reason: "compaction".to_string(),
         status: "active".to_string(),
-        canonical: false,
         confidence: 0.9,
         summary_text: "User likes hiking in mountains and also codes in Python".to_string(),
         topic_tags: "hobby,coding".to_string(),
@@ -829,6 +827,8 @@ async fn test_full_memory_system_e2e() {
             DEFAULT_TIDY_PROMPT,
             DEFAULT_COLLATE_PROMPT,
             DEFAULT_NORMALIZE_PROMPT,
+            &std::collections::HashMap::new(),
+            None,
         )
         .await
         .unwrap();

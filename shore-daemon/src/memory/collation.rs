@@ -1,6 +1,8 @@
+use crate::memory::agent::AgentIndexer;
 use crate::memory::db::{Entry, MemoryDB};
+use crate::memory::vectorstore::VectorStore;
 use chrono::Utc;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 
@@ -14,6 +16,9 @@ const DEFAULT_DECAY_HALF_LIFE_DAYS: f64 = 30.0;
 /// Floor below which confidence is not further decayed.
 const DEFAULT_DECAY_FLOOR: f64 = 0.1;
 
+/// Days before a previously-collated entry becomes eligible for reconsideration.
+const DEFAULT_RECONSIDER_TTL_DAYS: f64 = 30.0;
+
 /// Configuration for the collation pipeline.
 #[derive(Debug, Clone)]
 pub struct CollationConfig {
@@ -21,6 +26,8 @@ pub struct CollationConfig {
     pub decay_half_life_days: f64,
     /// Minimum confidence floor — entries at or below this are not decayed further.
     pub decay_floor: f64,
+    /// Days before a previously-collated entry becomes eligible for reconsideration.
+    pub reconsider_ttl_days: f64,
 }
 
 impl Default for CollationConfig {
@@ -28,17 +35,10 @@ impl Default for CollationConfig {
         Self {
             decay_half_life_days: DEFAULT_DECAY_HALF_LIFE_DAYS,
             decay_floor: DEFAULT_DECAY_FLOOR,
+            reconsider_ttl_days: DEFAULT_RECONSIDER_TTL_DAYS,
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Phase names (used as collation_skip phase keys)
-// ---------------------------------------------------------------------------
-
-const PHASE_TIDY: &str = "tidy";
-const PHASE_COLLATE: &str = "collate";
-const PHASE_DECAY: &str = "confidence_decay";
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -65,152 +65,103 @@ impl std::error::Error for CollationError {}
 // LLM response types
 // ---------------------------------------------------------------------------
 
-/// A split produced by Phase 1 (Tidy).
+/// Fields for an entry produced by the refine phase.
 #[derive(Debug, Clone, serde::Deserialize)]
-pub struct TidySplit {
-    /// ID of the original (overly broad) entry.
-    pub original_entry_id: String,
-    /// New focused entries to replace it.
-    pub replacements: Vec<TidyReplacement>,
-}
-
-#[derive(Debug, Clone, serde::Deserialize)]
-pub struct TidyReplacement {
+pub struct RefineEntryFields {
     pub summary_text: String,
     pub topic_tags: String,
     pub topic_key: String,
     pub confidence: f64,
 }
 
-/// A merge produced by Phase 2 (Collate).
+/// A single action from the unified refine phase.
 #[derive(Debug, Clone, serde::Deserialize)]
-pub struct CollateMerge {
-    /// IDs of entries being merged together.
-    pub source_entry_ids: Vec<String>,
-    /// The consolidated entry.
-    pub merged_summary: String,
-    pub merged_topic_tags: String,
-    pub merged_topic_key: String,
-    pub merged_confidence: f64,
-}
-
-/// An entity normalization produced by Phase 3.
-#[derive(Debug, Clone, serde::Deserialize)]
-pub struct EntityNormalization {
-    /// The canonical entity name to keep.
-    pub canonical_name: String,
-    /// Duplicate names to merge into the canonical.
-    pub duplicate_names: Vec<String>,
+#[serde(tag = "action")]
+pub enum RefineAction {
+    #[serde(rename = "merge")]
+    Merge {
+        source_entry_ids: Vec<String>,
+        result: RefineEntryFields,
+        reason: String,
+    },
+    #[serde(rename = "split")]
+    Split {
+        source_entry_id: String,
+        results: Vec<RefineEntryFields>,
+        reason: String,
+    },
+    #[serde(rename = "update")]
+    Update {
+        entry_id: String,
+        result: RefineEntryFields,
+        reason: String,
+    },
 }
 
 // ---------------------------------------------------------------------------
 // Trait for LLM dependency
 // ---------------------------------------------------------------------------
 
-/// LLM client for collation phases. Uses cheap tool_model, falls back to primary.
+/// LLM client for the collation refine phase.
 pub trait CollationLlm: Send + Sync {
-    /// Phase 1: Given entries, identify which are overly broad and split them.
-    fn tidy(
+    /// Given a prompt with candidate and context entries, return refine actions.
+    fn refine(
         &self,
         prompt: &str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<TidySplit>, CollationError>> + Send + '_>>;
-
-    /// Phase 2: Given entries, identify semantically similar groups and merge them.
-    fn collate(
-        &self,
-        prompt: &str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<CollateMerge>, CollationError>> + Send + '_>>;
-
-    /// Phase 3: Given entities, identify duplicates and normalize names.
-    fn normalize_entities(
-        &self,
-        prompt: &str,
-    ) -> Pin<
-        Box<dyn Future<Output = Result<Vec<EntityNormalization>, CollationError>> + Send + '_>,
-    >;
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<RefineAction>, CollationError>> + Send + '_>>;
 }
 
 // ---------------------------------------------------------------------------
-// Default prompt templates
+// Default prompt template
 // ---------------------------------------------------------------------------
 
-pub const DEFAULT_TIDY_PROMPT: &str = r#"You are splitting messy, multi-topic memory entries into clean, atomic entries.
+pub const DEFAULT_REFINE_PROMPT: &str = r#"You are maintaining a memory database for an AI character chat system.
 
 User: {{user}}
 Character: {{char}}
 
-Analyze the following memory entries and identify any that are overly broad or cover multiple distinct topics. For each such entry, split it into focused, single-topic entries.
+{{definitions}}
+## Your goal
 
-Rules:
-- Every piece of information from the original entry MUST appear in exactly one output entry
-- Do not fabricate or infer anything not present in the source
-- Each entry should be atomic — focused on exactly one topic or theme
-- If an entry is actually coherent (single topic), return it unchanged as one entry
-- Preserve entity names, dates, and specific details
+Produce clean, well-tagged memory entries. Each entry should be atomic — focused on one specific event, person, preference, attribute, or relationship. Entries should be descriptive and tagged accurately.
 
-Topic landscape (existing topics in the memory store):
-{{topic_landscape}}
+## What you can do
 
-Respond with a JSON object:
-{"splits":[{"original_entry_id":"...","replacements":[{"summary_text":"...","topic_tags":"tag1,tag2","topic_key":"topic","confidence":0.9}]}]}
+For the CANDIDATE entries below, you may:
+- **merge**: Combine 2+ candidate entries about the same topic into one consolidated entry. Prefer the most recent information as canonical, but preserve important historical context.
+- **split**: Break one unfocused candidate entry into multiple atomic entries. Every piece of information from the original must appear in exactly one output.
+- **update**: Rewrite a candidate entry's summary or tags for clarity, specificity, or accuracy without changing its scope.
+- **keep** (default): If a candidate entry is already good, do nothing — omit it from your response.
 
-If no entries need splitting, return {"splits":[]}.
+## Rules
 
-Entries:
-{{entries}}"#;
+- You may ONLY act on entries marked [CANDIDATE]. Entries marked [CONTEXT] are reference only.
+- When merging, prefer the more recent entry if entries conflict. If one explicitly corrects another, use the correction. If the conflict reflects genuine change over time, preserve both with temporal framing.
+- Do not fabricate or infer anything not present in the source entries.
+- Preserve entity names exactly as they appear. Do NOT rename, normalize, or merge entity names.
+- Each output entry needs: summary_text, topic_tags (comma-separated), topic_key (single category), confidence (0.0-1.0).
+- A merge must reference at least 2 source entry IDs.
+- When splitting, every fact from the original must appear in exactly one output entry.
 
-pub const DEFAULT_COLLATE_PROMPT: &str = r#"You are distilling a cluster of conversation records into stable, durable knowledge about {{user}} and their relationship with {{char}}.
+## Response format
 
-User: {{user}}
-Character: {{char}}
+Respond with ONLY a JSON object. Include ONLY entries that need changes.
 
-Goal: Extract what is durably true — preferences, personal details, important attributes, ongoing truths — not what merely happened in a specific conversation. Write in present tense where possible. The output should read as settled facts, not narrative.
+{"actions":[
+  {"action":"merge","source_entry_ids":["id1","id2"],"result":{"summary_text":"...","topic_tags":"...","topic_key":"...","confidence":0.9},"reason":"why"},
+  {"action":"split","source_entry_id":"id1","results":[{"summary_text":"...","topic_tags":"...","topic_key":"...","confidence":0.85}],"reason":"why"},
+  {"action":"update","entry_id":"id1","result":{"summary_text":"...","topic_tags":"...","topic_key":"...","confidence":0.9},"reason":"why"}
+]}
 
-Instructions:
-- The primary goal is **consolidation** — reduce the number of entries by merging overlapping or related information
-- You MUST produce fewer entries than the number of source entries ({{entry_count}} sources → at most {{max_entries}} output entries)
-- Merge redundant information across entries
-- Extract stable facts, preferences, and attributes from episodic narratives
-- Do not fabricate or infer anything not present in the source entries
-- Keep specific names, dates, and details where relevant
-- Each entry should be self-contained — but prefer merging related sub-topics into one entry over splitting into many
+If no changes are needed, return {"actions":[]}.
 
-Contradiction handling:
-- When entries contain conflicting information, prefer the more recent entry (by timestamp or position)
-- If one entry explicitly corrects or updates another, use the correction
-- If the contradiction reflects genuine change over time, preserve both with temporal framing (e.g. "Previously X, but as of [date] Y")
-- If unresolvable, preserve both and note the conflict
+## Entries
 
-Drop permission:
-- You MAY drop information that is clearly outdated, superseded by newer facts, or no longer relevant
-- When dropping information, note what was dropped in the merged_summary
-- Only drop when confident the information is stale — when in doubt, preserve it
+### Candidates (you may modify these):
+{{candidates}}
 
-Respond with a JSON object:
-{"merges":[{"source_entry_ids":["id1","id2"],"merged_summary":"...","merged_topic_tags":"tag1,tag2","merged_topic_key":"topic","merged_confidence":0.9}]}
-
-If no entries should be merged, return {"merges":[]}.
-
-Entries:
-{{entries}}"#;
-
-pub const DEFAULT_NORMALIZE_PROMPT: &str = r#"You are normalizing entity records in a memory system.
-
-Below are entity records that may have inconsistencies: duplicate names (aliases), conflicting types, or missing information.
-
-For each group of related entities, produce a single canonical record with:
-- The most complete, correct name
-- The best available type classification
-
-If an entity has no issues, do not include it in the output.
-
-Respond with a JSON object:
-{"normalizations":[{"canonical_name":"...","duplicate_names":["alias1","alias2"]}]}
-
-If no entities need normalization, return {"normalizations":[]}.
-
-Entities:
-{{entities}}"#;
+### Context (reference only, do NOT modify):
+{{context}}"#;
 
 // ---------------------------------------------------------------------------
 // Collation outcome
@@ -219,13 +170,14 @@ Entities:
 /// Summary of what the collation pipeline did.
 #[derive(Debug, Default)]
 pub struct CollationOutcome {
-    pub tidy_splits: usize,
-    pub tidy_new_entries: usize,
-    pub collate_merges: usize,
-    pub collate_new_entries: usize,
-    pub entities_normalized: usize,
+    pub refine_merges: usize,
+    pub refine_splits: usize,
+    pub refine_updates: usize,
+    pub refine_new_entries: usize,
+    pub refine_kept: usize,
     pub entries_decayed: usize,
     pub entries_skipped: usize,
+    pub timestamps_backfilled: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -247,21 +199,58 @@ impl CollationManager {
         format!("{}_{}", now.format("%Y%m%d_%H%M%S"), index)
     }
 
-    /// Build a prompt from a template, replacing `{{entries}}` with formatted entries
-    /// and any additional template variables from `vars`.
-    pub fn build_entries_prompt(
+    /// Build a refine prompt from a template, replacing `{{candidates}}` and
+    /// `{{context}}` with formatted entry blocks, plus any template variables.
+    pub fn build_refine_prompt(
         template: &str,
-        entries: &[Entry],
+        candidates: &[Entry],
+        context: &[Entry],
         vars: &HashMap<String, String>,
     ) -> String {
-        let mut text = String::new();
-        for e in entries {
-            text.push_str(&format!(
-                "- ID: {} | Type: {} | Confidence: {:.2} | Tags: {} | Summary: {}\n",
-                e.id, e.memory_type, e.confidence, e.topic_tags, e.summary_text
-            ));
+        let format_entry = |e: &Entry, label: &str| -> String {
+            let mut line = format!(
+                "{} ID: {} | Tags: {} | Key: {} | Confidence: {:.2}",
+                label, e.id, e.topic_tags, e.topic_key, e.confidence
+            );
+            if !e.start_timestamp.is_empty() {
+                line.push_str(&format!(" | Time: {}", e.start_timestamp));
+                if !e.end_timestamp.is_empty() && e.end_timestamp != e.start_timestamp {
+                    line.push_str(&format!("..{}", e.end_timestamp));
+                }
+            }
+            line.push_str(&format!("\n  {}", e.summary_text));
+            line
+        };
+
+        let mut cand_text = String::new();
+        for e in candidates {
+            cand_text.push_str(&format_entry(e, "[CANDIDATE]"));
+            cand_text.push('\n');
         }
-        let mut result = template.replace("{{entries}}", &text);
+
+        let mut ctx_text = String::new();
+        for e in context {
+            ctx_text.push_str(&format_entry(e, "[CONTEXT]"));
+            ctx_text.push('\n');
+        }
+
+        // Build definitions block from char_description / user_description vars.
+        let mut defs = String::new();
+        if let Some(cd) = vars.get("char_description").filter(|s| !s.is_empty()) {
+            defs.push_str("## Character definition\n");
+            defs.push_str(cd);
+            defs.push_str("\n\n");
+        }
+        if let Some(ud) = vars.get("user_description").filter(|s| !s.is_empty()) {
+            defs.push_str("## User definition\n");
+            defs.push_str(ud);
+            defs.push_str("\n\n");
+        }
+
+        let mut result = template
+            .replace("{{definitions}}", &defs)
+            .replace("{{candidates}}", &cand_text)
+            .replace("{{context}}", &ctx_text);
         for (key, value) in vars {
             let tag = format!("{{{{{key}}}}}");
             result = result.replace(&tag, value);
@@ -269,195 +258,227 @@ impl CollationManager {
         result
     }
 
-    /// Build a prompt from a template, replacing `{{entities}}` with formatted entity names
-    /// and any additional template variables from `vars`.
-    pub fn build_entities_prompt(
-        template: &str,
-        entities: &[(String, String)],
-        vars: &HashMap<String, String>,
-    ) -> String {
-        let mut text = String::new();
-        for (name, etype) in entities {
-            text.push_str(&format!("- Name: {} | Type: {}\n", name, etype));
+    /// Unified candidate selection for the refine phase.
+    /// An entry is a candidate if:
+    /// - It's not an image entry
+    /// - It has never been collated (collated_at empty), OR
+    /// - It was modified since last collation (updated_at > collated_at), OR
+    /// - Its TTL has expired (collated_at older than reconsider_ttl_days)
+    fn is_refine_candidate(&self, e: &Entry) -> bool {
+        if !e.image_path.is_empty() {
+            return false;
         }
-        let mut result = template.replace("{{entities}}", &text);
-        for (key, value) in vars {
-            let tag = format!("{{{{{key}}}}}");
-            result = result.replace(&tag, value);
+        if e.collated_at.is_empty() {
+            return true;
         }
-        result
+        // Modified since last collation
+        if e.updated_at.as_str() > e.collated_at.as_str() {
+            return true;
+        }
+        // TTL expired
+        let ttl_seconds = self.config.reconsider_ttl_days * 86400.0;
+        chrono::DateTime::parse_from_rfc3339(&e.collated_at)
+            .map(|ca| {
+                let age = (Utc::now() - ca.with_timezone(&Utc)).num_seconds() as f64;
+                age > ttl_seconds
+            })
+            .unwrap_or(true)
     }
 
-    /// Run the full 4-phase collation pipeline.
+    /// Run the collation pipeline: backfill → refine → confidence decay → stamp.
     ///
     /// `vars` provides template variables like `{{char}}` and `{{user}}`.
-    /// Phase-specific variables (entry_count, max_entries, topic_landscape)
-    /// are computed internally and merged into a copy of `vars` before rendering.
     pub async fn run(
         &self,
         db: &MemoryDB,
         llm: &dyn CollationLlm,
-        tidy_template: &str,
-        collate_template: &str,
-        normalize_template: &str,
+        refine_template: &str,
         vars: &HashMap<String, String>,
+        indexer: Option<&dyn AgentIndexer>,
+        vector_store: Option<&VectorStore>,
+        limit: Option<usize>,
     ) -> Result<CollationOutcome, CollationError> {
         let mut outcome = CollationOutcome::default();
-        // Shared counter to avoid entry ID collisions across phases.
         let mut id_counter: usize = 0;
+        let mut candidates_processed: HashSet<String> = HashSet::new();
 
-        // Phase 1: Tidy
-        self.phase_tidy(db, llm, tidy_template, vars, &mut outcome, &mut id_counter)
-            .await?;
+        // Phase 0: Backfill missing timestamps (incremental, no LLM)
+        self.phase_backfill_timestamps(db, 20, &mut outcome)?;
 
-        // Phase 2: Collate
-        self.phase_collate(db, llm, collate_template, vars, &mut outcome, &mut id_counter)
-            .await?;
+        // Phase 1: Refine (unified merge/split/update)
+        self.phase_refine(
+            db, llm, refine_template, vars, &mut outcome,
+            &mut id_counter, indexer, vector_store, limit,
+            &mut candidates_processed,
+        ).await?;
 
-        // Phase 3: Normalize entities
-        self.phase_normalize_entities(db, llm, normalize_template, vars, &mut outcome)
-            .await?;
+        // Phase 2: Confidence decay (math only)
+        self.phase_confidence_decay(db, &mut outcome, &mut candidates_processed)?;
 
-        // Phase 4: Confidence decay
-        self.phase_confidence_decay(db, &mut outcome)?;
+        // Stamp only entries that were examined as candidates this run.
+        let stamp = Utc::now().to_rfc3339();
+        for id in &candidates_processed {
+            let _ = db.stamp_collated(id, &stamp);
+        }
 
         Ok(outcome)
     }
 
     // -----------------------------------------------------------------------
-    // Phase 1: Tidy — split overly broad entries
+    // Phase 0: Backfill missing timestamps (incremental, no LLM)
     // -----------------------------------------------------------------------
 
-    async fn phase_tidy(
+    fn phase_backfill_timestamps(
         &self,
         db: &MemoryDB,
-        llm: &dyn CollationLlm,
-        template: &str,
-        vars: &HashMap<String, String>,
+        batch_size: usize,
         outcome: &mut CollationOutcome,
-        id_counter: &mut usize,
     ) -> Result<(), CollationError> {
         let entries = db
             .get_entries_by_status("active")
             .map_err(|e| CollationError::Db(e.to_string()))?;
 
-        // Filter to entries not already processed for this phase.
         let candidates: Vec<&Entry> = entries
             .iter()
-            .filter(|e| {
-                !db.is_collation_skipped(&e.id, PHASE_TIDY)
-                    .unwrap_or(true)
-            })
+            .filter(|e| e.start_timestamp.is_empty())
+            .take(batch_size)
             .collect();
 
         if candidates.is_empty() {
-            outcome.entries_skipped += entries.len();
             return Ok(());
         }
 
-        // Build topic landscape from all active entries' topic keys.
-        let topic_landscape: String = {
-            let mut keys: Vec<&str> = entries
-                .iter()
-                .map(|e| e.topic_key.as_str())
-                .filter(|k| !k.is_empty())
-                .collect();
-            keys.sort();
-            keys.dedup();
-            keys.join(", ")
-        };
-        let mut phase_vars = vars.clone();
-        phase_vars.insert("topic_landscape".into(), topic_landscape);
+        let mut from_ancestors = 0usize;
+        let mut from_created_at = 0usize;
 
-        let owned: Vec<Entry> = candidates.iter().map(|e| (*e).clone()).collect();
-        let prompt = Self::build_entries_prompt(template, &owned, &phase_vars);
-        let splits = llm.tidy(&prompt).await?;
+        for entry in &candidates {
+            let (start, end, source) =
+                self.resolve_timestamps_from_ancestors(db, entry)?;
 
-        let now_str = Utc::now().to_rfc3339();
+            let mut updated = (*entry).clone();
+            updated.start_timestamp = start.clone();
+            updated.end_timestamp = end.clone();
+            updated.updated_at = Utc::now().to_rfc3339();
+            db.update_entry(&updated)
+                .map_err(|e| CollationError::Db(e.to_string()))?;
 
-        for split in &splits {
-            // Verify the original entry exists and is active.
-            let original = match db
-                .get_entry(&split.original_entry_id)
-                .map_err(|e| CollationError::Db(e.to_string()))?
-            {
-                Some(e) if e.status == "active" => e,
-                _ => continue,
-            };
-
-            // Create replacement entries.
-            let mut new_ids = Vec::new();
-            for replacement in &split.replacements {
-                let new_id = Self::generate_entry_id(*id_counter);
-                *id_counter += 1;
-
-                let entry = Entry {
-                    id: new_id.clone(),
-                    memory_type: original.memory_type.clone(),
-                    source: "collation_tidy".to_string(),
-                    reason: "tidy_split".to_string(),
-                    status: "active".to_string(),
-                    canonical: false,
-                    confidence: replacement.confidence,
-                    summary_text: replacement.summary_text.clone(),
-                    topic_tags: replacement.topic_tags.clone(),
-                    topic_key: replacement.topic_key.clone(),
-                    start_timestamp: original.start_timestamp.clone(),
-                    end_timestamp: original.end_timestamp.clone(),
-                    message_count: original.message_count,
-                    source_entry_ids: split.original_entry_id.clone(),
-                    related_entry_ids: String::new(),
-                    superseded_by: String::new(),
-                    created_at: now_str.clone(),
-                    updated_at: now_str.clone(),
-                    entry_type: original.entry_type.clone(),
-                    image_path: String::new(),
-                };
-
-                db.create_entry(&entry)
-                    .map_err(|e| CollationError::Db(e.to_string()))?;
-                new_ids.push(new_id.clone());
-
-                // Changelog for each new entry.
-                let cl_id = db
-                    .append_changelog(
-                        "collation_tidy",
-                        &format!(
-                            "Tidy split: {} -> {} ({})",
-                            split.original_entry_id, new_id, replacement.topic_key
-                        ),
-                    )
-                    .map_err(|e| CollationError::Db(e.to_string()))?;
-                db.link_changelog_entry(cl_id, &new_id)
-                    .map_err(|e| CollationError::Db(e.to_string()))?;
+            if source == "ancestors" {
+                from_ancestors += 1;
+            } else {
+                from_created_at += 1;
             }
 
-            // Supersede the original entry (point to first replacement).
-            if let Some(first_new) = new_ids.first() {
-                db.supersede_entry(&split.original_entry_id, first_new)
-                    .map_err(|e| CollationError::Db(e.to_string()))?;
-            }
-
-            outcome.tidy_splits += 1;
-            outcome.tidy_new_entries += new_ids.len();
+            outcome.timestamps_backfilled += 1;
         }
 
-        // Mark all candidates as processed for this phase.
-        let skipped = candidates.len() - splits.len();
-        outcome.entries_skipped += skipped;
-        for e in &candidates {
-            db.add_collation_skip(&e.id, PHASE_TIDY)
-                .map_err(|e| CollationError::Db(e.to_string()))?;
+        // Single summary changelog entry for all backfills.
+        if outcome.timestamps_backfilled > 0 {
+            let _ = db.append_changelog(
+                "backfill_timestamp",
+                &format!(
+                    "Backfilled timestamps for {} entries ({} from ancestors, {} from created_at)",
+                    outcome.timestamps_backfilled, from_ancestors, from_created_at,
+                ),
+            );
         }
 
         Ok(())
     }
 
+    /// Walk the source_entry_ids chain to find ancestor timestamps.
+    /// Returns (start, end, source_description).
+    fn resolve_timestamps_from_ancestors(
+        &self,
+        db: &MemoryDB,
+        entry: &Entry,
+    ) -> Result<(String, String, String), CollationError> {
+        // Try to find timestamps by walking source_entry_ids
+        if !entry.source_entry_ids.is_empty() {
+            let mut min_start = String::new();
+            let mut max_end = String::new();
+            let mut found_any = false;
+
+            let mut to_visit: Vec<String> = entry
+                .source_entry_ids
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+
+            let mut visited = std::collections::HashSet::new();
+            // Cap traversal depth to avoid runaway chains
+            let mut depth = 0;
+            const MAX_DEPTH: usize = 10;
+
+            while !to_visit.is_empty() && depth < MAX_DEPTH {
+                depth += 1;
+                let mut next_visit = Vec::new();
+
+                for id in &to_visit {
+                    if !visited.insert(id.clone()) {
+                        continue;
+                    }
+                    if let Some(ancestor) = db
+                        .get_entry(id)
+                        .map_err(|e| CollationError::Db(e.to_string()))?
+                    {
+                        if !ancestor.start_timestamp.is_empty() {
+                            if min_start.is_empty()
+                                || ancestor.start_timestamp.as_str() < min_start.as_str()
+                            {
+                                min_start = ancestor.start_timestamp.clone();
+                            }
+                            found_any = true;
+                        }
+                        if !ancestor.end_timestamp.is_empty() {
+                            if max_end.is_empty()
+                                || ancestor.end_timestamp.as_str() > max_end.as_str()
+                            {
+                                max_end = ancestor.end_timestamp.clone();
+                            }
+                        }
+                        // If this ancestor also lacks timestamps, walk its sources
+                        if ancestor.start_timestamp.is_empty()
+                            && !ancestor.source_entry_ids.is_empty()
+                        {
+                            for src in ancestor.source_entry_ids.split(',') {
+                                let src = src.trim().to_string();
+                                if !src.is_empty() && !visited.contains(&src) {
+                                    next_visit.push(src);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                to_visit = next_visit;
+            }
+
+            if found_any {
+                // If we found start but not end, use start as end too
+                if max_end.is_empty() {
+                    max_end = min_start.clone();
+                }
+                return Ok((min_start, max_end, "ancestors".to_string()));
+            }
+        }
+
+        // Fallback: use created_at
+        Ok((
+            entry.created_at.clone(),
+            entry.created_at.clone(),
+            "created_at".to_string(),
+        ))
+    }
+
     // -----------------------------------------------------------------------
-    // Phase 2: Collate — merge semantically similar entries
+    // Phase 1: Refine — unified merge/split/update
     // -----------------------------------------------------------------------
 
-    async fn phase_collate(
+    /// Maximum context entries (non-candidates) to include per cluster prompt.
+    const MAX_CONTEXT: usize = 10;
+
+    async fn phase_refine(
         &self,
         db: &MemoryDB,
         llm: &dyn CollationLlm,
@@ -465,208 +486,568 @@ impl CollationManager {
         vars: &HashMap<String, String>,
         outcome: &mut CollationOutcome,
         id_counter: &mut usize,
+        indexer: Option<&dyn AgentIndexer>,
+        vector_store: Option<&VectorStore>,
+        limit: Option<usize>,
+        candidates_processed: &mut HashSet<String>,
     ) -> Result<(), CollationError> {
         let entries = db
             .get_entries_by_status("active")
             .map_err(|e| CollationError::Db(e.to_string()))?;
 
-        let candidates: Vec<&Entry> = entries
+        let mut candidates: Vec<&Entry> = entries
             .iter()
-            .filter(|e| {
-                !db.is_collation_skipped(&e.id, PHASE_COLLATE)
-                    .unwrap_or(true)
-            })
+            .filter(|e| self.is_refine_candidate(e))
             .collect();
+
+        if let Some(cap) = limit {
+            candidates.truncate(cap);
+        }
 
         if candidates.is_empty() {
             outcome.entries_skipped += entries.len();
             return Ok(());
         }
 
-        // Add entry count caps as template variables.
-        let entry_count = candidates.len();
-        let max_entries = (entry_count / 2).max(1);
-        let mut phase_vars = vars.clone();
-        phase_vars.insert("entry_count".into(), entry_count.to_string());
-        phase_vars.insert("max_entries".into(), max_entries.to_string());
+        for c in &candidates {
+            candidates_processed.insert(c.id.clone());
+        }
 
-        let owned: Vec<Entry> = candidates.iter().map(|e| (*e).clone()).collect();
-        let prompt = Self::build_entries_prompt(template, &owned, &phase_vars);
-        let merges = llm.collate(&prompt).await?;
+        let candidate_ids: HashSet<String> = candidates.iter().map(|e| e.id.clone()).collect();
+
+        // Cluster candidates by semantic similarity.
+        let clusters = self.cluster_candidates(&candidates, vector_store).await;
 
         let now_str = Utc::now().to_rfc3339();
 
-        for merge in &merges {
-            if merge.source_entry_ids.len() < 2 {
-                continue;
+        for cluster in &clusters {
+            // Fetch context entries (nearby non-candidates).
+            let context = self
+                .fetch_context_entries(cluster, &entries, &candidate_ids, vector_store)
+                .await;
+
+            let prompt = Self::build_refine_prompt(template, cluster, &context, vars);
+            let actions = llm.refine(&prompt).await?;
+
+            let mut acted_on: HashSet<String> = HashSet::new();
+
+            for action in &actions {
+                match action {
+                    RefineAction::Merge {
+                        source_entry_ids,
+                        result,
+                        reason,
+                    } => {
+                        if self.apply_merge(
+                            db, source_entry_ids, result, reason,
+                            id_counter, indexer, &now_str,
+                            outcome, candidates_processed, &candidate_ids,
+                        ).await? {
+                            for id in source_entry_ids {
+                                acted_on.insert(id.clone());
+                            }
+                        }
+                    }
+                    RefineAction::Split {
+                        source_entry_id,
+                        results,
+                        reason,
+                    } => {
+                        if self.apply_split(
+                            db, source_entry_id, results, reason,
+                            id_counter, indexer, &now_str,
+                            outcome, candidates_processed, &candidate_ids,
+                        ).await? {
+                            acted_on.insert(source_entry_id.clone());
+                        }
+                    }
+                    RefineAction::Update {
+                        entry_id,
+                        result,
+                        reason,
+                    } => {
+                        if self.apply_update(
+                            db, entry_id, result, reason,
+                            &now_str, indexer, outcome, &candidate_ids,
+                        ).await? {
+                            acted_on.insert(entry_id.clone());
+                        }
+                    }
+                }
             }
 
-            // Verify all source entries exist and are active.
-            let all_valid = merge.source_entry_ids.iter().all(|id| {
-                db.get_entry(id)
-                    .map(|opt| opt.is_some_and(|e| e.status == "active"))
-                    .unwrap_or(false)
-            });
-            if !all_valid {
-                continue;
+            // Count candidates in this cluster that had no actions.
+            let kept = cluster
+                .iter()
+                .filter(|e| !acted_on.contains(&e.id))
+                .count();
+            outcome.refine_kept += kept;
+        }
+
+        Ok(())
+    }
+
+    /// Fetch context entries: active entries near the cluster centroid that
+    /// are NOT candidates. Provides the LLM with awareness of existing coverage.
+    async fn fetch_context_entries(
+        &self,
+        cluster: &[Entry],
+        all_active: &[Entry],
+        candidate_ids: &HashSet<String>,
+        vector_store: Option<&VectorStore>,
+    ) -> Vec<Entry> {
+        let vs = match vector_store {
+            Some(vs) => vs,
+            None => return vec![],
+        };
+
+        let ids: Vec<&str> = cluster.iter().map(|e| e.id.as_str()).collect();
+        let embeddings = match vs.get_embeddings(&ids).await {
+            Ok(embs) if !embs.is_empty() => embs,
+            _ => return vec![],
+        };
+
+        let centroid = match compute_centroid(&embeddings) {
+            Some(c) => c,
+            None => return vec![],
+        };
+
+        let search_k = Self::MAX_CONTEXT + cluster.len();
+        let results = match vs.search(&centroid, search_k).await {
+            Ok(r) => r,
+            Err(_) => return vec![],
+        };
+
+        let context_ids: HashSet<&str> = results
+            .iter()
+            .map(|r| r.entry_id.as_str())
+            .filter(|id| !candidate_ids.contains(*id))
+            .take(Self::MAX_CONTEXT)
+            .collect();
+
+        all_active
+            .iter()
+            .filter(|e| context_ids.contains(e.id.as_str()) && e.status == "active")
+            .cloned()
+            .collect()
+    }
+
+    /// Apply a merge action: combine N entries into 1. Returns true if applied.
+    async fn apply_merge(
+        &self,
+        db: &MemoryDB,
+        source_entry_ids: &[String],
+        result: &RefineEntryFields,
+        reason: &str,
+        id_counter: &mut usize,
+        indexer: Option<&dyn AgentIndexer>,
+        now_str: &str,
+        outcome: &mut CollationOutcome,
+        candidates_processed: &mut HashSet<String>,
+        candidate_ids: &HashSet<String>,
+    ) -> Result<bool, CollationError> {
+        if source_entry_ids.len() < 2 {
+            return Ok(false);
+        }
+
+        // All sources must be active candidates.
+        for id in source_entry_ids {
+            if !candidate_ids.contains(id) {
+                return Ok(false);
             }
+            match db.get_entry(id).map_err(|e| CollationError::Db(e.to_string()))? {
+                Some(e) if e.status == "active" => {}
+                _ => return Ok(false),
+            }
+        }
 
-            // Get the first source for metadata inheritance.
-            let first_source = db
-                .get_entry(&merge.source_entry_ids[0])
-                .map_err(|e| CollationError::Db(e.to_string()))?
-                .unwrap();
+        let sources: Vec<Entry> = source_entry_ids
+            .iter()
+            .filter_map(|id| db.get_entry(id).ok().flatten())
+            .collect();
+        let first_source = &sources[0];
 
+        // Compute merged timestamps: min(start), max(end).
+        let start_timestamp = sources
+            .iter()
+            .map(|e| e.start_timestamp.as_str())
+            .filter(|t| !t.is_empty())
+            .min()
+            .unwrap_or("")
+            .to_string();
+        let end_timestamp = sources
+            .iter()
+            .map(|e| e.end_timestamp.as_str())
+            .filter(|t| !t.is_empty())
+            .max()
+            .unwrap_or("")
+            .to_string();
+
+        let message_count: i64 = sources.iter().map(|e| e.message_count).sum();
+
+        let new_id = Self::generate_entry_id(*id_counter);
+        *id_counter += 1;
+
+        let confidence = result.confidence.clamp(0.0, 1.0);
+        let entry = Entry {
+            id: new_id.clone(),
+            memory_type: first_source.memory_type.clone(),
+            source: "collation_refine".to_string(),
+            reason: "refine_merge".to_string(),
+            status: "active".to_string(),
+
+            confidence,
+            summary_text: result.summary_text.clone(),
+            topic_tags: result.topic_tags.clone(),
+            topic_key: result.topic_key.clone(),
+            start_timestamp,
+            end_timestamp,
+            message_count,
+            source_entry_ids: source_entry_ids.join(","),
+            related_entry_ids: String::new(),
+            superseded_by: String::new(),
+            created_at: now_str.to_string(),
+            updated_at: now_str.to_string(),
+            entry_type: first_source.entry_type.clone(),
+            image_path: String::new(),
+            collated_at: String::new(),
+        };
+
+        db.create_entry(&entry)
+            .map_err(|e| CollationError::Db(e.to_string()))?;
+
+        if let Some(idx) = indexer {
+            let _ = idx.index_entry(&new_id, &result.summary_text).await;
+        }
+
+        candidates_processed.insert(new_id.clone());
+
+        for source_id in source_entry_ids {
+            db.supersede_entry(source_id, &new_id)
+                .map_err(|e| CollationError::Db(e.to_string()))?;
+        }
+
+        // Changelog with source summaries and reason.
+        let source_summaries: Vec<String> = sources
+            .iter()
+            .map(|s| format!("  - [{}] {}", s.id, s.summary_text))
+            .collect();
+        let cl_id = db
+            .append_changelog(
+                "collation_refine",
+                &format!(
+                    "Merge {} entries -> {}:\n{}\n  => {}\n  Reason: {}",
+                    source_entry_ids.len(),
+                    new_id,
+                    source_summaries.join("\n"),
+                    result.summary_text,
+                    reason,
+                ),
+            )
+            .map_err(|e| CollationError::Db(e.to_string()))?;
+        db.link_changelog_entry(cl_id, &new_id)
+            .map_err(|e| CollationError::Db(e.to_string()))?;
+
+        outcome.refine_merges += 1;
+        outcome.refine_new_entries += 1;
+
+        Ok(true)
+    }
+
+    /// Apply a split action: break 1 entry into N. Returns true if applied.
+    async fn apply_split(
+        &self,
+        db: &MemoryDB,
+        source_entry_id: &str,
+        results: &[RefineEntryFields],
+        reason: &str,
+        id_counter: &mut usize,
+        indexer: Option<&dyn AgentIndexer>,
+        now_str: &str,
+        outcome: &mut CollationOutcome,
+        candidates_processed: &mut HashSet<String>,
+        candidate_ids: &HashSet<String>,
+    ) -> Result<bool, CollationError> {
+        if results.len() < 2 {
+            return Ok(false);
+        }
+
+        if !candidate_ids.contains(source_entry_id) {
+            return Ok(false);
+        }
+
+        let original = match db
+            .get_entry(source_entry_id)
+            .map_err(|e| CollationError::Db(e.to_string()))?
+        {
+            Some(e) if e.status == "active" => e,
+            _ => return Ok(false),
+        };
+
+        let mut new_ids = Vec::new();
+        for replacement in results {
             let new_id = Self::generate_entry_id(*id_counter);
             *id_counter += 1;
 
+            let confidence = replacement.confidence.clamp(0.0, 1.0);
             let entry = Entry {
                 id: new_id.clone(),
-                memory_type: first_source.memory_type.clone(),
-                source: "collation_collate".to_string(),
-                reason: "collate_merge".to_string(),
+                memory_type: original.memory_type.clone(),
+                source: "collation_refine".to_string(),
+                reason: "refine_split".to_string(),
                 status: "active".to_string(),
-                canonical: false,
-                confidence: merge.merged_confidence,
-                summary_text: merge.merged_summary.clone(),
-                topic_tags: merge.merged_topic_tags.clone(),
-                topic_key: merge.merged_topic_key.clone(),
-                start_timestamp: first_source.start_timestamp.clone(),
-                end_timestamp: first_source.end_timestamp.clone(),
-                message_count: first_source.message_count,
-                source_entry_ids: merge.source_entry_ids.join(","),
+    
+                confidence,
+                summary_text: replacement.summary_text.clone(),
+                topic_tags: replacement.topic_tags.clone(),
+                topic_key: replacement.topic_key.clone(),
+                start_timestamp: original.start_timestamp.clone(),
+                end_timestamp: original.end_timestamp.clone(),
+                message_count: original.message_count,
+                source_entry_ids: source_entry_id.to_string(),
                 related_entry_ids: String::new(),
                 superseded_by: String::new(),
-                created_at: now_str.clone(),
-                updated_at: now_str.clone(),
-                entry_type: first_source.entry_type.clone(),
+                created_at: now_str.to_string(),
+                updated_at: now_str.to_string(),
+                entry_type: original.entry_type.clone(),
                 image_path: String::new(),
+                collated_at: String::new(),
             };
 
             db.create_entry(&entry)
                 .map_err(|e| CollationError::Db(e.to_string()))?;
+            new_ids.push(new_id.clone());
 
-            // Supersede all source entries.
-            for source_id in &merge.source_entry_ids {
-                db.supersede_entry(source_id, &new_id)
-                    .map_err(|e| CollationError::Db(e.to_string()))?;
+            if let Some(idx) = indexer {
+                let _ = idx.index_entry(&new_id, &replacement.summary_text).await;
             }
-
-            // Changelog.
-            let cl_id = db
-                .append_changelog(
-                    "collation_collate",
-                    &format!(
-                        "Collate merge: [{}] -> {}",
-                        merge.source_entry_ids.join(", "),
-                        new_id
-                    ),
-                )
-                .map_err(|e| CollationError::Db(e.to_string()))?;
-            db.link_changelog_entry(cl_id, &new_id)
-                .map_err(|e| CollationError::Db(e.to_string()))?;
-
-            outcome.collate_merges += 1;
-            outcome.collate_new_entries += 1;
         }
 
-        // Mark candidates as processed.
-        for e in &candidates {
-            db.add_collation_skip(&e.id, PHASE_COLLATE)
-                .map_err(|e| CollationError::Db(e.to_string()))?;
-        }
-
-        Ok(())
-    }
-
-    // -----------------------------------------------------------------------
-    // Phase 3: Normalize entities — deduplicate entity names
-    // -----------------------------------------------------------------------
-
-    async fn phase_normalize_entities(
-        &self,
-        db: &MemoryDB,
-        llm: &dyn CollationLlm,
-        template: &str,
-        vars: &HashMap<String, String>,
-        outcome: &mut CollationOutcome,
-    ) -> Result<(), CollationError> {
-        // Gather all entities.
-        let all_entities = db
-            .get_all_entities()
+        // Supersede original with all new IDs.
+        let all_ids = new_ids.join(",");
+        db.supersede_entry(source_entry_id, &all_ids)
             .map_err(|e| CollationError::Db(e.to_string()))?;
 
-        if all_entities.is_empty() {
-            return Ok(());
+        for id in &new_ids {
+            candidates_processed.insert(id.clone());
         }
 
-        let entity_pairs: Vec<(String, String)> = all_entities
+        // Changelog.
+        let replacement_lines: Vec<String> = results
             .iter()
-            .map(|e| (e.name.clone(), e.entity_type.clone()))
+            .zip(new_ids.iter())
+            .map(|(r, id)| format!("  - [{}] {}", id, r.summary_text))
             .collect();
-
-        let prompt = Self::build_entities_prompt(template, &entity_pairs, vars);
-        let normalizations = llm.normalize_entities(&prompt).await?;
-
-        for norm in &normalizations {
-            // Find the canonical entity.
-            let canonical = match db
-                .get_entity_by_name(&norm.canonical_name)
-                .map_err(|e| CollationError::Db(e.to_string()))?
-            {
-                Some(e) => e,
-                None => continue,
-            };
-
-            for dup_name in &norm.duplicate_names {
-                let dup = match db
-                    .get_entity_by_name(dup_name)
-                    .map_err(|e| CollationError::Db(e.to_string()))?
-                {
-                    Some(e) => e,
-                    None => continue,
-                };
-
-                if dup.entity_id == canonical.entity_id {
-                    continue;
-                }
-
-                // Reassign all entry links from duplicate to canonical.
-                db.reassign_entity_links(dup.entity_id, canonical.entity_id)
-                    .map_err(|e| CollationError::Db(e.to_string()))?;
-
-                // Remove the duplicate entity.
-                db.delete_entity(dup.entity_id)
-                    .map_err(|e| CollationError::Db(e.to_string()))?;
-
-                // Changelog.
-                let cl_id = db
-                    .append_changelog(
-                        "collation_normalize",
-                        &format!(
-                            "Normalize entity: '{}' merged into '{}'",
-                            dup_name, norm.canonical_name
-                        ),
-                    )
-                    .map_err(|e| CollationError::Db(e.to_string()))?;
-                db.link_changelog_entity(cl_id, canonical.entity_id)
-                    .map_err(|e| CollationError::Db(e.to_string()))?;
-
-                outcome.entities_normalized += 1;
-            }
+        let cl_id = db
+            .append_changelog(
+                "collation_refine",
+                &format!(
+                    "Split [{}] \"{}\" into {} parts:\n{}\n  Reason: {}",
+                    source_entry_id,
+                    original.summary_text,
+                    new_ids.len(),
+                    replacement_lines.join("\n"),
+                    reason,
+                ),
+            )
+            .map_err(|e| CollationError::Db(e.to_string()))?;
+        for id in &new_ids {
+            let _ = db.link_changelog_entry(cl_id, id);
         }
 
-        Ok(())
+        outcome.refine_splits += 1;
+        outcome.refine_new_entries += new_ids.len();
+
+        Ok(true)
+    }
+
+    /// Apply an update action: rewrite entry in-place. Returns true if applied.
+    async fn apply_update(
+        &self,
+        db: &MemoryDB,
+        entry_id: &str,
+        result: &RefineEntryFields,
+        reason: &str,
+        now_str: &str,
+        indexer: Option<&dyn AgentIndexer>,
+        outcome: &mut CollationOutcome,
+        candidate_ids: &HashSet<String>,
+    ) -> Result<bool, CollationError> {
+        if !candidate_ids.contains(entry_id) {
+            return Ok(false);
+        }
+
+        let mut entry = match db
+            .get_entry(entry_id)
+            .map_err(|e| CollationError::Db(e.to_string()))?
+        {
+            Some(e) if e.status == "active" => e,
+            _ => return Ok(false),
+        };
+
+        let old_summary = entry.summary_text.clone();
+        entry.summary_text = result.summary_text.clone();
+        entry.topic_tags = result.topic_tags.clone();
+        entry.topic_key = result.topic_key.clone();
+        entry.confidence = result.confidence.clamp(0.0, 1.0);
+        entry.updated_at = now_str.to_string();
+
+        db.update_entry(&entry)
+            .map_err(|e| CollationError::Db(e.to_string()))?;
+
+        if let Some(idx) = indexer {
+            let _ = idx.index_entry(entry_id, &result.summary_text).await;
+        }
+
+        let _ = db.append_changelog(
+            "collation_refine",
+            &format!(
+                "Update [{}]: \"{}\" -> \"{}\"\n  Reason: {}",
+                entry_id, old_summary, result.summary_text, reason,
+            ),
+        );
+
+        outcome.refine_updates += 1;
+
+        Ok(true)
     }
 
     // -----------------------------------------------------------------------
-    // Phase 4: Confidence decay — reduce confidence on stale entries
+    // Clustering — group entries by semantic similarity before LLM calls
+    // -----------------------------------------------------------------------
+
+    /// Maximum entries per cluster sent to the LLM.
+    const MAX_CLUSTER_SIZE: usize = 15;
+
+    /// Minimum cosine similarity to consider two entries related.
+    const SIMILARITY_THRESHOLD: f32 = 0.3;
+
+    /// Group candidate entries into clusters of semantically related entries.
+    /// Uses existing embeddings from the vector store for in-memory cosine
+    /// similarity. Falls back to a single batch if no vector store is available
+    /// or if entries lack embeddings.
+    async fn cluster_candidates(
+        &self,
+        candidates: &[&Entry],
+        vector_store: Option<&VectorStore>,
+    ) -> Vec<Vec<Entry>> {
+        // If few enough candidates, no need to cluster.
+        if candidates.len() <= Self::MAX_CLUSTER_SIZE {
+            return vec![candidates.iter().map(|e| (*e).clone()).collect()];
+        }
+
+        // Try to get embeddings from vector store.
+        if let Some(vs) = vector_store {
+            let ids: Vec<&str> = candidates.iter().map(|e| e.id.as_str()).collect();
+            if let Ok(embeddings) = vs.get_embeddings(&ids).await {
+                // Only cluster if we have embeddings for a meaningful fraction.
+                let coverage = embeddings.len() as f32 / candidates.len() as f32;
+                if coverage >= 0.5 {
+                    return self.cluster_by_embeddings(candidates, &embeddings);
+                }
+            }
+        }
+
+        // Fallback: chunk into batches of MAX_CLUSTER_SIZE.
+        candidates
+            .chunks(Self::MAX_CLUSTER_SIZE)
+            .map(|chunk| chunk.iter().map(|e| (*e).clone()).collect())
+            .collect()
+    }
+
+    /// Greedy clustering using cosine similarity of pre-computed embeddings.
+    fn cluster_by_embeddings(
+        &self,
+        candidates: &[&Entry],
+        embeddings: &HashMap<String, Vec<f32>>,
+    ) -> Vec<Vec<Entry>> {
+        // Build similarity lists: for each entry with an embedding, find its
+        // nearest neighbors among other candidates.
+        let with_embeddings: Vec<(usize, &[f32])> = candidates
+            .iter()
+            .enumerate()
+            .filter_map(|(i, e)| embeddings.get(&e.id).map(|emb| (i, emb.as_slice())))
+            .collect();
+
+        // Precompute pairwise neighbor lists (indices into `candidates`).
+        let mut neighbors: HashMap<usize, Vec<(usize, f32)>> = HashMap::new();
+        for &(i, emb_i) in &with_embeddings {
+            let mut sims: Vec<(usize, f32)> = with_embeddings
+                .iter()
+                .filter(|&&(j, _)| j != i)
+                .map(|&(j, emb_j)| (j, cosine_similarity(emb_i, emb_j)))
+                .filter(|&(_, sim)| sim >= Self::SIMILARITY_THRESHOLD)
+                .collect();
+            sims.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            neighbors.insert(i, sims);
+        }
+
+        let mut clustered = vec![false; candidates.len()];
+        let mut clusters: Vec<Vec<Entry>> = Vec::new();
+
+        // Greedy: pick the entry with the most high-similarity neighbors,
+        // form a cluster, remove those entries, repeat.
+        loop {
+            // Find unclustered entry with most unclustered neighbors.
+            let best = neighbors
+                .iter()
+                .filter(|(&idx, _)| !clustered[idx])
+                .map(|(&idx, nbrs)| {
+                    let count = nbrs.iter().filter(|&&(j, _)| !clustered[j]).count();
+                    (idx, count)
+                })
+                .max_by_key(|&(_, count)| count);
+
+            let (seed, neighbor_count) = match best {
+                Some((idx, count)) => (idx, count),
+                None => break,
+            };
+
+            // If no neighbors left, remaining entries go into individual chunks.
+            if neighbor_count == 0 {
+                break;
+            }
+
+            let mut cluster = vec![seed];
+            if let Some(nbrs) = neighbors.get(&seed) {
+                for &(j, _) in nbrs {
+                    if !clustered[j] && cluster.len() < Self::MAX_CLUSTER_SIZE {
+                        cluster.push(j);
+                    }
+                }
+            }
+
+            for &idx in &cluster {
+                clustered[idx] = true;
+            }
+
+            clusters.push(cluster.iter().map(|&i| candidates[i].clone()).collect());
+        }
+
+        // Collect unclustered entries into overflow batches.
+        let unclustered: Vec<Entry> = candidates
+            .iter()
+            .enumerate()
+            .filter(|&(i, _)| !clustered[i])
+            .map(|(_, e)| (*e).clone())
+            .collect();
+
+        for chunk in unclustered.chunks(Self::MAX_CLUSTER_SIZE) {
+            clusters.push(chunk.to_vec());
+        }
+
+        clusters
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 2: Confidence decay — reduce confidence on stale entries
     // -----------------------------------------------------------------------
 
     fn phase_confidence_decay(
         &self,
         db: &MemoryDB,
         outcome: &mut CollationOutcome,
+        candidates_processed: &mut HashSet<String>,
     ) -> Result<(), CollationError> {
         let entries = db
             .get_entries_by_status("active")
@@ -675,19 +1056,8 @@ impl CollationManager {
         let now = Utc::now();
 
         for entry in &entries {
-            // Skip entries already processed for decay this cycle.
-            if db
-                .is_collation_skipped(&entry.id, PHASE_DECAY)
-                .unwrap_or(true)
-            {
-                outcome.entries_skipped += 1;
-                continue;
-            }
-
             // Skip entries already at or below floor.
             if entry.confidence <= self.config.decay_floor {
-                db.add_collation_skip(&entry.id, PHASE_DECAY)
-                    .map_err(|e| CollationError::Db(e.to_string()))?;
                 outcome.entries_skipped += 1;
                 continue;
             }
@@ -700,8 +1070,6 @@ impl CollationManager {
                 / 86400.0;
 
             if days_since <= 0.0 {
-                db.add_collation_skip(&entry.id, PHASE_DECAY)
-                    .map_err(|e| CollationError::Db(e.to_string()))?;
                 outcome.entries_skipped += 1;
                 continue;
             }
@@ -712,8 +1080,6 @@ impl CollationManager {
 
             // Only update if confidence actually changed meaningfully.
             if (entry.confidence - new_confidence).abs() < 0.001 {
-                db.add_collation_skip(&entry.id, PHASE_DECAY)
-                    .map_err(|e| CollationError::Db(e.to_string()))?;
                 outcome.entries_skipped += 1;
                 continue;
             }
@@ -725,27 +1091,60 @@ impl CollationManager {
             db.update_entry(&updated)
                 .map_err(|e| CollationError::Db(e.to_string()))?;
 
-            // Changelog.
-            let cl_id = db
-                .append_changelog(
-                    "collation_decay",
-                    &format!(
-                        "Confidence decay: {} {:.3} -> {:.3} ({:.0} days stale)",
-                        entry.id, entry.confidence, new_confidence, days_since
-                    ),
-                )
-                .map_err(|e| CollationError::Db(e.to_string()))?;
-            db.link_changelog_entry(cl_id, &entry.id)
-                .map_err(|e| CollationError::Db(e.to_string()))?;
-
-            db.add_collation_skip(&entry.id, PHASE_DECAY)
-                .map_err(|e| CollationError::Db(e.to_string()))?;
+            // Track decayed entries so they get stamped (prevents updated_at
+            // bump from making them spurious tidy candidates next run).
+            candidates_processed.insert(entry.id.clone());
 
             outcome.entries_decayed += 1;
         }
 
+        // Single summary changelog entry for all decays (instead of per-entry spam).
+        if outcome.entries_decayed > 0 {
+            let _ = db.append_changelog(
+                "collation_decay",
+                &format!(
+                    "Confidence decay: {} entries decayed (half-life {:.0}d)",
+                    outcome.entries_decayed, self.config.decay_half_life_days
+                ),
+            );
+        }
+
         Ok(())
     }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Cosine similarity between two vectors. Returns 0.0 for zero-length vectors.
+fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
+    let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if norm_a == 0.0 || norm_b == 0.0 {
+        return 0.0;
+    }
+    dot / (norm_a * norm_b)
+}
+
+/// Compute the centroid (element-wise average) of a set of embeddings.
+fn compute_centroid(embeddings: &HashMap<String, Vec<f32>>) -> Option<Vec<f32>> {
+    if embeddings.is_empty() {
+        return None;
+    }
+    let dim = embeddings.values().next()?.len();
+    let mut centroid = vec![0.0f32; dim];
+    for emb in embeddings.values() {
+        for (i, v) in emb.iter().enumerate() {
+            centroid[i] += v;
+        }
+    }
+    let n = embeddings.len() as f32;
+    for v in &mut centroid {
+        *v /= n;
+    }
+    Some(centroid)
 }
 
 // ---------------------------------------------------------------------------
@@ -759,49 +1158,24 @@ mod tests {
     // -- Mock LLM ---------------------------------------------------------
 
     struct MockCollationLlm {
-        tidy_response: Vec<TidySplit>,
-        collate_response: Vec<CollateMerge>,
-        normalize_response: Vec<EntityNormalization>,
+        refine_response: Vec<RefineAction>,
     }
 
     impl MockCollationLlm {
         fn empty() -> Self {
             Self {
-                tidy_response: vec![],
-                collate_response: vec![],
-                normalize_response: vec![],
+                refine_response: vec![],
             }
         }
     }
 
     impl CollationLlm for MockCollationLlm {
-        fn tidy(
+        fn refine(
             &self,
             _prompt: &str,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<TidySplit>, CollationError>> + Send + '_>>
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<RefineAction>, CollationError>> + Send + '_>>
         {
-            let result = Ok(self.tidy_response.clone());
-            Box::pin(async move { result })
-        }
-
-        fn collate(
-            &self,
-            _prompt: &str,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<CollateMerge>, CollationError>> + Send + '_>>
-        {
-            let result = Ok(self.collate_response.clone());
-            Box::pin(async move { result })
-        }
-
-        fn normalize_entities(
-            &self,
-            _prompt: &str,
-        ) -> Pin<
-            Box<
-                dyn Future<Output = Result<Vec<EntityNormalization>, CollationError>> + Send + '_,
-            >,
-        > {
-            let result = Ok(self.normalize_response.clone());
+            let result = Ok(self.refine_response.clone());
             Box::pin(async move { result })
         }
     }
@@ -815,7 +1189,7 @@ mod tests {
             source: "summary".to_string(),
             reason: "compaction".to_string(),
             status: "active".to_string(),
-            canonical: false,
+
             confidence,
             summary_text: summary.to_string(),
             topic_tags: "test".to_string(),
@@ -830,6 +1204,7 @@ mod tests {
             updated_at: updated_at.to_string(),
             entry_type: String::new(),
             image_path: String::new(),
+            collated_at: String::new(),
         }
     }
 
@@ -837,51 +1212,152 @@ mod tests {
         Utc::now().to_rfc3339()
     }
 
-    // -- Phase 1: Tidy tests ----------------------------------------------
+    /// Helper to run the pipeline with defaults.
+    async fn run_pipeline(
+        db: &MemoryDB,
+        llm: &MockCollationLlm,
+        mgr: &CollationManager,
+        limit: Option<usize>,
+    ) -> CollationOutcome {
+        mgr.run(
+            db,
+            llm,
+            DEFAULT_REFINE_PROMPT,
+            &HashMap::new(),
+            None,
+            None,
+            limit,
+        )
+        .await
+        .unwrap()
+    }
+
+    // -- Refine: merge tests -----------------------------------------------
 
     #[tokio::test]
-    async fn test_tidy_splits_broad_entry() {
+    async fn test_refine_merge_two_entries() {
         let db = MemoryDB::open_in_memory().unwrap();
         let now = now_str();
-        let entry = make_entry("entry_001", "User likes tea and works at ACME", 0.9, &now);
-        db.create_entry(&entry).unwrap();
+        db.create_entry(&make_entry("e1", "User prefers tea", 0.8, &now))
+            .unwrap();
+        db.create_entry(&make_entry("e2", "User drinks tea daily", 0.85, &now))
+            .unwrap();
+        db.create_entry(&make_entry("e3", "User works at ACME", 0.9, &now))
+            .unwrap();
 
         let llm = MockCollationLlm {
-            tidy_response: vec![TidySplit {
-                original_entry_id: "entry_001".to_string(),
-                replacements: vec![
-                    TidyReplacement {
+            refine_response: vec![RefineAction::Merge {
+                source_entry_ids: vec!["e1".to_string(), "e2".to_string()],
+                result: RefineEntryFields {
+                    summary_text: "User prefers and drinks tea daily".to_string(),
+                    topic_tags: "preference,beverage".to_string(),
+                    topic_key: "preferences".to_string(),
+                    confidence: 0.9,
+                },
+                reason: "Both entries describe tea preferences".to_string(),
+            }],
+        };
+
+        let mgr = CollationManager::new(CollationConfig::default());
+        let outcome = run_pipeline(&db, &llm, &mgr, None).await;
+
+        assert_eq!(outcome.refine_merges, 1);
+        assert_eq!(outcome.refine_new_entries, 1);
+
+        // Source entries should be superseded.
+        let e1 = db.get_entry("e1").unwrap().unwrap();
+        let e2 = db.get_entry("e2").unwrap().unwrap();
+        assert_eq!(e1.status, "superseded");
+        assert_eq!(e2.status, "superseded");
+
+        // e3 should remain active.
+        let e3 = db.get_entry("e3").unwrap().unwrap();
+        assert_eq!(e3.status, "active");
+
+        // New merged entry should exist.
+        let active = db.get_entries_by_status("active").unwrap();
+        let merged: Vec<&Entry> = active
+            .iter()
+            .filter(|e| e.source == "collation_refine")
+            .collect();
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].summary_text, "User prefers and drinks tea daily");
+        assert_eq!(merged[0].source_entry_ids, "e1,e2");
+
+        // Changelog should include reason.
+        let logs = db.get_recent_changelog(10).unwrap();
+        assert!(logs.iter().any(|l| l.operation == "collation_refine"
+            && l.description.contains("tea preferences")));
+    }
+
+    #[tokio::test]
+    async fn test_refine_rejects_single_entry_merge() {
+        let db = MemoryDB::open_in_memory().unwrap();
+        let now = now_str();
+        db.create_entry(&make_entry("e1", "A fact", 0.8, &now))
+            .unwrap();
+
+        let llm = MockCollationLlm {
+            refine_response: vec![RefineAction::Merge {
+                source_entry_ids: vec!["e1".to_string()],
+                result: RefineEntryFields {
+                    summary_text: "Same fact".to_string(),
+                    topic_tags: "test".to_string(),
+                    topic_key: "test".to_string(),
+                    confidence: 0.8,
+                },
+                reason: "bad merge".to_string(),
+            }],
+        };
+
+        let mgr = CollationManager::new(CollationConfig::default());
+        let outcome = run_pipeline(&db, &llm, &mgr, None).await;
+
+        assert_eq!(outcome.refine_merges, 0);
+        let e1 = db.get_entry("e1").unwrap().unwrap();
+        assert_eq!(e1.status, "active");
+    }
+
+    // -- Refine: split tests -----------------------------------------------
+
+    #[tokio::test]
+    async fn test_refine_split_broad_entry() {
+        let db = MemoryDB::open_in_memory().unwrap();
+        let now = now_str();
+        db.create_entry(&make_entry(
+            "entry_001",
+            "User likes tea and works at ACME",
+            0.9,
+            &now,
+        ))
+        .unwrap();
+
+        let llm = MockCollationLlm {
+            refine_response: vec![RefineAction::Split {
+                source_entry_id: "entry_001".to_string(),
+                results: vec![
+                    RefineEntryFields {
                         summary_text: "User likes tea".to_string(),
                         topic_tags: "preference,beverage".to_string(),
                         topic_key: "preferences".to_string(),
                         confidence: 0.9,
                     },
-                    TidyReplacement {
+                    RefineEntryFields {
                         summary_text: "User works at ACME".to_string(),
                         topic_tags: "work,employer".to_string(),
                         topic_key: "employment".to_string(),
                         confidence: 0.85,
                     },
                 ],
+                reason: "Entry covers two distinct topics".to_string(),
             }],
-            ..MockCollationLlm::empty()
         };
 
         let mgr = CollationManager::new(CollationConfig::default());
-        let outcome = mgr
-            .run(
-                &db,
-                &llm,
-                DEFAULT_TIDY_PROMPT,
-                DEFAULT_COLLATE_PROMPT,
-                DEFAULT_NORMALIZE_PROMPT,
-                &HashMap::new(),
-            )
-            .await
-            .unwrap();
+        let outcome = run_pipeline(&db, &llm, &mgr, None).await;
 
-        assert_eq!(outcome.tidy_splits, 1);
-        assert_eq!(outcome.tidy_new_entries, 2);
+        assert_eq!(outcome.refine_splits, 1);
+        assert_eq!(outcome.refine_new_entries, 2);
 
         // Original should be superseded.
         let original = db.get_entry("entry_001").unwrap().unwrap();
@@ -895,242 +1371,278 @@ mod tests {
         assert!(summaries.contains(&"User likes tea"));
         assert!(summaries.contains(&"User works at ACME"));
 
-        // New entries should reference the original.
         for e in &active {
             assert_eq!(e.source_entry_ids, "entry_001");
-            assert_eq!(e.source, "collation_tidy");
+            assert_eq!(e.source, "collation_refine");
         }
 
-        // Changelog should record the operations.
         let logs = db.get_recent_changelog(10).unwrap();
-        assert!(logs.iter().any(|l| l.operation == "collation_tidy"));
+        assert!(logs.iter().any(|l| l.operation == "collation_refine"
+            && l.description.contains("Split")));
     }
 
     #[tokio::test]
-    async fn test_tidy_no_splits_needed() {
-        let db = MemoryDB::open_in_memory().unwrap();
-        let now = now_str();
-        db.create_entry(&make_entry("entry_001", "Focused entry", 0.9, &now))
-            .unwrap();
-
-        let llm = MockCollationLlm::empty();
-        let mgr = CollationManager::new(CollationConfig::default());
-        let outcome = mgr
-            .run(
-                &db,
-                &llm,
-                DEFAULT_TIDY_PROMPT,
-                DEFAULT_COLLATE_PROMPT,
-                DEFAULT_NORMALIZE_PROMPT,
-                &HashMap::new(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(outcome.tidy_splits, 0);
-        assert_eq!(outcome.tidy_new_entries, 0);
-
-        // Entry should remain active.
-        let entry = db.get_entry("entry_001").unwrap().unwrap();
-        assert_eq!(entry.status, "active");
-    }
-
-    // -- Phase 2: Collate tests -------------------------------------------
-
-    #[tokio::test]
-    async fn test_collate_merges_similar_entries() {
-        let db = MemoryDB::open_in_memory().unwrap();
-        let now = now_str();
-        db.create_entry(&make_entry("e1", "User prefers tea", 0.8, &now))
-            .unwrap();
-        db.create_entry(&make_entry("e2", "User drinks tea daily", 0.85, &now))
-            .unwrap();
-        db.create_entry(&make_entry("e3", "User works at ACME", 0.9, &now))
-            .unwrap();
-
-        let llm = MockCollationLlm {
-            collate_response: vec![CollateMerge {
-                source_entry_ids: vec!["e1".to_string(), "e2".to_string()],
-                merged_summary: "User prefers and drinks tea daily".to_string(),
-                merged_topic_tags: "preference,beverage".to_string(),
-                merged_topic_key: "preferences".to_string(),
-                merged_confidence: 0.9,
-            }],
-            ..MockCollationLlm::empty()
-        };
-
-        let mgr = CollationManager::new(CollationConfig::default());
-        let outcome = mgr
-            .run(
-                &db,
-                &llm,
-                DEFAULT_TIDY_PROMPT,
-                DEFAULT_COLLATE_PROMPT,
-                DEFAULT_NORMALIZE_PROMPT,
-                &HashMap::new(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(outcome.collate_merges, 1);
-        assert_eq!(outcome.collate_new_entries, 1);
-
-        // Source entries should be superseded.
-        let e1 = db.get_entry("e1").unwrap().unwrap();
-        let e2 = db.get_entry("e2").unwrap().unwrap();
-        assert_eq!(e1.status, "superseded");
-        assert_eq!(e2.status, "superseded");
-
-        // e3 should remain active (not merged).
-        let e3 = db.get_entry("e3").unwrap().unwrap();
-        assert_eq!(e3.status, "active");
-
-        // New merged entry should exist.
-        let active = db.get_entries_by_status("active").unwrap();
-        let merged: Vec<&Entry> = active
-            .iter()
-            .filter(|e| e.source == "collation_collate")
-            .collect();
-        assert_eq!(merged.len(), 1);
-        assert_eq!(merged[0].summary_text, "User prefers and drinks tea daily");
-        assert_eq!(merged[0].source_entry_ids, "e1,e2");
-
-        // Changelog.
-        let logs = db.get_recent_changelog(10).unwrap();
-        assert!(logs.iter().any(|l| l.operation == "collation_collate"));
-    }
-
-    #[tokio::test]
-    async fn test_collate_skips_single_entry_merge() {
+    async fn test_refine_rejects_split_with_one_result() {
         let db = MemoryDB::open_in_memory().unwrap();
         let now = now_str();
         db.create_entry(&make_entry("e1", "A fact", 0.8, &now))
             .unwrap();
 
-        // LLM incorrectly suggests merging a single entry — should be ignored.
         let llm = MockCollationLlm {
-            collate_response: vec![CollateMerge {
-                source_entry_ids: vec!["e1".to_string()],
-                merged_summary: "Same fact".to_string(),
-                merged_topic_tags: "test".to_string(),
-                merged_topic_key: "test".to_string(),
-                merged_confidence: 0.8,
+            refine_response: vec![RefineAction::Split {
+                source_entry_id: "e1".to_string(),
+                results: vec![RefineEntryFields {
+                    summary_text: "Same fact".to_string(),
+                    topic_tags: "test".to_string(),
+                    topic_key: "test".to_string(),
+                    confidence: 0.8,
+                }],
+                reason: "pointless split".to_string(),
             }],
-            ..MockCollationLlm::empty()
         };
 
         let mgr = CollationManager::new(CollationConfig::default());
-        let outcome = mgr
-            .run(
-                &db,
-                &llm,
-                DEFAULT_TIDY_PROMPT,
-                DEFAULT_COLLATE_PROMPT,
-                DEFAULT_NORMALIZE_PROMPT,
-                &HashMap::new(),
-            )
-            .await
-            .unwrap();
+        let outcome = run_pipeline(&db, &llm, &mgr, None).await;
 
-        assert_eq!(outcome.collate_merges, 0);
-
-        // e1 should remain active.
+        assert_eq!(outcome.refine_splits, 0);
         let e1 = db.get_entry("e1").unwrap().unwrap();
         assert_eq!(e1.status, "active");
     }
 
-    // -- Phase 3: Normalize entities tests --------------------------------
+    // -- Refine: update tests -----------------------------------------------
 
     #[tokio::test]
-    async fn test_normalize_entities_deduplicates() {
+    async fn test_refine_update_entry() {
         let db = MemoryDB::open_in_memory().unwrap();
         let now = now_str();
-
-        // Create an entry to link entities to.
-        db.create_entry(&make_entry("e1", "Met Bob", 0.9, &now))
+        db.create_entry(&make_entry("e1", "usr likes tea", 0.7, &now))
             .unwrap();
 
-        let id1 = db.upsert_entity("Bob Smith", "person", "A colleague").unwrap();
-        let id2 = db.upsert_entity("Robert Smith", "person", "Bob").unwrap();
-        let _id3 = db.upsert_entity("Alice", "person", "A friend").unwrap();
-
-        // Link both Bob variants to the entry.
-        db.link_entity_to_entry("e1", id1).unwrap();
-        db.link_entity_to_entry("e1", id2).unwrap();
-
         let llm = MockCollationLlm {
-            normalize_response: vec![EntityNormalization {
-                canonical_name: "Bob Smith".to_string(),
-                duplicate_names: vec!["Robert Smith".to_string()],
+            refine_response: vec![RefineAction::Update {
+                entry_id: "e1".to_string(),
+                result: RefineEntryFields {
+                    summary_text: "User enjoys drinking tea".to_string(),
+                    topic_tags: "preference,beverage".to_string(),
+                    topic_key: "preferences".to_string(),
+                    confidence: 0.85,
+                },
+                reason: "Improved clarity and specificity".to_string(),
             }],
-            ..MockCollationLlm::empty()
         };
 
         let mgr = CollationManager::new(CollationConfig::default());
-        let outcome = mgr
-            .run(
-                &db,
-                &llm,
-                DEFAULT_TIDY_PROMPT,
-                DEFAULT_COLLATE_PROMPT,
-                DEFAULT_NORMALIZE_PROMPT,
-                &HashMap::new(),
-            )
-            .await
-            .unwrap();
+        let outcome = run_pipeline(&db, &llm, &mgr, None).await;
 
-        assert_eq!(outcome.entities_normalized, 1);
+        assert_eq!(outcome.refine_updates, 1);
+        assert_eq!(outcome.refine_new_entries, 0); // no new entries
 
-        // "Robert Smith" should no longer exist.
-        assert!(db.get_entity_by_name("Robert Smith").unwrap().is_none());
+        let e1 = db.get_entry("e1").unwrap().unwrap();
+        assert_eq!(e1.status, "active"); // not superseded
+        assert_eq!(e1.summary_text, "User enjoys drinking tea");
+        assert_eq!(e1.topic_tags, "preference,beverage");
+        assert!((e1.confidence - 0.85).abs() < 0.001);
 
-        // "Bob Smith" and "Alice" should still exist.
-        assert!(db.get_entity_by_name("Bob Smith").unwrap().is_some());
-        assert!(db.get_entity_by_name("Alice").unwrap().is_some());
-
-        // Changelog.
         let logs = db.get_recent_changelog(10).unwrap();
-        assert!(logs.iter().any(|l| l.operation == "collation_normalize"));
+        assert!(logs.iter().any(|l| l.operation == "collation_refine"
+            && l.description.contains("Update")));
     }
 
-    // -- Phase 4: Confidence decay tests ----------------------------------
+    #[tokio::test]
+    async fn test_refine_rejects_context_entry_update() {
+        let db = MemoryDB::open_in_memory().unwrap();
+        let now = now_str();
+
+        // Entry with collated_at in the future → NOT a candidate.
+        let mut entry = make_entry("context_e", "Context fact", 0.9, &now);
+        let future = (Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+        entry.collated_at = future;
+        db.create_entry(&entry).unwrap();
+
+        // Also need a real candidate so the LLM is actually called.
+        db.create_entry(&make_entry("candidate_e", "Real candidate", 0.8, &now))
+            .unwrap();
+
+        let llm = MockCollationLlm {
+            refine_response: vec![RefineAction::Update {
+                entry_id: "context_e".to_string(),
+                result: RefineEntryFields {
+                    summary_text: "Should not change".to_string(),
+                    topic_tags: "test".to_string(),
+                    topic_key: "test".to_string(),
+                    confidence: 0.9,
+                },
+                reason: "Attempted context modification".to_string(),
+            }],
+        };
+
+        let mgr = CollationManager::new(CollationConfig::default());
+        let outcome = run_pipeline(&db, &llm, &mgr, None).await;
+
+        assert_eq!(outcome.refine_updates, 0);
+        let e = db.get_entry("context_e").unwrap().unwrap();
+        assert_eq!(e.summary_text, "Context fact"); // unchanged
+    }
+
+    // -- Refine: keep tests -------------------------------------------------
+
+    #[tokio::test]
+    async fn test_refine_keep_unchanged() {
+        let db = MemoryDB::open_in_memory().unwrap();
+        let now = now_str();
+        db.create_entry(&make_entry("e1", "Good entry", 0.9, &now))
+            .unwrap();
+
+        let llm = MockCollationLlm::empty(); // no actions
+        let mgr = CollationManager::new(CollationConfig::default());
+        let outcome = run_pipeline(&db, &llm, &mgr, None).await;
+
+        assert_eq!(outcome.refine_merges, 0);
+        assert_eq!(outcome.refine_splits, 0);
+        assert_eq!(outcome.refine_updates, 0);
+        assert_eq!(outcome.refine_kept, 1);
+
+        let e1 = db.get_entry("e1").unwrap().unwrap();
+        assert_eq!(e1.status, "active");
+    }
+
+    // -- Refine: mixed actions test ------------------------------------------
+
+    #[tokio::test]
+    async fn test_refine_mixed_actions() {
+        let db = MemoryDB::open_in_memory().unwrap();
+        let now = now_str();
+        db.create_entry(&make_entry("m1", "Tea preference A", 0.8, &now))
+            .unwrap();
+        db.create_entry(&make_entry("m2", "Tea preference B", 0.85, &now))
+            .unwrap();
+        db.create_entry(&make_entry("s1", "Broad entry: tea and work", 0.9, &now))
+            .unwrap();
+        db.create_entry(&make_entry("u1", "usr prefs cofee", 0.7, &now))
+            .unwrap();
+
+        let llm = MockCollationLlm {
+            refine_response: vec![
+                RefineAction::Merge {
+                    source_entry_ids: vec!["m1".to_string(), "m2".to_string()],
+                    result: RefineEntryFields {
+                        summary_text: "User prefers tea".to_string(),
+                        topic_tags: "preference".to_string(),
+                        topic_key: "preferences".to_string(),
+                        confidence: 0.9,
+                    },
+                    reason: "Duplicate tea preferences".to_string(),
+                },
+                RefineAction::Split {
+                    source_entry_id: "s1".to_string(),
+                    results: vec![
+                        RefineEntryFields {
+                            summary_text: "User likes tea".to_string(),
+                            topic_tags: "beverage".to_string(),
+                            topic_key: "preferences".to_string(),
+                            confidence: 0.9,
+                        },
+                        RefineEntryFields {
+                            summary_text: "User works somewhere".to_string(),
+                            topic_tags: "work".to_string(),
+                            topic_key: "employment".to_string(),
+                            confidence: 0.85,
+                        },
+                    ],
+                    reason: "Covers two topics".to_string(),
+                },
+                RefineAction::Update {
+                    entry_id: "u1".to_string(),
+                    result: RefineEntryFields {
+                        summary_text: "User prefers coffee".to_string(),
+                        topic_tags: "preference,beverage".to_string(),
+                        topic_key: "preferences".to_string(),
+                        confidence: 0.8,
+                    },
+                    reason: "Fixed typos".to_string(),
+                },
+            ],
+        };
+
+        let mgr = CollationManager::new(CollationConfig::default());
+        let outcome = run_pipeline(&db, &llm, &mgr, None).await;
+
+        assert_eq!(outcome.refine_merges, 1);
+        assert_eq!(outcome.refine_splits, 1);
+        assert_eq!(outcome.refine_updates, 1);
+        assert_eq!(outcome.refine_new_entries, 3); // 1 merge + 2 split
+
+        // Merge sources superseded.
+        assert_eq!(db.get_entry("m1").unwrap().unwrap().status, "superseded");
+        assert_eq!(db.get_entry("m2").unwrap().unwrap().status, "superseded");
+
+        // Split source superseded.
+        assert_eq!(db.get_entry("s1").unwrap().unwrap().status, "superseded");
+
+        // Update target still active with new text.
+        let u1 = db.get_entry("u1").unwrap().unwrap();
+        assert_eq!(u1.status, "active");
+        assert_eq!(u1.summary_text, "User prefers coffee");
+    }
+
+    // -- Refine: confidence clamping ----------------------------------------
+
+    #[tokio::test]
+    async fn test_refine_clamps_confidence() {
+        let db = MemoryDB::open_in_memory().unwrap();
+        let now = now_str();
+        db.create_entry(&make_entry("e1", "Fact A", 0.8, &now))
+            .unwrap();
+        db.create_entry(&make_entry("e2", "Fact B", 0.8, &now))
+            .unwrap();
+
+        let llm = MockCollationLlm {
+            refine_response: vec![RefineAction::Merge {
+                source_entry_ids: vec!["e1".to_string(), "e2".to_string()],
+                result: RefineEntryFields {
+                    summary_text: "Combined".to_string(),
+                    topic_tags: "test".to_string(),
+                    topic_key: "test".to_string(),
+                    confidence: 1.5, // out of range
+                },
+                reason: "test".to_string(),
+            }],
+        };
+
+        let mgr = CollationManager::new(CollationConfig::default());
+        let outcome = run_pipeline(&db, &llm, &mgr, None).await;
+
+        assert_eq!(outcome.refine_merges, 1);
+        let active = db.get_entries_by_status("active").unwrap();
+        let merged = active.iter().find(|e| e.source == "collation_refine").unwrap();
+        assert!((merged.confidence - 1.0).abs() < 0.001, "Should clamp to 1.0");
+    }
+
+    // -- Confidence decay tests -------------------------------------------
 
     #[tokio::test]
     async fn test_confidence_decay_reduces_stale_entries() {
         let db = MemoryDB::open_in_memory().unwrap();
-
-        // Create an entry last updated 30 days ago (one half-life).
         let thirty_days_ago = (Utc::now() - chrono::Duration::days(30)).to_rfc3339();
         db.create_entry(&make_entry("old_entry", "Old fact", 0.8, &thirty_days_ago))
             .unwrap();
 
         let llm = MockCollationLlm::empty();
         let mgr = CollationManager::new(CollationConfig::default());
-        let outcome = mgr
-            .run(
-                &db,
-                &llm,
-                DEFAULT_TIDY_PROMPT,
-                DEFAULT_COLLATE_PROMPT,
-                DEFAULT_NORMALIZE_PROMPT,
-                &HashMap::new(),
-            )
-            .await
-            .unwrap();
+        let outcome = run_pipeline(&db, &llm, &mgr, None).await;
 
         assert_eq!(outcome.entries_decayed, 1);
-
         let entry = db.get_entry("old_entry").unwrap().unwrap();
-        // After one half-life, confidence should be ~0.4 (0.8 * 0.5).
-        assert!(entry.confidence > 0.35 && entry.confidence < 0.45,
-            "Expected ~0.4, got {}", entry.confidence);
+        assert!(
+            entry.confidence > 0.35 && entry.confidence < 0.45,
+            "Expected ~0.4, got {}",
+            entry.confidence
+        );
     }
 
     #[tokio::test]
     async fn test_confidence_decay_respects_floor() {
         let db = MemoryDB::open_in_memory().unwrap();
-
-        // Entry with very old updated_at and low confidence.
         let very_old = (Utc::now() - chrono::Duration::days(365)).to_rfc3339();
         db.create_entry(&make_entry("ancient", "Very old fact", 0.2, &very_old))
             .unwrap();
@@ -1140,27 +1652,11 @@ mod tests {
             decay_floor: 0.1,
             ..Default::default()
         });
-        let outcome = mgr
-            .run(
-                &db,
-                &llm,
-                DEFAULT_TIDY_PROMPT,
-                DEFAULT_COLLATE_PROMPT,
-                DEFAULT_NORMALIZE_PROMPT,
-                &HashMap::new(),
-            )
-            .await
-            .unwrap();
+        let outcome = run_pipeline(&db, &llm, &mgr, None).await;
 
         assert_eq!(outcome.entries_decayed, 1);
-
         let entry = db.get_entry("ancient").unwrap().unwrap();
-        // Should not go below floor.
-        assert!(
-            entry.confidence >= 0.1,
-            "Confidence {} is below floor",
-            entry.confidence
-        );
+        assert!(entry.confidence >= 0.1, "Confidence {} below floor", entry.confidence);
     }
 
     #[tokio::test]
@@ -1172,21 +1668,9 @@ mod tests {
 
         let llm = MockCollationLlm::empty();
         let mgr = CollationManager::new(CollationConfig::default());
-        let outcome = mgr
-            .run(
-                &db,
-                &llm,
-                DEFAULT_TIDY_PROMPT,
-                DEFAULT_COLLATE_PROMPT,
-                DEFAULT_NORMALIZE_PROMPT,
-                &HashMap::new(),
-            )
-            .await
-            .unwrap();
+        let outcome = run_pipeline(&db, &llm, &mgr, None).await;
 
         assert_eq!(outcome.entries_decayed, 0);
-
-        // Confidence should be unchanged.
         let entry = db.get_entry("fresh").unwrap().unwrap();
         assert!((entry.confidence - 0.9).abs() < 0.001);
     }
@@ -1200,228 +1684,414 @@ mod tests {
 
         let llm = MockCollationLlm::empty();
         let mgr = CollationManager::new(CollationConfig::default());
-        mgr.run(
-            &db,
-            &llm,
-            DEFAULT_TIDY_PROMPT,
-            DEFAULT_COLLATE_PROMPT,
-            DEFAULT_NORMALIZE_PROMPT,
-            &HashMap::new(),
-        )
-        .await
-        .unwrap();
+        run_pipeline(&db, &llm, &mgr, None).await;
 
         let logs = db.get_recent_changelog(10).unwrap();
         assert!(logs.iter().any(|l| l.operation == "collation_decay"));
     }
 
-    // -- Skip optimization tests ------------------------------------------
+    #[tokio::test]
+    async fn test_decay_runs_every_time_regardless_of_collated_at() {
+        let db = MemoryDB::open_in_memory().unwrap();
+        let old = (Utc::now() - chrono::Duration::days(30)).to_rfc3339();
+        let mut entry = make_entry("old_e", "Old fact", 0.8, &old);
+        entry.collated_at = old.clone();
+        db.create_entry(&entry).unwrap();
+
+        let llm = MockCollationLlm::empty();
+        let mgr = CollationManager::new(CollationConfig::default());
+        let outcome = run_pipeline(&db, &llm, &mgr, None).await;
+
+        assert_eq!(outcome.entries_decayed, 1);
+        let fetched = db.get_entry("old_e").unwrap().unwrap();
+        assert!(
+            fetched.confidence > 0.35 && fetched.confidence < 0.45,
+            "Expected ~0.4, got {}",
+            fetched.confidence
+        );
+    }
+
+    // -- Candidate selection tests -----------------------------------------
+
+    #[test]
+    fn test_new_entries_always_candidates() {
+        let mgr = CollationManager::new(CollationConfig::default());
+        let now = now_str();
+        let entry = make_entry("e1", "New fact", 0.9, &now);
+        assert!(mgr.is_refine_candidate(&entry));
+    }
+
+    #[test]
+    fn test_recently_collated_not_candidates() {
+        let mgr = CollationManager::new(CollationConfig::default());
+        let now = now_str();
+        let mut entry = make_entry("e1", "Old fact", 0.9, &now);
+        entry.collated_at = now;
+        assert!(!mgr.is_refine_candidate(&entry));
+    }
+
+    #[test]
+    fn test_ttl_expired_are_candidates() {
+        let mgr = CollationManager::new(CollationConfig {
+            reconsider_ttl_days: 7.0,
+            ..Default::default()
+        });
+        let now = now_str();
+        let mut entry = make_entry("e1", "Old fact", 0.9, &now);
+        let ten_days_ago = (Utc::now() - chrono::Duration::days(10)).to_rfc3339();
+        entry.collated_at = ten_days_ago;
+        assert!(mgr.is_refine_candidate(&entry));
+    }
+
+    #[test]
+    fn test_modified_since_collation_are_candidates() {
+        let mgr = CollationManager::new(CollationConfig::default());
+        let old = (Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
+        let now = now_str();
+        let mut entry = make_entry("e1", "Updated fact", 0.9, &now);
+        entry.collated_at = old; // collated before updated_at
+        assert!(mgr.is_refine_candidate(&entry));
+    }
+
+    #[test]
+    fn test_image_excluded() {
+        let mgr = CollationManager::new(CollationConfig::default());
+        let now = now_str();
+
+        let mut image_entry = make_entry("img1", "Photo memory", 0.9, &now);
+        image_entry.image_path = "attachments/photo.jpg".to_string();
+        assert!(!mgr.is_refine_candidate(&image_entry));
+    }
 
     #[tokio::test]
-    async fn test_skip_prevents_reprocessing_tidy() {
+    async fn test_collated_at_prevents_reprocessing() {
         let db = MemoryDB::open_in_memory().unwrap();
         let now = now_str();
-        db.create_entry(&make_entry("e1", "A fact", 0.9, &now))
-            .unwrap();
-
-        // Pre-mark as processed for tidy.
-        db.add_collation_skip("e1", PHASE_TIDY).unwrap();
+        let mut entry = make_entry("e1", "A fact", 0.9, &now);
+        let later = (Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+        entry.collated_at = later;
+        db.create_entry(&entry).unwrap();
 
         let llm = MockCollationLlm {
-            tidy_response: vec![TidySplit {
-                original_entry_id: "e1".to_string(),
-                replacements: vec![TidyReplacement {
+            refine_response: vec![RefineAction::Update {
+                entry_id: "e1".to_string(),
+                result: RefineEntryFields {
                     summary_text: "Should not happen".to_string(),
                     topic_tags: "test".to_string(),
                     topic_key: "test".to_string(),
                     confidence: 0.9,
-                }],
+                },
+                reason: "test".to_string(),
             }],
-            ..MockCollationLlm::empty()
         };
 
         let mgr = CollationManager::new(CollationConfig::default());
-        let outcome = mgr
-            .run(
-                &db,
-                &llm,
-                DEFAULT_TIDY_PROMPT,
-                DEFAULT_COLLATE_PROMPT,
-                DEFAULT_NORMALIZE_PROMPT,
-                &HashMap::new(),
-            )
-            .await
-            .unwrap();
+        let outcome = run_pipeline(&db, &llm, &mgr, None).await;
 
-        // Tidy should have skipped e1 since it was pre-marked.
-        assert_eq!(outcome.tidy_splits, 0);
-        assert_eq!(outcome.tidy_new_entries, 0);
-
-        // e1 should still be active and unchanged.
-        let entry = db.get_entry("e1").unwrap().unwrap();
-        assert_eq!(entry.status, "active");
-        assert_eq!(entry.summary_text, "A fact");
+        assert_eq!(outcome.refine_updates, 0);
+        let fetched = db.get_entry("e1").unwrap().unwrap();
+        assert_eq!(fetched.summary_text, "A fact");
     }
 
-    #[tokio::test]
-    async fn test_skip_prevents_reprocessing_decay() {
-        let db = MemoryDB::open_in_memory().unwrap();
-        let old = (Utc::now() - chrono::Duration::days(30)).to_rfc3339();
-        db.create_entry(&make_entry("old_e", "Old fact", 0.8, &old))
-            .unwrap();
+    // -- Batch limit and stamping tests ------------------------------------
 
-        // Pre-mark as processed for decay.
-        db.add_collation_skip("old_e", PHASE_DECAY).unwrap();
+    #[tokio::test]
+    async fn test_batch_limit_caps_candidates() {
+        let db = MemoryDB::open_in_memory().unwrap();
+        let now = now_str();
+        for i in 0..5 {
+            db.create_entry(&make_entry(&format!("e{i}"), &format!("Fact {i}"), 0.9, &now))
+                .unwrap();
+        }
 
         let llm = MockCollationLlm::empty();
         let mgr = CollationManager::new(CollationConfig::default());
-        let outcome = mgr
-            .run(
-                &db,
-                &llm,
-                DEFAULT_TIDY_PROMPT,
-                DEFAULT_COLLATE_PROMPT,
-                DEFAULT_NORMALIZE_PROMPT,
-                &HashMap::new(),
-            )
-            .await
-            .unwrap();
+        let _outcome = run_pipeline(&db, &llm, &mgr, Some(2)).await;
 
-        // Decay should have skipped this entry.
-        assert_eq!(outcome.entries_decayed, 0);
-
-        // Confidence should be unchanged.
-        let entry = db.get_entry("old_e").unwrap().unwrap();
-        assert!((entry.confidence - 0.8).abs() < 0.001);
+        let active = db.get_entries_by_status("active").unwrap();
+        let stamped = active.iter().filter(|e| !e.collated_at.is_empty()).count();
+        assert!(stamped <= 2, "limit=2 should cap stamping, got {stamped}");
     }
-
-    // -- Full pipeline test -----------------------------------------------
 
     #[tokio::test]
-    async fn test_full_pipeline_runs_all_phases() {
+    async fn test_stamping_only_candidates() {
         let db = MemoryDB::open_in_memory().unwrap();
         let now = now_str();
-        let old = (Utc::now() - chrono::Duration::days(60)).to_rfc3339();
 
-        // Entry for tidy.
-        db.create_entry(&make_entry("broad", "User likes tea and works at ACME", 0.9, &now))
-            .unwrap();
+        let a = make_entry("a", "New fact", 0.9, &now);
+        db.create_entry(&a).unwrap();
 
-        // Entries for collate (will become active after tidy creates new ones).
-        db.create_entry(&make_entry("sim1", "User enjoys green tea", 0.8, &now))
-            .unwrap();
-        db.create_entry(&make_entry("sim2", "User drinks green tea often", 0.85, &now))
-            .unwrap();
+        let mut b = make_entry("b", "Old fact", 0.9, &now);
+        b.collated_at = now.clone();
+        db.create_entry(&b).unwrap();
 
-        // Entry for decay.
-        db.create_entry(&make_entry("stale", "Old preference", 0.7, &old))
-            .unwrap();
-
-        // Entities for normalization.
-        db.upsert_entity("Bob", "person", "Friend").unwrap();
-        db.upsert_entity("Bobby", "person", "Also Bob").unwrap();
-
-        let llm = MockCollationLlm {
-            tidy_response: vec![TidySplit {
-                original_entry_id: "broad".to_string(),
-                replacements: vec![
-                    TidyReplacement {
-                        summary_text: "User likes tea".to_string(),
-                        topic_tags: "preference".to_string(),
-                        topic_key: "preferences".to_string(),
-                        confidence: 0.9,
-                    },
-                    TidyReplacement {
-                        summary_text: "User works at ACME".to_string(),
-                        topic_tags: "work".to_string(),
-                        topic_key: "employment".to_string(),
-                        confidence: 0.85,
-                    },
-                ],
-            }],
-            collate_response: vec![CollateMerge {
-                source_entry_ids: vec!["sim1".to_string(), "sim2".to_string()],
-                merged_summary: "User regularly enjoys green tea".to_string(),
-                merged_topic_tags: "preference,beverage".to_string(),
-                merged_topic_key: "preferences".to_string(),
-                merged_confidence: 0.9,
-            }],
-            normalize_response: vec![EntityNormalization {
-                canonical_name: "Bob".to_string(),
-                duplicate_names: vec!["Bobby".to_string()],
-            }],
-        };
-
+        let llm = MockCollationLlm::empty();
         let mgr = CollationManager::new(CollationConfig::default());
-        let outcome = mgr
-            .run(
-                &db,
-                &llm,
-                DEFAULT_TIDY_PROMPT,
-                DEFAULT_COLLATE_PROMPT,
-                DEFAULT_NORMALIZE_PROMPT,
-                &HashMap::new(),
-            )
-            .await
-            .unwrap();
+        run_pipeline(&db, &llm, &mgr, None).await;
 
-        // Phase 1: 1 split producing 2 entries.
-        assert_eq!(outcome.tidy_splits, 1);
-        assert_eq!(outcome.tidy_new_entries, 2);
+        let a_after = db.get_entry("a").unwrap().unwrap();
+        let b_after = db.get_entry("b").unwrap().unwrap();
 
-        // Phase 2: 1 merge producing 1 entry.
-        assert_eq!(outcome.collate_merges, 1);
-        assert_eq!(outcome.collate_new_entries, 1);
-
-        // Phase 3: 1 entity normalized.
-        assert_eq!(outcome.entities_normalized, 1);
-
-        // Phase 4: at least the stale entry should have been decayed.
-        assert!(outcome.entries_decayed >= 1, "Expected at least 1 decay, got {}", outcome.entries_decayed);
+        assert!(!a_after.collated_at.is_empty(), "Candidate A should be stamped");
+        assert_eq!(b_after.collated_at, now, "Non-candidate B should keep original stamp");
     }
 
-    // -- Prompt building tests --------------------------------------------
-
-    #[test]
-    fn test_build_entries_prompt() {
+    #[tokio::test]
+    async fn test_second_run_processes_ttl_expired() {
+        let db = MemoryDB::open_in_memory().unwrap();
         let now = now_str();
-        let entries = vec![make_entry("e1", "Test summary", 0.9, &now)];
-        let vars = HashMap::new();
-        let prompt =
-            CollationManager::build_entries_prompt("Template:\n{{entries}}", &entries, &vars);
-        assert!(prompt.contains("ID: e1"));
-        assert!(prompt.contains("Test summary"));
-        assert!(!prompt.contains("{{entries}}"));
+        let mut entry = make_entry("old", "Old fact", 0.9, &now);
+        let ten_days_ago = (Utc::now() - chrono::Duration::days(10)).to_rfc3339();
+        entry.collated_at = ten_days_ago.clone();
+        db.create_entry(&entry).unwrap();
+
+        let llm = MockCollationLlm::empty();
+        let mgr = CollationManager::new(CollationConfig {
+            reconsider_ttl_days: 7.0,
+            ..Default::default()
+        });
+        run_pipeline(&db, &llm, &mgr, None).await;
+
+        let after = db.get_entry("old").unwrap().unwrap();
+        assert_ne!(after.collated_at, ten_days_ago, "TTL-expired entry should be re-stamped");
+        assert!(!after.collated_at.is_empty());
     }
 
-    #[test]
-    fn test_build_entities_prompt() {
-        let entities = vec![
-            ("Alice".to_string(), "person".to_string()),
-            ("ACME Corp".to_string(), "organization".to_string()),
-        ];
-        let vars = HashMap::new();
-        let prompt =
-            CollationManager::build_entities_prompt("Entities:\n{{entities}}", &entities, &vars);
-        assert!(prompt.contains("Alice"));
-        assert!(prompt.contains("ACME Corp"));
-        assert!(!prompt.contains("{{entities}}"));
-    }
+    // -- Prompt building tests ---------------------------------------------
 
     #[test]
-    fn test_build_entries_prompt_substitutes_vars() {
+    fn test_build_refine_prompt_labels() {
         let now = now_str();
-        let entries = vec![make_entry("e1", "Test", 0.9, &now)];
+        let candidates = vec![make_entry("c1", "Candidate entry", 0.9, &now)];
+        let context = vec![make_entry("ctx1", "Context entry", 0.8, &now)];
+        let vars = HashMap::new();
+
+        let prompt = CollationManager::build_refine_prompt(
+            "Candidates:\n{{candidates}}\nContext:\n{{context}}",
+            &candidates,
+            &context,
+            &vars,
+        );
+
+        assert!(prompt.contains("[CANDIDATE] ID: c1"));
+        assert!(prompt.contains("[CONTEXT] ID: ctx1"));
+        assert!(prompt.contains("Candidate entry"));
+        assert!(prompt.contains("Context entry"));
+        assert!(!prompt.contains("{{candidates}}"));
+        assert!(!prompt.contains("{{context}}"));
+    }
+
+    #[test]
+    fn test_build_refine_prompt_substitutes_vars() {
+        let now = now_str();
+        let candidates = vec![make_entry("e1", "Test", 0.9, &now)];
         let mut vars = HashMap::new();
         vars.insert("char".into(), "Shore".into());
         vars.insert("user".into(), "Alice".into());
-        let prompt = CollationManager::build_entries_prompt(
-            "{{char}} and {{user}}:\n{{entries}}",
-            &entries,
+        let prompt = CollationManager::build_refine_prompt(
+            "{{char}} and {{user}}:\n{{candidates}}\n{{context}}",
+            &candidates,
+            &[],
             &vars,
         );
         assert!(prompt.contains("Shore and Alice:"));
         assert!(!prompt.contains("{{char}}"));
         assert!(!prompt.contains("{{user}}"));
+    }
+
+    #[test]
+    fn test_build_refine_prompt_includes_timestamps() {
+        let ts = "2026-03-15T12:00:00Z";
+        let candidates = vec![make_entry("e1", "Test", 0.9, ts)];
+        let vars = HashMap::new();
+        let prompt = CollationManager::build_refine_prompt(
+            "{{candidates}}\n{{context}}",
+            &candidates,
+            &[],
+            &vars,
+        );
+        assert!(prompt.contains("Time: 2026-03-15T12:00:00Z"));
+    }
+
+    // -- Backfill timestamp tests -------------------------------------------
+
+    #[tokio::test]
+    async fn test_backfill_from_ancestors() {
+        let db = MemoryDB::open_in_memory().unwrap();
+        let now = Utc::now().to_rfc3339();
+
+        let parent = make_entry("parent1", "Parent entry", 0.9, &now);
+        db.create_entry(&parent).unwrap();
+
+        let mut child = make_entry("child1", "Child entry", 0.8, &now);
+        child.start_timestamp = String::new();
+        child.end_timestamp = String::new();
+        child.source_entry_ids = "parent1".to_string();
+        db.create_entry(&child).unwrap();
+
+        let mgr = CollationManager::new(CollationConfig::default());
+        let mut outcome = CollationOutcome::default();
+        mgr.phase_backfill_timestamps(&db, 20, &mut outcome).unwrap();
+
+        assert_eq!(outcome.timestamps_backfilled, 1);
+        let updated = db.get_entry("child1").unwrap().unwrap();
+        assert_eq!(updated.start_timestamp, now);
+        assert_eq!(updated.end_timestamp, now);
+    }
+
+    #[tokio::test]
+    async fn test_backfill_falls_back_to_created_at() {
+        let db = MemoryDB::open_in_memory().unwrap();
+        let now = Utc::now().to_rfc3339();
+
+        let mut entry = make_entry("orphan1", "Orphan entry", 0.8, &now);
+        entry.start_timestamp = String::new();
+        entry.end_timestamp = String::new();
+        db.create_entry(&entry).unwrap();
+
+        let mgr = CollationManager::new(CollationConfig::default());
+        let mut outcome = CollationOutcome::default();
+        mgr.phase_backfill_timestamps(&db, 20, &mut outcome).unwrap();
+
+        assert_eq!(outcome.timestamps_backfilled, 1);
+        let updated = db.get_entry("orphan1").unwrap().unwrap();
+        assert_eq!(updated.start_timestamp, now);
+    }
+
+    #[tokio::test]
+    async fn test_backfill_respects_batch_size() {
+        let db = MemoryDB::open_in_memory().unwrap();
+        let now = Utc::now().to_rfc3339();
+
+        for i in 0..5 {
+            let mut entry = make_entry(&format!("e{i}"), &format!("Entry {i}"), 0.8, &now);
+            entry.start_timestamp = String::new();
+            entry.end_timestamp = String::new();
+            db.create_entry(&entry).unwrap();
+        }
+
+        let mgr = CollationManager::new(CollationConfig::default());
+        let mut outcome = CollationOutcome::default();
+        mgr.phase_backfill_timestamps(&db, 3, &mut outcome).unwrap();
+        assert_eq!(outcome.timestamps_backfilled, 3);
+    }
+
+    #[tokio::test]
+    async fn test_backfill_walks_chain() {
+        let db = MemoryDB::open_in_memory().unwrap();
+        let ts = "2026-01-15T12:00:00Z".to_string();
+
+        let grandparent = make_entry("gp1", "Grandparent", 0.9, &ts);
+        db.create_entry(&grandparent).unwrap();
+
+        let mut parent = make_entry("p1", "Parent", 0.8, &ts);
+        parent.start_timestamp = String::new();
+        parent.end_timestamp = String::new();
+        parent.source_entry_ids = "gp1".to_string();
+        db.create_entry(&parent).unwrap();
+
+        let mut child = make_entry("c1", "Child", 0.7, &ts);
+        child.start_timestamp = String::new();
+        child.end_timestamp = String::new();
+        child.source_entry_ids = "p1".to_string();
+        db.create_entry(&child).unwrap();
+
+        let mgr = CollationManager::new(CollationConfig::default());
+        let mut outcome = CollationOutcome::default();
+        mgr.phase_backfill_timestamps(&db, 20, &mut outcome).unwrap();
+
+        assert_eq!(outcome.timestamps_backfilled, 2);
+        let updated_child = db.get_entry("c1").unwrap().unwrap();
+        assert_eq!(updated_child.start_timestamp, ts);
+    }
+
+    // -- Clustering tests ---------------------------------------------------
+
+    #[test]
+    fn test_cosine_similarity() {
+        let a = vec![1.0, 0.0, 0.0];
+        let b = vec![1.0, 0.0, 0.0];
+        assert!((cosine_similarity(&a, &b) - 1.0).abs() < 1e-6);
+
+        let c = vec![0.0, 1.0, 0.0];
+        assert!(cosine_similarity(&a, &c).abs() < 1e-6);
+
+        let d = vec![-1.0, 0.0, 0.0];
+        assert!((cosine_similarity(&a, &d) + 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_compute_centroid() {
+        let mut embs = HashMap::new();
+        embs.insert("a".to_string(), vec![1.0, 0.0, 0.0]);
+        embs.insert("b".to_string(), vec![0.0, 1.0, 0.0]);
+        let centroid = compute_centroid(&embs).unwrap();
+        assert!((centroid[0] - 0.5).abs() < 1e-6);
+        assert!((centroid[1] - 0.5).abs() < 1e-6);
+        assert!((centroid[2] - 0.0).abs() < 1e-6);
+
+        let empty: HashMap<String, Vec<f32>> = HashMap::new();
+        assert!(compute_centroid(&empty).is_none());
+    }
+
+    #[test]
+    fn test_cluster_by_embeddings_groups_similar() {
+        let now = now_str();
+        let entries: Vec<Entry> = (0..6)
+            .map(|i| make_entry(&format!("e{i}"), &format!("Entry {i}"), 0.8, &now))
+            .collect();
+        let entry_refs: Vec<&Entry> = entries.iter().collect();
+
+        let mut embeddings = HashMap::new();
+        embeddings.insert("e0".to_string(), vec![0.9, 0.1, 0.0, 0.0]);
+        embeddings.insert("e1".to_string(), vec![0.8, 0.2, 0.0, 0.0]);
+        embeddings.insert("e2".to_string(), vec![0.85, 0.15, 0.0, 0.0]);
+        embeddings.insert("e3".to_string(), vec![0.0, 0.0, 0.9, 0.1]);
+        embeddings.insert("e4".to_string(), vec![0.0, 0.0, 0.8, 0.2]);
+        embeddings.insert("e5".to_string(), vec![0.0, 0.0, 0.85, 0.15]);
+
+        let mgr = CollationManager::new(CollationConfig::default());
+        let clusters = mgr.cluster_by_embeddings(&entry_refs, &embeddings);
+
+        assert_eq!(clusters.len(), 2);
+        let mut sizes: Vec<usize> = clusters.iter().map(|c| c.len()).collect();
+        sizes.sort();
+        assert_eq!(sizes, vec![3, 3]);
+
+        for cluster in &clusters {
+            let ids: Vec<&str> = cluster.iter().map(|e| e.id.as_str()).collect();
+            let all_food = ids.iter().all(|id| ["e0", "e1", "e2"].contains(id));
+            let all_tech = ids.iter().all(|id| ["e3", "e4", "e5"].contains(id));
+            assert!(all_food || all_tech, "Cluster should be homogeneous, got: {:?}", ids);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_cluster_candidates_small_set_no_clustering() {
+        let now = now_str();
+        let entries: Vec<Entry> = (0..5)
+            .map(|i| make_entry(&format!("e{i}"), &format!("Entry {i}"), 0.8, &now))
+            .collect();
+        let entry_refs: Vec<&Entry> = entries.iter().collect();
+
+        let mgr = CollationManager::new(CollationConfig::default());
+        let clusters = mgr.cluster_candidates(&entry_refs, None).await;
+        assert_eq!(clusters.len(), 1);
+        assert_eq!(clusters[0].len(), 5);
+    }
+
+    #[tokio::test]
+    async fn test_cluster_candidates_no_vectorstore_chunks() {
+        let now = now_str();
+        let entries: Vec<Entry> = (0..30)
+            .map(|i| make_entry(&format!("e{i}"), &format!("Entry {i}"), 0.8, &now))
+            .collect();
+        let entry_refs: Vec<&Entry> = entries.iter().collect();
+
+        let mgr = CollationManager::new(CollationConfig::default());
+        let clusters = mgr.cluster_candidates(&entry_refs, None).await;
+        assert_eq!(clusters.len(), 2);
+        assert_eq!(clusters[0].len(), 15);
+        assert_eq!(clusters[1].len(), 15);
     }
 }

@@ -159,7 +159,7 @@ fn load_matrix_config(config_flag: &Option<String>) -> Option<MatrixFileConfig> 
     let config_dir = if let Some(ref path) = config_flag {
         PathBuf::from(path)
     } else {
-        dirs::config_dir()?.join("shore")
+        shore_config::config_dir()
     };
 
     let config_path = config_dir.join("config.toml");

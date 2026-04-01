@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 
 use shore_config::models::ResolvedModel;
 use shore_llm_client::types::ContentBlock;
-use crate::memory::agent::types::{AgentError, AgentIndexer};
+use crate::memory::agent::types::{AgentError, AgentIndexer, AgentSearchContext};
 use crate::memory::agent::MemoryAgent;
 use crate::memory::agent_llm::AgentLlm;
 use crate::memory::db::MemoryDB;
@@ -124,6 +124,7 @@ impl MemoryResearcher {
         agent_model: &ResolvedModel,
         db: &MemoryDB,
         indexer: Option<&dyn AgentIndexer>,
+        search_ctx: Option<&AgentSearchContext>,
     ) -> Result<String, AgentError> {
         // Build the first user message with character/user context.
         let mut context_parts: Vec<String> = Vec::new();
@@ -226,7 +227,7 @@ impl MemoryResearcher {
                 let result_text = if tool_name == "ask_memory_agent" {
                     let question = tool_input["question"].as_str().unwrap_or("");
                     match agent
-                        .ask(question, agent_llm, db, indexer, agent_model)
+                        .ask(question, agent_llm, db, indexer, search_ctx, agent_model)
                         .await
                     {
                         Ok(text) => text,
@@ -368,6 +369,7 @@ mod tests {
                 &test_model(),
                 &db,
                 None,
+                None,
             )
             .await
             .unwrap();
@@ -442,6 +444,7 @@ mod tests {
                 &test_model(),
                 &db,
                 None,
+                None,
             )
             .await
             .unwrap();
@@ -498,6 +501,7 @@ mod tests {
                 &test_model(),
                 &db,
                 None,
+                None,
             )
             .await
             .unwrap();
@@ -532,6 +536,7 @@ mod tests {
                 &agent_mock,
                 &test_model(),
                 &db,
+                None,
                 None,
             )
             .await

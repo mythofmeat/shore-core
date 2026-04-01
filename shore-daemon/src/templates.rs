@@ -204,16 +204,14 @@ fn write_template(
 // Default path helpers
 // ---------------------------------------------------------------------------
 
-/// Returns the default manifest path: `$XDG_DATA_HOME/shore/prompts.manifest.json`.
+/// Returns the default manifest path: `$SHORE_DATA_DIR/prompts.manifest.json`.
 pub fn default_manifest_path() -> PathBuf {
-    let data_dir = dirs::data_dir().unwrap_or_else(|| PathBuf::from(".local/share"));
-    data_dir.join("shore").join("prompts.manifest.json")
+    shore_config::data_dir().join("prompts.manifest.json")
 }
 
-/// Returns the default global prompts directory: `$XDG_CONFIG_HOME/shore/prompts/`.
+/// Returns the default global prompts directory: `$SHORE_CONFIG_DIR/prompts/`.
 pub fn default_prompts_dir() -> PathBuf {
-    let config_dir = dirs::config_dir().unwrap_or_else(|| PathBuf::from(".config"));
-    config_dir.join("shore").join("prompts")
+    shore_config::config_dir().join("prompts")
 }
 
 // ---------------------------------------------------------------------------

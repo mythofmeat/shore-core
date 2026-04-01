@@ -7,7 +7,7 @@ pub mod web;
 use crate::autonomy::manager::AutonomyManager;
 use shore_config::models::ResolvedModel;
 use shore_llm_client::LlmClient;
-use crate::memory::agent::types::AgentIndexer;
+use crate::memory::agent::types::{AgentIndexer, AgentSearchContext};
 use crate::memory::agent::{AgentError, AgentRag, MemoryAgent};
 use crate::memory::agent_llm::AgentLlm;
 use crate::memory::compaction_impls::ImageGenConfig;
@@ -116,6 +116,9 @@ pub trait ToolContext: Sync {
 
     // Web search configuration
     fn search_config(&self) -> &shore_config::app::SearchConfig;
+
+    // Semantic search context (vector + BM25 + embeddings)
+    fn search_context(&self) -> Option<&AgentSearchContext> { None }
 
     // Autonomy access — used by activity heatmap tool
     fn autonomy_manager(&self) -> Option<&AutonomyManager> { None }

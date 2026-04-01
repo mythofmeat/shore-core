@@ -50,28 +50,48 @@ pub struct ShoreDirs {
 }
 
 impl ShoreDirs {
-    /// Resolve XDG directories using environment variables or platform defaults.
+    /// Resolve Shore directories.
+    ///
+    /// Priority (highest first):
+    /// 1. `SHORE_CONFIG_DIR` / `SHORE_DATA_DIR` / `SHORE_RUNTIME_DIR` — used as-is
+    /// 2. `XDG_CONFIG_HOME` / `XDG_DATA_HOME` / `XDG_RUNTIME_DIR` + `/shore`
+    /// 3. Platform defaults + `/shore`
     pub fn resolve() -> Self {
-        let config = std::env::var("XDG_CONFIG_HOME")
+        let config = std::env::var("SHORE_CONFIG_DIR")
             .ok()
             .map(PathBuf::from)
-            .or_else(dirs::config_dir)
-            .unwrap_or_else(|| PathBuf::from("~/.config"))
-            .join("shore");
+            .unwrap_or_else(|| {
+                std::env::var("XDG_CONFIG_HOME")
+                    .ok()
+                    .map(PathBuf::from)
+                    .or_else(dirs::config_dir)
+                    .unwrap_or_else(|| PathBuf::from("~/.config"))
+                    .join("shore")
+            });
 
-        let data = std::env::var("XDG_DATA_HOME")
+        let data = std::env::var("SHORE_DATA_DIR")
             .ok()
             .map(PathBuf::from)
-            .or_else(dirs::data_dir)
-            .unwrap_or_else(|| PathBuf::from("~/.local/share"))
-            .join("shore");
+            .unwrap_or_else(|| {
+                std::env::var("XDG_DATA_HOME")
+                    .ok()
+                    .map(PathBuf::from)
+                    .or_else(dirs::data_dir)
+                    .unwrap_or_else(|| PathBuf::from("~/.local/share"))
+                    .join("shore")
+            });
 
-        let runtime = std::env::var("XDG_RUNTIME_DIR")
+        let runtime = std::env::var("SHORE_RUNTIME_DIR")
             .ok()
             .map(PathBuf::from)
-            .or_else(dirs::runtime_dir)
-            .unwrap_or_else(std::env::temp_dir)
-            .join("shore");
+            .unwrap_or_else(|| {
+                std::env::var("XDG_RUNTIME_DIR")
+                    .ok()
+                    .map(PathBuf::from)
+                    .or_else(dirs::runtime_dir)
+                    .unwrap_or_else(std::env::temp_dir)
+                    .join("shore")
+            });
 
         Self {
             config,
@@ -79,6 +99,21 @@ impl ShoreDirs {
             runtime,
         }
     }
+}
+
+/// Convenience: resolved Shore config directory.
+pub fn config_dir() -> PathBuf {
+    ShoreDirs::resolve().config
+}
+
+/// Convenience: resolved Shore data directory.
+pub fn data_dir() -> PathBuf {
+    ShoreDirs::resolve().data
+}
+
+/// Convenience: resolved Shore runtime directory.
+pub fn runtime_dir() -> PathBuf {
+    ShoreDirs::resolve().runtime
 }
 
 /// Fully loaded daemon configuration.
