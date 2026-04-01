@@ -10,6 +10,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Instant;
 
 use base64::Engine as _;
 use serde_json::{json, Value};
@@ -350,6 +351,8 @@ async fn handle_generation(
     data_dir: PathBuf,
     active_model: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let wall_clock_start = Instant::now();
+
     // Get engine Arc from registry (brief lock — registry released immediately after).
     let engine_arc = {
         let mut registry = ctx.registry.lock().await;
@@ -792,10 +795,11 @@ async fn handle_generation(
         ctx.autonomy.notify_assistant_message(&char_name, engine.turn_count());
     } // engine lock released
 
+    let wall_clock_ms = wall_clock_start.elapsed().as_millis() as u32;
     ctx.notifier.notify_message_complete(
         &format!("Shore — {char_name}"),
-        &format!("Response complete ({:.1}s)", result.timing.total_ms as f64 / 1000.0),
-        result.timing.total_ms,
+        &format!("Response complete ({:.1}s)", wall_clock_ms as f64 / 1000.0),
+        wall_clock_ms,
     );
 
     Ok(())
