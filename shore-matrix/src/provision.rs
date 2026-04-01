@@ -268,26 +268,17 @@ pub struct RegisterResponse {
     pub home_server: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum ProvisionError {
+    #[error("I/O error: {0}")]
     Io(String),
+    #[error("invalid provision state: {0}")]
     InvalidState(String),
+    #[error("HTTP error: {0}")]
     Http(String),
+    #[error("registration failed: {0}")]
     Registration(String),
 }
-
-impl std::fmt::Display for ProvisionError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Io(e) => write!(f, "I/O error: {e}"),
-            Self::InvalidState(e) => write!(f, "invalid provision state: {e}"),
-            Self::Http(e) => write!(f, "HTTP error: {e}"),
-            Self::Registration(e) => write!(f, "registration failed: {e}"),
-        }
-    }
-}
-
-impl std::error::Error for ProvisionError {}
 
 // ── Embedded Synapse state ──────────────────────────────────────────────
 
