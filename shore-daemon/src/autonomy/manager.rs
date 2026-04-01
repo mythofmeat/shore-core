@@ -56,6 +56,8 @@ pub struct AutonomyState {
     compaction_triggered: bool,
     /// Current number of messages in active.jsonl (updated on each message notification).
     active_turn_count: usize,
+    /// Set after compaction completes — signals the handler to reload the engine.
+    needs_engine_reload: bool,
     /// Cached last LLM request for cache keepalive pings.
     last_request: Option<LlmRequest>,
 }
@@ -287,6 +289,7 @@ impl AutonomyManager {
             last_compaction_activity: Instant::now(),
             compaction_triggered: false,
             active_turn_count: 0,
+            needs_engine_reload: false,
             last_request: None,
         }));
 
@@ -344,7 +347,6 @@ impl AutonomyManager {
             }
             s.activity.record_message();
             s.last_compaction_activity = now;
-            s.compaction_triggered = false;
             s.active_turn_count = message_count;
             s.coordinate_interiority_keepalive();
             s.mark_dirty();
@@ -360,7 +362,6 @@ impl AutonomyManager {
             s.interiority.on_assistant_message(now);
             s.activity.record_message();
             s.last_compaction_activity = now;
-            s.compaction_triggered = false;
             s.active_turn_count = message_count;
             s.mark_dirty();
         }
@@ -390,6 +391,52 @@ impl AutonomyManager {
             let mut s = state.lock().unwrap();
             s.last_request = Some(request);
         }
+    }
+
+    /// Call after compaction completes successfully. Updates the turn count
+    /// and signals the handler to reload the engine on the next message.
+    pub fn notify_compaction_complete(&self, character: &str, new_turn_count: usize) {
+        let states = self.states.lock().unwrap();
+        if let Some(state) = states.get(character) {
+            let mut s = state.lock().unwrap();
+            s.active_turn_count = new_turn_count;
+            s.needs_engine_reload = true;
+            // Keep compaction_triggered = true until engine reload acknowledges it.
+            s.mark_dirty();
+            info!(
+                character = %character,
+                new_turn_count,
+                "Compaction complete — engine reload pending"
+            );
+        }
+    }
+
+    /// Call after compaction fails. Resets the trigger so it can retry.
+    pub fn notify_compaction_failed(&self, character: &str) {
+        let states = self.states.lock().unwrap();
+        if let Some(state) = states.get(character) {
+            let mut s = state.lock().unwrap();
+            s.compaction_triggered = false;
+            s.last_compaction_activity = Instant::now();
+            s.mark_dirty();
+        }
+    }
+
+    /// Check if a character's engine needs reloading after compaction.
+    /// Returns true (and clears the flag) if a reload is needed.
+    pub fn take_needs_reload(&self, character: &str) -> bool {
+        let states = self.states.lock().unwrap();
+        if let Some(state) = states.get(character) {
+            let mut s = state.lock().unwrap();
+            if s.needs_engine_reload {
+                s.needs_engine_reload = false;
+                // Compaction cycle complete — allow future compaction triggers.
+                s.compaction_triggered = false;
+                s.last_compaction_activity = Instant::now();
+                return true;
+            }
+        }
+        false
     }
 
     /// Update the cache keepalive config for a character (e.g. on model switch).
@@ -1210,6 +1257,7 @@ mod tests {
             last_compaction_activity: Instant::now(),
             compaction_triggered: false,
             active_turn_count: 0,
+            needs_engine_reload: false,
             last_request: None,
         };
         save_state(data_dir, "alice", &mut state);
@@ -1259,6 +1307,7 @@ mod tests {
             last_compaction_activity: Instant::now(),
             compaction_triggered: false,
             active_turn_count: 0,
+            needs_engine_reload: false,
             last_request: None,
         }));
 
