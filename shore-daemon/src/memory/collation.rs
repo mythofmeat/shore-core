@@ -609,19 +609,6 @@ impl CollationManager {
                 if let Some(idx) = indexer {
                     let _ = idx.index_entry(&new_id, &replacement.summary_text).await;
                 }
-
-                // Changelog for each new entry.
-                let cl_id = db
-                    .append_changelog(
-                        "collation_tidy",
-                        &format!(
-                            "Tidy split: {} -> {} ({})",
-                            split.original_entry_id, new_id, replacement.topic_key
-                        ),
-                    )
-                    .map_err(|e| CollationError::Db(e.to_string()))?;
-                db.link_changelog_entry(cl_id, &new_id)
-                    .map_err(|e| CollationError::Db(e.to_string()))?;
             }
 
             // Supersede the original entry (point to all replacements).
@@ -629,6 +616,28 @@ impl CollationManager {
                 let all_ids = new_ids.join(",");
                 db.supersede_entry(&split.original_entry_id, &all_ids)
                     .map_err(|e| CollationError::Db(e.to_string()))?;
+            }
+
+            // Changelog — one entry per split with original + all replacements.
+            let replacement_lines: Vec<String> = split.replacements
+                .iter()
+                .zip(new_ids.iter())
+                .map(|(r, id)| format!("  - [{}] {}", id, truncate_str(&r.summary_text, 80)))
+                .collect();
+            let cl_id = db
+                .append_changelog(
+                    "collation_tidy",
+                    &format!(
+                        "Split [{}] \"{}\" into {} parts:\n{}",
+                        split.original_entry_id,
+                        truncate_str(&original.summary_text, 80),
+                        new_ids.len(),
+                        replacement_lines.join("\n"),
+                    ),
+                )
+                .map_err(|e| CollationError::Db(e.to_string()))?;
+            for id in &new_ids {
+                let _ = db.link_changelog_entry(cl_id, id);
             }
 
             outcome.tidy_splits += 1;
@@ -909,14 +918,20 @@ impl CollationManager {
                     .map_err(|e| CollationError::Db(e.to_string()))?;
             }
 
-            // Changelog.
+            // Changelog — include source summaries and merged result.
+            let source_summaries: Vec<String> = sources
+                .iter()
+                .map(|s| format!("  - [{}] {}", s.id, truncate_str(&s.summary_text, 80)))
+                .collect();
             let cl_id = db
                 .append_changelog(
                     "collation_collate",
                     &format!(
-                        "Collate merge: [{}] -> {}",
-                        merge.source_entry_ids.join(", "),
-                        new_id
+                        "Merged {} entries -> {}:\n{}\n  => {}",
+                        merge.source_entry_ids.len(),
+                        new_id,
+                        source_summaries.join("\n"),
+                        truncate_str(&merge.merged_summary, 120),
                     ),
                 )
                 .map_err(|e| CollationError::Db(e.to_string()))?;
@@ -1066,20 +1081,18 @@ impl CollationManager {
             // bump from making them spurious tidy candidates next run).
             candidates_processed.insert(entry.id.clone());
 
-            // Changelog.
-            let cl_id = db
-                .append_changelog(
-                    "collation_decay",
-                    &format!(
-                        "Confidence decay: {} {:.3} -> {:.3} ({:.0} days stale)",
-                        entry.id, entry.confidence, new_confidence, days_since
-                    ),
-                )
-                .map_err(|e| CollationError::Db(e.to_string()))?;
-            db.link_changelog_entry(cl_id, &entry.id)
-                .map_err(|e| CollationError::Db(e.to_string()))?;
-
             outcome.entries_decayed += 1;
+        }
+
+        // Single summary changelog entry for all decays (instead of per-entry spam).
+        if outcome.entries_decayed > 0 {
+            let _ = db.append_changelog(
+                "collation_decay",
+                &format!(
+                    "Confidence decay: {} entries decayed (half-life {:.0}d)",
+                    outcome.entries_decayed, self.config.decay_half_life_days
+                ),
+            );
         }
 
         Ok(())
@@ -1089,6 +1102,19 @@ impl CollationManager {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Truncate a string to `max` chars, appending "…" if truncated.
+fn truncate_str(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        s.to_string()
+    } else {
+        let mut end = max;
+        while end > 0 && !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}…", &s[..end])
+    }
+}
 
 /// Cosine similarity between two vectors. Returns 0.0 for zero-length vectors.
 fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
