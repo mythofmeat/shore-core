@@ -359,7 +359,17 @@ async fn handle_generation(
         registry.get_or_create(&char_name).map_err(|e| e.to_string())?
     };
 
-    // 1. Append user message or truncate after last user turn for regen.
+    // 1. Reload engine if compaction ran since the last message.
+    //    MUST happen before appending the user message — append calls persist()
+    //    which rewrites active.jsonl from the in-memory state; without a reload
+    //    first, that would overwrite the compacted file with stale messages.
+    if ctx.autonomy.take_needs_reload(&char_name) {
+        let mut engine = engine_arc.lock().await;
+        info!(character = %char_name, "Reloading engine after compaction");
+        engine.reload().map_err(|e| e.to_string())?;
+    }
+
+    // 2. Append user message or truncate after last user turn for regen.
     {
         let mut engine = engine_arc.lock().await;
         if regen {
@@ -385,7 +395,7 @@ async fn handle_generation(
         }
     } // engine lock released
 
-    // 2. Resolve model.
+    // 3. Resolve model.
     let model_name = active_model.as_deref()
         .or(effective_config.app.defaults.model.as_deref());
     let resolved = match model_name {
@@ -393,7 +403,7 @@ async fn handle_generation(
         None => effective_config.models.first_chat_model().ok_or("No model configured")?,
     };
 
-    // 3. Resolve memory agent and researcher models.
+    // 4. Resolve memory agent and researcher models.
     let agent_model = effective_config.app.defaults.memory_agent.as_deref()
         .and_then(|name| effective_config.models.find_model(name).ok())
         .unwrap_or(resolved)
@@ -403,7 +413,7 @@ async fn handle_generation(
         .and_then(|name| effective_config.models.find_model(name).ok())
         .cloned();
 
-    // 4. Ensure autonomy state with model-specific keepalive config.
+    // 5. Ensure autonomy state with model-specific keepalive config.
     // Must happen before notify_user_message so session_start is set on first message.
     let keepalive_cfg = CacheKeepaliveConfig::from_resolved_model(
         &resolved.provider_key,

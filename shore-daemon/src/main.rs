@@ -190,8 +190,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let compaction_push_tx = push_tx.clone();
         let compaction_notifier = notifier.clone();
         let compaction_flag = compaction_occurred.clone();
+        let compaction_autonomy = autonomy.clone();
         tokio::spawn(async move {
-            compaction_task(compaction_rx, config, compaction_llm_client, data_dir, compaction_push_tx, compaction_notifier, compaction_flag).await;
+            compaction_task(compaction_rx, config, compaction_llm_client, data_dir, compaction_push_tx, compaction_notifier, compaction_flag, compaction_autonomy).await;
         })
     };
 
@@ -254,13 +255,15 @@ async fn compaction_task(
     push_tx: broadcast::Sender<ServerMessage>,
     notifier: NotificationService,
     compaction_occurred: std::sync::Arc<AtomicBool>,
+    autonomy: AutonomyManager,
 ) {
     while let Some(character) = rx.recv().await {
         info!(character = %character, "Background compaction triggered");
 
         match run_compaction(&character, &config, &llm_client, &data_dir, &push_tx, &notifier).await {
-            Ok(()) => {
+            Ok(retained_count) => {
                 compaction_occurred.store(true, std::sync::atomic::Ordering::Release);
+                autonomy.notify_compaction_complete(&character, retained_count);
             }
             Err(e) => {
                 warn!(
@@ -268,6 +271,7 @@ async fn compaction_task(
                     error = %e,
                     "Background compaction failed"
                 );
+                autonomy.notify_compaction_failed(&character);
             }
         }
     }
@@ -275,6 +279,7 @@ async fn compaction_task(
 }
 
 /// Run compaction for a single character (called from the background task).
+/// Returns the number of retained turns on success.
 async fn run_compaction(
     character: &str,
     config: &LoadedConfig,
@@ -282,7 +287,7 @@ async fn run_compaction(
     data_dir: &std::path::Path,
     _push_tx: &broadcast::Sender<ServerMessage>,
     notifier: &NotificationService,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
     let character_dir = data_dir.join(character);
     let active_path = character_dir.join("active.jsonl");
 
@@ -310,7 +315,7 @@ async fn run_compaction(
 
     if messages.is_empty() {
         info!(character = %character, "No messages to compact, skipping");
-        return Ok(());
+        return Ok(0);
     }
 
     // Open memory DB.
@@ -423,13 +428,14 @@ async fn run_compaction(
                     }
                 }
             }
+
+            Ok(result.retained_turns)
         }
         CompactionOutcome::DryRun(_) => {
             // Should not happen in background mode, but harmless.
+            Ok(0)
         }
     }
-
-    Ok(())
 }
 
 /// Run the collation pipeline for a single character.
