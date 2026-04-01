@@ -25,6 +25,18 @@ use crate::autonomy::activity::HourClassification;
 
 use super::{CommandContext, CommandResult, MemoryShellSession};
 
+/// Build the memory DB path for a character and open it.
+fn open_memory_db(ctx: &CommandContext, char_name: &str) -> Result<MemoryDB, (ErrorCode, String)> {
+    let db_path = ctx.data_dir.join(char_name).join("memory").join("memory.db");
+    MemoryDB::open(&db_path)
+        .map_err(|e| (ErrorCode::InternalError, format!("Failed to open memory DB: {e}")))
+}
+
+/// Build the memory directory path for a character.
+fn memory_dir(ctx: &CommandContext, char_name: &str) -> std::path::PathBuf {
+    ctx.data_dir.join(char_name).join("memory")
+}
+
 /// Return system status: character, message count, model, token counts.
 pub fn status(engine: &ConversationEngine, ctx: &CommandContext) -> CommandResult {
     let activity = ctx
@@ -212,18 +224,13 @@ pub fn memory_changelog(
         .unwrap_or(20);
 
     let char_name = engine.character_name();
-    let db_path = ctx
-        .data_dir
-        .join(char_name)
-        .join("memory")
-        .join("memory.db");
+    let db_path = memory_dir(ctx, char_name).join("memory.db");
 
     if !db_path.exists() {
         return Ok(json!({ "changelog": [], "character": char_name }));
     }
 
-    let db = MemoryDB::open(&db_path)
-        .map_err(|e| (ErrorCode::InternalError, format!("Failed to open memory DB: {e}")))?;
+    let db = open_memory_db(ctx, char_name)?;
 
     let records = db
         .get_recent_changelog(limit)
@@ -264,11 +271,7 @@ pub async fn memory(
 /// Return memory entry/entity counts for the current character.
 fn memory_status(engine: &ConversationEngine, ctx: &CommandContext) -> CommandResult {
     let char_name = engine.character_name();
-    let db_path = ctx
-        .data_dir
-        .join(char_name)
-        .join("memory")
-        .join("memory.db");
+    let db_path = memory_dir(ctx, char_name).join("memory.db");
 
     if !db_path.exists() {
         return Ok(json!({
@@ -279,8 +282,7 @@ fn memory_status(engine: &ConversationEngine, ctx: &CommandContext) -> CommandRe
         }));
     }
 
-    let db = MemoryDB::open(&db_path)
-        .map_err(|e| (ErrorCode::InternalError, format!("Failed to open memory DB: {e}")))?;
+    let db = open_memory_db(ctx, char_name)?;
 
     let entries = db
         .count_entries()
@@ -307,14 +309,7 @@ async fn memory_query(
     query: &str,
 ) -> CommandResult {
     let char_name = engine.character_name();
-    let db_path = ctx
-        .data_dir
-        .join(char_name)
-        .join("memory")
-        .join("memory.db");
-
-    let db = MemoryDB::open(&db_path)
-        .map_err(|e| (ErrorCode::InternalError, format!("Failed to open memory DB: {e}")))?;
+    let db = open_memory_db(ctx, char_name)?;
 
     // Resolve agent model: configured memory_agent → active model → first available.
     let agent_model = ctx
@@ -343,10 +338,7 @@ async fn memory_query(
         &ctx.config.models.embedding,
     ) {
         Ok(embed_config) => {
-            let vs_path = ctx.data_dir
-                .join(char_name)
-                .join("memory")
-                .join("vectorstore");
+            let vs_path = memory_dir(ctx, char_name).join("vectorstore");
             VectorStore::open(&vs_path, embed_config.dimensions)
                 .await
                 .ok()
@@ -439,12 +431,7 @@ pub async fn memory_shell_query(
         .get_mut(session_id)
         .ok_or_else(|| (ErrorCode::NotFound, "Session not found".to_string()))?;
 
-    let db_path = ctx
-        .data_dir
-        .join(&session.character)
-        .join("memory")
-        .join("memory.db");
-
+    let db_path = ctx.data_dir.join(&session.character).join("memory").join("memory.db");
     let db = MemoryDB::open(&db_path)
         .map_err(|e| (ErrorCode::InternalError, format!("Failed to open memory DB: {e}")))?;
 
@@ -456,10 +443,7 @@ pub async fn memory_shell_query(
         &ctx.config.models.embedding,
     ) {
         Ok(embed_config) => {
-            let vs_path = ctx.data_dir
-                .join(&session.character)
-                .join("memory")
-                .join("vectorstore");
+            let vs_path = ctx.data_dir.join(&session.character).join("memory").join("vectorstore");
             VectorStore::open(&vs_path, embed_config.dimensions)
                 .await
                 .ok()
@@ -560,13 +544,7 @@ pub async fn compact(
     }
 
     // Open the memory database.
-    let db_path = ctx
-        .data_dir
-        .join(&char_name)
-        .join("memory")
-        .join("memory.db");
-    let db = MemoryDB::open(&db_path)
-        .map_err(|e| (ErrorCode::InternalError, format!("Failed to open memory DB: {e}")))?;
+    let db = open_memory_db(ctx, &char_name)?;
 
     // Resolve the compaction prompt template.
     let prompt_template = resolve_prompt_template(
@@ -592,11 +570,7 @@ pub async fn compact(
     .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
 
     // Open vector store.
-    let vs_path = ctx
-        .data_dir
-        .join(&char_name)
-        .join("memory")
-        .join("vectorstore");
+    let vs_path = memory_dir(ctx, &char_name).join("vectorstore");
     let store = VectorStore::open(&vs_path, embed_config.dimensions)
         .await
         .map_err(|e| (ErrorCode::InternalError, format!("Failed to open vector store: {e}")))?;
@@ -618,11 +592,7 @@ pub async fn compact(
     let mgr = CompactionManager::new(config);
 
     // Load existing recap for folding.
-    let recap_path = ctx
-        .data_dir
-        .join(&char_name)
-        .join("memory")
-        .join("recap.md");
+    let recap_path = memory_dir(ctx, &char_name).join("recap.md");
     let existing_recap = std::fs::read_to_string(&recap_path).ok();
 
     // Run compaction.
@@ -678,7 +648,7 @@ pub async fn compact(
 
                     // Open a second vector store for collation (the compaction one was moved).
                     let collation_search_ctx = {
-                        let cvs_path = ctx.data_dir.join(&char_name).join("memory").join("vectorstore");
+                        let cvs_path = memory_dir(ctx, &char_name).join("vectorstore");
                         match VectorStore::open(&cvs_path, collation_embed_config.dimensions).await {
                             Ok(vs) => Some(AgentSearchContext::new(vs, ctx.llm_client.clone(), collation_embed_config.clone())),
                             Err(_) => None,
@@ -831,13 +801,7 @@ pub async fn collate(
     let full_mode = args.get("full").and_then(|v| v.as_bool()).unwrap_or(false);
 
     // Open the memory database.
-    let db_path = ctx
-        .data_dir
-        .join(&char_name)
-        .join("memory")
-        .join("memory.db");
-    let db = MemoryDB::open(&db_path)
-        .map_err(|e| (ErrorCode::InternalError, format!("Failed to open memory DB: {e}")))?;
+    let db = open_memory_db(ctx, &char_name)?;
 
     let model = resolve_collation_model(&ctx.config)
         .ok_or_else(|| (ErrorCode::InternalError, "No model configured".to_string()))?;
@@ -864,7 +828,7 @@ pub async fn collate(
         &ctx.config.models.embedding,
     ) {
         Ok(embed_config) => {
-            let vs_path = ctx.data_dir.join(&char_name).join("memory").join("vectorstore");
+            let vs_path = memory_dir(ctx, &char_name).join("vectorstore");
             match VectorStore::open(&vs_path, embed_config.dimensions).await {
                 Ok(vs) => Some(AgentSearchContext::new(vs, ctx.llm_client.clone(), embed_config)),
                 Err(e) => {
@@ -961,13 +925,7 @@ pub async fn memory_purge(
         )
     })?;
 
-    let db_path = ctx
-        .data_dir
-        .join(&char_name)
-        .join("memory")
-        .join("memory.db");
-    let db = MemoryDB::open(&db_path)
-        .map_err(|e| (ErrorCode::InternalError, format!("Failed to open memory DB: {e}")))?;
+    let db = open_memory_db(ctx, &char_name)?;
 
     let cutoff = (chrono::Utc::now() - chrono::Duration::days(days))
         .to_rfc3339();
@@ -1154,9 +1112,7 @@ pub async fn memory_reindex(engine: &ConversationEngine, ctx: &CommandContext) -
     let char_name = engine.character_name().to_string();
 
     // Open memory DB.
-    let db_path = ctx.data_dir.join(&char_name).join("memory").join("memory.db");
-    let db = MemoryDB::open(&db_path)
-        .map_err(|e| (ErrorCode::InternalError, format!("Failed to open memory DB: {e}")))?;
+    let db = open_memory_db(ctx, &char_name)?;
 
     // Load all active entries.
     let entries = db.get_entries_by_status("active")
@@ -1177,7 +1133,7 @@ pub async fn memory_reindex(engine: &ConversationEngine, ctx: &CommandContext) -
     )
     .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
 
-    let vs_path = ctx.data_dir.join(&char_name).join("memory").join("vectorstore");
+    let vs_path = memory_dir(ctx, &char_name).join("vectorstore");
     let store = VectorStore::open(&vs_path, embed_config.dimensions)
         .await
         .map_err(|e| (ErrorCode::InternalError, format!("Failed to open vector store: {e}")))?;

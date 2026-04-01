@@ -1,8 +1,12 @@
+pub mod conn_manager;
 pub mod connection;
 pub mod discovery;
 pub mod error;
+pub mod image_protocol;
 pub mod stream;
 
+pub use conn_manager::{ConnCommand, ConnEvent, spawn_connection};
+pub use image_protocol::{ImageProtocol, detect_protocol};
 pub use connection::{SWPConnection, ServerAddr};
 pub use discovery::{discover, discover_or_default};
 pub use error::{ClientError, Result};

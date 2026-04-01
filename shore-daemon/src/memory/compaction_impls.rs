@@ -10,11 +10,11 @@ use std::pin::Pin;
 
 use chrono::Utc;
 use serde_json::json;
+use tracing::debug;
 use uuid::Uuid;
 
 use shore_config::models::ResolvedModel;
 use crate::engine::segments::{CompactionManifest, SegmentEntry};
-use shore_llm_client::types::ContentBlock;
 use shore_llm_client::LlmClient;
 
 use super::compaction::{CompactionError, CompactionLlm, ConversationManager, RetentionParams, VectorIndexer};
@@ -251,30 +251,16 @@ impl CompactionLlm for RealCompactionLlm {
             let request = LlmClient::build_request(&self.model, messages, None, None, None)
                 .map_err(|e| CompactionError::Llm(e.to_string()))?;
 
-            eprintln!("[compact-timing] summarize: starting LLM generate, prompt_len={}", prompt.len());
+            debug!(prompt_len = prompt.len(), "compaction: starting LLM summarize");
             let t0 = std::time::Instant::now();
             let resp = self
                 .client
                 .generate(&request, None)
                 .await
-                .map_err(|e| { eprintln!("[compact-timing] summarize: LLM generate FAILED in {:?}: {}", t0.elapsed(), e); CompactionError::Llm(e.to_string()) })?;
-            eprintln!("[compact-timing] summarize: LLM generate done in {:?}, content_len={}", t0.elapsed(), resp.content.len());
+                .map_err(|e| CompactionError::Llm(e.to_string()))?;
+            debug!(elapsed = ?t0.elapsed(), content_len = resp.content.len(), "compaction: LLM summarize done");
 
-            // Extract text from content blocks, falling back to content field.
-            let text = if resp.content_blocks.is_empty() {
-                resp.content.clone()
-            } else {
-                resp.content_blocks
-                    .iter()
-                    .filter_map(|b| match b {
-                        ContentBlock::Text { text } => Some(text.as_str()),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join("")
-            };
-
-            Ok(text)
+            Ok(resp.extract_text())
         })
     }
 }
@@ -311,7 +297,7 @@ impl VectorIndexer for RealVectorIndexer {
         let text = text.to_string();
 
         Box::pin(async move {
-            eprintln!("[compact-timing] index_entry '{}': starting embed", &entry_id);
+            debug!(entry_id = %entry_id, "compaction: starting embed");
             let t0 = std::time::Instant::now();
             let embedding = self
                 .client
@@ -323,8 +309,8 @@ impl VectorIndexer for RealVectorIndexer {
                     &[text.as_str()],
                 )
                 .await
-                .map_err(|e| { eprintln!("[compact-timing] index_entry '{}': embed FAILED in {:?}: {}", &entry_id, t0.elapsed(), e); CompactionError::Indexing(e.to_string()) })?;
-            eprintln!("[compact-timing] index_entry '{}': embed done in {:?}", &entry_id, t0.elapsed());
+                .map_err(|e| CompactionError::Indexing(e.to_string()))?;
+            debug!(entry_id = %entry_id, elapsed = ?t0.elapsed(), "compaction: embed done");
 
             let vec = embedding
                 .first()

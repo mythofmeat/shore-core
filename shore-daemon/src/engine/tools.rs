@@ -34,35 +34,6 @@ pub struct ToolLoopResult {
 
 // ── Tool loop ───────────────────────────────────────────────────────────
 
-/// Convert a ContentBlock to its LLM API JSON representation.
-fn content_block_to_json(block: &ContentBlock) -> Option<Value> {
-    match block {
-        ContentBlock::Text { text } => Some(json!({ "type": "text", "text": text })),
-        ContentBlock::Thinking { thinking, signature } => {
-            // Require signature — Anthropic API rejects unsigned thinking blocks.
-            signature.as_ref().map(|sig| {
-                json!({ "type": "thinking", "thinking": thinking, "signature": sig })
-            })
-        }
-        ContentBlock::RedactedThinking { data } => Some(json!({
-            "type": "redacted_thinking", "data": data,
-        })),
-        ContentBlock::ToolUse { id, name, input } => Some(json!({
-            "type": "tool_use", "id": id, "name": name, "input": input,
-        })),
-        ContentBlock::ToolResult { tool_use_id, content, is_error } => {
-            let mut v = json!({
-                "type": "tool_result", "tool_use_id": tool_use_id, "content": content,
-            });
-            if *is_error {
-                v["is_error"] = json!(true);
-            }
-            Some(v)
-        }
-    }
-}
-
-
 /// Run the tool use agentic loop.
 ///
 /// If the initial stream result has `finish_reason == "tool_use"`, executes
@@ -119,7 +90,7 @@ pub async fn run_tool_loop(
         // Build LLM payload from content blocks.
         let assistant_content: Vec<Value> = assistant_blocks
             .iter()
-            .filter_map(content_block_to_json)
+            .filter_map(crate::content_util::content_block_to_api_json)
             .collect();
 
         request.messages.push(json!({

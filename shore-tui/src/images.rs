@@ -4,12 +4,8 @@ use std::io::Write;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 
-/// Supported image protocols for inline terminal display.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ImageProtocol {
-    Kitty,
-    Iterm2,
-}
+pub use shore_client::image_protocol::ImageProtocol;
+pub use shore_client::image_protocol::detect_protocol as detect_protocol_from_env;
 
 pub type KittyImageId = u32;
 
@@ -27,51 +23,6 @@ pub struct ImageCache {
     protocol: Option<ImageProtocol>,
     cell_width: u16,
     cell_height: u16,
-}
-
-/// Detect supported image protocol from environment.
-pub fn detect_protocol(
-    shore_images: Option<&str>,
-    term_program: Option<&str>,
-    term: Option<&str>,
-) -> Option<ImageProtocol> {
-    // Explicit override
-    if let Some(val) = shore_images {
-        return match val.to_lowercase().as_str() {
-            "kitty" => Some(ImageProtocol::Kitty),
-            "iterm2" | "iterm" => Some(ImageProtocol::Iterm2),
-            _ => None,
-        };
-    }
-
-    // Auto-detect from TERM_PROGRAM
-    if let Some(prog) = term_program {
-        let lower = prog.to_lowercase();
-        if lower.contains("iterm") {
-            return Some(ImageProtocol::Iterm2);
-        }
-        if lower.contains("kitty") {
-            return Some(ImageProtocol::Kitty);
-        }
-    }
-
-    // Fallback to TERM
-    if let Some(t) = term {
-        if t.contains("kitty") {
-            return Some(ImageProtocol::Kitty);
-        }
-    }
-
-    None
-}
-
-/// Detect protocol from actual environment variables.
-pub fn detect_protocol_from_env() -> Option<ImageProtocol> {
-    detect_protocol(
-        std::env::var("SHORE_IMAGES").ok().as_deref(),
-        std::env::var("TERM_PROGRAM").ok().as_deref(),
-        std::env::var("TERM").ok().as_deref(),
-    )
 }
 
 fn base64_encode(data: &[u8]) -> String {
@@ -288,6 +239,7 @@ fn image_dimensions(data: &[u8]) -> Option<(u32, u32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shore_client::image_protocol::detect_protocol_from_env as detect_protocol;
 
     #[test]
     fn detect_kitty_from_env() {

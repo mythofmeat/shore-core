@@ -329,13 +329,26 @@ impl AutonomyManager {
         self.handles.lock().unwrap().push(handle);
     }
 
+    // -- state access helper ---------------------------------------------------
+
+    /// Lock the states map, find the character's state, lock it, and call `f`.
+    /// Returns `None` if the character has no autonomy state.
+    fn with_state<R, F: FnOnce(&mut AutonomyState) -> R>(
+        &self,
+        character: &str,
+        f: F,
+    ) -> Option<R> {
+        let states = self.states.lock().unwrap();
+        let state = states.get(character)?;
+        let mut s = state.lock().unwrap();
+        Some(f(&mut s))
+    }
+
     // -- event notifications from the message handler -------------------------
 
     /// Call after a user message is appended.
     pub fn notify_user_message(&self, character: &str, message_count: usize) {
-        let states = self.states.lock().unwrap();
-        if let Some(state) = states.get(character) {
-            let mut s = state.lock().unwrap();
+        self.with_state(character, |s| {
             let was_dormant = s.interiority.state() == InteriorityState::Dormant;
             let now = Instant::now();
             s.interiority.on_user_message(now);
@@ -350,21 +363,19 @@ impl AutonomyManager {
             s.active_turn_count = message_count;
             s.coordinate_interiority_keepalive();
             s.mark_dirty();
-        }
+        });
     }
 
     /// Call after an assistant message is appended.
     pub fn notify_assistant_message(&self, character: &str, message_count: usize) {
-        let states = self.states.lock().unwrap();
-        if let Some(state) = states.get(character) {
-            let mut s = state.lock().unwrap();
+        self.with_state(character, |s| {
             let now = Instant::now();
             s.interiority.on_assistant_message(now);
             s.activity.record_message();
             s.last_compaction_activity = now;
             s.active_turn_count = message_count;
             s.mark_dirty();
-        }
+        });
     }
 
     /// Call after an LLM API response with cache usage info.
@@ -374,31 +385,25 @@ impl AutonomyManager {
         cache_read_tokens: u32,
         input_tokens: u32,
     ) {
-        let states = self.states.lock().unwrap();
-        if let Some(state) = states.get(character) {
-            let mut s = state.lock().unwrap();
+        self.with_state(character, |s| {
             let now = Instant::now();
             s.cache_keepalive
                 .on_api_response(now, cache_read_tokens, input_tokens);
             s.coordinate_interiority_keepalive();
-        }
+        });
     }
 
     /// Cache the last LLM request for keepalive ping reuse.
     pub fn notify_last_request(&self, character: &str, request: LlmRequest) {
-        let states = self.states.lock().unwrap();
-        if let Some(state) = states.get(character) {
-            let mut s = state.lock().unwrap();
+        self.with_state(character, |s| {
             s.last_request = Some(request);
-        }
+        });
     }
 
     /// Call after compaction completes successfully. Updates the turn count
     /// and signals the handler to reload the engine on the next message.
     pub fn notify_compaction_complete(&self, character: &str, new_turn_count: usize) {
-        let states = self.states.lock().unwrap();
-        if let Some(state) = states.get(character) {
-            let mut s = state.lock().unwrap();
+        self.with_state(character, |s| {
             s.active_turn_count = new_turn_count;
             s.needs_engine_reload = true;
             // Keep compaction_triggered = true until engine reload acknowledges it.
@@ -408,26 +413,22 @@ impl AutonomyManager {
                 new_turn_count,
                 "Compaction complete — engine reload pending"
             );
-        }
+        });
     }
 
     /// Call after compaction fails. Resets the trigger so it can retry.
     pub fn notify_compaction_failed(&self, character: &str) {
-        let states = self.states.lock().unwrap();
-        if let Some(state) = states.get(character) {
-            let mut s = state.lock().unwrap();
+        self.with_state(character, |s| {
             s.compaction_triggered = false;
             s.last_compaction_activity = Instant::now();
             s.mark_dirty();
-        }
+        });
     }
 
     /// Check if a character's engine needs reloading after compaction.
     /// Returns true (and clears the flag) if a reload is needed.
     pub fn take_needs_reload(&self, character: &str) -> bool {
-        let states = self.states.lock().unwrap();
-        if let Some(state) = states.get(character) {
-            let mut s = state.lock().unwrap();
+        self.with_state(character, |s| {
             if s.needs_engine_reload {
                 s.needs_engine_reload = false;
                 // Compaction cycle complete — allow future compaction triggers.
@@ -435,29 +436,28 @@ impl AutonomyManager {
                 s.last_compaction_activity = Instant::now();
                 return true;
             }
-        }
-        false
+            false
+        })
+        .unwrap_or(false)
     }
+
 
     /// Update the cache keepalive config for a character (e.g. on model switch).
     pub fn update_keepalive_config(&self, character: &str, config: CacheKeepaliveConfig) {
-        let states = self.states.lock().unwrap();
-        if let Some(state) = states.get(character) {
-            let mut s = state.lock().unwrap();
+        self.with_state(character, |s| {
             s.cache_keepalive.update_config(config);
-        }
+        });
     }
 
     /// Explicitly set the paused state for a character. Returns the new state,
     /// or None if the character has no autonomy state.
     pub fn set_paused(&self, character: &str, paused: bool) -> Option<bool> {
-        let states = self.states.lock().unwrap();
-        let state_arc = states.get(character)?;
-        let mut s = state_arc.lock().unwrap();
-        s.interiority.set_paused(paused);
-        s.cache_keepalive.set_paused(paused);
-        s.mark_dirty();
-        Some(paused)
+        self.with_state(character, |s| {
+            s.interiority.set_paused(paused);
+            s.cache_keepalive.set_paused(paused);
+            s.mark_dirty();
+            paused
+        })
     }
 
     // -- activity stats --------------------------------------------------------
@@ -467,40 +467,33 @@ impl AutonomyManager {
         &self,
         character: &str,
     ) -> Option<(super::activity::ActivityStats, usize)> {
-        let states = self.states.lock().unwrap();
-        let state_arc = states.get(character)?;
-        let mut state = state_arc.lock().unwrap();
-        let stats = state.activity.stats().clone();
-        let count = state.activity.message_count();
-        Some((stats, count))
+        self.with_state(character, |s| {
+            let stats = s.activity.stats().clone();
+            let count = s.activity.message_count();
+            (stats, count)
+        })
     }
 
     // -- status snapshot ------------------------------------------------------
 
     /// Build an `AutonomyStatus` snapshot for the status command.
     pub fn status(&self, character: &str) -> Option<AutonomyStatus> {
-        let states = self.states.lock().unwrap();
-        let state_arc = states.get(character)?;
-        let state = state_arc.lock().unwrap();
-
-        Some(AutonomyStatus {
-            paused: state.interiority.is_paused(),
-            interiority_state: state.interiority.state().to_string(),
-            ticks_without_user: state.interiority.ticks_without_user(),
-            max_idle_ticks: state.interiority.max_idle_ticks(),
-            cache_keepalive_state: format!("{:?}", state.cache_keepalive.state()),
-            cache_keepalive_pings: state.cache_keepalive.ping_count(),
+        self.with_state(character, |s| AutonomyStatus {
+            paused: s.interiority.is_paused(),
+            interiority_state: s.interiority.state().to_string(),
+            ticks_without_user: s.interiority.ticks_without_user(),
+            max_idle_ticks: s.interiority.max_idle_ticks(),
+            cache_keepalive_state: format!("{:?}", s.cache_keepalive.state()),
+            cache_keepalive_pings: s.cache_keepalive.ping_count(),
         })
     }
 
     /// Return recent interiority events for `shore log --heartbeat`.
     pub fn heartbeat_log(&self, character: &str, limit: usize) -> Vec<super::InteriorityEvent> {
-        let states = self.states.lock().unwrap();
-        let Some(state_arc) = states.get(character) else {
-            return vec![];
-        };
-        let state = state_arc.lock().unwrap();
-        state.interiority_log.recent(limit).into_iter().cloned().collect()
+        self.with_state(character, |s| {
+            s.interiority_log.recent(limit).into_iter().cloned().collect()
+        })
+        .unwrap_or_default()
     }
 
     // -- shutdown -------------------------------------------------------------
@@ -831,23 +824,9 @@ async fn execute_interiority_tick(
         }
 
         // Build assistant message from content blocks for the next request.
-        let assistant_content: Vec<serde_json::Value> = resp.content_blocks.iter().filter_map(|block| {
-            match block {
-                ContentBlock::Text { text } => Some(json!({"type": "text", "text": text})),
-                ContentBlock::ToolUse { id, name, input } => Some(json!({
-                    "type": "tool_use", "id": id, "name": name, "input": input
-                })),
-                ContentBlock::Thinking { thinking, signature } => {
-                    signature.as_ref().map(|sig| json!({
-                        "type": "thinking", "thinking": thinking, "signature": sig
-                    }))
-                }
-                ContentBlock::RedactedThinking { data } => Some(json!({
-                    "type": "redacted_thinking", "data": data
-                })),
-                _ => None,
-            }
-        }).collect();
+        let assistant_content: Vec<serde_json::Value> = resp.content_blocks.iter()
+            .filter_map(crate::content_util::content_block_to_api_json)
+            .collect();
 
         request.messages.push(json!({"role": "assistant", "content": assistant_content}));
 

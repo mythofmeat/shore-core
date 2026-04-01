@@ -242,26 +242,17 @@ pub enum HealthStatus {
     Unknown,
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum HomeserverError {
+    #[error("homeserver is already running")]
     AlreadyRunning,
+    #[error("homeserver is not running")]
     NotRunning,
+    #[error("failed to spawn homeserver: {0}")]
     SpawnFailed(String),
+    #[error("I/O error: {0}")]
     Io(String),
 }
-
-impl std::fmt::Display for HomeserverError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::AlreadyRunning => write!(f, "homeserver is already running"),
-            Self::NotRunning => write!(f, "homeserver is not running"),
-            Self::SpawnFailed(e) => write!(f, "failed to spawn homeserver: {e}"),
-            Self::Io(e) => write!(f, "I/O error: {e}"),
-        }
-    }
-}
-
-impl std::error::Error for HomeserverError {}
 
 /// Generate a random registration token.
 pub fn generate_token() -> String {

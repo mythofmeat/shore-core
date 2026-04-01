@@ -8,7 +8,6 @@ use tracing::{info, warn};
 use serde_json::{json, Value};
 
 use shore_config::models::ResolvedModel;
-use shore_llm_client::types::ContentBlock;
 use crate::memory::agent::types::{AgentError, AgentIndexer, AgentSearchContext};
 use crate::memory::agent::MemoryAgent;
 use crate::memory::agent_llm::AgentLlm;
@@ -165,16 +164,7 @@ impl MemoryResearcher {
             last_text = response.text.clone();
 
             // Extract tool_use blocks
-            let tool_uses: Vec<(String, String, Value)> = response
-                .content_blocks
-                .iter()
-                .filter_map(|block| match block {
-                    ContentBlock::ToolUse { id, name, input } => {
-                        Some((id.clone(), name.clone(), input.clone()))
-                    }
-                    _ => None,
-                })
-                .collect();
+            let tool_uses = crate::content_util::extract_tool_uses(&response.content_blocks);
 
             // No tool calls → final response
             if tool_uses.is_empty() {
@@ -195,27 +185,7 @@ impl MemoryResearcher {
             let assistant_content: Vec<Value> = response
                 .content_blocks
                 .iter()
-                .map(|block| match block {
-                    ContentBlock::Text { text } => json!({"type": "text", "text": text}),
-                    ContentBlock::ToolUse { id, name, input } => {
-                        json!({"type": "tool_use", "id": id, "name": name, "input": input})
-                    }
-                    ContentBlock::Thinking { thinking, signature } => {
-                        let mut block = json!({"type": "thinking", "thinking": thinking});
-                        if let Some(sig) = signature {
-                            block["signature"] = json!(sig);
-                        }
-                        block
-                    }
-                    ContentBlock::RedactedThinking { data } => {
-                        json!({"type": "redacted_thinking", "data": data})
-                    }
-                    ContentBlock::ToolResult { tool_use_id, content, is_error } => {
-                        let mut v = json!({"type": "tool_result", "tool_use_id": tool_use_id, "content": content});
-                        if *is_error { v["is_error"] = json!(true); }
-                        v
-                    }
-                })
+                .map(crate::content_util::content_block_to_json)
                 .collect();
 
             messages.push(json!({"role": "assistant", "content": assistant_content}));
@@ -320,6 +290,7 @@ mod tests {
     use crate::memory::agent_llm::{AgentLlmResponse, MockAgentLlm};
     use crate::memory::db::MemoryDB;
     use crate::test_support::test_model;
+    use shore_llm_client::types::ContentBlock;
 
     /// Single ask_memory_agent call → synthesis.
     #[tokio::test]
