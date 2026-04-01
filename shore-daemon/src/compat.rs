@@ -16,49 +16,17 @@ use std::path::{Path, PathBuf};
 // Error type
 // ---------------------------------------------------------------------------
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum CompatError {
-    Io(io::Error),
-    Json(serde_json::Error),
-    Toml(toml::de::Error),
+    #[error("io: {0}")]
+    Io(#[from] io::Error),
+    #[error("json: {0}")]
+    Json(#[from] serde_json::Error),
+    #[error("toml: {0}")]
+    Toml(#[from] toml::de::Error),
+    #[error("{}", .0.join("\n"))]
     Config(Vec<String>),
 }
-
-impl From<io::Error> for CompatError {
-    fn from(e: io::Error) -> Self {
-        CompatError::Io(e)
-    }
-}
-
-impl From<serde_json::Error> for CompatError {
-    fn from(e: serde_json::Error) -> Self {
-        CompatError::Json(e)
-    }
-}
-
-impl From<toml::de::Error> for CompatError {
-    fn from(e: toml::de::Error) -> Self {
-        CompatError::Toml(e)
-    }
-}
-
-impl std::fmt::Display for CompatError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            CompatError::Io(e) => write!(f, "io: {e}"),
-            CompatError::Json(e) => write!(f, "json: {e}"),
-            CompatError::Toml(e) => write!(f, "toml: {e}"),
-            CompatError::Config(errors) => {
-                for err in errors {
-                    writeln!(f, "{err}")?;
-                }
-                Ok(())
-            }
-        }
-    }
-}
-
-impl std::error::Error for CompatError {}
 
 // ---------------------------------------------------------------------------
 // V1 Conversation JSONL

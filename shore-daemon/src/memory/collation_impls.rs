@@ -10,7 +10,6 @@ use serde::Deserialize;
 use serde_json::json;
 
 use shore_config::models::ResolvedModel;
-use shore_llm_client::types::ContentBlock;
 use shore_llm_client::LlmClient;
 
 use super::collation::{CollationError, CollationLlm, RefineAction};
@@ -80,21 +79,7 @@ impl RealCollationLlm {
             .await
             .map_err(|e| CollationError::Llm(e.to_string()))?;
 
-        // Extract text from content blocks, falling back to content field.
-        let text = if resp.content_blocks.is_empty() {
-            resp.content.clone()
-        } else {
-            resp.content_blocks
-                .iter()
-                .filter_map(|b| match b {
-                    ContentBlock::Text { text } => Some(text.as_str()),
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-                .join("")
-        };
-
-        Ok(text)
+        Ok(resp.extract_text())
     }
 }
 

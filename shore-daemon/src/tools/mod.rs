@@ -63,33 +63,18 @@ pub struct ToolDef {
 // Tool error
 // ---------------------------------------------------------------------------
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum ToolError {
+    #[error("invalid args: {0}")]
     InvalidArgs(String),
-    Agent(AgentError),
+    #[error("agent: {0}")]
+    Agent(#[from] AgentError),
+    #[error("{0}: not yet implemented")]
     NotImplemented(String),
+    #[error("io: {0}")]
     Io(String),
+    #[error("http: {0}")]
     Http(String),
-}
-
-impl std::fmt::Display for ToolError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ToolError::InvalidArgs(e) => write!(f, "invalid args: {e}"),
-            ToolError::Agent(e) => write!(f, "agent: {e}"),
-            ToolError::NotImplemented(name) => write!(f, "{name}: not yet implemented"),
-            ToolError::Io(e) => write!(f, "io: {e}"),
-            ToolError::Http(e) => write!(f, "http: {e}"),
-        }
-    }
-}
-
-impl std::error::Error for ToolError {}
-
-impl From<AgentError> for ToolError {
-    fn from(e: AgentError) -> Self {
-        ToolError::Agent(e)
-    }
 }
 
 // ---------------------------------------------------------------------------

@@ -427,7 +427,14 @@ async fn handle_generation(
     ctx.autonomy.ensure_state_with_config(&char_name, keepalive_cfg, Some(&effective_config));
 
     if !regen && (!body.text.is_empty() || !body.images.is_empty()) {
-        let turn_count = engine_arc.lock().await.turn_count();
+        let mut engine = engine_arc.lock().await;
+        // If compaction ran since the last message, reload the engine from disk.
+        if ctx.autonomy.take_needs_reload(&char_name) {
+            info!(character = %char_name, "Reloading engine after compaction");
+            engine.reload().map_err(|e| e.to_string())?;
+        }
+        let turn_count = engine.turn_count();
+        drop(engine);
         ctx.autonomy.notify_user_message(&char_name, turn_count);
     }
 
@@ -484,29 +491,9 @@ async fn handle_generation(
                 Role::System => "system",
             };
             let content = if !m.content_blocks.is_empty() {
-                let blocks: Vec<Value> = m.content_blocks.iter().filter_map(|b| match b {
-                    ContentBlock::Text { text } => Some(json!({ "type": "text", "text": text })),
-                    ContentBlock::Thinking { thinking, signature } => {
-                        signature.as_ref().map(|sig| {
-                            json!({ "type": "thinking", "thinking": thinking, "signature": sig })
-                        })
-                    }
-                    ContentBlock::RedactedThinking { data } => {
-                        Some(json!({ "type": "redacted_thinking", "data": data }))
-                    }
-                    ContentBlock::ToolUse { id, name, input } => Some(json!({
-                        "type": "tool_use", "id": id, "name": name, "input": input,
-                    })),
-                    ContentBlock::ToolResult { tool_use_id, content, is_error } => {
-                        let mut v = json!({
-                            "type": "tool_result", "tool_use_id": tool_use_id, "content": content,
-                        });
-                        if *is_error {
-                            v["is_error"] = json!(true);
-                        }
-                        Some(v)
-                    }
-                }).collect();
+                let blocks: Vec<Value> = m.content_blocks.iter()
+                    .filter_map(crate::content_util::content_block_to_api_json)
+                    .collect();
                 json!(blocks)
             } else {
                 build_content(&m.content, &m.images)

@@ -18,24 +18,15 @@ use shore_llm_client::types::ContentBlock;
 // ---------------------------------------------------------------------------
 
 /// Errors from agent LLM calls.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum AgentLlmError {
     /// Transport/API error.
+    #[error("llm transport: {0}")]
     Transport(String),
     /// No more canned responses in mock.
+    #[error("mock: no more canned responses")]
     MockExhausted,
 }
-
-impl std::fmt::Display for AgentLlmError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            AgentLlmError::Transport(e) => write!(f, "llm transport: {e}"),
-            AgentLlmError::MockExhausted => write!(f, "mock: no more canned responses"),
-        }
-    }
-}
-
-impl std::error::Error for AgentLlmError {}
 
 // ---------------------------------------------------------------------------
 // Response
@@ -105,22 +96,8 @@ impl AgentLlm for RealAgentLlm {
                 .await
                 .map_err(|e| AgentLlmError::Transport(e.to_string()))?;
 
-            // Extract text from content_blocks, or fall back to content field.
-            let text = if resp.content_blocks.is_empty() {
-                resp.content.clone()
-            } else {
-                resp.content_blocks
-                    .iter()
-                    .filter_map(|b| match b {
-                        ContentBlock::Text { text } => Some(text.as_str()),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join("")
-            };
-
             Ok(AgentLlmResponse {
-                text,
+                text: resp.extract_text(),
                 content_blocks: resp.content_blocks,
                 finish_reason: resp.finish_reason,
             })

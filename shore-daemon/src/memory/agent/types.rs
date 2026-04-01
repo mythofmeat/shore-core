@@ -48,28 +48,19 @@ pub enum AgentMode {
 // Error type
 // ---------------------------------------------------------------------------
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum AgentError {
+    #[error("db: {0}")]
     Db(String),
+    #[error("rag: {0}")]
     Rag(String),
+    #[error("indexing: {0}")]
     Indexing(String),
+    #[error("llm: {0}")]
     Llm(String),
+    #[error("agent loop reached maximum iterations")]
     MaxIterations,
 }
-
-impl std::fmt::Display for AgentError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            AgentError::Db(e) => write!(f, "db: {e}"),
-            AgentError::Rag(e) => write!(f, "rag: {e}"),
-            AgentError::Indexing(e) => write!(f, "indexing: {e}"),
-            AgentError::Llm(e) => write!(f, "llm: {e}"),
-            AgentError::MaxIterations => write!(f, "agent loop reached maximum iterations"),
-        }
-    }
-}
-
-impl std::error::Error for AgentError {}
 
 // ---------------------------------------------------------------------------
 // Tool result
