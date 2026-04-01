@@ -200,3 +200,27 @@ Rewrote the memory collation pipeline to fix multiple design flaws in the origin
 **Why:** A/B testing with identical request bodies showed OpenRouter intermittently drops prompt cache hits even with static, never-changing system prompt breakpoints and 1h TTL. Direct Anthropic API gets 100% cache hits with the exact same code. Client-side thinking stripping was also unnecessary — the API strips prior-turn thinking internally and the cache key accounts for it. Supporting a proxy path that silently degrades caching is worse than not supporting it.
 
 **Trade-off:** Users who were routing Anthropic models through OpenRouter must switch to using the `openrouter` SDK (which uses the OpenAI-compatible path). This is the correct approach anyway — OpenRouter's API is OpenAI-compatible, not Anthropic-compatible.
+
+### Unified Refine Phase — Collation Redesign (2026-04-01)
+
+**Decision:** Replace the 3 separate LLM phases (collate/merge, tidy/split, normalize entities) with a single unified "refine" phase. Drop entity normalization entirely.
+
+**Changes made:**
+- Replaced `phase_collate`, `phase_tidy`, `phase_normalize_entities` with single `phase_refine`
+- Replaced 3 prompt templates (`DEFAULT_COLLATE_PROMPT`, `DEFAULT_TIDY_PROMPT`, `DEFAULT_NORMALIZE_PROMPT`) with `DEFAULT_REFINE_PROMPT`
+- Replaced 3-method `CollationLlm` trait with single `refine()` method returning `Vec<RefineAction>`
+- `RefineAction` is a `#[serde(tag = "action")]` enum with `Merge`, `Split`, `Update` variants — the LLM returns a JSON array of actions it wants to take
+- Added context entries: vector store centroid search fetches up to 10 non-candidate entries near each cluster for reference (labeled `[CONTEXT]` in the prompt, read-only)
+- Added `Update` action type — in-place rewrite of summary/tags/confidence without creating new entries
+- Every action requires a `reason` field that goes directly into changelog entries
+- Validation guards: merge requires ≥2 sources, split requires ≥2 results, only candidate entries can be acted on, confidence clamped to [0.0, 1.0]
+- `run()` signature takes 1 template instead of 3; `CollationOutcome` fields renamed to `refine_merges`, `refine_splits`, `refine_updates`, `refine_kept`
+
+**Why:** Live testing on real character data revealed three fundamental flaws in the multi-phase approach:
+1. **Merge-then-split churn**: Phase 1 merged entries → Phase 2 split them → next run merged them back. The phases fought each other in a loop.
+2. **Dangerous entity normalization**: Phase 3 merged "christina" (ex-girlfriend) into "christine" (mother) because it only saw name/type pairs with no semantic context. This is a data-corruption-level bug.
+3. **Narrow isolated decisions**: Each LLM phase lacked context about what the other phases did. The collate phase might merge entries that the tidy phase would then immediately split.
+
+A single holistic call lets the LLM see all candidates + nearby context and make coherent merge/split/update decisions in one pass.
+
+**Trade-off:** The single prompt is larger (candidates + context entries), increasing token cost per call. Accepted because: (a) the multi-phase approach made 3 separate LLM calls anyway, (b) context entries provide critical disambiguation that prevents data corruption, (c) batch_limit caps total candidates per run. Entity normalization is permanently dropped — the risk of incorrect merges (christina→christine) outweighs the benefit of consistent naming.

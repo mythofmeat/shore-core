@@ -535,7 +535,6 @@ impl CompactionManager {
                 source: "summary".to_string(),
                 reason: "compaction".to_string(),
                 status: "active".to_string(),
-                canonical: false,
                 confidence: ce.confidence,
                 summary_text: ce.summary_text.clone(),
                 topic_tags: ce.topic_tags.clone(),

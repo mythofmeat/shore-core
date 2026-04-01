@@ -13,27 +13,15 @@ use shore_config::models::ResolvedModel;
 use shore_llm_client::types::ContentBlock;
 use shore_llm_client::LlmClient;
 
-use super::collation::{
-    CollateMerge, CollationError, CollationLlm, EntityNormalization, TidySplit,
-};
+use super::collation::{CollationError, CollationLlm, RefineAction};
 
 // ---------------------------------------------------------------------------
-// JSON response wrappers (top-level envelope only)
+// JSON response wrapper
 // ---------------------------------------------------------------------------
 
 #[derive(Deserialize)]
-struct TidyResponse {
-    splits: Vec<TidySplit>,
-}
-
-#[derive(Deserialize)]
-struct CollateResponse {
-    merges: Vec<CollateMerge>,
-}
-
-#[derive(Deserialize)]
-struct NormalizeResponse {
-    normalizations: Vec<EntityNormalization>,
+struct RefineResponse {
+    actions: Vec<RefineAction>,
 }
 
 // ---------------------------------------------------------------------------
@@ -111,10 +99,10 @@ impl RealCollationLlm {
 }
 
 impl CollationLlm for RealCollationLlm {
-    fn tidy(
+    fn refine(
         &self,
         prompt: &str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<TidySplit>, CollationError>> + Send + '_>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<RefineAction>, CollationError>> + Send + '_>> {
         let prompt = prompt.to_string();
         Box::pin(async move {
             let raw = self.generate(&prompt).await?;
@@ -122,55 +110,12 @@ impl CollationLlm for RealCollationLlm {
             if json_str.is_empty() {
                 return Ok(vec![]);
             }
-            let resp: TidyResponse = serde_json::from_str(json_str)
+            let resp: RefineResponse = serde_json::from_str(json_str)
                 .map_err(|e| CollationError::Llm(format!(
-                    "failed to parse tidy JSON: {e}\nraw response: {}",
+                    "failed to parse refine JSON: {e}\nraw response: {}",
                     truncate_raw(&raw, 500),
                 )))?;
-            Ok(resp.splits)
-        })
-    }
-
-    fn collate(
-        &self,
-        prompt: &str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<CollateMerge>, CollationError>> + Send + '_>> {
-        let prompt = prompt.to_string();
-        Box::pin(async move {
-            let raw = self.generate(&prompt).await?;
-            let json_str = extract_json(&raw);
-            if json_str.is_empty() {
-                return Ok(vec![]);
-            }
-            let resp: CollateResponse = serde_json::from_str(json_str)
-                .map_err(|e| CollationError::Llm(format!(
-                    "failed to parse collate JSON: {e}\nraw response: {}",
-                    truncate_raw(&raw, 500),
-                )))?;
-            Ok(resp.merges)
-        })
-    }
-
-    fn normalize_entities(
-        &self,
-        prompt: &str,
-    ) -> Pin<
-        Box<dyn Future<Output = Result<Vec<EntityNormalization>, CollationError>> + Send + '_>,
-    > {
-        let prompt = prompt.to_string();
-        Box::pin(async move {
-            let raw = self.generate(&prompt).await?;
-            let json_str = extract_json(&raw);
-            if json_str.is_empty() {
-                return Ok(vec![]);
-            }
-            let resp: NormalizeResponse = serde_json::from_str(json_str).map_err(|e| {
-                CollationError::Llm(format!(
-                    "failed to parse normalize JSON: {e}\nraw response: {}",
-                    truncate_raw(&raw, 500),
-                ))
-            })?;
-            Ok(resp.normalizations)
+            Ok(resp.actions)
         })
     }
 }
@@ -185,57 +130,89 @@ mod tests {
 
     #[test]
     fn extract_json_plain() {
-        let input = r#"{"splits":[]}"#;
-        assert_eq!(extract_json(input), r#"{"splits":[]}"#);
+        let input = r#"{"actions":[]}"#;
+        assert_eq!(extract_json(input), r#"{"actions":[]}"#);
     }
 
     #[test]
     fn extract_json_fenced() {
-        let input = "```json\n{\"splits\":[]}\n```";
-        assert_eq!(extract_json(input), r#"{"splits":[]}"#);
+        let input = "```json\n{\"actions\":[]}\n```";
+        assert_eq!(extract_json(input), r#"{"actions":[]}"#);
     }
 
     #[test]
     fn extract_json_fenced_no_lang() {
-        let input = "```\n{\"merges\":[]}\n```";
-        assert_eq!(extract_json(input), r#"{"merges":[]}"#);
+        let input = "```\n{\"actions\":[]}\n```";
+        assert_eq!(extract_json(input), r#"{"actions":[]}"#);
     }
 
     #[test]
     fn extract_json_with_whitespace() {
-        let input = "  \n  {\"splits\":[]}  \n  ";
-        assert_eq!(extract_json(input), r#"{"splits":[]}"#);
+        let input = "  \n  {\"actions\":[]}  \n  ";
+        assert_eq!(extract_json(input), r#"{"actions":[]}"#);
     }
 
     #[test]
-    fn parse_tidy_response() {
-        let json = r#"{"splits":[{"original_entry_id":"e1","replacements":[{"summary_text":"fact","topic_tags":"tag","topic_key":"key","confidence":0.9}]}]}"#;
-        let resp: TidyResponse = serde_json::from_str(json).unwrap();
-        assert_eq!(resp.splits.len(), 1);
-        assert_eq!(resp.splits[0].original_entry_id, "e1");
-        assert_eq!(resp.splits[0].replacements.len(), 1);
+    fn parse_refine_response_merge() {
+        let json = r#"{"actions":[{"action":"merge","source_entry_ids":["e1","e2"],"result":{"summary_text":"combined","topic_tags":"t","topic_key":"k","confidence":0.85},"reason":"dup"}]}"#;
+        let resp: RefineResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.actions.len(), 1);
+        match &resp.actions[0] {
+            RefineAction::Merge { source_entry_ids, result, reason } => {
+                assert_eq!(source_entry_ids, &vec!["e1", "e2"]);
+                assert_eq!(result.summary_text, "combined");
+                assert_eq!(reason, "dup");
+            }
+            _ => panic!("expected merge"),
+        }
     }
 
     #[test]
-    fn parse_collate_response() {
-        let json = r#"{"merges":[{"source_entry_ids":["e1","e2"],"merged_summary":"combined","merged_topic_tags":"t","merged_topic_key":"k","merged_confidence":0.85}]}"#;
-        let resp: CollateResponse = serde_json::from_str(json).unwrap();
-        assert_eq!(resp.merges.len(), 1);
-        assert_eq!(resp.merges[0].source_entry_ids, vec!["e1", "e2"]);
+    fn parse_refine_response_split() {
+        let json = r#"{"actions":[{"action":"split","source_entry_id":"e1","results":[{"summary_text":"a","topic_tags":"t","topic_key":"k","confidence":0.9},{"summary_text":"b","topic_tags":"t","topic_key":"k","confidence":0.8}],"reason":"broad"}]}"#;
+        let resp: RefineResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.actions.len(), 1);
+        match &resp.actions[0] {
+            RefineAction::Split { source_entry_id, results, .. } => {
+                assert_eq!(source_entry_id, "e1");
+                assert_eq!(results.len(), 2);
+            }
+            _ => panic!("expected split"),
+        }
     }
 
     #[test]
-    fn parse_normalize_response() {
-        let json = r#"{"normalizations":[{"canonical_name":"Bob","duplicate_names":["Bobby","Robert"]}]}"#;
-        let resp: NormalizeResponse = serde_json::from_str(json).unwrap();
-        assert_eq!(resp.normalizations.len(), 1);
-        assert_eq!(resp.normalizations[0].duplicate_names.len(), 2);
+    fn parse_refine_response_update() {
+        let json = r#"{"actions":[{"action":"update","entry_id":"e1","result":{"summary_text":"better","topic_tags":"t","topic_key":"k","confidence":0.9},"reason":"clarity"}]}"#;
+        let resp: RefineResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.actions.len(), 1);
+        match &resp.actions[0] {
+            RefineAction::Update { entry_id, result, reason } => {
+                assert_eq!(entry_id, "e1");
+                assert_eq!(result.summary_text, "better");
+                assert_eq!(reason, "clarity");
+            }
+            _ => panic!("expected update"),
+        }
     }
 
     #[test]
-    fn parse_empty_responses() {
-        let _: TidyResponse = serde_json::from_str(r#"{"splits":[]}"#).unwrap();
-        let _: CollateResponse = serde_json::from_str(r#"{"merges":[]}"#).unwrap();
-        let _: NormalizeResponse = serde_json::from_str(r#"{"normalizations":[]}"#).unwrap();
+    fn parse_refine_response_mixed() {
+        let json = r#"{"actions":[
+            {"action":"merge","source_entry_ids":["e1","e2"],"result":{"summary_text":"m","topic_tags":"t","topic_key":"k","confidence":0.9},"reason":"r"},
+            {"action":"split","source_entry_id":"e3","results":[{"summary_text":"a","topic_tags":"t","topic_key":"k","confidence":0.9}],"reason":"r"},
+            {"action":"update","entry_id":"e4","result":{"summary_text":"u","topic_tags":"t","topic_key":"k","confidence":0.9},"reason":"r"}
+        ]}"#;
+        let resp: RefineResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.actions.len(), 3);
+        assert!(matches!(&resp.actions[0], RefineAction::Merge { .. }));
+        assert!(matches!(&resp.actions[1], RefineAction::Split { .. }));
+        assert!(matches!(&resp.actions[2], RefineAction::Update { .. }));
+    }
+
+    #[test]
+    fn parse_refine_response_empty() {
+        let resp: RefineResponse = serde_json::from_str(r#"{"actions":[]}"#).unwrap();
+        assert!(resp.actions.is_empty());
     }
 }

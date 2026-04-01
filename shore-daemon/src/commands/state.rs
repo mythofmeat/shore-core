@@ -2,13 +2,13 @@ use serde_json::json;
 use shore_protocol::error::ErrorCode;
 use shore_protocol::types::{ContentBlock, Role};
 
-use shore_config::resolve_prompt_template;
+use shore_config::{resolve_prompt_template, load_character_definition, resolve_user_definition};
 use crate::engine::ConversationEngine;
 use crate::memory::agent::{AgentSearchContext, CallerIdentity, MemoryAgent, RealAgentIndexer};
 use crate::memory::agent_llm::RealAgentLlm;
 use crate::memory::collation::{
     CollationConfig as LibCollationConfig, CollationError, CollationManager, CollationOutcome,
-    DEFAULT_COLLATE_PROMPT, DEFAULT_NORMALIZE_PROMPT, DEFAULT_TIDY_PROMPT,
+    DEFAULT_REFINE_PROMPT,
 };
 use crate::memory::collation_impls::RealCollationLlm;
 use crate::memory::compaction::{
@@ -666,24 +666,12 @@ pub async fn compact(
                 if let Some(cmodel) = collation_model {
                     let collation_llm =
                         RealCollationLlm::new(ctx.llm_client.clone(), cmodel);
-                    let tidy_template = resolve_prompt_template(
+                    let refine_template = resolve_prompt_template(
                         &ctx.config.dirs.config,
                         &char_name,
-                        "tidy.md",
+                        "refine.md",
                     )
-                    .unwrap_or_else(|| DEFAULT_TIDY_PROMPT.to_string());
-                    let collate_template = resolve_prompt_template(
-                        &ctx.config.dirs.config,
-                        &char_name,
-                        "collate.md",
-                    )
-                    .unwrap_or_else(|| DEFAULT_COLLATE_PROMPT.to_string());
-                    let normalize_template = resolve_prompt_template(
-                        &ctx.config.dirs.config,
-                        &char_name,
-                        "normalize.md",
-                    )
-                    .unwrap_or_else(|| DEFAULT_NORMALIZE_PROMPT.to_string());
+                    .unwrap_or_else(|| DEFAULT_REFINE_PROMPT.to_string());
 
                     let collation_mgr = CollationManager::new(LibCollationConfig::default());
                     let collation_limit = ctx.config.app.memory.collation.batch_limit;
@@ -701,13 +689,17 @@ pub async fn compact(
                     let mut collation_vars = std::collections::HashMap::new();
                     collation_vars.insert("char".to_string(), char_name.clone());
                     collation_vars.insert("user".to_string(), display_name.clone());
+                    if let Some(cd) = load_character_definition(&ctx.config.dirs.config, &char_name) {
+                        collation_vars.insert("char_description".to_string(), cd);
+                    }
+                    if let Some(ud) = resolve_user_definition(&ctx.config.dirs.config, &char_name) {
+                        collation_vars.insert("user_description".to_string(), ud);
+                    }
                     match collation_mgr
                         .run(
                             &db,
                             &collation_llm,
-                            &tidy_template,
-                            &collate_template,
-                            &normalize_template,
+                            &refine_template,
                             &collation_vars,
                             collation_indexer.as_ref().map(|i| i as &dyn crate::memory::agent::AgentIndexer),
                             collation_search_ctx.as_ref().map(|ctx| &ctx.vector_store),
@@ -717,11 +709,11 @@ pub async fn compact(
                     {
                         Ok(outcome) => Some(json!({
                             "timestamps_backfilled": outcome.timestamps_backfilled,
-                            "tidy_splits": outcome.tidy_splits,
-                            "tidy_new_entries": outcome.tidy_new_entries,
-                            "collate_merges": outcome.collate_merges,
-                            "collate_new_entries": outcome.collate_new_entries,
-                            "entities_normalized": outcome.entities_normalized,
+                            "refine_merges": outcome.refine_merges,
+                            "refine_splits": outcome.refine_splits,
+                            "refine_updates": outcome.refine_updates,
+                            "refine_new_entries": outcome.refine_new_entries,
+                            "refine_kept": outcome.refine_kept,
                             "entries_decayed": outcome.entries_decayed,
                             "entries_skipped": outcome.entries_skipped,
                         })),
@@ -852,15 +844,9 @@ pub async fn collate(
 
     let llm = RealCollationLlm::new(ctx.llm_client.clone(), model);
 
-    // Resolve prompt templates.
-    let tidy_template = resolve_prompt_template(&ctx.config.dirs.config, &char_name, "tidy.md")
-        .unwrap_or_else(|| DEFAULT_TIDY_PROMPT.to_string());
-    let collate_template =
-        resolve_prompt_template(&ctx.config.dirs.config, &char_name, "collate.md")
-            .unwrap_or_else(|| DEFAULT_COLLATE_PROMPT.to_string());
-    let normalize_template =
-        resolve_prompt_template(&ctx.config.dirs.config, &char_name, "normalize.md")
-            .unwrap_or_else(|| DEFAULT_NORMALIZE_PROMPT.to_string());
+    // Resolve prompt template.
+    let refine_template = resolve_prompt_template(&ctx.config.dirs.config, &char_name, "refine.md")
+        .unwrap_or_else(|| DEFAULT_REFINE_PROMPT.to_string());
 
     let mgr = CollationManager::new(LibCollationConfig::default());
 
@@ -895,6 +881,12 @@ pub async fn collate(
     let mut collation_vars = std::collections::HashMap::new();
     collation_vars.insert("char".to_string(), char_name.clone());
     collation_vars.insert("user".to_string(), collation_display_name);
+    if let Some(cd) = load_character_definition(&ctx.config.dirs.config, &char_name) {
+        collation_vars.insert("char_description".to_string(), cd);
+    }
+    if let Some(ud) = resolve_user_definition(&ctx.config.dirs.config, &char_name) {
+        collation_vars.insert("user_description".to_string(), ud);
+    }
 
     const MAX_PASSES: usize = 10;
     let mut total = CollationOutcome::default();
@@ -904,7 +896,7 @@ pub async fn collate(
         passes += 1;
         let outcome = mgr
             .run(
-                &db, &llm, &tidy_template, &collate_template, &normalize_template, &collation_vars,
+                &db, &llm, &refine_template, &collation_vars,
                 indexer.as_ref().map(|i| i as &dyn crate::memory::agent::AgentIndexer),
                 search_ctx.as_ref().map(|ctx| &ctx.vector_store),
                 Some(limit),
@@ -913,16 +905,16 @@ pub async fn collate(
             .map_err(collation_err)?;
 
         total.timestamps_backfilled += outcome.timestamps_backfilled;
-        total.tidy_splits += outcome.tidy_splits;
-        total.tidy_new_entries += outcome.tidy_new_entries;
-        total.collate_merges += outcome.collate_merges;
-        total.collate_new_entries += outcome.collate_new_entries;
-        total.entities_normalized += outcome.entities_normalized;
+        total.refine_merges += outcome.refine_merges;
+        total.refine_splits += outcome.refine_splits;
+        total.refine_updates += outcome.refine_updates;
+        total.refine_new_entries += outcome.refine_new_entries;
+        total.refine_kept += outcome.refine_kept;
         total.entries_decayed += outcome.entries_decayed;
         total.entries_skipped += outcome.entries_skipped;
 
         if !full_mode
-            || (outcome.collate_merges == 0 && outcome.tidy_splits == 0)
+            || (outcome.refine_merges == 0 && outcome.refine_splits == 0 && outcome.refine_updates == 0)
             || passes >= MAX_PASSES
         {
             break;
@@ -934,11 +926,11 @@ pub async fn collate(
         "character": char_name,
         "passes": passes,
         "timestamps_backfilled": total.timestamps_backfilled,
-        "tidy_splits": total.tidy_splits,
-        "tidy_new_entries": total.tidy_new_entries,
-        "collate_merges": total.collate_merges,
-        "collate_new_entries": total.collate_new_entries,
-        "entities_normalized": total.entities_normalized,
+        "refine_merges": total.refine_merges,
+        "refine_splits": total.refine_splits,
+        "refine_updates": total.refine_updates,
+        "refine_new_entries": total.refine_new_entries,
+        "refine_kept": total.refine_kept,
         "entries_decayed": total.entries_decayed,
         "entries_skipped": total.entries_skipped,
     }))
@@ -1527,7 +1519,6 @@ model_id = "gpt-4o"
             source: "test".into(),
             reason: "test".into(),
             status: "active".into(),
-            canonical: false,
             confidence: 0.9,
             summary_text: "Test entry".into(),
             topic_tags: "test".into(),

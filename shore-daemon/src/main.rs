@@ -6,13 +6,12 @@ use shore_daemon::autonomy::manager::AutonomyManager;
 use shore_daemon::characters::CharacterRegistry;
 use shore_daemon::commands::{CommandContext, SessionTokens};
 use shore_diagnostics::Diagnostics;
-use shore_config::{load_config, resolve_prompt_template, LoadedConfig};
+use shore_config::{load_config, load_character_definition, resolve_prompt_template, resolve_user_definition, LoadedConfig};
 use shore_daemon::handler::MessageHandler;
 use shore_llm_client::LlmClient;
 use shore_daemon::notifications::NotificationService;
 use shore_daemon::memory::collation::{
-    CollationConfig as LibCollationConfig, CollationManager, DEFAULT_COLLATE_PROMPT,
-    DEFAULT_NORMALIZE_PROMPT, DEFAULT_TIDY_PROMPT,
+    CollationConfig as LibCollationConfig, CollationManager, DEFAULT_REFINE_PROMPT,
 };
 use shore_daemon::memory::collation_impls::RealCollationLlm;
 use shore_daemon::commands::state::resolve_collation_model;
@@ -454,14 +453,9 @@ async fn run_collation(
 
     let llm = RealCollationLlm::new(llm_client.clone(), model);
 
-    // Resolve prompt templates.
-    let tidy_template = resolve_prompt_template(&config.dirs.config, character, "tidy.md")
-        .unwrap_or_else(|| DEFAULT_TIDY_PROMPT.to_string());
-    let collate_template = resolve_prompt_template(&config.dirs.config, character, "collate.md")
-        .unwrap_or_else(|| DEFAULT_COLLATE_PROMPT.to_string());
-    let normalize_template =
-        resolve_prompt_template(&config.dirs.config, character, "normalize.md")
-            .unwrap_or_else(|| DEFAULT_NORMALIZE_PROMPT.to_string());
+    // Resolve prompt template.
+    let refine_template = resolve_prompt_template(&config.dirs.config, character, "refine.md")
+        .unwrap_or_else(|| DEFAULT_REFINE_PROMPT.to_string());
 
     let mgr = CollationManager::new(LibCollationConfig::default());
     let collation_limit = config.app.memory.collation.batch_limit;
@@ -493,10 +487,16 @@ async fn run_collation(
     let mut collation_vars = std::collections::HashMap::new();
     collation_vars.insert("char".to_string(), character.to_string());
     collation_vars.insert("user".to_string(), collation_display_name);
+    if let Some(cd) = load_character_definition(&config.dirs.config, character) {
+        collation_vars.insert("char_description".to_string(), cd);
+    }
+    if let Some(ud) = resolve_user_definition(&config.dirs.config, character) {
+        collation_vars.insert("user_description".to_string(), ud);
+    }
 
     let outcome = mgr
         .run(
-            &db, &llm, &tidy_template, &collate_template, &normalize_template, &collation_vars,
+            &db, &llm, &refine_template, &collation_vars,
             indexer.as_ref().map(|i| i as &dyn shore_daemon::memory::agent::AgentIndexer),
             search_ctx.as_ref().map(|ctx| &ctx.vector_store),
             Some(collation_limit),
@@ -505,9 +505,9 @@ async fn run_collation(
 
     info!(
         character = %character,
-        tidy_splits = outcome.tidy_splits,
-        collate_merges = outcome.collate_merges,
-        entities_normalized = outcome.entities_normalized,
+        refine_merges = outcome.refine_merges,
+        refine_splits = outcome.refine_splits,
+        refine_updates = outcome.refine_updates,
         entries_decayed = outcome.entries_decayed,
         "Auto-collation completed"
     );
