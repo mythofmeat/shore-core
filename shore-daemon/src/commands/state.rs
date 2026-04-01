@@ -574,21 +574,12 @@ pub async fn compact(
     )
     .unwrap_or_else(|| DEFAULT_COMPACT_PROMPT.to_string());
 
-    // Resolve model: memory_agent -> active_model -> first_chat_model.
+    // Resolve model: always use the active conversation model.
     let model = ctx
-        .config
-        .app
-        .defaults
-        .memory_agent
+        .active_model
         .as_deref()
         .and_then(|name| ctx.config.models.find_model(name).ok())
-        .or_else(|| {
-            ctx.active_model
-                .as_deref()
-                .and_then(|name| ctx.config.models.find_model(name).ok())
-        })
-        .or_else(|| ctx.config.models.first_chat_model())
-        .ok_or_else(|| (ErrorCode::InternalError, "No model configured".to_string()))?
+        .ok_or_else(|| (ErrorCode::InternalError, "No active model for compaction".to_string()))?
         .clone();
 
     // Resolve embedding config.

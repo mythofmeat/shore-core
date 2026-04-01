@@ -323,23 +323,14 @@ async fn run_compaction(
     let prompt_template = resolve_prompt_template(&config.dirs.config, character, "compact.md")
         .unwrap_or_else(|| DEFAULT_COMPACT_PROMPT.to_string());
 
-    // Resolve model.
+    // Resolve model: use defaults.model for background compaction.
     let model = config
         .app
         .defaults
-        .memory_agent
+        .model
         .as_deref()
         .and_then(|name| config.models.find_model(name).ok())
-        .or_else(|| {
-            config
-                .app
-                .defaults
-                .model
-                .as_deref()
-                .and_then(|name| config.models.find_model(name).ok())
-        })
-        .or_else(|| config.models.first_chat_model())
-        .ok_or("No model configured")?
+        .ok_or("No default model configured for background compaction")?
         .clone();
 
     // Resolve embedding config.
