@@ -9,10 +9,9 @@ use crate::state;
 
 /// Execute the CLI command by connecting to the daemon and dispatching.
 pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
-    // Handle local-only commands that don't need a daemon connection.
+    // config --path: query the daemon for its actual config dir, fall back to local.
     if matches!(&cli.command, CliCommand::Config { path: true, .. }) {
-        print_config_path();
-        return Ok(());
+        return print_config_path(&cli).await;
     }
     if let CliCommand::Character { name: Some(name), new: true, .. } = &cli.command {
         return handle_create_character(name);
@@ -414,9 +413,29 @@ fn config_dir() -> std::path::PathBuf {
     shore_config::config_dir()
 }
 
-/// Print the config directory path and exit.
-fn print_config_path() {
-    println!("{}", config_dir().display());
+/// Print the config directory path by querying the daemon.
+/// Falls back to local resolution if the daemon is unreachable.
+async fn print_config_path(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
+    let addr = resolve_addr(cli);
+    let character = cli.character.clone().or_else(state::read_active_character);
+
+    match SWPConnection::connect(&addr, "cli", "shore-cli", character).await {
+        Ok((mut conn, _hello, _history)) => {
+            conn.send_command("status", serde_json::json!({})).await?;
+            let data = recv_command_data(&mut conn).await?;
+            if let Some(dir) = data["config_dir"].as_str() {
+                println!("{dir}");
+            } else {
+                println!("{}", config_dir().display());
+            }
+            Ok(())
+        }
+        Err(_) => {
+            eprintln!("(no daemon running — showing local config dir)");
+            println!("{}", config_dir().display());
+            Ok(())
+        }
+    }
 }
 
 /// Read all of stdin to a string (for piped input).

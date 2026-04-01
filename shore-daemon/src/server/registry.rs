@@ -38,6 +38,8 @@ impl Registry {
     }
 
     /// Read-modify-write under an exclusive file lock.
+    ///
+    /// Automatically prunes entries whose PID is no longer alive.
     fn with_locked<F>(&self, f: F) -> std::io::Result<()>
     where
         F: FnOnce(&mut Vec<InstanceInfo>) -> std::io::Result<()>,
@@ -63,6 +65,9 @@ impl Registry {
                 serde_json::from_str(&content).unwrap_or_default()
             }
         };
+
+        // Prune entries whose PID is no longer alive.
+        entries.retain(|e| pid_alive(e.pid));
 
         f(&mut entries)?;
 
@@ -91,25 +96,44 @@ impl Registry {
         })
     }
 
-    /// List all registered instances.
+    /// List all registered instances, pruning any with dead PIDs.
     pub fn list(&self) -> std::io::Result<Vec<InstanceInfo>> {
         if !self.path.exists() {
             return Ok(Vec::new());
         }
 
-        let lock_file = std::fs::OpenOptions::new().read(true).open(&self.path)?;
-        lock_file.lock_shared()?;
+        // Use exclusive lock so we can prune stale entries.
+        let lock_file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&self.path)?;
+        lock_file.lock_exclusive()?;
 
         let content = std::fs::read_to_string(&self.path)?;
-        let entries: Vec<InstanceInfo> = if content.trim().is_empty() {
+        let mut entries: Vec<InstanceInfo> = if content.trim().is_empty() {
             Vec::new()
         } else {
             serde_json::from_str(&content).unwrap_or_default()
         };
 
+        let before = entries.len();
+        entries.retain(|e| pid_alive(e.pid));
+
+        // Write back if we pruned anything.
+        if entries.len() != before {
+            let json = serde_json::to_string_pretty(&entries)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+            std::fs::write(&self.path, json)?;
+        }
+
         lock_file.unlock()?;
         Ok(entries)
     }
+}
+
+/// Check whether a PID is still alive.
+fn pid_alive(pid: u32) -> bool {
+    Path::new(&format!("/proc/{pid}")).exists()
 }
 
 #[cfg(test)]

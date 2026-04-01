@@ -59,6 +59,8 @@ pub fn status(engine: &ConversationEngine, ctx: &CommandContext) -> CommandResul
         "character": engine.character_name(),
         "message_count": engine.message_count(),
         "active_model": effective_model,
+        "config_dir": ctx.config.dirs.config.display().to_string(),
+        "data_dir": ctx.config.dirs.data.display().to_string(),
         "tokens": {
             "input": tokens.input,
             "output": tokens.output,
