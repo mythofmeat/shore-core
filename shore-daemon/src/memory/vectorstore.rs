@@ -66,11 +66,9 @@ pub struct VectorStore {
 }
 
 impl VectorStore {
-    /// Default path: `$XDG_DATA_HOME/shore/{character}/memory/vectorstore/`
+    /// Default path: `$SHORE_DATA_DIR/{character}/memory/vectorstore/`
     pub fn default_path(character: &str) -> PathBuf {
-        let data_dir = dirs::data_dir().unwrap_or_else(|| PathBuf::from(".local/share"));
-        data_dir
-            .join("shore")
+        shore_config::data_dir()
             .join(character)
             .join("memory")
             .join("vectorstore")

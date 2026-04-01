@@ -20,15 +20,10 @@ pub struct Registry {
 
 impl Registry {
     /// Create a registry using the default path:
-    /// `$XDG_RUNTIME_DIR/shore/instances.json` (or `/tmp/shore/instances.json`).
+    /// `$SHORE_RUNTIME_DIR/instances.json` (or `/tmp/shore/instances.json`).
     pub fn default_path() -> Self {
-        let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
-            .ok()
-            .map(PathBuf::from)
-            .or_else(dirs::runtime_dir)
-            .unwrap_or_else(std::env::temp_dir);
         Self {
-            path: runtime_dir.join("shore").join("instances.json"),
+            path: shore_config::runtime_dir().join("instances.json"),
         }
     }
 

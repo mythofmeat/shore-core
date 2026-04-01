@@ -320,9 +320,7 @@ impl MemoryDB {
 
     /// Resolve the default database path for a character.
     pub fn default_path(character: &str) -> PathBuf {
-        let data_dir = dirs::data_dir().unwrap_or_else(|| PathBuf::from(".local/share"));
-        data_dir
-            .join("shore")
+        shore_config::data_dir()
             .join(character)
             .join("memory")
             .join("memory.db")

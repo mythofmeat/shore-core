@@ -411,13 +411,7 @@ async fn run_memory_shell(
 
 /// Resolve the Shore config directory.
 fn config_dir() -> std::path::PathBuf {
-    let base = std::env::var("XDG_CONFIG_HOME")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| {
-            let home = std::env::var("HOME").unwrap_or_else(|_| "~".into());
-            std::path::PathBuf::from(home).join(".config")
-        });
-    base.join("shore")
+    shore_config::config_dir()
 }
 
 /// Print the config directory path and exit.

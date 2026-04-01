@@ -9,6 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 shore-protocol = { path = "../shore-protocol" }
+shore-config = { path = "../shore-config" }
 shore-client = { path = "../shore-client" }
 clap = { version = "4", features = ["derive", "env"] }
 clap_complete = "4"

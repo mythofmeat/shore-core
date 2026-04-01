@@ -155,7 +155,7 @@ fn provision_state_detects_homeserver_mismatch() {
 
 #[test]
 fn character_paths_xdg_structure() {
-    let base = PathBuf::from("/home/test/.local/share");
+    let base = PathBuf::from("/home/test/.local/share/shore");
     let paths = CharacterPaths::with_base(base, "alice");
 
     assert_eq!(
