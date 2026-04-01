@@ -641,6 +641,11 @@ pub struct NotificationsConfig {
     #[serde(default)]
     pub command: CommandNotifyConfig,
 
+    /// Only fire `message_complete` notifications when generation takes longer
+    /// than this many seconds. 0 means always notify.
+    #[serde(default)]
+    pub generation_threshold_secs: u64,
+
     /// Per-event toggles.
     #[serde(default)]
     pub events: NotificationEventsConfig,
@@ -653,6 +658,7 @@ impl Default for NotificationsConfig {
             backend: NotificationBackend::default(),
             ntfy: NtfyConfig::default(),
             command: CommandNotifyConfig::default(),
+            generation_threshold_secs: 0,
             events: NotificationEventsConfig::default(),
         }
     }
@@ -736,6 +742,8 @@ pub struct NotificationEventsConfig {
     pub collation_complete: bool,
     #[serde(default = "default_true")]
     pub error: bool,
+    #[serde(default)]
+    pub message_complete: bool,
 }
 
 impl Default for NotificationEventsConfig {
@@ -746,6 +754,7 @@ impl Default for NotificationEventsConfig {
             compaction_complete: true,
             collation_complete: true,
             error: true,
+            message_complete: false,
         }
     }
 }

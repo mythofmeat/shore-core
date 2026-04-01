@@ -122,6 +122,8 @@ struct GenContext {
     session_tokens: Arc<std::sync::Mutex<SessionTokens>>,
     /// In-memory diagnostics ring buffers.
     diagnostics: Arc<std::sync::Mutex<shore_diagnostics::Diagnostics>>,
+    /// Push notification service.
+    notifier: NotificationService,
 }
 
 // ── MessageHandler ────────────────────────────────────────────────────
@@ -291,6 +293,7 @@ impl MessageHandler {
             compaction_occurred: self.compaction_occurred.clone(),
             session_tokens: self.cmd_ctx.session_tokens.clone(),
             diagnostics: self.cmd_ctx.diagnostics.clone(),
+            notifier: self.notifier.clone(),
         }
     }
 
@@ -811,6 +814,12 @@ async fn handle_generation(
         engine.append_message(assistant_msg)?;
         ctx.autonomy.notify_assistant_message(&char_name, engine.turn_count());
     } // engine lock released
+
+    ctx.notifier.notify_message_complete(
+        &format!("Shore — {char_name}"),
+        &format!("Response complete ({:.1}s)", result.timing.total_ms as f64 / 1000.0),
+        result.timing.total_ms,
+    );
 
     Ok(())
 }

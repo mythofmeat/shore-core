@@ -98,12 +98,15 @@ model = "claude-sonnet"            # Must match a key in [chat.*.*] below
 # [notifications.command]
 # template = ""  # Shell command; use {title} and {body} as placeholders
 
+# generation_threshold_secs = 0  # Only notify message_complete when generation exceeds this (0 = always)
+
 # [notifications.events]
 # autonomous_message = true
 # cache_warning = true
 # compaction_complete = true
 # collation_complete = true
 # error = true
+# message_complete = false  # Notify when message generation completes
 
 # ── Connections ──────────────────────────────────────────────────────────
 
