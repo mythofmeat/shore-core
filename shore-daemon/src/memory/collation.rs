@@ -44,22 +44,13 @@ impl Default for CollationConfig {
 // Error type
 // ---------------------------------------------------------------------------
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum CollationError {
+    #[error("llm: {0}")]
     Llm(String),
+    #[error("db: {0}")]
     Db(String),
 }
-
-impl std::fmt::Display for CollationError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            CollationError::Llm(e) => write!(f, "llm: {e}"),
-            CollationError::Db(e) => write!(f, "db: {e}"),
-        }
-    }
-}
-
-impl std::error::Error for CollationError {}
 
 // ---------------------------------------------------------------------------
 // LLM response types

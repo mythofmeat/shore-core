@@ -107,32 +107,23 @@ pub struct RetentionParams {
 // Error type
 // ---------------------------------------------------------------------------
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum CompactionError {
+    #[error("llm: {0}")]
     Llm(String),
+    #[error("db: {0}")]
     Db(String),
+    #[error("parse: {0}")]
     Parse(String),
+    #[error("private conversation: skipped")]
     PrivateConversation,
+    #[error("insufficient messages")]
     InsufficientMessages,
+    #[error("indexing: {0}")]
     Indexing(String),
+    #[error("conversation: {0}")]
     ConversationManager(String),
 }
-
-impl std::fmt::Display for CompactionError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            CompactionError::Llm(e) => write!(f, "llm: {e}"),
-            CompactionError::Db(e) => write!(f, "db: {e}"),
-            CompactionError::Parse(e) => write!(f, "parse: {e}"),
-            CompactionError::PrivateConversation => write!(f, "private conversation: skipped"),
-            CompactionError::InsufficientMessages => write!(f, "insufficient messages"),
-            CompactionError::Indexing(e) => write!(f, "indexing: {e}"),
-            CompactionError::ConversationManager(e) => write!(f, "conversation: {e}"),
-        }
-    }
-}
-
-impl std::error::Error for CompactionError {}
 
 // ---------------------------------------------------------------------------
 // Traits for external dependencies

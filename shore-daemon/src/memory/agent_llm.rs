@@ -18,24 +18,15 @@ use shore_llm_client::types::ContentBlock;
 // ---------------------------------------------------------------------------
 
 /// Errors from agent LLM calls.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum AgentLlmError {
     /// Transport/API error.
+    #[error("llm transport: {0}")]
     Transport(String),
     /// No more canned responses in mock.
+    #[error("mock: no more canned responses")]
     MockExhausted,
 }
-
-impl std::fmt::Display for AgentLlmError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            AgentLlmError::Transport(e) => write!(f, "llm transport: {e}"),
-            AgentLlmError::MockExhausted => write!(f, "mock: no more canned responses"),
-        }
-    }
-}
-
-impl std::error::Error for AgentLlmError {}
 
 // ---------------------------------------------------------------------------
 // Response

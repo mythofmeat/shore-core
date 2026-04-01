@@ -12,38 +12,17 @@ const TABLE_NAME: &str = "vectors";
 // Error type
 // ---------------------------------------------------------------------------
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum VectorStoreError {
-    Lance(lancedb::error::Error),
-    Arrow(arrow_schema::ArrowError),
+    #[error("lancedb: {0}")]
+    Lance(#[from] lancedb::error::Error),
+    #[error("arrow: {0}")]
+    Arrow(#[from] arrow_schema::ArrowError),
+    #[error("embed: {0}")]
     Embed(String),
-    Io(std::io::Error),
+    #[error("io: {0}")]
+    Io(#[from] std::io::Error),
 }
-
-impl From<lancedb::error::Error> for VectorStoreError {
-    fn from(e: lancedb::error::Error) -> Self {
-        VectorStoreError::Lance(e)
-    }
-}
-
-impl From<arrow_schema::ArrowError> for VectorStoreError {
-    fn from(e: arrow_schema::ArrowError) -> Self {
-        VectorStoreError::Arrow(e)
-    }
-}
-
-impl std::fmt::Display for VectorStoreError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            VectorStoreError::Lance(e) => write!(f, "lancedb: {e}"),
-            VectorStoreError::Arrow(e) => write!(f, "arrow: {e}"),
-            VectorStoreError::Embed(e) => write!(f, "embed: {e}"),
-            VectorStoreError::Io(e) => write!(f, "io: {e}"),
-        }
-    }
-}
-
-impl std::error::Error for VectorStoreError {}
 
 // ---------------------------------------------------------------------------
 // Result type
