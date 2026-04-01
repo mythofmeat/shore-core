@@ -146,7 +146,7 @@ enabled = false
 base_url = "https://openrouter.ai/api/v1"
 
 [chat.openrouter.haiku]
-model_id = "google/gemini-2.0-flash-001"
+model_id = "google/gemini-3.1-flash-lite-preview"
 max_tokens = 2048
 temperature = 0.3
 

@@ -61,7 +61,8 @@ pub struct AssembledPrompt {
 /// config tree into prompt assembly.
 #[derive(Debug, Clone, Default)]
 pub struct CapabilitiesConfig {
-    pub heartbeat_enabled: bool,
+    pub interiority_enabled: bool,
+    pub scratchpad_enabled: bool,
     pub memory_enabled: bool,
     pub image_memory_enabled: bool,
     pub send_image_enabled: bool,
@@ -79,11 +80,21 @@ pub struct CapabilitiesConfig {
 pub fn build_capabilities_block(config: &CapabilitiesConfig) -> Option<String> {
     let mut lines: Vec<&str> = Vec::new();
 
-    if config.heartbeat_enabled {
+    if config.interiority_enabled {
         lines.push(
-            "- You have a heartbeat system: when the user has been idle, you are \
-             prompted to optionally send a message. These messages are real and \
-             were written by you — do not deny or second-guess them.",
+            "- You have an interiority system: periodically, you get private moments \
+             to think, use tools, and write in your scratchpad. If you want to \
+             message the user during these moments, wrap your message in \
+             <sendMessage>...</sendMessage> tags. These autonomous messages are \
+             real and were written by you — do not deny or second-guess them.",
+        );
+    }
+    if config.scratchpad_enabled {
+        lines.push(
+            "- You have a scratchpad: a persistent filesystem for notes, drafts, \
+             and working memory. Use it to keep track of ongoing thoughts, plans, \
+             or anything you want to remember between conversations. Available \
+             tools: scratchpad_list, scratchpad_read, scratchpad_write, scratchpad_delete.",
         );
     }
     if config.memory_enabled {
@@ -632,13 +643,14 @@ mod tests {
         assert!(block.contains("Use your tools freely"));
         // Should NOT mention disabled tools.
         assert!(!block.contains("dice"));
-        assert!(!block.contains("heartbeat"));
+        assert!(!block.contains("interiority"));
     }
 
     #[test]
     fn capabilities_block_all_enabled() {
         let config = CapabilitiesConfig {
-            heartbeat_enabled: true,
+            interiority_enabled: true,
+            scratchpad_enabled: true,
             memory_enabled: true,
             image_memory_enabled: true,
             send_image_enabled: true,
@@ -649,7 +661,7 @@ mod tests {
             check_time_enabled: true,
         };
         let block = build_capabilities_block(&config).unwrap();
-        assert!(block.contains("heartbeat"));
+        assert!(block.contains("interiority"));
         assert!(block.contains("memory system"));
         assert!(block.contains("Image memory"));
         assert!(block.contains("send images"));

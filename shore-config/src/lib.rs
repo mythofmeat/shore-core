@@ -421,11 +421,11 @@ fn create_default_config(config_dir: &Path) {
 
 /// Validate cross-field config constraints.
 fn validate_config(app: &AppConfig, catalog: &ModelCatalog) -> Result<(), ConfigError> {
-    // Personality must be 0.0–1.0.
-    let p = app.behavior.autonomy.personality;
-    if !(0.0..=1.0).contains(&p) {
+    // Jitter factor must be 0.0–1.0.
+    let jf = app.behavior.autonomy.interiority.jitter_factor;
+    if !(0.0..=1.0).contains(&jf) {
         return Err(ConfigError::Validation(format!(
-            "behavior.autonomy.personality must be 0.0–1.0, got {p}"
+            "behavior.autonomy.interiority.jitter_factor must be 0.0–1.0, got {jf}"
         )));
     }
 
@@ -586,11 +586,10 @@ socket_path = "/tmp/shore.sock"
 
 [behavior.autonomy]
 enabled = true
-personality = 0.7
-max_unanswered = 2
 
-[behavior.autonomy.heartbeat]
+[behavior.autonomy.interiority]
 enabled = false
+interval_secs = 1800
 
 [behavior.tool_use.tools]
 roll_dice = false
@@ -623,9 +622,8 @@ model_id = "claude-opus-4-6"
             Some("/tmp/shore.sock")
         );
         assert!(loaded.app.behavior.autonomy.enabled);
-        assert_eq!(loaded.app.behavior.autonomy.personality, 0.7);
-        assert_eq!(loaded.app.behavior.autonomy.max_unanswered, 2);
-        assert!(!loaded.app.behavior.autonomy.heartbeat.enabled);
+        assert!(!loaded.app.behavior.autonomy.interiority.enabled);
+        assert_eq!(loaded.app.behavior.autonomy.interiority.interval_secs, 1800);
         assert!(!loaded.app.behavior.tool_use.tools.roll_dice);
         assert!(loaded.app.behavior.tool_use.tools.memory);
         assert!(!loaded.app.advanced.cache_invalidation_warnings);
@@ -651,18 +649,12 @@ model_id = "claude-opus-4-6"
         // All defaults should be filled in.
         assert!(loaded.app.defaults.stream);
         assert!(!loaded.app.behavior.autonomy.enabled);
-        assert_eq!(loaded.app.behavior.autonomy.personality, 0.5);
-        assert_eq!(loaded.app.behavior.autonomy.max_unanswered, 1);
-        assert_eq!(loaded.app.behavior.autonomy.max_deferral_hours, 24.0);
+        assert!(loaded.app.behavior.autonomy.interiority.enabled);
+        assert_eq!(loaded.app.behavior.autonomy.interiority.interval_secs, 3600);
+        assert_eq!(loaded.app.behavior.autonomy.interiority.jitter_factor, 0.25);
         assert!(loaded.app.behavior.tool_use.enabled);
         assert_eq!(loaded.app.memory.rag_results, 5);
         assert!(loaded.app.advanced.cache_invalidation_warnings);
-        assert_eq!(
-            loaded.app.behavior.autonomy.heartbeat.session_gap_secs,
-            1800
-        );
-        // New defaults: sub-toggles, image_enabled, tcp, retry.
-        assert!(loaded.app.behavior.autonomy.heartbeat.enabled);
         assert!(loaded.app.memory.compaction.enabled);
         assert!(loaded.app.memory.collation.enabled);
         assert!(loaded.app.memory.image_enabled);
@@ -721,19 +713,19 @@ model_id = "google/gemini-flash"
     }
 
     #[test]
-    fn invalid_personality_range() {
+    fn invalid_jitter_factor_range() {
         let tmp = setup_config_dir(&[(
             "config.toml",
             r#"
-[behavior.autonomy]
-personality = 1.5
+[behavior.autonomy.interiority]
+jitter_factor = 1.5
 "#,
         )]);
 
         let config_path = tmp.path().join("config.toml");
         let err = load_config(Some(&config_path)).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("personality"), "Should mention personality: {msg}");
+        assert!(msg.contains("jitter_factor"), "Should mention jitter_factor: {msg}");
     }
 
     #[test]
@@ -1039,7 +1031,9 @@ model = "sonnet"
 
 [behavior.autonomy]
 enabled = false
-personality = 0.5
+
+[behavior.autonomy.interiority]
+interval_secs = 3600
 
 [chat.anthropic.sonnet]
 model_id = "claude-sonnet-4-6"
@@ -1060,7 +1054,9 @@ model = "opus"
 
 [behavior.autonomy]
 enabled = true
-personality = 0.8
+
+[behavior.autonomy.interiority]
+interval_secs = 1800
 "#,
             ),
         ]);
@@ -1071,13 +1067,13 @@ personality = 0.8
         // Global config should be unchanged.
         assert_eq!(global.app.defaults.model.as_deref(), Some("sonnet"));
         assert!(!global.app.behavior.autonomy.enabled);
-        assert_eq!(global.app.behavior.autonomy.personality, 0.5);
+        assert_eq!(global.app.behavior.autonomy.interiority.interval_secs, 3600);
 
         // Character config should override specific keys.
         let alice = load_character_config(&global, "Alice").unwrap().unwrap();
         assert_eq!(alice.app.defaults.model.as_deref(), Some("opus"));
         assert!(alice.app.behavior.autonomy.enabled);
-        assert_eq!(alice.app.behavior.autonomy.personality, 0.8);
+        assert_eq!(alice.app.behavior.autonomy.interiority.interval_secs, 1800);
 
         // Models should still be available (inherited from global).
         assert!(alice.models.find_model("sonnet").is_ok());

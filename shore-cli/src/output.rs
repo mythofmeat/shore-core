@@ -760,36 +760,14 @@ fn write_row_colored(out: &mut impl Write, label: &str, value: &str, color: Colo
     let _ = writeln!(out);
 }
 
-/// Translate a heartbeat state string to a human-readable description.
-fn heartbeat_description(state: &str, data: &serde_json::Value) -> String {
-    // The daemon sends Debug-formatted state strings like "Session",
-    // "Deferred { fire_at: ..., reasoning: ... }", etc.
-    if state.starts_with("Deferred") {
-        // Try to extract fire_at for display.
-        if let Some(fire_at) = data["autonomy"]["deferred_fire_at"].as_str() {
-            return format!("plans to reach out at {fire_at}");
-        }
-        return "plans to reach out later".to_string();
-    }
+/// Translate an interiority state string to a human-readable description.
+fn interiority_description(state: &str, ticks: u64, max_ticks: u64) -> String {
     match state {
-        "Session" => "in conversation".to_string(),
-        "PostSessionProbe" => "deciding whether to reach out...".to_string(),
-        "SocialNeed" => "may reach out spontaneously".to_string(),
-        "Dormant" => "quiet — waiting for you".to_string(),
+        "Active" if ticks == 0 => "active — in conversation".to_string(),
+        "Active" => format!("active — idle {ticks}/{max_ticks} ticks"),
+        "Dormant" => "dormant — waiting for you".to_string(),
         other => other.to_string(),
     }
-}
-
-/// Render a social need bar: `████████░░  83%`
-fn format_social_need_bar(value: f64) -> String {
-    let clamped = value.clamp(0.0, 1.0);
-    let bar_width = 10;
-    let filled = (clamped * bar_width as f64).round() as usize;
-    let empty = bar_width - filled;
-    let bar: String = "█".repeat(filled);
-    let rest: String = "░".repeat(empty);
-    let pct = (clamped * 100.0).round() as u32;
-    format!("{bar}{rest}  {pct}%")
 }
 
 /// Map a normalized density (0.0–1.0) to a bar character.
@@ -893,16 +871,6 @@ fn write_activity_section(
     let _ = writeln!(out);
 }
 
-/// Choose a color for the social need bar based on value.
-fn social_need_color(value: f64) -> Color {
-    if value < 0.33 {
-        Color::Green
-    } else if value < 0.66 {
-        Color::DarkYellow
-    } else {
-        Color::Red
-    }
-}
 
 /// Print the status dashboard.
 pub fn print_status(data: &serde_json::Value, character_name: &str) {
@@ -956,46 +924,28 @@ pub fn print_status(data: &serde_json::Value, character_name: &str) {
             let suffix = if paused { "paused" } else { "" };
             write_section_header(&mut out, "Autonomy", suffix, width);
 
-            let hb_state = autonomy["heartbeat_state"].as_str().unwrap_or("Session");
-            let description = heartbeat_description(hb_state, data);
-            let dim_state = format!("{description}  ");
+            let int_state = autonomy["interiority_state"].as_str().unwrap_or("Active");
+            let ticks = autonomy["ticks_without_user"].as_u64().unwrap_or(0);
+            let max_ticks = autonomy["max_idle_ticks"].as_u64().unwrap_or(3);
+            let description = interiority_description(int_state, ticks, max_ticks);
 
-            // Heartbeat row: description + dim state label.
+            // Interiority row: description + state label.
             if use_color() {
                 let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
             }
-            let _ = write!(out, "  {:<13}", "Heartbeat");
+            let _ = write!(out, "  {:<13}", "Interiority");
             if use_color() {
                 let _ = crossterm::execute!(out, ResetColor);
             }
-            let _ = write!(out, "{dim_state}");
+            let _ = write!(out, "{description}  ");
             if use_color() {
                 let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
             }
-            let _ = write!(out, "({hb_state})");
+            let _ = write!(out, "({int_state})");
             if use_color() {
                 let _ = crossterm::execute!(out, ResetColor);
             }
             let _ = writeln!(out);
-
-            // Social need bar (only in SocialNeed state or if bar > 0).
-            let bar_value = autonomy["social_need_bar"].as_f64().unwrap_or(0.0);
-            if bar_value > 0.0 || hb_state == "SocialNeed" {
-                let bar_str = format_social_need_bar(bar_value);
-                let bar_color = social_need_color(bar_value);
-                write_row_colored(&mut out, "Social need", &bar_str, bar_color);
-            }
-
-            // Roll info (only meaningful in SocialNeed).
-            if hb_state == "SocialNeed" {
-                let tau = autonomy["tau"].as_f64().unwrap_or(0.0);
-                if tau > 0.0 {
-                    // Per-check probability with 30-min interval.
-                    let prob = 1.0 - (-1800.0_f64 / tau).exp();
-                    let pct = (prob * 100.0).min(99.9);
-                    write_row(&mut out, "Roll", &format!("{pct:.1}% / check · τ {tau:.0}s"));
-                }
-            }
 
             // Cache keepalive (only when pings > 0).
             let pings = autonomy["cache_keepalive_pings"].as_u64().unwrap_or(0);
@@ -1825,7 +1775,7 @@ pub fn print_memory_shell_response(response: &str, mutations: &str) {
     println!();
 }
 
-/// Print heartbeat event log returned by `shore log --heartbeat`.
+/// Print interiority event log returned by `shore log --heartbeat`.
 pub fn print_heartbeat_log(data: &serde_json::Value) {
     let stdout = io::stdout();
     let mut out = stdout.lock();
@@ -1834,17 +1784,17 @@ pub fn print_heartbeat_log(data: &serde_json::Value) {
     let events = match data["events"].as_array() {
         Some(arr) => arr,
         None => {
-            print_dim_line(&mut out, "(no heartbeat events)");
+            print_dim_line(&mut out, "(no interiority events)");
             return;
         }
     };
 
     if events.is_empty() {
-        print_dim_line(&mut out, "(no heartbeat events)");
+        print_dim_line(&mut out, "(no interiority events)");
         return;
     }
 
-    write_section_header(&mut out, "Heartbeat Log", &format!("{} events", events.len()), width);
+    write_section_header(&mut out, "Interiority Log", &format!("{} events", events.len()), width);
 
     let mut prev_date: Option<String> = None;
     for event in events {
@@ -1862,13 +1812,12 @@ pub fn print_heartbeat_log(data: &serde_json::Value) {
 
         // Kind label with color
         let kind_color = match kind {
-            "probe_trigger" | "probe_result" => Color::Cyan,
-            "deferred_fire" | "social_need_fire" => Color::Yellow,
+            "tick_fired" => Color::Blue,
             "message_sent" => Color::Green,
             "message_skipped" => Color::DarkGrey,
+            "tool_use" => Color::Cyan,
             "dormant" => Color::Red,
             "wake" => Color::Green,
-            "state_change" => Color::Blue,
             _ => Color::White,
         };
 
@@ -2022,38 +1971,10 @@ mod tests {
     // ── Status formatter tests ──────────────────────────────────────
 
     #[test]
-    fn heartbeat_description_maps_states() {
-        let data = serde_json::json!({});
-        assert_eq!(heartbeat_description("Session", &data), "in conversation");
-        assert_eq!(heartbeat_description("SocialNeed", &data), "may reach out spontaneously");
-        assert_eq!(heartbeat_description("Dormant", &data), "quiet — waiting for you");
-        assert_eq!(
-            heartbeat_description("PostSessionProbe", &data),
-            "deciding whether to reach out..."
-        );
-    }
-
-    #[test]
-    fn heartbeat_description_deferred() {
-        let data = serde_json::json!({
-            "autonomy": { "deferred_fire_at": "8:30 PM" }
-        });
-        let desc = heartbeat_description("Deferred { fire_at: ..., reasoning: ... }", &data);
-        assert!(desc.contains("8:30 PM"));
-    }
-
-    #[test]
-    fn social_need_bar_formatting() {
-        assert_eq!(format_social_need_bar(0.0), "░░░░░░░░░░  0%");
-        assert_eq!(format_social_need_bar(0.5), "█████░░░░░  50%");
-        assert_eq!(format_social_need_bar(1.0), "██████████  100%");
-    }
-
-    #[test]
-    fn social_need_color_ranges() {
-        assert!(matches!(social_need_color(0.1), Color::Green));
-        assert!(matches!(social_need_color(0.5), Color::DarkYellow));
-        assert!(matches!(social_need_color(0.9), Color::Red));
+    fn interiority_description_maps_states() {
+        assert_eq!(interiority_description("Active", 0, 3), "active — in conversation");
+        assert_eq!(interiority_description("Active", 2, 3), "active — idle 2/3 ticks");
+        assert_eq!(interiority_description("Dormant", 4, 3), "dormant — waiting for you");
     }
 
     #[test]
@@ -2071,11 +1992,9 @@ mod tests {
             },
             "autonomy": {
                 "paused": false,
-                "heartbeat_state": "SocialNeed",
-                "unanswered_count": 0,
-                "dormant_threshold": 1,
-                "social_need_bar": 0.42,
-                "tau": 15120.0,
+                "interiority_state": "Active",
+                "ticks_without_user": 1,
+                "max_idle_ticks": 3,
                 "cache_keepalive_state": "Pinging",
                 "cache_keepalive_pings": 3,
             }
@@ -2103,11 +2022,9 @@ mod tests {
             "active_model": "test-model",
             "autonomy": {
                 "paused": true,
-                "heartbeat_state": "Session",
-                "unanswered_count": 0,
-                "dormant_threshold": 1,
-                "social_need_bar": 0.0,
-                "tau": 10800.0,
+                "interiority_state": "Active",
+                "ticks_without_user": 0,
+                "max_idle_ticks": 3,
                 "cache_keepalive_state": "Monitoring",
                 "cache_keepalive_pings": 0,
             }

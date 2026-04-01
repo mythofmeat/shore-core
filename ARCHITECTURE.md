@@ -14,7 +14,7 @@
    directly in Rust using `reqwest`. No separate process or TypeScript runtime.
 5. **Separate binaries** for daemon, CLI/TUI, and each bridge —
    independent development, deployment, and restart.
-6. **Build it right from the start** — incorporate planned redesigns (heartbeat,
+6. **Build it right from the start** — incorporate planned redesigns (interiority,
    private conversations) into the V2 architecture rather than porting V1 bugs.
 
 ---
@@ -34,7 +34,7 @@
 │  shore-mx    │───────────▶│                     │     │           │
 │  (bridge)    │◀───────────│  ┌─────────────┐    │     │           │
 └──────────────┘            │  │ Autonomy     │◀──┘     │           │
-                            │  │ (heartbeat,  │         │           │
+                            │  │ (interiority,│         │           │
                             │  │  cache)      │    ┌────▼───────┐   │
                             │  └─────────────┘    │ LLM Client  │   │
                             │                     │ (reqwest,    │──── LLM APIs
@@ -109,7 +109,7 @@ Every message has this shape:
 - `rid` — request ID. Client-generated, opaque string. The server echoes `rid`
   on every response message (including streaming chunks and push messages)
   that was triggered by that request. Push messages not tied to a request
-  (heartbeat, status_change) have `rid: null`. This enables:
+  (interiority, status_change) have `rid: null`. This enables:
   - **Multiplexing** — TUI can send a status command while a message streams
   - **Tracing** — follow a request through structured logs across all services
   - **Debugging** — correlate "which request caused this error?"
@@ -370,7 +370,7 @@ binary in the workspace.
 | **RAG** | Vector search (LanceDB) + BM25 keyword retrieval + embedding via HTTP | `lancedb`, custom BM25 |
 | **Compaction** | Conversation → memory entries (via LLM). Proactive idle timer fires at `idle_trigger_minutes` after last activity — no waiting for next user message. | — |
 | **Collation** | 5-phase memory pipeline: timestamp backfill → collate (merge) → tidy (split) → normalize entities → confidence decay. Embedding-driven clustering groups related entries before LLM calls. `collated_at` watermark tracks processing state. | — |
-| **Heartbeat** | Redesigned character-driven scheduling (see §13.1) | — |
+| **Interiority** | Timer-based autonomous turns with full tool access (see §13.1) | — |
 | **Cache Keepalive** | Anthropic prompt cache TTL refresh pings | — |
 | **Activity Tracker** | Session tempo, hour histograms, engagement scoring | — |
 | **Config** | TOML loading (config.toml + models.toml), validation, defaults | `toml`, `serde` |
@@ -420,10 +420,9 @@ shore-daemon/
 │   │
 │   ├── autonomy/
 │   │   ├── mod.rs              # Master autonomy controller
-│   │   ├── heartbeat.rs        # Character-driven scheduling (5-state machine)
+│   │   ├── interiority.rs      # Interiority clock (timer + dormancy)
 │   │   ├── cache_keepalive.rs  # Cache TTL refresh
-│   │   ├── activity.rs         # Activity tracker (tempo, histograms)
-│   │   └── timing.rs           # Adaptive timing algorithms
+│   │   └── activity.rs         # Activity tracker (tempo, histograms)
 │   │
 │   ├── config/
 │   │   ├── mod.rs              # Config loading, resolution, validation
@@ -683,15 +682,10 @@ Loaded by daemon on startup. Key changes from V1:
 
 - `[behavior.autonomy]` section replaces scattered autonomy knobs:
   - `enabled` (bool)
-  - `personality` (float 0.0–1.0) — moved here from `[behavior.heartbeat]`
-  - `max_unanswered` (int, default 1)
-  - `max_deferral_hours` (float, default 24)
-- `[behavior.autonomy.heartbeat]` — heartbeat-specific config
+- `[behavior.autonomy.interiority]` — interiority config (interval, jitter, max idle ticks, max tool rounds)
 - `[behavior.autonomy.cache_keepalive]` — cache TTL refresh
 - `[memory.compaction]` — compaction triggers
 - `[memory.collation]` — collation settings
-- **No `[behavior.autonomy.interiority]`** — interiority (journal/story) is
-  removed entirely.
 - `[connections.matrix]` — replaces `matrix_external` and `matrix_embedded`
   (single section, mode determined by config present)
 - `[connections.telegram]` and `[connections.discord]` — reserved for future use
@@ -789,10 +783,9 @@ reason TEXT, resolved_at TEXT, resolution TEXT, created_at TEXT)
 | Memory agent | memory_agent.py | memory/agent.rs | Fix: caller identity awareness |
 | Full-text search | search.py | memory/search.rs | |
 | File importer | importer.py | memory/importer.rs | |
-| Heartbeat scheduler | heartbeat.py | autonomy/heartbeat.rs | **Redesigned** (see §13.1) |
+| Heartbeat scheduler | heartbeat.py | autonomy/interiority.rs | **Replaced** by interiority system (see §13.1) |
 | Cache keepalive | cache_keepalive.py | autonomy/cache_keepalive.rs | |
 | Activity tracker | activity_tracker.py | autonomy/activity.rs | Fix: lower data threshold |
-| Adaptive timing | adaptive_timing.py | autonomy/timing.rs | Heatmap curve rework |
 | Server | server.py | server/mod.rs | |
 | Command dispatch | commands.py | commands/*.rs | 18 flat commands (see §3.7) |
 | Config loading | config.py, config_schema.py | config/*.rs | New autonomy section |
@@ -933,119 +926,70 @@ pronouns in character queries.
 
 ## 13. Autonomy Subsystems
 
-### 13.1 Heartbeat — Character-Driven Scheduling (REDESIGNED)
+### 13.1 Interiority — Autonomous Character Turns
 
-The V1 three-mode system (session / inter-session / deferred) is replaced with
-a cleaner five-state machine that gives characters agency over scheduling.
+The V1 heartbeat (5-state probability machine) is replaced by the interiority
+system. Instead of complex scheduling heuristics, characters get periodic
+"turns to self" — full agentic turns with the same tool set as normal
+conversation, plus a scratchpad filesystem for private persistent notes.
 
-#### State Machine
+#### Design
 
 ```
-                    user messages
-            ┌──────────────────────┐
-            │                      │
-            ▼                      │
-     ┌──────────┐  30 min gap  ┌───┴──────────────┐
-     │ SESSION  │─────────────▶│ POST_SESSION_PROBE│
-     └──────────┘              └────────┬──────────┘
-            ▲                     │           │
-            │              valid time     no time /
-            │              found          declined
-            │                │           │
-            │         ┌──────▼───┐  ┌────▼───────┐
-            │         │ DEFERRED │  │ SOCIAL_NEED│
-            │         └──────┬───┘  └────┬───────┘
-            │                │           │
-            │           timer fires   prob roll
-            │           or user msgs  succeeds
-            │                │        or user msgs
-            │                │           │
-            │                ▼           ▼
-            │         (deliver msg  (deliver msg
-            │          or cancel)    or go dormant)
-            │                │           │
-            │                │     ┌─────▼──┐
-            │                │     │DORMANT │ (max_unanswered reached)
-            │                │     └────────┘
-            │                │           │
-            └────────────────┴───────────┘
-                     user messages
+            ┌─────────┐  tick()   ┌──────────────┐
+            │  Active  │─────────▶│  RunTick      │──▶ full LLM turn
+            └────┬────┘          └──────────────┘     with all tools
+                 │                                     + scratchpad
+          ticks_without_user                           
+          > max_idle_ticks                         optional:
+                 │                                 <sendMessage>
+            ┌────▼────┐                            tag → user
+            │ Dormant  │
+            └────┬────┘
+                 │
+           user messages
+                 │
+            ┌────▼────┐
+            │  Active  │  (reset ticks_without_user)
+            └─────────┘
 ```
 
 #### States
 
 | State | Description |
 |-------|-------------|
-| `session` | User is actively chatting. Track response gaps for tempo. Idle time measured from `max(last_user_ts, last_assistant_ts)` — assistant responses reset the clock. 3-minute floor on session probe threshold prevents rapid tempo from producing absurdly short idle windows. |
-| `post_session_probe` | One-shot probe after 30 min idle. Character sees idle duration + current time. Can choose a specific time to message (absolute or relative, natural language) or decline. Response is NOT shown to user. |
-| `deferred` | Character chose a time. Timer waits. On fire: character gets a follow-up prompt with their original reasoning, delivers message to user. Blocks social need timer. If user messages first, deferred state is discarded. |
-| `social_need` | Spontaneous probabilistic path (social need bar). No scheduling — purely `1 - e^(-Δt/τ)` roll. No `NEXT_CHECK`. Message delivered on success. |
-| `dormant` | `unanswered_count >= max_unanswered`. No probes until user messages. |
+| `Active` | Timer fires at `interval_secs ± jitter_factor`. Each tick runs an LLM turn. If the character wants to message the user, it wraps text in `<sendMessage>` tags. |
+| `Dormant` | `ticks_without_user >= max_idle_ticks`. No ticks fire. Wakes on next user message. |
 
-#### Key Differences from V1
+#### Key Properties
 
-- **Post-session probe is one-shot** — fires exactly once per session end, not
-  repeatedly
-- **Time extraction from natural language** — no structured `NEXT_CHECK` field.
-  Parse "8:30 PM", "in 3 hours", "tomorrow morning" etc.
-- **Social-need path has no scheduling** — purely spontaneous, no deferral
-- **Deferred state stores original reasoning** — character gets context when
-  their chosen time arrives, making follow-up coherent
-- **max_deferral_hours** cap (default 24) — prevents "I'll message them next
-  week" scheduling drift
+- **Identical tool set**: Interiority ticks use the exact same tools as normal
+  conversation (memory, web, image, scratchpad). This preserves Anthropic prompt
+  cache — the system prompt and tool definitions are identical.
+- **Scratchpad**: Per-character filesystem at `data_dir/<char>/scratchpad/`.
+  4 tools: `scratchpad_list`, `scratchpad_read`, `scratchpad_write`,
+  `scratchpad_delete`. Available in both normal conversation and interiority.
+- **Full conversation context**: Interiority ticks see the entire conversation
+  history (loaded from `active.jsonl`), enabling coherent continuation.
+- **No probability math**: Simple timer with jitter. No τ, engagement scores,
+  heatmaps, or social need bars.
 
-#### Social Need Bar
+#### Config
 
-Unchanged math, but the heatmap curve needs adjustment:
-
-**Current issue:** Areas of low activity barely contribute to social need.
-**Planned fix:** Flatten the distribution curve (or use log scale) so that
-low-activity hours still contribute meaningfully. The exact adjustment TBD
-during implementation — this is a tuning knob, not an architectural decision.
-
-**τ computation:**
-```
-base_τ         = 86400 / sessions_per_day
-recip_factor   = 1.0 if reciprocated, 0.4 if unreciprocated
-engage_factor  = 1.5 - engagement_score          (range 0.5–1.5)
-heatmap_factor = peak: 0.7, trough: 2.0, normal: 1.0
-person_factor  = 1.5 - personality                (range 0.5–1.5)
-
-τ = base_τ × recip_factor × engage_factor × heatmap_factor × person_factor
+```toml
+[behavior.autonomy.interiority]
+enabled = true           # default: true
+interval_secs = 3600     # default: 1 hour
+jitter_factor = 0.25     # ±25% random variation
+max_idle_ticks = 3       # go dormant after 3 ticks with no user
+max_tool_rounds = 3      # max tool-use rounds per tick
 ```
 
-**Engagement score:**
-```
-engagement = 0.6 × consistency + 0.4 × tempo_score
-tempo_score = 1 / (1 + e^((median_gap - 900) / 400))
-```
+#### Persisted State (v2)
 
-Tempo logistic: 30s → 0.90, 5min → 0.82, 15min → 0.50, 30min → 0.20
-
-**Per-roll probability:** `p = 1 - e^(-check_interval / τ)`
-
-#### Constants Reference
-
-V1 starting values. Tune empirically after Phase 4.
-
-| Constant | Value | Description |
-|----------|-------|-------------|
-| `SESSION_GAP` | 1800s (30 min) | Idle gap marking a session boundary |
-| `SESSION_PROBE_FLOOR` | 180s (3 min) | Minimum idle before post-session probe |
-| `DORMANT_THRESHOLD` | 8 | Max consecutive unanswered probes before dormancy |
-| `MAX_DEFERRAL_HOURS` | 24 | Cap on character-chosen deferral time |
-| `ANOMALY_Z_SCORE` | 1.5 | Standard deviations above mean gap to flag anomaly |
-| `SUFFICIENT_DATA` | ≥5 msgs, ≥2 days | Minimum for adaptive timing |
-| `SUFFICIENT_HEATMAP` | ≥20 msgs, ≥7 days | Minimum for hour-weighted timing |
-| `WEEKDAY_HEATMAP_MIN` | 5 events | Below this, fall back to global histogram |
-| `PEAK_HOUR_THRESHOLD` | density > avg × 1.5 | Hour classified as peak |
-| `TROUGH_HOUR_THRESHOLD` | density < avg × 0.5 | Hour classified as trough |
-| `WARMUP_TAU` | 10800s (3 hr) | τ used before sufficient data collected |
-| `WARMUP_CHECK_INTERVAL` | 1200s (20 min) | Check interval during warmup |
-| `CHECK_INTERVAL_JITTER` | ±60s | Random jitter on check interval |
-| `SESSION_MEDIANS_WINDOW` | 30 | Number of recent sessions for median calculation |
-| `SESSION_TEMPO_WINDOW` | 10 | Response gaps tracked per session |
-| `STATS_CACHE_TTL` | 60s | Activity stats cache validity |
+State is saved to `autonomy.json` per character. Version bumped from 1→2.
+Fields: `interiority_state` (Active/Dormant), `ticks_without_user` (u32).
+V1 state files are migrated gracefully (old heartbeat fields ignored).
 
 ### 13.2 Cache Keepalive
 
@@ -1277,10 +1221,10 @@ Runtime:
 | Commands | Nested groups (`chat list`, `model switch`, ...) | Flat `verb_noun` names (`list_chats`, `switch_model`, ...) |
 | Server responses | Streaming + non-streaming paths | Always-stream (one code path for clients) |
 | State sync | Clients parse command output | Server pushes `history` on any state change |
-| Heartbeat | 3-mode (session/inter-session/deferred) | 5-state character-driven scheduling |
+| Heartbeat | 3-mode (session/inter-session/deferred) | Interiority system (timer + agentic turns) |
 | Session idle | Measured from last user message | `max(last_user, last_assistant)` + 3-min floor |
 | Compaction trigger | Reactive (on next user message) | Proactive background timer |
-| Interiority | Journal + story generation | **Removed** |
+| Interiority | Journal + story generation | **Redesigned** — autonomous turns with full tool access |
 | Private conversations | Not supported | Full memory isolation |
 | Relay server | Separate process | Eliminated — native TCP on daemon |
 | Chat platforms | Telegram, Discord, Matrix (all in-process) | Matrix only at launch (out-of-process) |
@@ -1328,8 +1272,7 @@ JSONL, config) are compatible — V2 reads V1 data.
 
 ### Phase 4: Autonomy
 - [ ] Activity tracker (with lowered threshold)
-- [ ] Adaptive timing (with heatmap curve rework)
-- [ ] Heartbeat scheduler (new 5-state machine from scratch)
+- [x] Interiority system (replaces heartbeat)
 - [ ] Cache keepalive
 - [ ] Autonomy commands (pause, resume, status)
 - [ ] **Milestone: character reaches out autonomously**
@@ -1363,9 +1306,9 @@ These are noted for architectural awareness — V2 should not block them, but
 does not implement them.
 
 ### Group Chats (characters messaging each other)
-Characters can choose to message another character during heartbeat probes.
+Characters can choose to message another character during interiority ticks.
 Messages work like an inbox/outbox — the response happens during the
-*recipient's* heartbeat probe. User can observe and participate in group chats.
+*recipient's* interiority tick. User can observe and participate in group chats.
 **Architectural impact:** daemon needs inter-character message routing. The SWP
 protocol doesn't need changes (this is all daemon-internal).
 

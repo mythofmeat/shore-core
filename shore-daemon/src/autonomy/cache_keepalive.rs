@@ -147,7 +147,7 @@ pub struct CacheKeepaliveScheduler {
     state: KeepaliveState,
     config: CacheKeepaliveConfig,
     paused: bool,
-    /// Timestamp of last API call (user message, heartbeat, regen, or ping).
+    /// Timestamp of last API call (user message, interiority, regen, or ping).
     last_api_call: Option<Instant>,
     /// Timestamp of last keepalive ping sent.
     last_ping: Option<Instant>,
@@ -231,7 +231,7 @@ impl CacheKeepaliveScheduler {
 
     // -- event handlers ---------------------------------------------------
 
-    /// Call when any API call completes (user message, heartbeat, regen).
+    /// Call when any API call completes (user message, interiority, regen).
     /// Updates the last-activity timestamp and cache token estimate.
     ///
     /// `cache_read_tokens` — from the LLM response usage data.
@@ -247,7 +247,7 @@ impl CacheKeepaliveScheduler {
             self.estimated_cache_tokens = input_tokens;
         }
 
-        // Any real API call (user message, heartbeat, regen) means the
+        // Any real API call (user message, interiority, regen) means the
         // conversation is active again — return to monitoring regardless of
         // cache hits.  The next response will re-establish the cache prefix.
         if matches!(self.state, KeepaliveState::Pinging | KeepaliveState::Stopped { .. }) {
@@ -595,7 +595,7 @@ mod tests {
         let t1 = t0 + Duration::from_secs(DEFAULT_PING_INTERVAL_SECS - 10);
         assert_eq!(sched.tick(t1), KeepaliveAction::None);
 
-        // Non-user API call (e.g. heartbeat) resets the timer.
+        // Non-user API call (e.g. interiority) resets the timer.
         sched.on_api_response(t1, 1000, 1500);
 
         // Now idle threshold is measured from t1, not t0.

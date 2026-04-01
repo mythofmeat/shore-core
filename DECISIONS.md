@@ -92,9 +92,9 @@ Add items here as decisions are made.
 
 ## Failed Concepts (not porting)
 
-- **Interiority — journal writing** (2.4) — Failed concept in V1. Not porting.
-- **Interiority — story writing** (2.5) — Failed concept in V1. Not porting.
-- **Interiority scheduling** (2.6) — Depended on interiority. Not porting.
+- **Interiority — journal writing** (2.4) — Failed concept in V1. Replaced by the new interiority system (autonomous turns with full tool access).
+- **Interiority — story writing** (2.5) — Failed concept in V1. Replaced by the new interiority system.
+- **Interiority scheduling** (2.6) — Replaced by InteriorityClock (simple timer + dormancy).
 
 ## Compaction: Turn-Based Semantics (2026-03-31)
 
@@ -223,3 +223,20 @@ Rewrote the memory collation pipeline to fix multiple design flaws in the origin
 A single holistic call lets the LLM see all candidates + nearby context and make coherent merge/split/update decisions in one pass.
 
 **Trade-off:** The single prompt is larger (candidates + context entries), increasing token cost per call. Accepted because: (a) the multi-phase approach made 3 separate LLM calls anyway, (b) context entries provide critical disambiguation that prevents data corruption, (c) batch_limit caps total candidates per run. Entity normalization is permanently dropped — the risk of incorrect merges (christina→christine) outweighs the benefit of consistent naming.
+
+### Interiority System — Replace Heartbeat (2026-04-01)
+
+**Decision:** Replace the 5-state heartbeat probability machine with a simple interiority system that gives characters periodic autonomous turns with full tool access.
+
+**Changes made:**
+- Deleted `heartbeat.rs`, `timing.rs`, `time_parse.rs` from `shore-daemon/src/autonomy/`
+- New `interiority.rs`: `InteriorityClock` with two states (Active, Dormant), timer with jitter, dormancy counter
+- New `scratchpad.rs` in `shore-daemon/src/tools/`: 4 tools (`scratchpad_list`, `scratchpad_read`, `scratchpad_write`, `scratchpad_delete`) with path traversal protection
+- Rewrote `autonomy/manager.rs`: `execute_interiority_tick()` reads conversation from `active.jsonl`, builds full prompt with identical tool set, sends to LLM, extracts optional `<sendMessage>` tags for user-visible output
+- Replaced `AutonomyConfig` fields: removed `personality`, `max_unanswered`, `max_deferral_hours`, `heartbeat`; added `interiority: InteriorityConfig`
+- Replaced `CapabilitiesConfig`: `heartbeat_enabled` → `interiority_enabled`, added `scratchpad_enabled`
+- Updated CLI output, persisted state (version 1→2), all downstream consumers
+
+**Why:** The 5-state heartbeat was overengineered — complex scheduling heuristics (τ computation, engagement scores, heatmaps, social need bars, time parsing from natural language) for a simple goal: "the character should sometimes do things on its own." The interiority system achieves the same goal with a timer + dormancy counter. Additionally, the heartbeat used separate, simpler prompts that couldn't leverage the character's full tool set. Interiority ticks use the identical system prompt and tool definitions as normal conversation, preserving Anthropic prompt cache.
+
+**Trade-off:** The interiority system has no adaptive timing — it doesn't speed up during active conversation or slow down during quiet periods. The timer is fixed (with jitter). This is intentionally simpler. If adaptive timing proves necessary, it can be layered on top of the InteriorityClock without changing the fundamental architecture.

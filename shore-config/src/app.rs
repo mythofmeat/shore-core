@@ -119,81 +119,64 @@ pub struct AutonomyConfig {
     #[serde(default)]
     pub enabled: bool,
 
-    /// Personality factor (0.0–1.0).
-    #[serde(default = "default_personality")]
-    pub personality: f64,
-
-    /// Max unanswered messages before backing off.
-    #[serde(default = "default_max_unanswered")]
-    pub max_unanswered: u32,
-
-    /// Maximum hours a character can defer a message.
-    #[serde(default = "default_max_deferral_hours")]
-    pub max_deferral_hours: f64,
-
     #[serde(default)]
-    pub heartbeat: HeartbeatConfig,
-}
-
-fn default_personality() -> f64 {
-    0.5
-}
-fn default_max_unanswered() -> u32 {
-    1
-}
-fn default_max_deferral_hours() -> f64 {
-    24.0
+    pub interiority: InteriorityConfig,
 }
 
 impl Default for AutonomyConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            personality: default_personality(),
-            max_unanswered: default_max_unanswered(),
-            max_deferral_hours: default_max_deferral_hours(),
-            heartbeat: HeartbeatConfig::default(),
+            interiority: InteriorityConfig::default(),
         }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct HeartbeatConfig {
-    /// Whether heartbeat scheduling is enabled.
+pub struct InteriorityConfig {
+    /// Whether interiority ticks are enabled.
     #[serde(default = "default_true")]
     pub enabled: bool,
 
-    /// Session gap in seconds — idle time marking a session boundary.
-    #[serde(default = "default_session_gap")]
-    pub session_gap_secs: u64,
+    /// Base interval in seconds between interiority ticks.
+    #[serde(default = "default_interiority_interval")]
+    pub interval_secs: u64,
 
-    /// Minimum idle seconds before post-session probe.
-    #[serde(default = "default_session_probe_floor")]
-    pub session_probe_floor_secs: u64,
+    /// Jitter factor (0.0–1.0) applied to interval. 0.25 means ±25%.
+    #[serde(default = "default_jitter_factor")]
+    pub jitter_factor: f64,
 
-    /// Max consecutive unanswered probes before dormancy.
-    #[serde(default = "default_dormant_threshold")]
-    pub dormant_threshold: u32,
+    /// Go dormant after this many consecutive ticks with no user message.
+    #[serde(default = "default_max_idle_ticks")]
+    pub max_idle_ticks: u32,
+
+    /// Maximum tool-use rounds per interiority tick.
+    #[serde(default = "default_max_tool_rounds")]
+    pub max_tool_rounds: u32,
 }
 
-fn default_session_gap() -> u64 {
-    1800
+fn default_interiority_interval() -> u64 {
+    3600
 }
-fn default_session_probe_floor() -> u64 {
-    180
+fn default_jitter_factor() -> f64 {
+    0.25
 }
-fn default_dormant_threshold() -> u32 {
-    1
+fn default_max_idle_ticks() -> u32 {
+    3
+}
+fn default_max_tool_rounds() -> u32 {
+    3
 }
 
-impl Default for HeartbeatConfig {
+impl Default for InteriorityConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            session_gap_secs: default_session_gap(),
-            session_probe_floor_secs: default_session_probe_floor(),
-            dormant_threshold: default_dormant_threshold(),
+            interval_secs: default_interiority_interval(),
+            jitter_factor: default_jitter_factor(),
+            max_idle_ticks: default_max_idle_ticks(),
+            max_tool_rounds: default_max_tool_rounds(),
         }
     }
 }
@@ -337,6 +320,14 @@ pub struct ToolToggles {
     pub roll_dice: bool,
     #[serde(default = "default_true")]
     pub activity_heatmap: bool,
+    #[serde(default = "default_true")]
+    pub scratchpad_list: bool,
+    #[serde(default = "default_true")]
+    pub scratchpad_read: bool,
+    #[serde(default = "default_true")]
+    pub scratchpad_write: bool,
+    #[serde(default = "default_true")]
+    pub scratchpad_delete: bool,
 }
 
 impl Default for ToolToggles {
@@ -352,6 +343,10 @@ impl Default for ToolToggles {
             check_time: true,
             roll_dice: true,
             activity_heatmap: true,
+            scratchpad_list: true,
+            scratchpad_read: true,
+            scratchpad_write: true,
+            scratchpad_delete: true,
         }
     }
 }
@@ -370,6 +365,10 @@ impl ToolToggles {
             "check_time" => self.check_time,
             "roll_dice" => self.roll_dice,
             "activity_heatmap" => self.activity_heatmap,
+            "scratchpad_list" => self.scratchpad_list,
+            "scratchpad_read" => self.scratchpad_read,
+            "scratchpad_write" => self.scratchpad_write,
+            "scratchpad_delete" => self.scratchpad_delete,
             // Unknown tools are enabled by default.
             _ => true,
         }
@@ -809,13 +808,13 @@ mod tests {
         let config = AppConfig::default();
         assert!(config.defaults.stream);
         assert!(!config.behavior.autonomy.enabled);
-        assert_eq!(config.behavior.autonomy.personality, 0.5);
-        assert_eq!(config.behavior.autonomy.max_unanswered, 1);
-        assert_eq!(config.behavior.autonomy.max_deferral_hours, 24.0);
+        assert!(config.behavior.autonomy.interiority.enabled);
+        assert_eq!(config.behavior.autonomy.interiority.interval_secs, 3600);
+        assert_eq!(config.behavior.autonomy.interiority.jitter_factor, 0.25);
+        assert_eq!(config.behavior.autonomy.interiority.max_idle_ticks, 3);
+        assert_eq!(config.behavior.autonomy.interiority.max_tool_rounds, 3);
         assert!(config.advanced.cache_invalidation_warnings);
         assert!(config.behavior.tool_use.enabled);
-        // Sub-toggles default to true.
-        assert!(config.behavior.autonomy.heartbeat.enabled);
         assert!(config.memory.compaction.enabled);
         assert!(config.memory.collation.enabled);
         assert!(config.memory.image_enabled);

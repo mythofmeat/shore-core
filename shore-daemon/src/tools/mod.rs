@@ -2,6 +2,7 @@ pub mod activity;
 pub mod basic;
 pub mod images;
 pub mod memory_tools;
+pub mod scratchpad;
 pub mod web;
 
 use crate::autonomy::manager::AutonomyManager;
@@ -123,6 +124,9 @@ pub trait ToolContext: Sync {
     // Autonomy access — used by activity heatmap tool
     fn autonomy_manager(&self) -> Option<&AutonomyManager> { None }
     fn character_name(&self) -> &str { "" }
+
+    // Scratchpad directory for per-character scratch storage
+    fn scratchpad_dir(&self) -> &str { "" }
 }
 
 // ---------------------------------------------------------------------------
@@ -137,6 +141,7 @@ pub fn all_tools() -> Vec<ToolDef> {
     tools.extend(web::tool_defs());
     tools.extend(activity::tool_defs());
     tools.extend(basic::tool_defs());
+    tools.extend(scratchpad::tool_defs());
     tools
 }
 
@@ -179,6 +184,11 @@ pub fn dispatch_tool<'a>(
             "roll_dice" => basic::handle_roll_dice(input).await,
             // Other
             "activity_heatmap" => activity::handle_activity_heatmap(input, ctx).await,
+            // Scratchpad tools
+            "scratchpad_list" => scratchpad::handle_scratchpad_list(input, ctx.scratchpad_dir()).await,
+            "scratchpad_read" => scratchpad::handle_scratchpad_read(input, ctx.scratchpad_dir()).await,
+            "scratchpad_write" => scratchpad::handle_scratchpad_write(input, ctx.scratchpad_dir()).await,
+            "scratchpad_delete" => scratchpad::handle_scratchpad_delete(input, ctx.scratchpad_dir()).await,
             _ => Err(ToolError::NotImplemented(name.to_string())),
         }
     })
@@ -196,8 +206,8 @@ mod tests {
     #[test]
     fn test_all_tools_returns_expected_count() {
         let tools = all_tools();
-        // memory(1) + images(4) + web(2) + activity(1) + basic(2) = 10
-        assert_eq!(tools.len(), 10);
+        // memory(1) + images(4) + web(2) + activity(1) + basic(2) + scratchpad(4) = 14
+        assert_eq!(tools.len(), 14);
     }
 
     #[test]
@@ -252,7 +262,7 @@ mod tests {
         assert!(!names.contains(&"web_search"));
         assert!(names.contains(&"memory"));
         assert!(names.contains(&"check_time"));
-        assert_eq!(tools.len(), 8); // 10 - 2 disabled
+        assert_eq!(tools.len(), 12); // 14 - 2 disabled
     }
 
     #[test]

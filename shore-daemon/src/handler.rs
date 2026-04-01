@@ -76,6 +76,7 @@ struct HandlerToolContext {
     search_config_val: SearchConfig,
     autonomy_val: AutonomyManager,
     character_name_val: String,
+    scratchpad_dir_val: String,
 }
 
 impl ToolContext for HandlerToolContext {
@@ -101,6 +102,7 @@ impl ToolContext for HandlerToolContext {
     fn search_config(&self) -> &SearchConfig { &self.search_config_val }
     fn autonomy_manager(&self) -> Option<&AutonomyManager> { Some(&self.autonomy_val) }
     fn character_name(&self) -> &str { &self.character_name_val }
+    fn scratchpad_dir(&self) -> &str { &self.scratchpad_dir_val }
 }
 
 // ── Shared context for spawned generation tasks ───────────────────────
@@ -461,7 +463,8 @@ async fn handle_generation(
     let display_name = effective_config.app.defaults.resolve_display_name();
     let tool_toggles = &effective_config.app.behavior.tool_use.tools;
     let capabilities = CapabilitiesConfig {
-        heartbeat_enabled: effective_config.app.behavior.autonomy.heartbeat.enabled,
+        interiority_enabled: effective_config.app.behavior.autonomy.interiority.enabled,
+        scratchpad_enabled: tool_toggles.scratchpad_read || tool_toggles.scratchpad_write,
         memory_enabled: tool_toggles.memory,
         image_memory_enabled: effective_config.app.memory.image_enabled,
         send_image_enabled: tool_toggles.send_image,
@@ -727,6 +730,11 @@ async fn handle_generation(
             search_config_val: effective_config.app.behavior.tool_use.search.clone(),
             autonomy_val: ctx.autonomy.clone(),
             character_name_val: char_name.clone(),
+            scratchpad_dir_val: data_dir
+                .join(&char_name)
+                .join("scratchpad")
+                .to_string_lossy()
+                .into_owned(),
         };
 
         let tool_loop_result = tools::run_tool_loop(

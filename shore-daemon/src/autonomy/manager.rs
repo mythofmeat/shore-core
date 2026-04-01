@@ -1,7 +1,7 @@
 //! AutonomyManager — per-character scheduler state with background tick tasks.
 //!
-//! Each character gets its own tokio task that ticks the heartbeat and cache
-//! keepalive schedulers on a fixed interval. State is persisted to
+//! Each character gets its own tokio task that ticks the interiority clock and
+//! cache keepalive scheduler on a fixed interval. State is persisted to
 //! `{data_dir}/{character}/autonomy_state.json` and restored on startup.
 
 use std::collections::HashMap;
@@ -9,8 +9,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use chrono::{NaiveDateTime, Timelike, Utc};
-use rand::Rng;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use shore_protocol::server_msg::{CacheWarning, NewMessage, ServerMessage};
@@ -19,16 +17,20 @@ use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 
-use super::activity::{ActivityTracker, HourClassification};
+use super::activity::ActivityTracker;
 use super::cache_keepalive::{
     CacheKeepaliveConfig, CacheKeepaliveScheduler, KeepaliveAction, KeepaliveState,
 };
-use super::heartbeat::{
-    self, HeartbeatAction, HeartbeatScheduler, HeartbeatState, ProbeResult,
-};
-use super::timing::{compute_tau, TauParams};
-use super::{AutonomyStatus, HeartbeatEventKind, HeartbeatLog};
+use super::interiority::{InteriorityAction, InteriorityClock, InteriorityState};
+use super::{AutonomyStatus, InteriorityEventKind, InteriorityLog};
+use crate::memory::agent::{AgentError, AgentRag, AgentSearchContext, CallerIdentity, RagHit};
+use crate::memory::agent_llm::{AgentLlm, RealAgentLlm};
+use crate::memory::compaction_impls::{resolve_embed_config, resolve_image_gen_config, ImageGenConfig};
+use crate::memory::db::MemoryDB;
+use crate::memory::researcher::MemoryResearcher;
+use crate::memory::vectorstore::VectorStore;
 use crate::notifications::{NotificationEvent, NotificationService};
+use crate::tools as tool_system;
 use shore_config::app::{AutonomyConfig, CompactionConfig};
 use shore_config::LoadedConfig;
 use shore_llm_client::types::LlmRequest;
@@ -40,11 +42,11 @@ use shore_llm_client::LlmClient;
 
 /// All autonomy state for a single character.
 pub struct AutonomyState {
-    pub heartbeat: HeartbeatScheduler,
+    pub interiority: InteriorityClock,
     pub cache_keepalive: CacheKeepaliveScheduler,
     pub activity: ActivityTracker,
-    /// Ring buffer of heartbeat events for `shore log --heartbeat`.
-    pub heartbeat_log: HeartbeatLog,
+    /// Ring buffer of interiority events for `shore log --heartbeat`.
+    pub interiority_log: InteriorityLog,
     /// Whether state has changed since last save.
     dirty: bool,
     /// Last message activity timestamp for compaction idle trigger.
@@ -67,19 +69,15 @@ impl AutonomyState {
 // Persistence
 // ---------------------------------------------------------------------------
 
-const STATE_VERSION: u32 = 1;
+const STATE_VERSION: u32 = 2;
 const STATE_FILENAME: &str = "autonomy_state.json";
 
 #[derive(Serialize, Deserialize)]
 struct PersistedState {
     version: u32,
-    heartbeat_state: String,
-    unanswered_count: u32,
-    /// ISO 8601 wall-clock time for Deferred state.
-    deferred_fire_at: Option<String>,
-    deferred_reasoning: Option<String>,
+    interiority_state: String,
+    ticks_without_user: u32,
     cache_ping_count: u32,
-    cache_estimated_tokens: u32,
 }
 
 fn state_path(data_dir: &Path, character: &str) -> PathBuf {
@@ -91,26 +89,11 @@ fn save_state(data_dir: &Path, character: &str, state: &mut AutonomyState) {
         return;
     }
 
-    let (hb_state_str, fire_at, reasoning) = match state.heartbeat.state() {
-        HeartbeatState::Session => ("Session".into(), None, None),
-        HeartbeatState::PostSessionProbe => ("PostSessionProbe".into(), None, None),
-        HeartbeatState::Deferred { fire_at, reasoning } => (
-            "Deferred".into(),
-            Some(fire_at.to_string()),
-            Some(reasoning.clone()),
-        ),
-        HeartbeatState::SocialNeed => ("SocialNeed".into(), None, None),
-        HeartbeatState::Dormant => ("Dormant".into(), None, None),
-    };
-
     let persisted = PersistedState {
         version: STATE_VERSION,
-        heartbeat_state: hb_state_str,
-        unanswered_count: state.heartbeat.unanswered_count(),
-        deferred_fire_at: fire_at,
-        deferred_reasoning: reasoning,
+        interiority_state: state.interiority.state().to_string(),
+        ticks_without_user: state.interiority.ticks_without_user(),
         cache_ping_count: state.cache_keepalive.ping_count(),
-        cache_estimated_tokens: 0, // not exposed via accessor; reset on restart
     };
 
     let path = state_path(data_dir, character);
@@ -143,50 +126,27 @@ fn load_state(data_dir: &Path, character: &str) -> Option<PersistedState> {
                 character,
                 version = state.version,
                 expected = STATE_VERSION,
-                "Ignoring autonomy state with unknown version"
+                "Ignoring autonomy state with unknown version (migration)"
             );
             None
         }
         Err(e) => {
-            warn!(character, error = %e, "Failed to parse autonomy state");
+            warn!(character, error = %e, "Failed to parse autonomy state (may be v1 format)");
             None
         }
     }
 }
 
-fn restore_heartbeat(persisted: &PersistedState) -> (HeartbeatState, u32) {
-    let wall_now = Utc::now().naive_utc();
-
-    let state = match persisted.heartbeat_state.as_str() {
-        "Session" => HeartbeatState::Session,
-        "PostSessionProbe" => {
-            // Don't block on a probe from a previous session.
-            HeartbeatState::SocialNeed
-        }
-        "Deferred" => {
-            match (&persisted.deferred_fire_at, &persisted.deferred_reasoning) {
-                (Some(fire_at_str), Some(reasoning)) => {
-                    match fire_at_str.parse::<NaiveDateTime>() {
-                        Ok(fire_at) if fire_at > wall_now => HeartbeatState::Deferred {
-                            fire_at,
-                            reasoning: reasoning.clone(),
-                        },
-                        // Expired or parse error — move to SocialNeed.
-                        _ => HeartbeatState::SocialNeed,
-                    }
-                }
-                _ => HeartbeatState::SocialNeed,
-            }
-        }
-        "SocialNeed" => HeartbeatState::SocialNeed,
-        "Dormant" => HeartbeatState::Dormant,
+fn restore_interiority(persisted: &PersistedState) -> (InteriorityState, u32) {
+    let state = match persisted.interiority_state.as_str() {
+        "Active" => InteriorityState::Active,
+        "Dormant" => InteriorityState::Dormant,
         other => {
-            warn!(state = other, "Unknown heartbeat state, defaulting to Session");
-            HeartbeatState::Session
+            warn!(state = other, "Unknown interiority state, defaulting to Active");
+            InteriorityState::Active
         }
     };
-
-    (state, persisted.unanswered_count)
+    (state, persisted.ticks_without_user)
 }
 
 // ---------------------------------------------------------------------------
@@ -207,7 +167,7 @@ pub struct AutonomyManager {
     shutdown_rx: tokio::sync::watch::Receiver<()>,
     /// Channel for sending compaction trigger signals (character name).
     compaction_tx: mpsc::Sender<String>,
-    /// LLM client for heartbeat probes and cache keepalive pings.
+    /// LLM client for interiority ticks and cache keepalive pings.
     llm_client: Option<LlmClient>,
     /// Broadcast sender for pushing autonomous messages to SWP clients.
     push_tx: Option<broadcast::Sender<ServerMessage>>,
@@ -296,29 +256,24 @@ impl AutonomyManager {
             .map(|c| Arc::new(c.app.behavior.autonomy.clone()))
             .unwrap_or_else(|| self.config.clone());
 
-        // Create scheduler state with config values.
-        let mut heartbeat = HeartbeatScheduler::with_config(
-            autonomy_cfg.heartbeat.dormant_threshold,
-            autonomy_cfg.heartbeat.session_gap_secs,
-            autonomy_cfg.heartbeat.session_probe_floor_secs,
-        );
-        let mut cache_keepalive = CacheKeepaliveScheduler::new(keepalive_config);
+        // Create interiority clock with config values.
+        let mut interiority = InteriorityClock::with_config(&autonomy_cfg.interiority);
+        let cache_keepalive = CacheKeepaliveScheduler::new(keepalive_config);
 
         // Restore persisted state if available.
         if let Some(persisted) = load_state(&self.data_dir, character) {
-            let (hb_state, unanswered) = restore_heartbeat(&persisted);
-            heartbeat.restore(hb_state, unanswered);
-            cache_keepalive.restore_counters(persisted.cache_estimated_tokens);
+            let (int_state, ticks) = restore_interiority(&persisted);
+            interiority.restore(int_state, ticks);
             info!(character, "Autonomy state restored from disk");
         } else {
             info!(character, "Autonomy state created (no prior state)");
         }
 
         let state = Arc::new(Mutex::new(AutonomyState {
-            heartbeat,
+            interiority,
             cache_keepalive,
             activity: ActivityTracker::new(),
-            heartbeat_log: HeartbeatLog::new(),
+            interiority_log: InteriorityLog::new(),
             dirty: false,
             last_compaction_activity: Instant::now(),
             compaction_triggered: false,
@@ -328,7 +283,7 @@ impl AutonomyManager {
 
         states.insert(character.to_string(), state.clone());
 
-        // Spawn per-character tick task. Use per-character effective config if available.
+        // Spawn per-character tick task.
         let name = character.to_string();
         let config = autonomy_cfg;
         let compaction = self.compaction.clone();
@@ -369,12 +324,12 @@ impl AutonomyManager {
         let states = self.states.lock().unwrap();
         if let Some(state) = states.get(character) {
             let mut s = state.lock().unwrap();
-            let was_dormant = matches!(s.heartbeat.state(), HeartbeatState::Dormant);
+            let was_dormant = s.interiority.state() == InteriorityState::Dormant;
             let now = Instant::now();
-            s.heartbeat.on_user_message(now);
+            s.interiority.on_user_message(now);
             if was_dormant {
-                s.heartbeat_log.push(
-                    HeartbeatEventKind::Wake,
+                s.interiority_log.push(
+                    InteriorityEventKind::Wake,
                     "User returned — woke from dormant",
                 );
             }
@@ -392,11 +347,12 @@ impl AutonomyManager {
         if let Some(state) = states.get(character) {
             let mut s = state.lock().unwrap();
             let now = Instant::now();
-            s.heartbeat.on_assistant_message(now);
+            s.interiority.on_assistant_message(now);
             s.activity.record_message();
             s.last_compaction_activity = now;
             s.compaction_triggered = false;
             s.active_turn_count = message_count;
+            s.mark_dirty();
         }
     }
 
@@ -440,7 +396,7 @@ impl AutonomyManager {
         let states = self.states.lock().unwrap();
         let state_arc = states.get(character)?;
         let mut s = state_arc.lock().unwrap();
-        s.heartbeat.set_paused(paused);
+        s.interiority.set_paused(paused);
         s.cache_keepalive.set_paused(paused);
         s.mark_dirty();
         Some(paused)
@@ -449,8 +405,6 @@ impl AutonomyManager {
     // -- activity stats --------------------------------------------------------
 
     /// Return a clone of the `ActivityStats` and message count for a character.
-    ///
-    /// Used by the activity heatmap tool.
     pub fn activity_stats(
         &self,
         character: &str,
@@ -469,46 +423,31 @@ impl AutonomyManager {
     pub fn status(&self, character: &str) -> Option<AutonomyStatus> {
         let states = self.states.lock().unwrap();
         let state_arc = states.get(character)?;
-        let mut state = state_arc.lock().unwrap();
-
-        // Clone stats to release the mutable borrow on activity before
-        // accessing heartbeat fields.
-        let stats = state.activity.stats().clone();
-        let tau_params = TauParams {
-            reciprocated: state.heartbeat.unanswered_count() == 0,
-            hour_class: current_hour_class(stats.hour_classifications),
-            personality: self.config.personality,
-        };
-        let tau = compute_tau(&stats, &tau_params);
-        let dormant_threshold = state.heartbeat.dormant_threshold();
+        let state = state_arc.lock().unwrap();
 
         Some(AutonomyStatus {
-            paused: state.heartbeat.is_paused(),
-            heartbeat_state: format!("{:?}", state.heartbeat.state()),
-            unanswered_count: state.heartbeat.unanswered_count(),
-            dormant_threshold,
-            social_need_bar: state.heartbeat.social_need_bar(),
-            tau,
+            paused: state.interiority.is_paused(),
+            interiority_state: state.interiority.state().to_string(),
+            ticks_without_user: state.interiority.ticks_without_user(),
+            max_idle_ticks: state.interiority.max_idle_ticks(),
             cache_keepalive_state: format!("{:?}", state.cache_keepalive.state()),
             cache_keepalive_pings: state.cache_keepalive.ping_count(),
         })
     }
 
-    /// Return recent heartbeat events for `shore log --heartbeat`.
-    pub fn heartbeat_log(&self, character: &str, limit: usize) -> Vec<super::HeartbeatEvent> {
+    /// Return recent interiority events for `shore log --heartbeat`.
+    pub fn heartbeat_log(&self, character: &str, limit: usize) -> Vec<super::InteriorityEvent> {
         let states = self.states.lock().unwrap();
         let Some(state_arc) = states.get(character) else {
             return vec![];
         };
         let state = state_arc.lock().unwrap();
-        state.heartbeat_log.recent(limit).into_iter().cloned().collect()
+        state.interiority_log.recent(limit).into_iter().cloned().collect()
     }
 
     // -- shutdown -------------------------------------------------------------
 
     /// Wait for all per-character tick tasks to finish.
-    ///
-    /// Call after the shutdown signal has been sent.
     pub async fn shutdown(&self) {
         let handles: Vec<JoinHandle<()>> = {
             let mut h = self.handles.lock().unwrap();
@@ -591,45 +530,32 @@ async fn tick_character(
     notifier: Option<&NotificationService>,
 ) {
     let now = Instant::now();
-    let wall_now = Utc::now().naive_utc();
 
     // Collect actions under the lock, then release before any async work.
-    let (hb_action, ka_action, compaction_needed) = {
+    let (int_action, ka_action, compaction_needed) = {
         let mut s = state.lock().unwrap();
 
-        // -- heartbeat --------------------------------------------------------
-        let hb_action = if config.enabled && config.heartbeat.enabled {
-            let state_before = format!("{:?}", s.heartbeat.state());
-            let stats = s.activity.stats().clone();
-            let tau_params = TauParams {
-                reciprocated: s.heartbeat.unanswered_count() == 0,
-                hour_class: current_hour_class(stats.hour_classifications),
-                personality: config.personality,
-            };
-            let random_value: f64 = rand::thread_rng().gen();
-            let action = s.heartbeat.tick(&stats, &tau_params, now, wall_now, random_value);
-            if !matches!(action, HeartbeatAction::None) {
+        // -- interiority ------------------------------------------------------
+        let int_action = if config.enabled && config.interiority.enabled {
+            let state_before = s.interiority.state();
+            let action = s.interiority.tick(now);
+            let state_after = s.interiority.state();
+
+            if !matches!(action, InteriorityAction::None) {
                 s.mark_dirty();
             }
-            // Record state transitions and dormant entry.
-            let state_after = format!("{:?}", s.heartbeat.state());
-            if state_before != state_after {
-                if matches!(s.heartbeat.state(), HeartbeatState::Dormant) {
-                    let count = s.heartbeat.unanswered_count();
-                    s.heartbeat_log.push(
-                        HeartbeatEventKind::Dormant,
-                        format!("Entered dormant (unanswered: {count})"),
-                    );
-                } else {
-                    s.heartbeat_log.push(
-                        HeartbeatEventKind::StateChange,
-                        format!("{state_before} → {state_after}"),
-                    );
-                }
+
+            // Record dormancy transition.
+            if state_before != state_after && state_after == InteriorityState::Dormant {
+                let ticks = s.interiority.ticks_without_user();
+                s.interiority_log.push(
+                    InteriorityEventKind::Dormant,
+                    format!("Entered dormant (ticks without user: {ticks})"),
+                );
             }
             action
         } else {
-            HeartbeatAction::None
+            InteriorityAction::None
         };
 
         // -- cache keepalive --------------------------------------------------
@@ -671,72 +597,25 @@ async fn tick_character(
         }
 
         save_state(data_dir, character, &mut s);
-        (hb_action, ka_action, compaction_needed)
+        (int_action, ka_action, compaction_needed)
     };
 
     if compaction_needed {
         let _ = compaction_tx.try_send(character.to_string());
     }
 
-    // -- execute heartbeat actions (async, outside lock) -------------------
-    match hb_action {
-        HeartbeatAction::None => {}
-        HeartbeatAction::GenerateProbe { idle_secs, current_time } => {
-            {
-                let mut s = state.lock().unwrap();
-                s.heartbeat_log.push(
-                    HeartbeatEventKind::ProbeTrigger,
-                    format!("Post-session probe after {idle_secs}s idle"),
-                );
-            }
-            info!(
-                character = %character,
-                idle_secs,
-                current_time = %current_time,
-                "Heartbeat: post-session probe triggered"
+    // -- execute interiority tick (async, outside lock) -------------------
+    if matches!(int_action, InteriorityAction::RunTick) {
+        {
+            let mut s = state.lock().unwrap();
+            s.interiority_log.push(
+                InteriorityEventKind::TickFired,
+                "Interiority tick fired",
             );
-            execute_probe(character, idle_secs, current_time, now, wall_now, state, data_dir, llm_client, loaded_config).await;
         }
-        HeartbeatAction::GenerateDeferredMessage { reasoning } => {
-            {
-                let mut s = state.lock().unwrap();
-                s.heartbeat_log.push(
-                    HeartbeatEventKind::DeferredFire,
-                    format!("Deferred timer fired: {reasoning}"),
-                );
-            }
-            info!(
-                character = %character,
-                reasoning = %reasoning,
-                "Heartbeat: deferred message triggered"
-            );
-            execute_autonomous_message(
-                character, &heartbeat::render_deferred(&reasoning, &wall_now),
-                state, data_dir, llm_client, push_tx, loaded_config, notifier,
-            ).await;
-        }
-        HeartbeatAction::GenerateSocialNeedMessage { anomaly_context } => {
-            {
-                let mut s = state.lock().unwrap();
-                s.heartbeat_log.push(
-                    HeartbeatEventKind::SocialNeedFire,
-                    if anomaly_context {
-                        "Social-need message triggered (anomaly detected)"
-                    } else {
-                        "Social-need message triggered"
-                    },
-                );
-            }
-            info!(
-                character = %character,
-                anomaly_context,
-                "Heartbeat: social-need message triggered"
-            );
-            execute_autonomous_message(
-                character, &heartbeat::render_social_need(anomaly_context),
-                state, data_dir, llm_client, push_tx, loaded_config, notifier,
-            ).await;
-        }
+        execute_interiority_tick(
+            character, state, config, data_dir, llm_client, push_tx, loaded_config, notifier,
+        ).await;
     }
 
     // -- execute keepalive actions (async, outside lock) -------------------
@@ -776,67 +655,22 @@ async fn tick_character(
 }
 
 // ---------------------------------------------------------------------------
-// Heartbeat action executors
+// Interiority tick executor
 // ---------------------------------------------------------------------------
 
-/// Execute the post-session probe: ask the LLM if the character wants to reach out.
-async fn execute_probe(
+/// Ephemeral prompt appended as the final user message during interiority ticks.
+const INTERIORITY_PROMPT: &str = "\
+[This is a private moment. You are not in conversation — no one is watching. \
+Use your tools (memory, scratchpad, web) to think, plan, reflect, or research. \
+If you want to message the user, wrap your message in <sendMessage>...</sendMessage> tags. \
+Otherwise, work silently.]";
+
+/// Execute a full interiority tick: clone last_request, append interiority prompt,
+/// run a tool loop, optionally message the user.
+async fn execute_interiority_tick(
     character: &str,
-    idle_secs: u64,
-    current_time: NaiveDateTime,
-    now: Instant,
-    wall_now: NaiveDateTime,
     state: &Arc<Mutex<AutonomyState>>,
-    data_dir: &Path,
-    llm_client: Option<&LlmClient>,
-    loaded_config: Option<&LoadedConfig>,
-) {
-    let Some(client) = llm_client else { return };
-    let Some(config) = loaded_config else { return };
-
-    let prompt = heartbeat::render_post_session(idle_secs, &current_time);
-    let request = match build_autonomy_request(config, &prompt, 500) {
-        Some(r) => r,
-        None => {
-            warn!(character, "Cannot execute probe: no model configured");
-            return;
-        }
-    };
-
-    match client.generate(&request, None).await {
-        Ok(resp) => {
-            let mut s = state.lock().unwrap();
-            let result = s.heartbeat.handle_probe_response(&resp.content, now, wall_now);
-            match &result {
-                ProbeResult::Deferred(fire_at) => {
-                    s.heartbeat_log.push(
-                        HeartbeatEventKind::ProbeResult,
-                        format!("Deferred to {fire_at}"),
-                    );
-                    info!(character, fire_at = %fire_at, "Probe: character deferred to later");
-                }
-                ProbeResult::Declined => {
-                    s.heartbeat_log.push(
-                        HeartbeatEventKind::ProbeResult,
-                        "Declined to reach out",
-                    );
-                    info!(character, "Probe: character declined to reach out");
-                }
-            }
-            s.mark_dirty();
-            save_state(data_dir, character, &mut s);
-        }
-        Err(e) => {
-            error!(character, error = %e, "Heartbeat probe LLM call failed");
-        }
-    }
-}
-
-/// Execute an autonomous message (deferred or social-need): generate text and push it.
-async fn execute_autonomous_message(
-    character: &str,
-    prompt: &str,
-    state: &Arc<Mutex<AutonomyState>>,
+    config: &AutonomyConfig,
     data_dir: &Path,
     llm_client: Option<&LlmClient>,
     push_tx: Option<&broadcast::Sender<ServerMessage>>,
@@ -844,92 +678,395 @@ async fn execute_autonomous_message(
     notifier: Option<&NotificationService>,
 ) {
     let Some(client) = llm_client else { return };
-    let Some(config) = loaded_config else { return };
 
-    let request = match build_autonomy_request(config, prompt, 1000) {
-        Some(r) => r,
-        None => {
-            warn!(character, "Cannot execute autonomous message: no model configured");
-            return;
+    // Clone the last conversation request to preserve the cache prefix
+    // (system prompt, tool definitions, provider_options are all inherited).
+    let mut request = {
+        let s = state.lock().unwrap();
+        match &s.last_request {
+            Some(req) => req.clone(),
+            None => {
+                info!(character, "Interiority: skipping tick (no prior conversation)");
+                return;
+            }
         }
     };
 
-    match client.generate(&request, None).await {
-        Ok(resp) => {
-            if resp.content.trim().is_empty() {
-                {
-                    let mut s = state.lock().unwrap();
-                    s.heartbeat_log.push(
-                        HeartbeatEventKind::MessageSkipped,
-                        "Character chose not to respond",
-                    );
-                }
-                info!(character, "Autonomous message: character chose not to respond");
+    // Append the interiority prompt as a new user message.
+    request.messages.push(json!({"role": "user", "content": INTERIORITY_PROMPT}));
+    request.max_tokens = 1000;
+
+    let max_rounds = config.interiority.max_tool_rounds;
+    let Some(lc) = loaded_config else { return };
+    let tool_ctx = match InteriorityToolContext::build(
+        character, data_dir, client, lc,
+    ).await {
+        Some(ctx) => ctx,
+        None => {
+            warn!(character, "Interiority: failed to build tool context, skipping tick");
+            return;
+        }
+    };
+    let active_path = data_dir.join(character).join("active.jsonl");
+
+    info!(character, max_rounds, "Interiority: executing tick");
+
+    // -- Tool loop: generate → dispatch tools → generate again ----------------
+    let mut final_content = String::new();
+    let mut final_blocks: Vec<ContentBlock> = Vec::new();
+
+    for round in 0..=max_rounds {
+        let resp = match client.generate(&request, None).await {
+            Ok(r) => r,
+            Err(e) => {
+                error!(character, error = %e, round, "Interiority: LLM call failed");
                 return;
             }
+        };
 
-            // Append to conversation file directly (like compaction_task does).
-            let content_blocks = if resp.content_blocks.is_empty() {
-                vec![ContentBlock::Text { text: resp.content.clone() }]
-            } else {
-                resp.content_blocks.clone()
-            };
-            let content = derive_content_from_blocks(&content_blocks);
-            let msg = Message {
-                msg_id: format!("m_{}", uuid::Uuid::new_v4()),
-                role: Role::Assistant,
-                content,
-                images: vec![],
-                content_blocks,
-                alt_index: None,
-                alt_count: None,
-                timestamp: chrono::Utc::now().to_rfc3339(),
-            };
+        // Update cache keepalive — this API call keeps the cache warm.
+        {
+            let mut s = state.lock().unwrap();
+            let now = Instant::now();
+            s.cache_keepalive.on_api_response(
+                now,
+                resp.usage.cache_read_tokens,
+                resp.usage.input_tokens,
+            );
+        }
 
-            let active_path = data_dir.join(character).join("active.jsonl");
-            if let Ok(line) = msg.serialize_for_storage() {
-                use std::io::Write;
-                if let Ok(mut f) = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&active_path)
-                {
-                    let _ = writeln!(f, "{line}");
+        // Log the response.
+        info!(
+            character,
+            round,
+            finish_reason = %resp.finish_reason,
+            input_tokens = resp.usage.input_tokens,
+            output_tokens = resp.usage.output_tokens,
+            cache_read = resp.usage.cache_read_tokens,
+            "Interiority: LLM response"
+        );
+        if !resp.content.is_empty() {
+            let preview: String = resp.content.chars().take(200).collect();
+            info!(character, round, content = %preview, "Interiority: response text");
+        }
+
+        final_content = resp.content.clone();
+        final_blocks = resp.content_blocks.clone();
+
+        // If no tool use, we're done.
+        if resp.finish_reason != "tool_use" {
+            break;
+        }
+
+        // Bail if we've exhausted tool rounds.
+        if round >= max_rounds {
+            warn!(character, max_rounds, "Interiority: hit max tool rounds");
+            let mut s = state.lock().unwrap();
+            s.interiority_log.push(
+                InteriorityEventKind::ToolUse,
+                format!("Hit max tool rounds ({max_rounds})"),
+            );
+            break;
+        }
+
+        // Build assistant message from content blocks for the next request.
+        let assistant_content: Vec<serde_json::Value> = resp.content_blocks.iter().filter_map(|block| {
+            match block {
+                ContentBlock::Text { text } => Some(json!({"type": "text", "text": text})),
+                ContentBlock::ToolUse { id, name, input } => Some(json!({
+                    "type": "tool_use", "id": id, "name": name, "input": input
+                })),
+                ContentBlock::Thinking { thinking, signature } => {
+                    signature.as_ref().map(|sig| json!({
+                        "type": "thinking", "thinking": thinking, "signature": sig
+                    }))
                 }
+                ContentBlock::RedactedThinking { data } => Some(json!({
+                    "type": "redacted_thinking", "data": data
+                })),
+                _ => None,
             }
+        }).collect();
 
-            // Broadcast to connected clients.
-            if let Some(tx) = push_tx {
-                let _ = tx.send(ServerMessage::NewMessage(NewMessage { message: msg.clone() }));
-            }
+        request.messages.push(json!({"role": "assistant", "content": assistant_content}));
 
-            // Push notification.
-            if let Some(n) = notifier {
-                n.notify(
-                    NotificationEvent::AutonomousMessage,
-                    &format!("Shore — {character}"),
-                    &msg.content,
+        // Execute each tool call and collect results.
+        let mut tool_results: Vec<serde_json::Value> = Vec::new();
+        for block in &resp.content_blocks {
+            if let ContentBlock::ToolUse { id, name, input } = block {
+                info!(
+                    character, round,
+                    tool = %name, tool_id = %id,
+                    input = %serde_json::to_string(input).unwrap_or_default(),
+                    "Interiority: executing tool"
                 );
-            }
 
-            // Update heartbeat state.
+                let (output_str, is_error) = match tool_system::dispatch_tool(name, input.clone(), &tool_ctx).await {
+                    Ok(value) => {
+                        let s = if let Some(s) = value.as_str() {
+                            s.to_string()
+                        } else {
+                            serde_json::to_string(&value).unwrap_or_default()
+                        };
+                        (s, false)
+                    }
+                    Err(e) => (e.to_string(), true),
+                };
+
+                info!(
+                    character, round,
+                    tool = %name, is_error,
+                    output = %truncate_log(&output_str, 200),
+                    "Interiority: tool result"
+                );
+
+                {
+                    let mut s = state.lock().unwrap();
+                    s.interiority_log.push(
+                        InteriorityEventKind::ToolUse,
+                        format!("Tool: {name} → {}", truncate_log(&output_str, 80)),
+                    );
+                }
+
+                let mut result_block = json!({
+                    "type": "tool_result",
+                    "tool_use_id": id,
+                    "content": output_str,
+                });
+                if is_error {
+                    result_block["is_error"] = json!(true);
+                }
+                tool_results.push(result_block);
+            }
+        }
+
+        // Append tool results as user message.
+        request.messages.push(json!({"role": "user", "content": tool_results}));
+    }
+
+    // -- Extract <sendMessage> and handle result --------------------------------
+
+    let send_message = extract_send_message(&final_content);
+
+    if let Some(user_msg) = send_message {
+        info!(character, msg = %truncate_log(&user_msg, 200), "Interiority: sending message to user");
+
+        let content_blocks = vec![ContentBlock::Text { text: user_msg.clone() }];
+        let content = derive_content_from_blocks(&content_blocks);
+        let msg = Message {
+            msg_id: format!("m_{}", uuid::Uuid::new_v4()),
+            role: Role::Assistant,
+            content,
+            images: vec![],
+            content_blocks,
+            alt_index: None,
+            alt_count: None,
+            timestamp: chrono::Utc::now().to_rfc3339(),
+        };
+
+        if let Ok(line) = msg.serialize_for_storage() {
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&active_path)
             {
-                let mut s = state.lock().unwrap();
-                let now = Instant::now();
-                s.heartbeat.on_assistant_message(now);
-                s.activity.record_message();
-                let preview: String = msg.content.chars().take(80).collect();
-                s.heartbeat_log.push(
-                    HeartbeatEventKind::MessageSent,
-                    format!("Autonomous message sent: {preview}"),
-                );
-                s.mark_dirty();
-                save_state(data_dir, character, &mut s);
+                let _ = writeln!(f, "{line}");
             }
         }
-        Err(e) => {
-            error!(character, error = %e, "Autonomous message LLM call failed");
+
+        if let Some(tx) = push_tx {
+            let _ = tx.send(ServerMessage::NewMessage(NewMessage { message: msg.clone() }));
         }
+        if let Some(n) = notifier {
+            n.notify(
+                NotificationEvent::AutonomousMessage,
+                &format!("Shore — {character}"),
+                &msg.content,
+            );
+        }
+
+        let mut s = state.lock().unwrap();
+        let preview: String = msg.content.chars().take(80).collect();
+        s.interiority_log.push(
+            InteriorityEventKind::MessageSent,
+            format!("Autonomous message sent: {preview}"),
+        );
+        s.mark_dirty();
+    } else {
+        // Log thinking even when no message sent — useful for prompt tuning.
+        let thinking: Vec<&str> = final_blocks.iter().filter_map(|b| {
+            if let ContentBlock::Text { text } = b { Some(text.as_str()) } else { None }
+        }).collect();
+        let summary = if thinking.is_empty() {
+            "Tick completed — no message, no text output".to_string()
+        } else {
+            format!("Tick completed silently: {}", truncate_log(&thinking.join(" "), 150))
+        };
+        info!(character, summary = %summary, "Interiority: tick complete (silent)");
+        let mut s = state.lock().unwrap();
+        s.interiority_log.push(InteriorityEventKind::MessageSkipped, summary);
+    }
+}
+
+/// Truncate a string for log output.
+fn truncate_log(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let truncated: String = s.chars().take(max).collect();
+        format!("{truncated}…")
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ToolContext for interiority ticks
+// ---------------------------------------------------------------------------
+
+/// Full tool context for interiority tick execution.
+///
+/// Constructed per-tick from the same ingredients the handler uses (LlmClient,
+/// LoadedConfig, data_dir). All tools work — memory, images, web, scratchpad.
+/// The only gap is AutonomyManager (the heatmap tool degrades gracefully).
+struct InteriorityToolContext {
+    db: MemoryDB,
+    agent: crate::memory::agent::MemoryAgent,
+    agent_llm: RealAgentLlm,
+    agent_model_val: shore_config::models::ResolvedModel,
+    researcher: Option<MemoryResearcher>,
+    researcher_llm_val: Option<RealAgentLlm>,
+    researcher_model_val: Option<shore_config::models::ResolvedModel>,
+    rag: NoopRag,
+    search_ctx: Option<AgentSearchContext>,
+    image_dir_val: String,
+    llm_client_val: LlmClient,
+    image_gen_config_val: Option<ImageGenConfig>,
+    search_config_val: shore_config::app::SearchConfig,
+    character_name_val: String,
+    scratchpad_dir_val: String,
+}
+
+impl InteriorityToolContext {
+    /// Build a full tool context for interiority ticks.
+    async fn build(
+        character: &str,
+        data_dir: &Path,
+        client: &LlmClient,
+        config: &LoadedConfig,
+    ) -> Option<Self> {
+        let char_dir = data_dir.join(character);
+
+        // Memory DB.
+        let db_path = char_dir.join("memory").join("memory.db");
+        let db = match MemoryDB::open(&db_path) {
+            Ok(db) => db,
+            Err(e) => {
+                warn!(character, error = %e, "Interiority: failed to open memory DB");
+                return None;
+            }
+        };
+
+        // Agent model (use memory_agent config if set, else default model).
+        let agent_model_name = config.app.defaults.memory_agent.as_deref()
+            .or(config.app.defaults.model.as_deref())?;
+        let agent_model = config.models.find_model(agent_model_name).ok()?;
+
+        // Researcher model (optional).
+        let researcher_model = config.app.defaults.collation.as_deref()
+            .and_then(|name| config.models.find_model(name).ok())
+            .cloned();
+
+        // Semantic search context (graceful: None if no embedding model).
+        let search_ctx = match resolve_embed_config(
+            config.app.defaults.embedding.as_deref(),
+            &config.models.embedding,
+        ) {
+            Ok(embed_config) => {
+                let vs_path = char_dir.join("memory").join("vectorstore");
+                VectorStore::open(&vs_path, embed_config.dimensions).await
+                    .ok()
+                    .map(|vs| AgentSearchContext::new(vs, client.clone(), embed_config))
+            }
+            Err(_) => None,
+        };
+
+        let image_gen_config = resolve_image_gen_config(
+            config.app.defaults.image_generation.as_deref(),
+            &config.models.image_generation,
+        ).ok();
+
+        let display_name = config.app.defaults.resolve_display_name();
+
+        Some(Self {
+            db,
+            agent: crate::memory::agent::MemoryAgent::one_shot(
+                CallerIdentity::Char, character, &display_name,
+            ),
+            agent_llm: RealAgentLlm::new(client.clone()),
+            agent_model_val: agent_model.clone(),
+            researcher: researcher_model.as_ref().map(|_| MemoryResearcher::new(String::new(), String::new())),
+            researcher_llm_val: researcher_model.as_ref().map(|_| RealAgentLlm::new(client.clone())),
+            researcher_model_val: researcher_model,
+            rag: NoopRag,
+            search_ctx,
+            image_dir_val: char_dir.join("images").to_string_lossy().into_owned(),
+            llm_client_val: client.clone(),
+            image_gen_config_val: image_gen_config,
+            search_config_val: config.app.behavior.tool_use.search.clone(),
+            character_name_val: character.to_string(),
+            scratchpad_dir_val: char_dir.join("scratchpad").to_string_lossy().into_owned(),
+        })
+    }
+}
+
+/// NoopRag stub — same as handler's, needed by image tools via ToolContext.
+struct NoopRag;
+
+impl AgentRag for NoopRag {
+    fn query(
+        &self, _query: &str, _top_k: usize,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<RagHit>, AgentError>> + Send + '_>> {
+        Box::pin(async { Ok(vec![]) })
+    }
+}
+
+impl tool_system::ToolContext for InteriorityToolContext {
+    fn memory_db(&self) -> &MemoryDB { &self.db }
+    fn memory_agent(&self) -> &crate::memory::agent::MemoryAgent { &self.agent }
+    fn agent_llm(&self) -> &dyn AgentLlm { &self.agent_llm }
+    fn agent_model(&self) -> &shore_config::models::ResolvedModel { &self.agent_model_val }
+    fn researcher_llm(&self) -> Option<&dyn AgentLlm> {
+        self.researcher_llm_val.as_ref().map(|l| l as &dyn AgentLlm)
+    }
+    fn researcher_model(&self) -> Option<&shore_config::models::ResolvedModel> {
+        self.researcher_model_val.as_ref()
+    }
+    fn memory_researcher(&self) -> Option<&MemoryResearcher> { self.researcher.as_ref() }
+    fn indexer(&self) -> Option<&dyn crate::memory::agent::AgentIndexer> { None }
+    fn search_context(&self) -> Option<&AgentSearchContext> { self.search_ctx.as_ref() }
+    fn rag(&self) -> &dyn AgentRag { &self.rag }
+    fn image_dir(&self) -> &str { &self.image_dir_val }
+    fn llm_client(&self) -> Option<&LlmClient> { Some(&self.llm_client_val) }
+    fn image_gen_config(&self) -> Option<&ImageGenConfig> { self.image_gen_config_val.as_ref() }
+    fn search_config(&self) -> &shore_config::app::SearchConfig { &self.search_config_val }
+    fn character_name(&self) -> &str { &self.character_name_val }
+    fn scratchpad_dir(&self) -> &str { &self.scratchpad_dir_val }
+}
+
+/// Extract text between `<sendMessage>` and `</sendMessage>` tags.
+fn extract_send_message(content: &str) -> Option<String> {
+    let start_tag = "<sendMessage>";
+    let end_tag = "</sendMessage>";
+    let start = content.find(start_tag)? + start_tag.len();
+    let end = content.find(end_tag)?;
+    if start >= end {
+        return None;
+    }
+    let inner = content[start..end].trim();
+    if inner.is_empty() {
+        None
+    } else {
+        Some(inner.to_string())
     }
 }
 
@@ -945,10 +1082,7 @@ async fn execute_keepalive_ping(
 ) {
     let Some(client) = llm_client else { return };
 
-    // Re-check state under the lock before sending.  The tick loop decides
-    // the keepalive action inside the lock, but executes the ping outside it.
-    // A concurrent handler notify_api_response() can transition state between
-    // the decision and execution — this guard prevents stale pings.
+    // Re-check state under the lock before sending.
     let request = {
         let s = state.lock().unwrap();
         if !matches!(s.cache_keepalive.state(), &KeepaliveState::Pinging) {
@@ -998,40 +1132,6 @@ async fn execute_keepalive_ping(
             error!(character, error = %e, "Cache keepalive ping failed");
         }
     }
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/// Build a minimal LLM request for autonomous actions using the default model.
-fn build_autonomy_request(
-    config: &LoadedConfig,
-    prompt: &str,
-    max_tokens: u32,
-) -> Option<LlmRequest> {
-    let model_name = config.app.defaults.model.as_deref()?;
-    let resolved = config.models.find_model(model_name).ok()?;
-    LlmClient::build_request(
-        resolved,
-        vec![json!({"role": "user", "content": prompt})],
-        None,
-        None,
-        None,
-    ).ok().map(|mut r| {
-        r.max_tokens = max_tokens;
-        r
-    })
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/// Get the HourClassification for the current UTC hour.
-fn current_hour_class(classifications: [HourClassification; 24]) -> HourClassification {
-    let hour = Utc::now().naive_utc().time().hour() as usize;
-    classifications[hour]
 }
 
 // ---------------------------------------------------------------------------
@@ -1127,25 +1227,25 @@ mod tests {
             let mgr = test_manager(tmp.path());
             mgr.ensure_state("alice", test_keepalive_config());
             let status = mgr.status("alice").unwrap();
-            assert_eq!(status.heartbeat_state, "Session");
-            assert_eq!(status.unanswered_count, 0);
+            assert_eq!(status.interiority_state, "Active");
+            assert_eq!(status.ticks_without_user, 0);
         });
     }
 
     // -- persistence ----------------------------------------------------------
 
     #[test]
-    fn save_and_restore_session_state() {
+    fn save_and_restore_state() {
         let tmp = tempfile::tempdir().unwrap();
         let data_dir = tmp.path();
         std::fs::create_dir_all(data_dir.join("alice")).unwrap();
 
         // Create and save.
         let mut state = AutonomyState {
-            heartbeat: HeartbeatScheduler::new(),
+            interiority: InteriorityClock::new(),
             cache_keepalive: CacheKeepaliveScheduler::new(CacheKeepaliveConfig::default()),
             activity: ActivityTracker::new(),
-            heartbeat_log: HeartbeatLog::new(),
+            interiority_log: InteriorityLog::new(),
             dirty: true,
             last_compaction_activity: Instant::now(),
             compaction_triggered: false,
@@ -1160,8 +1260,8 @@ mod tests {
 
         // Restore.
         let persisted = load_state(data_dir, "alice").unwrap();
-        assert_eq!(persisted.heartbeat_state, "Session");
-        assert_eq!(persisted.unanswered_count, 0);
+        assert_eq!(persisted.interiority_state, "Active");
+        assert_eq!(persisted.ticks_without_user, 0);
     }
 
     #[test]
@@ -1172,54 +1272,17 @@ mod tests {
 
         let persisted = PersistedState {
             version: STATE_VERSION,
-            heartbeat_state: "Dormant".into(),
-            unanswered_count: 5,
-            deferred_fire_at: None,
-            deferred_reasoning: None,
+            interiority_state: "Dormant".into(),
+            ticks_without_user: 5,
             cache_ping_count: 3,
-            cache_estimated_tokens: 0,
         };
         let json = serde_json::to_string(&persisted).unwrap();
         std::fs::write(state_path(data_dir, "alice"), json).unwrap();
 
         let loaded = load_state(data_dir, "alice").unwrap();
-        let (hb_state, unanswered) = restore_heartbeat(&loaded);
-        assert!(matches!(hb_state, HeartbeatState::Dormant));
-        assert_eq!(unanswered, 5);
-    }
-
-    #[test]
-    fn restore_expired_deferred_becomes_social_need() {
-        let expired = "2020-01-01T00:00:00".to_string();
-
-        let persisted = PersistedState {
-            version: STATE_VERSION,
-            heartbeat_state: "Deferred".into(),
-            unanswered_count: 1,
-            deferred_fire_at: Some(expired),
-            deferred_reasoning: Some("testing".into()),
-            cache_ping_count: 0,
-            cache_estimated_tokens: 0,
-        };
-
-        let (hb_state, _) = restore_heartbeat(&persisted);
-        assert!(matches!(hb_state, HeartbeatState::SocialNeed));
-    }
-
-    #[test]
-    fn restore_post_session_probe_becomes_social_need() {
-        let persisted = PersistedState {
-            version: STATE_VERSION,
-            heartbeat_state: "PostSessionProbe".into(),
-            unanswered_count: 0,
-            deferred_fire_at: None,
-            deferred_reasoning: None,
-            cache_ping_count: 0,
-            cache_estimated_tokens: 0,
-        };
-
-        let (hb_state, _) = restore_heartbeat(&persisted);
-        assert!(matches!(hb_state, HeartbeatState::SocialNeed));
+        let (int_state, ticks) = restore_interiority(&loaded);
+        assert_eq!(int_state, InteriorityState::Dormant);
+        assert_eq!(ticks, 5);
     }
 
     #[tokio::test]
@@ -1228,10 +1291,10 @@ mod tests {
         let config = test_config();
         let (compaction_tx, _compaction_rx) = mpsc::channel(16);
         let state = Arc::new(Mutex::new(AutonomyState {
-            heartbeat: HeartbeatScheduler::new(),
+            interiority: InteriorityClock::new(),
             cache_keepalive: CacheKeepaliveScheduler::new(CacheKeepaliveConfig::default()),
             activity: ActivityTracker::new(),
-            heartbeat_log: HeartbeatLog::new(),
+            interiority_log: InteriorityLog::new(),
             dirty: false,
             last_compaction_activity: Instant::now(),
             compaction_triggered: false,
@@ -1239,13 +1302,25 @@ mod tests {
             last_request: None,
         }));
 
-        // Need at least one message for heartbeat to have timestamps.
         {
             let mut s = state.lock().unwrap();
-            s.heartbeat.on_user_message(Instant::now());
+            s.interiority.on_user_message(Instant::now());
             s.activity.record_message();
         }
 
         tick_character("alice", &state, &config, &Default::default(), tmp.path(), &compaction_tx, None, None, None, None).await;
+    }
+
+    #[test]
+    fn extract_send_message_parses() {
+        assert_eq!(
+            extract_send_message("thinking...<sendMessage>Hey there!</sendMessage>...done"),
+            Some("Hey there!".into())
+        );
+        assert_eq!(extract_send_message("no tags here"), None);
+        assert_eq!(
+            extract_send_message("<sendMessage></sendMessage>"),
+            None
+        );
     }
 }

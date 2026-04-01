@@ -157,7 +157,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         info!("API payload logging enabled → {}/api_payloads.jsonl", loaded.dirs.data.display());
     }
 
-    // Provide the autonomy manager with resources for heartbeat/keepalive execution.
+    // Provide the autonomy manager with resources for interiority/keepalive execution.
     autonomy.set_resources(llm_client.clone(), push_tx.clone(), loaded.clone(), notifier.clone());
 
     let diagnostics = Arc::new(std::sync::Mutex::new(Diagnostics::default()));
