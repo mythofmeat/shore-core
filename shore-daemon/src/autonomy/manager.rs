@@ -441,51 +441,6 @@ impl AutonomyManager {
         .unwrap_or(false)
     }
 
-    /// Call after compaction completes successfully. Updates the turn count
-    /// and signals the handler to reload the engine on the next message.
-    pub fn notify_compaction_complete(&self, character: &str, new_turn_count: usize) {
-        let states = self.states.lock().unwrap();
-        if let Some(state) = states.get(character) {
-            let mut s = state.lock().unwrap();
-            s.active_turn_count = new_turn_count;
-            s.needs_engine_reload = true;
-            // Keep compaction_triggered = true until engine reload acknowledges it.
-            s.mark_dirty();
-            info!(
-                character = %character,
-                new_turn_count,
-                "Compaction complete — engine reload pending"
-            );
-        }
-    }
-
-    /// Call after compaction fails. Resets the trigger so it can retry.
-    pub fn notify_compaction_failed(&self, character: &str) {
-        let states = self.states.lock().unwrap();
-        if let Some(state) = states.get(character) {
-            let mut s = state.lock().unwrap();
-            s.compaction_triggered = false;
-            s.last_compaction_activity = Instant::now();
-            s.mark_dirty();
-        }
-    }
-
-    /// Check if a character's engine needs reloading after compaction.
-    /// Returns true (and clears the flag) if a reload is needed.
-    pub fn take_needs_reload(&self, character: &str) -> bool {
-        let states = self.states.lock().unwrap();
-        if let Some(state) = states.get(character) {
-            let mut s = state.lock().unwrap();
-            if s.needs_engine_reload {
-                s.needs_engine_reload = false;
-                // Compaction cycle complete — allow future compaction triggers.
-                s.compaction_triggered = false;
-                s.last_compaction_activity = Instant::now();
-                return true;
-            }
-        }
-        false
-    }
 
     /// Update the cache keepalive config for a character (e.g. on model switch).
     pub fn update_keepalive_config(&self, character: &str, config: CacheKeepaliveConfig) {
