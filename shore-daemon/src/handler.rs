@@ -232,6 +232,7 @@ impl MessageHandler {
                     let notifier = self.notifier.clone();
 
                     tokio::spawn(async move {
+                        let notify_name = char_name.clone();
                         if let Err(e) = handle_generation(
                             gen, body, regen, char_name, rid,
                             effective_config, data_dir, active_model,
@@ -242,7 +243,7 @@ impl MessageHandler {
                                 code: ErrorCode::InternalError,
                                 message: err_msg.clone(),
                             }));
-                            notifier.notify(NotificationEvent::Error, "Shore — Error", &err_msg);
+                            notifier.notify(NotificationEvent::Error, &format!("Shore — {notify_name}"), &err_msg);
                         }
                     });
                 }
@@ -736,7 +737,7 @@ async fn handle_generation(
     }
 
     // 12. Persist intermediate tool messages and final assistant message.
-    {
+    let notify_content = {
         let mut engine = engine_arc.lock().await;
 
         for msg in tool_intermediate_messages {
@@ -791,6 +792,7 @@ async fn handle_generation(
             result.content_blocks.clone()
         };
         let content = derive_content_from_blocks(&content_blocks);
+        let notify_content = content.clone();
         let assistant_msg = Message {
             msg_id: format!("m_{}", uuid::Uuid::new_v4()),
             role: Role::Assistant,
@@ -803,12 +805,13 @@ async fn handle_generation(
         };
         engine.append_message(assistant_msg)?;
         ctx.autonomy.notify_assistant_message(&char_name, engine.turn_count());
-    } // engine lock released
+        notify_content
+    }; // engine lock released
 
     let wall_clock_ms = wall_clock_start.elapsed().as_millis() as u32;
     ctx.notifier.notify_message_complete(
         &format!("Shore — {char_name}"),
-        &format!("Response complete ({:.1}s)", wall_clock_ms as f64 / 1000.0),
+        &notify_content,
         wall_clock_ms,
     );
 
