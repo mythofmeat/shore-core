@@ -376,15 +376,57 @@ async fn handle_generation(
         if regen {
             engine.truncate_after_last_user_turn()?;
         } else if !body.text.is_empty() || !body.images.is_empty() {
-            let images: Vec<ImageRef> = body.images.iter()
-                .map(|p| ImageRef { path: p.clone(), caption: None })
-                .collect();
+            // Copy incoming images to durable attachments/ directory.
+            let character_data_dir = data_dir.join(&char_name);
+            let attachments_dir = character_data_dir.join("images").join("attachments");
+            let mut images: Vec<ImageRef> = Vec::with_capacity(body.images.len());
+            let mut content_blocks: Vec<ContentBlock> = Vec::new();
+
+            for src_path_str in &body.images {
+                let src_path = std::path::Path::new(src_path_str);
+                if !src_path.exists() {
+                    warn!(path = %src_path_str, "Skipping non-existent image");
+                    continue;
+                }
+                if let Err(e) = std::fs::create_dir_all(&attachments_dir) {
+                    warn!(error = %e, "Failed to create attachments directory");
+                    continue;
+                }
+                let original_name = src_path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "image".to_string());
+                let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+                let dest_name = format!("{timestamp}_{original_name}");
+                let dest_path = attachments_dir.join(&dest_name);
+
+                match std::fs::copy(src_path, &dest_path) {
+                    Ok(_) => {
+                        let abs_path = dest_path.to_string_lossy().to_string();
+                        let rel_path = format!("attachments/{dest_name}");
+                        images.push(ImageRef { path: abs_path, caption: None });
+                        content_blocks.push(ContentBlock::Text {
+                            text: format!("[Attached image saved as: {rel_path}]"),
+                        });
+                        info!(src = %src_path_str, dest = %rel_path, "Copied incoming image to attachments");
+                    }
+                    Err(e) => {
+                        warn!(src = %src_path_str, error = %e, "Failed to copy image to attachments");
+                        // Fall back to the original path so the image still reaches the LLM.
+                        images.push(ImageRef { path: src_path_str.clone(), caption: None });
+                    }
+                }
+            }
+
+            // User text comes after the image annotations.
+            content_blocks.push(ContentBlock::Text { text: body.text.clone() });
+
             let user_msg = Message {
                 msg_id: format!("m_{}", uuid::Uuid::new_v4()),
                 role: Role::User,
                 content: body.text.clone(),
                 images,
-                content_blocks: vec![ContentBlock::Text { text: body.text.clone() }],
+                content_blocks,
                 alt_index: None,
                 alt_count: None,
                 timestamp: chrono::Utc::now().to_rfc3339(),
@@ -456,6 +498,7 @@ async fn handle_generation(
         memory_enabled: tool_toggles.memory,
         image_memory_enabled: effective_config.app.memory.image_enabled,
         send_image_enabled: tool_toggles.send_image,
+        remember_image_enabled: tool_toggles.remember_image,
         generate_image_enabled: tool_toggles.generate_image,
         web_search_enabled: tool_toggles.web_search,
         activity_heatmap_enabled: tool_toggles.activity_heatmap,
@@ -491,9 +534,34 @@ async fn handle_generation(
                 Role::System => "system",
             };
             let content = if !m.content_blocks.is_empty() {
-                let blocks: Vec<Value> = m.content_blocks.iter()
-                    .filter_map(crate::content_util::content_block_to_api_json)
-                    .collect();
+                let mut blocks: Vec<Value> = Vec::new();
+
+                // Prepend base64-encoded image blocks from m.images (fixes the
+                // bug where user-sent images were silently dropped because
+                // content_blocks was non-empty and build_content was dead code).
+                for img in &m.images {
+                    if let Some(media_type) = media_type_for_path(&img.path) {
+                        match std::fs::read(&img.path) {
+                            Ok(bytes) => {
+                                let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                                blocks.push(json!({
+                                    "type": "image",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": media_type,
+                                        "data": encoded,
+                                    }
+                                }));
+                            }
+                            Err(e) => {
+                                warn!(path = %img.path, error = %e, "Failed to read image file for LLM");
+                            }
+                        }
+                    }
+                }
+
+                blocks.extend(m.content_blocks.iter()
+                    .filter_map(crate::content_util::content_block_to_api_json));
                 json!(blocks)
             } else {
                 build_content(&m.content, &m.images)

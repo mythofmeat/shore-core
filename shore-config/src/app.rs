@@ -311,6 +311,8 @@ pub struct ToolToggles {
     #[serde(default = "default_true")]
     pub generate_image: bool,
     #[serde(default = "default_true")]
+    pub remember_image: bool,
+    #[serde(default = "default_true")]
     pub web_search: bool,
     #[serde(default = "default_true")]
     pub fetch_url: bool,
@@ -338,6 +340,7 @@ impl Default for ToolToggles {
             list_images: true,
             recall_image: true,
             generate_image: true,
+            remember_image: true,
             web_search: true,
             fetch_url: true,
             check_time: true,
@@ -360,6 +363,7 @@ impl ToolToggles {
             "list_images" => self.list_images,
             "recall_image" => self.recall_image,
             "generate_image" => self.generate_image,
+            "remember_image" => self.remember_image,
             "web_search" => self.web_search,
             "fetch_url" => self.fetch_url,
             "check_time" => self.check_time,

@@ -66,6 +66,7 @@ pub struct CapabilitiesConfig {
     pub memory_enabled: bool,
     pub image_memory_enabled: bool,
     pub send_image_enabled: bool,
+    pub remember_image_enabled: bool,
     pub generate_image_enabled: bool,
     pub web_search_enabled: bool,
     pub activity_heatmap_enabled: bool,
@@ -125,6 +126,16 @@ pub fn build_capabilities_block(config: &CapabilitiesConfig) -> Option<String> {
              to what you're discussing — a shared moment, something you created \
              together, a visual callback — surface it. Don't wait to be asked; \
              sharing a relevant image is like referencing a shared experience.",
+        );
+    }
+    if config.remember_image_enabled {
+        lines.push(
+            "- When the user shares an image with you, use remember_image to save it \
+             to your memory with a description capturing context — who shared it, \
+             why, what it means. The image path is shown as \
+             [Attached image saved as: <path>]. Use that path with remember_image. \
+             The conversational context is the most valuable part — 'a photo of \
+             Alex's cat Whiskers' is far better than 'a photo of a cat'.",
         );
     }
     if config.generate_image_enabled {
@@ -654,6 +665,7 @@ mod tests {
             memory_enabled: true,
             image_memory_enabled: true,
             send_image_enabled: true,
+            remember_image_enabled: true,
             generate_image_enabled: true,
             web_search_enabled: true,
             activity_heatmap_enabled: true,
@@ -665,6 +677,7 @@ mod tests {
         assert!(block.contains("memory system"));
         assert!(block.contains("Image memory"));
         assert!(block.contains("send images"));
+        assert!(block.contains("remember_image"));
         assert!(block.contains("generate images"));
         assert!(block.contains("search the web"));
         assert!(block.contains("activity heatmap"));

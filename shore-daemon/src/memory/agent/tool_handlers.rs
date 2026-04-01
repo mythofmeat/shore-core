@@ -336,7 +336,7 @@ pub async fn handle_create_entry(
         created_at: now_str.clone(),
         updated_at: now_str,
         entry_type: String::new(),
-        image_path: String::new(),
+        image_path: input["image_path"].as_str().unwrap_or("").to_string(),
         collated_at: String::new(),
     };
 

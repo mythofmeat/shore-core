@@ -58,6 +58,25 @@ pub fn tool_defs() -> Vec<ToolDef> {
             category: ToolCategory::MemoryRead,
         },
         ToolDef {
+            name: "remember_image",
+            description: "Save a user-shared image to memory with a contextual description.",
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Relative path to the image in storage (from the [Attached image saved as: ...] annotation)."
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Rich contextual description — who shared it, why, what it means."
+                    }
+                },
+                "required": ["path", "description"]
+            }),
+            category: ToolCategory::MemoryWrite,
+        },
+        ToolDef {
             name: "generate_image",
             description: "Generate an image using the configured image generation model.",
             parameters: json!({
@@ -171,6 +190,62 @@ pub async fn handle_recall_image(input: Value, ctx: &dyn ToolContext) -> Result<
     Ok(json!({
         "path": full_path.to_string_lossy(),
         "exists": true,
+    }))
+}
+
+/// Handle `remember_image` — save a user-shared image to memory with context.
+pub async fn handle_remember_image(input: Value, ctx: &dyn ToolContext) -> Result<Value, ToolError> {
+    let path = input
+        .get("path")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| ToolError::InvalidArgs("missing 'path' field".to_string()))?;
+
+    let description = input
+        .get("description")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| ToolError::InvalidArgs("missing 'description' field".to_string()))?;
+
+    // Verify the file exists relative to image_dir.
+    let full_path = std::path::Path::new(ctx.image_dir()).join(path);
+    if !full_path.exists() {
+        return Err(ToolError::Io(format!("image not found: {}", full_path.display())));
+    }
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let entry = crate::memory::db::Entry {
+        id: format!("img_{}", uuid::Uuid::new_v4()),
+        memory_type: "image".into(),
+        source: "user".into(),
+        reason: "remember_image".into(),
+        status: "active".into(),
+        confidence: 1.0,
+        summary_text: description.to_string(),
+        topic_tags: "image,received".into(),
+        topic_key: "images".into(),
+        start_timestamp: now.clone(),
+        end_timestamp: now.clone(),
+        message_count: 0,
+        source_entry_ids: String::new(),
+        related_entry_ids: String::new(),
+        superseded_by: String::new(),
+        created_at: now.clone(),
+        updated_at: now,
+        entry_type: String::new(),
+        image_path: path.to_string(),
+        collated_at: String::new(),
+    };
+
+    ctx.memory_db()
+        .create_entry(&entry)
+        .map_err(|e| ToolError::Io(format!("failed to create memory entry: {e}")))?;
+
+    info!(path = %path, description = %description, "Saved image memory via remember_image");
+
+    Ok(json!({
+        "entry_id": entry.id,
+        "path": path,
+        "description": description,
+        "saved": true,
     }))
 }
 
@@ -327,16 +402,18 @@ mod tests {
     #[test]
     fn test_image_tool_defs() {
         let defs = tool_defs();
-        assert_eq!(defs.len(), 4);
+        assert_eq!(defs.len(), 5);
 
         let names: Vec<&str> = defs.iter().map(|d| d.name).collect();
         assert!(names.contains(&"send_image"));
         assert!(names.contains(&"list_images"));
         assert!(names.contains(&"recall_image"));
+        assert!(names.contains(&"remember_image"));
         assert!(names.contains(&"generate_image"));
 
-        // send_image and generate_image are MemoryWrite (they produce side effects).
+        // send_image, remember_image, and generate_image are MemoryWrite (they produce side effects).
         assert_eq!(defs.iter().find(|d| d.name == "send_image").unwrap().category, ToolCategory::MemoryWrite);
+        assert_eq!(defs.iter().find(|d| d.name == "remember_image").unwrap().category, ToolCategory::MemoryWrite);
         assert_eq!(defs.iter().find(|d| d.name == "generate_image").unwrap().category, ToolCategory::MemoryWrite);
 
         // list_images and recall_image are MemoryRead.

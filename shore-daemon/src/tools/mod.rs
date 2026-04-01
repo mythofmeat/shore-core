@@ -161,6 +161,7 @@ pub fn dispatch_tool<'a>(
             "send_image" => images::handle_send_image(input, ctx).await,
             "list_images" => images::handle_list_images(input, ctx).await,
             "recall_image" => images::handle_recall_image(input, ctx).await,
+            "remember_image" => images::handle_remember_image(input, ctx).await,
             "generate_image" => images::handle_generate_image(input, ctx).await,
             // Web tools
             "web_search" => web::handle_web_search(input, ctx).await,
@@ -192,8 +193,8 @@ mod tests {
     #[test]
     fn test_all_tools_returns_expected_count() {
         let tools = all_tools();
-        // memory(1) + images(4) + web(2) + activity(1) + basic(2) + scratchpad(4) = 14
-        assert_eq!(tools.len(), 14);
+        // memory(1) + images(5) + web(2) + activity(1) + basic(2) + scratchpad(4) = 15
+        assert_eq!(tools.len(), 15);
     }
 
     #[test]
@@ -228,6 +229,7 @@ mod tests {
         assert!(!private_names.contains(&"list_images"));
         assert!(!private_names.contains(&"recall_image"));
         assert!(!private_names.contains(&"generate_image"));
+        assert!(!private_names.contains(&"remember_image"));
 
         // Web and other tools should remain.
         assert!(private_names.contains(&"web_search"));
@@ -248,7 +250,7 @@ mod tests {
         assert!(!names.contains(&"web_search"));
         assert!(names.contains(&"memory"));
         assert!(names.contains(&"check_time"));
-        assert_eq!(tools.len(), 12); // 14 - 2 disabled
+        assert_eq!(tools.len(), 13); // 15 - 2 disabled
     }
 
     #[test]

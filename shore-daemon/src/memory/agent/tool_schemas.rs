@@ -101,10 +101,14 @@ pub fn tool_definitions() -> Vec<Value> {
                     "topic_tags": { "type": "string" },
                     "memory_type": {
                         "type": "string",
-                        "enum": ["episodic", "semantic"]
+                        "enum": ["episodic", "semantic", "image"]
                     },
                     "confidence": { "type": "number" },
-                    "reason": { "type": "string" }
+                    "reason": { "type": "string" },
+                    "image_path": {
+                        "type": "string",
+                        "description": "Relative path to an associated image file, if any."
+                    }
                 },
                 "required": ["summary_text", "reason"]
             }
