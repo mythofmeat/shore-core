@@ -627,6 +627,11 @@ impl CollationManager {
                     .map_err(|e| CollationError::Db(e.to_string()))?;
             }
 
+            // Stamp split outputs so they aren't immediately re-merged next run.
+            for id in &new_ids {
+                candidates_processed.insert(id.clone());
+            }
+
             // Changelog — one entry per split with original + all replacements.
             let replacement_lines: Vec<String> = split.replacements
                 .iter()
@@ -920,6 +925,9 @@ impl CollationManager {
             if let Some(idx) = indexer {
                 let _ = idx.index_entry(&new_id, &merge.merged_summary).await;
             }
+
+            // Stamp merge output so it isn't immediately re-split next run.
+            candidates_processed.insert(new_id.clone());
 
             // Supersede all source entries.
             for source_id in &merge.source_entry_ids {
