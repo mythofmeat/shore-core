@@ -163,10 +163,10 @@ fn default_jitter_factor() -> f64 {
     0.25
 }
 fn default_max_idle_ticks() -> u32 {
-    3
+    8
 }
 fn default_max_tool_rounds() -> u32 {
-    3
+    12
 }
 
 impl Default for InteriorityConfig {
@@ -811,8 +811,8 @@ mod tests {
         assert!(config.behavior.autonomy.interiority.enabled);
         assert_eq!(config.behavior.autonomy.interiority.interval_secs, 3600);
         assert_eq!(config.behavior.autonomy.interiority.jitter_factor, 0.25);
-        assert_eq!(config.behavior.autonomy.interiority.max_idle_ticks, 3);
-        assert_eq!(config.behavior.autonomy.interiority.max_tool_rounds, 3);
+        assert_eq!(config.behavior.autonomy.interiority.max_idle_ticks, 8);
+        assert_eq!(config.behavior.autonomy.interiority.max_tool_rounds, 12);
         assert!(config.advanced.cache_invalidation_warnings);
         assert!(config.behavior.tool_use.enabled);
         assert!(config.memory.compaction.enabled);

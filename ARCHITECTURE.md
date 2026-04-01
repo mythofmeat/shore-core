@@ -981,8 +981,8 @@ conversation, plus a scratchpad filesystem for private persistent notes.
 enabled = true           # default: true
 interval_secs = 3600     # default: 1 hour
 jitter_factor = 0.25     # ±25% random variation
-max_idle_ticks = 3       # go dormant after 3 ticks with no user
-max_tool_rounds = 3      # max tool-use rounds per tick
+max_idle_ticks = 8       # go dormant after 8 ticks with no user
+max_tool_rounds = 12     # max tool-use rounds per tick
 ```
 
 #### Persisted State (v2)
