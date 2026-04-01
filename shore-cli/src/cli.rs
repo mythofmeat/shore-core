@@ -247,6 +247,9 @@ pub enum MemoryCommand {
         /// Run convergence mode: repeat until no merges/splits occur
         #[arg(long)]
         full: bool,
+        /// Override batch limit (max entries to process per run)
+        #[arg(long)]
+        limit: Option<u64>,
     },
 
     /// Delete old superseded entries to reclaim space
@@ -336,8 +339,12 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
         CliCommand::Memory { subcommand: Some(MemoryCommand::Compact), .. } => {
             Some(("compact", json!({ "collate": true })))
         }
-        CliCommand::Memory { subcommand: Some(MemoryCommand::Collate { full }), .. } => {
-            Some(("collate", json!({ "full": full })))
+        CliCommand::Memory { subcommand: Some(MemoryCommand::Collate { full, limit }), .. } => {
+            let mut args = json!({ "full": full });
+            if let Some(l) = limit {
+                args["limit"] = json!(l);
+            }
+            Some(("collate", args))
         }
         CliCommand::Memory { subcommand: Some(MemoryCommand::Purge { older_than }), .. } => {
             Some(("memory_purge", json!({ "older_than": older_than })))
