@@ -3,7 +3,7 @@
 //! Sends minimal API calls (max_tokens=1) to keep the prompt cache warm
 //! during idle periods. See §13.2 of ARCHITECTURE.md.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -200,6 +200,23 @@ impl CacheKeepaliveScheduler {
 
     pub fn config(&self) -> &CacheKeepaliveConfig {
         &self.config
+    }
+
+    /// Returns the `Instant` at which the next keepalive ping would fire,
+    /// or `None` if keepalive is not actively monitoring (inactive, pinging,
+    /// or stopped).
+    pub fn next_deadline(&self) -> Option<Instant> {
+        match &self.state {
+            KeepaliveState::Monitoring => self
+                .last_api_call
+                .map(|t| t + Duration::from_secs(self.config.ping_interval_secs)),
+            _ => None,
+        }
+    }
+
+    /// The configured ping interval in seconds (TTL - 60s, floored to default).
+    pub fn ping_interval_secs(&self) -> u64 {
+        self.config.ping_interval_secs
     }
 
     // -- control ----------------------------------------------------------
@@ -759,5 +776,56 @@ mod tests {
         } else {
             panic!("expected EmitCacheWarning");
         }
+    }
+
+    // -- next_deadline tests ----------------------------------------------
+
+    #[test]
+    fn test_next_deadline_monitoring_with_api_call() {
+        let mut sched = CacheKeepaliveScheduler::new(anthropic_config());
+        let t0 = Instant::now();
+
+        sched.on_api_response(t0, 1000, 1500);
+
+        let deadline = sched.next_deadline();
+        assert_eq!(deadline, Some(t0 + Duration::from_secs(DEFAULT_PING_INTERVAL_SECS)));
+    }
+
+    #[test]
+    fn test_next_deadline_monitoring_no_api_call() {
+        let sched = CacheKeepaliveScheduler::new(anthropic_config());
+        assert_eq!(sched.next_deadline(), None);
+    }
+
+    #[test]
+    fn test_next_deadline_inactive() {
+        let sched = CacheKeepaliveScheduler::new(openai_config());
+        assert_eq!(sched.next_deadline(), None);
+    }
+
+    #[test]
+    fn test_next_deadline_pinging() {
+        let mut sched = CacheKeepaliveScheduler::new(anthropic_config());
+        let t0 = Instant::now();
+
+        sched.on_api_response(t0, 1000, 1500);
+        let t1 = t0 + Duration::from_secs(DEFAULT_PING_INTERVAL_SECS);
+        sched.tick(t1); // transitions to Pinging
+        assert_eq!(*sched.state(), KeepaliveState::Pinging);
+        assert_eq!(sched.next_deadline(), None);
+    }
+
+    #[test]
+    fn test_next_deadline_shifts_on_api_response() {
+        let mut sched = CacheKeepaliveScheduler::new(anthropic_config());
+        let t0 = Instant::now();
+
+        sched.on_api_response(t0, 1000, 1500);
+        assert_eq!(sched.next_deadline(), Some(t0 + Duration::from_secs(DEFAULT_PING_INTERVAL_SECS)));
+
+        // New API call shifts the deadline forward.
+        let t1 = t0 + Duration::from_secs(100);
+        sched.on_api_response(t1, 1000, 1500);
+        assert_eq!(sched.next_deadline(), Some(t1 + Duration::from_secs(DEFAULT_PING_INTERVAL_SECS)));
     }
 }

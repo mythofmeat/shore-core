@@ -240,3 +240,16 @@ A single holistic call lets the LLM see all candidates + nearby context and make
 **Why:** The 5-state heartbeat was overengineered — complex scheduling heuristics (τ computation, engagement scores, heatmaps, social need bars, time parsing from natural language) for a simple goal: "the character should sometimes do things on its own." The interiority system achieves the same goal with a timer + dormancy counter. Additionally, the heartbeat used separate, simpler prompts that couldn't leverage the character's full tool set. Interiority ticks use the identical system prompt and tool definitions as normal conversation, preserving Anthropic prompt cache.
 
 **Trade-off:** The interiority system has no adaptive timing — it doesn't speed up during active conversation or slow down during quiet periods. The timer is fixed (with jitter). This is intentionally simpler. If adaptive timing proves necessary, it can be layered on top of the InteriorityClock without changing the fundamental architecture.
+
+### Interiority–Keepalive Coordination (2026-04-01)
+
+**Decision:** Coordinate the interiority timer with the cache keepalive timer so interiority ticks serve double-duty as cache refreshes, eliminating redundant keepalive pings.
+
+**Changes made:**
+- `CacheKeepaliveScheduler::next_deadline()` exposes when the next keepalive ping would fire
+- `InteriorityClock::snap_to_deadline()` pulls the next interiority tick forward to the keepalive deadline when the shift is within the jitter range
+- `AutonomyState::coordinate_interiority_keepalive()` called at 3 sites: after interiority tick scheduling, on user message, and on API response
+
+**Why:** Both systems operate on ~1h intervals (interiority at 3600s±25%, keepalive at TTL-60s = 3540s for 1h cache). Without coordination, interiority at 65 min triggers a wasted keepalive ping at 59 min followed by the interiority tick 6 min later — two API calls when one suffices. Snapping interiority to fire at the keepalive deadline eliminates the redundant ping.
+
+**Trade-off:** Snapping is capped at the jitter range (`interval_secs × jitter_factor`) to avoid large shifts. If interiority is scheduled far beyond the deadline, keepalive pings independently as a fallback. The keepalive state machine is unchanged — it remains the safety net for dormant/disabled interiority.

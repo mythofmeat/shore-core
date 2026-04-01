@@ -63,6 +63,14 @@ impl AutonomyState {
     fn mark_dirty(&mut self) {
         self.dirty = true;
     }
+
+    /// Snap the interiority tick to the cache keepalive deadline when close
+    /// enough, so a single API call serves both purposes.
+    fn coordinate_interiority_keepalive(&mut self) {
+        if let Some(deadline) = self.cache_keepalive.next_deadline() {
+            self.interiority.snap_to_deadline(deadline);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -337,6 +345,7 @@ impl AutonomyManager {
             s.last_compaction_activity = now;
             s.compaction_triggered = false;
             s.active_turn_count = message_count;
+            s.coordinate_interiority_keepalive();
             s.mark_dirty();
         }
     }
@@ -369,6 +378,7 @@ impl AutonomyManager {
             let now = Instant::now();
             s.cache_keepalive
                 .on_api_response(now, cache_read_tokens, input_tokens);
+            s.coordinate_interiority_keepalive();
         }
     }
 
@@ -557,6 +567,9 @@ async fn tick_character(
         } else {
             InteriorityAction::None
         };
+
+        // -- coordinate interiority → keepalive --------------------------------
+        s.coordinate_interiority_keepalive();
 
         // -- cache keepalive --------------------------------------------------
         let ka_action = s.cache_keepalive.tick(now);

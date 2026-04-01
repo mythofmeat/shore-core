@@ -153,6 +153,22 @@ impl InteriorityClock {
         self.ticks_without_user = ticks_without_user;
     }
 
+    /// Snap the next scheduled tick forward to `deadline` if it falls after
+    /// the deadline but within the jitter range. This lets an interiority tick
+    /// serve as a cache keepalive, avoiding a redundant ping.
+    pub fn snap_to_deadline(&mut self, deadline: Instant) {
+        let Some(next) = self.next_tick_at else { return };
+        if next <= deadline {
+            return; // Already fires before deadline — no snap needed.
+        }
+        // Only snap if the pull-forward distance is within the jitter range.
+        // Beyond that, let keepalive handle it independently.
+        let max_snap = Duration::from_secs_f64(self.interval_secs as f64 * self.jitter_factor);
+        if next.duration_since(deadline) <= max_snap {
+            self.next_tick_at = Some(deadline);
+        }
+    }
+
     fn schedule_next(&mut self, now: Instant) {
         let base = self.interval_secs as f64;
         let jitter_range = base * self.jitter_factor;
@@ -266,5 +282,86 @@ mod tests {
         now += Duration::from_secs(10);
         clock.on_user_message(now);
         assert_eq!(clock.ticks_without_user, 0);
+    }
+
+    // -- snap_to_deadline tests -------------------------------------------
+
+    #[test]
+    fn snap_when_after_deadline_within_jitter() {
+        // interval=100, jitter=0.25 → max_snap=25s
+        let config = InteriorityConfig {
+            enabled: true,
+            interval_secs: 100,
+            jitter_factor: 0.25,
+            max_idle_ticks: 3,
+            max_tool_rounds: 3,
+        };
+        let mut clock = InteriorityClock::with_config(&config);
+        let now = Instant::now();
+        clock.tick(now); // schedule next (jitter=0 in with_config? no, jitter_factor is set)
+
+        // Force next_tick_at to a known value.
+        let deadline = now + Duration::from_secs(90);
+        clock.next_tick_at = Some(deadline + Duration::from_secs(20)); // 20s after deadline, within 25s max_snap
+
+        clock.snap_to_deadline(deadline);
+        assert_eq!(clock.next_tick_at, Some(deadline));
+    }
+
+    #[test]
+    fn no_snap_when_after_deadline_beyond_jitter() {
+        let config = InteriorityConfig {
+            enabled: true,
+            interval_secs: 100,
+            jitter_factor: 0.25,
+            max_idle_ticks: 3,
+            max_tool_rounds: 3,
+        };
+        let mut clock = InteriorityClock::with_config(&config);
+        let now = Instant::now();
+
+        let deadline = now + Duration::from_secs(90);
+        let original = deadline + Duration::from_secs(30); // 30s after deadline, beyond 25s max_snap
+        clock.next_tick_at = Some(original);
+
+        clock.snap_to_deadline(deadline);
+        assert_eq!(clock.next_tick_at, Some(original)); // unchanged
+    }
+
+    #[test]
+    fn no_snap_when_before_deadline() {
+        let config = InteriorityConfig {
+            enabled: true,
+            interval_secs: 100,
+            jitter_factor: 0.25,
+            max_idle_ticks: 3,
+            max_tool_rounds: 3,
+        };
+        let mut clock = InteriorityClock::with_config(&config);
+        let now = Instant::now();
+
+        let deadline = now + Duration::from_secs(90);
+        let original = deadline - Duration::from_secs(10); // before deadline
+        clock.next_tick_at = Some(original);
+
+        clock.snap_to_deadline(deadline);
+        assert_eq!(clock.next_tick_at, Some(original)); // unchanged
+    }
+
+    #[test]
+    fn no_snap_when_no_tick_scheduled() {
+        let config = InteriorityConfig {
+            enabled: true,
+            interval_secs: 100,
+            jitter_factor: 0.25,
+            max_idle_ticks: 3,
+            max_tool_rounds: 3,
+        };
+        let mut clock = InteriorityClock::with_config(&config);
+        let now = Instant::now();
+        let deadline = now + Duration::from_secs(90);
+
+        clock.snap_to_deadline(deadline); // next_tick_at is None
+        assert_eq!(clock.next_tick_at, None);
     }
 }
