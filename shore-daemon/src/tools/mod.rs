@@ -1,5 +1,6 @@
 pub mod activity;
 pub mod basic;
+pub(crate) mod context;
 pub mod images;
 pub mod memory_tools;
 pub mod scratchpad;

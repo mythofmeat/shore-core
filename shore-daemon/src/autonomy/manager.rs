@@ -23,14 +23,15 @@ use super::cache_keepalive::{
 };
 use super::interiority::{InteriorityAction, InteriorityClock, InteriorityState};
 use super::{AutonomyStatus, InteriorityEventKind, InteriorityLog};
-use crate::memory::agent::{AgentError, AgentRag, AgentSearchContext, CallerIdentity, RagHit};
-use crate::memory::agent_llm::{AgentLlm, RealAgentLlm};
-use crate::memory::compaction_impls::{resolve_embed_config, resolve_image_gen_config, ImageGenConfig};
+use crate::memory::agent::{AgentSearchContext, CallerIdentity};
+use crate::memory::agent_llm::RealAgentLlm;
+use crate::memory::compaction_impls::{resolve_embed_config, resolve_image_gen_config};
 use crate::memory::db::MemoryDB;
 use crate::memory::researcher::MemoryResearcher;
 use crate::memory::vectorstore::VectorStore;
 use crate::notifications::{NotificationEvent, NotificationService};
 use crate::tools as tool_system;
+use crate::tools::context::{NoopRag, SharedToolContext};
 use shore_config::app::{AutonomyConfig, CompactionConfig};
 use shore_config::LoadedConfig;
 use shore_llm_client::types::LlmRequest;
@@ -711,7 +712,7 @@ async fn execute_interiority_tick(
 
     let max_rounds = config.interiority.max_tool_rounds;
     let Some(lc) = loaded_config else { return };
-    let tool_ctx = match InteriorityToolContext::build(
+    let tool_ctx = match build_tool_context(
         character, data_dir, client, lc,
     ).await {
         Some(ctx) => ctx,
@@ -933,137 +934,83 @@ fn truncate_log(s: &str, max: usize) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// ToolContext for interiority ticks
+// Tool context builder for interiority ticks
 // ---------------------------------------------------------------------------
 
-/// Full tool context for interiority tick execution.
+/// Build a SharedToolContext for interiority ticks.
 ///
-/// Constructed per-tick from the same ingredients the handler uses (LlmClient,
-/// LoadedConfig, data_dir). All tools work — memory, images, web, scratchpad.
-/// The only gap is AutonomyManager (the heatmap tool degrades gracefully).
-struct InteriorityToolContext {
-    db: MemoryDB,
-    agent: crate::memory::agent::MemoryAgent,
-    agent_llm: RealAgentLlm,
-    agent_model_val: shore_config::models::ResolvedModel,
-    researcher: Option<MemoryResearcher>,
-    researcher_llm_val: Option<RealAgentLlm>,
-    researcher_model_val: Option<shore_config::models::ResolvedModel>,
-    rag: NoopRag,
-    search_ctx: Option<AgentSearchContext>,
-    image_dir_val: String,
-    llm_client_val: LlmClient,
-    image_gen_config_val: Option<ImageGenConfig>,
-    search_config_val: shore_config::app::SearchConfig,
-    character_name_val: String,
-    scratchpad_dir_val: String,
-}
+/// Uses the same ingredients as the handler (LlmClient, LoadedConfig, data_dir)
+/// but resolves models with interiority-specific fallbacks. All tools work —
+/// memory, images, web, scratchpad. The only gap is AutonomyManager (the
+/// heatmap tool degrades gracefully via the trait default).
+async fn build_tool_context(
+    character: &str,
+    data_dir: &Path,
+    client: &LlmClient,
+    config: &LoadedConfig,
+) -> Option<SharedToolContext> {
+    let char_dir = data_dir.join(character);
 
-impl InteriorityToolContext {
-    /// Build a full tool context for interiority ticks.
-    async fn build(
-        character: &str,
-        data_dir: &Path,
-        client: &LlmClient,
-        config: &LoadedConfig,
-    ) -> Option<Self> {
-        let char_dir = data_dir.join(character);
+    // Memory DB.
+    let db_path = char_dir.join("memory").join("memory.db");
+    let db = match MemoryDB::open(&db_path) {
+        Ok(db) => db,
+        Err(e) => {
+            warn!(character, error = %e, "Interiority: failed to open memory DB");
+            return None;
+        }
+    };
 
-        // Memory DB.
-        let db_path = char_dir.join("memory").join("memory.db");
-        let db = match MemoryDB::open(&db_path) {
-            Ok(db) => db,
-            Err(e) => {
-                warn!(character, error = %e, "Interiority: failed to open memory DB");
-                return None;
-            }
-        };
+    // Agent model (use memory_agent config if set, else default model).
+    let agent_model_name = config.app.defaults.memory_agent.as_deref()
+        .or(config.app.defaults.model.as_deref())?;
+    let agent_model = config.models.find_model(agent_model_name).ok()?;
 
-        // Agent model (use memory_agent config if set, else default model).
-        let agent_model_name = config.app.defaults.memory_agent.as_deref()
-            .or(config.app.defaults.model.as_deref())?;
-        let agent_model = config.models.find_model(agent_model_name).ok()?;
+    // Researcher model (optional).
+    let researcher_model = config.app.defaults.collation.as_deref()
+        .and_then(|name| config.models.find_model(name).ok())
+        .cloned();
 
-        // Researcher model (optional).
-        let researcher_model = config.app.defaults.collation.as_deref()
-            .and_then(|name| config.models.find_model(name).ok())
-            .cloned();
+    // Semantic search context (graceful: None if no embedding model).
+    let search_ctx = match resolve_embed_config(
+        config.app.defaults.embedding.as_deref(),
+        &config.models.embedding,
+    ) {
+        Ok(embed_config) => {
+            let vs_path = char_dir.join("memory").join("vectorstore");
+            VectorStore::open(&vs_path, embed_config.dimensions).await
+                .ok()
+                .map(|vs| AgentSearchContext::new(vs, client.clone(), embed_config))
+        }
+        Err(_) => None,
+    };
 
-        // Semantic search context (graceful: None if no embedding model).
-        let search_ctx = match resolve_embed_config(
-            config.app.defaults.embedding.as_deref(),
-            &config.models.embedding,
-        ) {
-            Ok(embed_config) => {
-                let vs_path = char_dir.join("memory").join("vectorstore");
-                VectorStore::open(&vs_path, embed_config.dimensions).await
-                    .ok()
-                    .map(|vs| AgentSearchContext::new(vs, client.clone(), embed_config))
-            }
-            Err(_) => None,
-        };
+    let image_gen_config = resolve_image_gen_config(
+        config.app.defaults.image_generation.as_deref(),
+        &config.models.image_generation,
+    ).ok();
 
-        let image_gen_config = resolve_image_gen_config(
-            config.app.defaults.image_generation.as_deref(),
-            &config.models.image_generation,
-        ).ok();
+    let display_name = config.app.defaults.resolve_display_name();
 
-        let display_name = config.app.defaults.resolve_display_name();
-
-        Some(Self {
-            db,
-            agent: crate::memory::agent::MemoryAgent::one_shot(
-                CallerIdentity::Char, character, &display_name,
-            ),
-            agent_llm: RealAgentLlm::new(client.clone()),
-            agent_model_val: agent_model.clone(),
-            researcher: researcher_model.as_ref().map(|_| MemoryResearcher::new(String::new(), String::new())),
-            researcher_llm_val: researcher_model.as_ref().map(|_| RealAgentLlm::new(client.clone())),
-            researcher_model_val: researcher_model,
-            rag: NoopRag,
-            search_ctx,
-            image_dir_val: char_dir.join("images").to_string_lossy().into_owned(),
-            llm_client_val: client.clone(),
-            image_gen_config_val: image_gen_config,
-            search_config_val: config.app.behavior.tool_use.search.clone(),
-            character_name_val: character.to_string(),
-            scratchpad_dir_val: char_dir.join("scratchpad").to_string_lossy().into_owned(),
-        })
-    }
-}
-
-/// NoopRag stub — same as handler's, needed by image tools via ToolContext.
-struct NoopRag;
-
-impl AgentRag for NoopRag {
-    fn query(
-        &self, _query: &str, _top_k: usize,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<RagHit>, AgentError>> + Send + '_>> {
-        Box::pin(async { Ok(vec![]) })
-    }
-}
-
-impl tool_system::ToolContext for InteriorityToolContext {
-    fn memory_db(&self) -> &MemoryDB { &self.db }
-    fn memory_agent(&self) -> &crate::memory::agent::MemoryAgent { &self.agent }
-    fn agent_llm(&self) -> &dyn AgentLlm { &self.agent_llm }
-    fn agent_model(&self) -> &shore_config::models::ResolvedModel { &self.agent_model_val }
-    fn researcher_llm(&self) -> Option<&dyn AgentLlm> {
-        self.researcher_llm_val.as_ref().map(|l| l as &dyn AgentLlm)
-    }
-    fn researcher_model(&self) -> Option<&shore_config::models::ResolvedModel> {
-        self.researcher_model_val.as_ref()
-    }
-    fn memory_researcher(&self) -> Option<&MemoryResearcher> { self.researcher.as_ref() }
-    fn indexer(&self) -> Option<&dyn crate::memory::agent::AgentIndexer> { None }
-    fn search_context(&self) -> Option<&AgentSearchContext> { self.search_ctx.as_ref() }
-    fn rag(&self) -> &dyn AgentRag { &self.rag }
-    fn image_dir(&self) -> &str { &self.image_dir_val }
-    fn llm_client(&self) -> Option<&LlmClient> { Some(&self.llm_client_val) }
-    fn image_gen_config(&self) -> Option<&ImageGenConfig> { self.image_gen_config_val.as_ref() }
-    fn search_config(&self) -> &shore_config::app::SearchConfig { &self.search_config_val }
-    fn character_name(&self) -> &str { &self.character_name_val }
-    fn scratchpad_dir(&self) -> &str { &self.scratchpad_dir_val }
+    Some(SharedToolContext {
+        db,
+        agent: crate::memory::agent::MemoryAgent::one_shot(
+            CallerIdentity::Char, character, &display_name,
+        ),
+        agent_llm: RealAgentLlm::new(client.clone()),
+        agent_model_val: agent_model.clone(),
+        researcher: researcher_model.as_ref().map(|_| MemoryResearcher::new(String::new(), String::new())),
+        researcher_llm_val: researcher_model.as_ref().map(|_| RealAgentLlm::new(client.clone())),
+        researcher_model_val: researcher_model,
+        rag: NoopRag,
+        search_ctx,
+        image_dir_val: char_dir.join("images").to_string_lossy().into_owned(),
+        llm_client_val: client.clone(),
+        image_gen_config_val: image_gen_config,
+        search_config_val: config.app.behavior.tool_use.search.clone(),
+        character_name_val: character.to_string(),
+        scratchpad_dir_val: char_dir.join("scratchpad").to_string_lossy().into_owned(),
+    })
 }
 
 /// Extract text between `<sendMessage>` and `</sendMessage>` tags.

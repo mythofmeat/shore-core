@@ -26,13 +26,14 @@ use crate::characters::CharacterRegistry;
 use crate::commands::{self, CommandContext, SessionTokens};
 use crate::engine::prompt::{self, CapabilitiesConfig, PromptParams};
 use crate::engine::tools;
-use crate::memory::agent::{AgentError, AgentIndexer, AgentRag, AgentSearchContext, CallerIdentity, MemoryAgent, RagHit};
+use crate::memory::agent::{AgentSearchContext, CallerIdentity, MemoryAgent};
 use crate::memory::agent_llm::{AgentLlm, RealAgentLlm};
 use crate::memory::compaction_impls::resolve_embed_config;
 use crate::memory::db::MemoryDB;
 use crate::memory::researcher::MemoryResearcher;
 use crate::memory::vectorstore::VectorStore;
 use crate::tools::{self as tool_system, ToolContext};
+use crate::tools::context::{NoopRag, SharedToolContext};
 use shore_llm_client::retry::{self, RetryDecision, RetryPolicy};
 use shore_llm_client::stream::{CacheContext, StreamConsumer};
 use shore_llm_client::LlmClient;
@@ -42,67 +43,33 @@ use shore_config::LoadedConfig;
 use crate::memory::compaction_impls::ImageGenConfig;
 use crate::server::RoutedMessage;
 
-// ── NoopRag stub (legacy, needed by image tools via ToolContext) ──────
-
-struct NoopRag;
-
-impl AgentRag for NoopRag {
-    fn query(
-        &self,
-        _query: &str,
-        _top_k: usize,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<Vec<RagHit>, AgentError>> + Send + '_>,
-    > {
-        Box::pin(async { Ok(vec![]) })
-    }
-}
-
-// ── Per-request tool context (owns all memory dependencies) ──────────
+// ── Per-request tool context (wraps SharedToolContext + autonomy) ────
 
 struct HandlerToolContext {
-    db: MemoryDB,
-    agent: MemoryAgent,
-    agent_llm: RealAgentLlm,
-    agent_model_val: shore_config::models::ResolvedModel,
-    researcher: Option<MemoryResearcher>,
-    researcher_llm_val: Option<RealAgentLlm>,
-    researcher_model_val: Option<shore_config::models::ResolvedModel>,
-    rag: NoopRag,
-    search_ctx: Option<AgentSearchContext>,
-    image_dir_val: String,
-    llm_client_val: LlmClient,
-    image_gen_config_val: Option<ImageGenConfig>,
-    search_config_val: SearchConfig,
+    inner: SharedToolContext,
     autonomy_val: AutonomyManager,
-    character_name_val: String,
-    scratchpad_dir_val: String,
 }
 
 impl ToolContext for HandlerToolContext {
-    fn memory_db(&self) -> &MemoryDB { &self.db }
-    fn memory_agent(&self) -> &MemoryAgent { &self.agent }
-    fn agent_llm(&self) -> &dyn AgentLlm { &self.agent_llm }
-    fn agent_model(&self) -> &shore_config::models::ResolvedModel { &self.agent_model_val }
-    fn researcher_llm(&self) -> Option<&dyn AgentLlm> {
-        self.researcher_llm_val.as_ref().map(|l| l as &dyn AgentLlm)
-    }
+    fn memory_db(&self) -> &MemoryDB { self.inner.memory_db() }
+    fn memory_agent(&self) -> &MemoryAgent { self.inner.memory_agent() }
+    fn agent_llm(&self) -> &dyn AgentLlm { self.inner.agent_llm() }
+    fn agent_model(&self) -> &shore_config::models::ResolvedModel { self.inner.agent_model() }
+    fn researcher_llm(&self) -> Option<&dyn AgentLlm> { self.inner.researcher_llm() }
     fn researcher_model(&self) -> Option<&shore_config::models::ResolvedModel> {
-        self.researcher_model_val.as_ref()
+        self.inner.researcher_model()
     }
-    fn memory_researcher(&self) -> Option<&MemoryResearcher> {
-        self.researcher.as_ref()
-    }
-    fn indexer(&self) -> Option<&dyn AgentIndexer> { None }
-    fn search_context(&self) -> Option<&AgentSearchContext> { self.search_ctx.as_ref() }
-    fn rag(&self) -> &dyn AgentRag { &self.rag }
-    fn image_dir(&self) -> &str { &self.image_dir_val }
-    fn llm_client(&self) -> Option<&LlmClient> { Some(&self.llm_client_val) }
-    fn image_gen_config(&self) -> Option<&ImageGenConfig> { self.image_gen_config_val.as_ref() }
-    fn search_config(&self) -> &SearchConfig { &self.search_config_val }
+    fn memory_researcher(&self) -> Option<&MemoryResearcher> { self.inner.memory_researcher() }
+    fn indexer(&self) -> Option<&dyn crate::memory::agent::types::AgentIndexer> { self.inner.indexer() }
+    fn search_context(&self) -> Option<&AgentSearchContext> { self.inner.search_context() }
+    fn rag(&self) -> &dyn crate::memory::agent::AgentRag { self.inner.rag() }
+    fn image_dir(&self) -> &str { self.inner.image_dir() }
+    fn llm_client(&self) -> Option<&LlmClient> { self.inner.llm_client() }
+    fn image_gen_config(&self) -> Option<&ImageGenConfig> { self.inner.image_gen_config() }
+    fn search_config(&self) -> &SearchConfig { self.inner.search_config() }
     fn autonomy_manager(&self) -> Option<&AutonomyManager> { Some(&self.autonomy_val) }
-    fn character_name(&self) -> &str { &self.character_name_val }
-    fn scratchpad_dir(&self) -> &str { &self.scratchpad_dir_val }
+    fn character_name(&self) -> &str { self.inner.character_name() }
+    fn scratchpad_dir(&self) -> &str { self.inner.scratchpad_dir() }
 }
 
 // ── Shared context for spawned generation tasks ───────────────────────
@@ -703,38 +670,40 @@ async fn handle_generation(
         };
 
         let tool_ctx = HandlerToolContext {
-            db: memory_db,
-            agent: MemoryAgent::one_shot(
-                CallerIdentity::Char,
-                &char_name,
-                &effective_config.app.defaults.resolve_display_name(),
-            ),
-            agent_llm: RealAgentLlm::new(ctx.llm_client.clone()),
-            agent_model_val: agent_model.clone(),
-            researcher: researcher_model.as_ref().map(|_| {
-                MemoryResearcher::new(char_def, user_def)
-            }),
-            researcher_llm_val: researcher_model.as_ref().map(|_| {
-                RealAgentLlm::new(ctx.llm_client.clone())
-            }),
-            researcher_model_val: researcher_model.clone(),
-            rag: NoopRag,
-            search_ctx,
-            image_dir_val: data_dir
-                .join(&char_name)
-                .join("images")
-                .to_string_lossy()
-                .into_owned(),
-            llm_client_val: ctx.llm_client.clone(),
-            image_gen_config_val: image_gen_config,
-            search_config_val: effective_config.app.behavior.tool_use.search.clone(),
+            inner: SharedToolContext {
+                db: memory_db,
+                agent: MemoryAgent::one_shot(
+                    CallerIdentity::Char,
+                    &char_name,
+                    &effective_config.app.defaults.resolve_display_name(),
+                ),
+                agent_llm: RealAgentLlm::new(ctx.llm_client.clone()),
+                agent_model_val: agent_model.clone(),
+                researcher: researcher_model.as_ref().map(|_| {
+                    MemoryResearcher::new(char_def, user_def)
+                }),
+                researcher_llm_val: researcher_model.as_ref().map(|_| {
+                    RealAgentLlm::new(ctx.llm_client.clone())
+                }),
+                researcher_model_val: researcher_model.clone(),
+                rag: NoopRag,
+                search_ctx,
+                image_dir_val: data_dir
+                    .join(&char_name)
+                    .join("images")
+                    .to_string_lossy()
+                    .into_owned(),
+                llm_client_val: ctx.llm_client.clone(),
+                image_gen_config_val: image_gen_config,
+                search_config_val: effective_config.app.behavior.tool_use.search.clone(),
+                character_name_val: char_name.clone(),
+                scratchpad_dir_val: data_dir
+                    .join(&char_name)
+                    .join("scratchpad")
+                    .to_string_lossy()
+                    .into_owned(),
+            },
             autonomy_val: ctx.autonomy.clone(),
-            character_name_val: char_name.clone(),
-            scratchpad_dir_val: data_dir
-                .join(&char_name)
-                .join("scratchpad")
-                .to_string_lossy()
-                .into_owned(),
         };
 
         let tool_loop_result = tools::run_tool_loop(
