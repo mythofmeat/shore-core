@@ -820,11 +820,19 @@ impl MemoryDB {
     // FTS maintenance
     // ------------------------------------------------------------------
 
-    /// Rebuild the FTS index from the entries table.
+    /// Rebuild the FTS index from scratch (drop + recreate + repopulate).
+    /// This is more robust than DELETE + INSERT when the existing FTS data
+    /// is corrupted or was built by an incompatible SQLite version.
     pub fn rebuild_fts(&self) -> SqlResult<()> {
         self.conn.execute_batch(
-            "DELETE FROM entries_fts;
-             INSERT INTO entries_fts(rowid, summary_text, topic_tags, topic_key)
+            "DROP TRIGGER IF EXISTS entries_fts_insert;
+             DROP TRIGGER IF EXISTS entries_fts_update;
+             DROP TRIGGER IF EXISTS entries_fts_delete;
+             DROP TABLE IF EXISTS entries_fts;",
+        )?;
+        self.conn.execute_batch(FTS_SCHEMA_SQL)?;
+        self.conn.execute_batch(
+            "INSERT INTO entries_fts(rowid, summary_text, topic_tags, topic_key)
                SELECT rowid, summary_text, topic_tags, topic_key FROM entries;",
         )
     }

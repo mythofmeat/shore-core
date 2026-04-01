@@ -57,6 +57,11 @@ fn extract_json(raw: &str) -> &str {
     body.trim()
 }
 
+/// Truncate raw LLM output for error messages.
+fn truncate_raw(s: &str, max: usize) -> &str {
+    if s.len() <= max { s } else { &s[..max] }
+}
+
 // ---------------------------------------------------------------------------
 // RealCollationLlm
 // ---------------------------------------------------------------------------
@@ -114,8 +119,14 @@ impl CollationLlm for RealCollationLlm {
         Box::pin(async move {
             let raw = self.generate(&prompt).await?;
             let json_str = extract_json(&raw);
+            if json_str.is_empty() {
+                return Ok(vec![]);
+            }
             let resp: TidyResponse = serde_json::from_str(json_str)
-                .map_err(|e| CollationError::Llm(format!("failed to parse tidy JSON: {e}")))?;
+                .map_err(|e| CollationError::Llm(format!(
+                    "failed to parse tidy JSON: {e}\nraw response: {}",
+                    truncate_raw(&raw, 500),
+                )))?;
             Ok(resp.splits)
         })
     }
@@ -128,8 +139,14 @@ impl CollationLlm for RealCollationLlm {
         Box::pin(async move {
             let raw = self.generate(&prompt).await?;
             let json_str = extract_json(&raw);
+            if json_str.is_empty() {
+                return Ok(vec![]);
+            }
             let resp: CollateResponse = serde_json::from_str(json_str)
-                .map_err(|e| CollationError::Llm(format!("failed to parse collate JSON: {e}")))?;
+                .map_err(|e| CollationError::Llm(format!(
+                    "failed to parse collate JSON: {e}\nraw response: {}",
+                    truncate_raw(&raw, 500),
+                )))?;
             Ok(resp.merges)
         })
     }
@@ -144,8 +161,14 @@ impl CollationLlm for RealCollationLlm {
         Box::pin(async move {
             let raw = self.generate(&prompt).await?;
             let json_str = extract_json(&raw);
+            if json_str.is_empty() {
+                return Ok(vec![]);
+            }
             let resp: NormalizeResponse = serde_json::from_str(json_str).map_err(|e| {
-                CollationError::Llm(format!("failed to parse normalize JSON: {e}"))
+                CollationError::Llm(format!(
+                    "failed to parse normalize JSON: {e}\nraw response: {}",
+                    truncate_raw(&raw, 500),
+                ))
             })?;
             Ok(resp.normalizations)
         })

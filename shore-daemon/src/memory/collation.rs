@@ -389,6 +389,9 @@ impl CollationManager {
             return Ok(());
         }
 
+        let mut from_ancestors = 0usize;
+        let mut from_created_at = 0usize;
+
         for entry in &candidates {
             let (start, end, source) =
                 self.resolve_timestamps_from_ancestors(db, entry)?;
@@ -400,18 +403,24 @@ impl CollationManager {
             db.update_entry(&updated)
                 .map_err(|e| CollationError::Db(e.to_string()))?;
 
-            let log_id = db
-                .append_changelog(
-                    "backfill_timestamp",
-                    &format!(
-                        "Backfill timestamps: {} -> {} / {} (from {})",
-                        entry.id, start, end, source
-                    ),
-                )
-                .map_err(|e| CollationError::Db(e.to_string()))?;
-            let _ = db.link_changelog_entry(log_id, &entry.id);
+            if source == "ancestors" {
+                from_ancestors += 1;
+            } else {
+                from_created_at += 1;
+            }
 
             outcome.timestamps_backfilled += 1;
+        }
+
+        // Single summary changelog entry for all backfills.
+        if outcome.timestamps_backfilled > 0 {
+            let _ = db.append_changelog(
+                "backfill_timestamp",
+                &format!(
+                    "Backfilled timestamps for {} entries ({} from ancestors, {} from created_at)",
+                    outcome.timestamps_backfilled, from_ancestors, from_created_at,
+                ),
+            );
         }
 
         Ok(())
@@ -622,7 +631,7 @@ impl CollationManager {
             let replacement_lines: Vec<String> = split.replacements
                 .iter()
                 .zip(new_ids.iter())
-                .map(|(r, id)| format!("  - [{}] {}", id, truncate_str(&r.summary_text, 80)))
+                .map(|(r, id)| format!("  - [{}] {}", id, r.summary_text))
                 .collect();
             let cl_id = db
                 .append_changelog(
@@ -630,7 +639,7 @@ impl CollationManager {
                     &format!(
                         "Split [{}] \"{}\" into {} parts:\n{}",
                         split.original_entry_id,
-                        truncate_str(&original.summary_text, 80),
+                        original.summary_text,
                         new_ids.len(),
                         replacement_lines.join("\n"),
                     ),
@@ -921,7 +930,7 @@ impl CollationManager {
             // Changelog — include source summaries and merged result.
             let source_summaries: Vec<String> = sources
                 .iter()
-                .map(|s| format!("  - [{}] {}", s.id, truncate_str(&s.summary_text, 80)))
+                .map(|s| format!("  - [{}] {}", s.id, s.summary_text))
                 .collect();
             let cl_id = db
                 .append_changelog(
@@ -931,7 +940,7 @@ impl CollationManager {
                         merge.source_entry_ids.len(),
                         new_id,
                         source_summaries.join("\n"),
-                        truncate_str(&merge.merged_summary, 120),
+                        merge.merged_summary,
                     ),
                 )
                 .map_err(|e| CollationError::Db(e.to_string()))?;
@@ -1102,19 +1111,6 @@ impl CollationManager {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/// Truncate a string to `max` chars, appending "…" if truncated.
-fn truncate_str(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        s.to_string()
-    } else {
-        let mut end = max;
-        while end > 0 && !s.is_char_boundary(end) {
-            end -= 1;
-        }
-        format!("{}…", &s[..end])
-    }
-}
 
 /// Cosine similarity between two vectors. Returns 0.0 for zero-length vectors.
 fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
