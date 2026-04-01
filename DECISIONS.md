@@ -170,6 +170,23 @@ Rewrote the memory collation pipeline to fix multiple design flaws in the origin
 
 **Trade-off**: The `collation_skip` table and its DB methods still exist (no destructive removal) but are no longer called by collation. The vector store parameter is optional — clustering falls back to sequential chunking without it. The `collated_at` watermark uses string comparison of RFC3339 timestamps, which is correct for lexicographic ordering but fragile if non-RFC3339 values are stored.
 
+### Collation Candidate Selection and Model Config (2026-04-01)
+
+**Decision:** Collation candidate selection uses TTL-based reconsideration instead of one-shot watermark. A dedicated `defaults.collation` model config controls which LLM is used.
+
+**Changes made:**
+- Replaced simple `updated_at > collated_at` watermark with two-tier selection: new entries (`collated_at` empty) are always candidates; previously-collated entries become candidates when their TTL expires (default 7 days)
+- Added `defaults.collation` config field with fallback chain: `collation` → `memory_agent` → `model` → first chat model. Removed `active_model` (runtime session state) from the resolution chain.
+- Added `memory.collation.batch_limit` (default 10) to cap entries processed per run, controlling LLM cost
+- Added `--limit` CLI override for manual `shore collate` runs
+- Wired `AgentSearchContext` + `RealAgentIndexer` at all 3 collation call sites (manual, post-compact inline, auto-collation) — enables embedding-driven clustering and indexes collation outputs into vector store + BM25
+- Changed post-pipeline stamping to only stamp entries that were actually examined as candidates, preserving TTL clocks on unexamined entries
+- Unified model resolution across all 3 call sites via shared `resolve_collation_model()` helper
+
+**Why:** The original watermark (`updated_at > collated_at`) was permanently one-shot — once stamped, entries were never reconsidered unless externally modified. TTL-based reconsideration allows incremental refinement: `shore collate` can be run repeatedly to work through the backlog, and entries naturally come up for re-evaluation as their TTL expires. The separate model config exists because collation is synthesis/judgment work (merge decisions, split decisions, entity normalization) that benefits from a more capable model than memory retrieval.
+
+**Trade-off:** With `batch_limit = 10`, convergence mode (`--full`) may take many passes. The existing 10-pass cap prevents runaway, but a single `--full` invocation could process up to 100 entries. This is acceptable since the user explicitly opts into convergence mode.
+
 ### OpenRouter proxy removed from Anthropic SDK (2026-04-01)
 
 **Decision:** The Anthropic SDK (`sdk = "anthropic"`) no longer supports custom `base_url`. Setting one is a runtime error with a message pointing to the `openrouter` SDK. Localhost is exempted for unit tests.

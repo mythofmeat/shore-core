@@ -15,6 +15,7 @@ use shore_daemon::memory::collation::{
     DEFAULT_NORMALIZE_PROMPT, DEFAULT_TIDY_PROMPT,
 };
 use shore_daemon::memory::collation_impls::RealCollationLlm;
+use shore_daemon::commands::state::resolve_collation_model;
 use shore_daemon::memory::compaction::{
     CompactionConfig, CompactionManager, CompactionOutcome, ConversationMessage,
     DEFAULT_COMPACT_PROMPT,
@@ -457,24 +458,8 @@ async fn run_collation(
     let db = MemoryDB::open(&db_path)
         .map_err(|e| format!("Failed to open memory DB: {e}"))?;
 
-    // Resolve model.
-    let model = config
-        .app
-        .defaults
-        .memory_agent
-        .as_deref()
-        .and_then(|name| config.models.find_model(name).ok())
-        .or_else(|| {
-            config
-                .app
-                .defaults
-                .model
-                .as_deref()
-                .and_then(|name| config.models.find_model(name).ok())
-        })
-        .or_else(|| config.models.first_chat_model())
-        .ok_or("No model configured")?
-        .clone();
+    let model = resolve_collation_model(config)
+        .ok_or("No model configured")?;
 
     let llm = RealCollationLlm::new(llm_client.clone(), model);
 
@@ -488,13 +473,43 @@ async fn run_collation(
             .unwrap_or_else(|| DEFAULT_NORMALIZE_PROMPT.to_string());
 
     let mgr = CollationManager::new(LibCollationConfig::default());
+    let collation_limit = config.app.memory.collation.batch_limit;
+
+    // Construct vector store + indexer for clustering and indexing (optional).
+    let search_ctx = match resolve_embed_config(
+        config.app.defaults.embedding.as_deref(),
+        &config.models.embedding,
+    ) {
+        Ok(embed_config) => {
+            let vs_path = character_dir.join("memory").join("vectorstore");
+            match VectorStore::open(&vs_path, embed_config.dimensions).await {
+                Ok(vs) => Some(shore_daemon::memory::agent::AgentSearchContext::new(
+                    vs, llm_client.clone(), embed_config,
+                )),
+                Err(e) => {
+                    tracing::warn!("Vector store unavailable for auto-collation: {e}");
+                    None
+                }
+            }
+        }
+        Err(_) => None,
+    };
+    let indexer = search_ctx.as_ref().map(|ctx| {
+        shore_daemon::memory::agent::RealAgentIndexer::new(ctx)
+    });
+
     let collation_display_name = config.app.defaults.resolve_display_name();
     let mut collation_vars = std::collections::HashMap::new();
     collation_vars.insert("char".to_string(), character.to_string());
     collation_vars.insert("user".to_string(), collation_display_name);
 
     let outcome = mgr
-        .run(&db, &llm, &tidy_template, &collate_template, &normalize_template, &collation_vars, None, None)
+        .run(
+            &db, &llm, &tidy_template, &collate_template, &normalize_template, &collation_vars,
+            indexer.as_ref().map(|i| i as &dyn shore_daemon::memory::agent::AgentIndexer),
+            search_ctx.as_ref().map(|ctx| &ctx.vector_store),
+            Some(collation_limit),
+        )
         .await?;
 
     info!(

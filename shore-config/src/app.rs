@@ -57,6 +57,9 @@ pub struct DefaultsConfig {
     /// Default memory agent model name.
     pub memory_agent: Option<String>,
 
+    /// Default collation model name (for merge/split/normalize decisions).
+    pub collation: Option<String>,
+
     /// Default embedding profile name.
     pub embedding: Option<String>,
 
@@ -88,6 +91,7 @@ impl Default for DefaultsConfig {
             model: None,
             tool_model: None,
             memory_agent: None,
+            collation: None,
             embedding: None,
             image_generation: None,
             display_name: None,
@@ -252,6 +256,14 @@ pub struct CollationConfig {
     /// Whether collation runs automatically after compaction.
     #[serde(default = "default_true")]
     pub auto_run: bool,
+
+    /// Maximum entries to process per collation run. Controls LLM cost.
+    #[serde(default = "default_batch_limit")]
+    pub batch_limit: usize,
+}
+
+fn default_batch_limit() -> usize {
+    10
 }
 
 impl Default for CollationConfig {
@@ -259,6 +271,7 @@ impl Default for CollationConfig {
         Self {
             enabled: true,
             auto_run: true,
+            batch_limit: default_batch_limit(),
         }
     }
 }

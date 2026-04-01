@@ -2,7 +2,7 @@ use crate::memory::agent::AgentIndexer;
 use crate::memory::db::{Entry, MemoryDB};
 use crate::memory::vectorstore::VectorStore;
 use chrono::Utc;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 
@@ -16,6 +16,9 @@ const DEFAULT_DECAY_HALF_LIFE_DAYS: f64 = 30.0;
 /// Floor below which confidence is not further decayed.
 const DEFAULT_DECAY_FLOOR: f64 = 0.1;
 
+/// Days before a previously-collated entry becomes eligible for reconsideration.
+const DEFAULT_RECONSIDER_TTL_DAYS: f64 = 30.0;
+
 /// Configuration for the collation pipeline.
 #[derive(Debug, Clone)]
 pub struct CollationConfig {
@@ -23,6 +26,8 @@ pub struct CollationConfig {
     pub decay_half_life_days: f64,
     /// Minimum confidence floor — entries at or below this are not decayed further.
     pub decay_floor: f64,
+    /// Days before a previously-collated entry becomes eligible for reconsideration.
+    pub reconsider_ttl_days: f64,
 }
 
 impl Default for CollationConfig {
@@ -30,6 +35,7 @@ impl Default for CollationConfig {
         Self {
             decay_half_life_days: DEFAULT_DECAY_HALF_LIFE_DAYS,
             decay_floor: DEFAULT_DECAY_FLOOR,
+            reconsider_ttl_days: DEFAULT_RECONSIDER_TTL_DAYS,
         }
     }
 }
@@ -283,14 +289,28 @@ impl CollationManager {
         result
     }
 
-    /// Run the full 4-phase collation pipeline.
-    /// Check if an entry is eligible for collation processing.
-    /// Candidates are non-image, non-canonical entries that have either never
-    /// been collated, or have been modified (updated_at) since their last collation.
-    fn is_collation_candidate(e: &Entry) -> bool {
+    /// Phase 2 (tidy) candidate: never collated or modified since last collation.
+    fn is_tidy_candidate(e: &Entry) -> bool {
         e.image_path.is_empty()
             && !e.canonical
             && (e.collated_at.is_empty() || e.updated_at.as_str() > e.collated_at.as_str())
+    }
+
+    /// Phase 1 (collate) candidate: new entries + TTL-expired entries.
+    fn is_collate_candidate(&self, e: &Entry) -> bool {
+        if !e.image_path.is_empty() || e.canonical {
+            return false;
+        }
+        if e.collated_at.is_empty() {
+            return true;
+        }
+        let ttl_seconds = self.config.reconsider_ttl_days * 86400.0;
+        chrono::DateTime::parse_from_rfc3339(&e.collated_at)
+            .map(|ca| {
+                let age = (Utc::now() - ca.with_timezone(&Utc)).num_seconds() as f64;
+                age > ttl_seconds
+            })
+            .unwrap_or(true)
     }
 
     ///
@@ -307,40 +327,39 @@ impl CollationManager {
         vars: &HashMap<String, String>,
         indexer: Option<&dyn AgentIndexer>,
         vector_store: Option<&VectorStore>,
+        limit: Option<usize>,
     ) -> Result<CollationOutcome, CollationError> {
         let mut outcome = CollationOutcome::default();
         // Shared counter to avoid entry ID collisions across phases.
         let mut id_counter: usize = 0;
-        // Snapshot time: entries with collated_at before this are candidates.
-        // This ensures all phases within one run see the same candidate set.
+        // Track which entries were examined as candidates so we only stamp those.
+        let mut candidates_processed: HashSet<String> = HashSet::new();
+
         // Phase 0: Backfill missing timestamps (incremental, no LLM)
         self.phase_backfill_timestamps(db, 20, &mut outcome)?;
 
         // Phase 1: Collate (merge similar entries first to reduce count)
-        self.phase_collate(db, llm, collate_template, vars, &mut outcome, &mut id_counter, indexer, vector_store)
+        self.phase_collate(db, llm, collate_template, vars, &mut outcome, &mut id_counter, indexer, vector_store, limit, &mut candidates_processed)
             .await?;
 
         // Phase 2: Tidy (split overly broad entries, including merged results)
-        self.phase_tidy(db, llm, tidy_template, vars, &mut outcome, &mut id_counter, indexer)
+        self.phase_tidy(db, llm, tidy_template, vars, &mut outcome, &mut id_counter, indexer, limit, &mut candidates_processed)
             .await?;
 
         // Phase 3: Normalize entities
         self.phase_normalize_entities(db, llm, normalize_template, vars, &mut outcome)
             .await?;
 
-        // Phase 4: Confidence decay
-        self.phase_confidence_decay(db, &mut outcome)?;
+        // Phase 4: Confidence decay (also stamps decayed entries to prevent
+        // updated_at bump from making them spurious tidy candidates next run)
+        self.phase_confidence_decay(db, &mut outcome, &mut candidates_processed)?;
 
-        // Stamp all active entries with current time as collated_at.
-        // Entries won't be reconsidered until updated_at > collated_at
-        // (i.e., they are modified by compaction, user edit, or another process).
+        // Stamp only entries that were examined as candidates this run.
+        // Newly created entries keep collated_at = '' (candidates next run).
+        // Entries not examined keep their existing collated_at (TTL preserved).
         let stamp = Utc::now().to_rfc3339();
-        let active = db
-            .get_entries_by_status("active")
-            .map_err(|e| CollationError::Db(e.to_string()))?;
-        for e in &active {
-            db.stamp_collated(&e.id, &stamp)
-                .map_err(|e| CollationError::Db(e.to_string()))?;
+        for id in &candidates_processed {
+            let _ = db.stamp_collated(id, &stamp);
         }
 
         Ok(outcome)
@@ -497,19 +516,29 @@ impl CollationManager {
         outcome: &mut CollationOutcome,
         id_counter: &mut usize,
         indexer: Option<&dyn AgentIndexer>,
+        limit: Option<usize>,
+        candidates_processed: &mut HashSet<String>,
     ) -> Result<(), CollationError> {
         let entries = db
             .get_entries_by_status("active")
             .map_err(|e| CollationError::Db(e.to_string()))?;
 
-        let candidates: Vec<&Entry> = entries
+        let mut candidates: Vec<&Entry> = entries
             .iter()
-            .filter(|e| Self::is_collation_candidate(e))
+            .filter(|e| Self::is_tidy_candidate(e))
             .collect();
+
+        if let Some(cap) = limit {
+            candidates.truncate(cap);
+        }
 
         if candidates.is_empty() {
             outcome.entries_skipped += entries.len();
             return Ok(());
+        }
+
+        for c in &candidates {
+            candidates_processed.insert(c.id.clone());
         }
 
         // Build topic landscape from all active entries' topic keys.
@@ -753,15 +782,25 @@ impl CollationManager {
         id_counter: &mut usize,
         indexer: Option<&dyn AgentIndexer>,
         vector_store: Option<&VectorStore>,
+        limit: Option<usize>,
+        candidates_processed: &mut HashSet<String>,
     ) -> Result<(), CollationError> {
         let entries = db
             .get_entries_by_status("active")
             .map_err(|e| CollationError::Db(e.to_string()))?;
 
-        let candidates: Vec<&Entry> = entries
+        let mut candidates: Vec<&Entry> = entries
             .iter()
-            .filter(|e| Self::is_collation_candidate(e))
+            .filter(|e| self.is_collate_candidate(e))
             .collect();
+
+        if let Some(cap) = limit {
+            candidates.truncate(cap);
+        }
+
+        for c in &candidates {
+            candidates_processed.insert(c.id.clone());
+        }
 
         if candidates.is_empty() {
             outcome.entries_skipped += entries.len();
@@ -979,6 +1018,7 @@ impl CollationManager {
         &self,
         db: &MemoryDB,
         outcome: &mut CollationOutcome,
+        candidates_processed: &mut HashSet<String>,
     ) -> Result<(), CollationError> {
         let entries = db
             .get_entries_by_status("active")
@@ -1021,6 +1061,10 @@ impl CollationManager {
 
             db.update_entry(&updated)
                 .map_err(|e| CollationError::Db(e.to_string()))?;
+
+            // Track decayed entries so they get stamped (prevents updated_at
+            // bump from making them spurious tidy candidates next run).
+            candidates_processed.insert(entry.id.clone());
 
             // Changelog.
             let cl_id = db
@@ -1188,6 +1232,7 @@ mod tests {
                 &HashMap::new(),
                 None,
                 None,
+                None,
             )
             .await
             .unwrap();
@@ -1237,6 +1282,7 @@ mod tests {
                 &HashMap::new(),
                 None,
                 None,
+                None,
             )
             .await
             .unwrap();
@@ -1282,6 +1328,7 @@ mod tests {
                 DEFAULT_COLLATE_PROMPT,
                 DEFAULT_NORMALIZE_PROMPT,
                 &HashMap::new(),
+                None,
                 None,
                 None,
             )
@@ -1346,6 +1393,7 @@ mod tests {
                 &HashMap::new(),
                 None,
                 None,
+                None,
             )
             .await
             .unwrap();
@@ -1395,6 +1443,7 @@ mod tests {
                 &HashMap::new(),
                 None,
                 None,
+                None,
             )
             .await
             .unwrap();
@@ -1436,6 +1485,7 @@ mod tests {
                 &HashMap::new(),
                 None,
                 None,
+                None,
             )
             .await
             .unwrap();
@@ -1472,6 +1522,7 @@ mod tests {
                 &HashMap::new(),
                 None,
                 None,
+                None,
             )
             .await
             .unwrap();
@@ -1506,6 +1557,7 @@ mod tests {
                 &HashMap::new(),
                 None,
                 None,
+                None,
             )
             .await
             .unwrap();
@@ -1533,6 +1585,7 @@ mod tests {
             DEFAULT_COLLATE_PROMPT,
             DEFAULT_NORMALIZE_PROMPT,
             &HashMap::new(),
+            None,
             None,
             None,
         )
@@ -1579,6 +1632,7 @@ mod tests {
                 &HashMap::new(),
                 None,
                 None,
+                None,
             )
             .await
             .unwrap();
@@ -1612,6 +1666,7 @@ mod tests {
                 DEFAULT_COLLATE_PROMPT,
                 DEFAULT_NORMALIZE_PROMPT,
                 &HashMap::new(),
+                None,
                 None,
                 None,
             )
@@ -1693,6 +1748,7 @@ mod tests {
                 DEFAULT_COLLATE_PROMPT,
                 DEFAULT_NORMALIZE_PROMPT,
                 &HashMap::new(),
+                None,
                 None,
                 None,
             )
@@ -1955,5 +2011,177 @@ mod tests {
         assert_eq!(clusters.len(), 2); // 30 / 15 = 2 chunks
         assert_eq!(clusters[0].len(), 15);
         assert_eq!(clusters[1].len(), 15);
+    }
+
+    // -- Candidate selection tests (TTL-based) --------------------------------
+
+    #[test]
+    fn test_phase1_new_entries_always_candidates() {
+        let mgr = CollationManager::new(CollationConfig::default());
+        let now = now_str();
+        let entry = make_entry("e1", "New fact", 0.9, &now);
+        // collated_at is empty → always candidate
+        assert!(mgr.is_collate_candidate(&entry));
+    }
+
+    #[test]
+    fn test_phase1_recently_collated_not_candidates() {
+        let mgr = CollationManager::new(CollationConfig::default());
+        let now = now_str();
+        let mut entry = make_entry("e1", "Old fact", 0.9, &now);
+        entry.collated_at = now; // collated just now → not expired
+        assert!(!mgr.is_collate_candidate(&entry));
+    }
+
+    #[test]
+    fn test_phase1_ttl_expired_are_candidates() {
+        let mgr = CollationManager::new(CollationConfig {
+            reconsider_ttl_days: 7.0,
+            ..Default::default()
+        });
+        let now = now_str();
+        let mut entry = make_entry("e1", "Old fact", 0.9, &now);
+        // Collated 10 days ago → TTL (7d) expired
+        let ten_days_ago = (Utc::now() - chrono::Duration::days(10)).to_rfc3339();
+        entry.collated_at = ten_days_ago;
+        assert!(mgr.is_collate_candidate(&entry));
+    }
+
+    #[test]
+    fn test_phase1_image_and_canonical_excluded() {
+        let mgr = CollationManager::new(CollationConfig::default());
+        let now = now_str();
+
+        // Image entry — never a candidate even if new
+        let mut image_entry = make_entry("img1", "Photo memory", 0.9, &now);
+        image_entry.image_path = "attachments/photo.jpg".to_string();
+        assert!(!mgr.is_collate_candidate(&image_entry));
+
+        // Canonical entry — never a candidate even if new
+        let mut canonical_entry = make_entry("can1", "Canonical fact", 1.0, &now);
+        canonical_entry.canonical = true;
+        assert!(!mgr.is_collate_candidate(&canonical_entry));
+    }
+
+    #[tokio::test]
+    async fn test_batch_limit_caps_candidates() {
+        let db = MemoryDB::open_in_memory().unwrap();
+        let now = now_str();
+
+        // Create 5 entries, all new (collated_at empty).
+        for i in 0..5 {
+            db.create_entry(&make_entry(
+                &format!("e{i}"),
+                &format!("Fact {i}"),
+                0.9,
+                &now,
+            ))
+            .unwrap();
+        }
+
+        let llm = MockCollationLlm::empty();
+        let mgr = CollationManager::new(CollationConfig::default());
+        // limit=2 → only 2 entries processed
+        let outcome = mgr
+            .run(
+                &db,
+                &llm,
+                DEFAULT_TIDY_PROMPT,
+                DEFAULT_COLLATE_PROMPT,
+                DEFAULT_NORMALIZE_PROMPT,
+                &HashMap::new(),
+                None,
+                None,
+                Some(2),
+            )
+            .await
+            .unwrap();
+
+        // With limit=2, at most 2 entries should be examined per phase.
+        // Verify that not all 5 entries were stamped.
+        let active = db.get_entries_by_status("active").unwrap();
+        let stamped = active.iter().filter(|e| !e.collated_at.is_empty()).count();
+        assert!(stamped <= 4, "limit should cap processing, got {stamped} stamped out of 5");
+    }
+
+    #[tokio::test]
+    async fn test_stamping_only_candidates() {
+        let db = MemoryDB::open_in_memory().unwrap();
+        let now = now_str();
+
+        // Entry A: new (collated_at empty) → candidate
+        let a = make_entry("a", "New fact", 0.9, &now);
+        db.create_entry(&a).unwrap();
+
+        // Entry B: recently collated → NOT a candidate (TTL not expired)
+        let mut b = make_entry("b", "Old fact", 0.9, &now);
+        b.collated_at = now.clone();
+        db.create_entry(&b).unwrap();
+
+        let llm = MockCollationLlm::empty();
+        let mgr = CollationManager::new(CollationConfig::default());
+        mgr.run(
+            &db,
+            &llm,
+            DEFAULT_TIDY_PROMPT,
+            DEFAULT_COLLATE_PROMPT,
+            DEFAULT_NORMALIZE_PROMPT,
+            &HashMap::new(),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let a_after = db.get_entry("a").unwrap().unwrap();
+        let b_after = db.get_entry("b").unwrap().unwrap();
+
+        // A was a candidate → collated_at should be updated (non-empty, different from before)
+        assert!(!a_after.collated_at.is_empty(), "Candidate A should be stamped");
+
+        // B was NOT a collate candidate (recently collated).
+        // B IS a tidy candidate (collated_at is non-empty, updated_at == collated_at, so
+        // updated_at > collated_at is false, meaning is_tidy_candidate returns false too).
+        // So B should keep its original collated_at.
+        assert_eq!(b_after.collated_at, now, "Non-candidate B should keep original stamp");
+    }
+
+    #[tokio::test]
+    async fn test_second_run_processes_ttl_expired() {
+        let db = MemoryDB::open_in_memory().unwrap();
+        let now = now_str();
+
+        // Create entry with collated_at set to 10 days ago (TTL 7d → expired).
+        let mut entry = make_entry("old", "Old fact", 0.9, &now);
+        let ten_days_ago = (Utc::now() - chrono::Duration::days(10)).to_rfc3339();
+        entry.collated_at = ten_days_ago.clone();
+        db.create_entry(&entry).unwrap();
+
+        let llm = MockCollationLlm::empty();
+        let mgr = CollationManager::new(CollationConfig {
+            reconsider_ttl_days: 7.0,
+            ..Default::default()
+        });
+
+        // First run: should process the TTL-expired entry.
+        mgr.run(
+            &db,
+            &llm,
+            DEFAULT_TIDY_PROMPT,
+            DEFAULT_COLLATE_PROMPT,
+            DEFAULT_NORMALIZE_PROMPT,
+            &HashMap::new(),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let after = db.get_entry("old").unwrap().unwrap();
+        // Should have been stamped (collated_at updated from 10 days ago).
+        assert_ne!(after.collated_at, ten_days_ago, "TTL-expired entry should be re-stamped");
+        assert!(!after.collated_at.is_empty());
     }
 }

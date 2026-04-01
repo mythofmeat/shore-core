@@ -610,6 +610,7 @@ pub async fn compact(
 
     // Create trait implementations.
     let llm = RealCompactionLlm::new(ctx.llm_client.clone(), model);
+    let collation_embed_config = embed_config.clone();
     let indexer = RealVectorIndexer::new(store, ctx.llm_client.clone(), embed_config);
     let conv_mgr = RealConversationManager::new(engine.character_dir());
 
@@ -667,23 +668,11 @@ pub async fn compact(
             let collation_result = if do_collate
                 && ctx.config.app.memory.collation.enabled
             {
-                let collation_model = ctx
-                    .config
-                    .app
-                    .defaults
-                    .memory_agent
-                    .as_deref()
-                    .and_then(|name| ctx.config.models.find_model(name).ok())
-                    .or_else(|| {
-                        ctx.active_model
-                            .as_deref()
-                            .and_then(|name| ctx.config.models.find_model(name).ok())
-                    })
-                    .or_else(|| ctx.config.models.first_chat_model());
+                let collation_model = resolve_collation_model(&ctx.config);
 
                 if let Some(cmodel) = collation_model {
                     let collation_llm =
-                        RealCollationLlm::new(ctx.llm_client.clone(), cmodel.clone());
+                        RealCollationLlm::new(ctx.llm_client.clone(), cmodel);
                     let tidy_template = resolve_prompt_template(
                         &ctx.config.dirs.config,
                         &char_name,
@@ -704,6 +693,18 @@ pub async fn compact(
                     .unwrap_or_else(|| DEFAULT_NORMALIZE_PROMPT.to_string());
 
                     let collation_mgr = CollationManager::new(LibCollationConfig::default());
+                    let collation_limit = ctx.config.app.memory.collation.batch_limit;
+
+                    // Open a second vector store for collation (the compaction one was moved).
+                    let collation_search_ctx = {
+                        let cvs_path = ctx.data_dir.join(&char_name).join("memory").join("vectorstore");
+                        match VectorStore::open(&cvs_path, collation_embed_config.dimensions).await {
+                            Ok(vs) => Some(AgentSearchContext::new(vs, ctx.llm_client.clone(), collation_embed_config.clone())),
+                            Err(_) => None,
+                        }
+                    };
+                    let collation_indexer = collation_search_ctx.as_ref().map(|ctx| RealAgentIndexer::new(ctx));
+
                     let mut collation_vars = std::collections::HashMap::new();
                     collation_vars.insert("char".to_string(), char_name.clone());
                     collation_vars.insert("user".to_string(), display_name.clone());
@@ -715,8 +716,9 @@ pub async fn compact(
                             &collate_template,
                             &normalize_template,
                             &collation_vars,
-                            None,
-                            None,
+                            collation_indexer.as_ref().map(|i| i as &dyn crate::memory::agent::AgentIndexer),
+                            collation_search_ctx.as_ref().map(|ctx| &ctx.vector_store),
+                            Some(collation_limit),
                         )
                         .await
                     {
@@ -798,6 +800,39 @@ fn compaction_err(e: CompactionError) -> (ErrorCode, String) {
     }
 }
 
+/// Resolve the model to use for collation.
+///
+/// Fallback chain: `defaults.collation` → `defaults.memory_agent` →
+/// `defaults.model` → first chat model.
+pub fn resolve_collation_model(
+    config: &shore_config::LoadedConfig,
+) -> Option<shore_config::models::ResolvedModel> {
+    config
+        .app
+        .defaults
+        .collation
+        .as_deref()
+        .and_then(|name| config.models.find_model(name).ok())
+        .or_else(|| {
+            config
+                .app
+                .defaults
+                .memory_agent
+                .as_deref()
+                .and_then(|name| config.models.find_model(name).ok())
+        })
+        .or_else(|| {
+            config
+                .app
+                .defaults
+                .model
+                .as_deref()
+                .and_then(|name| config.models.find_model(name).ok())
+        })
+        .or_else(|| config.models.first_chat_model())
+        .cloned()
+}
+
 /// Run the 4-phase collation pipeline on the current character's memory.
 ///
 /// Phases: tidy (split broad entries), collate (merge similar), normalize
@@ -819,22 +854,8 @@ pub async fn collate(
     let db = MemoryDB::open(&db_path)
         .map_err(|e| (ErrorCode::InternalError, format!("Failed to open memory DB: {e}")))?;
 
-    // Resolve model: memory_agent -> active_model -> first_chat_model.
-    let model = ctx
-        .config
-        .app
-        .defaults
-        .memory_agent
-        .as_deref()
-        .and_then(|name| ctx.config.models.find_model(name).ok())
-        .or_else(|| {
-            ctx.active_model
-                .as_deref()
-                .and_then(|name| ctx.config.models.find_model(name).ok())
-        })
-        .or_else(|| ctx.config.models.first_chat_model())
-        .ok_or_else(|| (ErrorCode::InternalError, "No model configured".to_string()))?
-        .clone();
+    let model = resolve_collation_model(&ctx.config)
+        .ok_or_else(|| (ErrorCode::InternalError, "No model configured".to_string()))?;
 
     let llm = RealCollationLlm::new(ctx.llm_client.clone(), model);
 
@@ -850,6 +871,33 @@ pub async fn collate(
 
     let mgr = CollationManager::new(LibCollationConfig::default());
 
+    // Resolve batch limit: CLI --limit overrides config default.
+    let config_limit = ctx.config.app.memory.collation.batch_limit;
+    let limit = args
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as usize)
+        .unwrap_or(config_limit);
+
+    // Construct vector store + indexer for clustering and indexing (optional).
+    let search_ctx = match resolve_embed_config(
+        ctx.config.app.defaults.embedding.as_deref(),
+        &ctx.config.models.embedding,
+    ) {
+        Ok(embed_config) => {
+            let vs_path = ctx.data_dir.join(&char_name).join("memory").join("vectorstore");
+            match VectorStore::open(&vs_path, embed_config.dimensions).await {
+                Ok(vs) => Some(AgentSearchContext::new(vs, ctx.llm_client.clone(), embed_config)),
+                Err(e) => {
+                    tracing::warn!("Vector store unavailable for collation: {e}");
+                    None
+                }
+            }
+        }
+        Err(_) => None,
+    };
+    let indexer = search_ctx.as_ref().map(|ctx| RealAgentIndexer::new(ctx));
+
     let collation_display_name = ctx.config.app.defaults.resolve_display_name();
     let mut collation_vars = std::collections::HashMap::new();
     collation_vars.insert("char".to_string(), char_name.clone());
@@ -862,7 +910,12 @@ pub async fn collate(
     loop {
         passes += 1;
         let outcome = mgr
-            .run(&db, &llm, &tidy_template, &collate_template, &normalize_template, &collation_vars, None, None)
+            .run(
+                &db, &llm, &tidy_template, &collate_template, &normalize_template, &collation_vars,
+                indexer.as_ref().map(|i| i as &dyn crate::memory::agent::AgentIndexer),
+                search_ctx.as_ref().map(|ctx| &ctx.vector_store),
+                Some(limit),
+            )
             .await
             .map_err(collation_err)?;
 
