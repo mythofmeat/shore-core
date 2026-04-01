@@ -4,9 +4,10 @@
 *.profraw
 *.profdata
 
-# IDE
+# IDE / AI tooling
 .idea/
 .vscode/
+.claude/
 *.swp
 *.swo
 *~
