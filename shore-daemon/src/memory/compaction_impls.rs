@@ -14,7 +14,6 @@ use uuid::Uuid;
 
 use shore_config::models::ResolvedModel;
 use crate::engine::segments::{CompactionManifest, SegmentEntry};
-use shore_llm_client::types::ContentBlock;
 use shore_llm_client::LlmClient;
 
 use super::compaction::{CompactionError, CompactionLlm, ConversationManager, RetentionParams, VectorIndexer};
@@ -260,21 +259,7 @@ impl CompactionLlm for RealCompactionLlm {
                 .map_err(|e| { eprintln!("[compact-timing] summarize: LLM generate FAILED in {:?}: {}", t0.elapsed(), e); CompactionError::Llm(e.to_string()) })?;
             eprintln!("[compact-timing] summarize: LLM generate done in {:?}, content_len={}", t0.elapsed(), resp.content.len());
 
-            // Extract text from content blocks, falling back to content field.
-            let text = if resp.content_blocks.is_empty() {
-                resp.content.clone()
-            } else {
-                resp.content_blocks
-                    .iter()
-                    .filter_map(|b| match b {
-                        ContentBlock::Text { text } => Some(text.as_str()),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join("")
-            };
-
-            Ok(text)
+            Ok(resp.extract_text())
         })
     }
 }

@@ -105,22 +105,8 @@ impl AgentLlm for RealAgentLlm {
                 .await
                 .map_err(|e| AgentLlmError::Transport(e.to_string()))?;
 
-            // Extract text from content_blocks, or fall back to content field.
-            let text = if resp.content_blocks.is_empty() {
-                resp.content.clone()
-            } else {
-                resp.content_blocks
-                    .iter()
-                    .filter_map(|b| match b {
-                        ContentBlock::Text { text } => Some(text.as_str()),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join("")
-            };
-
             Ok(AgentLlmResponse {
-                text,
+                text: resp.extract_text(),
                 content_blocks: resp.content_blocks,
                 finish_reason: resp.finish_reason,
             })

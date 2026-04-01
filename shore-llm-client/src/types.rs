@@ -176,6 +176,25 @@ pub struct GenerateResponse {
     pub model: String,
 }
 
+impl GenerateResponse {
+    /// Extract concatenated text from content blocks, falling back to the
+    /// `content` field when no structured blocks are present.
+    pub fn extract_text(&self) -> String {
+        if self.content_blocks.is_empty() {
+            self.content.clone()
+        } else {
+            self.content_blocks
+                .iter()
+                .filter_map(|b| match b {
+                    ContentBlock::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("")
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

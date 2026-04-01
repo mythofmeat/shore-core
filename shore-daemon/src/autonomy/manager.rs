@@ -831,23 +831,9 @@ async fn execute_interiority_tick(
         }
 
         // Build assistant message from content blocks for the next request.
-        let assistant_content: Vec<serde_json::Value> = resp.content_blocks.iter().filter_map(|block| {
-            match block {
-                ContentBlock::Text { text } => Some(json!({"type": "text", "text": text})),
-                ContentBlock::ToolUse { id, name, input } => Some(json!({
-                    "type": "tool_use", "id": id, "name": name, "input": input
-                })),
-                ContentBlock::Thinking { thinking, signature } => {
-                    signature.as_ref().map(|sig| json!({
-                        "type": "thinking", "thinking": thinking, "signature": sig
-                    }))
-                }
-                ContentBlock::RedactedThinking { data } => Some(json!({
-                    "type": "redacted_thinking", "data": data
-                })),
-                _ => None,
-            }
-        }).collect();
+        let assistant_content: Vec<serde_json::Value> = resp.content_blocks.iter()
+            .filter_map(crate::content_util::content_block_to_api_json)
+            .collect();
 
         request.messages.push(json!({"role": "assistant", "content": assistant_content}));
 

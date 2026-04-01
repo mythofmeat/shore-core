@@ -480,29 +480,9 @@ async fn handle_generation(
                 Role::System => "system",
             };
             let content = if !m.content_blocks.is_empty() {
-                let blocks: Vec<Value> = m.content_blocks.iter().filter_map(|b| match b {
-                    ContentBlock::Text { text } => Some(json!({ "type": "text", "text": text })),
-                    ContentBlock::Thinking { thinking, signature } => {
-                        signature.as_ref().map(|sig| {
-                            json!({ "type": "thinking", "thinking": thinking, "signature": sig })
-                        })
-                    }
-                    ContentBlock::RedactedThinking { data } => {
-                        Some(json!({ "type": "redacted_thinking", "data": data }))
-                    }
-                    ContentBlock::ToolUse { id, name, input } => Some(json!({
-                        "type": "tool_use", "id": id, "name": name, "input": input,
-                    })),
-                    ContentBlock::ToolResult { tool_use_id, content, is_error } => {
-                        let mut v = json!({
-                            "type": "tool_result", "tool_use_id": tool_use_id, "content": content,
-                        });
-                        if *is_error {
-                            v["is_error"] = json!(true);
-                        }
-                        Some(v)
-                    }
-                }).collect();
+                let blocks: Vec<Value> = m.content_blocks.iter()
+                    .filter_map(crate::content_util::content_block_to_api_json)
+                    .collect();
                 json!(blocks)
             } else {
                 build_content(&m.content, &m.images)
