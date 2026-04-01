@@ -268,3 +268,19 @@ A single holistic call lets the LLM see all candidates + nearby context and make
 **Resolution order:** `--socket` CLI flag → `client.toml` `default_address` → instance discovery → default Unix socket.
 
 **Trade-off:** `load_client_config()` reads and parses the file on every invocation of `discover_or_default()`. This is acceptable because it is a single small file read, and caching would add complexity with no measurable benefit for a CLI tool.
+
+---
+
+### Image ingestion pipeline and `remember_image` tool
+
+**Changes made:**
+- Fixed bug where user-sent images never reached the LLM: the `content_blocks` branch in `handler.rs` ignored `m.images` entirely, making `build_content()` dead code for user messages
+- Incoming images are now copied to `<data_dir>/<char>/images/attachments/` with timestamped filenames (matching `generate_image` naming convention)
+- Each copied image adds `[Attached image saved as: <rel_path>]` to content_blocks so the character learns the storage path
+- New `remember_image` tool lets the character save user-shared images to memory with rich contextual descriptions
+- Memory agent's `create_entry` now accepts `image_path` parameter and `"image"` memory_type
+- Prompt guidance instructs the character to use `remember_image` when images are shared
+
+**Why:** User-sent images were completely invisible to the LLM — the most basic image feature was broken. The ingestion pipeline ensures images survive beyond the conversation (durable copy) and become searchable memories (via `remember_image` → memory DB → FTS5/RAG).
+
+**Trade-off:** No image compression on ingestion — large images inflate LLM context. No vector indexing at `remember_image` time (matches `generate_image` pattern; backfill via `shore memory reindex`). `send_image` still doesn't emit a `ServerMessage::SendImage` event to the client — display-side concern, separate fix.

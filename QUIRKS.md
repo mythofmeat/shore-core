@@ -21,3 +21,7 @@ Unexpected behavior, kludges, and idiosyncrasies that aren't obvious from readin
 - **Anthropic prompt cache has ~5s propagation delay.** After a cache write, identical requests within ~2s may miss. Requests after ~5s reliably hit. This is relevant for tool loops where the continuation call fires within ~1s of the initial call — the cache from the initial call won't be available yet, but this is expected and not a bug.
 
 - **Cache breakpoints at depth 2 are sufficient.** Messages 1-3 of a conversation won't have cache breakpoints (not enough turns for depth-2 to exist), but once the breakpoint activates at message 4+, it works reliably across all subsequent turns including tool use exchanges. Multiple breakpoints at depths 4 and 8 were tested but provided no additional benefit on direct Anthropic.
+
+## Image Handling
+
+- **User messages always have `content_blocks` populated.** This means the `build_content(text, images)` fallback in the LLM message builder is dead code for user messages — it only fires when `content_blocks` is empty. Prior to the fix, `m.images` was silently dropped for all user messages because the `content_blocks` branch didn't encode them. Image encoding must happen in both branches.
