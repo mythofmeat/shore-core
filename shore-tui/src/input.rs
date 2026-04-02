@@ -191,6 +191,16 @@ fn handle_insert_mode(app: &mut App, key: KeyEvent) -> Action {
             Action::Redraw
         }
 
+        // Word deletion
+        (KeyModifiers::ALT, KeyCode::Backspace) => {
+            app.input.backspace_word();
+            Action::Redraw
+        }
+        (KeyModifiers::ALT, KeyCode::Delete) => {
+            app.input.delete_word();
+            Action::Redraw
+        }
+
         // Backspace
         (_, KeyCode::Backspace) => {
             app.input.backspace();
