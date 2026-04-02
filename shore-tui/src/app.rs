@@ -198,27 +198,31 @@ impl InputState {
         self.text = text;
     }
 
+    #[cfg(test)]
     pub fn line_count(&self) -> usize {
         self.text.lines().count().max(1)
     }
 
     /// Visual line count accounting for word-wrap at the given content width.
     pub fn visual_line_count(&self, content_width: usize) -> usize {
-        if content_width == 0 {
-            return self.line_count();
+        let starts = word_wrap_offsets(&self.text, content_width);
+        let count = starts.len();
+
+        // Add an extra line when the last visual line fills the width entirely,
+        // so the cursor has room to sit on the next line at the boundary.
+        if content_width > 0 && count > 0 {
+            let last_start = starts[count - 1];
+            let last_width: usize = self.text[last_start..]
+                .chars()
+                .take_while(|&c| c != '\n')
+                .map(|c| unicode_width::UnicodeWidthChar::width(c).unwrap_or(0))
+                .sum();
+            if last_width >= content_width {
+                return count + 1;
+            }
         }
-        self.text
-            .split('\n')
-            .map(|line| {
-                let w = unicode_width::UnicodeWidthStr::width(line);
-                if w == 0 {
-                    1
-                } else {
-                    w / content_width + 1 // floor + 1: extra line for cursor at boundary
-                }
-            })
-            .sum::<usize>()
-            .max(1)
+
+        count.max(1)
     }
 
     pub fn enter_command_mode(&mut self) {
@@ -256,6 +260,80 @@ impl InputState {
         self.mode = InputMode::Normal;
         text
     }
+}
+
+/// Compute visual line start byte-offsets for word-wrapped text.
+///
+/// Returns a `Vec<usize>` where each entry is the byte index where a visual
+/// line begins. The first entry is always `0`. Breaks happen at word
+/// boundaries (spaces) when possible; falls back to character wrapping for
+/// words longer than `max_width`.
+pub fn word_wrap_offsets(text: &str, max_width: usize) -> Vec<usize> {
+    let mut starts = vec![0usize];
+
+    if max_width == 0 {
+        for (i, ch) in text.char_indices() {
+            if ch == '\n' {
+                starts.push(i + ch.len_utf8());
+            }
+        }
+        return starts;
+    }
+
+    let mut col: usize = 0;
+    // Byte offset AFTER the last space on the current visual line.
+    let mut last_space_after: Option<usize> = None;
+    // Column value at the byte after that space.
+    let mut col_at_space_after: usize = 0;
+
+    for (i, ch) in text.char_indices() {
+        if ch == '\n' {
+            starts.push(i + ch.len_utf8());
+            col = 0;
+            last_space_after = None;
+            continue;
+        }
+
+        let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+
+        if col + w > max_width {
+            if ch == ' ' {
+                // Space at the overflow point — consume it as a line break.
+                starts.push(i + ch.len_utf8());
+                col = 0;
+                last_space_after = None;
+            } else if let Some(brk) = last_space_after {
+                // Break at the previous word boundary.
+                starts.push(brk);
+                col = col - col_at_space_after + w;
+                // Rescan for spaces between `brk` and `i` on the new line.
+                last_space_after = None;
+                for (j, c) in text[brk..i].char_indices() {
+                    if c == ' ' {
+                        let after = brk + j + c.len_utf8();
+                        last_space_after = Some(after);
+                        col_at_space_after = text[brk..after]
+                            .chars()
+                            .map(|ch| unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0))
+                            .sum();
+                    }
+                }
+            } else {
+                // No space on this line — fall back to character wrap.
+                starts.push(i);
+                col = w;
+                last_space_after = None;
+            }
+        } else {
+            if ch == ' ' {
+                last_space_after = Some(i + ch.len_utf8());
+                col_at_space_after = col + w;
+            }
+            col += w;
+        }
+    }
+
+    starts
 }
 
 /// Connection status for the status bar.

@@ -565,31 +565,26 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    // Calculate cursor visual position (needed for both scrolling and placement)
+    // Word-wrap the input text — shared offsets drive rendering AND cursor calc.
     let content_width = area.width as usize;
-    let text_before_cursor = &app.input.text[..app.input.cursor];
-    let mut cx: usize = 0;
-    let mut cy: u16 = 0;
-    for ch in text_before_cursor.chars() {
-        if ch == '\n' {
-            cx = 0;
-            cy += 1;
-        } else {
-            let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-            if content_width > 0 && cx + w > content_width {
-                cy += 1;
-                cx = w;
-            } else {
-                cx += w;
-            }
-        }
-    }
+    let line_starts = crate::app::word_wrap_offsets(&app.input.text, content_width);
+
+    // Cursor visual position: find which visual line it lands on.
+    let cy_idx = line_starts.partition_point(|&s| s <= app.input.cursor).saturating_sub(1);
+    let cy: u16 = cy_idx as u16;
+    let line_start = line_starts[cy_idx];
+    let mut cx: usize = app.input.text[line_start..app.input.cursor]
+        .chars()
+        .map(|c| unicode_width::UnicodeWidthChar::width(c).unwrap_or(0))
+        .sum();
 
     // If cursor lands exactly at the right edge, wrap to next line
-    if content_width > 0 && cx >= content_width {
-        cy += 1;
+    let cy = if content_width > 0 && cx >= content_width {
         cx = 0;
-    }
+        cy + 1
+    } else {
+        cy
+    };
 
     // Scroll input so cursor line is always visible
     let content_height = area.height.saturating_sub(1);
@@ -607,27 +602,17 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(Color::DarkGray),
         )))
     } else {
-        // Pre-wrap at character boundaries to match cursor position calc
-        let mut lines: Vec<String> = Vec::new();
-        let mut current = String::new();
-        let mut col: usize = 0;
-        for ch in app.input.text.chars() {
-            if ch == '\n' {
-                lines.push(std::mem::take(&mut current));
-                col = 0;
-            } else {
-                let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-                if content_width > 0 && col + w > content_width {
-                    lines.push(std::mem::take(&mut current));
-                    col = w;
-                    current.push(ch);
-                } else {
-                    col += w;
-                    current.push(ch);
-                }
-            }
-        }
-        lines.push(current);
+        // Build visual lines from the word-wrap offsets.
+        let text = &app.input.text;
+        let lines: Vec<String> = line_starts
+            .iter()
+            .enumerate()
+            .map(|(idx, &start)| {
+                let end = line_starts.get(idx + 1).copied().unwrap_or(text.len());
+                let slice = &text[start..end];
+                slice.strip_suffix('\n').unwrap_or(slice).to_string()
+            })
+            .collect();
         Text::from(lines.into_iter().map(Line::from).collect::<Vec<_>>())
     };
 
@@ -1223,11 +1208,14 @@ mod scenario_tests {
         // The message should be present (may be split across lines)
         assert!(f.contains("This is a very long message"), "start of message visible");
 
-        // Type a long input too
+        // Type a long input — word wrap should keep words intact
         h.type_str("Another really long input message that should cause the input area to grow taller as the text wraps to accommodate");
-        let _f = h.render("long input");
-        // Input area should have grown
-        // The input constraint is (line_count + 2).min(8)
+        let f = h.render("long input");
+        // "taller" must NOT be split across lines (word-level wrap)
+        assert!(
+            f.lines().any(|l| l.contains("taller")),
+            "word 'taller' should stay intact on one visual line"
+        );
     }
 
     // ── Scenario: tool call display ─────────────────────────────────────────
