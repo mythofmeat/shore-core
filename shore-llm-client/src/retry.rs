@@ -171,17 +171,12 @@ const REFUSAL_PATTERNS: &[&str] = &[
     "i must refuse",
 ];
 
-/// Truncate a string to a maximum length, appending "..." if truncated.
 fn truncate(s: &str, max: usize) -> String {
     if s.len() <= max {
         s.to_string()
     } else {
-        let end = s
-            .char_indices()
-            .nth(max)
-            .map(|(i, _)| i)
-            .unwrap_or(s.len());
-        format!("{}...", &s[..end])
+        let end = s.floor_char_boundary(max);
+        format!("{}…", &s[..end])
     }
 }
 

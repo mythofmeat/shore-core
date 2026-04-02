@@ -9,6 +9,7 @@ use std::sync::Arc;
 use tracing::warn;
 
 use shore_config::app::{NotificationBackend, NotificationsConfig, NtfyConfig};
+use shore_diagnostics::truncate_summary;
 
 /// Events that can trigger a push notification.
 #[derive(Debug, Clone, Copy)]
@@ -54,7 +55,7 @@ impl NotificationService {
         let config = self.config.clone();
         let client = self.http_client.clone();
         let title = title.to_string();
-        let body = truncate(body, 200);
+        let body = truncate_summary(body, 200);
         tokio::spawn(async move {
             if let Err(e) = dispatch(&config, &client, &title, &body).await {
                 warn!(error = %e, "Notification dispatch failed");
@@ -152,17 +153,6 @@ async fn dispatch_command(
     Ok(())
 }
 
-// ── Helpers ─────────────────────────────────────────────────────────────
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
-        let truncated: String = s.chars().take(max).collect();
-        format!("{truncated}…")
-    }
-}
-
 // ── Tests ───────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -209,26 +199,6 @@ mod tests {
         assert!(!svc.is_event_enabled(NotificationEvent::CollationComplete));
         assert!(svc.is_event_enabled(NotificationEvent::Error));
         assert!(svc.is_event_enabled(NotificationEvent::MessageComplete));
-    }
-
-    #[test]
-    fn truncate_short_string() {
-        assert_eq!(truncate("hello", 10), "hello");
-    }
-
-    #[test]
-    fn truncate_exact_length() {
-        assert_eq!(truncate("hello", 5), "hello");
-    }
-
-    #[test]
-    fn truncate_long_string() {
-        assert_eq!(truncate("hello world", 5), "hello…");
-    }
-
-    #[test]
-    fn truncate_unicode() {
-        assert_eq!(truncate("héllo wörld", 5), "héllo…");
     }
 
     #[test]

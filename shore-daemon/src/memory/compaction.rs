@@ -265,7 +265,7 @@ fn extract_all_xml_tags(text: &str, tag: &str) -> Vec<String> {
 ///
 /// Expected format: `<recap>...</recap>` followed by one or more `<entry>...</entry>` blocks.
 /// Each entry contains `<summary>`, `<topic_tags>`, and `<memory_type>` sub-tags.
-pub fn parse_compaction_response(
+pub(crate) fn parse_compaction_response(
     raw: &str,
 ) -> Result<(Option<String>, Vec<CompactedEntry>), CompactionError> {
     let recap = extract_xml_tag(raw, "recap");

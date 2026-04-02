@@ -1,4 +1,4 @@
-pub mod providers;
+pub(crate) mod providers;
 pub mod retry;
 pub mod stream;
 pub mod types;

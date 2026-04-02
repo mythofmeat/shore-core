@@ -88,9 +88,19 @@ impl SWPConnection {
         character: Option<String>,
     ) -> Result<(Self, ServerHello, History)> {
         let mut conn = Self::open(addr).await?;
+        let (server_hello, history) = conn.do_handshake(client_type.into(), client_name.into(), character).await?;
+        Ok((conn, server_hello, history))
+    }
 
+    /// Perform the 3-step SWP handshake on an already-open connection.
+    async fn do_handshake(
+        &mut self,
+        client_type: String,
+        client_name: String,
+        character: Option<String>,
+    ) -> Result<(ServerHello, History)> {
         // Step 1: receive server hello
-        let first_msg = conn.recv().await?;
+        let first_msg = self.recv().await?;
         let server_hello = match first_msg {
             ServerMessage::Hello(h) => {
                 if h.v != SWP_V1 {
@@ -110,15 +120,15 @@ impl SWPConnection {
 
         // Step 2: send client hello
         let hello = ClientMessage::Hello(ClientHello {
-            client_type: client_type.into(),
-            client_name: client_name.into(),
+            client_type,
+            client_name,
             capabilities: vec!["streaming".into()],
             character,
         });
-        conn.send(&hello).await?;
+        self.send(&hello).await?;
 
         // Step 3: receive history
-        let history_msg = conn.recv().await?;
+        let history_msg = self.recv().await?;
         let history = match history_msg {
             ServerMessage::History(h) => h,
             other => {
@@ -128,7 +138,7 @@ impl SWPConnection {
             }
         };
 
-        Ok((conn, server_hello, history))
+        Ok((server_hello, history))
     }
 
     /// Send a client message as a JSON line.
@@ -268,46 +278,7 @@ impl SWPConnection {
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static,
     {
         let mut conn = Self::from_raw_stream(stream);
-
-        // Step 1: receive server hello
-        let first_msg = conn.recv().await?;
-        let server_hello = match first_msg {
-            ServerMessage::Hello(h) => {
-                if h.v != SWP_V1 {
-                    return Err(ClientError::Protocol(format!(
-                        "unsupported protocol version: {} (expected {})",
-                        h.v, SWP_V1
-                    )));
-                }
-                h
-            }
-            other => {
-                return Err(ClientError::Protocol(format!(
-                    "expected server hello, got: {other:?}"
-                )));
-            }
-        };
-
-        // Step 2: send client hello
-        let hello = ClientMessage::Hello(ClientHello {
-            client_type: client_type.into(),
-            client_name: client_name.into(),
-            capabilities: vec!["streaming".into()],
-            character,
-        });
-        conn.send(&hello).await?;
-
-        // Step 3: receive history
-        let history_msg = conn.recv().await?;
-        let history = match history_msg {
-            ServerMessage::History(h) => h,
-            other => {
-                return Err(ClientError::Protocol(format!(
-                    "expected history, got: {other:?}"
-                )));
-            }
-        };
-
+        let (server_hello, history) = conn.do_handshake(client_type.into(), client_name.into(), character).await?;
         Ok((conn, server_hello, history))
     }
 }

@@ -1,7 +1,8 @@
-pub mod anthropic;
-pub mod gemini;
-pub mod openai;
-pub mod sse;
+pub(crate) mod anthropic;
+pub(crate) mod gemini;
+pub(crate) mod openai;
+pub(crate) mod sse;
+pub(crate) mod stream_helpers;
 
 use crate::types::{GenerateResponse, ImageGenerateResponse, LlmRequest};
 use crate::LlmError;

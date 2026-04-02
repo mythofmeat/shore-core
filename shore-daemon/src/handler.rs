@@ -521,16 +521,16 @@ async fn handle_generation(
     let tool_toggles = &effective_config.app.behavior.tool_use.tools;
     let capabilities = CapabilitiesConfig {
         interiority_enabled: effective_config.app.behavior.autonomy.interiority.enabled,
-        scratchpad_enabled: tool_toggles.scratchpad_read || tool_toggles.scratchpad_write,
-        memory_enabled: tool_toggles.memory,
+        scratchpad_enabled: tool_toggles.scratchpad_read() || tool_toggles.scratchpad_write(),
+        memory_enabled: tool_toggles.memory(),
         image_memory_enabled: effective_config.app.memory.image_enabled,
-        send_image_enabled: tool_toggles.send_image,
-        remember_image_enabled: tool_toggles.remember_image,
-        generate_image_enabled: tool_toggles.generate_image,
-        web_search_enabled: tool_toggles.web_search,
-        activity_heatmap_enabled: tool_toggles.activity_heatmap,
-        roll_dice_enabled: tool_toggles.roll_dice,
-        check_time_enabled: tool_toggles.check_time,
+        send_image_enabled: tool_toggles.send_image(),
+        remember_image_enabled: tool_toggles.remember_image(),
+        generate_image_enabled: tool_toggles.generate_image(),
+        web_search_enabled: tool_toggles.web_search(),
+        activity_heatmap_enabled: tool_toggles.activity_heatmap(),
+        roll_dice_enabled: tool_toggles.roll_dice(),
+        check_time_enabled: tool_toggles.check_time(),
     };
 
     let prompt_result = prompt::assemble_prompt(&PromptParams {

@@ -240,8 +240,8 @@ mod tests {
     #[test]
     fn test_tool_toggles_filter() {
         let mut toggles = ToolToggles::default();
-        toggles.roll_dice = false;
-        toggles.web_search = false;
+        toggles.set("roll_dice", false);
+        toggles.set("web_search", false);
 
         let tools = available_tools(false, &toggles);
         let names: Vec<&str> = tools.iter().map(|t| t.name).collect();

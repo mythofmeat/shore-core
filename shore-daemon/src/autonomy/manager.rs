@@ -23,6 +23,7 @@ use super::cache_keepalive::{
 };
 use super::interiority::{InteriorityAction, InteriorityClock, InteriorityState};
 use super::{AutonomyStatus, InteriorityEventKind, InteriorityLog};
+use shore_diagnostics::truncate_summary;
 use crate::memory::agent::{AgentSearchContext, CallerIdentity};
 use crate::memory::agent_llm::RealAgentLlm;
 use crate::memory::compaction_impls::{resolve_embed_config, resolve_image_gen_config};
@@ -856,7 +857,7 @@ async fn execute_interiority_tick(
                 info!(
                     character, round,
                     tool = %name, is_error,
-                    output = %truncate_log(&output_str, 200),
+                    output = %truncate_summary(&output_str, 200),
                     "Interiority: tool result"
                 );
 
@@ -864,7 +865,7 @@ async fn execute_interiority_tick(
                     let mut s = state.lock().unwrap();
                     s.interiority_log.push(
                         InteriorityEventKind::ToolUse,
-                        format!("Tool: {name} → {}", truncate_log(&output_str, 80)),
+                        format!("Tool: {name} → {}", truncate_summary(&output_str, 80)),
                     );
                 }
 
@@ -889,7 +890,7 @@ async fn execute_interiority_tick(
     let send_message = extract_send_message(&final_content);
 
     if let Some(user_msg) = send_message {
-        info!(character, msg = %truncate_log(&user_msg, 200), "Interiority: sending message to user");
+        info!(character, msg = %truncate_summary(&user_msg, 200), "Interiority: sending message to user");
 
         let content_blocks = vec![ContentBlock::Text { text: user_msg.clone() }];
         let content = derive_content_from_blocks(&content_blocks);
@@ -941,21 +942,11 @@ async fn execute_interiority_tick(
         let summary = if thinking.is_empty() {
             "Tick completed — no message, no text output".to_string()
         } else {
-            format!("Tick completed silently: {}", truncate_log(&thinking.join(" "), 150))
+            format!("Tick completed silently: {}", truncate_summary(&thinking.join(" "), 150))
         };
         info!(character, summary = %summary, "Interiority: tick complete (silent)");
         let mut s = state.lock().unwrap();
         s.interiority_log.push(InteriorityEventKind::MessageSkipped, summary);
-    }
-}
-
-/// Truncate a string for log output.
-fn truncate_log(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
-        let truncated: String = s.chars().take(max).collect();
-        format!("{truncated}…")
     }
 }
 
