@@ -1,0 +1,6 @@
+# Godot editor cache
+.godot/
+
+# Rust build artifacts
+rust/target/
+rust/Cargo.lock
