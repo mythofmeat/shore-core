@@ -194,6 +194,24 @@ fn translate_messages(request: &LlmRequest) -> Vec<Value> {
                     }
                 }
 
+                "system" => {
+                    // System messages with array content: extract text blocks.
+                    let text: String = blocks
+                        .iter()
+                        .filter_map(|b| {
+                            if b.get("type").and_then(|t| t.as_str()) == Some("text") {
+                                b.get("text").and_then(|t| t.as_str())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join("");
+                    if !text.is_empty() {
+                        out.push(json!({"role": "system", "content": text}));
+                    }
+                }
+
                 _ => {}
             },
 
