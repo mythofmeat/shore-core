@@ -608,17 +608,27 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let (mode_label, border_color) = match app.input.mode {
-        InputMode::Insert => (" [INSERT] ", Color::Cyan),
-        InputMode::Normal => (" [NORMAL] ", Color::DarkGray),
+        InputMode::Insert => (" [INSERT] ".to_string(), Color::Cyan),
+        InputMode::Normal => (" [NORMAL] ".to_string(), Color::DarkGray),
         InputMode::Command => unreachable!(),
     };
+    let img_count = app.pending_images.len();
+    let mut block = Block::default()
+        .borders(Borders::TOP)
+        .title(mode_label)
+        .border_style(Style::default().fg(border_color));
+    if img_count > 0 {
+        let label = if img_count == 1 {
+            " 1 image ".to_string()
+        } else {
+            format!(" {} images ", img_count)
+        };
+        block = block.title_bottom(
+            Line::from(Span::styled(label, Style::default().fg(Color::Magenta)))
+        );
+    }
     let paragraph = Paragraph::new(input_content)
-        .block(
-            Block::default()
-                .borders(Borders::TOP)
-                .title(mode_label)
-                .border_style(Style::default().fg(border_color)),
-        )
+        .block(block)
         .scroll((input_scroll, 0));
 
     frame.render_widget(paragraph, area);
@@ -666,6 +676,7 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         Line::from(Span::styled("    :help           this screen", Style::default().fg(Color::White))),
         Line::from(Span::styled("    :character      switch character", Style::default().fg(Color::White))),
         Line::from(Span::styled("    :model          switch model", Style::default().fg(Color::White))),
+        Line::from(Span::styled("    :image          attach image (picker)", Style::default().fg(Color::White))),
         Line::from(Span::styled("    :quit           exit", Style::default().fg(Color::White))),
         Line::from(Span::styled("    :log  :memory  :compact  :config  :diag", Style::default().fg(Color::DarkGray))),
         Line::from(""),

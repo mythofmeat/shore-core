@@ -126,6 +126,119 @@ fn open_in_editor(
     Ok(())
 }
 
+/// Open an external file picker and return the selected path(s).
+///
+/// Tries (in order): $SHORE_FILE_PICKER, yazi, fzf. Leaves the alternate
+/// screen while the picker runs so it can draw freely.
+fn pick_image(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    start_dir: Option<&str>,
+) -> io::Result<Vec<String>> {
+    let chooser_file = std::env::temp_dir().join("shore_image_pick");
+    // Remove stale chooser file
+    let _ = std::fs::remove_file(&chooser_file);
+
+    let start = start_dir.unwrap_or(".");
+
+    disable_raw_mode()?;
+    io::stdout().execute(LeaveAlternateScreen)?;
+
+    let result = try_yazi(&chooser_file, start)
+        .or_else(|| try_fzf(&chooser_file, start));
+
+    enable_raw_mode()?;
+    io::stdout().execute(EnterAlternateScreen)?;
+    terminal.clear()?;
+
+    match result {
+        Some(true) => {
+            // Read selected path(s) from chooser file
+            if let Ok(contents) = std::fs::read_to_string(&chooser_file) {
+                let paths: Vec<String> = contents
+                    .lines()
+                    .map(|l| l.trim().to_string())
+                    .filter(|l| !l.is_empty())
+                    .collect();
+                Ok(paths)
+            } else {
+                Ok(vec![])
+            }
+        }
+        Some(false) => Ok(vec![]), // picker ran but user cancelled
+        None => {
+            // No picker found — print hint to stderr before restoring screen
+            Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "no file picker found (install yazi or fzf)",
+            ))
+        }
+    }
+}
+
+/// Try launching yazi. Returns Some(true) on success, Some(false) on
+/// cancel/error, None if yazi is not installed.
+fn try_yazi(chooser_file: &std::path::Path, start: &str) -> Option<bool> {
+    let status = std::process::Command::new("yazi")
+        .arg(start)
+        .arg("--chooser-file")
+        .arg(chooser_file)
+        .status()
+        .ok()?;
+    Some(status.success() && chooser_file.exists())
+}
+
+/// Try launching fzf with image-aware preview. Returns Some(true) on
+/// success, Some(false) on cancel, None if fzf is not installed.
+fn try_fzf(chooser_file: &std::path::Path, start: &str) -> Option<bool> {
+    // Build a list of image files and pipe into fzf
+    let find = std::process::Command::new("find")
+        .arg(start)
+        .arg("-type")
+        .arg("f")
+        .arg("(")
+        .args(["-iname", "*.png", "-o"])
+        .args(["-iname", "*.jpg", "-o"])
+        .args(["-iname", "*.jpeg", "-o"])
+        .args(["-iname", "*.webp", "-o"])
+        .args(["-iname", "*.gif", "-o"])
+        .args(["-iname", "*.bmp"])
+        .arg(")")
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .ok()?;
+
+    // Detect best preview command: chafa > kitty icat > file
+    let preview_cmd = if which_exists("chafa") {
+        "chafa -s ${FZF_PREVIEW_COLUMNS}x${FZF_PREVIEW_LINES} {}".to_string()
+    } else if which_exists("kitty") {
+        "kitty icat --clear --transfer-mode=memory --stdin=no {}".to_string()
+    } else {
+        "file {}".to_string()
+    };
+
+    let status = std::process::Command::new("fzf")
+        .arg("--preview")
+        .arg(&preview_cmd)
+        .arg("--preview-window=right:50%")
+        .stdin(find.stdout.unwrap())
+        .stdout(std::fs::File::create(chooser_file).ok()?)
+        .status()
+        .ok()?;
+
+    Some(status.success() && chooser_file.exists())
+}
+
+/// Check whether a command exists on PATH.
+fn which_exists(cmd: &str) -> bool {
+    std::process::Command::new("which")
+        .arg(cmd)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
 async fn run_tui(cli: Cli) -> io::Result<()> {
     // Set up terminal
     enable_raw_mode()?;
@@ -188,6 +301,24 @@ async fn run_tui(cli: Cli) -> io::Result<()> {
                         }
                         Action::OpenInEditor => {
                             let _ = open_in_editor(&mut terminal, &mut app.input);
+                        }
+                        Action::PickImage(start_dir) => {
+                            match pick_image(&mut terminal, start_dir.as_deref()) {
+                                Ok(paths) if paths.is_empty() => {
+                                    // User cancelled — no status needed
+                                }
+                                Ok(paths) => {
+                                    let count = paths.len();
+                                    app.pending_images.extend(paths);
+                                    app.set_status(format!(
+                                        "attached {count} image(s) ({} pending)",
+                                        app.pending_images.len()
+                                    ));
+                                }
+                                Err(e) => {
+                                    app.set_status(format!("image picker: {e}"));
+                                }
+                            }
                         }
                         Action::Redraw | Action::None => {}
                     }

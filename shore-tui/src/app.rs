@@ -276,6 +276,8 @@ pub struct App {
     pub show_thinking: bool,
     pub show_tools: bool,
     pub show_help: bool,
+    /// Images queued for attachment to the next outgoing message.
+    pub pending_images: Vec<String>,
 }
 
 impl Default for App {
@@ -305,6 +307,7 @@ impl Default for App {
             show_thinking: true,
             show_tools: true,
             show_help: false,
+            pending_images: Vec::new(),
         }
     }
 }
@@ -340,7 +343,7 @@ impl App {
     /// Static command names for completion.
     const COMMANDS: &'static [&'static str] = &[
         "character", "compact", "config", "diag", "diagnostics",
-        "help", "log", "memory", "model", "quit", "regen", "status",
+        "help", "image", "log", "memory", "model", "quit", "regen", "status",
     ];
 
     /// Update completion candidates based on current command input.

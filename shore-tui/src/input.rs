@@ -13,6 +13,8 @@ pub enum Action {
     Quit,
     Redraw,
     OpenInEditor,
+    /// Open external file picker to select an image.
+    PickImage(Option<String>),
 }
 
 /// Handle a crossterm input event and return the resulting action.
@@ -161,13 +163,21 @@ fn handle_insert_mode(app: &mut App, key: KeyEvent) -> Action {
         // Send message: Enter (without Shift)
         (KeyModifiers::NONE, KeyCode::Enter) => {
             let text = app.input.take_text();
-            if text.trim().is_empty() {
+            if text.trim().is_empty() && app.pending_images.is_empty() {
                 return Action::None;
             }
+            let images = std::mem::take(&mut app.pending_images);
+            let image_refs: Vec<shore_protocol::types::ImageRef> = images
+                .iter()
+                .map(|p| shore_protocol::types::ImageRef {
+                    path: p.clone(),
+                    caption: None,
+                })
+                .collect();
             // Optimistic: show user's message in conversation immediately
             app.entries.push(crate::app::ConversationEntry::User {
                 content: text.clone(),
-                images: vec![],
+                images: image_refs,
                 timestamp: String::new(),
             });
             app.scroll_to_bottom();
@@ -177,7 +187,7 @@ fn handle_insert_mode(app: &mut App, key: KeyEvent) -> Action {
                 rid: None,
                 text,
                 stream: true,
-                images: vec![],
+                images,
                 absence_seconds: None,
                 overrides: None,
             });
@@ -439,6 +449,47 @@ fn parse_command(app: &mut App, input: &str) -> Action {
                 guidance: if arg.is_empty() { None } else { Some(arg.to_string()) },
             });
             Action::Send(ConnCommand::Send(msg))
+        }
+
+        "image" => {
+            if arg == "clear" {
+                let count = app.pending_images.len();
+                app.pending_images.clear();
+                app.set_status(format!("cleared {count} pending image(s)"));
+                Action::Redraw
+            } else if arg.is_empty() {
+                // Open external file picker
+                Action::PickImage(None)
+            } else {
+                // Direct path — resolve tilde and relative paths
+                let expanded = if arg.starts_with('~') {
+                    if let Ok(home) = std::env::var("HOME") {
+                        arg.replacen('~', &home, 1)
+                    } else {
+                        arg.to_string()
+                    }
+                } else {
+                    arg.to_string()
+                };
+                let path = if std::path::Path::new(&expanded).is_absolute() {
+                    expanded
+                } else {
+                    std::env::current_dir()
+                        .map(|d| d.join(&expanded).to_string_lossy().to_string())
+                        .unwrap_or(expanded)
+                };
+                if !std::path::Path::new(&path).exists() {
+                    app.set_status(format!("file not found: {path}"));
+                    Action::Redraw
+                } else {
+                    app.pending_images.push(path.clone());
+                    app.set_status(format!(
+                        "attached image ({} pending)",
+                        app.pending_images.len()
+                    ));
+                    Action::Redraw
+                }
+            }
         }
 
         "diag" | "diagnostics" => {
