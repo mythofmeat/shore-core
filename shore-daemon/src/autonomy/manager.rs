@@ -341,7 +341,7 @@ impl AutonomyManager {
     ) -> Option<R> {
         let states = self.states.lock().unwrap();
         let state = states.get(character)?;
-        let mut s = state.lock().unwrap();
+        let mut s = lock_state(state);
         Some(f(&mut s))
     }
 
@@ -518,6 +518,22 @@ impl AutonomyManager {
 /// Tick interval for each character's autonomy loop.
 const TICK_INTERVAL: Duration = Duration::from_secs(30);
 
+/// Maximum wall-clock time for a single interiority tick (including all tool
+/// rounds). If the tick exceeds this, the future is dropped and the tick loop
+/// continues. Prevents a hung LLM call from killing keepalive permanently.
+const INTERIORITY_TIMEOUT: Duration = Duration::from_secs(300); // 5 minutes
+
+/// Lock the per-character autonomy state, recovering from mutex poisoning
+/// instead of panicking. A poisoned mutex means a previous holder panicked,
+/// but the state inside is still usable — letting the tick loop die would be
+/// worse (no more keepalive, no more interiority, permanent silent failure).
+fn lock_state(m: &Mutex<AutonomyState>) -> std::sync::MutexGuard<'_, AutonomyState> {
+    m.lock().unwrap_or_else(|poisoned| {
+        error!("Autonomy state mutex was poisoned, recovering");
+        poisoned.into_inner()
+    })
+}
+
 async fn character_tick_loop(
     character: String,
     state: Arc<Mutex<AutonomyState>>,
@@ -558,7 +574,7 @@ async fn character_tick_loop(
             }
             _ = shutdown_rx.changed() => {
                 // Final save before shutdown.
-                let mut s = state.lock().unwrap();
+                let mut s = lock_state(&state);
                 s.mark_dirty();
                 save_state(&data_dir, &character, &mut s);
                 info!(character = %character, "Autonomy tick task shutting down");
@@ -585,7 +601,7 @@ async fn tick_character(
 
     // Collect actions under the lock, then release before any async work.
     let (int_action, ka_action, compaction_needed) = {
-        let mut s = state.lock().unwrap();
+        let mut s = lock_state(state);
 
         // -- interiority ------------------------------------------------------
         let int_action = if config.enabled && config.interiority.enabled {
@@ -659,21 +675,7 @@ async fn tick_character(
         let _ = compaction_tx.try_send(character.to_string());
     }
 
-    // -- execute interiority tick (async, outside lock) -------------------
-    if matches!(int_action, InteriorityAction::RunTick) {
-        {
-            let mut s = state.lock().unwrap();
-            s.interiority_log.push(
-                InteriorityEventKind::TickFired,
-                "Interiority tick fired",
-            );
-        }
-        execute_interiority_tick(
-            character, state, config, data_dir, llm_client, push_tx, loaded_config, notifier,
-        ).await;
-    }
-
-    // -- execute keepalive actions (async, outside lock) -------------------
+    // -- execute keepalive FIRST (fast max_tokens=1, critical for cache) ---
     match ka_action {
         KeepaliveAction::None => {}
         KeepaliveAction::SendPing => {
@@ -702,9 +704,41 @@ async fn tick_character(
         }
     }
 
+    // -- execute interiority tick with timeout (async, outside lock) -------
+    if matches!(int_action, InteriorityAction::RunTick) {
+        {
+            let mut s = lock_state(state);
+            s.interiority_log.push(
+                InteriorityEventKind::TickFired,
+                "Interiority tick fired",
+            );
+        }
+        match tokio::time::timeout(
+            INTERIORITY_TIMEOUT,
+            execute_interiority_tick(
+                character, state, config, data_dir, llm_client, push_tx, loaded_config, notifier,
+            ),
+        ).await {
+            Ok(()) => {}
+            Err(_) => {
+                error!(
+                    character = %character,
+                    timeout_secs = INTERIORITY_TIMEOUT.as_secs(),
+                    "Interiority tick timed out, dropping to keep tick loop alive"
+                );
+                let mut s = lock_state(state);
+                s.interiority_log.push(
+                    InteriorityEventKind::Timeout,
+                    format!("Tick timed out after {}s", INTERIORITY_TIMEOUT.as_secs()),
+                );
+                s.mark_dirty();
+            }
+        }
+    }
+
     // -- final persist (in case async actions dirtied state) ---------------
     {
-        let mut s = state.lock().unwrap();
+        let mut s = lock_state(state);
         save_state(data_dir, character, &mut s);
     }
 }
@@ -737,7 +771,7 @@ async fn execute_interiority_tick(
     // Clone the last conversation request to preserve the cache prefix
     // (system prompt, tool definitions, provider_options are all inherited).
     let mut request = {
-        let s = state.lock().unwrap();
+        let s = lock_state(state);
         match &s.last_request {
             Some(req) => req.clone(),
             None => {
@@ -781,7 +815,7 @@ async fn execute_interiority_tick(
 
         // Update cache keepalive — this API call keeps the cache warm.
         {
-            let mut s = state.lock().unwrap();
+            let mut s = lock_state(state);
             let now = Instant::now();
             s.cache_keepalive.on_api_response(
                 now,
@@ -816,7 +850,7 @@ async fn execute_interiority_tick(
         // Bail if we've exhausted tool rounds.
         if round >= max_rounds {
             warn!(character, max_rounds, "Interiority: hit max tool rounds");
-            let mut s = state.lock().unwrap();
+            let mut s = lock_state(state);
             s.interiority_log.push(
                 InteriorityEventKind::ToolUse,
                 format!("Hit max tool rounds ({max_rounds})"),
@@ -862,7 +896,7 @@ async fn execute_interiority_tick(
                 );
 
                 {
-                    let mut s = state.lock().unwrap();
+                    let mut s = lock_state(state);
                     s.interiority_log.push(
                         InteriorityEventKind::ToolUse,
                         format!("Tool: {name} → {}", truncate_summary(&output_str, 80)),
@@ -927,7 +961,7 @@ async fn execute_interiority_tick(
             );
         }
 
-        let mut s = state.lock().unwrap();
+        let mut s = lock_state(state);
         let preview: String = msg.content.chars().take(80).collect();
         s.interiority_log.push(
             InteriorityEventKind::MessageSent,
@@ -945,7 +979,7 @@ async fn execute_interiority_tick(
             format!("Tick completed silently: {}", truncate_summary(&thinking.join(" "), 150))
         };
         info!(character, summary = %summary, "Interiority: tick complete (silent)");
-        let mut s = state.lock().unwrap();
+        let mut s = lock_state(state);
         s.interiority_log.push(InteriorityEventKind::MessageSkipped, summary);
     }
 }
@@ -1061,7 +1095,7 @@ async fn execute_keepalive_ping(
 
     // Re-check state under the lock before sending.
     let request = {
-        let s = state.lock().unwrap();
+        let s = lock_state(state);
         if !matches!(s.cache_keepalive.state(), &KeepaliveState::Pinging) {
             debug!(character, "Cache keepalive: state changed since tick, skipping ping");
             return;
@@ -1088,7 +1122,7 @@ async fn execute_keepalive_ping(
 
     match client.generate(&request, None).await {
         Ok(resp) => {
-            let mut s = state.lock().unwrap();
+            let mut s = lock_state(state);
             let now = Instant::now();
             let action = s.cache_keepalive.on_ping_response(now, resp.usage.cache_read_tokens);
             match action {
@@ -1282,7 +1316,7 @@ mod tests {
         }));
 
         {
-            let mut s = state.lock().unwrap();
+            let mut s = lock_state(&state);
             s.interiority.on_user_message(Instant::now());
             s.activity.record_message();
         }

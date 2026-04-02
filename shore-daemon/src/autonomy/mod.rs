@@ -58,6 +58,8 @@ pub enum InteriorityEventKind {
     Dormant,
     /// Woke from dormant (user returned).
     Wake,
+    /// Interiority tick was killed by the timeout guard.
+    Timeout,
 }
 
 impl std::fmt::Display for InteriorityEventKind {
@@ -69,6 +71,7 @@ impl std::fmt::Display for InteriorityEventKind {
             Self::ToolUse => write!(f, "tool_use"),
             Self::Dormant => write!(f, "dormant"),
             Self::Wake => write!(f, "wake"),
+            Self::Timeout => write!(f, "timeout"),
         }
     }
 }

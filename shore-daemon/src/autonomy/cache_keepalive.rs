@@ -202,14 +202,13 @@ impl CacheKeepaliveScheduler {
         &self.config
     }
 
-    /// Returns the `Instant` at which the next keepalive ping would fire,
-    /// or `None` if keepalive is not actively monitoring (inactive, pinging,
-    /// or stopped).
+    /// Returns the `Instant` at which the next keepalive-relevant event fires,
+    /// or `None` if keepalive is inactive or stopped.
     pub fn next_deadline(&self) -> Option<Instant> {
+        let interval = Duration::from_secs(self.config.ping_interval_secs);
         match &self.state {
-            KeepaliveState::Monitoring => self
-                .last_api_call
-                .map(|t| t + Duration::from_secs(self.config.ping_interval_secs)),
+            KeepaliveState::Monitoring => self.last_api_call.map(|t| t + interval),
+            KeepaliveState::Pinging => self.last_ping.map(|t| t + interval),
             _ => None,
         }
     }
@@ -810,9 +809,10 @@ mod tests {
 
         sched.on_api_response(t0, 1000, 1500);
         let t1 = t0 + Duration::from_secs(DEFAULT_PING_INTERVAL_SECS);
-        sched.tick(t1); // transitions to Pinging
+        sched.tick(t1); // transitions to Pinging, last_ping = t1
         assert_eq!(*sched.state(), KeepaliveState::Pinging);
-        assert_eq!(sched.next_deadline(), None);
+        // Now returns the next ping deadline so coordination still works.
+        assert_eq!(sched.next_deadline(), Some(t1 + Duration::from_secs(DEFAULT_PING_INTERVAL_SECS)));
     }
 
     #[test]
