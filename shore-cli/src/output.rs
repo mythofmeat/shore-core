@@ -991,6 +991,7 @@ pub fn format_command(name: &str, data: &serde_json::Value) {
         "config_reset" => print_config_reset(data),
         "edit" => print_edit_confirmation(data),
         "delete" => print_delete_confirmation(data),
+        "inject_system" => println!("System instruction injected."),
         "diagnostics" => print_diagnostics(data),
         _ => print_command_output_fallback(name, data),
     }

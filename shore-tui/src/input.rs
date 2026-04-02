@@ -517,6 +517,19 @@ fn parse_command(app: &mut App, input: &str) -> Action {
         }
 
 
+        "sys" | "system" => {
+            if arg.is_empty() {
+                app.set_status("usage: :sys <instruction>");
+                Action::Redraw
+            } else {
+                Action::Send(ConnCommand::Send(ClientMessage::Command(Command {
+                    rid: None,
+                    name: "inject_system".into(),
+                    args: serde_json::json!({ "text": arg }),
+                })))
+            }
+        }
+
         _ => {
             app.set_status(format!("unknown command: {cmd}"));
             Action::Redraw

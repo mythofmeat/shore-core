@@ -29,7 +29,7 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         SWPConnection::connect(&addr, "cli", "shore-cli", character.clone()).await?;
 
     match &cli.command {
-        CliCommand::Send { message, images, temperature, top_p, thinking } => {
+        CliCommand::Send { message, images, temperature, top_p, thinking, system } => {
             let text = if !message.is_empty() {
                 message.join(" ")
             } else if !io::stdin().is_terminal() {
@@ -40,17 +40,23 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             if text.is_empty() && images.is_empty() {
                 return Ok(());
             }
-            let overrides = if temperature.is_some() || top_p.is_some() || thinking.is_some() {
-                Some(shore_protocol::client_msg::MessageOverrides {
-                    temperature: *temperature,
-                    top_p: *top_p,
-                    thinking_budget: *thinking,
-                })
+            if *system {
+                conn.send_command("inject_system", serde_json::json!({ "text": text })).await?;
+                let data = recv_command_data(&mut conn).await?;
+                output::format_command("inject_system", &data);
             } else {
-                None
-            };
-            conn.send_message_full(&text, true, images.clone(), overrides).await?;
-            recv_streaming_response(&mut conn).await?;
+                let overrides = if temperature.is_some() || top_p.is_some() || thinking.is_some() {
+                    Some(shore_protocol::client_msg::MessageOverrides {
+                        temperature: *temperature,
+                        top_p: *top_p,
+                        thinking_budget: *thinking,
+                    })
+                } else {
+                    None
+                };
+                conn.send_message_full(&text, true, images.clone(), overrides).await?;
+                recv_streaming_response(&mut conn).await?;
+            }
         }
         CliCommand::Regen { guidance } => {
             conn.send_regen(true, guidance.clone()).await?;
@@ -752,6 +758,7 @@ mod tests {
             temperature: None,
             top_p: None,
             thinking: None,
+            system: false,
         });
         let received = execute_with_mock(cli, streaming_response("Hi there!")).await;
 
@@ -920,6 +927,7 @@ mod tests {
             temperature: None,
             top_p: None,
             thinking: None,
+            system: false,
         });
         let received = execute_with_mock(cli, responses).await;
         assert!(matches!(received, ClientMessage::Message(_)));

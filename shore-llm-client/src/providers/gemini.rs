@@ -71,7 +71,36 @@ fn translate_messages(request: &LlmRequest) -> Vec<Value> {
     for msg in &request.messages {
         let role = match msg.get("role").and_then(|r| r.as_str()) {
             Some("assistant") => "model",
-            Some("system") => continue, // system messages handled separately
+            Some("system") => {
+                // Inline system instructions → user/model pair.
+                // merge_consecutive_roles() handles adjacent same-role merging.
+                let text = match msg.get("content") {
+                    Some(Value::String(s)) => s.clone(),
+                    Some(Value::Array(blocks)) => blocks
+                        .iter()
+                        .filter_map(|b| {
+                            if b.get("type").and_then(|t| t.as_str()) == Some("text") {
+                                b.get("text").and_then(|t| t.as_str()).map(String::from)
+                            } else {
+                                None
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join(""),
+                    _ => String::new(),
+                };
+                let wrapped =
+                    format!("<system_instruction>{text}</system_instruction>");
+                contents.push(json!({
+                    "role": "user",
+                    "parts": [{"text": wrapped}]
+                }));
+                contents.push(json!({
+                    "role": "model",
+                    "parts": [{"text": "Understood."}]
+                }));
+                continue;
+            }
             Some(r) => r,
             None => continue,
         };

@@ -148,6 +148,7 @@ pub async fn dispatch(
         "get" => conversation::get(engine, ctx, &cmd.args),
         "edit" => conversation::edit(engine, ctx, &cmd.args),
         "delete" => conversation::delete(engine, ctx, &cmd.args),
+        "inject_system" => conversation::inject_system(engine, ctx, &cmd.args),
 
         // State
         "status" => state::status(engine, ctx),

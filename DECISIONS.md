@@ -306,3 +306,19 @@ A single holistic call lets the LLM see all candidates + nearby context and make
 **Why:** Audit identified 4 duplicate truncation functions, 5 duplicate HTTP client builders, ~500 LOC of LLM streaming boilerplate, and the ToolToggles 3-way synchronization trap. All addressed.
 
 **Trade-off:** ToolToggles loses compile-time enforcement of valid tool names (field access → method call). This is acceptable — tool names are also embedded as string literals throughout the tool dispatch layer anyway.
+
+### Mid-Conversation System Message Injection (2026-04-02)
+
+**Decision:** Add `:sys` TUI command and `shore sys` CLI command to inject `Role::System` messages into the conversation history for mid-conversation behavioral correction.
+
+**Changes made:**
+- New `inject_system` daemon command creates a `Role::System` message and appends it to the conversation engine
+- TUI: `:sys <instruction>` command (also accepts `:system`)
+- CLI: `shore send --system <text>` flag on existing send command
+- Anthropic provider: `convert_inline_system_messages()` transforms system-role messages in the array to user/assistant pairs wrapped in `<system_instruction>` XML tags (Anthropic API rejects `role: "system"` in the messages array)
+- Gemini provider: same user/model wrapping approach (previously system messages were silently skipped)
+- OpenAI provider: no changes needed — already passes `role: "system"` through natively
+
+**Why:** Users need to correct model behavior mid-conversation (e.g. "stop using roleplay actions", "respond in English only") without modifying the system prompt (which invalidates the prompt cache) or sending user-role messages (which pollute conversation context and are treated as dialogue).
+
+**Trade-off:** For Anthropic/Gemini, the system instruction becomes a synthetic user/assistant turn rather than a true system message, which uses slightly more tokens and may be less authoritative than a real system message. Accepted because: (a) these providers don't support mid-conversation system messages at all, (b) XML-tagged instructions are well-understood by the models, (c) the alternative (no injection) is worse.

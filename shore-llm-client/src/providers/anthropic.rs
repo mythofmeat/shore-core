@@ -221,11 +221,74 @@ fn build_output_config(opts: &Value) -> Option<Value> {
     }
 }
 
+/// Extract plain text from a message's content (string or array of blocks).
+fn extract_text_content(msg: &Value) -> String {
+    match msg.get("content") {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Array(blocks)) => blocks
+            .iter()
+            .filter_map(|b| {
+                if b.get("type").and_then(Value::as_str) == Some("text") {
+                    b.get("text").and_then(Value::as_str)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(""),
+        _ => String::new(),
+    }
+}
+
+/// Convert inline system-role messages to user/assistant pairs.
+///
+/// The Anthropic API does not support `role: "system"` in the messages array,
+/// so we wrap the instruction in XML tags and add a synthetic assistant ack
+/// to maintain alternating turns.  Adjacent user messages are avoided by
+/// merging the instruction into the preceding or following user turn when
+/// possible.
+fn convert_inline_system_messages(messages: &[Value]) -> Vec<Value> {
+    let has_system = messages.iter().any(|m| {
+        m.get("role").and_then(Value::as_str) == Some("system")
+    });
+    if !has_system {
+        return messages.to_vec();
+    }
+
+    let mut out: Vec<Value> = Vec::with_capacity(messages.len());
+    for msg in messages {
+        if msg.get("role").and_then(Value::as_str) == Some("system") {
+            let text = extract_text_content(msg);
+            let wrapped = format!("<system_instruction>{text}</system_instruction>");
+
+            // If the previous message is a user message, merge to avoid
+            // consecutive user roles (which the API rejects).
+            if let Some(prev) = out.last_mut() {
+                if prev.get("role").and_then(Value::as_str) == Some("user") {
+                    let prev_text = extract_text_content(prev);
+                    prev["content"] = json!(format!("{prev_text}\n\n{wrapped}"));
+                    continue;
+                }
+            }
+
+            out.push(json!({ "role": "user", "content": wrapped }));
+            out.push(json!({ "role": "assistant", "content": "Understood." }));
+        } else {
+            out.push(msg.clone());
+        }
+    }
+    out
+}
+
 /// Construct the JSON request body for the Anthropic Messages API.
 fn build_body(request: &LlmRequest, streaming: bool) -> Value {
     let opts = request.provider_options.as_ref();
     let empty_opts = json!({});
     let opts_ref = opts.unwrap_or(&empty_opts);
+
+    // Convert inline system-role messages to user/assistant pairs before
+    // any further processing (Anthropic rejects role: "system" in messages).
+    let converted_messages = convert_inline_system_messages(&request.messages);
 
     // Cache is enabled when cache_ttl is present and non-empty.
     let cache_ttl = opts_ref
@@ -233,20 +296,20 @@ fn build_body(request: &LlmRequest, streaming: bool) -> Value {
         .and_then(Value::as_str)
         .unwrap_or("");
     let cache_enabled = !cache_ttl.is_empty();
-    let has_existing_markers = messages_have_cache_control(&request.messages);
+    let has_existing_markers = messages_have_cache_control(&converted_messages);
 
     // On the first call of a turn (no existing markers), apply cache
     // breakpoints.  On tool-loop continuations (markers already present),
     // keep existing breakpoints immutable.
     let (messages, system) = if cache_enabled && !has_existing_markers {
         apply_cache_control(
-            &request.messages,
+            &converted_messages,
             request.system.as_ref().unwrap_or(&json!(null)),
             cache_ttl,
         )
     } else {
         (
-            request.messages.clone(),
+            converted_messages,
             request.system.clone().unwrap_or(json!(null)),
         )
     };
