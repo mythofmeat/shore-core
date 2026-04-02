@@ -290,16 +290,6 @@ fn build_body(request: &LlmRequest, streaming: bool) -> Value {
         body["output_config"] = output_config;
     }
 
-    // Debug: dump body (after all modifications)
-    {
-        use std::sync::atomic::{AtomicU32, Ordering};
-        static SEQ: AtomicU32 = AtomicU32::new(0);
-        let n = SEQ.fetch_add(1, Ordering::Relaxed);
-        if let Ok(s) = serde_json::to_string_pretty(&body) {
-            let _ = std::fs::write(format!("/tmp/shore_body_{:04}.json", n), s);
-        }
-    }
-
     body
 }
 

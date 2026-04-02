@@ -637,10 +637,10 @@ pub async fn stream(
         }
 
         // Emit accumulated tool_use events.
-        for (name, args) in &function_calls {
+        for (i, (name, args)) in function_calls.iter().enumerate() {
             let line = serde_json::to_string(&json!({
                 "type": "tool_use",
-                "id": format!("gemini_{name}"),
+                "id": format!("gemini_call_{i}"),
                 "name": name,
                 "input": args,
             }));

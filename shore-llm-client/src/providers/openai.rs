@@ -464,7 +464,7 @@ pub async fn stream(
                     }
                     start_sent = true;
                     let start_event = json!({"type": "start", "model": &model});
-                    return Some(serde_json::to_string(&start_event).unwrap());
+                    return serde_json::to_string(&start_event).ok();
                 }
 
                 let choice = chunk.get("choices").and_then(|c| c.get(0));
@@ -485,8 +485,9 @@ pub async fn stream(
                                         Some(start.elapsed().as_millis() as u32);
                                 }
                                 let ev = json!({"type": "thinking", "text": reasoning});
-                                lines_out
-                                    .push(serde_json::to_string(&ev).unwrap());
+                                if let Ok(line) = serde_json::to_string(&ev) {
+                                    lines_out.push(line);
+                                }
                             }
                         }
                     }
@@ -503,7 +504,9 @@ pub async fn stream(
                             }
                             text_content.push_str(content);
                             let ev = json!({"type": "text", "text": content});
-                            lines_out.push(serde_json::to_string(&ev).unwrap());
+                            if let Ok(line) = serde_json::to_string(&ev) {
+                                lines_out.push(line);
+                            }
                         }
                     }
 
@@ -591,16 +594,19 @@ pub async fn stream(
                     "name": name,
                     "input": input,
                 });
-                tool_lines.push(serde_json::to_string(&ev).unwrap());
+                if let Ok(line) = serde_json::to_string(&ev) {
+                    tool_lines.push(line);
+                }
             }
         }
 
         // Ensure start was emitted.
         if !start_sent {
             let start_event = json!({"type": "start", "model": &model});
-            let line = serde_json::to_string(&start_event).unwrap();
-            let _ = tokio::io::AsyncWriteExt::write_all(&mut writer, line.as_bytes()).await;
-            let _ = tokio::io::AsyncWriteExt::write_all(&mut writer, b"\n").await;
+            if let Ok(line) = serde_json::to_string(&start_event) {
+                let _ = tokio::io::AsyncWriteExt::write_all(&mut writer, line.as_bytes()).await;
+                let _ = tokio::io::AsyncWriteExt::write_all(&mut writer, b"\n").await;
+            }
         }
 
         // Write tool_use events.
@@ -626,9 +632,10 @@ pub async fn stream(
                 "time_to_first_token_ms": first_token_ms.unwrap_or(total_ms),
             },
         });
-        let done_line = serde_json::to_string(&done).unwrap();
-        let _ = tokio::io::AsyncWriteExt::write_all(&mut writer, done_line.as_bytes()).await;
-        let _ = tokio::io::AsyncWriteExt::write_all(&mut writer, b"\n").await;
+        if let Ok(done_line) = serde_json::to_string(&done) {
+            let _ = tokio::io::AsyncWriteExt::write_all(&mut writer, done_line.as_bytes()).await;
+            let _ = tokio::io::AsyncWriteExt::write_all(&mut writer, b"\n").await;
+        }
 
         // Drop writer to signal EOF to the reader half.
         drop(writer);
