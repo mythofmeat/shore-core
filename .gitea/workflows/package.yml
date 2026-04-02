@@ -1,4 +1,4 @@
-name: Build and publish Arch package
+name: Build and publish Arch packages
 
 on:
   push:
@@ -12,20 +12,17 @@ jobs:
         with:
           fetch-depth: 0  # full history needed for pkgver()
 
-      - name: Build package
+      - name: Build packages
         working-directory: contrib
         run: makepkg -sf --noconfirm
 
       - name: Upload to Gitea package registry
         working-directory: contrib
         run: |
-          ls -la *.pkg.tar.zst 2>/dev/null || echo "No packages in contrib/, checking PKGDEST..."
-          pkg=$(find . /home -maxdepth 3 -name '*.pkg.tar.zst' -newer PKGBUILD 2>/dev/null | head -1)
-          if [ -z "$pkg" ]; then
-            echo "ERROR: No .pkg.tar.zst found anywhere"
-            exit 1
-          fi
-          echo "Uploading $pkg..."
-          curl --fail --user "eshen:${{ secrets.PACKAGE_TOKEN }}" \
-               --upload-file "$pkg" \
-               "${{ gitea.server_url }}/api/packages/eshen/arch/eshen"
+          for pkg in *.pkg.tar.zst; do
+            [ -f "$pkg" ] || continue
+            echo "Uploading $pkg..."
+            curl --fail --user "eshen:${{ secrets.PACKAGE_TOKEN }}" \
+                 --upload-file "$pkg" \
+                 "${{ gitea.server_url }}/api/packages/eshen/arch/eshen"
+          done
