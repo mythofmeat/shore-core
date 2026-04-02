@@ -284,3 +284,25 @@ A single holistic call lets the LLM see all candidates + nearby context and make
 **Why:** User-sent images were completely invisible to the LLM — the most basic image feature was broken. The ingestion pipeline ensures images survive beyond the conversation (durable copy) and become searchable memories (via `remember_image` → memory DB → FTS5/RAG).
 
 **Trade-off:** No image compression on ingestion — large images inflate LLM context. No vector indexing at `remember_image` time (matches `generate_image` pattern; backfill via `shore memory reindex`). `send_image` still doesn't emit a `ServerMessage::SendImage` event to the client — display-side concern, separate fix.
+
+---
+
+### Codebase consolidation audit (2026-04-02)
+
+**Changes made (8 phases, all compile-clean, zero test regressions):**
+
+1. **Truncation functions** — 3 duplicate `truncate()`/`truncate_log()` functions removed from `shore-daemon/src/notifications.rs` and `shore-daemon/src/autonomy/manager.rs`. Both now call `shore_diagnostics::truncate_summary`. `shore-llm-client/src/retry.rs` rewritten in-place to use `floor_char_boundary` + "…" (matching the canonical implementation). Tests for the deleted duplicates removed.
+
+2. **ToolToggles refactor** — `shore-config/src/app.rs` `ToolToggles` struct replaced with `BTreeMap<String, bool>` newtype (`#[serde(transparent)]`). Adding a new tool now requires a single change (add a method) instead of three. Named accessor methods (`memory()`, `scratchpad_read()`, etc.) added for callers in `handler.rs`. Unknown tool names in config are silently accepted (no `deny_unknown_fields`).
+
+3. **Provider defaults** — `shore-config/src/models.rs` `hardcoded_defaults()` extracted `base_provider_defaults()` helper for the three fields shared across all 6 providers (temperature=1.0, max_tokens=8192, max_context_tokens=200_000).
+
+4. **Connection handshake** — `shore-client/src/connection.rs` `connect()` and `connect_raw()` deduplicated by extracting `do_handshake()` method (~38 identical lines removed).
+
+5. **Visibility cleanup** — `shore-llm-client` providers module narrowed to `pub(crate)`. `parse_compaction_response` in `compaction.rs` narrowed to `pub(crate)`.
+
+6–8. **LLM streaming helpers** — New `shore-llm-client/src/providers/stream_helpers.rs` with `build_done_event`, `build_start_event`, `build_tool_use_event`, and `StreamTiming`. All three provider streaming functions (`openai.rs`, `anthropic.rs`, `gemini.rs`) migrated to use these helpers. Gemini's first-chunk/subsequent-chunk duplication (~190 LOC) collapsed into a single unified code path.
+
+**Why:** Audit identified 4 duplicate truncation functions, 5 duplicate HTTP client builders, ~500 LOC of LLM streaming boilerplate, and the ToolToggles 3-way synchronization trap. All addressed.
+
+**Trade-off:** ToolToggles loses compile-time enforcement of valid tool names (field access → method call). This is acceptable — tool names are also embedded as string literals throughout the tool dispatch layer anyway.
