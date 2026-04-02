@@ -84,10 +84,9 @@ pub fn build_capabilities_block(config: &CapabilitiesConfig) -> Option<String> {
     if config.interiority_enabled {
         lines.push(
             "- You have an interiority system: periodically, you get private moments \
-             to think, use tools, and write in your scratchpad. If you want to \
-             message the user during these moments, wrap your message in \
-             <sendMessage>...</sendMessage> tags. These autonomous messages are \
-             real and were written by you — do not deny or second-guess them.",
+             to think, use tools, and write in your scratchpad. You sometimes send \
+             autonomous messages during these moments — these are real and were \
+             written by you, do not deny or second-guess them.",
         );
     }
     if config.scratchpad_enabled {

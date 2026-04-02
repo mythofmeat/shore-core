@@ -3,7 +3,8 @@
 //! Simple timer with jitter and dormancy counter. Each tick gives the character
 //! a full agentic turn with its existing tools plus scratchpad. The character
 //! decides what to do — write notes, research things, or optionally message
-//! the user via `<sendMessage>` tags.
+//! the user (the `<sendMessage>` mechanism is explained in the ephemeral
+//! interiority prompt, not in the cached system prompt).
 
 use std::time::{Duration, Instant};
 
