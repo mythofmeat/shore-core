@@ -413,8 +413,10 @@ fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<ConnCommand> 
         ServerMessage::StreamChunk(chunk) => {
             if chunk.content_type == "thinking" {
                 app.stream.thinking.push_str(&chunk.text);
+                app.stream.phase = "thinking".into();
             } else {
                 app.stream.text.push_str(&chunk.text);
+                app.stream.phase = "responding".into();
             }
             if app.auto_scroll {
                 app.scroll_to_bottom();
@@ -432,7 +434,16 @@ fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<ConnCommand> 
                 metadata: Some(end.metadata),
             });
 
-            app.stream.reset();
+            if end.finish_reason == "tool_use" {
+                // Tool loop in progress — keep stream active, clear buffers
+                app.stream.text.clear();
+                app.stream.thinking.clear();
+                app.stream.thinking_collapsed = false;
+                app.stream.phase = "tool_use".into();
+                app.stream.tool_name = None;
+            } else {
+                app.stream.reset();
+            }
 
             // Re-request log to guard against stale History broadcasts
             // (e.g. from background compaction) overwriting this response.
@@ -511,20 +522,30 @@ fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<ConnCommand> 
         }
 
         ServerMessage::ToolCall(tc) => {
+            app.stream.active = true;
+            app.stream.phase = "tool_use".into();
+            app.stream.tool_name = Some(tc.tool_name.clone());
             app.entries.push(ConversationEntry::ToolCall {
                 tool_id: tc.tool_id,
                 tool_name: tc.tool_name,
                 input: tc.input,
             });
+            if app.auto_scroll {
+                app.scroll_to_bottom();
+            }
         }
 
         ServerMessage::ToolResult(tr) => {
+            app.stream.tool_name = None;
             app.entries.push(ConversationEntry::ToolResult {
                 tool_id: tr.tool_id,
                 tool_name: tr.tool_name,
                 output: tr.output,
                 is_error: tr.is_error,
             });
+            if app.auto_scroll {
+                app.scroll_to_bottom();
+            }
         }
 
         ServerMessage::SendImage(img) => {

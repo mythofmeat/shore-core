@@ -48,6 +48,8 @@ pub struct StreamState {
     pub thinking: String,
     pub thinking_collapsed: bool,
     pub phase: String,
+    /// Name of the tool currently being called/executed.
+    pub tool_name: Option<String>,
 }
 
 impl StreamState {
@@ -58,6 +60,7 @@ impl StreamState {
         self.thinking.clear();
         self.thinking_collapsed = false;
         self.phase.clear();
+        self.tool_name = None;
     }
 }
 
