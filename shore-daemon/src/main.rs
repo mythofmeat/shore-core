@@ -300,7 +300,8 @@ async fn run_compaction(
         if line.is_empty() {
             continue;
         }
-        let msg: shore_protocol::types::Message = serde_json::from_str(line)?;
+        let mut msg: shore_protocol::types::Message = serde_json::from_str(line)?;
+        msg.normalize();
         let is_tool_result_only = msg.role == shore_protocol::types::Role::User
             && !msg.content_blocks.is_empty()
             && msg.content_blocks
