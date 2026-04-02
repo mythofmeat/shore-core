@@ -49,6 +49,35 @@ pub struct ShoreDirs {
     pub runtime: PathBuf,
 }
 
+/// Resolve an XDG-style directory path with Shore-specific overrides.
+///
+/// Precedence: `override_var` → `xdg_var`+"/shore" → `platform_fn()`+"/shore" → `fallback`+"/shore".
+/// If `fallback` is empty, `std::env::temp_dir()` is used.
+fn resolve_xdg_dir(
+    override_var: &str,
+    xdg_var: &str,
+    platform_fn: fn() -> Option<PathBuf>,
+    fallback: &str,
+) -> PathBuf {
+    std::env::var(override_var)
+        .ok()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            std::env::var(xdg_var)
+                .ok()
+                .map(PathBuf::from)
+                .or_else(platform_fn)
+                .unwrap_or_else(|| {
+                    if fallback.is_empty() {
+                        std::env::temp_dir()
+                    } else {
+                        PathBuf::from(fallback)
+                    }
+                })
+                .join("shore")
+        })
+}
+
 impl ShoreDirs {
     /// Resolve Shore directories.
     ///
@@ -57,46 +86,10 @@ impl ShoreDirs {
     /// 2. `XDG_CONFIG_HOME` / `XDG_DATA_HOME` / `XDG_RUNTIME_DIR` + `/shore`
     /// 3. Platform defaults + `/shore`
     pub fn resolve() -> Self {
-        let config = std::env::var("SHORE_CONFIG_DIR")
-            .ok()
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                std::env::var("XDG_CONFIG_HOME")
-                    .ok()
-                    .map(PathBuf::from)
-                    .or_else(dirs::config_dir)
-                    .unwrap_or_else(|| PathBuf::from("~/.config"))
-                    .join("shore")
-            });
-
-        let data = std::env::var("SHORE_DATA_DIR")
-            .ok()
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                std::env::var("XDG_DATA_HOME")
-                    .ok()
-                    .map(PathBuf::from)
-                    .or_else(dirs::data_dir)
-                    .unwrap_or_else(|| PathBuf::from("~/.local/share"))
-                    .join("shore")
-            });
-
-        let runtime = std::env::var("SHORE_RUNTIME_DIR")
-            .ok()
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                std::env::var("XDG_RUNTIME_DIR")
-                    .ok()
-                    .map(PathBuf::from)
-                    .or_else(dirs::runtime_dir)
-                    .unwrap_or_else(std::env::temp_dir)
-                    .join("shore")
-            });
-
         Self {
-            config,
-            data,
-            runtime,
+            config: resolve_xdg_dir("SHORE_CONFIG_DIR", "XDG_CONFIG_HOME", dirs::config_dir, "~/.config"),
+            data: resolve_xdg_dir("SHORE_DATA_DIR", "XDG_DATA_HOME", dirs::data_dir, "~/.local/share"),
+            runtime: resolve_xdg_dir("SHORE_RUNTIME_DIR", "XDG_RUNTIME_DIR", dirs::runtime_dir, ""),
         }
     }
 }
@@ -429,33 +422,27 @@ fn validate_config(app: &AppConfig, catalog: &ModelCatalog) -> Result<(), Config
         )));
     }
 
-    // If a default model is specified, it must exist in the catalog.
-    if let Some(ref default_model) = app.defaults.model {
-        if catalog.find_model(default_model).is_err() {
+    // Validate model references exist in the catalog.
+    validate_model_ref(catalog, "defaults.model", app.defaults.model.as_deref())?;
+    validate_model_ref(catalog, "defaults.tool_model", app.defaults.tool_model.as_deref())?;
+    validate_model_ref(catalog, "defaults.memory_agent", app.defaults.memory_agent.as_deref())?;
+
+    Ok(())
+}
+
+/// Validate that an optional model reference exists in the catalog.
+fn validate_model_ref(
+    catalog: &ModelCatalog,
+    field: &str,
+    name: Option<&str>,
+) -> Result<(), ConfigError> {
+    if let Some(name) = name {
+        if catalog.find_model(name).is_err() {
             return Err(ConfigError::Validation(format!(
-                "defaults.model \"{default_model}\" not found in model catalog"
+                "{field} \"{name}\" not found in model catalog"
             )));
         }
     }
-
-    // If a default tool_model is specified, it must exist.
-    if let Some(ref tool_model) = app.defaults.tool_model {
-        if catalog.find_model(tool_model).is_err() {
-            return Err(ConfigError::Validation(format!(
-                "defaults.tool_model \"{tool_model}\" not found in model catalog"
-            )));
-        }
-    }
-
-    // If a default memory_agent model is specified, it must exist.
-    if let Some(ref memory_agent) = app.defaults.memory_agent {
-        if catalog.find_model(memory_agent).is_err() {
-            return Err(ConfigError::Validation(format!(
-                "defaults.memory_agent \"{memory_agent}\" not found in model catalog"
-            )));
-        }
-    }
-
     Ok(())
 }
 

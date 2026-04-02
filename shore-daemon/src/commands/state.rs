@@ -2,9 +2,9 @@ use serde_json::json;
 use shore_protocol::error::ErrorCode;
 use shore_protocol::types::{ContentBlock, Role};
 
-use shore_config::{resolve_prompt_template, load_character_definition, resolve_user_definition};
+use shore_config::resolve_prompt_template;
 use crate::engine::ConversationEngine;
-use crate::memory::agent::{AgentSearchContext, CallerIdentity, MemoryAgent, RealAgentIndexer};
+use crate::memory::agent::{CallerIdentity, MemoryAgent, RealAgentIndexer};
 use crate::memory::agent_llm::RealAgentLlm;
 use crate::memory::collation::{
     CollationConfig as LibCollationConfig, CollationError, CollationManager, CollationOutcome,
@@ -23,18 +23,16 @@ use crate::memory::vectorstore::VectorStore;
 
 use crate::autonomy::activity::HourClassification;
 
-use super::{CommandContext, CommandResult, MemoryShellSession};
+use super::{
+    build_collation_vars, memory_dir, resolve_agent_model, setup_search_context,
+    CommandContext, CommandResult, MemoryShellSession,
+};
 
 /// Build the memory DB path for a character and open it.
 fn open_memory_db(ctx: &CommandContext, char_name: &str) -> Result<MemoryDB, (ErrorCode, String)> {
-    let db_path = ctx.data_dir.join(char_name).join("memory").join("memory.db");
+    let db_path = memory_dir(ctx, char_name).join("memory.db");
     MemoryDB::open(&db_path)
         .map_err(|e| (ErrorCode::InternalError, format!("Failed to open memory DB: {e}")))
-}
-
-/// Build the memory directory path for a character.
-fn memory_dir(ctx: &CommandContext, char_name: &str) -> std::path::PathBuf {
-    ctx.data_dir.join(char_name).join("memory")
 }
 
 /// Return system status: character, message count, model, token counts.
@@ -310,42 +308,13 @@ async fn memory_query(
 ) -> CommandResult {
     let char_name = engine.character_name();
     let db = open_memory_db(ctx, char_name)?;
-
-    // Resolve agent model: configured memory_agent → active model → first available.
-    let agent_model = ctx
-        .config
-        .app
-        .defaults
-        .memory_agent
-        .as_deref()
-        .and_then(|name| ctx.config.models.find_model(name).ok())
-        .or_else(|| {
-            ctx.active_model
-                .as_deref()
-                .and_then(|name| ctx.config.models.find_model(name).ok())
-        })
-        .or_else(|| ctx.config.models.first_chat_model())
-        .ok_or_else(|| (ErrorCode::InternalError, "No model configured".to_string()))?
-        .clone();
+    let agent_model = resolve_agent_model(ctx)?;
 
     let display_name = ctx.config.app.defaults.resolve_display_name();
     let agent = MemoryAgent::one_shot(CallerIdentity::User, &display_name, char_name);
     let agent_llm = RealAgentLlm::new(ctx.llm_client.clone());
 
-    // Build semantic search context (graceful: None if no embedding model).
-    let search_ctx = match resolve_embed_config(
-        ctx.config.app.defaults.embedding.as_deref(),
-        &ctx.config.models.embedding,
-    ) {
-        Ok(embed_config) => {
-            let vs_path = memory_dir(ctx, char_name).join("vectorstore");
-            VectorStore::open(&vs_path, embed_config.dimensions)
-                .await
-                .ok()
-                .map(|vs| AgentSearchContext::new(vs, ctx.llm_client.clone(), embed_config))
-        }
-        Err(_) => None,
-    };
+    let search_ctx = setup_search_context(ctx, char_name).await;
     let real_indexer = search_ctx.as_ref().map(RealAgentIndexer::new);
     let indexer = real_indexer.as_ref().map(|i| i as &dyn crate::memory::agent::AgentIndexer);
 
@@ -372,23 +341,7 @@ pub async fn memory_shell_start(
     _args: &serde_json::Value,
 ) -> CommandResult {
     let char_name = engine.character_name().to_string();
-
-    // Resolve agent model (same logic as memory_query).
-    let agent_model = ctx
-        .config
-        .app
-        .defaults
-        .memory_agent
-        .as_deref()
-        .and_then(|name| ctx.config.models.find_model(name).ok())
-        .or_else(|| {
-            ctx.active_model
-                .as_deref()
-                .and_then(|name| ctx.config.models.find_model(name).ok())
-        })
-        .or_else(|| ctx.config.models.first_chat_model())
-        .ok_or_else(|| (ErrorCode::InternalError, "No model configured".to_string()))?
-        .clone();
+    let agent_model = resolve_agent_model(ctx)?;
 
     let display_name = ctx.config.app.defaults.resolve_display_name();
     let agent = MemoryAgent::interactive(CallerIdentity::User, &display_name, &char_name);
@@ -426,33 +379,24 @@ pub async fn memory_shell_query(
         .ok_or_else(|| (ErrorCode::InvalidRequest, "Missing input".to_string()))?
         .to_string();
 
+    // Extract character name before mutable borrow of sessions.
+    let char_name = ctx
+        .memory_shell_sessions
+        .get(session_id)
+        .ok_or_else(|| (ErrorCode::NotFound, "Session not found".to_string()))?
+        .character
+        .clone();
+
+    let db = open_memory_db(ctx, &char_name)?;
+    let agent_llm = RealAgentLlm::new(ctx.llm_client.clone());
+    let search_ctx = setup_search_context(ctx, &char_name).await;
+    let real_indexer = search_ctx.as_ref().map(RealAgentIndexer::new);
+    let indexer = real_indexer.as_ref().map(|i| i as &dyn crate::memory::agent::AgentIndexer);
+
     let session = ctx
         .memory_shell_sessions
         .get_mut(session_id)
         .ok_or_else(|| (ErrorCode::NotFound, "Session not found".to_string()))?;
-
-    let db_path = ctx.data_dir.join(&session.character).join("memory").join("memory.db");
-    let db = MemoryDB::open(&db_path)
-        .map_err(|e| (ErrorCode::InternalError, format!("Failed to open memory DB: {e}")))?;
-
-    let agent_llm = RealAgentLlm::new(ctx.llm_client.clone());
-
-    // Build semantic search context (graceful: None if no embedding model).
-    let search_ctx = match resolve_embed_config(
-        ctx.config.app.defaults.embedding.as_deref(),
-        &ctx.config.models.embedding,
-    ) {
-        Ok(embed_config) => {
-            let vs_path = ctx.data_dir.join(&session.character).join("memory").join("vectorstore");
-            VectorStore::open(&vs_path, embed_config.dimensions)
-                .await
-                .ok()
-                .map(|vs| AgentSearchContext::new(vs, ctx.llm_client.clone(), embed_config))
-        }
-        Err(_) => None,
-    };
-    let real_indexer = search_ctx.as_ref().map(RealAgentIndexer::new);
-    let indexer = real_indexer.as_ref().map(|i| i as &dyn crate::memory::agent::AgentIndexer);
 
     let mutations = session
         .agent
@@ -577,7 +521,6 @@ pub async fn compact(
 
     // Create trait implementations.
     let llm = RealCompactionLlm::new(ctx.llm_client.clone(), model);
-    let collation_embed_config = embed_config.clone();
     let indexer = RealVectorIndexer::new(store, ctx.llm_client.clone(), embed_config);
     let conv_mgr = RealConversationManager::new(engine.character_dir());
 
@@ -647,24 +590,10 @@ pub async fn compact(
                     let collation_limit = ctx.config.app.memory.collation.batch_limit;
 
                     // Open a second vector store for collation (the compaction one was moved).
-                    let collation_search_ctx = {
-                        let cvs_path = memory_dir(ctx, &char_name).join("vectorstore");
-                        match VectorStore::open(&cvs_path, collation_embed_config.dimensions).await {
-                            Ok(vs) => Some(AgentSearchContext::new(vs, ctx.llm_client.clone(), collation_embed_config.clone())),
-                            Err(_) => None,
-                        }
-                    };
-                    let collation_indexer = collation_search_ctx.as_ref().map(|ctx| RealAgentIndexer::new(ctx));
+                    let collation_search_ctx = setup_search_context(ctx, &char_name).await;
+                    let collation_indexer = collation_search_ctx.as_ref().map(RealAgentIndexer::new);
 
-                    let mut collation_vars = std::collections::HashMap::new();
-                    collation_vars.insert("char".to_string(), char_name.clone());
-                    collation_vars.insert("user".to_string(), display_name.clone());
-                    if let Some(cd) = load_character_definition(&ctx.config.dirs.config, &char_name) {
-                        collation_vars.insert("char_description".to_string(), cd);
-                    }
-                    if let Some(ud) = resolve_user_definition(&ctx.config.dirs.config, &char_name) {
-                        collation_vars.insert("user_description".to_string(), ud);
-                    }
+                    let collation_vars = build_collation_vars(ctx, &char_name, &display_name);
                     match collation_mgr
                         .run(
                             &db,
@@ -822,35 +751,11 @@ pub async fn collate(
         .map(|v| v as usize)
         .unwrap_or(config_limit);
 
-    // Construct vector store + indexer for clustering and indexing (optional).
-    let search_ctx = match resolve_embed_config(
-        ctx.config.app.defaults.embedding.as_deref(),
-        &ctx.config.models.embedding,
-    ) {
-        Ok(embed_config) => {
-            let vs_path = memory_dir(ctx, &char_name).join("vectorstore");
-            match VectorStore::open(&vs_path, embed_config.dimensions).await {
-                Ok(vs) => Some(AgentSearchContext::new(vs, ctx.llm_client.clone(), embed_config)),
-                Err(e) => {
-                    tracing::warn!("Vector store unavailable for collation: {e}");
-                    None
-                }
-            }
-        }
-        Err(_) => None,
-    };
-    let indexer = search_ctx.as_ref().map(|ctx| RealAgentIndexer::new(ctx));
+    let search_ctx = setup_search_context(ctx, &char_name).await;
+    let indexer = search_ctx.as_ref().map(RealAgentIndexer::new);
 
-    let collation_display_name = ctx.config.app.defaults.resolve_display_name();
-    let mut collation_vars = std::collections::HashMap::new();
-    collation_vars.insert("char".to_string(), char_name.clone());
-    collation_vars.insert("user".to_string(), collation_display_name);
-    if let Some(cd) = load_character_definition(&ctx.config.dirs.config, &char_name) {
-        collation_vars.insert("char_description".to_string(), cd);
-    }
-    if let Some(ud) = resolve_user_definition(&ctx.config.dirs.config, &char_name) {
-        collation_vars.insert("user_description".to_string(), ud);
-    }
+    let display_name = ctx.config.app.defaults.resolve_display_name();
+    let collation_vars = build_collation_vars(ctx, &char_name, &display_name);
 
     const MAX_PASSES: usize = 10;
     let mut total = CollationOutcome::default();

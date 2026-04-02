@@ -327,21 +327,7 @@ fn build_http_request(
     Ok(builder.json(&body))
 }
 
-/// Check the HTTP response status, returning the response on success or
-/// an `HttpStatus` error with the body on failure.
-async fn check_response(response: reqwest::Response) -> Result<reqwest::Response, LlmError> {
-    let status = response.status();
-    if status.is_success() {
-        return Ok(response);
-    }
-
-    let status_code = status.as_u16();
-    let body = response.text().await.unwrap_or_default();
-    Err(LlmError::HttpStatus {
-        status: status_code,
-        body,
-    })
-}
+use super::check_response;
 
 // ── Streaming ────────────────────────────────────────────────────────────
 

@@ -4,6 +4,8 @@ use std::time::Instant;
 use serde_json::{json, Value};
 use tokio::io::DuplexStream;
 
+use shore_protocol::types::ContentBlock;
+
 use crate::types::{GenerateResponse, ImageGenerateResponse, LlmRequest, Timing, Usage};
 use crate::LlmError;
 
@@ -417,14 +419,7 @@ pub async fn stream(
         .send()
         .await?;
 
-    let status = response.status();
-    if !status.is_success() {
-        let body_text = response.text().await.unwrap_or_default();
-        return Err(LlmError::HttpStatus {
-            status: status.as_u16(),
-            body: body_text,
-        });
-    }
+    let response = super::check_response(response).await?;
 
     let (mut writer, reader) = tokio::io::duplex(64 * 1024);
     let reasoning_field_name = reasoning_field(request).to_string();
@@ -665,14 +660,7 @@ pub async fn generate(
         .send()
         .await?;
 
-    let status = response.status();
-    if !status.is_success() {
-        let body_text = response.text().await.unwrap_or_default();
-        return Err(LlmError::HttpStatus {
-            status: status.as_u16(),
-            body: body_text,
-        });
-    }
+    let response = super::check_response(response).await?;
 
     let total_ms = start.elapsed().as_millis() as u32;
 
@@ -689,7 +677,7 @@ pub async fn generate(
     let field_name = reasoning_field(request);
 
     // Build content blocks.
-    let mut content_blocks: Vec<Value> = Vec::new();
+    let mut typed_blocks: Vec<ContentBlock> = Vec::new();
 
     // Reasoning / thinking.
     if let Some(reasoning) = message
@@ -697,7 +685,10 @@ pub async fn generate(
         .and_then(|r| r.as_str())
     {
         if !reasoning.is_empty() {
-            content_blocks.push(json!({"type": "thinking", "thinking": reasoning}));
+            typed_blocks.push(ContentBlock::Thinking {
+                thinking: reasoning.to_string(),
+                signature: None,
+            });
         }
     }
 
@@ -707,7 +698,9 @@ pub async fn generate(
         .and_then(|c| c.as_str())
         .unwrap_or("");
     if !text_content.is_empty() {
-        content_blocks.push(json!({"type": "text", "text": text_content}));
+        typed_blocks.push(ContentBlock::Text {
+            text: text_content.to_string(),
+        });
     }
 
     // Tool calls.
@@ -720,24 +713,20 @@ pub async fn generate(
             if tc_type != "function" {
                 continue;
             }
-            let id = tc.get("id").and_then(|i| i.as_str()).unwrap_or("");
+            let id = tc.get("id").and_then(|i| i.as_str()).unwrap_or("").to_string();
             let func = tc.get("function");
             let name = func
                 .and_then(|f| f.get("name"))
                 .and_then(|n| n.as_str())
-                .unwrap_or("");
+                .unwrap_or("")
+                .to_string();
             let args_str = func
                 .and_then(|f| f.get("arguments"))
                 .and_then(|a| a.as_str())
                 .unwrap_or("{}");
             let input: Value =
                 serde_json::from_str(args_str).unwrap_or(json!({}));
-            content_blocks.push(json!({
-                "type": "tool_use",
-                "id": id,
-                "name": name,
-                "input": input,
-            }));
+            typed_blocks.push(ContentBlock::ToolUse { id, name, input });
         }
     }
 
@@ -754,10 +743,6 @@ pub async fn generate(
         .get("model")
         .and_then(|m| m.as_str())
         .unwrap_or(&request.model);
-
-    // Deserialize content_blocks into the typed ContentBlock vec via round-trip.
-    let blocks_value = Value::Array(content_blocks);
-    let typed_blocks = serde_json::from_value(blocks_value).unwrap_or_default();
 
     Ok(GenerateResponse {
         content: text_content.to_string(),
@@ -799,14 +784,7 @@ pub async fn embed(
         .send()
         .await?;
 
-    let status = response.status();
-    if !status.is_success() {
-        let body_text = response.text().await.unwrap_or_default();
-        return Err(LlmError::HttpStatus {
-            status: status.as_u16(),
-            body: body_text,
-        });
-    }
+    let response = super::check_response(response).await?;
 
     let resp: Value = response.json().await.map_err(LlmError::Request)?;
 
@@ -895,14 +873,7 @@ pub async fn image_generate(
         .send()
         .await?;
 
-    let status = response.status();
-    if !status.is_success() {
-        let body_text = response.text().await.unwrap_or_default();
-        return Err(LlmError::HttpStatus {
-            status: status.as_u16(),
-            body: body_text,
-        });
-    }
+    let response = super::check_response(response).await?;
 
     let total_ms = start.elapsed().as_millis() as u32;
     let resp: Value = response.json().await.map_err(LlmError::Request)?;
@@ -1014,14 +985,7 @@ async fn try_openrouter_image(
         .send()
         .await?;
 
-    let status = response.status();
-    if !status.is_success() {
-        let body_text = response.text().await.unwrap_or_default();
-        return Err(LlmError::HttpStatus {
-            status: status.as_u16(),
-            body: body_text,
-        });
-    }
+    let response = super::check_response(response).await?;
 
     let resp: Value = response.json().await.map_err(LlmError::Request)?;
 

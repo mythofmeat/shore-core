@@ -32,19 +32,10 @@ fn is_tool_result_only(msg: &Message) -> bool {
 
 /// Derive content from Text blocks only (for merged messages).
 ///
-/// Unlike `derive_content_from_blocks`, this excludes ToolResult content
-/// because merged messages embed tool results in content_blocks.
+/// Excludes ToolResult content because merged messages embed tool results
+/// in content_blocks.
 fn derive_content_text_only(blocks: &[ContentBlock]) -> String {
-    let mut parts: Vec<&str> = Vec::new();
-    for block in blocks {
-        if let ContentBlock::Text { text } = block {
-            let trimmed = text.trim();
-            if !trimmed.is_empty() {
-                parts.push(trimmed);
-            }
-        }
-    }
-    parts.join("\n")
+    super::types::derive_content_from_blocks_with(blocks, false)
 }
 
 /// Collect blocks from one tool-loop round (assistant + user result pair).

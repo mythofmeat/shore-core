@@ -10,7 +10,7 @@ use tokio::time::Duration;
 // Configuration
 // ---------------------------------------------------------------------------
 
-const DEFAULT_IDLE_TRIGGER_MINUTES: u64 = 15;
+const DEFAULT_IDLE_TRIGGER_MINUTES: u64 = 30;
 const DEFAULT_MIN_TURNS: usize = 8;
 const DEFAULT_MAX_TURNS: usize = 16;
 const DEFAULT_KEEP_RECENT_TURNS: usize = 2;

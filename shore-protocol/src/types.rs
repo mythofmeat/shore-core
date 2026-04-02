@@ -124,10 +124,14 @@ pub struct StreamMetadata {
 
 /// Derive a human-readable text summary from content blocks.
 ///
-/// Joins all `Text` and `ToolResult` block contents (trimmed), skipping
-/// thinking, redacted thinking, and tool use blocks which are not
-/// user-visible text. This is the canonical way to produce `Message.content`.
-pub fn derive_content_from_blocks(blocks: &[ContentBlock]) -> String {
+/// Joins all `Text` block contents (trimmed), and optionally `ToolResult`
+/// contents, skipping thinking, redacted thinking, and tool use blocks
+/// which are not user-visible text.
+///
+/// When `include_tool_results` is true, this is the canonical way to produce
+/// `Message.content`. When false, only `Text` blocks contribute (used for
+/// merged messages where tool results are already embedded in content_blocks).
+pub fn derive_content_from_blocks_with(blocks: &[ContentBlock], include_tool_results: bool) -> String {
     let mut parts: Vec<&str> = Vec::new();
 
     for block in blocks {
@@ -138,7 +142,7 @@ pub fn derive_content_from_blocks(blocks: &[ContentBlock]) -> String {
                     parts.push(trimmed);
                 }
             }
-            ContentBlock::ToolResult { content, .. } => {
+            ContentBlock::ToolResult { content, .. } if include_tool_results => {
                 let trimmed = content.trim();
                 if !trimmed.is_empty() {
                     parts.push(trimmed);
@@ -149,6 +153,11 @@ pub fn derive_content_from_blocks(blocks: &[ContentBlock]) -> String {
     }
 
     parts.join("\n")
+}
+
+/// Derive a human-readable text summary from content blocks (including tool results).
+pub fn derive_content_from_blocks(blocks: &[ContentBlock]) -> String {
+    derive_content_from_blocks_with(blocks, true)
 }
 
 /// Information about a character.

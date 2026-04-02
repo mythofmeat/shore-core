@@ -400,14 +400,7 @@ pub async fn stream(
         .await
         .map_err(LlmError::Request)?;
 
-    let status = response.status();
-    if !status.is_success() {
-        let body = response.text().await.unwrap_or_default();
-        return Err(LlmError::HttpStatus {
-            status: status.as_u16(),
-            body,
-        });
-    }
+    let response = super::check_response(response).await?;
 
     let model = request.model.clone();
     let (writer, reader) = tokio::io::duplex(64 * 1024);
@@ -708,14 +701,7 @@ pub async fn generate(
         .await
         .map_err(LlmError::Request)?;
 
-    let status = response.status();
-    if !status.is_success() {
-        let body = response.text().await.unwrap_or_default();
-        return Err(LlmError::HttpStatus {
-            status: status.as_u16(),
-            body,
-        });
-    }
+    let response = super::check_response(response).await?;
 
     let resp_text = response.text().await.map_err(LlmError::Request)?;
     let resp: Value =

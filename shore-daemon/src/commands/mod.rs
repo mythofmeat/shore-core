@@ -14,11 +14,13 @@ use tracing::info;
 
 use crate::autonomy::manager::AutonomyManager;
 use shore_config::models::ResolvedModel;
-use shore_config::LoadedConfig;
+use shore_config::{load_character_definition, resolve_user_definition, LoadedConfig};
 use shore_diagnostics::Diagnostics;
 use crate::engine::{ConversationEngine, EngineError};
 use shore_llm_client::LlmClient;
-use crate::memory::agent::MemoryAgent;
+use crate::memory::agent::{AgentSearchContext, MemoryAgent};
+use crate::memory::compaction_impls::resolve_embed_config;
+use crate::memory::vectorstore::VectorStore;
 
 /// Cumulative token usage tracked across the daemon session.
 #[derive(Debug, Default)]
@@ -61,6 +63,68 @@ pub struct CommandContext {
 
 /// Convenience type for command handler results.
 pub type CommandResult = Result<serde_json::Value, (ErrorCode, String)>;
+
+/// Resolve the agent model: configured `memory_agent` → active model → first chat model.
+///
+/// Used by memory queries, memory shell, and collation setup.
+pub fn resolve_agent_model(ctx: &CommandContext) -> Result<ResolvedModel, (ErrorCode, String)> {
+    ctx.config
+        .app
+        .defaults
+        .memory_agent
+        .as_deref()
+        .and_then(|name| ctx.config.models.find_model(name).ok())
+        .or_else(|| {
+            ctx.active_model
+                .as_deref()
+                .and_then(|name| ctx.config.models.find_model(name).ok())
+        })
+        .or_else(|| ctx.config.models.first_chat_model())
+        .cloned()
+        .ok_or_else(|| (ErrorCode::InternalError, "No model configured".to_string()))
+}
+
+/// Build the memory directory path for a character.
+pub fn memory_dir(ctx: &CommandContext, char_name: &str) -> PathBuf {
+    ctx.data_dir.join(char_name).join("memory")
+}
+
+/// Build a semantic search context for a character (graceful: returns None
+/// if no embedding model is configured or the vector store can't be opened).
+pub async fn setup_search_context(
+    ctx: &CommandContext,
+    char_name: &str,
+) -> Option<AgentSearchContext> {
+    let embed_config = resolve_embed_config(
+        ctx.config.app.defaults.embedding.as_deref(),
+        &ctx.config.models.embedding,
+    )
+    .ok()?;
+    let vs_path = memory_dir(ctx, char_name).join("vectorstore");
+    let vs = VectorStore::open(&vs_path, embed_config.dimensions)
+        .await
+        .ok()?;
+    Some(AgentSearchContext::new(vs, ctx.llm_client.clone(), embed_config))
+}
+
+/// Build the template variable map used by collation.
+pub fn build_collation_vars(
+    ctx: &CommandContext,
+    char_name: &str,
+    display_name: &str,
+) -> HashMap<String, String> {
+    let mut vars = HashMap::new();
+    vars.insert("char".to_string(), char_name.to_string());
+    vars.insert("user".to_string(), display_name.to_string());
+    if let Some(cd) = load_character_definition(&ctx.config.dirs.config, char_name) {
+        vars.insert("char_description".to_string(), cd);
+    }
+    if let Some(ud) = resolve_user_definition(&ctx.config.dirs.config, char_name) {
+        vars.insert("user_description".to_string(), ud);
+    }
+    vars
+}
+
 
 /// Dispatch a command to the appropriate handler.
 pub async fn dispatch(

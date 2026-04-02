@@ -732,32 +732,24 @@ fn write_section_header(out: &mut impl Write, title: &str, suffix: &str, width: 
     let _ = writeln!(out);
 }
 
+/// Write a label-value row, optionally coloring the value.
+fn write_row_with(out: &mut impl Write, label: &str, value: &str, color: Option<Color>) {
+    write_dim(out, &format!("  {label:<13}"));
+    match color {
+        Some(c) => write_fg(out, c, value),
+        None => { let _ = write!(out, "{value}"); }
+    }
+    let _ = writeln!(out);
+}
+
 /// Write a label-value row: `  Label        Value`
 fn write_row(out: &mut impl Write, label: &str, value: &str) {
-    if use_color() {
-        let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
-    }
-    let _ = write!(out, "  {label:<13}");
-    if use_color() {
-        let _ = crossterm::execute!(out, ResetColor);
-    }
-    let _ = writeln!(out, "{value}");
+    write_row_with(out, label, value, None);
 }
 
 /// Write a label-value row with the value in a specific color.
 fn write_row_colored(out: &mut impl Write, label: &str, value: &str, color: Color) {
-    if use_color() {
-        let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
-    }
-    let _ = write!(out, "  {label:<13}");
-    if use_color() {
-        let _ = crossterm::execute!(out, SetForegroundColor(color));
-    }
-    let _ = write!(out, "{value}");
-    if use_color() {
-        let _ = crossterm::execute!(out, ResetColor);
-    }
-    let _ = writeln!(out);
+    write_row_with(out, label, value, Some(color));
 }
 
 /// Translate an interiority state string to a human-readable description.
@@ -1596,137 +1588,91 @@ pub fn print_diagnostics(data: &serde_json::Value) {
     let width = term_width();
 
     // ── API Calls ───────────────────────
-    let api_count = data["api_calls"]["count"].as_u64().unwrap_or(0);
-    let api_suffix = format!("{api_count} total");
-    write_section_header(&mut out, "API Calls", &api_suffix, width);
+    print_diagnostics_section(&mut out, "API Calls", &data["api_calls"], width, |out, call| {
+        let model = abbreviate_model(call["model"].as_str().unwrap_or("?"));
+        let input = call["input_tokens"].as_u64().unwrap_or(0);
+        let output_t = call["output_tokens"].as_u64().unwrap_or(0);
+        let cr = call["cache_read_tokens"].as_u64().unwrap_or(0);
+        let cw = call["cache_write_tokens"].as_u64().unwrap_or(0);
+        let total = call["total_ms"].as_u64().unwrap_or(0);
+        let secs = total as f64 / 1000.0;
 
-    if let Some(calls) = data["api_calls"]["recent"].as_array() {
-        if calls.is_empty() {
-            print_dim_line(&mut out, "(none)");
-        } else {
-            for call in calls {
-                let ts = call["timestamp"].as_str().unwrap_or("");
-                let time = parse_timestamp(ts)
-                    .map(|dt| dt.format("%H:%M:%S").to_string())
-                    .unwrap_or_else(|| ts.chars().take(8).collect());
-                let model = abbreviate_model(call["model"].as_str().unwrap_or("?"));
-                let input = call["input_tokens"].as_u64().unwrap_or(0);
-                let output_t = call["output_tokens"].as_u64().unwrap_or(0);
-                let cr = call["cache_read_tokens"].as_u64().unwrap_or(0);
-                let cw = call["cache_write_tokens"].as_u64().unwrap_or(0);
-                let total = call["total_ms"].as_u64().unwrap_or(0);
-                let secs = total as f64 / 1000.0;
+        let _ = write!(out, "{model:<24}");
+        write_dim(out, &format!("in:{input:<5} out:{output_t:<5} cache:{cr}/{cw}  {secs:.1}s"));
 
-                if use_color() {
-                    let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
-                }
-                let _ = write!(out, "  {time}  ");
-                if use_color() {
-                    let _ = crossterm::execute!(out, ResetColor);
-                }
-                let _ = write!(out, "{model:<24}");
-                if use_color() {
-                    let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
-                }
-                let _ = write!(out, "in:{input:<5} out:{output_t:<5} cache:{cr}/{cw}");
-                let _ = write!(out, "  {secs:.1}s");
-                if use_color() {
-                    let _ = crossterm::execute!(out, ResetColor);
-                }
-
-                // Error indicator
-                if let Some(err) = call.get("error").filter(|v| !v.is_null()) {
-                    if use_color() {
-                        let _ = crossterm::execute!(out, SetForegroundColor(Color::Red));
-                    }
-                    let _ = write!(out, "  ERR: {}", err.as_str().unwrap_or("?"));
-                    if use_color() {
-                        let _ = crossterm::execute!(out, ResetColor);
-                    }
-                }
-                let _ = writeln!(out);
-            }
+        if let Some(err) = call.get("error").filter(|v| !v.is_null()) {
+            write_fg(out, Color::Red, &format!("  ERR: {}", err.as_str().unwrap_or("?")));
         }
-    }
-    let _ = writeln!(out);
+        let _ = writeln!(out);
+    });
 
     // ── Tool Calls ──────────────────────
-    let tool_count = data["tool_calls"]["count"].as_u64().unwrap_or(0);
-    let tool_suffix = format!("{tool_count} total");
-    write_section_header(&mut out, "Tool Calls", &tool_suffix, width);
+    print_diagnostics_section(&mut out, "Tool Calls", &data["tool_calls"], width, |out, call| {
+        let name = call["tool_name"].as_str().unwrap_or("?");
+        let dur = call["duration_ms"].as_u64().unwrap_or(0);
+        let ok = call["success"].as_bool().unwrap_or(true);
 
-    if let Some(calls) = data["tool_calls"]["recent"].as_array() {
-        if calls.is_empty() {
-            print_dim_line(&mut out, "(none)");
-        } else {
-            for call in calls {
-                let ts = call["timestamp"].as_str().unwrap_or("");
-                let time = parse_timestamp(ts)
-                    .map(|dt| dt.format("%H:%M:%S").to_string())
-                    .unwrap_or_else(|| ts.chars().take(8).collect());
-                let name = call["tool_name"].as_str().unwrap_or("?");
-                let dur = call["duration_ms"].as_u64().unwrap_or(0);
-                let ok = call["success"].as_bool().unwrap_or(true);
-
-                if use_color() {
-                    let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
-                }
-                let _ = write!(out, "  {time}  ");
-                if use_color() {
-                    let _ = crossterm::execute!(out, ResetColor);
-                }
-                let _ = write!(out, "{name:<24}");
-                if use_color() {
-                    let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
-                }
-                let _ = write!(out, "{dur}ms  ");
-                let marker_color = if ok { Color::Green } else { Color::Red };
-                if use_color() {
-                    let _ = crossterm::execute!(out, SetForegroundColor(marker_color));
-                }
-                let _ = write!(out, "{}", if ok { "ok" } else { "FAIL" });
-                if use_color() {
-                    let _ = crossterm::execute!(out, ResetColor);
-                }
-                let _ = writeln!(out);
-            }
-        }
-    }
-    let _ = writeln!(out);
+        let _ = write!(out, "{name:<24}");
+        write_dim(out, &format!("{dur}ms  "));
+        let (marker_color, marker_text) = if ok { (Color::Green, "ok") } else { (Color::Red, "FAIL") };
+        write_fg(out, marker_color, marker_text);
+        let _ = writeln!(out);
+    });
 
     // ── Errors ──────────────────────────
-    let err_count = data["errors"]["count"].as_u64().unwrap_or(0);
-    let err_suffix = format!("{err_count} total");
-    write_section_header(&mut out, "Errors", &err_suffix, width);
+    print_diagnostics_section(&mut out, "Errors", &data["errors"], width, |out, err| {
+        let etype = err["error_type"].as_str().unwrap_or("?");
+        let msg = err["message"].as_str().unwrap_or("?");
 
-    if let Some(errors) = data["errors"]["recent"].as_array() {
-        if errors.is_empty() {
-            print_dim_line(&mut out, "(none)");
+        write_fg(out, Color::Red, &format!("{etype:<12}"));
+        let _ = writeln!(out, "{msg}");
+    });
+}
+
+/// Print a diagnostics section with a header, shared timestamp formatting,
+/// and a per-entry formatter.
+fn print_diagnostics_section<W: Write>(
+    out: &mut W,
+    title: &str,
+    section: &serde_json::Value,
+    width: usize,
+    mut format_row: impl FnMut(&mut W, &serde_json::Value),
+) {
+    let count = section["count"].as_u64().unwrap_or(0);
+    write_section_header(out, title, &format!("{count} total"), width);
+
+    if let Some(entries) = section["recent"].as_array() {
+        if entries.is_empty() {
+            print_dim_line(out, "(none)");
         } else {
-            for err in errors {
-                let ts = err["timestamp"].as_str().unwrap_or("");
+            for entry in entries {
+                let ts = entry["timestamp"].as_str().unwrap_or("");
                 let time = parse_timestamp(ts)
                     .map(|dt| dt.format("%H:%M:%S").to_string())
                     .unwrap_or_else(|| ts.chars().take(8).collect());
-                let etype = err["error_type"].as_str().unwrap_or("?");
-                let msg = err["message"].as_str().unwrap_or("?");
 
-                if use_color() {
-                    let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
-                }
-                let _ = write!(out, "  {time}  ");
-                if use_color() {
-                    let _ = crossterm::execute!(out, SetForegroundColor(Color::Red));
-                }
-                let _ = write!(out, "{etype:<12}");
-                if use_color() {
-                    let _ = crossterm::execute!(out, ResetColor);
-                }
-                let _ = writeln!(out, "{msg}");
+                write_dim(out, &format!("  {time}  "));
+                format_row(out, entry);
             }
         }
     }
     let _ = writeln!(out);
+}
+
+/// Write text in a specific foreground color (respects use_color()).
+fn write_fg(out: &mut impl Write, color: Color, text: &str) {
+    if use_color() {
+        let _ = crossterm::execute!(out, SetForegroundColor(color));
+    }
+    let _ = write!(out, "{text}");
+    if use_color() {
+        let _ = crossterm::execute!(out, ResetColor);
+    }
+}
+
+/// Write text in dim (DarkGrey) color.
+fn write_dim(out: &mut impl Write, text: &str) {
+    write_fg(out, Color::DarkGrey, text);
 }
 
 /// Print a dimmed line (for empty states).
