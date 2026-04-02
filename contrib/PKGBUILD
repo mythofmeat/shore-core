@@ -1,21 +1,19 @@
 # Maintainer: eshen
-pkgname=shore-git
+pkgbase=shore
+pkgname=(shore-daemon shore-cli shore-tui shore-matrix)
 pkgver=.r96.4df5d05
 pkgrel=1
-pkgdesc='Persistent AI character engine — daemon, CLI, and LLM provider proxy'
+pkgdesc='Persistent AI character engine'
 arch=('x86_64')
 url='http://localhost:3000/eshen/silvershore'
 license=('custom')
-depends=('gcc-libs')
 makedepends=('cargo' 'git')
-provides=('shore')
-conflicts=('shore')
-source=("${pkgname}::git+http://localhost:3000/eshen/silvershore.git")
+source=("${pkgbase}::git+http://localhost:3000/eshen/silvershore.git")
 options=('!lto')
 sha256sums=('SKIP')
 
 pkgver() {
-    cd "${pkgname}"
+    cd "${pkgbase}"
     printf "%s.r%s.%s" \
         "$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')" \
         "$(git rev-list --count HEAD)" \
@@ -23,36 +21,48 @@ pkgver() {
 }
 
 prepare() {
-    cd "${pkgname}"
+    cd "${pkgbase}"
     export RUSTUP_TOOLCHAIN=stable
     cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
 }
 
 build() {
-    cd "${pkgname}"
+    cd "${pkgbase}"
     export RUSTUP_TOOLCHAIN=stable
     export CARGO_TARGET_DIR=target
     cargo build --workspace --release --frozen
 }
 
-package() {
-    cd "${pkgname}"
+package_shore-daemon() {
+    pkgdesc='Persistent AI character engine — daemon'
+    depends=('gcc-libs' 'openssl')
+    provides=('shore-daemon')
+    conflicts=('shore-daemon' 'shore-git')
 
-    # Rust binaries
+    cd "${pkgbase}"
     install -Dm755 target/release/shore-daemon "$pkgdir/usr/bin/shore-daemon"
-    install -Dm755 target/release/shore         "$pkgdir/usr/bin/shore"
-    install -Dm755 target/release/shore-tui    "$pkgdir/usr/bin/shore-tui"
-    install -Dm755 target/release/shore-matrix  "$pkgdir/usr/bin/shore-matrix"
 
     # Systemd user service
     install -Dm644 contrib/shore-daemon.service \
         "$pkgdir/usr/lib/systemd/user/shore-daemon.service"
 
-    # Example config
+    # Example configs
     install -Dm644 examples/config.toml \
         "$pkgdir/usr/share/doc/shore/config.toml.example"
     install -Dm644 examples/models.toml \
         "$pkgdir/usr/share/doc/shore/models.toml.example"
+    install -Dm644 examples/client.toml \
+        "$pkgdir/usr/share/doc/shore/client.toml.example"
+}
+
+package_shore-cli() {
+    pkgdesc='Persistent AI character engine — CLI'
+    depends=('gcc-libs')
+    provides=('shore-cli')
+    conflicts=('shore-cli' 'shore-git')
+
+    cd "${pkgbase}"
+    install -Dm755 target/release/shore "$pkgdir/usr/bin/shore"
 
     # Shell completions
     install -dm755 "$pkgdir/usr/share/fish/vendor_completions.d"
@@ -61,4 +71,24 @@ package() {
     target/release/shore completions fish > "$pkgdir/usr/share/fish/vendor_completions.d/shore.fish"
     target/release/shore completions bash > "$pkgdir/usr/share/bash-completion/completions/shore"
     target/release/shore completions zsh  > "$pkgdir/usr/share/zsh/site-functions/_shore"
+}
+
+package_shore-tui() {
+    pkgdesc='Persistent AI character engine — TUI'
+    depends=('gcc-libs')
+    provides=('shore-tui')
+    conflicts=('shore-tui' 'shore-git')
+
+    cd "${pkgbase}"
+    install -Dm755 target/release/shore-tui "$pkgdir/usr/bin/shore-tui"
+}
+
+package_shore-matrix() {
+    pkgdesc='Persistent AI character engine — Matrix bridge'
+    depends=('gcc-libs' 'openssl')
+    provides=('shore-matrix')
+    conflicts=('shore-matrix' 'shore-git')
+
+    cd "${pkgbase}"
+    install -Dm755 target/release/shore-matrix "$pkgdir/usr/bin/shore-matrix"
 }

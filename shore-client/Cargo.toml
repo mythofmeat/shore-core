@@ -8,6 +8,7 @@ shore-config = { path = "../shore-config" }
 shore-protocol = { path = "../shore-protocol" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+toml = { workspace = true }
 tokio = { version = "1", features = ["net", "io-util", "sync", "rt", "macros", "time"] }
 thiserror = "2"
 

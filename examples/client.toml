@@ -1,0 +1,15 @@
+# Shore V2 — Example Client Configuration
+#
+# Place this file at $XDG_CONFIG_HOME/shore/client.toml
+# (typically ~/.config/shore/client.toml).
+#
+# This is read by shore (CLI), shore-tui, and any other SWP client.
+# It is intentionally separate from the daemon's config.toml.
+
+# Default server address. Set this on remote machines to point at
+# the daemon's TCP listener. Can be a Unix socket path or host:port.
+#
+# The --socket CLI flag always overrides this value.
+#
+# default_address = "192.168.1.50:7320"
+# default_address = "/run/user/1000/shore/shore.sock"

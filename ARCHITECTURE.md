@@ -703,6 +703,28 @@ Bridges need exactly two things to start:
 
 Everything else comes from the daemon via the SWP `hello` exchange.
 
+### 8.4 Client Configuration (`client.toml`)
+
+Clients (CLI, TUI, bridges) can set a default server address in
+`$XDG_CONFIG_HOME/shore/client.toml`. This is loaded by `shore-client`
+independently of the daemon's `config.toml` — the two files share a directory
+but use separate code paths.
+
+```toml
+default_address = "100.64.0.1:7320"
+```
+
+**Address resolution order:**
+
+1. `--socket` CLI flag (explicit address)
+2. `client.toml` `default_address`
+3. Instance discovery (`instances.json`, optionally filtered by `--config` ID)
+4. Default Unix socket (`$XDG_RUNTIME_DIR/shore/shore.sock`)
+
+The file is optional. If missing or unparseable, resolution falls through to
+instance discovery. On the daemon machine, omit `client.toml` (or leave
+`default_address` unset) to use local socket discovery as before.
+
 ---
 
 ## 9. SQLite Schema
