@@ -116,16 +116,18 @@ pub fn build_capabilities_block(config: &CapabilitiesConfig) -> Option<String> {
         lines.push(
             "- Your memory block may contain image memories shown as \
              [Image memory #<id>: <description>]. To actually see the image, \
-             call recall_image with the memory ID. Use this when you need to \
-             examine visual details — appearance, content, or composition.",
+             call recall_image with the entry ID or image path. Use this when \
+             you need to examine visual details — appearance, content, or \
+             composition.",
         );
     }
     if config.send_image_enabled {
         lines.push(
-            "- You can send images from your memories. If a past image is relevant \
-             to what you're discussing — a shared moment, something you created \
-             together, a visual callback — surface it. Don't wait to be asked; \
-             sharing a relevant image is like referencing a shared experience.",
+            "- You can send images from your memories using send_image with a \
+             path or entry ID. If a past image is relevant to what you're \
+             discussing — a shared moment, something you created together, a \
+             visual callback — surface it. Don't wait to be asked; sharing a \
+             relevant image is like referencing a shared experience.",
         );
     }
     if config.remember_image_enabled {
@@ -676,7 +678,7 @@ mod tests {
         assert!(block.contains("interiority"));
         assert!(block.contains("memory system"));
         assert!(block.contains("Image memory"));
-        assert!(block.contains("send images"));
+        assert!(block.contains("send_image"));
         assert!(block.contains("remember_image"));
         assert!(block.contains("generate images"));
         assert!(block.contains("search the web"));

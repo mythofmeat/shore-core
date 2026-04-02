@@ -17,7 +17,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Path to the image file in memory storage."
+                        "description": "Path or entry ID (e.g. 'img_...') of the image to send."
                     },
                     "caption": {
                         "type": "string",
@@ -26,7 +26,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
                 },
                 "required": ["path"]
             }),
-            category: ToolCategory::MemoryWrite,
+            category: ToolCategory::MemoryRead,
         },
         ToolDef {
             name: "list_images",
@@ -44,13 +44,13 @@ pub fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "recall_image",
-            description: "View an image at full resolution by path.",
+            description: "View an image at full resolution by path or entry ID.",
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Path to the image file to recall."
+                        "description": "Path or entry ID (e.g. 'img_...') of the image to view."
                     }
                 },
                 "required": ["path"]
@@ -100,6 +100,35 @@ pub fn tool_defs() -> Vec<ToolDef> {
 }
 
 // ---------------------------------------------------------------------------
+// Path resolution
+// ---------------------------------------------------------------------------
+
+/// Resolve an image path from either a relative file path or an entry ID.
+///
+/// If the input starts with `img_`, looks up the entry in the DB and uses its
+/// `image_path`. Otherwise treats the input as a relative path directly.
+/// Returns `(relative_path, full_path)`.
+fn resolve_image_path(input_path: &str, ctx: &dyn ToolContext) -> Result<(String, std::path::PathBuf), ToolError> {
+    let relative_path = if input_path.starts_with("img_") {
+        let entry = ctx.memory_db()
+            .get_entry(input_path)
+            .map_err(|e| ToolError::Io(format!("DB error: {e}")))?
+            .ok_or_else(|| ToolError::Io(format!("no memory entry found: {input_path}")))?;
+        if entry.image_path.is_empty() {
+            return Err(ToolError::Io(format!("entry {input_path} has no image_path")));
+        }
+        entry.image_path
+    } else {
+        input_path.to_string()
+    };
+    let full_path = std::path::Path::new(ctx.image_dir()).join(&relative_path);
+    if !full_path.exists() {
+        return Err(ToolError::Io(format!("image not found: {}", full_path.display())));
+    }
+    Ok((relative_path, full_path))
+}
+
+// ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
 
@@ -111,13 +140,7 @@ pub async fn handle_send_image(input: Value, ctx: &dyn ToolContext) -> Result<Va
         .ok_or_else(|| ToolError::InvalidArgs("missing 'path' field".to_string()))?;
 
     let caption = input.get("caption").and_then(|v| v.as_str());
-
-    // Resolve path relative to image directory.
-    let full_path = std::path::Path::new(ctx.image_dir()).join(path);
-
-    if !full_path.exists() {
-        return Err(ToolError::Io(format!("image not found: {}", full_path.display())));
-    }
+    let (_relative, full_path) = resolve_image_path(path, ctx)?;
 
     Ok(json!({
         "path": full_path.to_string_lossy(),
@@ -181,11 +204,7 @@ pub async fn handle_recall_image(input: Value, ctx: &dyn ToolContext) -> Result<
         .and_then(|v| v.as_str())
         .ok_or_else(|| ToolError::InvalidArgs("missing 'path' field".to_string()))?;
 
-    let full_path = std::path::Path::new(ctx.image_dir()).join(path);
-
-    if !full_path.exists() {
-        return Err(ToolError::Io(format!("image not found: {}", full_path.display())));
-    }
+    let (_relative, full_path) = resolve_image_path(path, ctx)?;
 
     Ok(json!({
         "path": full_path.to_string_lossy(),
@@ -411,12 +430,12 @@ mod tests {
         assert!(names.contains(&"remember_image"));
         assert!(names.contains(&"generate_image"));
 
-        // send_image, remember_image, and generate_image are MemoryWrite (they produce side effects).
-        assert_eq!(defs.iter().find(|d| d.name == "send_image").unwrap().category, ToolCategory::MemoryWrite);
+        // remember_image and generate_image are MemoryWrite (they produce side effects).
         assert_eq!(defs.iter().find(|d| d.name == "remember_image").unwrap().category, ToolCategory::MemoryWrite);
         assert_eq!(defs.iter().find(|d| d.name == "generate_image").unwrap().category, ToolCategory::MemoryWrite);
 
-        // list_images and recall_image are MemoryRead.
+        // send_image, list_images, and recall_image are MemoryRead.
+        assert_eq!(defs.iter().find(|d| d.name == "send_image").unwrap().category, ToolCategory::MemoryRead);
         assert_eq!(defs.iter().find(|d| d.name == "list_images").unwrap().category, ToolCategory::MemoryRead);
         assert_eq!(defs.iter().find(|d| d.name == "recall_image").unwrap().category, ToolCategory::MemoryRead);
     }
@@ -588,6 +607,65 @@ mod tests {
     fn test_decode_data_url_missing_base64() {
         let url = "data:image/png,raw-data";
         let result = decode_data_url(url);
+        assert!(matches!(result, Err(ToolError::Io(_))));
+    }
+
+    // ── entry ID resolution tests ─────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_send_image_by_entry_id() {
+        let tmp = tempfile::tempdir().unwrap();
+        let image_path = tmp.path().join("sunset.png");
+        std::fs::write(&image_path, b"fake image data").unwrap();
+
+        let ctx = TestToolContext::new()
+            .with_image_dir(tmp.path().to_str().unwrap());
+
+        let entry = make_image_entry("img_sunset_001", "A sunset photo", "sunset.png");
+        ctx.db.create_entry(&entry).unwrap();
+
+        let result = handle_send_image(
+            json!({"path": "img_sunset_001"}),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result["sent"], true);
+        assert!(result["path"].as_str().unwrap().contains("sunset.png"));
+    }
+
+    #[tokio::test]
+    async fn test_recall_image_by_entry_id() {
+        let tmp = tempfile::tempdir().unwrap();
+        let image_path = tmp.path().join("cat.jpg");
+        std::fs::write(&image_path, b"fake image data").unwrap();
+
+        let ctx = TestToolContext::new()
+            .with_image_dir(tmp.path().to_str().unwrap());
+
+        let entry = make_image_entry("img_cat_001", "A cat photo", "cat.jpg");
+        ctx.db.create_entry(&entry).unwrap();
+
+        let result = handle_recall_image(
+            json!({"path": "img_cat_001"}),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result["exists"], true);
+        assert!(result["path"].as_str().unwrap().contains("cat.jpg"));
+    }
+
+    #[tokio::test]
+    async fn test_send_image_entry_id_not_found() {
+        let ctx = TestToolContext::new().with_image_dir("/tmp");
+        let result = handle_send_image(
+            json!({"path": "img_nonexistent"}),
+            &ctx,
+        )
+        .await;
         assert!(matches!(result, Err(ToolError::Io(_))));
     }
 }
