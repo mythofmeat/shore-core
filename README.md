@@ -163,6 +163,16 @@ Models are declared under `[chat.<provider>.<alias>]`. The alias is what you pas
 
 Per-model options include `temperature`, `max_tokens`, `max_context_tokens`, `reasoning_effort`, `budget_tokens`, `cache_ttl`, and more. See `examples/config.toml` for the full list.
 
+### client.toml (remote access)
+
+Clients (CLI, TUI, bridges) can specify a default server address in `$XDG_CONFIG_HOME/shore/client.toml`. This is useful when the daemon runs on a different machine (e.g. over Tailscale):
+
+```toml
+default_address = "100.64.0.1:7320"
+```
+
+Address resolution order: `--socket` CLI flag → `client.toml` → instance discovery → default Unix socket. On the daemon machine, omit this file to use local socket discovery. See `examples/client.toml` for a full example.
+
 ## Usage
 
 Start the daemon:

@@ -253,3 +253,18 @@ A single holistic call lets the LLM see all candidates + nearby context and make
 **Why:** Both systems operate on ~1h intervals (interiority at 3600s±25%, keepalive at TTL-60s = 3540s for 1h cache). Without coordination, interiority at 65 min triggers a wasted keepalive ping at 59 min followed by the interiority tick 6 min later — two API calls when one suffices. Snapping interiority to fire at the keepalive deadline eliminates the redundant ping.
 
 **Trade-off:** Snapping is capped at the jitter range (`interval_secs × jitter_factor`) to avoid large shifts. If interiority is scheduled far beyond the deadline, keepalive pings independently as a fallback. The keepalive state machine is unchanged — it remains the safety net for dormant/disabled interiority.
+
+### Separate client.toml for Client Configuration (2026-04-02)
+
+**Decision:** Add `$XDG_CONFIG_HOME/shore/client.toml` as a client-side config file, loaded by `shore-client` independently of the daemon's `config.toml`.
+
+**Changes made:**
+- New `shore-client/src/client_config.rs`: `ClientConfig` struct with `default_address` field, `load_client_config()` loader
+- Updated `discover_or_default()` to check `client.toml` between the `--socket` flag and instance discovery
+- Added `toml` dependency to shore-client
+
+**Why:** Remote clients (running on a different machine from the daemon) had to pass `--socket host:port` on every invocation. A persistent config eliminates the repetition. The file is intentionally separate from `config.toml` because: (a) the daemon config uses `deny_unknown_fields` and would reject a `[client]` section, and (b) the packages will eventually be split — client config must not depend on daemon config infrastructure.
+
+**Resolution order:** `--socket` CLI flag → `client.toml` `default_address` → instance discovery → default Unix socket.
+
+**Trade-off:** `load_client_config()` reads and parses the file on every invocation of `discover_or_default()`. This is acceptable because it is a single small file read, and caching would add complexity with no measurable benefit for a CLI tool.

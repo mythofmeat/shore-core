@@ -1,8 +1,10 @@
+pub mod client_config;
 pub mod connection;
 pub mod discovery;
 pub mod error;
 pub mod stream;
 
+pub use client_config::{load_client_config, ClientConfig};
 pub use connection::{SWPConnection, ServerAddr};
 pub use discovery::{discover, discover_or_default};
 pub use error::{ClientError, Result};
@@ -471,5 +473,34 @@ mod tests {
         assert!(crate::connection::is_unix_path("./shore.sock"));
         assert!(!crate::connection::is_unix_path("localhost:8080"));
         assert!(!crate::connection::is_unix_path("127.0.0.1:9090"));
+    }
+
+    // ── ClientConfig tests ──────────────────────────────────────────
+
+    #[test]
+    fn client_config_parses_tcp_address() {
+        let toml = r#"default_address = "192.168.1.50:7320""#;
+        let cfg: crate::client_config::ClientConfig = toml::from_str(toml).unwrap();
+        assert_eq!(cfg.default_address.as_deref(), Some("192.168.1.50:7320"));
+    }
+
+    #[test]
+    fn client_config_parses_unix_address() {
+        let toml = r#"default_address = "/tmp/shore.sock""#;
+        let cfg: crate::client_config::ClientConfig = toml::from_str(toml).unwrap();
+        assert_eq!(cfg.default_address.as_deref(), Some("/tmp/shore.sock"));
+    }
+
+    #[test]
+    fn client_config_empty_file() {
+        let cfg: crate::client_config::ClientConfig = toml::from_str("").unwrap();
+        assert!(cfg.default_address.is_none());
+    }
+
+    #[test]
+    fn client_config_rejects_unknown_fields() {
+        let toml = r#"unknown_field = "oops""#;
+        let result = toml::from_str::<crate::client_config::ClientConfig>(toml);
+        assert!(result.is_err());
     }
 }

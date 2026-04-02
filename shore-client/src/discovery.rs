@@ -92,11 +92,21 @@ pub fn default_socket_path() -> PathBuf {
     shore_config::runtime_dir().join("shore.sock")
 }
 
-/// Convenience: discover or fall back to the default Unix socket.
+/// Convenience: check client.toml, then discover, then fall back to the
+/// default Unix socket.
 pub fn discover_or_default(config_path: Option<&str>) -> ServerAddr {
+    // 1. Check client.toml for a default_address.
+    if let Some(cfg) = crate::client_config::load_client_config() {
+        if let Some(addr) = &cfg.default_address {
+            return addr_from_socket(addr);
+        }
+    }
+
+    // 2. Instance discovery (optionally filtered by --config ID).
     match discover(config_path) {
         Ok(addr) => addr,
         Err(_) => {
+            // 3. Fall back to default Unix socket.
             let sock = default_socket_path();
             ServerAddr::Unix(sock.to_string_lossy().into_owned())
         }
