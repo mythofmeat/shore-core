@@ -667,7 +667,7 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         Line::from(Span::styled("    :character      switch character", Style::default().fg(Color::White))),
         Line::from(Span::styled("    :model          switch model", Style::default().fg(Color::White))),
         Line::from(Span::styled("    :quit           exit", Style::default().fg(Color::White))),
-        Line::from(Span::styled("    :log  :memory  :compact  :config  :diag", Style::default().fg(Color::DarkGray))),
+        Line::from(Span::styled("    :memory  :compact  :regen  :status", Style::default().fg(Color::DarkGray))),
         Line::from(""),
         Line::from(Span::styled("  Press any key to close", Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC))),
         Line::from(""),

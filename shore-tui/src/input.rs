@@ -388,21 +388,6 @@ fn parse_command(app: &mut App, input: &str) -> Action {
             })))
         }
 
-        "log" => {
-            let args = if arg.is_empty() {
-                serde_json::json!({})
-            } else if let Ok(n) = arg.parse::<u64>() {
-                serde_json::json!({ "count": n })
-            } else {
-                serde_json::json!({})
-            };
-            Action::Send(ConnCommand::Send(ClientMessage::Command(Command {
-                rid: None,
-                name: "log".into(),
-                args,
-            })))
-        }
-
         "memory" => {
             if arg.is_empty() {
                 app.set_status("usage: :memory <query>");
@@ -424,14 +409,6 @@ fn parse_command(app: &mut App, input: &str) -> Action {
             })))
         }
 
-        "config" => {
-            Action::Send(ConnCommand::Send(ClientMessage::Command(Command {
-                rid: None,
-                name: "config".into(),
-                args: serde_json::json!({}),
-            })))
-        }
-
         "regen" => {
             let msg = ClientMessage::Regen(Regen {
                 rid: None,
@@ -439,19 +416,6 @@ fn parse_command(app: &mut App, input: &str) -> Action {
                 guidance: if arg.is_empty() { None } else { Some(arg.to_string()) },
             });
             Action::Send(ConnCommand::Send(msg))
-        }
-
-        "diag" | "diagnostics" => {
-            let args = if let Ok(n) = arg.parse::<u64>() {
-                serde_json::json!({ "count": n })
-            } else {
-                serde_json::json!({})
-            };
-            Action::Send(ConnCommand::Send(ClientMessage::Command(Command {
-                rid: None,
-                name: "diagnostics".into(),
-                args,
-            })))
         }
 
         _ => {
