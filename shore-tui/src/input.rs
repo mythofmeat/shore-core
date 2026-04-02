@@ -429,6 +429,33 @@ fn parse_command(app: &mut App, input: &str) -> Action {
             })))
         }
 
+        "delete" => {
+            if arg.is_empty() {
+                app.set_status("usage: :delete <ref>  (e.g. last, -1, -2)");
+                Action::Redraw
+            } else {
+                // Support space-separated refs or a single ref
+                let refs: Vec<&str> = arg.split_whitespace().collect();
+                let args = if refs.len() == 1 {
+                    serde_json::json!({ "refs": refs[0] })
+                } else {
+                    serde_json::json!({ "refs": refs })
+                };
+                Action::SendMulti(vec![
+                    ConnCommand::Send(ClientMessage::Command(Command {
+                        rid: None,
+                        name: "delete".into(),
+                        args,
+                    })),
+                    ConnCommand::Send(ClientMessage::Command(Command {
+                        rid: None,
+                        name: "log".into(),
+                        args: serde_json::json!({}),
+                    })),
+                ])
+            }
+        }
+
         "regen" => {
             let msg = ClientMessage::Regen(Regen {
                 rid: None,

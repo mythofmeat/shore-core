@@ -367,7 +367,7 @@ impl App {
 
     /// Static command names for completion.
     const COMMANDS: &'static [&'static str] = &[
-        "character", "compact",
+        "character", "compact", "delete",
         "help", "memory", "model", "quit", "regen", "status",
     ];
 

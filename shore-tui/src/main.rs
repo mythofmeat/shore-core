@@ -660,6 +660,13 @@ fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<ConnCommand> 
                         app.scroll_to_bottom();
                     }
                 }
+                "delete" => {
+                    if let Some(deleted) = co.data.get("deleted").and_then(|v| v.as_array()) {
+                        let count = deleted.len();
+                        app.set_status(format!("deleted {count} message(s)"));
+                    }
+                    // Log re-fetch follows automatically (sent as SendMulti)
+                }
                 "compact" | "collate" => {
                     let status = co.data.get("status")
                         .and_then(|v| v.as_str())
