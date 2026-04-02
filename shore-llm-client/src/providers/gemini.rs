@@ -7,6 +7,7 @@ use crate::types::{ContentBlock, GenerateResponse, LlmRequest, Timing, Usage};
 use crate::LlmError;
 
 use super::sse::{read_sse_events, SseEvent};
+use super::stream_helpers::{build_done_event, build_start_event, build_tool_use_event};
 
 const DEFAULT_BASE_URL: &str = "https://generativelanguage.googleapis.com";
 
@@ -406,132 +407,30 @@ pub async fn stream(
     let (writer, reader) = tokio::io::duplex(64 * 1024);
 
     tokio::spawn(async move {
+        use super::stream_helpers::StreamTiming;
+        use tokio::io::AsyncWriteExt;
+
         let mut writer = writer;
-        let start = Instant::now();
-        let mut first_token_ms: Option<u32> = None;
+        let mut timing = StreamTiming::new();
         let mut text_content = String::new();
         let mut finish_reason = "end_turn".to_string();
         let mut usage = Usage::default();
         let mut function_calls: Vec<(String, Value)> = Vec::new();
         let mut started = false;
 
-        let model_clone = model.clone();
-
         let result = read_sse_events(
             response,
             |event: SseEvent| {
-                // Parse the SSE data as JSON.
-                let chunk: Value = match serde_json::from_str(&event.data) {
-                    Ok(v) => v,
-                    Err(_) => return None,
-                };
+                let chunk: Value = serde_json::from_str(&event.data).ok()?;
+                let mut lines: Vec<String> = Vec::new();
 
-                // Emit start event on first chunk.
+                // Emit start event once on the first chunk.
                 if !started {
                     started = true;
-                    let start_line = serde_json::to_string(&json!({
-                        "type": "start",
-                        "model": model_clone,
-                    }))
-                    .ok()?;
-                    // We can only return one line per callback, so we need to
-                    // buffer extra lines. Instead, we'll write the start event
-                    // and accumulate the content events to return.
-                    // Actually the SSE callback returns a single Option<String>.
-                    // We need to emit multiple lines. Let's concatenate with \n.
-                    let mut lines = start_line;
-                    lines.push('\n');
-
-                    // Process this chunk's parts.
-                    if let Some(parts) = chunk
-                        .get("candidates")
-                        .and_then(|c| c.get(0))
-                        .and_then(|c| c.get("content"))
-                        .and_then(|c| c.get("parts"))
-                        .and_then(|p| p.as_array())
-                    {
-                        for part in parts {
-                            if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
-                                if first_token_ms.is_none() {
-                                    first_token_ms =
-                                        Some(start.elapsed().as_millis() as u32);
-                                }
-                                if part.get("thought").and_then(|t| t.as_bool()) == Some(true)
-                                {
-                                    if let Ok(line) = serde_json::to_string(&json!({
-                                        "type": "thinking",
-                                        "text": text,
-                                    })) {
-                                        lines.push_str(&line);
-                                        lines.push('\n');
-                                    }
-                                    // Emit thought signature if present (Fix 3).
-                                    if let Some(sig) = part.get("thoughtSignature").and_then(|s| s.as_str()) {
-                                        if let Ok(sig_line) = serde_json::to_string(&json!({
-                                            "type": "thinking_signature",
-                                            "signature": sig,
-                                        })) {
-                                            lines.push_str(&sig_line);
-                                            lines.push('\n');
-                                        }
-                                    }
-                                } else {
-                                    text_content.push_str(text);
-                                    if let Ok(line) = serde_json::to_string(&json!({
-                                        "type": "text",
-                                        "text": text,
-                                    })) {
-                                        lines.push_str(&line);
-                                        lines.push('\n');
-                                    }
-                                }
-                            } else if let Some(fc) = part.get("functionCall") {
-                                let name = fc
-                                    .get("name")
-                                    .and_then(|n| n.as_str())
-                                    .unwrap_or("")
-                                    .to_string();
-                                let args = fc.get("args").cloned().unwrap_or(json!({}));
-                                function_calls.push((name, args));
-                            }
-                        }
-                    }
-
-                    // Update finish reason if present.
-                    if let Some(reason) = chunk
-                        .get("candidates")
-                        .and_then(|c| c.get(0))
-                        .and_then(|c| c.get("finishReason"))
-                        .and_then(|r| r.as_str())
-                    {
-                        finish_reason = normalize_finish_reason(Some(reason)).to_string();
-                    }
-
-                    // Update usage if present.
-                    if let Some(meta) = chunk.get("usageMetadata") {
-                        usage.input_tokens =
-                            meta.get("promptTokenCount").and_then(|v| v.as_u64()).unwrap_or(0)
-                                as u32;
-                        usage.output_tokens = meta
-                            .get("candidatesTokenCount")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(0) as u32;
-                        usage.cache_read_tokens = meta
-                            .get("cachedContentTokenCount")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(0) as u32;
-                    }
-
-                    // The callback returns a single string that gets written
-                    // followed by \n. But we already embedded \n separators.
-                    // The sse reader writes callback result + \n, so strip trailing \n.
-                    let trimmed = lines.trim_end_matches('\n').to_string();
-                    return Some(trimmed);
+                    lines.push(build_start_event(&model));
                 }
 
-                // Subsequent chunks.
-                let mut lines = String::new();
-
+                // Process parts (identical logic for first and subsequent chunks).
                 if let Some(parts) = chunk
                     .get("candidates")
                     .and_then(|c| c.get(0))
@@ -541,56 +440,31 @@ pub async fn stream(
                 {
                     for part in parts {
                         if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
-                            if first_token_ms.is_none() {
-                                first_token_ms = Some(start.elapsed().as_millis() as u32);
-                            }
+                            timing.record_first_token();
                             if part.get("thought").and_then(|t| t.as_bool()) == Some(true) {
-                                if let Ok(line) = serde_json::to_string(&json!({
-                                    "type": "thinking",
-                                    "text": text,
-                                })) {
-                                    if !lines.is_empty() {
-                                        lines.push('\n');
-                                    }
-                                    lines.push_str(&line);
+                                if let Ok(line) = serde_json::to_string(&json!({"type": "thinking", "text": text})) {
+                                    lines.push(line);
                                 }
-                                // Emit thought signature if present (Fix 3).
                                 if let Some(sig) = part.get("thoughtSignature").and_then(|s| s.as_str()) {
-                                    if let Ok(sig_line) = serde_json::to_string(&json!({
-                                        "type": "thinking_signature",
-                                        "signature": sig,
-                                    })) {
-                                        if !lines.is_empty() {
-                                            lines.push('\n');
-                                        }
-                                        lines.push_str(&sig_line);
+                                    if let Ok(sig_line) = serde_json::to_string(&json!({"type": "thinking_signature", "signature": sig})) {
+                                        lines.push(sig_line);
                                     }
                                 }
                             } else {
                                 text_content.push_str(text);
-                                if let Ok(line) = serde_json::to_string(&json!({
-                                    "type": "text",
-                                    "text": text,
-                                })) {
-                                    if !lines.is_empty() {
-                                        lines.push('\n');
-                                    }
-                                    lines.push_str(&line);
+                                if let Ok(line) = serde_json::to_string(&json!({"type": "text", "text": text})) {
+                                    lines.push(line);
                                 }
                             }
                         } else if let Some(fc) = part.get("functionCall") {
-                            let name = fc
-                                .get("name")
-                                .and_then(|n| n.as_str())
-                                .unwrap_or("")
-                                .to_string();
+                            let name = fc.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string();
                             let args = fc.get("args").cloned().unwrap_or(json!({}));
                             function_calls.push((name, args));
                         }
                     }
                 }
 
-                // Update finish reason if present.
+                // Update finish reason.
                 if let Some(reason) = chunk
                     .get("candidates")
                     .and_then(|c| c.get(0))
@@ -600,26 +474,14 @@ pub async fn stream(
                     finish_reason = normalize_finish_reason(Some(reason)).to_string();
                 }
 
-                // Update usage if present (use the last one that has it).
+                // Update usage (last chunk wins).
                 if let Some(meta) = chunk.get("usageMetadata") {
-                    usage.input_tokens =
-                        meta.get("promptTokenCount").and_then(|v| v.as_u64()).unwrap_or(0)
-                            as u32;
-                    usage.output_tokens = meta
-                        .get("candidatesTokenCount")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0) as u32;
-                    usage.cache_read_tokens = meta
-                        .get("cachedContentTokenCount")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0) as u32;
+                    usage.input_tokens = meta.get("promptTokenCount").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                    usage.output_tokens = meta.get("candidatesTokenCount").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                    usage.cache_read_tokens = meta.get("cachedContentTokenCount").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
                 }
 
-                if lines.is_empty() {
-                    None
-                } else {
-                    Some(lines)
-                }
+                if lines.is_empty() { None } else { Some(lines.join("\n")) }
             },
             &mut writer,
         )
@@ -631,43 +493,16 @@ pub async fn stream(
 
         // Emit accumulated tool_use events.
         for (i, (name, args)) in function_calls.iter().enumerate() {
-            let line = serde_json::to_string(&json!({
-                "type": "tool_use",
-                "id": format!("gemini_call_{i}"),
-                "name": name,
-                "input": args,
-            }));
-            if let Ok(line) = line {
-                use tokio::io::AsyncWriteExt;
-                let _ = writer.write_all(line.as_bytes()).await;
-                let _ = writer.write_all(b"\n").await;
-            }
-        }
-
-        // Emit done event.
-        let total_ms = start.elapsed().as_millis() as u32;
-        let done = serde_json::to_string(&json!({
-            "type": "done",
-            "content": text_content,
-            "finish_reason": finish_reason,
-            "usage": {
-                "input_tokens": usage.input_tokens,
-                "output_tokens": usage.output_tokens,
-                "cache_read_tokens": usage.cache_read_tokens,
-                "cache_creation_tokens": usage.cache_creation_tokens,
-            },
-            "timing": {
-                "total_ms": total_ms,
-                "time_to_first_token_ms": first_token_ms.unwrap_or(total_ms),
-            },
-        }));
-        if let Ok(line) = done {
-            use tokio::io::AsyncWriteExt;
+            let line = build_tool_use_event(&format!("gemini_call_{i}"), name, args);
             let _ = writer.write_all(line.as_bytes()).await;
             let _ = writer.write_all(b"\n").await;
         }
 
-        // Drop writer so the reader sees EOF.
+        // Emit done event.
+        let done = build_done_event(&text_content, &finish_reason, &usage, timing.total_ms(), timing.ttft_ms());
+        let _ = writer.write_all(done.as_bytes()).await;
+        let _ = writer.write_all(b"\n").await;
+
         drop(writer);
     });
 

@@ -5,6 +5,7 @@ use serde_json::{json, Value};
 use tokio::io::DuplexStream;
 
 use super::sse::SseEvent;
+use super::stream_helpers::{build_done_event, build_start_event, build_tool_use_event};
 use crate::types::{ContentBlock, GenerateResponse, LlmRequest, Timing, Usage};
 use crate::LlmError;
 
@@ -471,7 +472,7 @@ fn handle_message_start(data: &str, state: &mut StreamState) -> Option<String> {
             .unwrap_or(0) as u32;
     }
 
-    Some(json!({ "type": "start", "model": state.model }).to_string())
+    Some(build_start_event(&state.model))
 }
 
 fn handle_content_block_start(data: &str, state: &mut StreamState) -> Option<String> {
@@ -578,15 +579,7 @@ fn handle_content_block_stop(data: &str, state: &mut StreamState) -> Option<Stri
         } else {
             serde_json::from_str(&raw).unwrap_or(json!({}))
         };
-        return Some(
-            json!({
-                "type": "tool_use",
-                "id": tool.id,
-                "name": tool.name,
-                "input": input,
-            })
-            .to_string(),
-        );
+        return Some(build_tool_use_event(&tool.id, &tool.name, &input));
     }
 
     // Check for thinking block completion — emit accumulated signature.
@@ -640,29 +633,12 @@ fn handle_message_delta(data: &str, state: &mut StreamState) {
 }
 
 fn handle_message_stop(state: &mut StreamState) -> String {
-    let elapsed = state.start_time.elapsed();
-    let total_ms = elapsed.as_millis() as u32;
+    let total_ms = state.start_time.elapsed().as_millis() as u32;
     let ttft_ms = state
         .first_token_time
         .map(|t| t.duration_since(state.start_time).as_millis() as u32)
         .unwrap_or(total_ms);
-
-    json!({
-        "type": "done",
-        "content": state.text_content,
-        "finish_reason": state.finish_reason,
-        "usage": {
-            "input_tokens": state.usage.input_tokens,
-            "output_tokens": state.usage.output_tokens,
-            "cache_read_tokens": state.usage.cache_read_tokens,
-            "cache_creation_tokens": state.usage.cache_creation_tokens,
-        },
-        "timing": {
-            "total_ms": total_ms,
-            "time_to_first_token_ms": ttft_ms,
-        },
-    })
-    .to_string()
+    build_done_event(&state.text_content, &state.finish_reason, &state.usage, total_ms, ttft_ms)
 }
 
 // ── Non-streaming ────────────────────────────────────────────────────────

@@ -10,6 +10,7 @@ use crate::types::{GenerateResponse, ImageGenerateResponse, LlmRequest, Timing, 
 use crate::LlmError;
 
 use super::sse::{read_sse_events, SseEvent};
+use super::stream_helpers::{build_done_event, build_start_event, build_tool_use_event, StreamTiming};
 
 // ── Default base URLs ───────────────────────────────────────────────
 
@@ -426,8 +427,9 @@ pub async fn stream(
     let model_fallback = request.model.clone();
 
     tokio::spawn(async move {
-        let start = Instant::now();
-        let mut first_token_ms: Option<u32> = None;
+        use tokio::io::AsyncWriteExt;
+
+        let mut timing = StreamTiming::new();
         let mut text_content = String::new();
         let mut finish_reason: &str = "end_turn";
         let mut usage = Usage::default();
@@ -458,8 +460,7 @@ pub async fn stream(
                         model = m.to_string();
                     }
                     start_sent = true;
-                    let start_event = json!({"type": "start", "model": &model});
-                    return serde_json::to_string(&start_event).ok();
+                    return Some(build_start_event(&model));
                 }
 
                 let choice = chunk.get("choices").and_then(|c| c.get(0));
@@ -475,10 +476,7 @@ pub async fn stream(
                             .and_then(|r| r.as_str())
                         {
                             if !reasoning.is_empty() {
-                                if first_token_ms.is_none() {
-                                    first_token_ms =
-                                        Some(start.elapsed().as_millis() as u32);
-                                }
+                                timing.record_first_token();
                                 let ev = json!({"type": "thinking", "text": reasoning});
                                 if let Ok(line) = serde_json::to_string(&ev) {
                                     lines_out.push(line);
@@ -493,10 +491,7 @@ pub async fn stream(
                         .and_then(|c| c.as_str())
                     {
                         if !content.is_empty() {
-                            if first_token_ms.is_none() {
-                                first_token_ms =
-                                    Some(start.elapsed().as_millis() as u32);
-                            }
+                            timing.record_first_token();
                             text_content.push_str(content);
                             let ev = json!({"type": "text", "text": content});
                             if let Ok(line) = serde_json::to_string(&ev) {
@@ -555,13 +550,7 @@ pub async fn stream(
                     usage = extract_usage(u);
                 }
 
-                // Return the accumulated lines joined by newlines (the SSE
-                // reader will append a trailing \n).
-                if lines_out.is_empty() {
-                    None
-                } else {
-                    Some(lines_out.join("\n"))
-                }
+                if lines_out.is_empty() { None } else { Some(lines_out.join("\n")) }
             },
             &mut writer,
         )
@@ -571,8 +560,14 @@ pub async fn stream(
             tracing::warn!(error = %e, "SSE stream read error");
         }
 
+        // Ensure start was emitted (empty stream edge case).
+        if !start_sent {
+            let line = build_start_event(&model);
+            let _ = writer.write_all(line.as_bytes()).await;
+            let _ = writer.write_all(b"\n").await;
+        }
+
         // Emit accumulated tool calls.
-        let mut tool_lines = Vec::new();
         let mut indices: Vec<u64> = tool_calls.keys().copied().collect();
         indices.sort();
         for idx in indices {
@@ -583,54 +578,16 @@ pub async fn stream(
                 } else {
                     serde_json::from_str(&raw).unwrap_or(json!({}))
                 };
-                let ev = json!({
-                    "type": "tool_use",
-                    "id": id,
-                    "name": name,
-                    "input": input,
-                });
-                if let Ok(line) = serde_json::to_string(&ev) {
-                    tool_lines.push(line);
-                }
+                let line = build_tool_use_event(&id, &name, &input);
+                let _ = writer.write_all(line.as_bytes()).await;
+                let _ = writer.write_all(b"\n").await;
             }
-        }
-
-        // Ensure start was emitted.
-        if !start_sent {
-            let start_event = json!({"type": "start", "model": &model});
-            if let Ok(line) = serde_json::to_string(&start_event) {
-                let _ = tokio::io::AsyncWriteExt::write_all(&mut writer, line.as_bytes()).await;
-                let _ = tokio::io::AsyncWriteExt::write_all(&mut writer, b"\n").await;
-            }
-        }
-
-        // Write tool_use events.
-        for line in &tool_lines {
-            let _ = tokio::io::AsyncWriteExt::write_all(&mut writer, line.as_bytes()).await;
-            let _ = tokio::io::AsyncWriteExt::write_all(&mut writer, b"\n").await;
         }
 
         // Done event.
-        let total_ms = start.elapsed().as_millis() as u32;
-        let done = json!({
-            "type": "done",
-            "content": text_content,
-            "finish_reason": finish_reason,
-            "usage": {
-                "input_tokens": usage.input_tokens,
-                "output_tokens": usage.output_tokens,
-                "cache_read_tokens": usage.cache_read_tokens,
-                "cache_creation_tokens": usage.cache_creation_tokens,
-            },
-            "timing": {
-                "total_ms": total_ms,
-                "time_to_first_token_ms": first_token_ms.unwrap_or(total_ms),
-            },
-        });
-        if let Ok(done_line) = serde_json::to_string(&done) {
-            let _ = tokio::io::AsyncWriteExt::write_all(&mut writer, done_line.as_bytes()).await;
-            let _ = tokio::io::AsyncWriteExt::write_all(&mut writer, b"\n").await;
-        }
+        let done = build_done_event(&text_content, finish_reason, &usage, timing.total_ms(), timing.ttft_ms());
+        let _ = writer.write_all(done.as_bytes()).await;
+        let _ = writer.write_all(b"\n").await;
 
         // Drop writer to signal EOF to the reader half.
         drop(writer);
