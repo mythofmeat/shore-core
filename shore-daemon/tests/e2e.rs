@@ -237,6 +237,7 @@ async fn e2e_conversation_milestone() {
         compaction_occurred: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         autonomy,
         notifier: shore_daemon::notifications::NotificationService::new(Default::default()),
+        generation_handle: None,
     };
 
     // Spawn message handler.
@@ -670,6 +671,7 @@ impl E2EHarness {
             compaction_occurred: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             autonomy,
             notifier: shore_daemon::notifications::NotificationService::new(Default::default()),
+            generation_handle: None,
         };
 
         let handler_handle = tokio::spawn(async move {

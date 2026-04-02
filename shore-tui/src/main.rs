@@ -544,8 +544,10 @@ fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<ConnCommand> 
         ServerMessage::StreamChunk(chunk) => {
             if chunk.content_type == "thinking" {
                 app.stream.thinking.push_str(&chunk.text);
+                app.stream.phase = "thinking".into();
             } else {
                 app.stream.text.push_str(&chunk.text);
+                app.stream.phase = "responding".into();
             }
             if app.auto_scroll {
                 app.scroll_to_bottom();
@@ -553,6 +555,16 @@ fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<ConnCommand> 
         }
 
         ServerMessage::StreamEnd(end) => {
+            if end.finish_reason == "cancelled" {
+                app.stream.reset();
+                app.set_status("generation cancelled");
+                return vec![ConnCommand::Send(ClientMessage::Command(Command {
+                    rid: None,
+                    name: "log".into(),
+                    args: serde_json::json!({}),
+                }))];
+            }
+
             app.model = end.metadata.model.clone();
             app.tokens = end.metadata.tokens.clone();
 
@@ -563,7 +575,16 @@ fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<ConnCommand> 
                 metadata: Some(end.metadata),
             });
 
-            app.stream.reset();
+            if end.finish_reason == "tool_use" {
+                // Tool loop in progress — keep stream active, clear buffers
+                app.stream.text.clear();
+                app.stream.thinking.clear();
+                app.stream.thinking_collapsed = false;
+                app.stream.phase = "tool_use".into();
+                app.stream.tool_name = None;
+            } else {
+                app.stream.reset();
+            }
 
             // Re-request log to guard against stale History broadcasts
             // (e.g. from background compaction) overwriting this response.
@@ -642,20 +663,30 @@ fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<ConnCommand> 
         }
 
         ServerMessage::ToolCall(tc) => {
+            app.stream.active = true;
+            app.stream.phase = "tool_use".into();
+            app.stream.tool_name = Some(tc.tool_name.clone());
             app.entries.push(ConversationEntry::ToolCall {
                 tool_id: tc.tool_id,
                 tool_name: tc.tool_name,
                 input: tc.input,
             });
+            if app.auto_scroll {
+                app.scroll_to_bottom();
+            }
         }
 
         ServerMessage::ToolResult(tr) => {
+            app.stream.tool_name = None;
             app.entries.push(ConversationEntry::ToolResult {
                 tool_id: tr.tool_id,
                 tool_name: tr.tool_name,
                 output: tr.output,
                 is_error: tr.is_error,
             });
+            if app.auto_scroll {
+                app.scroll_to_bottom();
+            }
         }
 
         ServerMessage::SendImage(img) => {
@@ -759,6 +790,13 @@ fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<ConnCommand> 
                     if app.auto_scroll {
                         app.scroll_to_bottom();
                     }
+                }
+                "delete" => {
+                    if let Some(deleted) = co.data.get("deleted").and_then(|v| v.as_array()) {
+                        let count = deleted.len();
+                        app.set_status(format!("deleted {count} message(s)"));
+                    }
+                    // Log re-fetch follows automatically (sent as SendMulti)
                 }
                 "compact" | "collate" => {
                     let status = co.data.get("status")

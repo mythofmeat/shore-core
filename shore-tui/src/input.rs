@@ -1,5 +1,5 @@
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
-use shore_protocol::client_msg::{ClientMessage, ClientMessageBody, Command, Regen};
+use shore_protocol::client_msg::{Cancel, ClientMessage, ClientMessageBody, Command, Regen};
 
 use crate::app::{App, InputMode};
 use crate::connection::ConnCommand;
@@ -35,7 +35,13 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
 
     // Global shortcuts (work in any mode)
     match (key.modifiers, key.code) {
-        (KeyModifiers::CONTROL, KeyCode::Char('c')) => return Action::Quit,
+        (KeyModifiers::CONTROL, KeyCode::Char('c')) => {
+            if app.stream.active {
+                app.stream.reset();
+                return Action::Send(ConnCommand::Send(ClientMessage::Cancel(Cancel {})));
+            }
+            return Action::Quit;
+        }
         (KeyModifiers::CONTROL, KeyCode::Char('q')) => return Action::Quit,
         _ => {}
     }
@@ -154,9 +160,13 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) -> Action {
 
 fn handle_insert_mode(app: &mut App, key: KeyEvent) -> Action {
     match (key.modifiers, key.code) {
-        // Exit insert mode
+        // Exit insert mode (cancel generation if active)
         (KeyModifiers::NONE, KeyCode::Esc) => {
             app.input.mode = InputMode::Normal;
+            if app.stream.active {
+                app.stream.reset();
+                return Action::Send(ConnCommand::Send(ClientMessage::Cancel(Cancel {})));
+            }
             Action::Redraw
         }
 
@@ -198,6 +208,16 @@ fn handle_insert_mode(app: &mut App, key: KeyEvent) -> Action {
         (KeyModifiers::SHIFT, KeyCode::Enter)
         | (KeyModifiers::ALT, KeyCode::Enter) => {
             app.input.insert_newline();
+            Action::Redraw
+        }
+
+        // Word deletion
+        (KeyModifiers::ALT, KeyCode::Backspace) => {
+            app.input.backspace_word();
+            Action::Redraw
+        }
+        (KeyModifiers::ALT, KeyCode::Delete) => {
+            app.input.delete_word();
             Action::Redraw
         }
 
@@ -398,21 +418,6 @@ fn parse_command(app: &mut App, input: &str) -> Action {
             })))
         }
 
-        "log" => {
-            let args = if arg.is_empty() {
-                serde_json::json!({})
-            } else if let Ok(n) = arg.parse::<u64>() {
-                serde_json::json!({ "count": n })
-            } else {
-                serde_json::json!({})
-            };
-            Action::Send(ConnCommand::Send(ClientMessage::Command(Command {
-                rid: None,
-                name: "log".into(),
-                args,
-            })))
-        }
-
         "memory" => {
             if arg.is_empty() {
                 app.set_status("usage: :memory <query>");
@@ -434,12 +439,31 @@ fn parse_command(app: &mut App, input: &str) -> Action {
             })))
         }
 
-        "config" => {
-            Action::Send(ConnCommand::Send(ClientMessage::Command(Command {
-                rid: None,
-                name: "config".into(),
-                args: serde_json::json!({}),
-            })))
+        "delete" => {
+            if arg.is_empty() {
+                app.set_status("usage: :delete <ref>  (e.g. last, -1, -2)");
+                Action::Redraw
+            } else {
+                // Support space-separated refs or a single ref
+                let refs: Vec<&str> = arg.split_whitespace().collect();
+                let args = if refs.len() == 1 {
+                    serde_json::json!({ "refs": refs[0] })
+                } else {
+                    serde_json::json!({ "refs": refs })
+                };
+                Action::SendMulti(vec![
+                    ConnCommand::Send(ClientMessage::Command(Command {
+                        rid: None,
+                        name: "delete".into(),
+                        args,
+                    })),
+                    ConnCommand::Send(ClientMessage::Command(Command {
+                        rid: None,
+                        name: "log".into(),
+                        args: serde_json::json!({}),
+                    })),
+                ])
+            }
         }
 
         "regen" => {
@@ -492,18 +516,6 @@ fn parse_command(app: &mut App, input: &str) -> Action {
             }
         }
 
-        "diag" | "diagnostics" => {
-            let args = if let Ok(n) = arg.parse::<u64>() {
-                serde_json::json!({ "count": n })
-            } else {
-                serde_json::json!({})
-            };
-            Action::Send(ConnCommand::Send(ClientMessage::Command(Command {
-                rid: None,
-                name: "diagnostics".into(),
-                args,
-            })))
-        }
 
         _ => {
             app.set_status(format!("unknown command: {cmd}"));

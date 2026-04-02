@@ -48,6 +48,8 @@ pub struct StreamState {
     pub thinking: String,
     pub thinking_collapsed: bool,
     pub phase: String,
+    /// Name of the tool currently being called/executed.
+    pub tool_name: Option<String>,
 }
 
 impl StreamState {
@@ -58,6 +60,7 @@ impl StreamState {
         self.thinking.clear();
         self.thinking_collapsed = false;
         self.phase.clear();
+        self.tool_name = None;
     }
 }
 
@@ -124,6 +127,31 @@ impl InputState {
         }
     }
 
+    pub fn backspace_word(&mut self) {
+        if self.cursor == 0 {
+            return;
+        }
+        let before = &self.text[..self.cursor];
+        // Skip trailing whitespace, then skip the word
+        let after_ws = before.trim_end_matches(|c: char| c.is_whitespace());
+        let after_word = after_ws.trim_end_matches(|c: char| !c.is_whitespace());
+        let new_cursor = after_word.len();
+        self.text.drain(new_cursor..self.cursor);
+        self.cursor = new_cursor;
+    }
+
+    pub fn delete_word(&mut self) {
+        if self.cursor >= self.text.len() {
+            return;
+        }
+        let after = &self.text[self.cursor..];
+        // Skip leading whitespace, then skip the word
+        let after_ws = after.trim_start_matches(|c: char| c.is_whitespace());
+        let after_word = after_ws.trim_start_matches(|c: char| !c.is_whitespace());
+        let delete_len = after.len() - after_word.len();
+        self.text.drain(self.cursor..self.cursor + delete_len);
+    }
+
     pub fn move_left(&mut self) {
         if self.cursor > 0 {
             self.cursor = self.text[..self.cursor]
@@ -186,7 +214,7 @@ impl InputState {
                 if w == 0 {
                     1
                 } else {
-                    (w + content_width - 1) / content_width // ceil division
+                    w / content_width + 1 // floor + 1: extra line for cursor at boundary
                 }
             })
             .sum::<usize>()
@@ -342,8 +370,8 @@ impl App {
 
     /// Static command names for completion.
     const COMMANDS: &'static [&'static str] = &[
-        "character", "compact", "config", "diag", "diagnostics",
-        "help", "image", "log", "memory", "model", "quit", "regen", "status",
+        "character", "compact", "delete",
+        "help", "image", "memory", "model", "quit", "regen", "status",
     ];
 
     /// Update completion candidates based on current command input.

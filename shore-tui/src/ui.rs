@@ -390,16 +390,40 @@ fn draw_conversation(frame: &mut Frame, app: &mut App, area: Rect) {
                     .add_modifier(Modifier::BOLD),
             )));
             lines.push(Line::from(""));
-            lines.push(Line::from(vec![
-                Span::raw("  "),
-                Span::styled(
-                    "···",
-                    Style::default()
-                        .fg(Color::DarkGray)
-                        .add_modifier(Modifier::ITALIC),
-                ),
-            ]));
-            lines.push(Line::from("")); // match trailing blank of finalized entries
+
+            // Phase-aware indicator
+            let indicator_style = Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::ITALIC);
+            let indicator = if !app.stream.thinking.is_empty() {
+                "thinking ···"
+            } else if let Some(ref tool) = app.stream.tool_name {
+                // Tool call/execution in progress — show inline below
+                lines.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled("▶ ", Style::default().fg(Color::Magenta)),
+                    Span::styled(
+                        tool.clone(),
+                        Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(" ···", indicator_style),
+                ]));
+                lines.push(Line::from(""));
+                // Skip the default indicator push below
+                ""
+            } else if app.stream.phase == "tool_use" {
+                "waiting for tool ···"
+            } else {
+                "···"
+            };
+
+            if !indicator.is_empty() {
+                lines.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(indicator.to_string(), indicator_style),
+                ]));
+                lines.push(Line::from(""));
+            }
         }
     }
 
@@ -678,7 +702,7 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         Line::from(Span::styled("    :model          switch model", Style::default().fg(Color::White))),
         Line::from(Span::styled("    :image          attach image (picker)", Style::default().fg(Color::White))),
         Line::from(Span::styled("    :quit           exit", Style::default().fg(Color::White))),
-        Line::from(Span::styled("    :log  :memory  :compact  :config  :diag", Style::default().fg(Color::DarkGray))),
+        Line::from(Span::styled("    :memory  :compact  :regen  :status", Style::default().fg(Color::DarkGray))),
         Line::from(""),
         Line::from(Span::styled("  Press any key to close", Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC))),
         Line::from(""),
