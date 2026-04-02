@@ -112,6 +112,8 @@ pub struct MessageHandler {
     pub compaction_occurred: Arc<std::sync::atomic::AtomicBool>,
     pub autonomy: AutonomyManager,
     pub notifier: NotificationService,
+    /// Handle to the active generation task, if any. Used for cancellation.
+    pub generation_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -189,6 +191,31 @@ impl MessageHandler {
                     let _ = self.push_tx.send(result);
                 }
                 RoutedMessage::Engine { msg, character } => {
+                    // Handle cancellation: abort the active generation task.
+                    if matches!(msg, ClientMessage::Cancel(_)) {
+                        if let Some(handle) = self.generation_handle.take() {
+                            info!("Cancelling active generation");
+                            handle.abort();
+                            // Send a minimal StreamEnd so clients know to reset
+                            let _ = self.push_tx.send(ServerMessage::StreamEnd(
+                                shore_protocol::server_msg::StreamEnd {
+                                    content: String::new(),
+                                    metadata: shore_protocol::types::StreamMetadata {
+                                        tokens: shore_protocol::types::TokenCounts {
+                                            input: 0, output: 0, cache_read: 0, cache_write: 0,
+                                        },
+                                        timing: shore_protocol::types::TimingInfo {
+                                            total_ms: 0, ttft_ms: 0,
+                                        },
+                                        model: String::new(),
+                                    },
+                                    finish_reason: "cancelled".into(),
+                                },
+                            ));
+                        }
+                        continue;
+                    }
+
                     // Resolve char_name and effective config with a brief registry lock.
                     // Done here (before spawning) so the handler can report resolution
                     // errors synchronously and the task has an owned config snapshot.
@@ -231,7 +258,7 @@ impl MessageHandler {
                     let push_tx = self.push_tx.clone();
                     let notifier = self.notifier.clone();
 
-                    tokio::spawn(async move {
+                    self.generation_handle = Some(tokio::spawn(async move {
                         let notify_name = char_name.clone();
                         if let Err(e) = handle_generation(
                             gen, body, regen, char_name, rid,
@@ -245,7 +272,7 @@ impl MessageHandler {
                             }));
                             notifier.notify(NotificationEvent::Error, &format!("Shore — {notify_name}"), &err_msg);
                         }
-                    });
+                    }));
                 }
             }
         }
@@ -947,6 +974,7 @@ mod tests {
             compaction_occurred: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             autonomy,
             notifier: NotificationService::new(Default::default()),
+            generation_handle: None,
         };
 
         (handler, push_rx)

@@ -390,7 +390,7 @@ where
             });
             write_message(writer, &err).await?;
         }
-        ClientMessage::Message(_) | ClientMessage::Regen(_) => {
+        ClientMessage::Message(_) | ClientMessage::Regen(_) | ClientMessage::Cancel(_) => {
             info!(client_id, msg_type = %msg_type_name(&msg), "Routing to engine");
             route_tx
                 .send(RoutedMessage::Engine {
@@ -458,6 +458,7 @@ fn msg_type_name(msg: &ClientMessage) -> &'static str {
         ClientMessage::Message(_) => "message",
         ClientMessage::Regen(_) => "regen",
         ClientMessage::Command(_) => "command",
+        ClientMessage::Cancel(_) => "cancel",
     }
 }
 

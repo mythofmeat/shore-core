@@ -424,6 +424,16 @@ fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<ConnCommand> 
         }
 
         ServerMessage::StreamEnd(end) => {
+            if end.finish_reason == "cancelled" {
+                app.stream.reset();
+                app.set_status("generation cancelled");
+                return vec![ConnCommand::Send(ClientMessage::Command(Command {
+                    rid: None,
+                    name: "log".into(),
+                    args: serde_json::json!({}),
+                }))];
+            }
+
             app.model = end.metadata.model.clone();
             app.tokens = end.metadata.tokens.clone();
 

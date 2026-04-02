@@ -1,5 +1,5 @@
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
-use shore_protocol::client_msg::{ClientMessage, ClientMessageBody, Command, Regen};
+use shore_protocol::client_msg::{Cancel, ClientMessage, ClientMessageBody, Command, Regen};
 
 use crate::app::{App, InputMode};
 use crate::connection::ConnCommand;
@@ -33,7 +33,13 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
 
     // Global shortcuts (work in any mode)
     match (key.modifiers, key.code) {
-        (KeyModifiers::CONTROL, KeyCode::Char('c')) => return Action::Quit,
+        (KeyModifiers::CONTROL, KeyCode::Char('c')) => {
+            if app.stream.active {
+                app.stream.reset();
+                return Action::Send(ConnCommand::Send(ClientMessage::Cancel(Cancel {})));
+            }
+            return Action::Quit;
+        }
         (KeyModifiers::CONTROL, KeyCode::Char('q')) => return Action::Quit,
         _ => {}
     }
@@ -152,9 +158,13 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) -> Action {
 
 fn handle_insert_mode(app: &mut App, key: KeyEvent) -> Action {
     match (key.modifiers, key.code) {
-        // Exit insert mode
+        // Exit insert mode (cancel generation if active)
         (KeyModifiers::NONE, KeyCode::Esc) => {
             app.input.mode = InputMode::Normal;
+            if app.stream.active {
+                app.stream.reset();
+                return Action::Send(ConnCommand::Send(ClientMessage::Cancel(Cancel {})));
+            }
             Action::Redraw
         }
 

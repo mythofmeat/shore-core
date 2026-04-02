@@ -206,6 +206,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         compaction_occurred,
         autonomy: autonomy.clone(),
         notifier,
+        generation_handle: None,
     };
 
     // Spawn message handler as a background task.
