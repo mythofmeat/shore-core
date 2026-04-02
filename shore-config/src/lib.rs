@@ -611,8 +611,8 @@ model_id = "claude-opus-4-6"
         assert!(loaded.app.behavior.autonomy.enabled);
         assert!(!loaded.app.behavior.autonomy.interiority.enabled);
         assert_eq!(loaded.app.behavior.autonomy.interiority.interval_secs, 1800);
-        assert!(!loaded.app.behavior.tool_use.tools.roll_dice);
-        assert!(loaded.app.behavior.tool_use.tools.memory);
+        assert!(!loaded.app.behavior.tool_use.tools.roll_dice());
+        assert!(loaded.app.behavior.tool_use.tools.memory());
         assert!(!loaded.app.advanced.cache_invalidation_warnings);
         assert_eq!(loaded.app.advanced.max_retries, Some(5));
 

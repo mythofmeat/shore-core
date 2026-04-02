@@ -423,60 +423,52 @@ fn parse_category(
 
 // ── Provider defaults ───────────────────────────────────────────────────
 
+/// Shared baseline for all known providers.
+fn base_provider_defaults() -> ProviderConfig {
+    ProviderConfig {
+        temperature: Some(1.0),
+        max_tokens: Some(8192),
+        max_context_tokens: Some(200_000),
+        ..Default::default()
+    }
+}
+
 /// Hardcoded provider defaults (ported from V1 `PROVIDER_DEFAULTS`).
 fn hardcoded_defaults(provider_key: &str) -> ProviderConfig {
     match provider_key {
         "anthropic" => ProviderConfig {
             sdk: Some(Sdk::Anthropic),
             api_key_env: Some("ANTHROPIC_API_KEY".into()),
-            temperature: Some(1.0),
-            max_tokens: Some(8192),
-            max_context_tokens: Some(200_000),
-            ..Default::default()
+            ..base_provider_defaults()
         },
         "openrouter" => ProviderConfig {
             sdk: Some(Sdk::Openai),
             api_key_env: Some("OPENROUTER_API_KEY".into()),
             base_url: Some("https://openrouter.ai/api/v1".into()),
-            temperature: Some(1.0),
-            max_tokens: Some(8192),
-            max_context_tokens: Some(200_000),
-            ..Default::default()
+            ..base_provider_defaults()
         },
         "deepseek" => ProviderConfig {
             sdk: Some(Sdk::Deepseek),
-            base_url: Some("https://api.deepseek.com/v1".into()),
             api_key_env: Some("DEEPSEEK_API_KEY".into()),
-            temperature: Some(1.0),
-            max_tokens: Some(8192),
-            max_context_tokens: Some(200_000),
-            ..Default::default()
+            base_url: Some("https://api.deepseek.com/v1".into()),
+            ..base_provider_defaults()
         },
         "gemini" => ProviderConfig {
             sdk: Some(Sdk::Gemini),
             api_key_env: Some("GEMINI_API_KEY".into()),
-            temperature: Some(1.0),
-            max_tokens: Some(8192),
-            max_context_tokens: Some(200_000),
-            ..Default::default()
+            ..base_provider_defaults()
         },
         "xai" => ProviderConfig {
             sdk: Some(Sdk::Openai),
-            base_url: Some("https://api.x.ai/v1".into()),
             api_key_env: Some("XAI_API_KEY".into()),
-            temperature: Some(1.0),
-            max_tokens: Some(8192),
-            max_context_tokens: Some(200_000),
-            ..Default::default()
+            base_url: Some("https://api.x.ai/v1".into()),
+            ..base_provider_defaults()
         },
         "zhipuai" => ProviderConfig {
             sdk: Some(Sdk::Zhipuai),
-            base_url: Some("https://open.bigmodel.cn/api/paas/v4".into()),
             api_key_env: Some("ZAI_API_KEY".into()),
-            temperature: Some(1.0),
-            max_tokens: Some(8192),
-            max_context_tokens: Some(200_000),
-            ..Default::default()
+            base_url: Some("https://open.bigmodel.cn/api/paas/v4".into()),
+            ..base_provider_defaults()
         },
         _ => ProviderConfig::default(),
     }

@@ -296,87 +296,39 @@ impl Default for ToolUseConfig {
     }
 }
 
-/// Per-tool enable/disable toggles. All default to true.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct ToolToggles {
-    #[serde(default = "default_true")]
-    pub memory: bool,
-    #[serde(default = "default_true")]
-    pub send_image: bool,
-    #[serde(default = "default_true")]
-    pub list_images: bool,
-    #[serde(default = "default_true")]
-    pub recall_image: bool,
-    #[serde(default = "default_true")]
-    pub generate_image: bool,
-    #[serde(default = "default_true")]
-    pub remember_image: bool,
-    #[serde(default = "default_true")]
-    pub web_search: bool,
-    #[serde(default = "default_true")]
-    pub fetch_url: bool,
-    #[serde(default = "default_true")]
-    pub check_time: bool,
-    #[serde(default = "default_true")]
-    pub roll_dice: bool,
-    #[serde(default = "default_true")]
-    pub activity_heatmap: bool,
-    #[serde(default = "default_true")]
-    pub scratchpad_list: bool,
-    #[serde(default = "default_true")]
-    pub scratchpad_read: bool,
-    #[serde(default = "default_true")]
-    pub scratchpad_write: bool,
-    #[serde(default = "default_true")]
-    pub scratchpad_delete: bool,
-}
-
-impl Default for ToolToggles {
-    fn default() -> Self {
-        Self {
-            memory: true,
-            send_image: true,
-            list_images: true,
-            recall_image: true,
-            generate_image: true,
-            remember_image: true,
-            web_search: true,
-            fetch_url: true,
-            check_time: true,
-            roll_dice: true,
-            activity_heatmap: true,
-            scratchpad_list: true,
-            scratchpad_read: true,
-            scratchpad_write: true,
-            scratchpad_delete: true,
-        }
-    }
-}
+/// Per-tool enable/disable toggles. All default to enabled.
+///
+/// Stored as a map so new tool names can be toggled in config without a code change.
+/// Any key present in the map overrides the default (enabled). Absent keys default to enabled.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(transparent)]
+pub struct ToolToggles(BTreeMap<String, bool>);
 
 impl ToolToggles {
-    /// Check whether a tool is enabled by name.
+    /// Check whether a tool is enabled by name. Absent keys default to enabled.
     pub fn is_enabled(&self, name: &str) -> bool {
-        match name {
-            "memory" => self.memory,
-            "send_image" => self.send_image,
-            "list_images" => self.list_images,
-            "recall_image" => self.recall_image,
-            "generate_image" => self.generate_image,
-            "remember_image" => self.remember_image,
-            "web_search" => self.web_search,
-            "fetch_url" => self.fetch_url,
-            "check_time" => self.check_time,
-            "roll_dice" => self.roll_dice,
-            "activity_heatmap" => self.activity_heatmap,
-            "scratchpad_list" => self.scratchpad_list,
-            "scratchpad_read" => self.scratchpad_read,
-            "scratchpad_write" => self.scratchpad_write,
-            "scratchpad_delete" => self.scratchpad_delete,
-            // Unknown tools are enabled by default.
-            _ => true,
-        }
+        self.0.get(name).copied().unwrap_or(true)
     }
+
+    pub fn set(&mut self, tool: &str, enabled: bool) {
+        self.0.insert(tool.to_string(), enabled);
+    }
+
+    pub fn memory(&self) -> bool { self.is_enabled("memory") }
+    pub fn send_image(&self) -> bool { self.is_enabled("send_image") }
+    pub fn list_images(&self) -> bool { self.is_enabled("list_images") }
+    pub fn recall_image(&self) -> bool { self.is_enabled("recall_image") }
+    pub fn generate_image(&self) -> bool { self.is_enabled("generate_image") }
+    pub fn remember_image(&self) -> bool { self.is_enabled("remember_image") }
+    pub fn web_search(&self) -> bool { self.is_enabled("web_search") }
+    pub fn fetch_url(&self) -> bool { self.is_enabled("fetch_url") }
+    pub fn check_time(&self) -> bool { self.is_enabled("check_time") }
+    pub fn roll_dice(&self) -> bool { self.is_enabled("roll_dice") }
+    pub fn activity_heatmap(&self) -> bool { self.is_enabled("activity_heatmap") }
+    pub fn scratchpad_list(&self) -> bool { self.is_enabled("scratchpad_list") }
+    pub fn scratchpad_read(&self) -> bool { self.is_enabled("scratchpad_read") }
+    pub fn scratchpad_write(&self) -> bool { self.is_enabled("scratchpad_write") }
+    pub fn scratchpad_delete(&self) -> bool { self.is_enabled("scratchpad_delete") }
 }
 
 // ── [behavior.tool_use.search] ───────────────────────────────────────────
@@ -839,9 +791,9 @@ roll_dice = false
 web_search = false
 "#;
         let config: AppConfig = toml::from_str(toml_str).unwrap();
-        assert!(!config.behavior.tool_use.tools.roll_dice);
-        assert!(!config.behavior.tool_use.tools.web_search);
-        assert!(config.behavior.tool_use.tools.memory);
+        assert!(!config.behavior.tool_use.tools.roll_dice());
+        assert!(!config.behavior.tool_use.tools.web_search());
+        assert!(config.behavior.tool_use.tools.memory());
         assert!(config.behavior.tool_use.tools.is_enabled("memory"));
         assert!(!config.behavior.tool_use.tools.is_enabled("roll_dice"));
     }
