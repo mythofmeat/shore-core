@@ -6,7 +6,7 @@ use shore_daemon::autonomy::manager::AutonomyManager;
 use shore_daemon::characters::CharacterRegistry;
 use shore_daemon::commands::{CommandContext, SessionTokens};
 use shore_diagnostics::Diagnostics;
-use shore_config::{load_config, load_character_definition, resolve_prompt_template, resolve_user_definition, LoadedConfig};
+use shore_config::{load_config, load_character_config, load_character_definition, resolve_prompt_template, resolve_user_definition, LoadedConfig};
 use shore_daemon::handler::MessageHandler;
 use shore_llm_client::LlmClient;
 use shore_daemon::notifications::NotificationService;
@@ -324,24 +324,30 @@ async fn run_compaction(
     let db = MemoryDB::open(&db_path)
         .map_err(|e| format!("Failed to open memory DB: {e}"))?;
 
+    // Resolve effective config: merge per-character overrides over global.
+    let effective = load_character_config(config, character)
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| config.clone());
+
     // Resolve prompt template.
-    let prompt_template = resolve_prompt_template(&config.dirs.config, character, "compact.md")
+    let prompt_template = resolve_prompt_template(&effective.dirs.config, character, "compact.md")
         .unwrap_or_else(|| DEFAULT_COMPACT_PROMPT.to_string());
 
-    // Resolve model: use defaults.model for background compaction.
-    let model = config
+    // Resolve model from effective (character-merged) config.
+    let model = effective
         .app
         .defaults
         .model
         .as_deref()
-        .and_then(|name| config.models.find_model(name).ok())
+        .and_then(|name| effective.models.find_model(name).ok())
         .ok_or("No default model configured for background compaction")?
         .clone();
 
     // Resolve embedding config.
     let embed_config = resolve_embed_config(
-        config.app.defaults.embedding.as_deref(),
-        &config.models.embedding,
+        effective.app.defaults.embedding.as_deref(),
+        &effective.models.embedding,
     )?;
 
     // Open vector store.
@@ -354,7 +360,7 @@ async fn run_compaction(
     let indexer = RealVectorIndexer::new(store, llm_client.clone(), embed_config);
     let conv_mgr = RealConversationManager::new(&character_dir);
 
-    let app_compaction = &config.app.memory.compaction;
+    let app_compaction = &effective.app.memory.compaction;
     let mgr_config = CompactionConfig {
         idle_trigger_minutes: app_compaction.idle_trigger_minutes as u64,
         min_turns: app_compaction.min_turns,
@@ -367,7 +373,7 @@ async fn run_compaction(
     let recap_path = character_dir.join("memory").join("recap.md");
     let existing_recap = tokio::fs::read_to_string(&recap_path).await.ok();
 
-    let display_name = config.app.defaults.resolve_display_name();
+    let display_name = effective.app.defaults.resolve_display_name();
     let outcome = mgr
         .compact(
             character,
