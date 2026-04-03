@@ -696,6 +696,100 @@ mod tests {
     }
 
     #[test]
+    fn estimate_tokens_uses_byte_length_not_char_count() {
+        // ASCII: 1 byte per char → 5 bytes / 4 = 2 tokens
+        assert_eq!(estimate_tokens("Hello"), 2);
+
+        // CJK: 3 bytes per char → 15 bytes / 4 = 4 tokens (not 5/4 = 2)
+        let cjk = "日本語の文"; // 5 chars, 15 bytes
+        assert_eq!(cjk.len(), 15);
+        assert_eq!(estimate_tokens(cjk), 4);
+
+        // Emoji: 4 bytes each → 16 bytes / 4 = 4 tokens
+        let emoji = "😀😁😂🤣"; // 4 chars, 16 bytes
+        assert_eq!(emoji.len(), 16);
+        assert_eq!(estimate_tokens(emoji), 4);
+    }
+
+    #[test]
+    fn estimate_tokens_short_words_undercount() {
+        // Real tokenizers often produce 1 token per short word + whitespace.
+        // "I am a" → 3 real tokens, but heuristic says 6 bytes / 4 = 2.
+        // This documents the known under-counting for short-word text.
+        let short_words = "I am a";
+        assert_eq!(estimate_tokens(short_words), 2); // real ≈ 3
+    }
+
+    #[test]
+    fn estimate_tokens_json_payload() {
+        // JSON has many structural chars (braces, quotes, colons) that
+        // tokenizers often group differently than plain prose.
+        let json = r#"{"name":"test","values":[1,2,3],"nested":{"key":"val"}}"#;
+        assert_eq!(estimate_tokens(json), json.len().div_ceil(4));
+    }
+
+    #[test]
+    fn estimate_tokens_code_block() {
+        // Code with identifiers, operators, and indentation.
+        let code = "fn estimate_tokens(text: &str) -> usize {\n    text.len().div_ceil(4)\n}";
+        assert_eq!(estimate_tokens(code), code.len().div_ceil(4));
+    }
+
+    #[test]
+    fn estimate_message_tokens_redacted_thinking_is_zero() {
+        let msg = Message {
+            msg_id: "m1".into(),
+            role: Role::Assistant,
+            content: String::new(),
+            images: vec![],
+            content_blocks: vec![ContentBlock::RedactedThinking {
+                data: "opaque".into(),
+            }],
+            alt_index: None,
+            alt_count: None,
+            timestamp: "2026-01-01T00:00:00Z".into(),
+        };
+        assert_eq!(estimate_message_tokens(&msg), 0);
+    }
+
+    #[test]
+    fn estimate_message_tokens_mixed_blocks_sums_all() {
+        let msg = Message {
+            msg_id: "m1".into(),
+            role: Role::Assistant,
+            content: String::new(),
+            images: vec![],
+            content_blocks: vec![
+                ContentBlock::Thinking {
+                    thinking: "A".repeat(40),
+                    signature: None,
+                },
+                ContentBlock::Text {
+                    text: "B".repeat(80),
+                },
+                ContentBlock::ToolUse {
+                    id: "tu1".into(),
+                    name: "check_time".into(),
+                    input: serde_json::json!({"tz": "UTC"}),
+                },
+                ContentBlock::RedactedThinking {
+                    data: "ignored".into(),
+                },
+            ],
+            alt_index: None,
+            alt_count: None,
+            timestamp: "2026-01-01T00:00:00Z".into(),
+        };
+        let tokens = estimate_message_tokens(&msg);
+        // 40/4 + 80/4 + tool_name + tool_input + 0 (redacted)
+        let tool_input_str = serde_json::json!({"tz": "UTC"}).to_string();
+        let expected = 10 + 20
+            + "check_time".len().div_ceil(4)
+            + tool_input_str.len().div_ceil(4);
+        assert_eq!(tokens, expected);
+    }
+
+    #[test]
     fn estimate_message_tokens_uses_content_blocks_when_present() {
         let msg = Message {
             msg_id: "m1".into(),
