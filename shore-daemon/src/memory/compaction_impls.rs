@@ -632,4 +632,143 @@ mod tests {
         assert_eq!(manifest.segments[1].file, "0002.jsonl");
         assert_eq!(manifest.total_compacted_messages, 6);
     }
+
+    #[test]
+    fn archive_with_malformed_jsonl_lines() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+
+        let valid1 = r#"{"msg_id":"m1","role":"User","content":"hello","images":[],"timestamp":"t1"}"#;
+        let garbage = r#"corrupted{{{not valid json at all"#;
+        let valid2 = r#"{"msg_id":"m2","role":"User","content":"bye","images":[],"timestamp":"t2"}"#;
+        std::fs::write(
+            dir.join("active.jsonl"),
+            format!("{valid1}\n{garbage}\n{valid2}\n"),
+        )
+        .unwrap();
+
+        let mgr = RealConversationManager::new(dir);
+        let new_id = mgr
+            .archive_and_retain(
+                "conv",
+                RetentionParams {
+                    keep_last_n: 1,
+                    recap: None,
+                },
+            )
+            .unwrap();
+        assert!(!new_id.is_empty());
+
+        // Segment should contain the first 2 lines (valid + garbage).
+        let seg = std::fs::read_to_string(dir.join("segments/0001.jsonl")).unwrap();
+        assert!(seg.contains("m1"));
+        assert!(seg.contains("corrupted{{{"));
+        assert!(!seg.contains("m2"));
+
+        // active.jsonl retains only the last valid message.
+        let active = std::fs::read_to_string(dir.join("active.jsonl")).unwrap();
+        assert!(active.contains("m2"));
+        assert!(!active.contains("m1"));
+
+        // Manifest reflects line count (not JSON validity).
+        let manifest: CompactionManifest = serde_json::from_str(
+            &std::fs::read_to_string(dir.join("compaction.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(manifest.segments[0].message_count, 2);
+    }
+
+    #[test]
+    fn archive_segment_write_fails_on_readonly_dir() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+
+        let msg1 = r#"{"msg_id":"m1","role":"User","content":"hello","images":[],"timestamp":"t1"}"#;
+        let msg2 = r#"{"msg_id":"m2","role":"User","content":"world","images":[],"timestamp":"t2"}"#;
+        std::fs::write(dir.join("active.jsonl"), format!("{msg1}\n{msg2}\n")).unwrap();
+
+        // Pre-create the segments dir as read-only so the write fails.
+        let segments_dir = dir.join("segments");
+        std::fs::create_dir_all(&segments_dir).unwrap();
+        std::fs::set_permissions(&segments_dir, std::fs::Permissions::from_mode(0o444)).unwrap();
+
+        let mgr = RealConversationManager::new(dir);
+        let result = mgr.archive_and_retain(
+            "conv",
+            RetentionParams {
+                keep_last_n: 1,
+                recap: None,
+            },
+        );
+
+        // Restore permissions so TempDir cleanup succeeds.
+        std::fs::set_permissions(&segments_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("failed to write segment file"),
+            "Expected segment write error, got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn archive_manifest_write_fails_on_readonly_parent() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+
+        let msg1 = r#"{"msg_id":"m1","role":"User","content":"hello","images":[],"timestamp":"t1"}"#;
+        let msg2 = r#"{"msg_id":"m2","role":"User","content":"world","images":[],"timestamp":"t2"}"#;
+        std::fs::write(dir.join("active.jsonl"), format!("{msg1}\n{msg2}\n")).unwrap();
+
+        // Segments dir is writable (so segment write succeeds), but make the
+        // parent dir read-only AFTER writing active.jsonl so manifest write fails.
+        // Actually, we need to let segments dir creation succeed then block the
+        // manifest write. Easiest: pre-create segments dir, pre-create
+        // compaction.json as a directory so the write fails.
+        std::fs::create_dir_all(dir.join("segments")).unwrap();
+        // Create compaction.json as a directory — writing to it will fail.
+        std::fs::create_dir_all(dir.join("compaction.json")).unwrap();
+
+        let mgr = RealConversationManager::new(dir);
+        let result = mgr.archive_and_retain(
+            "conv",
+            RetentionParams {
+                keep_last_n: 1,
+                recap: None,
+            },
+        );
+
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("compaction.json"),
+            "Expected compaction.json error, got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn archive_missing_active_jsonl() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        // No active.jsonl written.
+
+        let mgr = RealConversationManager::new(dir);
+        let result = mgr.archive_and_retain(
+            "conv",
+            RetentionParams {
+                keep_last_n: 1,
+                recap: None,
+            },
+        );
+
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("failed to read"),
+            "Expected 'failed to read' error, got: {err_msg}"
+        );
+    }
 }

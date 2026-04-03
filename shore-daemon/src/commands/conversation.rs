@@ -1,6 +1,6 @@
 use serde_json::json;
 use shore_protocol::error::ErrorCode;
-use shore_protocol::types::Message;
+use shore_protocol::types::{ContentBlock, Message, Role};
 
 use super::{engine_err, CommandContext, CommandResult};
 use crate::engine::ConversationEngine;
@@ -174,6 +174,43 @@ pub fn delete(
     }
 
     Ok(json!({ "deleted": deleted }))
+}
+
+/// Inject a system-role instruction into the conversation.
+///
+/// This allows mid-conversation behavioral correction (e.g. "stop using
+/// roleplay actions") without modifying the system prompt or polluting the
+/// conversation with user-role meta-instructions.
+pub fn inject_system(
+    engine: &mut ConversationEngine,
+    _ctx: &mut CommandContext,
+    args: &serde_json::Value,
+) -> CommandResult {
+    let text = args
+        .get("text")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            (
+                ErrorCode::InvalidRequest,
+                "Missing required argument: text".into(),
+            )
+        })?;
+
+    let msg = Message {
+        msg_id: format!("m_{}", uuid::Uuid::new_v4()),
+        role: Role::System,
+        content: text.to_string(),
+        images: vec![],
+        content_blocks: vec![ContentBlock::Text {
+            text: text.to_string(),
+        }],
+        alt_index: None,
+        alt_count: None,
+        timestamp: chrono::Utc::now().to_rfc3339(),
+    };
+
+    engine.append_message(msg).map_err(engine_err)?;
+    Ok(json!({ "injected": true }))
 }
 
 #[cfg(test)]
@@ -552,5 +589,33 @@ mod tests {
         assert_eq!(result["deleted"].as_array().unwrap()[0], "m2");
         assert_eq!(engine.messages().len(), 1);
         assert_eq!(engine.messages()[0].msg_id, "m1");
+    }
+
+    #[test]
+    fn test_inject_system_appends_message() {
+        let tmp = TempDir::new().unwrap();
+        let (mut engine, mut ctx, _rx) = make_ctx(&tmp);
+
+        let result =
+            inject_system(&mut engine, &mut ctx, &json!({"text": "Stop using actions"})).unwrap();
+        assert_eq!(result["injected"], true);
+
+        assert_eq!(engine.messages().len(), 1);
+        let msg = &engine.messages()[0];
+        assert_eq!(msg.role, Role::System);
+        assert_eq!(msg.content, "Stop using actions");
+        assert!(msg.msg_id.starts_with("m_"));
+    }
+
+    #[test]
+    fn test_inject_system_missing_text() {
+        let tmp = TempDir::new().unwrap();
+        let (mut engine, mut ctx, _rx) = make_ctx(&tmp);
+
+        let result = inject_system(&mut engine, &mut ctx, &json!({}));
+        assert!(result.is_err());
+        let (code, msg) = result.unwrap_err();
+        assert_eq!(code, ErrorCode::InvalidRequest);
+        assert!(msg.contains("text"));
     }
 }

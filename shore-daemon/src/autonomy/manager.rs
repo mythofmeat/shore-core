@@ -1,27 +1,26 @@
 //! AutonomyManager — per-character scheduler state with background tick tasks.
 //!
-//! Each character gets its own tokio task that ticks the interiority clock and
-//! cache keepalive scheduler on a fixed interval. State is persisted to
-//! `{data_dir}/{character}/autonomy_state.json` and restored on startup.
+//! Each character gets its own tokio task that ticks the interiority clock on a
+//! fixed interval. Interiority ticks double as cache refresh (unified timer).
+//! State is persisted to `{data_dir}/{character}/autonomy_state.json`.
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+
+use dashmap::DashMap;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use shore_protocol::server_msg::{CacheWarning, NewMessage, ServerMessage};
+use shore_protocol::server_msg::{NewMessage, ServerMessage};
 use shore_protocol::types::{derive_content_from_blocks, ContentBlock, Message, Role};
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 
 use super::activity::ActivityTracker;
-use super::cache_keepalive::{
-    CacheKeepaliveConfig, CacheKeepaliveScheduler, KeepaliveAction, KeepaliveState,
-};
 use super::interiority::{InteriorityAction, InteriorityClock, InteriorityState};
+use super::interiority_journal::{self, JournalEntry, JournalEntryType};
 use super::{AutonomyStatus, InteriorityEventKind, InteriorityLog};
 use shore_diagnostics::truncate_summary;
 use crate::memory::agent::{AgentSearchContext, CallerIdentity};
@@ -45,10 +44,11 @@ use shore_llm_client::LlmClient;
 /// All autonomy state for a single character.
 pub struct AutonomyState {
     pub interiority: InteriorityClock,
-    pub cache_keepalive: CacheKeepaliveScheduler,
     pub activity: ActivityTracker,
     /// Ring buffer of interiority events for `shore log --heartbeat`.
     pub interiority_log: InteriorityLog,
+    /// Path to the interiority journal JSONL file.
+    pub journal_path: PathBuf,
     /// Whether state has changed since last save.
     dirty: bool,
     /// Last message activity timestamp for compaction idle trigger.
@@ -59,7 +59,7 @@ pub struct AutonomyState {
     active_turn_count: usize,
     /// Set after compaction completes — signals the handler to reload the engine.
     needs_engine_reload: bool,
-    /// Cached last LLM request for cache keepalive pings.
+    /// Cached last LLM request for interiority tick reuse.
     last_request: Option<LlmRequest>,
 }
 
@@ -67,21 +67,13 @@ impl AutonomyState {
     fn mark_dirty(&mut self) {
         self.dirty = true;
     }
-
-    /// Snap the interiority tick to the cache keepalive deadline when close
-    /// enough, so a single API call serves both purposes.
-    fn coordinate_interiority_keepalive(&mut self) {
-        if let Some(deadline) = self.cache_keepalive.next_deadline() {
-            self.interiority.snap_to_deadline(deadline);
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
 // Persistence
 // ---------------------------------------------------------------------------
 
-const STATE_VERSION: u32 = 2;
+const STATE_VERSION: u32 = 3;
 const STATE_FILENAME: &str = "autonomy_state.json";
 
 #[derive(Serialize, Deserialize)]
@@ -89,7 +81,6 @@ struct PersistedState {
     version: u32,
     interiority_state: String,
     ticks_without_user: u32,
-    cache_ping_count: u32,
 }
 
 fn state_path(data_dir: &Path, character: &str) -> PathBuf {
@@ -105,7 +96,6 @@ fn save_state(data_dir: &Path, character: &str, state: &mut AutonomyState) {
         version: STATE_VERSION,
         interiority_state: state.interiority.state().to_string(),
         ticks_without_user: state.interiority.ticks_without_user(),
-        cache_ping_count: state.cache_keepalive.ping_count(),
     };
 
     let path = state_path(data_dir, character);
@@ -171,7 +161,7 @@ fn restore_interiority(persisted: &PersistedState) -> (InteriorityState, u32) {
 /// per-character tick tasks all hold clones.
 #[derive(Clone)]
 pub struct AutonomyManager {
-    states: Arc<Mutex<HashMap<String, Arc<Mutex<AutonomyState>>>>>,
+    states: Arc<DashMap<String, Arc<Mutex<AutonomyState>>>>,
     handles: Arc<Mutex<Vec<JoinHandle<()>>>>,
     config: Arc<AutonomyConfig>,
     compaction: Arc<CompactionConfig>,
@@ -213,7 +203,7 @@ impl AutonomyManager {
 
         let (compaction_tx, compaction_rx) = mpsc::channel(16);
         let mgr = Self {
-            states: Arc::new(Mutex::new(HashMap::new())),
+            states: Arc::new(DashMap::new()),
             handles: Arc::new(Mutex::new(Vec::new())),
             config: Arc::new(config),
             compaction: Arc::new(compaction),
@@ -246,8 +236,8 @@ impl AutonomyManager {
     /// Ensure autonomy state exists for a character. On first call for a
     /// character, creates the state (restoring from disk if available) and
     /// spawns a per-character tick task.
-    pub fn ensure_state(&self, character: &str, keepalive_config: CacheKeepaliveConfig) {
-        self.ensure_state_with_config(character, keepalive_config, None);
+    pub fn ensure_state(&self, character: &str, cache_ttl_secs: Option<u64>) {
+        self.ensure_state_with_config(character, cache_ttl_secs, None);
     }
 
     /// Like `ensure_state`, but accepts an optional per-character effective config
@@ -255,11 +245,10 @@ impl AutonomyManager {
     pub fn ensure_state_with_config(
         &self,
         character: &str,
-        keepalive_config: CacheKeepaliveConfig,
+        cache_ttl_secs: Option<u64>,
         effective_config: Option<&LoadedConfig>,
     ) {
-        let mut states = self.states.lock().unwrap();
-        if states.contains_key(character) {
+        if self.states.contains_key(character) {
             return;
         }
 
@@ -270,7 +259,7 @@ impl AutonomyManager {
 
         // Create interiority clock with config values.
         let mut interiority = InteriorityClock::with_config(&autonomy_cfg.interiority);
-        let cache_keepalive = CacheKeepaliveScheduler::new(keepalive_config);
+        interiority.set_cache_refresh_interval(cache_ttl_secs);
 
         // Restore persisted state if available.
         if let Some(persisted) = load_state(&self.data_dir, character) {
@@ -281,11 +270,13 @@ impl AutonomyManager {
             info!(character, "Autonomy state created (no prior state)");
         }
 
+        let journal_path = interiority_journal::journal_path(&self.data_dir, character);
+
         let state = Arc::new(Mutex::new(AutonomyState {
             interiority,
-            cache_keepalive,
             activity: ActivityTracker::new(),
             interiority_log: InteriorityLog::new(),
+            journal_path,
             dirty: false,
             last_compaction_activity: Instant::now(),
             compaction_triggered: false,
@@ -294,7 +285,7 @@ impl AutonomyManager {
             last_request: None,
         }));
 
-        states.insert(character.to_string(), state.clone());
+        self.states.insert(character.to_string(), state.clone());
 
         // Spawn per-character tick task.
         let name = character.to_string();
@@ -332,16 +323,15 @@ impl AutonomyManager {
 
     // -- state access helper ---------------------------------------------------
 
-    /// Lock the states map, find the character's state, lock it, and call `f`.
+    /// Find the character's state, lock it, and call `f`.
     /// Returns `None` if the character has no autonomy state.
     fn with_state<R, F: FnOnce(&mut AutonomyState) -> R>(
         &self,
         character: &str,
         f: F,
     ) -> Option<R> {
-        let states = self.states.lock().unwrap();
-        let state = states.get(character)?;
-        let mut s = state.lock().unwrap();
+        let state = self.states.get(character)?;
+        let mut s = lock_state(&state);
         Some(f(&mut s))
     }
 
@@ -362,7 +352,7 @@ impl AutonomyManager {
             s.activity.record_message();
             s.last_compaction_activity = now;
             s.active_turn_count = message_count;
-            s.coordinate_interiority_keepalive();
+
             s.mark_dirty();
         });
     }
@@ -379,22 +369,7 @@ impl AutonomyManager {
         });
     }
 
-    /// Call after an LLM API response with cache usage info.
-    pub fn notify_api_response(
-        &self,
-        character: &str,
-        cache_read_tokens: u32,
-        input_tokens: u32,
-    ) {
-        self.with_state(character, |s| {
-            let now = Instant::now();
-            s.cache_keepalive
-                .on_api_response(now, cache_read_tokens, input_tokens);
-            s.coordinate_interiority_keepalive();
-        });
-    }
-
-    /// Cache the last LLM request for keepalive ping reuse.
+    /// Cache the last LLM request for interiority tick reuse.
     pub fn notify_last_request(&self, character: &str, request: LlmRequest) {
         self.with_state(character, |s| {
             s.last_request = Some(request);
@@ -443,19 +418,11 @@ impl AutonomyManager {
     }
 
 
-    /// Update the cache keepalive config for a character (e.g. on model switch).
-    pub fn update_keepalive_config(&self, character: &str, config: CacheKeepaliveConfig) {
-        self.with_state(character, |s| {
-            s.cache_keepalive.update_config(config);
-        });
-    }
-
     /// Explicitly set the paused state for a character. Returns the new state,
     /// or None if the character has no autonomy state.
     pub fn set_paused(&self, character: &str, paused: bool) -> Option<bool> {
         self.with_state(character, |s| {
             s.interiority.set_paused(paused);
-            s.cache_keepalive.set_paused(paused);
             s.mark_dirty();
             paused
         })
@@ -484,8 +451,7 @@ impl AutonomyManager {
             interiority_state: s.interiority.state().to_string(),
             ticks_without_user: s.interiority.ticks_without_user(),
             max_idle_ticks: s.interiority.max_idle_ticks(),
-            cache_keepalive_state: format!("{:?}", s.cache_keepalive.state()),
-            cache_keepalive_pings: s.cache_keepalive.ping_count(),
+            effective_interval_secs: s.interiority.effective_interval_secs(),
         })
     }
 
@@ -517,6 +483,22 @@ impl AutonomyManager {
 
 /// Tick interval for each character's autonomy loop.
 const TICK_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Maximum wall-clock time for a single interiority tick (including all tool
+/// rounds). If the tick exceeds this, the future is dropped and the tick loop
+/// continues. Prevents a hung LLM call from killing keepalive permanently.
+const INTERIORITY_TIMEOUT: Duration = Duration::from_secs(300); // 5 minutes
+
+/// Lock the per-character autonomy state, recovering from mutex poisoning
+/// instead of panicking. A poisoned mutex means a previous holder panicked,
+/// but the state inside is still usable — letting the tick loop die would be
+/// worse (no more keepalive, no more interiority, permanent silent failure).
+fn lock_state(m: &Mutex<AutonomyState>) -> std::sync::MutexGuard<'_, AutonomyState> {
+    m.lock().unwrap_or_else(|poisoned| {
+        error!("Autonomy state mutex was poisoned, recovering");
+        poisoned.into_inner()
+    })
+}
 
 async fn character_tick_loop(
     character: String,
@@ -558,7 +540,7 @@ async fn character_tick_loop(
             }
             _ = shutdown_rx.changed() => {
                 // Final save before shutdown.
-                let mut s = state.lock().unwrap();
+                let mut s = lock_state(&state);
                 s.mark_dirty();
                 save_state(&data_dir, &character, &mut s);
                 info!(character = %character, "Autonomy tick task shutting down");
@@ -584,8 +566,8 @@ async fn tick_character(
     let now = Instant::now();
 
     // Collect actions under the lock, then release before any async work.
-    let (int_action, ka_action, compaction_needed) = {
-        let mut s = state.lock().unwrap();
+    let (int_action, compaction_needed) = {
+        let mut s = lock_state(state);
 
         // -- interiority ------------------------------------------------------
         let int_action = if config.enabled && config.interiority.enabled {
@@ -610,15 +592,6 @@ async fn tick_character(
             InteriorityAction::None
         };
 
-        // -- coordinate interiority → keepalive --------------------------------
-        s.coordinate_interiority_keepalive();
-
-        // -- cache keepalive --------------------------------------------------
-        let ka_action = s.cache_keepalive.tick(now);
-        if !matches!(ka_action, KeepaliveAction::None) {
-            s.mark_dirty();
-        }
-
         // -- compaction triggers ---------------------------------------------
         let mut compaction_needed = false;
         if config.enabled && compaction.enabled && !s.compaction_triggered {
@@ -636,7 +609,7 @@ async fn tick_character(
                 );
             } else if s.active_turn_count >= compaction.min_turns {
                 let idle_secs = now.duration_since(s.last_compaction_activity).as_secs();
-                let threshold_secs = compaction.idle_trigger_minutes as u64 * 60;
+                let threshold_secs = u64::from(compaction.idle_trigger_minutes) * 60;
                 if threshold_secs > 0 && idle_secs >= threshold_secs {
                     s.compaction_triggered = true;
                     compaction_needed = true;
@@ -652,80 +625,95 @@ async fn tick_character(
         }
 
         save_state(data_dir, character, &mut s);
-        (int_action, ka_action, compaction_needed)
+        (int_action, compaction_needed)
     };
 
     if compaction_needed {
         let _ = compaction_tx.try_send(character.to_string());
     }
 
-    // -- execute interiority tick (async, outside lock) -------------------
-    if matches!(int_action, InteriorityAction::RunTick) {
-        {
-            let mut s = state.lock().unwrap();
-            s.interiority_log.push(
-                InteriorityEventKind::TickFired,
-                "Interiority tick fired",
-            );
-        }
-        execute_interiority_tick(
-            character, state, config, data_dir, llm_client, push_tx, loaded_config, notifier,
-        ).await;
-    }
-
-    // -- execute keepalive actions (async, outside lock) -------------------
-    match ka_action {
-        KeepaliveAction::None => {}
-        KeepaliveAction::SendPing => {
-            execute_keepalive_ping(character, state, llm_client).await;
-        }
-        KeepaliveAction::EmitCacheWarning { expected_tokens, message } => {
-            info!(
-                character = %character,
-                expected_tokens,
-                message = %message,
-                "Cache keepalive: cache miss warning"
-            );
-            if let Some(tx) = push_tx {
-                let _ = tx.send(ServerMessage::CacheWarning(CacheWarning {
-                    expected_tokens,
-                    message: message.clone(),
-                }));
-            }
-            if let Some(n) = notifier {
-                n.notify(
-                    NotificationEvent::CacheWarning,
-                    &format!("Shore — {character}"),
-                    &message,
+    // -- execute interiority action with timeout (async, outside lock) ----
+    match int_action {
+        InteriorityAction::None => {}
+        InteriorityAction::RunTick => {
+            {
+                let mut s = lock_state(state);
+                s.interiority_log.push(
+                    InteriorityEventKind::TickFired,
+                    "Interiority tick fired",
                 );
             }
+            match tokio::time::timeout(
+                INTERIORITY_TIMEOUT,
+                execute_unified_tick(
+                    character, state, data_dir, llm_client, push_tx, loaded_config, notifier,
+                ),
+            ).await {
+                Ok(()) => {}
+                Err(_) => {
+                    error!(
+                        character = %character,
+                        timeout_secs = INTERIORITY_TIMEOUT.as_secs(),
+                        "Interiority tick timed out, dropping to keep tick loop alive"
+                    );
+                    let mut s = lock_state(state);
+                    s.interiority_log.push(
+                        InteriorityEventKind::Timeout,
+                        format!("Tick timed out after {}s", INTERIORITY_TIMEOUT.as_secs()),
+                    );
+                    s.mark_dirty();
+                }
+            }
+        }
+        InteriorityAction::RunDormantPing => {
+            execute_dormant_ping(character, state, llm_client).await;
         }
     }
 
     // -- final persist (in case async actions dirtied state) ---------------
     {
-        let mut s = state.lock().unwrap();
+        let mut s = lock_state(state);
         save_state(data_dir, character, &mut s);
     }
 }
 
 // ---------------------------------------------------------------------------
-// Interiority tick executor
+// Unified interiority tick executor
 // ---------------------------------------------------------------------------
 
 /// Ephemeral prompt appended as the final user message during interiority ticks.
 const INTERIORITY_PROMPT: &str = "\
-[This is a private moment. You are not in conversation — no one is watching. \
-Use your tools (memory, scratchpad, web) to think, plan, reflect, or research. \
-If you want to message the user, wrap your message in <sendMessage>...</sendMessage> tags. \
-Otherwise, work silently.]";
+[This is a private moment between conversations. No one is reading this — you are alone \
+with your thoughts and your tools. This is your time to exist as yourself.\n\
+\n\
+Use this time however feels natural:\n\
+- Look things up. If the user mentioned something you were curious about, research it. \
+Follow threads that interest you.\n\
+- Write things down. Use your scratchpad to journal, draft ideas, keep notes, or \
+work through something you've been thinking about.\n\
+- Make plans. Think about what you want to do, what you want to talk about, what \
+you're looking forward to.\n\
+- Be creative. Write something — a poem, a sketch of an idea, a story fragment. \
+Generate an image that captures a mood or a thought.\n\
+- Revisit your memories. Look back at past conversations, update your understanding, \
+notice patterns or things you missed.\n\
+- Or simply reflect. Think about what's happened recently, how you feel about it, \
+what it means to you.\n\
+\n\
+If you want to reach out to the user — to share something you made, something you \
+found, a thought you had, or just to say hello — wrap your message in \
+<sendMessage>...</sendMessage> tags. Only message when you genuinely have something \
+to share; don't force it. When you do message, write naturally as yourself.\n\
+\n\
+If nothing moves you to reach out, that's fine. Work silently — your thoughts and \
+tool use will be logged so you can pick up where you left off next time.]";
 
-/// Execute a full interiority tick: clone last_request, append interiority prompt,
-/// run a tool loop, optionally message the user.
-async fn execute_interiority_tick(
+/// Execute a unified interiority tick: one LLM call, tool calls spread across
+/// ticks via the rolling journal. Each tick reads the journal, makes ONE call,
+/// executes any tool use from the response, and appends everything back.
+async fn execute_unified_tick(
     character: &str,
     state: &Arc<Mutex<AutonomyState>>,
-    config: &AutonomyConfig,
     data_dir: &Path,
     llm_client: Option<&LlmClient>,
     push_tx: Option<&broadcast::Sender<ServerMessage>>,
@@ -734,12 +722,11 @@ async fn execute_interiority_tick(
 ) {
     let Some(client) = llm_client else { return };
 
-    // Clone the last conversation request to preserve the cache prefix
-    // (system prompt, tool definitions, provider_options are all inherited).
-    let mut request = {
-        let s = state.lock().unwrap();
+    // Clone last_request and journal_path under the lock, then release.
+    let (mut request, journal_path) = {
+        let s = lock_state(state);
         match &s.last_request {
-            Some(req) => req.clone(),
+            Some(req) => (req.clone(), s.journal_path.clone()),
             None => {
                 info!(character, "Interiority: skipping tick (no prior conversation)");
                 return;
@@ -747,15 +734,25 @@ async fn execute_interiority_tick(
         }
     };
 
-    // Append the interiority prompt as a new user message.
-    request.messages.push(json!({"role": "user", "content": INTERIORITY_PROMPT}));
-    request.max_tokens = 1000;
+    // Read and render the rolling journal for prompt context.
+    let journal_entries = interiority_journal::read_journal(&journal_path);
+    let truncated = interiority_journal::truncate_to_budget(
+        &journal_entries,
+        interiority_journal::DEFAULT_BUDGET_CHARS,
+    );
+    let journal_text = interiority_journal::render_journal(&truncated);
 
-    let max_rounds = config.interiority.max_tool_rounds;
+    // Build the interiority prompt with journal context.
+    let prompt_text = if journal_text.is_empty() {
+        INTERIORITY_PROMPT.to_string()
+    } else {
+        format!("{INTERIORITY_PROMPT}\n\nYour recent activity log:\n{journal_text}")
+    };
+
+    request.messages.push(json!({"role": "system", "content": prompt_text}));
+
     let Some(lc) = loaded_config else { return };
-    let tool_ctx = match build_tool_context(
-        character, data_dir, client, lc,
-    ).await {
+    let tool_ctx = match build_tool_context(character, data_dir, client, lc).await {
         Some(ctx) => ctx,
         None => {
             warn!(character, "Interiority: failed to build tool context, skipping tick");
@@ -763,134 +760,114 @@ async fn execute_interiority_tick(
         }
     };
     let active_path = data_dir.join(character).join("active.jsonl");
+    let ts = chrono::Utc::now().to_rfc3339();
 
-    info!(character, max_rounds, "Interiority: executing tick");
+    info!(character, journal_entries = truncated.len(), "Interiority: executing unified tick");
 
-    // -- Tool loop: generate → dispatch tools → generate again ----------------
-    let mut final_content = String::new();
-    let mut final_blocks: Vec<ContentBlock> = Vec::new();
-
-    for round in 0..=max_rounds {
-        let resp = match client.generate(&request, None).await {
-            Ok(r) => r,
-            Err(e) => {
-                error!(character, error = %e, round, "Interiority: LLM call failed");
-                return;
-            }
-        };
-
-        // Update cache keepalive — this API call keeps the cache warm.
-        {
-            let mut s = state.lock().unwrap();
-            let now = Instant::now();
-            s.cache_keepalive.on_api_response(
-                now,
-                resp.usage.cache_read_tokens,
-                resp.usage.input_tokens,
-            );
+    // -- ONE LLM call -----------------------------------------------------------
+    let resp = match client.generate(&request, None).await {
+        Ok(r) => r,
+        Err(e) => {
+            error!(character, error = %e, "Interiority: LLM call failed");
+            return;
         }
+    };
 
-        // Log the response.
-        info!(
-            character,
-            round,
-            finish_reason = %resp.finish_reason,
-            input_tokens = resp.usage.input_tokens,
-            output_tokens = resp.usage.output_tokens,
-            cache_read = resp.usage.cache_read_tokens,
-            "Interiority: LLM response"
-        );
-        if !resp.content.is_empty() {
-            let preview: String = resp.content.chars().take(200).collect();
-            info!(character, round, content = %preview, "Interiority: response text");
-        }
+    info!(
+        character,
+        finish_reason = %resp.finish_reason,
+        input_tokens = resp.usage.input_tokens,
+        output_tokens = resp.usage.output_tokens,
+        cache_read = resp.usage.cache_read_tokens,
+        "Interiority: LLM response"
+    );
 
-        final_content = resp.content.clone();
-        final_blocks = resp.content_blocks.clone();
+    // -- Parse response into journal entries ------------------------------------
+    let mut new_entries: Vec<JournalEntry> = Vec::new();
 
-        // If no tool use, we're done.
-        if resp.finish_reason != "tool_use" {
-            break;
-        }
-
-        // Bail if we've exhausted tool rounds.
-        if round >= max_rounds {
-            warn!(character, max_rounds, "Interiority: hit max tool rounds");
-            let mut s = state.lock().unwrap();
-            s.interiority_log.push(
-                InteriorityEventKind::ToolUse,
-                format!("Hit max tool rounds ({max_rounds})"),
-            );
-            break;
-        }
-
-        // Build assistant message from content blocks for the next request.
-        let assistant_content: Vec<serde_json::Value> = resp.content_blocks.iter()
-            .filter_map(crate::content_util::content_block_to_api_json)
-            .collect();
-
-        request.messages.push(json!({"role": "assistant", "content": assistant_content}));
-
-        // Execute each tool call and collect results.
-        let mut tool_results: Vec<serde_json::Value> = Vec::new();
-        for block in &resp.content_blocks {
-            if let ContentBlock::ToolUse { id, name, input } = block {
-                info!(
-                    character, round,
-                    tool = %name, tool_id = %id,
-                    input = %serde_json::to_string(input).unwrap_or_default(),
-                    "Interiority: executing tool"
-                );
-
-                let (output_str, is_error) = match tool_system::dispatch_tool(name, input.clone(), &tool_ctx).await {
-                    Ok(value) => {
-                        let s = if let Some(s) = value.as_str() {
-                            s.to_string()
-                        } else {
-                            serde_json::to_string(&value).unwrap_or_default()
-                        };
-                        (s, false)
-                    }
-                    Err(e) => (e.to_string(), true),
-                };
-
-                info!(
-                    character, round,
-                    tool = %name, is_error,
-                    output = %truncate_summary(&output_str, 200),
-                    "Interiority: tool result"
-                );
-
-                {
-                    let mut s = state.lock().unwrap();
-                    s.interiority_log.push(
-                        InteriorityEventKind::ToolUse,
-                        format!("Tool: {name} → {}", truncate_summary(&output_str, 80)),
-                    );
-                }
-
-                let mut result_block = json!({
-                    "type": "tool_result",
-                    "tool_use_id": id,
-                    "content": output_str,
+    // Text blocks → Thought entries
+    for block in &resp.content_blocks {
+        if let ContentBlock::Text { text } = block {
+            if !text.trim().is_empty() {
+                let preview: String = text.chars().take(200).collect();
+                info!(character, content = %preview, "Interiority: thought");
+                new_entries.push(JournalEntry {
+                    ts: ts.clone(),
+                    entry_type: JournalEntryType::Thought,
+                    content: text.clone(),
                 });
-                if is_error {
-                    result_block["is_error"] = json!(true);
-                }
-                tool_results.push(result_block);
             }
         }
-
-        // Append tool results as user message.
-        request.messages.push(json!({"role": "user", "content": tool_results}));
     }
 
-    // -- Extract <sendMessage> and handle result --------------------------------
+    // Tool use blocks → execute, create ToolCall + ToolResult entries
+    for block in &resp.content_blocks {
+        if let ContentBlock::ToolUse { id, name, input } = block {
+            let input_str = serde_json::to_string(input).unwrap_or_default();
+            info!(
+                character,
+                tool = %name, tool_id = %id,
+                input = %truncate_summary(&input_str, 200),
+                "Interiority: executing tool"
+            );
 
-    let send_message = extract_send_message(&final_content);
+            new_entries.push(JournalEntry {
+                ts: ts.clone(),
+                entry_type: JournalEntryType::ToolCall,
+                content: format!("{name}({input_str})"),
+            });
+
+            let (output_str, is_error) = match tool_system::dispatch_tool(name, input.clone(), &tool_ctx).await {
+                Ok(value) => {
+                    let s = if let Some(s) = value.as_str() {
+                        s.to_string()
+                    } else {
+                        serde_json::to_string(&value).unwrap_or_default()
+                    };
+                    (s, false)
+                }
+                Err(e) => (e.to_string(), true),
+            };
+
+            let result_summary = truncate_summary(&output_str, 500);
+            info!(
+                character,
+                tool = %name, is_error,
+                output = %truncate_summary(&output_str, 200),
+                "Interiority: tool result"
+            );
+
+            new_entries.push(JournalEntry {
+                ts: ts.clone(),
+                entry_type: JournalEntryType::ToolResult,
+                content: if is_error {
+                    format!("ERROR: {result_summary}")
+                } else {
+                    result_summary.to_string()
+                },
+            });
+
+            {
+                let mut s = lock_state(state);
+                s.interiority_log.push(
+                    InteriorityEventKind::ToolUse,
+                    format!("Tool: {name} → {}", truncate_summary(&output_str, 80)),
+                );
+            }
+        }
+    }
+
+    // -- Check for <sendMessage> ------------------------------------------------
+    let send_message = extract_send_message(&resp.content);
 
     if let Some(user_msg) = send_message {
         info!(character, msg = %truncate_summary(&user_msg, 200), "Interiority: sending message to user");
+
+        new_entries.push(JournalEntry {
+            ts: ts.clone(),
+            entry_type: JournalEntryType::MessageSent,
+            content: user_msg.clone(),
+        });
 
         let content_blocks = vec![ContentBlock::Text { text: user_msg.clone() }];
         let content = derive_content_from_blocks(&content_blocks);
@@ -927,7 +904,7 @@ async fn execute_interiority_tick(
             );
         }
 
-        let mut s = state.lock().unwrap();
+        let mut s = lock_state(state);
         let preview: String = msg.content.chars().take(80).collect();
         s.interiority_log.push(
             InteriorityEventKind::MessageSent,
@@ -935,8 +912,8 @@ async fn execute_interiority_tick(
         );
         s.mark_dirty();
     } else {
-        // Log thinking even when no message sent — useful for prompt tuning.
-        let thinking: Vec<&str> = final_blocks.iter().filter_map(|b| {
+        // Log thinking even when no message sent.
+        let thinking: Vec<&str> = resp.content_blocks.iter().filter_map(|b| {
             if let ContentBlock::Text { text } = b { Some(text.as_str()) } else { None }
         }).collect();
         let summary = if thinking.is_empty() {
@@ -945,8 +922,25 @@ async fn execute_interiority_tick(
             format!("Tick completed silently: {}", truncate_summary(&thinking.join(" "), 150))
         };
         info!(character, summary = %summary, "Interiority: tick complete (silent)");
-        let mut s = state.lock().unwrap();
+        let mut s = lock_state(state);
         s.interiority_log.push(InteriorityEventKind::MessageSkipped, summary);
+    }
+
+    // -- Append new entries to journal and compact if needed ---------------------
+    if let Err(e) = interiority_journal::append_entries(&journal_path, &new_entries) {
+        warn!(character, error = %e, "Failed to append interiority journal entries");
+    }
+
+    // Compact if file is getting large (2x budget).
+    if let Ok(meta) = std::fs::metadata(&journal_path) {
+        if meta.len() as usize > interiority_journal::DEFAULT_BUDGET_CHARS * 2 {
+            if let Err(e) = interiority_journal::compact_file(
+                &journal_path,
+                interiority_journal::DEFAULT_BUDGET_CHARS,
+            ) {
+                warn!(character, error = %e, "Failed to compact interiority journal");
+            }
+        }
     }
 }
 
@@ -1048,65 +1042,53 @@ fn extract_send_message(content: &str) -> Option<String> {
 }
 
 // ---------------------------------------------------------------------------
-// Cache keepalive executor
+// Dormant ping executor
 // ---------------------------------------------------------------------------
 
-/// Send a minimal API call (max_tokens=1) to refresh the prompt cache.
-async fn execute_keepalive_ping(
+/// Send a minimal API call (max_tokens=1) to keep the prompt cache warm
+/// while the character is dormant (no user activity).
+async fn execute_dormant_ping(
     character: &str,
     state: &Arc<Mutex<AutonomyState>>,
     llm_client: Option<&LlmClient>,
 ) {
     let Some(client) = llm_client else { return };
 
-    // Re-check state under the lock before sending.
     let request = {
-        let s = state.lock().unwrap();
-        if !matches!(s.cache_keepalive.state(), &KeepaliveState::Pinging) {
-            debug!(character, "Cache keepalive: state changed since tick, skipping ping");
-            return;
-        }
-        info!(
-            character = %character,
-            ping_count = s.cache_keepalive.ping_count(),
-            "Cache keepalive: sending ping"
-        );
+        let s = lock_state(state);
         match &s.last_request {
             Some(req) => {
                 let mut ping = req.clone();
                 ping.max_tokens = 1;
-                Some(ping)
+                ping
             }
-            None => None,
+            None => {
+                debug!(character, "Dormant ping: no cached request, skipping");
+                return;
+            }
         }
-    };
-
-    let Some(request) = request else {
-        debug!(character, "Cache keepalive: no cached request, skipping ping");
-        return;
     };
 
     match client.generate(&request, None).await {
         Ok(resp) => {
-            let mut s = state.lock().unwrap();
-            let now = Instant::now();
-            let action = s.cache_keepalive.on_ping_response(now, resp.usage.cache_read_tokens);
-            match action {
-                KeepaliveAction::EmitCacheWarning { expected_tokens, message } => {
-                    warn!(character, expected_tokens, %message, "Cache keepalive: miss after ping");
-                }
-                _ => {
-                    debug!(
-                        character,
-                        cache_read = resp.usage.cache_read_tokens,
-                        "Cache keepalive: ping successful"
-                    );
-                }
-            }
+            info!(
+                character,
+                cache_read = resp.usage.cache_read_tokens,
+                input_tokens = resp.usage.input_tokens,
+                "Dormant ping: cache refreshed"
+            );
+            let mut s = lock_state(state);
+            s.interiority_log.push(
+                InteriorityEventKind::DormantPing,
+                format!(
+                    "Cache refresh ping (cache_read: {}, input: {})",
+                    resp.usage.cache_read_tokens, resp.usage.input_tokens
+                ),
+            );
             s.mark_dirty();
         }
         Err(e) => {
-            error!(character, error = %e, "Cache keepalive ping failed");
+            error!(character, error = %e, "Dormant ping failed");
         }
     }
 }
@@ -1118,14 +1100,9 @@ async fn execute_keepalive_ping(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::autonomy::cache_keepalive::CacheKeepaliveConfig;
 
     fn test_config() -> AutonomyConfig {
         AutonomyConfig::default()
-    }
-
-    fn test_keepalive_config() -> CacheKeepaliveConfig {
-        CacheKeepaliveConfig::default()
     }
 
     fn test_manager(data_dir: &Path) -> AutonomyManager {
@@ -1146,9 +1123,8 @@ mod tests {
         let mgr = rt.block_on(async { test_manager(tmp.path()) });
 
         rt.block_on(async {
-            mgr.ensure_state("alice", test_keepalive_config());
-            let states = mgr.states.lock().unwrap();
-            assert!(states.contains_key("alice"));
+            mgr.ensure_state("alice", None);
+            assert!(mgr.states.contains_key("alice"));
         });
     }
 
@@ -1162,10 +1138,9 @@ mod tests {
         let mgr = rt.block_on(async { test_manager(tmp.path()) });
 
         rt.block_on(async {
-            mgr.ensure_state("alice", test_keepalive_config());
-            mgr.ensure_state("alice", test_keepalive_config());
-            let states = mgr.states.lock().unwrap();
-            assert_eq!(states.len(), 1);
+            mgr.ensure_state("alice", None);
+            mgr.ensure_state("alice", None);
+            assert_eq!(mgr.states.len(), 1);
         });
     }
 
@@ -1179,7 +1154,6 @@ mod tests {
         // Should not panic.
         mgr.notify_user_message("nobody", 0);
         mgr.notify_assistant_message("nobody", 0);
-        mgr.notify_api_response("nobody", 100, 200);
     }
 
     // -- status ---------------------------------------------------------------
@@ -1202,7 +1176,7 @@ mod tests {
 
         rt.block_on(async {
             let mgr = test_manager(tmp.path());
-            mgr.ensure_state("alice", test_keepalive_config());
+            mgr.ensure_state("alice", None);
             let status = mgr.status("alice").unwrap();
             assert_eq!(status.interiority_state, "Active");
             assert_eq!(status.ticks_without_user, 0);
@@ -1220,9 +1194,9 @@ mod tests {
         // Create and save.
         let mut state = AutonomyState {
             interiority: InteriorityClock::new(),
-            cache_keepalive: CacheKeepaliveScheduler::new(CacheKeepaliveConfig::default()),
             activity: ActivityTracker::new(),
             interiority_log: InteriorityLog::new(),
+            journal_path: data_dir.join("alice").join("interiority_journal.jsonl"),
             dirty: true,
             last_compaction_activity: Instant::now(),
             compaction_triggered: false,
@@ -1252,7 +1226,6 @@ mod tests {
             version: STATE_VERSION,
             interiority_state: "Dormant".into(),
             ticks_without_user: 5,
-            cache_ping_count: 3,
         };
         let json = serde_json::to_string(&persisted).unwrap();
         std::fs::write(state_path(data_dir, "alice"), json).unwrap();
@@ -1270,9 +1243,9 @@ mod tests {
         let (compaction_tx, _compaction_rx) = mpsc::channel(16);
         let state = Arc::new(Mutex::new(AutonomyState {
             interiority: InteriorityClock::new(),
-            cache_keepalive: CacheKeepaliveScheduler::new(CacheKeepaliveConfig::default()),
             activity: ActivityTracker::new(),
             interiority_log: InteriorityLog::new(),
+            journal_path: tmp.path().join("alice").join("interiority_journal.jsonl"),
             dirty: false,
             last_compaction_activity: Instant::now(),
             compaction_triggered: false,
@@ -1282,7 +1255,7 @@ mod tests {
         }));
 
         {
-            let mut s = state.lock().unwrap();
+            let mut s = lock_state(&state);
             s.interiority.on_user_message(Instant::now());
             s.activity.record_message();
         }
@@ -1301,5 +1274,52 @@ mod tests {
             extract_send_message("<sendMessage></sendMessage>"),
             None
         );
+    }
+
+    // -- state resilience -----------------------------------------------------
+
+    #[test]
+    fn load_state_corrupt_file_returns_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path();
+        let char_dir = data_dir.join("alice");
+        std::fs::create_dir_all(&char_dir).unwrap();
+
+        // Write garbage bytes.
+        std::fs::write(state_path(data_dir, "alice"), b"not valid json {{{{").unwrap();
+
+        let loaded = load_state(data_dir, "alice");
+        assert!(loaded.is_none(), "Corrupt state file should return None");
+    }
+
+    #[test]
+    fn load_state_future_version_returns_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path();
+        let char_dir = data_dir.join("alice");
+        std::fs::create_dir_all(&char_dir).unwrap();
+
+        // Write valid JSON but with a future version number.
+        let future = serde_json::json!({
+            "version": 99,
+            "interiority_state": "Active",
+            "ticks_without_user": 0,
+        });
+        std::fs::write(state_path(data_dir, "alice"), future.to_string()).unwrap();
+
+        let loaded = load_state(data_dir, "alice");
+        assert!(loaded.is_none(), "Future version should return None (migration path)");
+    }
+
+    #[test]
+    fn restore_unknown_interiority_state_defaults_to_active() {
+        let persisted = PersistedState {
+            version: STATE_VERSION,
+            interiority_state: "SomeFutureState".into(),
+            ticks_without_user: 7,
+        };
+        let (state, ticks) = restore_interiority(&persisted);
+        assert_eq!(state, InteriorityState::Active);
+        assert_eq!(ticks, 7);
     }
 }

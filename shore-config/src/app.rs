@@ -2,6 +2,13 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+/// Generate a zero-argument function returning a constant, for `#[serde(default = "...")]`.
+macro_rules! serde_default {
+    ($name:ident -> $ty:ty { $val:expr }) => {
+        fn $name() -> $ty { $val }
+    };
+}
+
 /// Top-level daemon configuration loaded from config.toml.
 ///
 /// Covers all sections from §8: [defaults], [models], [behavior.autonomy],
@@ -156,18 +163,10 @@ pub struct InteriorityConfig {
     pub max_tool_rounds: u32,
 }
 
-fn default_interiority_interval() -> u64 {
-    3600
-}
-fn default_jitter_factor() -> f64 {
-    0.25
-}
-fn default_max_idle_ticks() -> u32 {
-    8
-}
-fn default_max_tool_rounds() -> u32 {
-    12
-}
+serde_default!(default_interiority_interval -> u64 { 3600 });
+serde_default!(default_jitter_factor -> f64 { 0.25 });
+serde_default!(default_max_idle_ticks -> u32 { 8 });
+serde_default!(default_max_tool_rounds -> u32 { 12 });
 
 impl Default for InteriorityConfig {
     fn default() -> Self {
@@ -201,21 +200,10 @@ pub struct CompactionConfig {
     pub keep_recent_turns: usize,
 }
 
-fn default_idle_trigger_minutes() -> u32 {
-    30
-}
-
-fn default_min_turns() -> usize {
-    8
-}
-
-fn default_max_turns() -> usize {
-    16
-}
-
-fn default_keep_recent_turns() -> usize {
-    2
-}
+serde_default!(default_idle_trigger_minutes -> u32 { 30 });
+serde_default!(default_min_turns -> usize { 8 });
+serde_default!(default_max_turns -> usize { 16 });
+serde_default!(default_keep_recent_turns -> usize { 2 });
 
 impl Default for CompactionConfig {
     fn default() -> Self {
@@ -245,9 +233,7 @@ pub struct CollationConfig {
     pub batch_limit: usize,
 }
 
-fn default_batch_limit() -> usize {
-    10
-}
+serde_default!(default_batch_limit -> usize { 10 });
 
 impl Default for CollationConfig {
     fn default() -> Self {
@@ -281,9 +267,7 @@ pub struct ToolUseConfig {
     pub search: SearchConfig,
 }
 
-fn default_max_iterations() -> u32 {
-    10
-}
+serde_default!(default_max_iterations -> u32 { 10 });
 
 impl Default for ToolUseConfig {
     fn default() -> Self {
@@ -354,9 +338,9 @@ pub struct SearchConfig {
     pub include_answer: bool,
 }
 
-fn default_search_api_key_env() -> String { "TAVILY_API_KEY".into() }
-fn default_search_max_results() -> u32 { 5 }
-fn default_search_depth() -> String { "basic".into() }
+serde_default!(default_search_api_key_env -> String { "TAVILY_API_KEY".into() });
+serde_default!(default_search_max_results -> u32 { 5 });
+serde_default!(default_search_depth -> String { "basic".into() });
 
 impl Default for SearchConfig {
     fn default() -> Self {
@@ -393,12 +377,8 @@ pub struct MemoryConfig {
     pub collation: CollationConfig,
 }
 
-fn default_rag_results() -> u32 {
-    5
-}
-fn default_rag_threshold() -> f64 {
-    0.3
-}
+serde_default!(default_rag_results -> u32 { 5 });
+serde_default!(default_rag_threshold -> f64 { 0.3 });
 
 impl Default for MemoryConfig {
     fn default() -> Self {
@@ -499,15 +479,9 @@ pub struct EmbeddedConfig {
     pub binary: Option<String>,
 }
 
-fn default_server_name() -> String {
-    "localhost".into()
-}
-fn default_homeserver_port() -> u16 {
-    6167
-}
-fn default_admin_user() -> String {
-    "shore-admin".into()
-}
+serde_default!(default_server_name -> String { "localhost".into() });
+serde_default!(default_homeserver_port -> u16 { 6167 });
+serde_default!(default_admin_user -> String { "shore-admin".into() });
 
 impl Default for EmbeddedConfig {
     fn default() -> Self {
@@ -653,9 +627,7 @@ pub struct NtfyConfig {
     pub token: String,
 }
 
-fn default_ntfy_url() -> String {
-    "https://ntfy.sh".into()
-}
+serde_default!(default_ntfy_url -> String { "https://ntfy.sh".into() });
 
 impl Default for NtfyConfig {
     fn default() -> Self {
@@ -751,9 +723,7 @@ impl Default for AdvancedConfig {
 
 // ── Shared defaults ─────────────────────────────────────────────────────
 
-fn default_true() -> bool {
-    true
-}
+serde_default!(default_true -> bool { true });
 
 #[cfg(test)]
 mod tests {

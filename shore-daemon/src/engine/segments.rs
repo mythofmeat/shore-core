@@ -92,11 +92,12 @@ impl SegmentReader {
             if line.is_empty() {
                 continue;
             }
-            let msg: Message =
+            let mut msg: Message =
                 serde_json::from_str(line).map_err(|e| EngineError::JsonParse {
                     path: path.clone(),
                     source: e,
                 })?;
+            msg.normalize();
             msgs.push(msg);
         }
         Ok(msgs)

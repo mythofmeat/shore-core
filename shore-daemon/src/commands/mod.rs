@@ -107,6 +107,26 @@ pub async fn setup_search_context(
     Some(AgentSearchContext::new(vs, ctx.llm_client.clone(), embed_config))
 }
 
+/// Open a vector store with embedding config for a character (error-returning variant).
+///
+/// Unlike `setup_search_context()` which returns `Option` for graceful degradation,
+/// this propagates errors for callers that need diagnostics (e.g. compaction, reindex).
+pub async fn open_embed_and_vectorstore(
+    ctx: &CommandContext,
+    char_name: &str,
+) -> Result<(VectorStore, crate::memory::compaction_impls::EmbedConfig), (ErrorCode, String)> {
+    let embed_config = resolve_embed_config(
+        ctx.config.app.defaults.embedding.as_deref(),
+        &ctx.config.models.embedding,
+    )
+    .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
+    let vs_path = memory_dir(ctx, char_name).join("vectorstore");
+    let store = VectorStore::open(&vs_path, embed_config.dimensions)
+        .await
+        .map_err(|e| (ErrorCode::InternalError, format!("Failed to open vector store: {e}")))?;
+    Ok((store, embed_config))
+}
+
 /// Build the template variable map used by collation.
 pub fn build_collation_vars(
     ctx: &CommandContext,
@@ -148,6 +168,7 @@ pub async fn dispatch(
         "get" => conversation::get(engine, ctx, &cmd.args),
         "edit" => conversation::edit(engine, ctx, &cmd.args),
         "delete" => conversation::delete(engine, ctx, &cmd.args),
+        "inject_system" => conversation::inject_system(engine, ctx, &cmd.args),
 
         // State
         "status" => state::status(engine, ctx),
@@ -299,5 +320,52 @@ mod tests {
             }
             other => panic!("Expected CommandOutput, got {:?}", other),
         }
+    }
+
+    // ── dispatch_characterless ───────────────────────────────────────────
+
+    #[test]
+    fn dispatch_characterless_list_characters() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        // Create a character directory so list_characters finds something.
+        let char_dir = tmp.path().join("config").join("characters").join("alice");
+        std::fs::create_dir_all(&char_dir).unwrap();
+        std::fs::write(
+            char_dir.join("definition.toml"),
+            "[character]\nname = \"Alice\"\n",
+        )
+        .unwrap();
+
+        let (_engine, ctx, _rx) = make_ctx(&tmp);
+
+        let cmd = Command {
+            rid: None,
+            name: "list_characters".into(),
+            args: serde_json::json!({}),
+        };
+
+        let result = dispatch_characterless(&ctx, &cmd);
+        assert!(result.is_ok());
+        let data = result.unwrap();
+        assert!(data["characters"].is_array());
+    }
+
+    #[test]
+    fn dispatch_characterless_rejects_unknown_command() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_engine, ctx, _rx) = make_ctx(&tmp);
+
+        let cmd = Command {
+            rid: None,
+            name: "status".into(),
+            args: serde_json::json!({}),
+        };
+
+        let result = dispatch_characterless(&ctx, &cmd);
+        assert!(result.is_err());
+        let (code, msg) = result.unwrap_err();
+        assert_eq!(code, ErrorCode::InvalidRequest);
+        assert!(msg.contains("requires a character"));
     }
 }

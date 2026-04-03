@@ -21,9 +21,19 @@ pub enum Action {
 pub fn handle_event(app: &mut App, event: Event) -> Action {
     match event {
         Event::Key(key) => handle_key(app, key),
+        Event::Paste(text) => handle_paste(app, text),
         Event::Resize(_, _) => Action::Redraw,
         _ => Action::None,
     }
+}
+
+/// Handle a bracketed paste event — insert all text without triggering send.
+fn handle_paste(app: &mut App, text: String) -> Action {
+    if app.input.mode != InputMode::Insert {
+        app.input.mode = InputMode::Insert;
+    }
+    app.input.insert_str(&text);
+    Action::Redraw
 }
 
 fn handle_key(app: &mut App, key: KeyEvent) -> Action {
@@ -160,22 +170,44 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) -> Action {
 
 fn handle_insert_mode(app: &mut App, key: KeyEvent) -> Action {
     match (key.modifiers, key.code) {
-        // Exit insert mode (cancel generation if active)
+        // Exit insert mode (cancel edit or generation if active)
         (KeyModifiers::NONE, KeyCode::Esc) => {
             app.input.mode = InputMode::Normal;
-            if app.stream.active {
+            if app.editing_ref.take().is_some() {
+                app.input.text.clear();
+                app.input.cursor = 0;
+                app.set_status("edit cancelled");
+            } else if app.stream.active {
                 app.stream.reset();
                 return Action::Send(ConnCommand::Send(ClientMessage::Cancel(Cancel {})));
             }
             Action::Redraw
         }
 
-        // Send message: Enter (without Shift)
+        // Send message (or submit edit): Enter (without Shift)
         (KeyModifiers::NONE, KeyCode::Enter) => {
             let text = app.input.take_text();
             if text.trim().is_empty() && app.pending_images.is_empty() {
                 return Action::None;
             }
+
+            // If editing, send an edit command instead of a new message.
+            if let Some(edit_ref) = app.editing_ref.take() {
+                app.set_status(format!("edited message ({edit_ref})"));
+                return Action::SendMulti(vec![
+                    ConnCommand::Send(ClientMessage::Command(Command {
+                        rid: None,
+                        name: "edit".into(),
+                        args: serde_json::json!({ "ref": edit_ref, "content": text }),
+                    })),
+                    ConnCommand::Send(ClientMessage::Command(Command {
+                        rid: None,
+                        name: "log".into(),
+                        args: serde_json::json!({}),
+                    })),
+                ]);
+            }
+
             let images = std::mem::take(&mut app.pending_images);
             let image_refs: Vec<shore_protocol::types::ImageRef> = images
                 .iter()
@@ -466,6 +498,33 @@ fn parse_command(app: &mut App, input: &str) -> Action {
             }
         }
 
+        "edit" => {
+            if arg.is_empty() || arg == "cancel" {
+                if app.editing_ref.is_some() {
+                    app.editing_ref = None;
+                    app.input.text.clear();
+                    app.input.cursor = 0;
+                    app.set_status("edit cancelled");
+                } else {
+                    app.set_status("usage: :edit <ref>  (e.g. last, -1, -2)");
+                }
+                Action::Redraw
+            } else {
+                match app.resolve_ref_content(arg) {
+                    Some(content) => {
+                        app.editing_ref = Some(arg.to_string());
+                        app.input.set_text(content);
+                        app.input.mode = InputMode::Insert;
+                        Action::Redraw
+                    }
+                    None => {
+                        app.set_status(format!("message not found: {arg}"));
+                        Action::Redraw
+                    }
+                }
+            }
+        }
+
         "regen" => {
             let msg = ClientMessage::Regen(Regen {
                 rid: None,
@@ -516,6 +575,19 @@ fn parse_command(app: &mut App, input: &str) -> Action {
             }
         }
 
+
+        "sys" | "system" => {
+            if arg.is_empty() {
+                app.set_status("usage: :sys <instruction>");
+                Action::Redraw
+            } else {
+                Action::Send(ConnCommand::Send(ClientMessage::Command(Command {
+                    rid: None,
+                    name: "inject_system".into(),
+                    args: serde_json::json!({ "text": arg }),
+                })))
+            }
+        }
 
         _ => {
             app.set_status(format!("unknown command: {cmd}"));

@@ -7,7 +7,9 @@ use crate::types::{ContentBlock, GenerateResponse, LlmRequest, Timing, Usage};
 use crate::LlmError;
 
 use super::sse::{read_sse_events, SseEvent};
-use super::stream_helpers::{build_done_event, build_start_event, build_tool_use_event};
+use super::stream_helpers::{
+    build_done_event, build_start_event, build_tool_use_event, extract_gemini_usage,
+};
 
 const DEFAULT_BASE_URL: &str = "https://generativelanguage.googleapis.com";
 
@@ -71,7 +73,36 @@ fn translate_messages(request: &LlmRequest) -> Vec<Value> {
     for msg in &request.messages {
         let role = match msg.get("role").and_then(|r| r.as_str()) {
             Some("assistant") => "model",
-            Some("system") => continue, // system messages handled separately
+            Some("system") => {
+                // Inline system instructions → user/model pair.
+                // merge_consecutive_roles() handles adjacent same-role merging.
+                let text = match msg.get("content") {
+                    Some(Value::String(s)) => s.clone(),
+                    Some(Value::Array(blocks)) => blocks
+                        .iter()
+                        .filter_map(|b| {
+                            if b.get("type").and_then(|t| t.as_str()) == Some("text") {
+                                b.get("text").and_then(|t| t.as_str()).map(String::from)
+                            } else {
+                                None
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join(""),
+                    _ => String::new(),
+                };
+                let wrapped =
+                    format!("<system_instruction>{text}</system_instruction>");
+                contents.push(json!({
+                    "role": "user",
+                    "parts": [{"text": wrapped}]
+                }));
+                contents.push(json!({
+                    "role": "model",
+                    "parts": [{"text": "Understood."}]
+                }));
+                continue;
+            }
             Some(r) => r,
             None => continue,
         };
@@ -475,10 +506,8 @@ pub async fn stream(
                 }
 
                 // Update usage (last chunk wins).
-                if let Some(meta) = chunk.get("usageMetadata") {
-                    usage.input_tokens = meta.get("promptTokenCount").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-                    usage.output_tokens = meta.get("candidatesTokenCount").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-                    usage.cache_read_tokens = meta.get("cachedContentTokenCount").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                if chunk.get("usageMetadata").is_some() {
+                    usage = extract_gemini_usage(chunk.get("usageMetadata"));
                 }
 
                 if lines.is_empty() { None } else { Some(lines.join("\n")) }
@@ -596,22 +625,7 @@ pub async fn generate(
         .and_then(|r| r.as_str());
     let finish_reason = normalize_finish_reason(finish_reason).to_string();
 
-    let meta = resp.get("usageMetadata");
-    let usage = Usage {
-        input_tokens: meta
-            .and_then(|m| m.get("promptTokenCount"))
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as u32,
-        output_tokens: meta
-            .and_then(|m| m.get("candidatesTokenCount"))
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as u32,
-        cache_read_tokens: meta
-            .and_then(|m| m.get("cachedContentTokenCount"))
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as u32,
-        cache_creation_tokens: 0,
-    };
+    let usage = extract_gemini_usage(resp.get("usageMetadata"));
 
     Ok(GenerateResponse {
         content: text_content,
@@ -624,4 +638,180 @@ pub async fn generate(
         },
         model: request.model.clone(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn make_request(messages: Vec<Value>, system: Option<Value>) -> LlmRequest {
+        LlmRequest {
+            provider: "gemini".into(),
+            model: "gemini-2.0-flash".into(),
+            api_key: "test-key".into(),
+            base_url: None,
+            messages,
+            system,
+            tools: None,
+            max_tokens: 4096,
+            temperature: None,
+            top_p: None,
+            provider_options: None,
+            provider_key: None,
+        }
+    }
+
+    // ── detect_generation ──────────────────────────────────────────────
+
+    #[test]
+    fn test_detect_generation_gemini_2() {
+        assert_eq!(detect_generation("gemini-2.0-flash"), 2);
+        assert_eq!(detect_generation("gemini-2.5-pro-latest"), 2);
+    }
+
+    #[test]
+    fn test_detect_generation_gemini_3() {
+        assert_eq!(detect_generation("gemini-3-flash-preview"), 3);
+    }
+
+    #[test]
+    fn test_detect_generation_unknown() {
+        assert_eq!(detect_generation("gpt-4"), 0);
+        assert_eq!(detect_generation("claude-3-opus"), 0);
+    }
+
+    // ── translate_messages ─────────────────────────────────────────────
+
+    #[test]
+    fn test_translate_messages_basic() {
+        let request = make_request(
+            vec![
+                json!({"role": "user", "content": "hello"}),
+                json!({"role": "assistant", "content": "hi there"}),
+            ],
+            None,
+        );
+        let contents = translate_messages(&request);
+        assert_eq!(contents.len(), 2);
+        assert_eq!(contents[0]["role"], "user");
+        assert_eq!(contents[0]["parts"][0]["text"], "hello");
+        assert_eq!(contents[1]["role"], "model");
+        assert_eq!(contents[1]["parts"][0]["text"], "hi there");
+    }
+
+    #[test]
+    fn test_translate_messages_tool_use_and_result() {
+        let request = make_request(
+            vec![
+                json!({
+                    "role": "assistant",
+                    "content": [
+                        {"type": "tool_use", "id": "call_1", "name": "search", "input": {"q": "cats"}}
+                    ]
+                }),
+                json!({
+                    "role": "user",
+                    "content": [
+                        {"type": "tool_result", "tool_use_id": "call_1", "content": "5 results"}
+                    ]
+                }),
+            ],
+            None,
+        );
+        let contents = translate_messages(&request);
+        assert_eq!(contents.len(), 2);
+
+        // Assistant tool_use -> functionCall
+        let fc = &contents[0]["parts"][0]["functionCall"];
+        assert_eq!(fc["name"], "search");
+        assert_eq!(fc["args"]["q"], "cats");
+
+        // User tool_result -> functionResponse with name from tool_id_to_name map
+        let fr = &contents[1]["parts"][0]["functionResponse"];
+        assert_eq!(fr["name"], "search");
+        assert_eq!(fr["response"]["result"], "5 results");
+    }
+
+    #[test]
+    fn test_translate_messages_inline_system() {
+        let request = make_request(
+            vec![json!({"role": "system", "content": "be helpful"})],
+            None,
+        );
+        let contents = translate_messages(&request);
+        assert_eq!(contents.len(), 2);
+        assert_eq!(contents[0]["role"], "user");
+        assert!(contents[0]["parts"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("<system_instruction>"));
+        assert_eq!(contents[1]["role"], "model");
+        assert_eq!(contents[1]["parts"][0]["text"], "Understood.");
+    }
+
+    // ── merge_consecutive_roles ───────────────────────────────────────
+
+    #[test]
+    fn test_merge_consecutive_roles() {
+        let mut contents = vec![
+            json!({"role": "model", "parts": [{"text": "First."}]}),
+            json!({"role": "model", "parts": [{"text": "Second."}]}),
+        ];
+        merge_consecutive_roles(&mut contents);
+        assert_eq!(contents.len(), 1);
+        assert_eq!(contents[0]["role"], "model");
+        let text = contents[0]["parts"][0]["text"].as_str().unwrap();
+        assert!(text.contains("First."));
+        assert!(text.contains("Second."));
+    }
+
+    #[test]
+    fn test_merge_consecutive_roles_skips_thought() {
+        let mut contents = vec![
+            json!({
+                "role": "model",
+                "parts": [{"text": "thinking...", "thought": true}]
+            }),
+            json!({
+                "role": "model",
+                "parts": [{"text": "response"}]
+            }),
+        ];
+        merge_consecutive_roles(&mut contents);
+        // Should merge into one message but not combine thought and non-thought text.
+        assert_eq!(contents.len(), 1);
+        let parts = contents[0]["parts"].as_array().unwrap();
+        // Thought part and text part should both be present.
+        assert_eq!(parts.len(), 2);
+    }
+
+    // ── translate_tools ───────────────────────────────────────────────
+
+    #[test]
+    fn test_translate_tools() {
+        let tools = Some(vec![json!({
+            "name": "web_search",
+            "description": "Search the web",
+            "input_schema": {"type": "object", "properties": {"q": {"type": "string"}}}
+        })]);
+        let result = translate_tools(&tools).unwrap();
+        let decls = result[0]["functionDeclarations"].as_array().unwrap();
+        assert_eq!(decls.len(), 1);
+        assert_eq!(decls[0]["name"], "web_search");
+        assert_eq!(decls[0]["description"], "Search the web");
+        assert!(decls[0]["parameters"]["properties"]["q"].is_object());
+    }
+
+    // ── normalize_finish_reason ───────────────────────────────────────
+
+    #[test]
+    fn test_normalize_finish_reason() {
+        assert_eq!(normalize_finish_reason(Some("STOP")), "end_turn");
+        assert_eq!(normalize_finish_reason(Some("MAX_TOKENS")), "max_tokens");
+        assert_eq!(normalize_finish_reason(Some("SAFETY")), "safety");
+        assert_eq!(normalize_finish_reason(Some("MALFORMED_FUNCTION_CALL")), "tool_use");
+        assert_eq!(normalize_finish_reason(None), "end_turn");
+        assert_eq!(normalize_finish_reason(Some("UNKNOWN_THING")), "end_turn");
+    }
 }

@@ -6218,6 +6218,7 @@ dependencies = [
 name = "shore-client"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "serde",
  "serde_json",
  "shore-config",
@@ -6249,6 +6250,7 @@ dependencies = [
  "arrow-schema",
  "base64",
  "chrono",
+ "dashmap",
  "fs2",
  "futures",
  "lancedb",

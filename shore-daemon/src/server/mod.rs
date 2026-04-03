@@ -469,6 +469,7 @@ mod tests {
     use super::*;
     use shore_protocol::client_msg::{ClientHello, ClientMessageBody, Command, Regen};
     use shore_protocol::types::Message;
+    use tempfile::TempDir;
     use tokio::io::{duplex, AsyncWriteExt, BufReader};
 
     /// Helper: write a ClientMessage as JSON line into the writer half.
@@ -808,5 +809,204 @@ mod tests {
 
         drop(h.client_writer);
         h.handle.await.unwrap().unwrap();
+    }
+
+    // ── concurrent clients ───────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn broadcast_reaches_two_clients() {
+        // Shared state for both clients.
+        let clients: Arc<RwLock<HashMap<u64, ClientInfo>>> =
+            Arc::new(RwLock::new(HashMap::new()));
+        let (push_tx, _) = broadcast::channel::<ServerMessage>(16);
+        let (route_tx, _route_rx) = tokio::sync::mpsc::channel::<RoutedMessage>(16);
+        let (shutdown_tx, _) = tokio::sync::watch::channel(());
+
+        // Spawn client 1.
+        let (c1_stream, s1_stream) = duplex(8192);
+        let (c1_stream2, s1_stream2) = duplex(8192);
+        let h1 = {
+            let ctx = ClientCtx {
+                client_id: 1,
+                clients: clients.clone(),
+                push_rx: push_tx.subscribe(),
+                route_tx: route_tx.clone(),
+                server_name: "test-server".into(),
+                shutdown: shutdown_tx.subscribe(),
+            };
+            tokio::spawn(async move { handle_client(s1_stream, s1_stream2, ctx).await })
+        };
+        let mut r1 = BufReader::new(c1_stream2);
+        let mut w1 = c1_stream;
+
+        // Spawn client 2.
+        let (c2_stream, s2_stream) = duplex(8192);
+        let (c2_stream2, s2_stream2) = duplex(8192);
+        let h2 = {
+            let ctx = ClientCtx {
+                client_id: 2,
+                clients: clients.clone(),
+                push_rx: push_tx.subscribe(),
+                route_tx: route_tx.clone(),
+                server_name: "test-server".into(),
+                shutdown: shutdown_tx.subscribe(),
+            };
+            tokio::spawn(async move { handle_client(s2_stream, s2_stream2, ctx).await })
+        };
+        let mut r2 = BufReader::new(c2_stream2);
+        let mut w2 = c2_stream;
+
+        // Complete handshakes for both.
+        do_handshake(&mut r1, &mut w1, "tui").await;
+        do_handshake(&mut r2, &mut w2, "cli").await;
+
+        // Both clients should be registered.
+        assert_eq!(clients.read().await.len(), 2);
+
+        // Send a broadcast.
+        let chunk = ServerMessage::StreamChunk(shore_protocol::server_msg::StreamChunk {
+            text: "hello both".into(),
+            content_type: "text".into(),
+        });
+        push_tx.send(chunk.clone()).unwrap();
+
+        // Both clients should receive it.
+        let got1 = recv_server_msg(&mut r1).await;
+        let got2 = recv_server_msg(&mut r2).await;
+        assert_eq!(
+            serde_json::to_value(&got1).unwrap(),
+            serde_json::to_value(&chunk).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_value(&got2).unwrap(),
+            serde_json::to_value(&chunk).unwrap()
+        );
+
+        // Clean shutdown.
+        drop(w1);
+        drop(w2);
+        h1.await.unwrap().unwrap();
+        h2.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn client_disconnect_is_graceful() {
+        let mut h = spawn_handler();
+        do_handshake(&mut h.client_reader, &mut h.client_writer, "tui").await;
+
+        // Client is registered.
+        assert_eq!(h.clients.read().await.len(), 1);
+
+        // Simulate abrupt disconnect by dropping the writer.
+        drop(h.client_writer);
+
+        // Handler task should complete without error.
+        let result = h.handle.await.unwrap();
+        assert!(result.is_ok());
+
+        // Client should be deregistered.
+        assert!(h.clients.read().await.is_empty());
+    }
+
+    // ── TCP ACL enforcement ─────────────────────────────────────────
+
+    /// Find an available TCP port by briefly binding to port 0.
+    fn available_port() -> u16 {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap().port()
+    }
+
+    /// Spin up a real `Server::run()` with TCP enabled and the given allowed_hosts.
+    /// Returns the server handle and a shutdown sender.
+    fn spawn_tcp_server(
+        tmp: &TempDir,
+        port: u16,
+        allowed_hosts: Vec<String>,
+    ) -> (
+        tokio::task::JoinHandle<std::io::Result<()>>,
+        tokio::sync::watch::Sender<()>,
+    ) {
+        let socket_path = tmp.path().join("shore.sock");
+        let config = ServerConfig {
+            socket_path,
+            tcp: Some(TcpConfig {
+                enabled: true,
+                addr: Some(format!("127.0.0.1:{port}")),
+                allowed_hosts,
+            }),
+            server_name: "test-acl-server".into(),
+        };
+        let server = Server::new(config);
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+        let handle = tokio::spawn(async move { server.run(shutdown_rx).await });
+
+        (handle, shutdown_tx)
+    }
+
+    /// Connect via TCP to the given port, complete the SWP handshake, and
+    /// return true if ServerHello was received (i.e. connection was accepted).
+    async fn tcp_handshake_succeeds(port: u16) -> bool {
+        use tokio::net::TcpStream;
+        use tokio::time::{timeout, Duration};
+
+        // Small delay to let the server bind.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let stream = match timeout(
+            Duration::from_secs(2),
+            TcpStream::connect(format!("127.0.0.1:{port}")),
+        ).await {
+            Ok(Ok(s)) => s,
+            _ => return false,
+        };
+
+        let (reader, _writer) = stream.into_split();
+        let mut reader = BufReader::new(reader);
+        let mut line = String::new();
+
+        match timeout(Duration::from_secs(2), reader.read_line(&mut line)).await {
+            Ok(Ok(n)) if n > 0 => {
+                // Parse as ServerMessage — a ServerHello means ACL passed.
+                serde_json::from_str::<ServerMessage>(line.trim())
+                    .map(|msg| matches!(msg, ServerMessage::Hello(_)))
+                    .unwrap_or(false)
+            }
+            _ => false,
+        }
+    }
+
+    #[tokio::test]
+    async fn tcp_acl_empty_allows_all() {
+        let tmp = TempDir::new().unwrap();
+        let port = available_port();
+        let (_handle, shutdown_tx) = spawn_tcp_server(&tmp, port, vec![]);
+
+        assert!(tcp_handshake_succeeds(port).await, "Empty allowed_hosts should allow all");
+
+        let _ = shutdown_tx.send(());
+    }
+
+    #[tokio::test]
+    async fn tcp_acl_allows_matching_ip() {
+        let tmp = TempDir::new().unwrap();
+        let port = available_port();
+        let (_handle, shutdown_tx) =
+            spawn_tcp_server(&tmp, port, vec!["127.0.0.1".into()]);
+
+        assert!(tcp_handshake_succeeds(port).await, "Matching IP should be allowed");
+
+        let _ = shutdown_tx.send(());
+    }
+
+    #[tokio::test]
+    async fn tcp_acl_rejects_non_matching_ip() {
+        let tmp = TempDir::new().unwrap();
+        let port = available_port();
+        let (_handle, shutdown_tx) =
+            spawn_tcp_server(&tmp, port, vec!["10.0.0.1".into()]);
+
+        assert!(!tcp_handshake_succeeds(port).await, "Non-matching IP should be rejected");
+
+        let _ = shutdown_tx.send(());
     }
 }

@@ -6,6 +6,7 @@ use ratatui::text::{Line, Span};
 
 pub use shore_client::image_protocol::ImageProtocol;
 pub use shore_client::image_protocol::detect_protocol as detect_protocol_from_env;
+pub use shore_client::image_protocol::detect_protocol_probe;
 
 pub type KittyImageId = u32;
 
@@ -77,6 +78,13 @@ impl ImageCache {
             protocol: detect_protocol_from_env(),
             cell_width: 8,
             cell_height: 16,
+        }
+    }
+
+    /// Re-detect protocol using terminal probe (requires raw mode).
+    pub fn probe_protocol(&mut self) {
+        if self.protocol.is_none() {
+            self.protocol = detect_protocol_probe();
         }
     }
 
@@ -244,7 +252,7 @@ mod tests {
     #[test]
     fn detect_kitty_from_env() {
         assert_eq!(
-            detect_protocol(Some("kitty"), None, None),
+            detect_protocol(Some("kitty"), None, None, false, false),
             Some(ImageProtocol::Kitty)
         );
     }
@@ -252,7 +260,7 @@ mod tests {
     #[test]
     fn detect_iterm_from_term_program() {
         assert_eq!(
-            detect_protocol(None, Some("iTerm.app"), None),
+            detect_protocol(None, Some("iTerm.app"), None, false, false),
             Some(ImageProtocol::Iterm2)
         );
     }
@@ -260,19 +268,45 @@ mod tests {
     #[test]
     fn detect_kitty_from_term() {
         assert_eq!(
-            detect_protocol(None, None, Some("xterm-kitty")),
+            detect_protocol(None, None, Some("xterm-kitty"), false, false),
             Some(ImageProtocol::Kitty)
         );
     }
 
     #[test]
     fn detect_none() {
-        assert_eq!(detect_protocol(None, None, Some("xterm-256color")), None);
+        assert_eq!(detect_protocol(None, None, Some("xterm-256color"), false, false), None);
+    }
+
+    #[test]
+    fn detect_ghostty_from_term_program() {
+        assert_eq!(
+            detect_protocol(None, Some("ghostty"), None, false, false),
+            Some(ImageProtocol::Kitty)
+        );
+    }
+
+    #[test]
+    fn detect_ghostty_from_env_var() {
+        // GHOSTTY_RESOURCES_DIR survives tmux/zellij
+        assert_eq!(
+            detect_protocol(None, None, Some("xterm-256color"), true, false),
+            Some(ImageProtocol::Kitty)
+        );
+    }
+
+    #[test]
+    fn detect_kitty_from_window_id() {
+        // KITTY_WINDOW_ID survives tmux/zellij
+        assert_eq!(
+            detect_protocol(None, None, Some("xterm-256color"), false, true),
+            Some(ImageProtocol::Kitty)
+        );
     }
 
     #[test]
     fn detect_off() {
-        assert_eq!(detect_protocol(Some("off"), None, None), None);
+        assert_eq!(detect_protocol(Some("off"), None, None, false, false), None);
     }
 
     #[test]

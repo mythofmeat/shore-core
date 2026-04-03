@@ -84,10 +84,9 @@ pub fn build_capabilities_block(config: &CapabilitiesConfig) -> Option<String> {
     if config.interiority_enabled {
         lines.push(
             "- You have an interiority system: periodically, you get private moments \
-             to think, use tools, and write in your scratchpad. If you want to \
-             message the user during these moments, wrap your message in \
-             <sendMessage>...</sendMessage> tags. These autonomous messages are \
-             real and were written by you — do not deny or second-guess them.",
+             to think, use tools, and write in your scratchpad. You sometimes send \
+             autonomous messages during these moments — these are real and were \
+             written by you, do not deny or second-guess them.",
         );
     }
     if config.scratchpad_enabled {
@@ -697,6 +696,100 @@ mod tests {
     }
 
     #[test]
+    fn estimate_tokens_uses_byte_length_not_char_count() {
+        // ASCII: 1 byte per char → 5 bytes / 4 = 2 tokens
+        assert_eq!(estimate_tokens("Hello"), 2);
+
+        // CJK: 3 bytes per char → 15 bytes / 4 = 4 tokens (not 5/4 = 2)
+        let cjk = "日本語の文"; // 5 chars, 15 bytes
+        assert_eq!(cjk.len(), 15);
+        assert_eq!(estimate_tokens(cjk), 4);
+
+        // Emoji: 4 bytes each → 16 bytes / 4 = 4 tokens
+        let emoji = "😀😁😂🤣"; // 4 chars, 16 bytes
+        assert_eq!(emoji.len(), 16);
+        assert_eq!(estimate_tokens(emoji), 4);
+    }
+
+    #[test]
+    fn estimate_tokens_short_words_undercount() {
+        // Real tokenizers often produce 1 token per short word + whitespace.
+        // "I am a" → 3 real tokens, but heuristic says 6 bytes / 4 = 2.
+        // This documents the known under-counting for short-word text.
+        let short_words = "I am a";
+        assert_eq!(estimate_tokens(short_words), 2); // real ≈ 3
+    }
+
+    #[test]
+    fn estimate_tokens_json_payload() {
+        // JSON has many structural chars (braces, quotes, colons) that
+        // tokenizers often group differently than plain prose.
+        let json = r#"{"name":"test","values":[1,2,3],"nested":{"key":"val"}}"#;
+        assert_eq!(estimate_tokens(json), json.len().div_ceil(4));
+    }
+
+    #[test]
+    fn estimate_tokens_code_block() {
+        // Code with identifiers, operators, and indentation.
+        let code = "fn estimate_tokens(text: &str) -> usize {\n    text.len().div_ceil(4)\n}";
+        assert_eq!(estimate_tokens(code), code.len().div_ceil(4));
+    }
+
+    #[test]
+    fn estimate_message_tokens_redacted_thinking_is_zero() {
+        let msg = Message {
+            msg_id: "m1".into(),
+            role: Role::Assistant,
+            content: String::new(),
+            images: vec![],
+            content_blocks: vec![ContentBlock::RedactedThinking {
+                data: "opaque".into(),
+            }],
+            alt_index: None,
+            alt_count: None,
+            timestamp: "2026-01-01T00:00:00Z".into(),
+        };
+        assert_eq!(estimate_message_tokens(&msg), 0);
+    }
+
+    #[test]
+    fn estimate_message_tokens_mixed_blocks_sums_all() {
+        let msg = Message {
+            msg_id: "m1".into(),
+            role: Role::Assistant,
+            content: String::new(),
+            images: vec![],
+            content_blocks: vec![
+                ContentBlock::Thinking {
+                    thinking: "A".repeat(40),
+                    signature: None,
+                },
+                ContentBlock::Text {
+                    text: "B".repeat(80),
+                },
+                ContentBlock::ToolUse {
+                    id: "tu1".into(),
+                    name: "check_time".into(),
+                    input: serde_json::json!({"tz": "UTC"}),
+                },
+                ContentBlock::RedactedThinking {
+                    data: "ignored".into(),
+                },
+            ],
+            alt_index: None,
+            alt_count: None,
+            timestamp: "2026-01-01T00:00:00Z".into(),
+        };
+        let tokens = estimate_message_tokens(&msg);
+        // 40/4 + 80/4 + tool_name + tool_input + 0 (redacted)
+        let tool_input_str = serde_json::json!({"tz": "UTC"}).to_string();
+        let expected = 10 + 20
+            + "check_time".len().div_ceil(4)
+            + tool_input_str.len().div_ceil(4);
+        assert_eq!(tokens, expected);
+    }
+
+    #[test]
     fn estimate_message_tokens_uses_content_blocks_when_present() {
         let msg = Message {
             msg_id: "m1".into(),
@@ -1114,5 +1207,101 @@ mod tests {
         assert!(!all_text.contains("interiority"));
         assert!(!all_text.contains("journal"));
         assert!(!all_text.contains("story"));
+    }
+
+    // ── Trim: orphaned tool-loop stripping ────────────────────────────
+
+    fn make_tool_result_msg() -> Message {
+        Message {
+            msg_id: uuid::Uuid::new_v4().to_string(),
+            role: Role::User,
+            content: String::new(),
+            images: vec![],
+            content_blocks: vec![ContentBlock::ToolResult {
+                tool_use_id: "t1".into(),
+                content: "result".into(),
+                is_error: false,
+            }],
+            alt_index: None,
+            alt_count: None,
+            timestamp: "2026-01-01T00:00:00Z".into(),
+        }
+    }
+
+    fn make_tool_use_only_msg() -> Message {
+        Message {
+            msg_id: uuid::Uuid::new_v4().to_string(),
+            role: Role::Assistant,
+            content: String::new(),
+            images: vec![],
+            content_blocks: vec![ContentBlock::ToolUse {
+                id: "t1".into(),
+                name: "search".into(),
+                input: serde_json::json!({"q": "test"}),
+            }],
+            alt_index: None,
+            alt_count: None,
+            timestamp: "2026-01-01T00:00:00Z".into(),
+        }
+    }
+
+    #[test]
+    fn trim_drops_orphaned_tool_result() {
+        let msgs = vec![
+            make_msg(Role::User, "Hi"),
+            make_tool_use_only_msg(),
+            make_tool_result_msg(),
+            make_msg(Role::Assistant, "Done"),
+            make_msg(Role::User, "Recent"),
+        ];
+
+        // Budget tight enough to drop the first 2 messages.
+        // "Hi" = 1 token, tool_use msg ~10 tokens, tool_result ~4 tokens,
+        // "Done" = 1 token, "Recent" = 2 tokens.
+        // With budget=5, newest-first picks Recent(2) + Done(1) + tool_result(~4) = 7 > 5,
+        // so it stops. Result = [tool_result, Done, Recent].
+        // Then orphan stripping removes the leading tool_result.
+        let result = trim_messages(&msgs, 5);
+
+        // Leading ToolResult should be stripped.
+        assert!(
+            !result.is_empty(),
+            "Should have at least one message after stripping"
+        );
+        let first = &result[0];
+        let is_tool_result = first.role == Role::User
+            && first
+                .content_blocks
+                .iter()
+                .all(|b| matches!(b, ContentBlock::ToolResult { .. }));
+        assert!(!is_tool_result, "Leading ToolResult should be stripped");
+        assert_eq!(result.last().unwrap().content, "Recent");
+    }
+
+    #[test]
+    fn trim_drops_orphaned_tool_use_only_assistant() {
+        let msgs = vec![
+            make_msg(Role::User, "Old message here"),
+            make_tool_use_only_msg(),
+            make_tool_result_msg(),
+            make_msg(Role::User, "Recent"),
+        ];
+
+        // Budget tight enough to drop "Old message here" (~5 tokens).
+        // Newest-first: Recent(2) + tool_result(~4) + tool_use(~6) = 12 > 5,
+        // stops before tool_use. Result = [tool_result, Recent].
+        // Then orphan stripping removes leading tool_result.
+        let result = trim_messages(&msgs, 5);
+
+        assert!(
+            !result.is_empty(),
+            "Should have at least one message after stripping"
+        );
+        // The chain of tool_use-only + tool_result should be stripped.
+        assert_eq!(result.last().unwrap().content, "Recent");
+        for msg in &result {
+            let is_tool_loop = is_tool_loop_msg_prompt(msg);
+            assert!(!is_tool_loop, "No tool-loop messages should remain at front");
+        }
     }
 }

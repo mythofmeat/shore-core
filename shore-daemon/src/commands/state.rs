@@ -7,19 +7,18 @@ use crate::engine::ConversationEngine;
 use crate::memory::agent::{CallerIdentity, MemoryAgent, RealAgentIndexer};
 use crate::memory::agent_llm::RealAgentLlm;
 use crate::memory::collation::{
-    CollationConfig as LibCollationConfig, CollationError, CollationManager, CollationOutcome,
+    DecayConfig, CollationError, CollationManager, CollationOutcome,
     DEFAULT_REFINE_PROMPT,
 };
 use crate::memory::collation_impls::RealCollationLlm;
 use crate::memory::compaction::{
-    CompactionConfig, CompactionError, CompactionManager, CompactionOutcome,
+    CompactionError, CompactionManager, CompactionOutcome,
     ConversationMessage, DEFAULT_COMPACT_PROMPT,
 };
 use crate::memory::compaction_impls::{
-    resolve_embed_config, RealCompactionLlm, RealConversationManager, RealVectorIndexer,
+    RealCompactionLlm, RealConversationManager, RealVectorIndexer,
 };
 use crate::memory::db::MemoryDB;
-use crate::memory::vectorstore::VectorStore;
 
 use crate::autonomy::activity::HourClassification;
 
@@ -443,6 +442,66 @@ pub fn memory_shell_end(
     Ok(json!({ "ok": true }))
 }
 
+/// Run collation after a successful compaction, if enabled.
+async fn run_post_compaction_collation(
+    ctx: &CommandContext,
+    char_name: &str,
+    display_name: &str,
+    db: &MemoryDB,
+) -> Option<serde_json::Value> {
+    let collation_model = resolve_collation_model(&ctx.config);
+
+    let cmodel = collation_model?;
+
+    let collation_llm = RealCollationLlm::new(ctx.llm_client.clone(), cmodel);
+    let refine_template = resolve_prompt_template(
+        &ctx.config.dirs.config,
+        char_name,
+        "refine.md",
+    )
+    .unwrap_or_else(|| DEFAULT_REFINE_PROMPT.to_string());
+
+    let collation_mgr = CollationManager::new(DecayConfig::default());
+    let collation_limit = ctx.config.app.memory.collation.batch_limit;
+
+    // Open a second vector store for collation (the compaction one was moved).
+    let collation_search_ctx = setup_search_context(ctx, char_name).await;
+    let collation_indexer = collation_search_ctx.as_ref().map(RealAgentIndexer::new);
+
+    let collation_vars = build_collation_vars(ctx, char_name, display_name);
+    match collation_mgr
+        .run(
+            db,
+            &collation_llm,
+            &refine_template,
+            &collation_vars,
+            collation_indexer.as_ref().map(|i| i as &dyn crate::memory::agent::AgentIndexer),
+            collation_search_ctx.as_ref().map(|ctx| &ctx.vector_store),
+            Some(collation_limit),
+        )
+        .await
+    {
+        Ok(outcome) => Some(json!({
+            "timestamps_backfilled": outcome.timestamps_backfilled,
+            "refine_merges": outcome.refine_merges,
+            "refine_splits": outcome.refine_splits,
+            "refine_updates": outcome.refine_updates,
+            "refine_new_entries": outcome.refine_new_entries,
+            "refine_kept": outcome.refine_kept,
+            "entries_decayed": outcome.entries_decayed,
+            "entries_skipped": outcome.entries_skipped,
+        })),
+        Err(e) => {
+            tracing::warn!(
+                character = %char_name,
+                error = %e,
+                "Collation after compaction failed"
+            );
+            None
+        }
+    }
+}
+
 /// Run compaction on the current character's conversation.
 ///
 /// Extracts memories from the active conversation via an LLM, stores them
@@ -498,26 +557,11 @@ pub async fn compact(
     )
     .unwrap_or_else(|| DEFAULT_COMPACT_PROMPT.to_string());
 
-    // Resolve model: always use the active conversation model.
-    let model = ctx
-        .active_model
-        .as_deref()
-        .and_then(|name| ctx.config.models.find_model(name).ok())
-        .ok_or_else(|| (ErrorCode::InternalError, "No active model for compaction".to_string()))?
-        .clone();
+    // Resolve model: memory_agent default → active model → first chat model.
+    let model = super::resolve_agent_model(ctx)?;
 
-    // Resolve embedding config.
-    let embed_config = resolve_embed_config(
-        ctx.config.app.defaults.embedding.as_deref(),
-        &ctx.config.models.embedding,
-    )
-    .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
-
-    // Open vector store.
-    let vs_path = memory_dir(ctx, &char_name).join("vectorstore");
-    let store = VectorStore::open(&vs_path, embed_config.dimensions)
-        .await
-        .map_err(|e| (ErrorCode::InternalError, format!("Failed to open vector store: {e}")))?;
+    // Resolve embedding + vector store.
+    let (store, embed_config) = super::open_embed_and_vectorstore(ctx, &char_name).await?;
 
     // Create trait implementations.
     let llm = RealCompactionLlm::new(ctx.llm_client.clone(), model);
@@ -525,14 +569,7 @@ pub async fn compact(
     let conv_mgr = RealConversationManager::new(engine.character_dir());
 
     // Create compaction manager with config.
-    let app_compaction = &ctx.config.app.memory.compaction;
-    let config = CompactionConfig {
-        idle_trigger_minutes: app_compaction.idle_trigger_minutes as u64,
-        min_turns: app_compaction.min_turns,
-        max_turns: app_compaction.max_turns,
-        keep_recent_turns: app_compaction.keep_recent_turns,
-    };
-    let mgr = CompactionManager::new(config);
+    let mgr = CompactionManager::new(ctx.config.app.memory.compaction.clone());
 
     // Load existing recap for folding.
     let recap_path = memory_dir(ctx, &char_name).join("recap.md");
@@ -574,60 +611,7 @@ pub async fn compact(
             let collation_result = if do_collate
                 && ctx.config.app.memory.collation.enabled
             {
-                let collation_model = resolve_collation_model(&ctx.config);
-
-                if let Some(cmodel) = collation_model {
-                    let collation_llm =
-                        RealCollationLlm::new(ctx.llm_client.clone(), cmodel);
-                    let refine_template = resolve_prompt_template(
-                        &ctx.config.dirs.config,
-                        &char_name,
-                        "refine.md",
-                    )
-                    .unwrap_or_else(|| DEFAULT_REFINE_PROMPT.to_string());
-
-                    let collation_mgr = CollationManager::new(LibCollationConfig::default());
-                    let collation_limit = ctx.config.app.memory.collation.batch_limit;
-
-                    // Open a second vector store for collation (the compaction one was moved).
-                    let collation_search_ctx = setup_search_context(ctx, &char_name).await;
-                    let collation_indexer = collation_search_ctx.as_ref().map(RealAgentIndexer::new);
-
-                    let collation_vars = build_collation_vars(ctx, &char_name, &display_name);
-                    match collation_mgr
-                        .run(
-                            &db,
-                            &collation_llm,
-                            &refine_template,
-                            &collation_vars,
-                            collation_indexer.as_ref().map(|i| i as &dyn crate::memory::agent::AgentIndexer),
-                            collation_search_ctx.as_ref().map(|ctx| &ctx.vector_store),
-                            Some(collation_limit),
-                        )
-                        .await
-                    {
-                        Ok(outcome) => Some(json!({
-                            "timestamps_backfilled": outcome.timestamps_backfilled,
-                            "refine_merges": outcome.refine_merges,
-                            "refine_splits": outcome.refine_splits,
-                            "refine_updates": outcome.refine_updates,
-                            "refine_new_entries": outcome.refine_new_entries,
-                            "refine_kept": outcome.refine_kept,
-                            "entries_decayed": outcome.entries_decayed,
-                            "entries_skipped": outcome.entries_skipped,
-                        })),
-                        Err(e) => {
-                            tracing::warn!(
-                                character = %char_name,
-                                error = %e,
-                                "Collation after compaction failed"
-                            );
-                            None
-                        }
-                    }
-                } else {
-                    None
-                }
+                run_post_compaction_collation(ctx, &char_name, &display_name, &db).await
             } else {
                 None
             };
@@ -741,7 +725,7 @@ pub async fn collate(
     let refine_template = resolve_prompt_template(&ctx.config.dirs.config, &char_name, "refine.md")
         .unwrap_or_else(|| DEFAULT_REFINE_PROMPT.to_string());
 
-    let mgr = CollationManager::new(LibCollationConfig::default());
+    let mgr = CollationManager::new(DecayConfig::default());
 
     // Resolve batch limit: CLI --limit overrides config default.
     let config_limit = ctx.config.app.memory.collation.batch_limit;
@@ -1032,16 +1016,7 @@ pub async fn memory_reindex(engine: &ConversationEngine, ctx: &CommandContext) -
         .map_err(|e| (ErrorCode::InternalError, format!("Failed to rebuild FTS: {e}")))?;
 
     // Resolve embedding config and rebuild vector index.
-    let embed_config = resolve_embed_config(
-        ctx.config.app.defaults.embedding.as_deref(),
-        &ctx.config.models.embedding,
-    )
-    .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
-
-    let vs_path = memory_dir(ctx, &char_name).join("vectorstore");
-    let store = VectorStore::open(&vs_path, embed_config.dimensions)
-        .await
-        .map_err(|e| (ErrorCode::InternalError, format!("Failed to open vector store: {e}")))?;
+    let (store, embed_config) = super::open_embed_and_vectorstore(ctx, &char_name).await?;
 
     // Embed entries in batches to avoid overrunning the Unix socket with a
     // single huge JSON response (the socket may close before the client
@@ -1494,5 +1469,211 @@ model_id = "gpt-4o"
         assert!(result.is_err());
         let (code, _msg) = result.unwrap_err();
         assert_eq!(code, ErrorCode::NotFound);
+    }
+
+    // ── diagnostics / heartbeat / reset_model ──────────────────────────
+
+    #[test]
+    fn test_diagnostics_empty() {
+        let tmp = TempDir::new().unwrap();
+        let (_engine, ctx, _rx) = make_ctx(&tmp);
+
+        let result = diagnostics(&ctx, &json!({})).unwrap();
+        assert_eq!(result["api_calls"]["count"], 0);
+        assert_eq!(result["tool_calls"]["count"], 0);
+        assert_eq!(result["errors"]["count"], 0);
+        assert!(result["api_calls"]["recent"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_heartbeat_log_empty() {
+        let tmp = TempDir::new().unwrap();
+        let (engine, ctx, _rx) = make_ctx(&tmp);
+
+        let result = heartbeat_log(&engine, &ctx, &json!({})).unwrap();
+        assert!(result["events"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_reset_model_clears_override() {
+        let tmp = TempDir::new().unwrap();
+        let (_engine, mut ctx, _rx) = make_ctx(&tmp);
+
+        ctx.active_model = Some("custom-override".to_string());
+        let result = reset_model(&mut ctx).unwrap();
+
+        assert_eq!(result["previous"], "custom-override");
+        assert_eq!(result["reset_to"], "config default");
+        // AppConfig::default() has no defaults.model, so active_model should be None.
+        assert!(ctx.active_model.is_none());
+    }
+
+    // ── memory_purge ─────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn memory_purge_deletes_old_superseded_entries() {
+        use crate::memory::db::Entry;
+
+        let tmp = TempDir::new().unwrap();
+        let (mut engine, ctx, _rx) = make_ctx(&tmp);
+
+        // Create memory DB on disk at the path memory_purge expects.
+        let mem_dir = ctx.data_dir.join("TestChar").join("memory");
+        std::fs::create_dir_all(&mem_dir).unwrap();
+        let db = MemoryDB::open(&mem_dir.join("memory.db")).unwrap();
+
+        let old_ts = "2020-01-01T00:00:00Z".to_string();
+        let recent_ts = chrono::Utc::now().to_rfc3339();
+        let empty = String::new();
+
+        let make_entry = |id: &str, status: &str, superseded_by: &str, image_path: &str, ts: &str| Entry {
+            id: id.into(),
+            memory_type: "observation".into(),
+            source: "test".into(),
+            reason: empty.clone(),
+            status: status.into(),
+            confidence: 1.0,
+            summary_text: format!("Entry {id}"),
+            topic_tags: empty.clone(),
+            topic_key: empty.clone(),
+            start_timestamp: empty.clone(),
+            end_timestamp: empty.clone(),
+            message_count: 0,
+            source_entry_ids: empty.clone(),
+            related_entry_ids: empty.clone(),
+            superseded_by: superseded_by.into(),
+            created_at: ts.into(),
+            updated_at: ts.into(),
+            entry_type: empty.clone(),
+            image_path: image_path.into(),
+            collated_at: empty.clone(),
+        };
+
+        // Active entry that serves as the replacement target.
+        db.create_entry(&make_entry("active-1", "active", "", "", &old_ts)).unwrap();
+        // Old superseded entry with valid replacement → should be deleted.
+        db.create_entry(&make_entry("old-superseded", "superseded", "active-1", "", &old_ts)).unwrap();
+        // Recent superseded entry → should be skipped (not old enough).
+        db.create_entry(&make_entry("recent-superseded", "superseded", "active-1", "", &recent_ts)).unwrap();
+        // Superseded entry with image_path → should be skipped.
+        db.create_entry(&make_entry("image-superseded", "superseded", "active-1", "/some/image.png", &old_ts)).unwrap();
+        // Superseded entry with empty superseded_by → should be skipped.
+        db.create_entry(&make_entry("no-replacement", "superseded", "", "", &old_ts)).unwrap();
+
+        drop(db); // Close so memory_purge can open it.
+
+        let result = memory_purge(&mut engine, &ctx, &json!({"older_than": "1d"}))
+            .await
+            .unwrap();
+
+        assert_eq!(result["deleted"], 1);
+        assert_eq!(result["skipped_image"], 1);
+        assert_eq!(result["skipped_no_replacement"], 1);
+
+        // Verify the entry was actually removed from the DB.
+        let db = MemoryDB::open(&mem_dir.join("memory.db")).unwrap();
+        assert!(db.get_entry("old-superseded").unwrap().is_none());
+        assert!(db.get_entry("recent-superseded").unwrap().is_some());
+        assert!(db.get_entry("image-superseded").unwrap().is_some());
+        assert!(db.get_entry("no-replacement").unwrap().is_some());
+    }
+
+    // ── config_reset ────────────────────────────────────────────────────
+
+    #[test]
+    fn config_reset_clears_active_model_and_reloads() {
+        let tmp = TempDir::new().unwrap();
+        let (_engine, mut ctx, _rx) = make_ctx(&tmp);
+
+        // Simulate a runtime model override.
+        ctx.active_model = Some("custom-override".into());
+        // Mutate a config value so we can detect that it was replaced.
+        ctx.config.app.defaults.stream = false;
+
+        let result = config_reset(&mut ctx).unwrap();
+
+        assert_eq!(result["reset"], true);
+        assert!(ctx.active_model.is_none(), "active_model should be cleared");
+        // load_config(None) returns defaults when no config file exists,
+        // so stream should be back to the default (true).
+        assert!(ctx.config.app.defaults.stream, "config should be reloaded from defaults");
+    }
+
+    // ── memory_reindex ──────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn memory_reindex_empty_returns_zero() {
+        let tmp = TempDir::new().unwrap();
+        let (engine, ctx, _rx) = make_ctx(&tmp);
+
+        let db_dir = ctx.data_dir.join("TestChar").join("memory");
+        std::fs::create_dir_all(&db_dir).unwrap();
+        let _db = MemoryDB::open(&db_dir.join("memory.db")).unwrap();
+
+        let result = memory_reindex(&engine, &ctx).await.unwrap();
+        assert_eq!(result["reindexed"], 0);
+        assert!(result["message"].as_str().unwrap().contains("No active entries"));
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires OPENROUTER_SHORE_EMBEDDING"]
+    async fn memory_reindex_rebuilds_fts_and_vectors() {
+        if std::env::var("OPENROUTER_SHORE_EMBEDDING").is_err() {
+            panic!("OPENROUTER_SHORE_EMBEDDING not set");
+        }
+
+        let tmp = TempDir::new().unwrap();
+
+        let embed_toml: toml::Table = r#"
+[text-embed]
+model_id = "openai/text-embedding-3-small"
+provider = "openai"
+api_key_env = "OPENROUTER_SHORE_EMBEDDING"
+base_url = "https://openrouter.ai/api/v1"
+dimensions = 1536
+"#
+        .parse()
+        .unwrap();
+        let models =
+            ModelCatalog::from_sections(None, None, Some(&embed_toml), None).unwrap();
+        let (engine, ctx, _rx) = make_ctx_with_models(&tmp, models);
+
+        let db_dir = ctx.data_dir.join("TestChar").join("memory");
+        std::fs::create_dir_all(&db_dir).unwrap();
+        let db = MemoryDB::open(&db_dir.join("memory.db")).unwrap();
+
+        for i in 0..3 {
+            db.create_entry(&crate::memory::db::Entry {
+                id: format!("entry_{i}"),
+                memory_type: "semantic".into(),
+                source: "test".into(),
+                reason: "reindex test".into(),
+                status: "active".into(),
+                confidence: 0.9,
+                summary_text: format!("Test memory entry number {i} about various topics"),
+                topic_tags: "test".into(),
+                topic_key: "test".into(),
+                start_timestamp: String::new(),
+                end_timestamp: String::new(),
+                message_count: 0,
+                source_entry_ids: String::new(),
+                related_entry_ids: String::new(),
+                superseded_by: String::new(),
+                created_at: "2026-01-01T00:00:00Z".into(),
+                updated_at: "2026-01-01T00:00:00Z".into(),
+                entry_type: String::new(),
+                image_path: String::new(),
+                collated_at: String::new(),
+            })
+            .unwrap();
+        }
+        drop(db);
+
+        let result = memory_reindex(&engine, &ctx).await.unwrap();
+        assert_eq!(result["reindexed"], 3);
+        assert!(result["message"]
+            .as_str()
+            .unwrap()
+            .contains("Reindexed 3 entries"));
     }
 }

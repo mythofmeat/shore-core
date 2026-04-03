@@ -1,6 +1,6 @@
 pub mod activity;
-pub mod cache_keepalive;
 pub mod interiority;
+pub mod interiority_journal;
 pub mod manager;
 
 use std::collections::VecDeque;
@@ -18,10 +18,8 @@ pub struct AutonomyStatus {
     pub ticks_without_user: u32,
     /// Max idle ticks before going dormant.
     pub max_idle_ticks: u32,
-    /// Current cache keepalive state label.
-    pub cache_keepalive_state: String,
-    /// Number of cache keepalive pings sent.
-    pub cache_keepalive_pings: u32,
+    /// Effective tick interval in seconds (min of interiority + cache refresh).
+    pub effective_interval_secs: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -58,6 +56,10 @@ pub enum InteriorityEventKind {
     Dormant,
     /// Woke from dormant (user returned).
     Wake,
+    /// Interiority tick was killed by the timeout guard.
+    Timeout,
+    /// Dormant bare ping sent to keep cache warm.
+    DormantPing,
 }
 
 impl std::fmt::Display for InteriorityEventKind {
@@ -69,6 +71,8 @@ impl std::fmt::Display for InteriorityEventKind {
             Self::ToolUse => write!(f, "tool_use"),
             Self::Dormant => write!(f, "dormant"),
             Self::Wake => write!(f, "wake"),
+            Self::Timeout => write!(f, "timeout"),
+            Self::DormantPing => write!(f, "dormant_ping"),
         }
     }
 }
@@ -101,5 +105,21 @@ impl InteriorityLog {
     pub fn recent(&self, limit: usize) -> Vec<&InteriorityEvent> {
         let start = self.events.len().saturating_sub(limit);
         self.events.range(start..).collect()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Cache TTL parsing (shared between handler and interiority)
+// ---------------------------------------------------------------------------
+
+/// Parse a `cache_ttl` duration string (e.g. `"1h"`, `"5m"`) into seconds.
+pub fn parse_cache_ttl_secs(s: &str) -> Option<u64> {
+    let s = s.trim();
+    if let Some(h) = s.strip_suffix('h') {
+        h.parse::<u64>().ok().map(|v| v * 3600)
+    } else if let Some(m) = s.strip_suffix('m') {
+        m.parse::<u64>().ok().map(|v| v * 60)
+    } else {
+        None
     }
 }

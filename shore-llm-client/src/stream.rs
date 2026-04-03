@@ -914,4 +914,96 @@ mod tests {
         check_cache_invalidation(&push_tx, &ctx, &usage);
         assert!(push_rx.try_recv().is_err());
     }
+
+    #[tokio::test]
+    async fn malformed_json_mid_stream() {
+        let (mut writer, mut reader, push_tx, mut push_rx) = setup_stream_pair();
+        let consumer = StreamConsumer::new(push_tx);
+        let ctx = CacheContext::default();
+
+        let server_handle = tokio::spawn(async move {
+            writer
+                .write_all(b"{\"type\":\"start\",\"model\":\"claude-test\"}\n")
+                .await
+                .unwrap();
+            writer.write_all(b"NOT VALID JSON\n").await.unwrap();
+            writer.shutdown().await.unwrap();
+        });
+
+        let result = consumer.consume(&mut reader, false, &ctx).await;
+        assert!(result.is_err());
+        assert!(
+            matches!(&result.unwrap_err(), LlmError::Deserialize(_)),
+            "Expected Deserialize error"
+        );
+
+        // StreamStart should have been broadcast before the error.
+        let msg = push_rx.try_recv().unwrap();
+        assert!(matches!(msg, ServerMessage::StreamStart(_)));
+
+        server_handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn thinking_signature_without_thinking_text() {
+        let (mut writer, mut reader, push_tx, _push_rx) = setup_stream_pair();
+        let consumer = StreamConsumer::new(push_tx);
+        let ctx = CacheContext::default();
+
+        let events = [
+            r#"{"type":"start","model":"claude-test"}"#,
+            r#"{"type":"thinking_signature","signature":"sig_orphan"}"#,
+            r#"{"type":"text","text":"Hello"}"#,
+            r#"{"type":"done","content":"Hello","finish_reason":"end_turn","usage":{"input_tokens":10,"output_tokens":5},"timing":{"total_ms":100}}"#,
+        ];
+
+        let server_handle = tokio::spawn(async move {
+            for event in events {
+                writer.write_all(event.as_bytes()).await.unwrap();
+                writer.write_all(b"\n").await.unwrap();
+            }
+            writer.shutdown().await.unwrap();
+        });
+
+        let result = consumer.consume(&mut reader, false, &ctx).await.unwrap();
+
+        // Only a text block — the orphaned signature is discarded.
+        assert_eq!(result.content_blocks.len(), 1);
+        assert!(matches!(&result.content_blocks[0], ContentBlock::Text { text } if text == "Hello"));
+        assert_eq!(result.content, "Hello");
+
+        server_handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn broadcast_channel_no_receivers() {
+        let (mut writer, mut reader, push_tx, push_rx) = setup_stream_pair();
+        // Drop the only receiver — sends will silently fail.
+        drop(push_rx);
+
+        let consumer = StreamConsumer::new(push_tx);
+        let ctx = CacheContext::default();
+
+        let events = [
+            r#"{"type":"start","model":"claude-test"}"#,
+            r#"{"type":"text","text":"Hello "}"#,
+            r#"{"type":"text","text":"world"}"#,
+            r#"{"type":"done","content":"Hello world","finish_reason":"end_turn","usage":{"input_tokens":10,"output_tokens":5},"timing":{"total_ms":100}}"#,
+        ];
+
+        let server_handle = tokio::spawn(async move {
+            for event in events {
+                writer.write_all(event.as_bytes()).await.unwrap();
+                writer.write_all(b"\n").await.unwrap();
+            }
+            writer.shutdown().await.unwrap();
+        });
+
+        let result = consumer.consume(&mut reader, false, &ctx).await.unwrap();
+        assert_eq!(result.content, "Hello world");
+        assert_eq!(result.content_blocks.len(), 1);
+        assert!(matches!(&result.content_blocks[0], ContentBlock::Text { text } if text == "Hello world"));
+
+        server_handle.await.unwrap();
+    }
 }

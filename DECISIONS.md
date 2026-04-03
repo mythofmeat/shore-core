@@ -32,8 +32,8 @@ Add items here as decisions are made.
 - **`shore autonomy pause/resume`** (2.8) — Removed. Subsumed by
   `shore config autonomy.enabled true/false` (5.41).
 
-- **`shore cache suppress/unsuppress`** (5.48/5.49) — Removed. Subsumed by
-  `shore config cache_keepalive.enabled true/false` (5.41).
+- **`shore cache suppress/unsuppress`** (5.48/5.49) — Removed. Cache refresh
+  is now handled by the unified interiority system (no separate keepalive).
 
 - **CLI image commands** (5.50 list, 5.51 import, 5.52 describe) — Removed.
   Superseded by in-context image tools (`send_image`, `list_images`,
@@ -241,18 +241,24 @@ A single holistic call lets the LLM see all candidates + nearby context and make
 
 **Trade-off:** The interiority system has no adaptive timing — it doesn't speed up during active conversation or slow down during quiet periods. The timer is fixed (with jitter). This is intentionally simpler. If adaptive timing proves necessary, it can be layered on top of the InteriorityClock without changing the fundamental architecture.
 
-### Interiority–Keepalive Coordination (2026-04-01)
+### Unified Interiority — Replace Keepalive (2026-04-03)
 
-**Decision:** Coordinate the interiority timer with the cache keepalive timer so interiority ticks serve double-duty as cache refreshes, eliminating redundant keepalive pings.
+**Decision:** Delete `CacheKeepaliveScheduler` entirely. Merge cache refresh into InteriorityClock via dual deadlines and a rolling JSONL journal for tick-to-tick continuity. One LLM call per tick.
 
 **Changes made:**
-- `CacheKeepaliveScheduler::next_deadline()` exposes when the next keepalive ping would fire
-- `InteriorityClock::snap_to_deadline()` pulls the next interiority tick forward to the keepalive deadline when the shift is within the jitter range
-- `AutonomyState::coordinate_interiority_keepalive()` called at 3 sites: after interiority tick scheduling, on user message, and on API response
+- Deleted `cache_keepalive.rs` (832 LOC — 4-state machine, coordination logic, `snap_to_deadline`)
+- New `interiority_journal.rs`: `JournalEntry` types (Thought, ToolCall, ToolResult, MessageSent), JSONL file I/O, rendering, budget truncation, atomic compaction
+- `InteriorityClock` now tracks two deadlines: `next_tick_at` (full interiority) and `next_cache_ping_at` (bare cache refresh). Full tick resets both. Returns `RunTick`, `RunDormantPing`, or `None`
+- New `execute_unified_tick()`: reads journal → renders into prompt → ONE Opus call → parses response into journal entries → appends → compacts if oversized
+- New `execute_dormant_ping()`: bare `max_tokens=1` call, no journal, no prompt changes
+- Removed `coordinate_interiority_keepalive()`, `notify_api_response()`, keepalive config from handler
+- `ensure_state` takes `cache_ttl_secs: Option<u64>` instead of `CacheKeepaliveConfig`
+- Persisted state version 2→3 (drops `cache_ping_count`)
+- Removed `max_tool_rounds` from `InteriorityConfig` (tool calls now spread across ticks via journal)
 
-**Why:** Both systems operate on ~1h intervals (interiority at 3600s±25%, keepalive at TTL-60s = 3540s for 1h cache). Without coordination, interiority at 65 min triggers a wasted keepalive ping at 59 min followed by the interiority tick 6 min later — two API calls when one suffices. Snapping interiority to fire at the keepalive deadline eliminates the redundant ping.
+**Why:** The old system had two separate timers with fragile coordination (`snap_to_deadline` was effectively a no-op during Pinging state). The tool-use loop cost 3-4 Opus calls per tick (~$2.40/day). The keepalive state machine (Monitoring→Active→Pinging→Stopped) was complex for what it did. The unified system achieves the same goals — autonomous thinking + cache refresh — with one call per tick and zero coordination code. ~3.5x cost reduction.
 
-**Trade-off:** Snapping is capped at the jitter range (`interval_secs × jitter_factor`) to avoid large shifts. If interiority is scheduled far beyond the deadline, keepalive pings independently as a fallback. The keepalive state machine is unchanged — it remains the safety net for dormant/disabled interiority.
+**Trade-off:** No explicit cache miss detection. The old keepalive stopped after a cache miss; the new system just keeps pinging. In practice, cache misses only happen when the conversation context changes (which resets the prefix anyway), so stopping was unnecessary complexity.
 
 ### Separate client.toml for Client Configuration (2026-04-02)
 
@@ -306,3 +312,19 @@ A single holistic call lets the LLM see all candidates + nearby context and make
 **Why:** Audit identified 4 duplicate truncation functions, 5 duplicate HTTP client builders, ~500 LOC of LLM streaming boilerplate, and the ToolToggles 3-way synchronization trap. All addressed.
 
 **Trade-off:** ToolToggles loses compile-time enforcement of valid tool names (field access → method call). This is acceptable — tool names are also embedded as string literals throughout the tool dispatch layer anyway.
+
+### Mid-Conversation System Message Injection (2026-04-02)
+
+**Decision:** Add `:sys` TUI command and `shore sys` CLI command to inject `Role::System` messages into the conversation history for mid-conversation behavioral correction.
+
+**Changes made:**
+- New `inject_system` daemon command creates a `Role::System` message and appends it to the conversation engine
+- TUI: `:sys <instruction>` command (also accepts `:system`)
+- CLI: `shore send --system <text>` flag on existing send command
+- Anthropic provider: `convert_inline_system_messages()` transforms system-role messages in the array to user/assistant pairs wrapped in `<system_instruction>` XML tags (Anthropic API rejects `role: "system"` in the messages array)
+- Gemini provider: same user/model wrapping approach (previously system messages were silently skipped)
+- OpenAI provider: no changes needed — already passes `role: "system"` through natively
+
+**Why:** Users need to correct model behavior mid-conversation (e.g. "stop using roleplay actions", "respond in English only") without modifying the system prompt (which invalidates the prompt cache) or sending user-role messages (which pollute conversation context and are treated as dialogue).
+
+**Trade-off:** For Anthropic/Gemini, the system instruction becomes a synthetic user/assistant turn rather than a true system message, which uses slightly more tokens and may be less authoritative than a real system message. Accepted because: (a) these providers don't support mid-conversation system messages at all, (b) XML-tagged instructions are well-understood by the models, (c) the alternative (no injection) is worse.

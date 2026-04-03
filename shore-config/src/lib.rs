@@ -423,9 +423,14 @@ fn validate_config(app: &AppConfig, catalog: &ModelCatalog) -> Result<(), Config
     }
 
     // Validate model references exist in the catalog.
-    validate_model_ref(catalog, "defaults.model", app.defaults.model.as_deref())?;
-    validate_model_ref(catalog, "defaults.tool_model", app.defaults.tool_model.as_deref())?;
-    validate_model_ref(catalog, "defaults.memory_agent", app.defaults.memory_agent.as_deref())?;
+    for (field, value) in [
+        ("defaults.model", app.defaults.model.as_deref()),
+        ("defaults.tool_model", app.defaults.tool_model.as_deref()),
+        ("defaults.memory_agent", app.defaults.memory_agent.as_deref()),
+        ("defaults.collation", app.defaults.collation.as_deref()),
+    ] {
+        validate_model_ref(catalog, field, value)?;
+    }
 
     Ok(())
 }

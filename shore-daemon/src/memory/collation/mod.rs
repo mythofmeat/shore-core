@@ -1,186 +1,27 @@
+pub mod types;
+pub mod prompt;
+pub mod clustering;
+
+pub use types::*;
+pub use prompt::DEFAULT_REFINE_PROMPT;
+
 use crate::memory::agent::AgentIndexer;
 use crate::memory::db::{Entry, MemoryDB};
 use crate::memory::vectorstore::VectorStore;
 use chrono::Utc;
 use std::collections::{HashMap, HashSet};
-use std::future::Future;
-use std::pin::Pin;
-
-// ---------------------------------------------------------------------------
-// Configuration
-// ---------------------------------------------------------------------------
-
-/// Half-life in days for confidence decay.
-const DEFAULT_DECAY_HALF_LIFE_DAYS: f64 = 30.0;
-
-/// Floor below which confidence is not further decayed.
-const DEFAULT_DECAY_FLOOR: f64 = 0.1;
-
-/// Days before a previously-collated entry becomes eligible for reconsideration.
-const DEFAULT_RECONSIDER_TTL_DAYS: f64 = 30.0;
-
-/// Configuration for the collation pipeline.
-#[derive(Debug, Clone)]
-pub struct CollationConfig {
-    /// Half-life in days for Phase 4 confidence decay.
-    pub decay_half_life_days: f64,
-    /// Minimum confidence floor — entries at or below this are not decayed further.
-    pub decay_floor: f64,
-    /// Days before a previously-collated entry becomes eligible for reconsideration.
-    pub reconsider_ttl_days: f64,
-}
-
-impl Default for CollationConfig {
-    fn default() -> Self {
-        Self {
-            decay_half_life_days: DEFAULT_DECAY_HALF_LIFE_DAYS,
-            decay_floor: DEFAULT_DECAY_FLOOR,
-            reconsider_ttl_days: DEFAULT_RECONSIDER_TTL_DAYS,
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Error type
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, thiserror::Error)]
-pub enum CollationError {
-    #[error("llm: {0}")]
-    Llm(String),
-    #[error("db: {0}")]
-    Db(String),
-}
-
-// ---------------------------------------------------------------------------
-// LLM response types
-// ---------------------------------------------------------------------------
-
-/// Fields for an entry produced by the refine phase.
-#[derive(Debug, Clone, serde::Deserialize)]
-pub struct RefineEntryFields {
-    pub summary_text: String,
-    pub topic_tags: String,
-    pub topic_key: String,
-    pub confidence: f64,
-}
-
-/// A single action from the unified refine phase.
-#[derive(Debug, Clone, serde::Deserialize)]
-#[serde(tag = "action")]
-pub enum RefineAction {
-    #[serde(rename = "merge")]
-    Merge {
-        source_entry_ids: Vec<String>,
-        result: RefineEntryFields,
-        reason: String,
-    },
-    #[serde(rename = "split")]
-    Split {
-        source_entry_id: String,
-        results: Vec<RefineEntryFields>,
-        reason: String,
-    },
-    #[serde(rename = "update")]
-    Update {
-        entry_id: String,
-        result: RefineEntryFields,
-        reason: String,
-    },
-}
-
-// ---------------------------------------------------------------------------
-// Trait for LLM dependency
-// ---------------------------------------------------------------------------
-
-/// LLM client for the collation refine phase.
-pub trait CollationLlm: Send + Sync {
-    /// Given a prompt with candidate and context entries, return refine actions.
-    fn refine(
-        &self,
-        prompt: &str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<RefineAction>, CollationError>> + Send + '_>>;
-}
-
-// ---------------------------------------------------------------------------
-// Default prompt template
-// ---------------------------------------------------------------------------
-
-pub const DEFAULT_REFINE_PROMPT: &str = r#"You are maintaining a memory database for an AI character chat system.
-
-User: {{user}}
-Character: {{char}}
-
-{{definitions}}
-## Your goal
-
-Produce clean, well-tagged memory entries. Each entry should be atomic — focused on one specific event, person, preference, attribute, or relationship. Entries should be descriptive and tagged accurately.
-
-## What you can do
-
-For the CANDIDATE entries below, you may:
-- **merge**: Combine 2+ candidate entries about the same topic into one consolidated entry. Prefer the most recent information as canonical, but preserve important historical context.
-- **split**: Break one unfocused candidate entry into multiple atomic entries. Every piece of information from the original must appear in exactly one output.
-- **update**: Rewrite a candidate entry's summary or tags for clarity, specificity, or accuracy without changing its scope.
-- **keep** (default): If a candidate entry is already good, do nothing — omit it from your response.
-
-## Rules
-
-- You may ONLY act on entries marked [CANDIDATE]. Entries marked [CONTEXT] are reference only.
-- When merging, prefer the more recent entry if entries conflict. If one explicitly corrects another, use the correction. If the conflict reflects genuine change over time, preserve both with temporal framing.
-- Do not fabricate or infer anything not present in the source entries.
-- Preserve entity names exactly as they appear. Do NOT rename, normalize, or merge entity names.
-- Each output entry needs: summary_text, topic_tags (comma-separated), topic_key (single category), confidence (0.0-1.0).
-- A merge must reference at least 2 source entry IDs.
-- When splitting, every fact from the original must appear in exactly one output entry.
-
-## Response format
-
-Respond with ONLY a JSON object. Include ONLY entries that need changes.
-
-{"actions":[
-  {"action":"merge","source_entry_ids":["id1","id2"],"result":{"summary_text":"...","topic_tags":"...","topic_key":"...","confidence":0.9},"reason":"why"},
-  {"action":"split","source_entry_id":"id1","results":[{"summary_text":"...","topic_tags":"...","topic_key":"...","confidence":0.85}],"reason":"why"},
-  {"action":"update","entry_id":"id1","result":{"summary_text":"...","topic_tags":"...","topic_key":"...","confidence":0.9},"reason":"why"}
-]}
-
-If no changes are needed, return {"actions":[]}.
-
-## Entries
-
-### Candidates (you may modify these):
-{{candidates}}
-
-### Context (reference only, do NOT modify):
-{{context}}"#;
-
-// ---------------------------------------------------------------------------
-// Collation outcome
-// ---------------------------------------------------------------------------
-
-/// Summary of what the collation pipeline did.
-#[derive(Debug, Default)]
-pub struct CollationOutcome {
-    pub refine_merges: usize,
-    pub refine_splits: usize,
-    pub refine_updates: usize,
-    pub refine_new_entries: usize,
-    pub refine_kept: usize,
-    pub entries_decayed: usize,
-    pub entries_skipped: usize,
-    pub timestamps_backfilled: usize,
-}
+use std::path::Path;
 
 // ---------------------------------------------------------------------------
 // CollationManager
 // ---------------------------------------------------------------------------
 
 pub struct CollationManager {
-    config: CollationConfig,
+    config: DecayConfig,
 }
 
 impl CollationManager {
-    pub fn new(config: CollationConfig) -> Self {
+    pub fn new(config: DecayConfig) -> Self {
         Self { config }
     }
 
@@ -188,65 +29,6 @@ impl CollationManager {
     fn generate_entry_id(index: usize) -> String {
         let now = Utc::now();
         format!("{}_{}", now.format("%Y%m%d_%H%M%S"), index)
-    }
-
-    /// Build a refine prompt from a template, replacing `{{candidates}}` and
-    /// `{{context}}` with formatted entry blocks, plus any template variables.
-    pub fn build_refine_prompt(
-        template: &str,
-        candidates: &[Entry],
-        context: &[Entry],
-        vars: &HashMap<String, String>,
-    ) -> String {
-        let format_entry = |e: &Entry, label: &str| -> String {
-            let mut line = format!(
-                "{} ID: {} | Tags: {} | Key: {} | Confidence: {:.2}",
-                label, e.id, e.topic_tags, e.topic_key, e.confidence
-            );
-            if !e.start_timestamp.is_empty() {
-                line.push_str(&format!(" | Time: {}", e.start_timestamp));
-                if !e.end_timestamp.is_empty() && e.end_timestamp != e.start_timestamp {
-                    line.push_str(&format!("..{}", e.end_timestamp));
-                }
-            }
-            line.push_str(&format!("\n  {}", e.summary_text));
-            line
-        };
-
-        let mut cand_text = String::new();
-        for e in candidates {
-            cand_text.push_str(&format_entry(e, "[CANDIDATE]"));
-            cand_text.push('\n');
-        }
-
-        let mut ctx_text = String::new();
-        for e in context {
-            ctx_text.push_str(&format_entry(e, "[CONTEXT]"));
-            ctx_text.push('\n');
-        }
-
-        // Build definitions block from char_description / user_description vars.
-        let mut defs = String::new();
-        if let Some(cd) = vars.get("char_description").filter(|s| !s.is_empty()) {
-            defs.push_str("## Character definition\n");
-            defs.push_str(cd);
-            defs.push_str("\n\n");
-        }
-        if let Some(ud) = vars.get("user_description").filter(|s| !s.is_empty()) {
-            defs.push_str("## User definition\n");
-            defs.push_str(ud);
-            defs.push_str("\n\n");
-        }
-
-        let mut result = template
-            .replace("{{definitions}}", &defs)
-            .replace("{{candidates}}", &cand_text)
-            .replace("{{context}}", &ctx_text);
-        for (key, value) in vars {
-            let tag = format!("{{{{{key}}}}}");
-            result = result.replace(&tag, value);
-        }
-        result
     }
 
     /// Unified candidate selection for the refine phase.
@@ -507,7 +289,7 @@ impl CollationManager {
         let candidate_ids: HashSet<String> = candidates.iter().map(|e| e.id.clone()).collect();
 
         // Cluster candidates by semantic similarity.
-        let clusters = self.cluster_candidates(&candidates, vector_store).await;
+        let clusters = clustering::cluster_candidates(&candidates, vector_store).await;
 
         let now_str = Utc::now().to_rfc3339();
 
@@ -517,7 +299,7 @@ impl CollationManager {
                 .fetch_context_entries(cluster, &entries, &candidate_ids, vector_store)
                 .await;
 
-            let prompt = Self::build_refine_prompt(template, cluster, &context, vars);
+            let prompt = prompt::build_refine_prompt(template, cluster, &context, vars);
             let actions = llm.refine(&prompt).await?;
 
             let mut acted_on: HashSet<String> = HashSet::new();
@@ -598,7 +380,7 @@ impl CollationManager {
             _ => return vec![],
         };
 
-        let centroid = match compute_centroid(&embeddings) {
+        let centroid = match clustering::compute_centroid(&embeddings) {
             Some(c) => c,
             None => return vec![],
         };
@@ -787,7 +569,7 @@ impl CollationManager {
                 source: "collation_refine".to_string(),
                 reason: "refine_split".to_string(),
                 status: "active".to_string(),
-    
+
                 confidence,
                 summary_text: replacement.summary_text.clone(),
                 topic_tags: replacement.topic_tags.clone(),
@@ -904,133 +686,6 @@ impl CollationManager {
     }
 
     // -----------------------------------------------------------------------
-    // Clustering — group entries by semantic similarity before LLM calls
-    // -----------------------------------------------------------------------
-
-    /// Maximum entries per cluster sent to the LLM.
-    const MAX_CLUSTER_SIZE: usize = 15;
-
-    /// Minimum cosine similarity to consider two entries related.
-    const SIMILARITY_THRESHOLD: f32 = 0.3;
-
-    /// Group candidate entries into clusters of semantically related entries.
-    /// Uses existing embeddings from the vector store for in-memory cosine
-    /// similarity. Falls back to a single batch if no vector store is available
-    /// or if entries lack embeddings.
-    async fn cluster_candidates(
-        &self,
-        candidates: &[&Entry],
-        vector_store: Option<&VectorStore>,
-    ) -> Vec<Vec<Entry>> {
-        // If few enough candidates, no need to cluster.
-        if candidates.len() <= Self::MAX_CLUSTER_SIZE {
-            return vec![candidates.iter().map(|e| (*e).clone()).collect()];
-        }
-
-        // Try to get embeddings from vector store.
-        if let Some(vs) = vector_store {
-            let ids: Vec<&str> = candidates.iter().map(|e| e.id.as_str()).collect();
-            if let Ok(embeddings) = vs.get_embeddings(&ids).await {
-                // Only cluster if we have embeddings for a meaningful fraction.
-                let coverage = embeddings.len() as f32 / candidates.len() as f32;
-                if coverage >= 0.5 {
-                    return self.cluster_by_embeddings(candidates, &embeddings);
-                }
-            }
-        }
-
-        // Fallback: chunk into batches of MAX_CLUSTER_SIZE.
-        candidates
-            .chunks(Self::MAX_CLUSTER_SIZE)
-            .map(|chunk| chunk.iter().map(|e| (*e).clone()).collect())
-            .collect()
-    }
-
-    /// Greedy clustering using cosine similarity of pre-computed embeddings.
-    fn cluster_by_embeddings(
-        &self,
-        candidates: &[&Entry],
-        embeddings: &HashMap<String, Vec<f32>>,
-    ) -> Vec<Vec<Entry>> {
-        // Build similarity lists: for each entry with an embedding, find its
-        // nearest neighbors among other candidates.
-        let with_embeddings: Vec<(usize, &[f32])> = candidates
-            .iter()
-            .enumerate()
-            .filter_map(|(i, e)| embeddings.get(&e.id).map(|emb| (i, emb.as_slice())))
-            .collect();
-
-        // Precompute pairwise neighbor lists (indices into `candidates`).
-        let mut neighbors: HashMap<usize, Vec<(usize, f32)>> = HashMap::new();
-        for &(i, emb_i) in &with_embeddings {
-            let mut sims: Vec<(usize, f32)> = with_embeddings
-                .iter()
-                .filter(|&&(j, _)| j != i)
-                .map(|&(j, emb_j)| (j, cosine_similarity(emb_i, emb_j)))
-                .filter(|&(_, sim)| sim >= Self::SIMILARITY_THRESHOLD)
-                .collect();
-            sims.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-            neighbors.insert(i, sims);
-        }
-
-        let mut clustered = vec![false; candidates.len()];
-        let mut clusters: Vec<Vec<Entry>> = Vec::new();
-
-        // Greedy: pick the entry with the most high-similarity neighbors,
-        // form a cluster, remove those entries, repeat.
-        loop {
-            // Find unclustered entry with most unclustered neighbors.
-            let best = neighbors
-                .iter()
-                .filter(|(&idx, _)| !clustered[idx])
-                .map(|(&idx, nbrs)| {
-                    let count = nbrs.iter().filter(|&&(j, _)| !clustered[j]).count();
-                    (idx, count)
-                })
-                .max_by_key(|&(_, count)| count);
-
-            let (seed, neighbor_count) = match best {
-                Some((idx, count)) => (idx, count),
-                None => break,
-            };
-
-            // If no neighbors left, remaining entries go into individual chunks.
-            if neighbor_count == 0 {
-                break;
-            }
-
-            let mut cluster = vec![seed];
-            if let Some(nbrs) = neighbors.get(&seed) {
-                for &(j, _) in nbrs {
-                    if !clustered[j] && cluster.len() < Self::MAX_CLUSTER_SIZE {
-                        cluster.push(j);
-                    }
-                }
-            }
-
-            for &idx in &cluster {
-                clustered[idx] = true;
-            }
-
-            clusters.push(cluster.iter().map(|&i| candidates[i].clone()).collect());
-        }
-
-        // Collect unclustered entries into overflow batches.
-        let unclustered: Vec<Entry> = candidates
-            .iter()
-            .enumerate()
-            .filter(|&(i, _)| !clustered[i])
-            .map(|(_, e)| (*e).clone())
-            .collect();
-
-        for chunk in unclustered.chunks(Self::MAX_CLUSTER_SIZE) {
-            clusters.push(chunk.to_vec());
-        }
-
-        clusters
-    }
-
-    // -----------------------------------------------------------------------
     // Phase 2: Confidence decay — reduce confidence on stale entries
     // -----------------------------------------------------------------------
 
@@ -1105,37 +760,97 @@ impl CollationManager {
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Background collation (moved from main.rs)
 // ---------------------------------------------------------------------------
 
-/// Cosine similarity between two vectors. Returns 0.0 for zero-length vectors.
-fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
-    let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
-    let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if norm_a == 0.0 || norm_b == 0.0 {
-        return 0.0;
-    }
-    dot / (norm_a * norm_b)
-}
+/// Run the collation pipeline for a single character.
+///
+/// Called after compaction (auto-trigger) or could be invoked independently.
+pub async fn run_collation(
+    character: &str,
+    config: &shore_config::LoadedConfig,
+    llm_client: &shore_llm_client::LlmClient,
+    data_dir: &Path,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use crate::commands::state::resolve_collation_model;
+    use crate::memory::agent::{AgentSearchContext, RealAgentIndexer};
+    use crate::memory::collation_impls::RealCollationLlm;
+    use crate::memory::compaction_impls::resolve_embed_config;
+    use shore_config::{load_character_definition, resolve_prompt_template, resolve_user_definition};
+    use tracing::info;
 
-/// Compute the centroid (element-wise average) of a set of embeddings.
-fn compute_centroid(embeddings: &HashMap<String, Vec<f32>>) -> Option<Vec<f32>> {
-    if embeddings.is_empty() {
-        return None;
-    }
-    let dim = embeddings.values().next()?.len();
-    let mut centroid = vec![0.0f32; dim];
-    for emb in embeddings.values() {
-        for (i, v) in emb.iter().enumerate() {
-            centroid[i] += v;
+    let character_dir = data_dir.join(character);
+
+    // Open memory DB.
+    let db_path = character_dir.join("memory").join("memory.db");
+    let db = MemoryDB::open(&db_path)
+        .map_err(|e| format!("Failed to open memory DB: {e}"))?;
+
+    let model = resolve_collation_model(config)
+        .ok_or("No model configured")?;
+
+    let llm = RealCollationLlm::new(llm_client.clone(), model);
+
+    // Resolve prompt template.
+    let refine_template = resolve_prompt_template(&config.dirs.config, character, "refine.md")
+        .unwrap_or_else(|| DEFAULT_REFINE_PROMPT.to_string());
+
+    let mgr = CollationManager::new(DecayConfig::default());
+    let collation_limit = config.app.memory.collation.batch_limit;
+
+    // Construct vector store + indexer for clustering and indexing (optional).
+    let search_ctx = match resolve_embed_config(
+        config.app.defaults.embedding.as_deref(),
+        &config.models.embedding,
+    ) {
+        Ok(embed_config) => {
+            let vs_path = character_dir.join("memory").join("vectorstore");
+            match VectorStore::open(&vs_path, embed_config.dimensions).await {
+                Ok(vs) => Some(AgentSearchContext::new(
+                    vs, llm_client.clone(), embed_config,
+                )),
+                Err(e) => {
+                    tracing::warn!("Vector store unavailable for auto-collation: {e}");
+                    None
+                }
+            }
         }
+        Err(_) => None,
+    };
+    let indexer = search_ctx.as_ref().map(|ctx| {
+        RealAgentIndexer::new(ctx)
+    });
+
+    let collation_display_name = config.app.defaults.resolve_display_name();
+    let mut collation_vars = HashMap::new();
+    collation_vars.insert("char".to_string(), character.to_string());
+    collation_vars.insert("user".to_string(), collation_display_name);
+    if let Some(cd) = load_character_definition(&config.dirs.config, character) {
+        collation_vars.insert("char_description".to_string(), cd);
     }
-    let n = embeddings.len() as f32;
-    for v in &mut centroid {
-        *v /= n;
+    if let Some(ud) = resolve_user_definition(&config.dirs.config, character) {
+        collation_vars.insert("user_description".to_string(), ud);
     }
-    Some(centroid)
+
+    let outcome = mgr
+        .run(
+            &db, &llm, &refine_template, &collation_vars,
+            indexer.as_ref().map(|i| i as &dyn AgentIndexer),
+            search_ctx.as_ref().map(|ctx| &ctx.vector_store),
+            Some(collation_limit),
+        )
+        .await?;
+
+    info!(
+        character = %character,
+        refine_merges = outcome.refine_merges,
+        refine_splits = outcome.refine_splits,
+        refine_updates = outcome.refine_updates,
+        entries_decayed = outcome.entries_decayed,
+        "Auto-collation completed"
+    );
+
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -1164,7 +879,7 @@ mod tests {
         fn refine(
             &self,
             _prompt: &str,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<RefineAction>, CollationError>> + Send + '_>>
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<RefineAction>, CollationError>> + Send + '_>>
         {
             let result = Ok(self.refine_response.clone());
             Box::pin(async move { result })
@@ -1249,7 +964,7 @@ mod tests {
             }],
         };
 
-        let mgr = CollationManager::new(CollationConfig::default());
+        let mgr = CollationManager::new(DecayConfig::default());
         let outcome = run_pipeline(&db, &llm, &mgr, None).await;
 
         assert_eq!(outcome.refine_merges, 1);
@@ -1301,7 +1016,7 @@ mod tests {
             }],
         };
 
-        let mgr = CollationManager::new(CollationConfig::default());
+        let mgr = CollationManager::new(DecayConfig::default());
         let outcome = run_pipeline(&db, &llm, &mgr, None).await;
 
         assert_eq!(outcome.refine_merges, 0);
@@ -1344,7 +1059,7 @@ mod tests {
             }],
         };
 
-        let mgr = CollationManager::new(CollationConfig::default());
+        let mgr = CollationManager::new(DecayConfig::default());
         let outcome = run_pipeline(&db, &llm, &mgr, None).await;
 
         assert_eq!(outcome.refine_splits, 1);
@@ -1392,7 +1107,7 @@ mod tests {
             }],
         };
 
-        let mgr = CollationManager::new(CollationConfig::default());
+        let mgr = CollationManager::new(DecayConfig::default());
         let outcome = run_pipeline(&db, &llm, &mgr, None).await;
 
         assert_eq!(outcome.refine_splits, 0);
@@ -1422,7 +1137,7 @@ mod tests {
             }],
         };
 
-        let mgr = CollationManager::new(CollationConfig::default());
+        let mgr = CollationManager::new(DecayConfig::default());
         let outcome = run_pipeline(&db, &llm, &mgr, None).await;
 
         assert_eq!(outcome.refine_updates, 1);
@@ -1444,7 +1159,7 @@ mod tests {
         let db = MemoryDB::open_in_memory().unwrap();
         let now = now_str();
 
-        // Entry with collated_at in the future → NOT a candidate.
+        // Entry with collated_at in the future — NOT a candidate.
         let mut entry = make_entry("context_e", "Context fact", 0.9, &now);
         let future = (Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
         entry.collated_at = future;
@@ -1467,7 +1182,7 @@ mod tests {
             }],
         };
 
-        let mgr = CollationManager::new(CollationConfig::default());
+        let mgr = CollationManager::new(DecayConfig::default());
         let outcome = run_pipeline(&db, &llm, &mgr, None).await;
 
         assert_eq!(outcome.refine_updates, 0);
@@ -1485,7 +1200,7 @@ mod tests {
             .unwrap();
 
         let llm = MockCollationLlm::empty(); // no actions
-        let mgr = CollationManager::new(CollationConfig::default());
+        let mgr = CollationManager::new(DecayConfig::default());
         let outcome = run_pipeline(&db, &llm, &mgr, None).await;
 
         assert_eq!(outcome.refine_merges, 0);
@@ -1555,7 +1270,7 @@ mod tests {
             ],
         };
 
-        let mgr = CollationManager::new(CollationConfig::default());
+        let mgr = CollationManager::new(DecayConfig::default());
         let outcome = run_pipeline(&db, &llm, &mgr, None).await;
 
         assert_eq!(outcome.refine_merges, 1);
@@ -1600,7 +1315,7 @@ mod tests {
             }],
         };
 
-        let mgr = CollationManager::new(CollationConfig::default());
+        let mgr = CollationManager::new(DecayConfig::default());
         let outcome = run_pipeline(&db, &llm, &mgr, None).await;
 
         assert_eq!(outcome.refine_merges, 1);
@@ -1619,7 +1334,7 @@ mod tests {
             .unwrap();
 
         let llm = MockCollationLlm::empty();
-        let mgr = CollationManager::new(CollationConfig::default());
+        let mgr = CollationManager::new(DecayConfig::default());
         let outcome = run_pipeline(&db, &llm, &mgr, None).await;
 
         assert_eq!(outcome.entries_decayed, 1);
@@ -1639,7 +1354,7 @@ mod tests {
             .unwrap();
 
         let llm = MockCollationLlm::empty();
-        let mgr = CollationManager::new(CollationConfig {
+        let mgr = CollationManager::new(DecayConfig {
             decay_floor: 0.1,
             ..Default::default()
         });
@@ -1658,7 +1373,7 @@ mod tests {
             .unwrap();
 
         let llm = MockCollationLlm::empty();
-        let mgr = CollationManager::new(CollationConfig::default());
+        let mgr = CollationManager::new(DecayConfig::default());
         let outcome = run_pipeline(&db, &llm, &mgr, None).await;
 
         assert_eq!(outcome.entries_decayed, 0);
@@ -1674,7 +1389,7 @@ mod tests {
             .unwrap();
 
         let llm = MockCollationLlm::empty();
-        let mgr = CollationManager::new(CollationConfig::default());
+        let mgr = CollationManager::new(DecayConfig::default());
         run_pipeline(&db, &llm, &mgr, None).await;
 
         let logs = db.get_recent_changelog(10).unwrap();
@@ -1690,7 +1405,7 @@ mod tests {
         db.create_entry(&entry).unwrap();
 
         let llm = MockCollationLlm::empty();
-        let mgr = CollationManager::new(CollationConfig::default());
+        let mgr = CollationManager::new(DecayConfig::default());
         let outcome = run_pipeline(&db, &llm, &mgr, None).await;
 
         assert_eq!(outcome.entries_decayed, 1);
@@ -1706,7 +1421,7 @@ mod tests {
 
     #[test]
     fn test_new_entries_always_candidates() {
-        let mgr = CollationManager::new(CollationConfig::default());
+        let mgr = CollationManager::new(DecayConfig::default());
         let now = now_str();
         let entry = make_entry("e1", "New fact", 0.9, &now);
         assert!(mgr.is_refine_candidate(&entry));
@@ -1714,7 +1429,7 @@ mod tests {
 
     #[test]
     fn test_recently_collated_not_candidates() {
-        let mgr = CollationManager::new(CollationConfig::default());
+        let mgr = CollationManager::new(DecayConfig::default());
         let now = now_str();
         let mut entry = make_entry("e1", "Old fact", 0.9, &now);
         entry.collated_at = now;
@@ -1723,7 +1438,7 @@ mod tests {
 
     #[test]
     fn test_ttl_expired_are_candidates() {
-        let mgr = CollationManager::new(CollationConfig {
+        let mgr = CollationManager::new(DecayConfig {
             reconsider_ttl_days: 7.0,
             ..Default::default()
         });
@@ -1736,7 +1451,7 @@ mod tests {
 
     #[test]
     fn test_modified_since_collation_are_candidates() {
-        let mgr = CollationManager::new(CollationConfig::default());
+        let mgr = CollationManager::new(DecayConfig::default());
         let old = (Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
         let now = now_str();
         let mut entry = make_entry("e1", "Updated fact", 0.9, &now);
@@ -1746,7 +1461,7 @@ mod tests {
 
     #[test]
     fn test_image_excluded() {
-        let mgr = CollationManager::new(CollationConfig::default());
+        let mgr = CollationManager::new(DecayConfig::default());
         let now = now_str();
 
         let mut image_entry = make_entry("img1", "Photo memory", 0.9, &now);
@@ -1776,7 +1491,7 @@ mod tests {
             }],
         };
 
-        let mgr = CollationManager::new(CollationConfig::default());
+        let mgr = CollationManager::new(DecayConfig::default());
         let outcome = run_pipeline(&db, &llm, &mgr, None).await;
 
         assert_eq!(outcome.refine_updates, 0);
@@ -1796,7 +1511,7 @@ mod tests {
         }
 
         let llm = MockCollationLlm::empty();
-        let mgr = CollationManager::new(CollationConfig::default());
+        let mgr = CollationManager::new(DecayConfig::default());
         let _outcome = run_pipeline(&db, &llm, &mgr, Some(2)).await;
 
         let active = db.get_entries_by_status("active").unwrap();
@@ -1817,7 +1532,7 @@ mod tests {
         db.create_entry(&b).unwrap();
 
         let llm = MockCollationLlm::empty();
-        let mgr = CollationManager::new(CollationConfig::default());
+        let mgr = CollationManager::new(DecayConfig::default());
         run_pipeline(&db, &llm, &mgr, None).await;
 
         let a_after = db.get_entry("a").unwrap().unwrap();
@@ -1837,7 +1552,7 @@ mod tests {
         db.create_entry(&entry).unwrap();
 
         let llm = MockCollationLlm::empty();
-        let mgr = CollationManager::new(CollationConfig {
+        let mgr = CollationManager::new(DecayConfig {
             reconsider_ttl_days: 7.0,
             ..Default::default()
         });
@@ -1846,6 +1561,46 @@ mod tests {
         let after = db.get_entry("old").unwrap().unwrap();
         assert_ne!(after.collated_at, ten_days_ago, "TTL-expired entry should be re-stamped");
         assert!(!after.collated_at.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_refine_empty_candidates_skips_llm() {
+        let db = MemoryDB::open_in_memory().unwrap();
+        let now = now_str();
+
+        // All entries have a recent collated_at — none are candidates.
+        for i in 0..3 {
+            let mut entry = make_entry(&format!("e{i}"), &format!("Fact {i}"), 0.9, &now);
+            entry.collated_at = now.clone();
+            db.create_entry(&entry).unwrap();
+        }
+
+        // LLM returns actions — but should never be called.
+        let llm = MockCollationLlm {
+            refine_response: vec![RefineAction::Update {
+                entry_id: "e0".to_string(),
+                result: RefineEntryFields {
+                    summary_text: "SHOULD NOT APPEAR".to_string(),
+                    topic_tags: "bad".to_string(),
+                    topic_key: "bad".to_string(),
+                    confidence: 0.5,
+                },
+                reason: "test".to_string(),
+            }],
+        };
+        let mgr = CollationManager::new(DecayConfig::default());
+        let outcome = run_pipeline(&db, &llm, &mgr, None).await;
+
+        // 3 from refine (no candidates) + 3 from decay (recent entries not decayed).
+        assert_eq!(outcome.entries_skipped, 6, "all entries should be skipped by both phases");
+        assert_eq!(outcome.refine_merges, 0);
+        assert_eq!(outcome.refine_splits, 0);
+        assert_eq!(outcome.refine_updates, 0);
+        assert_eq!(outcome.refine_kept, 0);
+
+        // Entries should be untouched.
+        let e0 = db.get_entry("e0").unwrap().unwrap();
+        assert_eq!(e0.summary_text, "Fact 0", "entry should not be modified");
     }
 
     // -- Prompt building tests ---------------------------------------------
@@ -1857,7 +1612,7 @@ mod tests {
         let context = vec![make_entry("ctx1", "Context entry", 0.8, &now)];
         let vars = HashMap::new();
 
-        let prompt = CollationManager::build_refine_prompt(
+        let prompt = prompt::build_refine_prompt(
             "Candidates:\n{{candidates}}\nContext:\n{{context}}",
             &candidates,
             &context,
@@ -1879,7 +1634,7 @@ mod tests {
         let mut vars = HashMap::new();
         vars.insert("char".into(), "Shore".into());
         vars.insert("user".into(), "Alice".into());
-        let prompt = CollationManager::build_refine_prompt(
+        let prompt = prompt::build_refine_prompt(
             "{{char}} and {{user}}:\n{{candidates}}\n{{context}}",
             &candidates,
             &[],
@@ -1895,7 +1650,7 @@ mod tests {
         let ts = "2026-03-15T12:00:00Z";
         let candidates = vec![make_entry("e1", "Test", 0.9, ts)];
         let vars = HashMap::new();
-        let prompt = CollationManager::build_refine_prompt(
+        let prompt = prompt::build_refine_prompt(
             "{{candidates}}\n{{context}}",
             &candidates,
             &[],
@@ -1920,7 +1675,7 @@ mod tests {
         child.source_entry_ids = "parent1".to_string();
         db.create_entry(&child).unwrap();
 
-        let mgr = CollationManager::new(CollationConfig::default());
+        let mgr = CollationManager::new(DecayConfig::default());
         let mut outcome = CollationOutcome::default();
         mgr.phase_backfill_timestamps(&db, 20, &mut outcome).unwrap();
 
@@ -1940,7 +1695,7 @@ mod tests {
         entry.end_timestamp = String::new();
         db.create_entry(&entry).unwrap();
 
-        let mgr = CollationManager::new(CollationConfig::default());
+        let mgr = CollationManager::new(DecayConfig::default());
         let mut outcome = CollationOutcome::default();
         mgr.phase_backfill_timestamps(&db, 20, &mut outcome).unwrap();
 
@@ -1961,7 +1716,7 @@ mod tests {
             db.create_entry(&entry).unwrap();
         }
 
-        let mgr = CollationManager::new(CollationConfig::default());
+        let mgr = CollationManager::new(DecayConfig::default());
         let mut outcome = CollationOutcome::default();
         mgr.phase_backfill_timestamps(&db, 3, &mut outcome).unwrap();
         assert_eq!(outcome.timestamps_backfilled, 3);
@@ -1987,7 +1742,7 @@ mod tests {
         child.source_entry_ids = "p1".to_string();
         db.create_entry(&child).unwrap();
 
-        let mgr = CollationManager::new(CollationConfig::default());
+        let mgr = CollationManager::new(DecayConfig::default());
         let mut outcome = CollationOutcome::default();
         mgr.phase_backfill_timestamps(&db, 20, &mut outcome).unwrap();
 
@@ -1996,93 +1751,143 @@ mod tests {
         assert_eq!(updated_child.start_timestamp, ts);
     }
 
-    // -- Clustering tests ---------------------------------------------------
+    // -- Partial failure tests ------------------------------------------------
 
-    #[test]
-    fn test_cosine_similarity() {
-        let a = vec![1.0, 0.0, 0.0];
-        let b = vec![1.0, 0.0, 0.0];
-        assert!((cosine_similarity(&a, &b) - 1.0).abs() < 1e-6);
-
-        let c = vec![0.0, 1.0, 0.0];
-        assert!(cosine_similarity(&a, &c).abs() < 1e-6);
-
-        let d = vec![-1.0, 0.0, 0.0];
-        assert!((cosine_similarity(&a, &d) + 1.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn test_compute_centroid() {
-        let mut embs = HashMap::new();
-        embs.insert("a".to_string(), vec![1.0, 0.0, 0.0]);
-        embs.insert("b".to_string(), vec![0.0, 1.0, 0.0]);
-        let centroid = compute_centroid(&embs).unwrap();
-        assert!((centroid[0] - 0.5).abs() < 1e-6);
-        assert!((centroid[1] - 0.5).abs() < 1e-6);
-        assert!((centroid[2] - 0.0).abs() < 1e-6);
-
-        let empty: HashMap<String, Vec<f32>> = HashMap::new();
-        assert!(compute_centroid(&empty).is_none());
-    }
-
-    #[test]
-    fn test_cluster_by_embeddings_groups_similar() {
+    #[tokio::test]
+    async fn test_partial_failure_merge_valid_split_nonexistent() {
+        let db = MemoryDB::open_in_memory().unwrap();
         let now = now_str();
-        let entries: Vec<Entry> = (0..6)
-            .map(|i| make_entry(&format!("e{i}"), &format!("Entry {i}"), 0.8, &now))
+        db.create_entry(&make_entry("e1", "Tea preference A", 0.8, &now)).unwrap();
+        db.create_entry(&make_entry("e2", "Tea preference B", 0.85, &now)).unwrap();
+        db.create_entry(&make_entry("e3", "Works at ACME", 0.9, &now)).unwrap();
+
+        let llm = MockCollationLlm {
+            refine_response: vec![
+                RefineAction::Merge {
+                    source_entry_ids: vec!["e1".to_string(), "e2".to_string()],
+                    result: RefineEntryFields {
+                        summary_text: "User prefers tea".to_string(),
+                        topic_tags: "preference".to_string(),
+                        topic_key: "preferences".to_string(),
+                        confidence: 0.9,
+                    },
+                    reason: "Duplicate tea entries".to_string(),
+                },
+                RefineAction::Split {
+                    source_entry_id: "ghost".to_string(),
+                    results: vec![
+                        RefineEntryFields {
+                            summary_text: "Part A".to_string(),
+                            topic_tags: "test".to_string(),
+                            topic_key: "test".to_string(),
+                            confidence: 0.8,
+                        },
+                        RefineEntryFields {
+                            summary_text: "Part B".to_string(),
+                            topic_tags: "test".to_string(),
+                            topic_key: "test".to_string(),
+                            confidence: 0.8,
+                        },
+                    ],
+                    reason: "Split nonexistent entry".to_string(),
+                },
+            ],
+        };
+
+        let mgr = CollationManager::new(DecayConfig::default());
+        let outcome = run_pipeline(&db, &llm, &mgr, None).await;
+
+        // Merge should succeed, split should silently fail.
+        assert_eq!(outcome.refine_merges, 1);
+        assert_eq!(outcome.refine_splits, 0);
+
+        assert_eq!(db.get_entry("e1").unwrap().unwrap().status, "superseded");
+        assert_eq!(db.get_entry("e2").unwrap().unwrap().status, "superseded");
+        assert_eq!(db.get_entry("e3").unwrap().unwrap().status, "active");
+
+        let active = db.get_entries_by_status("active").unwrap();
+        let merged: Vec<&Entry> = active
+            .iter()
+            .filter(|e| e.source == "collation_refine")
             .collect();
-        let entry_refs: Vec<&Entry> = entries.iter().collect();
-
-        let mut embeddings = HashMap::new();
-        embeddings.insert("e0".to_string(), vec![0.9, 0.1, 0.0, 0.0]);
-        embeddings.insert("e1".to_string(), vec![0.8, 0.2, 0.0, 0.0]);
-        embeddings.insert("e2".to_string(), vec![0.85, 0.15, 0.0, 0.0]);
-        embeddings.insert("e3".to_string(), vec![0.0, 0.0, 0.9, 0.1]);
-        embeddings.insert("e4".to_string(), vec![0.0, 0.0, 0.8, 0.2]);
-        embeddings.insert("e5".to_string(), vec![0.0, 0.0, 0.85, 0.15]);
-
-        let mgr = CollationManager::new(CollationConfig::default());
-        let clusters = mgr.cluster_by_embeddings(&entry_refs, &embeddings);
-
-        assert_eq!(clusters.len(), 2);
-        let mut sizes: Vec<usize> = clusters.iter().map(|c| c.len()).collect();
-        sizes.sort();
-        assert_eq!(sizes, vec![3, 3]);
-
-        for cluster in &clusters {
-            let ids: Vec<&str> = cluster.iter().map(|e| e.id.as_str()).collect();
-            let all_food = ids.iter().all(|id| ["e0", "e1", "e2"].contains(id));
-            let all_tech = ids.iter().all(|id| ["e3", "e4", "e5"].contains(id));
-            assert!(all_food || all_tech, "Cluster should be homogeneous, got: {:?}", ids);
-        }
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].summary_text, "User prefers tea");
     }
 
     #[tokio::test]
-    async fn test_cluster_candidates_small_set_no_clustering() {
+    async fn test_partial_failure_split_valid_merge_non_candidate() {
+        let db = MemoryDB::open_in_memory().unwrap();
         let now = now_str();
-        let entries: Vec<Entry> = (0..5)
-            .map(|i| make_entry(&format!("e{i}"), &format!("Entry {i}"), 0.8, &now))
-            .collect();
-        let entry_refs: Vec<&Entry> = entries.iter().collect();
 
-        let mgr = CollationManager::new(CollationConfig::default());
-        let clusters = mgr.cluster_candidates(&entry_refs, None).await;
-        assert_eq!(clusters.len(), 1);
-        assert_eq!(clusters[0].len(), 5);
+        // s1 is a candidate (no collated_at).
+        db.create_entry(&make_entry("s1", "Broad: tea and work", 0.9, &now)).unwrap();
+
+        // nc1 is NOT a candidate (collated_at set to future).
+        let mut nc = make_entry("nc1", "Non-candidate fact", 0.8, &now);
+        nc.collated_at = (Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+        db.create_entry(&nc).unwrap();
+
+        let llm = MockCollationLlm {
+            refine_response: vec![
+                // Merge tries to include nc1 which is not in candidate_ids.
+                RefineAction::Merge {
+                    source_entry_ids: vec!["s1".to_string(), "nc1".to_string()],
+                    result: RefineEntryFields {
+                        summary_text: "Merged".to_string(),
+                        topic_tags: "test".to_string(),
+                        topic_key: "test".to_string(),
+                        confidence: 0.9,
+                    },
+                    reason: "Merge with non-candidate".to_string(),
+                },
+                // Split of s1 is valid (s1 is a candidate).
+                RefineAction::Split {
+                    source_entry_id: "s1".to_string(),
+                    results: vec![
+                        RefineEntryFields {
+                            summary_text: "User likes tea".to_string(),
+                            topic_tags: "beverage".to_string(),
+                            topic_key: "preferences".to_string(),
+                            confidence: 0.9,
+                        },
+                        RefineEntryFields {
+                            summary_text: "User works somewhere".to_string(),
+                            topic_tags: "work".to_string(),
+                            topic_key: "employment".to_string(),
+                            confidence: 0.85,
+                        },
+                    ],
+                    reason: "Two distinct topics".to_string(),
+                },
+            ],
+        };
+
+        let mgr = CollationManager::new(DecayConfig::default());
+        let outcome = run_pipeline(&db, &llm, &mgr, None).await;
+
+        // Merge fails (nc1 not a candidate), split succeeds.
+        assert_eq!(outcome.refine_merges, 0);
+        assert_eq!(outcome.refine_splits, 1);
+        assert_eq!(outcome.refine_new_entries, 2);
+
+        assert_eq!(db.get_entry("s1").unwrap().unwrap().status, "superseded");
+        assert_eq!(db.get_entry("nc1").unwrap().unwrap().status, "active");
     }
 
     #[tokio::test]
-    async fn test_cluster_candidates_no_vectorstore_chunks() {
-        let now = now_str();
-        let entries: Vec<Entry> = (0..30)
-            .map(|i| make_entry(&format!("e{i}"), &format!("Entry {i}"), 0.8, &now))
-            .collect();
-        let entry_refs: Vec<&Entry> = entries.iter().collect();
+    async fn test_pipeline_empty_db() {
+        let db = MemoryDB::open_in_memory().unwrap();
+        let llm = MockCollationLlm::empty();
+        let mgr = CollationManager::new(DecayConfig::default());
+        let outcome = run_pipeline(&db, &llm, &mgr, None).await;
 
-        let mgr = CollationManager::new(CollationConfig::default());
-        let clusters = mgr.cluster_candidates(&entry_refs, None).await;
-        assert_eq!(clusters.len(), 2);
-        assert_eq!(clusters[0].len(), 15);
-        assert_eq!(clusters[1].len(), 15);
+        assert_eq!(outcome.refine_merges, 0);
+        assert_eq!(outcome.refine_splits, 0);
+        assert_eq!(outcome.refine_updates, 0);
+        assert_eq!(outcome.refine_new_entries, 0);
+        assert_eq!(outcome.refine_kept, 0);
+        assert_eq!(outcome.entries_decayed, 0);
+        assert_eq!(outcome.entries_skipped, 0);
+        assert_eq!(outcome.timestamps_backfilled, 0);
     }
 }

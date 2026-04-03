@@ -21,7 +21,7 @@ use shore_protocol::types::{derive_content_from_blocks, ContentBlock, ImageRef, 
 use tokio::sync::{broadcast, Mutex};
 use tracing::{error, info, instrument, warn};
 
-use crate::autonomy::cache_keepalive::CacheKeepaliveConfig;
+use crate::autonomy::parse_cache_ttl_secs;
 use crate::autonomy::manager::AutonomyManager;
 use crate::characters::CharacterRegistry;
 use crate::commands::{self, CommandContext, SessionTokens};
@@ -403,47 +403,7 @@ async fn handle_generation(
         if regen {
             engine.truncate_after_last_user_turn()?;
         } else if !body.text.is_empty() || !body.images.is_empty() {
-            // Copy incoming images to durable attachments/ directory.
-            let character_data_dir = data_dir.join(&char_name);
-            let attachments_dir = character_data_dir.join("images").join("attachments");
-            let mut images: Vec<ImageRef> = Vec::with_capacity(body.images.len());
-            let mut content_blocks: Vec<ContentBlock> = Vec::new();
-
-            for src_path_str in &body.images {
-                let src_path = std::path::Path::new(src_path_str);
-                if !src_path.exists() {
-                    warn!(path = %src_path_str, "Skipping non-existent image");
-                    continue;
-                }
-                if let Err(e) = std::fs::create_dir_all(&attachments_dir) {
-                    warn!(error = %e, "Failed to create attachments directory");
-                    continue;
-                }
-                let original_name = src_path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "image".to_string());
-                let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
-                let dest_name = format!("{timestamp}_{original_name}");
-                let dest_path = attachments_dir.join(&dest_name);
-
-                match std::fs::copy(src_path, &dest_path) {
-                    Ok(_) => {
-                        let abs_path = dest_path.to_string_lossy().to_string();
-                        let rel_path = format!("attachments/{dest_name}");
-                        images.push(ImageRef { path: abs_path, caption: None });
-                        content_blocks.push(ContentBlock::Text {
-                            text: format!("[Attached image saved as: {rel_path}]"),
-                        });
-                        info!(src = %src_path_str, dest = %rel_path, "Copied incoming image to attachments");
-                    }
-                    Err(e) => {
-                        warn!(src = %src_path_str, error = %e, "Failed to copy image to attachments");
-                        // Fall back to the original path so the image still reaches the LLM.
-                        images.push(ImageRef { path: src_path_str.clone(), caption: None });
-                    }
-                }
-            }
+            let (images, mut content_blocks) = ingest_images(&data_dir, &char_name, &body.images);
 
             // User text comes after the image annotations.
             content_blocks.push(ContentBlock::Text { text: body.text.clone() });
@@ -483,17 +443,10 @@ async fn handle_generation(
         .and_then(|name| effective_config.models.find_model(name).ok())
         .cloned();
 
-    // 5. Ensure autonomy state with model-specific keepalive config.
+    // 5. Ensure autonomy state with cache TTL for unified interiority timer.
     // Must happen before notify_user_message so session_start is set on first message.
-    let keepalive_cfg = CacheKeepaliveConfig::from_resolved_model(
-        &resolved.provider_key,
-        resolved.cache_ttl.is_some(),
-        resolved.keepalive_enabled,
-        resolved.keepalive_ttl_minutes,
-        resolved.cache_ttl.as_deref(),
-        resolved.keepalive_max_pings,
-    );
-    ctx.autonomy.ensure_state_with_config(&char_name, keepalive_cfg, Some(&effective_config));
+    let cache_ttl_secs = resolved.cache_ttl.as_deref().and_then(parse_cache_ttl_secs);
+    ctx.autonomy.ensure_state_with_config(&char_name, cache_ttl_secs, Some(&effective_config));
 
     if !regen && (!body.text.is_empty() || !body.images.is_empty()) {
         let mut engine = engine_arc.lock().await;
@@ -548,64 +501,7 @@ async fn handle_generation(
     });
 
     // 7. Build LLM messages from assembled prompt.
-    //
-    // All content blocks are sent intact — the Anthropic API handles
-    // thinking block stripping for prior turns internally.
-    let llm_messages: Vec<Value> = prompt_result
-        .messages
-        .iter()
-        .map(|m| {
-            let role = match m.role {
-                Role::User => "user",
-                Role::Assistant => "assistant",
-                Role::System => "system",
-            };
-            let content = if !m.content_blocks.is_empty() {
-                let mut blocks: Vec<Value> = Vec::new();
-
-                // Prepend base64-encoded image blocks from m.images (fixes the
-                // bug where user-sent images were silently dropped because
-                // content_blocks was non-empty and build_content was dead code).
-                for img in &m.images {
-                    if let Some(media_type) = media_type_for_path(&img.path) {
-                        match std::fs::read(&img.path) {
-                            Ok(bytes) => {
-                                let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
-                                blocks.push(json!({
-                                    "type": "image",
-                                    "source": {
-                                        "type": "base64",
-                                        "media_type": media_type,
-                                        "data": encoded,
-                                    }
-                                }));
-                            }
-                            Err(e) => {
-                                warn!(path = %img.path, error = %e, "Failed to read image file for LLM");
-                            }
-                        }
-                    }
-                }
-
-                blocks.extend(m.content_blocks.iter()
-                    .filter_map(crate::content_util::content_block_to_api_json));
-                json!(blocks)
-            } else {
-                build_content(&m.content, &m.images)
-            };
-            json!({ "role": role, "content": content })
-        })
-        .collect();
-
-    let system = if prompt_result.system.is_empty() {
-        None
-    } else if prompt_result.system.len() == 1 {
-        Some(json!(prompt_result.system[0].content))
-    } else {
-        Some(json!(prompt_result.system.iter().map(|b| {
-            json!({"type": "text", "text": b.content})
-        }).collect::<Vec<_>>()))
-    };
+    let (llm_messages, system) = build_llm_messages(&prompt_result);
 
     // 8. Build tool definitions from unified tool system.
     let tool_defs = if effective_config.app.behavior.tool_use.enabled {
@@ -652,19 +548,136 @@ async fn handle_generation(
     );
 
     // 10. Stream response from shore-llm (with retry on transient errors).
+    let mut result = stream_with_retry(
+        &ctx, &request, &engine_arc, &resolved, &effective_config, regen, rid.as_deref(),
+    ).await?;
+
+    // Build cache context for tool loop.
+    let tool_cache_warnings = resolved.provider_key == "anthropic"
+        && effective_config.app.advanced.cache_invalidation_warnings;
+    let cache_ctx = CacheContext {
+        conversation_turn_count: engine_arc.lock().await.messages().len(),
+        is_first_after_restart: ctx.is_first_after_restart.load(Ordering::Acquire),
+        is_first_after_compaction: false,
+        cache_invalidation_warnings: tool_cache_warnings,
+        has_seen_cache_read: ctx.has_seen_cache_read.load(Ordering::Acquire),
+    };
+
+    ctx.is_first_after_restart.store(false, Ordering::Release);
+
+    // 11. Run tool loop if the LLM requested tool use.
+    let tool_intermediate_messages = if result.finish_reason == "tool_use"
+        && effective_config.app.behavior.tool_use.enabled
+    {
+        let tool_loop_result = run_tool_phase(
+            &ctx, &data_dir, &char_name, &effective_config,
+            &agent_model, &researcher_model,
+            &character_definition, &user_definition,
+            &mut request, result, &cache_ctx,
+        ).await?;
+        result = tool_loop_result.result;
+        tool_loop_result.intermediate_messages
+    } else {
+        Vec::new()
+    };
+
+    // 12. Persist intermediate tool messages and final assistant message.
+    persist_and_notify(
+        &ctx, &engine_arc, &char_name, &resolved,
+        &result, &request, tool_intermediate_messages, wall_clock_start,
+    ).await
+}
+
+// ---------------------------------------------------------------------------
+// Extracted helpers for handle_generation phases
+// ---------------------------------------------------------------------------
+
+/// Phase 7: Convert assembled prompt messages into LLM API JSON format.
+///
+/// Returns `(messages, system)` — the system parameter is `None` if empty,
+/// a plain string for a single block, or an array of `{type, text}` objects.
+fn build_llm_messages(
+    prompt_result: &prompt::AssembledPrompt,
+) -> (Vec<Value>, Option<Value>) {
+    let llm_messages: Vec<Value> = prompt_result
+        .messages
+        .iter()
+        .map(|m| {
+            let role = match m.role {
+                Role::User => "user",
+                Role::Assistant => "assistant",
+                Role::System => "system",
+            };
+            let content = if !m.content_blocks.is_empty() {
+                let mut blocks: Vec<Value> = Vec::new();
+
+                // Prepend base64-encoded image blocks from m.images.
+                for img in &m.images {
+                    if let Some(media_type) = media_type_for_path(&img.path) {
+                        match std::fs::read(&img.path) {
+                            Ok(bytes) => {
+                                let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                                blocks.push(json!({
+                                    "type": "image",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": media_type,
+                                        "data": encoded,
+                                    }
+                                }));
+                            }
+                            Err(e) => {
+                                warn!(path = %img.path, error = %e, "Failed to read image file for LLM");
+                            }
+                        }
+                    }
+                }
+
+                blocks.extend(m.content_blocks.iter()
+                    .filter_map(crate::content_util::content_block_to_api_json));
+                json!(blocks)
+            } else {
+                build_content(&m.content, &m.images)
+            };
+            json!({ "role": role, "content": content })
+        })
+        .collect();
+
+    let system = if prompt_result.system.is_empty() {
+        None
+    } else if prompt_result.system.len() == 1 {
+        Some(json!(prompt_result.system[0].content))
+    } else {
+        Some(json!(prompt_result.system.iter().map(|b| {
+            json!({"type": "text", "text": b.content})
+        }).collect::<Vec<_>>()))
+    };
+
+    (llm_messages, system)
+}
+
+/// Phase 10: Stream the LLM response with exponential backoff retry.
+async fn stream_with_retry(
+    ctx: &GenContext,
+    request: &shore_llm_client::types::LlmRequest,
+    engine_arc: &Arc<Mutex<crate::engine::ConversationEngine>>,
+    resolved: &shore_config::models::ResolvedModel,
+    effective_config: &LoadedConfig,
+    regen: bool,
+    rid: Option<&str>,
+) -> Result<shore_llm_client::types::StreamResult, Box<dyn std::error::Error + Send + Sync>> {
     let retry_policy = RetryPolicy {
         max_retries: effective_config.app.advanced.max_retries
             .unwrap_or(RetryPolicy::default().max_retries),
         ..RetryPolicy::default()
     };
     let mut attempt: u32 = 0;
-    let mut result;
 
     loop {
         let consumer = StreamConsumer::new(ctx.push_tx.clone());
 
         let stream_result = async {
-            let mut reader = ctx.llm_client.stream_raw(&request, rid.as_deref()).await?;
+            let mut reader = ctx.llm_client.stream_raw(request, rid).await?;
 
             let turn_count = engine_arc.lock().await.messages().len();
             let cache_warnings = resolved.provider_key == "anthropic"
@@ -687,8 +700,7 @@ async fn handle_generation(
                 if r.usage.cache_read_tokens > 0 {
                     ctx.has_seen_cache_read.store(true, Ordering::Release);
                 }
-                result = r;
-                break;
+                return Ok(r);
             }
             Err(e) => {
                 match retry::should_retry_error(&e, attempt, &retry_policy) {
@@ -709,116 +721,122 @@ async fn handle_generation(
             }
         }
     }
+}
 
-    // Build cache context for tool loop.
-    let tool_cache_warnings = resolved.provider_key == "anthropic"
-        && effective_config.app.advanced.cache_invalidation_warnings;
-    let cache_ctx = CacheContext {
-        conversation_turn_count: engine_arc.lock().await.messages().len(),
-        is_first_after_restart: ctx.is_first_after_restart.load(Ordering::Acquire),
-        is_first_after_compaction: false,
-        cache_invalidation_warnings: tool_cache_warnings,
-        has_seen_cache_read: ctx.has_seen_cache_read.load(Ordering::Acquire),
-    };
+/// Phase 11: Set up tool context and run the tool loop.
+#[allow(clippy::too_many_arguments)]
+async fn run_tool_phase(
+    ctx: &GenContext,
+    data_dir: &std::path::Path,
+    char_name: &str,
+    effective_config: &LoadedConfig,
+    agent_model: &shore_config::models::ResolvedModel,
+    researcher_model: &Option<shore_config::models::ResolvedModel>,
+    character_definition: &Option<String>,
+    user_definition: &Option<String>,
+    request: &mut shore_llm_client::types::LlmRequest,
+    result: shore_llm_client::types::StreamResult,
+    cache_ctx: &CacheContext,
+) -> Result<tools::ToolLoopResult, Box<dyn std::error::Error + Send + Sync>> {
+    let db_path = data_dir
+        .join(char_name)
+        .join("memory")
+        .join("memory.db");
+    let memory_db = MemoryDB::open(&db_path)
+        .map_err(|e| format!("failed to open memory DB: {e}"))?;
 
-    ctx.is_first_after_restart.store(false, Ordering::Release);
+    let char_def = character_definition.clone().unwrap_or_default();
+    let user_def = user_definition.clone().unwrap_or_default();
 
-    // 11. Run tool loop if the LLM requested tool use.
-    let mut tool_intermediate_messages: Vec<Message> = Vec::new();
+    let image_gen_config = crate::memory::compaction_impls::resolve_image_gen_config(
+        effective_config.app.defaults.image_generation.as_deref(),
+        &effective_config.models.image_generation,
+    ).ok();
 
-    if result.finish_reason == "tool_use"
-        && effective_config.app.behavior.tool_use.enabled
-    {
-        let db_path = data_dir
-            .join(&char_name)
-            .join("memory")
-            .join("memory.db");
-        let memory_db = MemoryDB::open(&db_path)
-            .map_err(|e| format!("failed to open memory DB: {e}"))?;
-
-        let char_def = character_definition.clone().unwrap_or_default();
-        let user_def = user_definition.clone().unwrap_or_default();
-
-        let image_gen_config = crate::memory::compaction_impls::resolve_image_gen_config(
-            effective_config.app.defaults.image_generation.as_deref(),
-            &effective_config.models.image_generation,
-        ).ok();
-
-        // Build semantic search context (graceful: None if no embedding model configured).
-        let search_ctx = match resolve_embed_config(
-            effective_config.app.defaults.embedding.as_deref(),
-            &effective_config.models.embedding,
-        ) {
-            Ok(embed_config) => {
-                let vs_path = data_dir
-                    .join(&char_name)
-                    .join("memory")
-                    .join("vectorstore");
-                match VectorStore::open(&vs_path, embed_config.dimensions).await {
-                    Ok(vs) => Some(AgentSearchContext::new(vs, ctx.llm_client.clone(), embed_config)),
-                    Err(e) => {
-                        warn!("Failed to open vector store for semantic search: {e}");
-                        None
-                    }
+    // Build semantic search context (graceful: None if no embedding model configured).
+    let search_ctx = match resolve_embed_config(
+        effective_config.app.defaults.embedding.as_deref(),
+        &effective_config.models.embedding,
+    ) {
+        Ok(embed_config) => {
+            let vs_path = data_dir
+                .join(char_name)
+                .join("memory")
+                .join("vectorstore");
+            match VectorStore::open(&vs_path, embed_config.dimensions).await {
+                Ok(vs) => Some(AgentSearchContext::new(vs, ctx.llm_client.clone(), embed_config)),
+                Err(e) => {
+                    warn!("Failed to open vector store for semantic search: {e}");
+                    None
                 }
             }
-            Err(_) => None, // No embedding model configured — semantic search unavailable.
-        };
+        }
+        Err(_) => None,
+    };
 
-        let tool_ctx = HandlerToolContext {
-            inner: SharedToolContext {
-                db: memory_db,
-                agent: MemoryAgent::one_shot(
-                    CallerIdentity::Char,
-                    &char_name,
-                    &effective_config.app.defaults.resolve_display_name(),
-                ),
-                agent_llm: RealAgentLlm::new(ctx.llm_client.clone()),
-                agent_model_val: agent_model.clone(),
-                researcher: researcher_model.as_ref().map(|_| {
-                    MemoryResearcher::new(char_def, user_def)
-                }),
-                researcher_llm_val: researcher_model.as_ref().map(|_| {
-                    RealAgentLlm::new(ctx.llm_client.clone())
-                }),
-                researcher_model_val: researcher_model.clone(),
-                rag: NoopRag,
-                search_ctx,
-                image_dir_val: data_dir
-                    .join(&char_name)
-                    .join("images")
-                    .to_string_lossy()
-                    .into_owned(),
-                llm_client_val: ctx.llm_client.clone(),
-                image_gen_config_val: image_gen_config,
-                search_config_val: effective_config.app.behavior.tool_use.search.clone(),
-                character_name_val: char_name.clone(),
-                scratchpad_dir_val: data_dir
-                    .join(&char_name)
-                    .join("scratchpad")
-                    .to_string_lossy()
-                    .into_owned(),
-            },
-            autonomy_val: ctx.autonomy.clone(),
-        };
+    let tool_ctx = HandlerToolContext {
+        inner: SharedToolContext {
+            db: memory_db,
+            agent: MemoryAgent::one_shot(
+                CallerIdentity::Char,
+                char_name,
+                &effective_config.app.defaults.resolve_display_name(),
+            ),
+            agent_llm: RealAgentLlm::new(ctx.llm_client.clone()),
+            agent_model_val: agent_model.clone(),
+            researcher: researcher_model.as_ref().map(|_| {
+                MemoryResearcher::new(char_def, user_def)
+            }),
+            researcher_llm_val: researcher_model.as_ref().map(|_| {
+                RealAgentLlm::new(ctx.llm_client.clone())
+            }),
+            researcher_model_val: researcher_model.clone(),
+            rag: NoopRag,
+            search_ctx,
+            image_dir_val: data_dir
+                .join(char_name)
+                .join("images")
+                .to_string_lossy()
+                .into_owned(),
+            llm_client_val: ctx.llm_client.clone(),
+            image_gen_config_val: image_gen_config,
+            search_config_val: effective_config.app.behavior.tool_use.search.clone(),
+            character_name_val: char_name.to_owned(),
+            scratchpad_dir_val: data_dir
+                .join(char_name)
+                .join("scratchpad")
+                .to_string_lossy()
+                .into_owned(),
+        },
+        autonomy_val: ctx.autonomy.clone(),
+    };
 
-        let tool_loop_result = tools::run_tool_loop(
-            &ctx.llm_client,
-            &ctx.push_tx,
-            &mut request,
-            result,
-            &tool_ctx,
-            effective_config.app.behavior.tool_use.max_iterations,
-            &cache_ctx,
-            &ctx.diagnostics,
-        )
-        .await?;
+    let tool_loop_result = tools::run_tool_loop(
+        &ctx.llm_client,
+        &ctx.push_tx,
+        request,
+        result,
+        &tool_ctx,
+        effective_config.app.behavior.tool_use.max_iterations,
+        cache_ctx,
+        &ctx.diagnostics,
+    )
+    .await?;
 
-        result = tool_loop_result.result;
-        tool_intermediate_messages = tool_loop_result.intermediate_messages;
-    }
+    Ok(tool_loop_result)
+}
 
-    // 12. Persist intermediate tool messages and final assistant message.
+/// Phase 12: Persist messages, record diagnostics, and send notifications.
+async fn persist_and_notify(
+    ctx: &GenContext,
+    engine_arc: &Arc<Mutex<crate::engine::ConversationEngine>>,
+    char_name: &str,
+    resolved: &shore_config::models::ResolvedModel,
+    result: &shore_llm_client::types::StreamResult,
+    request: &shore_llm_client::types::LlmRequest,
+    tool_intermediate_messages: Vec<Message>,
+    wall_clock_start: Instant,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let notify_content = {
         let mut engine = engine_arc.lock().await;
 
@@ -853,17 +871,13 @@ async fn handle_generation(
             ctx.diagnostics.lock().unwrap().api_calls.push(entry);
         }
 
-        // Notify cache keepalive of API response.
-        ctx.autonomy.notify_api_response(
-            &char_name,
-            result.usage.cache_read_tokens,
-            result.usage.input_tokens,
-        );
-        ctx.autonomy.notify_last_request(&char_name, request.clone());
+        ctx.autonomy.notify_last_request(char_name, request.clone());
 
         info!(
             input_tokens = result.usage.input_tokens,
             output_tokens = result.usage.output_tokens,
+            cache_read = result.usage.cache_read_tokens,
+            cache_creation = result.usage.cache_creation_tokens,
             model = %result.model,
             "Response complete"
         );
@@ -886,7 +900,7 @@ async fn handle_generation(
             timestamp: chrono::Utc::now().to_rfc3339(),
         };
         engine.append_message(assistant_msg)?;
-        ctx.autonomy.notify_assistant_message(&char_name, engine.turn_count());
+        ctx.autonomy.notify_assistant_message(char_name, engine.turn_count());
         notify_content
     }; // engine lock released
 
@@ -901,6 +915,60 @@ async fn handle_generation(
 }
 
 // ---------------------------------------------------------------------------
+// Image ingestion
+// ---------------------------------------------------------------------------
+
+/// Copy incoming image paths to durable attachments/ directory.
+/// Returns (persisted ImageRefs, annotation ContentBlocks).
+fn ingest_images(
+    data_dir: &std::path::Path,
+    char_name: &str,
+    image_paths: &[String],
+) -> (Vec<ImageRef>, Vec<ContentBlock>) {
+    let character_data_dir = data_dir.join(char_name);
+    let attachments_dir = character_data_dir.join("images").join("attachments");
+    let mut images: Vec<ImageRef> = Vec::with_capacity(image_paths.len());
+    let mut content_blocks: Vec<ContentBlock> = Vec::new();
+
+    for src_path_str in image_paths {
+        let src_path = std::path::Path::new(src_path_str);
+        if !src_path.exists() {
+            warn!(path = %src_path_str, "Skipping non-existent image");
+            continue;
+        }
+        if let Err(e) = std::fs::create_dir_all(&attachments_dir) {
+            warn!(error = %e, "Failed to create attachments directory");
+            continue;
+        }
+        let original_name = src_path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "image".to_string());
+        let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+        let dest_name = format!("{timestamp}_{original_name}");
+        let dest_path = attachments_dir.join(&dest_name);
+
+        match std::fs::copy(src_path, &dest_path) {
+            Ok(_) => {
+                let abs_path = dest_path.to_string_lossy().to_string();
+                let rel_path = format!("attachments/{dest_name}");
+                images.push(ImageRef { path: abs_path, caption: None });
+                content_blocks.push(ContentBlock::Text {
+                    text: format!("[Attached image saved as: {rel_path}]"),
+                });
+                info!(src = %src_path_str, dest = %rel_path, "Copied incoming image to attachments");
+            }
+            Err(e) => {
+                warn!(src = %src_path_str, error = %e, "Failed to copy image to attachments");
+                images.push(ImageRef { path: src_path_str.clone(), caption: None });
+            }
+        }
+    }
+
+    (images, content_blocks)
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -909,6 +977,7 @@ mod tests {
     use super::*;
     use shore_protocol::client_msg::{Command, Regen};
     use shore_protocol::error::ErrorCode;
+    use std::collections::BTreeMap;
     use tempfile::TempDir;
 
     /// Build a `MessageHandler` backed by a tempdir with the given characters.
@@ -1066,7 +1135,7 @@ mod tests {
     #[tokio::test]
     async fn handle_engine_message_regen_builds_empty_body() {
         let tmp = TempDir::new().unwrap();
-        let (mut handler, _rx) = make_handler(&tmp, &["Alice"]);
+        let (handler, _rx) = make_handler(&tmp, &["Alice"]);
 
         // Regen without a model configured will fail at model resolution,
         // but the important thing is it doesn't fail at message routing.
@@ -1109,5 +1178,320 @@ mod tests {
         ).await;
 
         assert!(result.is_err(), "Expected error due to no model configured");
+    }
+
+    // ── image helpers ────────────────────────────────────────────────────
+
+    #[test]
+    fn media_type_for_path_supported() {
+        assert_eq!(media_type_for_path("photo.jpg"), Some("image/jpeg"));
+        assert_eq!(media_type_for_path("photo.jpeg"), Some("image/jpeg"));
+        assert_eq!(media_type_for_path("photo.JPG"), Some("image/jpeg"));
+        assert_eq!(media_type_for_path("photo.png"), Some("image/png"));
+        assert_eq!(media_type_for_path("photo.gif"), Some("image/gif"));
+        assert_eq!(media_type_for_path("photo.webp"), Some("image/webp"));
+    }
+
+    #[test]
+    fn media_type_for_path_unsupported() {
+        assert_eq!(media_type_for_path("photo.bmp"), None);
+        assert_eq!(media_type_for_path("photo.tiff"), None);
+        assert_eq!(media_type_for_path("file.txt"), None);
+        assert_eq!(media_type_for_path("noext"), None);
+    }
+
+    #[test]
+    fn build_content_text_only() {
+        let result = build_content("hello", &[]);
+        assert_eq!(result, serde_json::json!("hello"));
+    }
+
+    #[test]
+    fn build_content_with_image() {
+        let tmp = TempDir::new().unwrap();
+        let img_path = tmp.path().join("test.png");
+        // Minimal valid PNG: 8-byte header.
+        std::fs::write(&img_path, b"\x89PNG\r\n\x1a\n").unwrap();
+
+        let images = vec![ImageRef {
+            path: img_path.to_str().unwrap().to_string(),
+            caption: None,
+        }];
+
+        let result = build_content("describe this", &images);
+        let blocks = result.as_array().expect("Should be a JSON array");
+        assert_eq!(blocks.len(), 2); // image block + text block
+
+        // Image block.
+        assert_eq!(blocks[0]["type"], "image");
+        assert_eq!(blocks[0]["source"]["type"], "base64");
+        assert_eq!(blocks[0]["source"]["media_type"], "image/png");
+        assert!(!blocks[0]["source"]["data"].as_str().unwrap().is_empty());
+
+        // Text block.
+        assert_eq!(blocks[1]["type"], "text");
+        assert_eq!(blocks[1]["text"], "describe this");
+    }
+
+    #[test]
+    fn build_content_skips_unsupported_and_missing() {
+        let tmp = TempDir::new().unwrap();
+        let images = vec![
+            // Unsupported extension → skipped.
+            ImageRef {
+                path: tmp.path().join("file.bmp").to_str().unwrap().to_string(),
+                caption: None,
+            },
+            // Missing file → skipped.
+            ImageRef {
+                path: tmp.path().join("ghost.png").to_str().unwrap().to_string(),
+                caption: None,
+            },
+        ];
+
+        let result = build_content("text", &images);
+        let blocks = result.as_array().expect("Should be a JSON array");
+        // Only the text block remains (both images were skipped).
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0]["type"], "text");
+    }
+
+    // ── Pipeline integration ────────────────────────────────────────
+
+    /// Build a mock Anthropic SSE stream for a simple text response.
+    fn sse_text_response(text: &str) -> String {
+        format!(
+            "event: message_start\n\
+             data: {{\"type\":\"message_start\",\"message\":{{\"model\":\"test\",\"usage\":{{\"input_tokens\":20}}}}}}\n\n\
+             event: content_block_start\n\
+             data: {{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{{\"type\":\"text\",\"text\":\"\"}}}}\n\n\
+             event: content_block_delta\n\
+             data: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"text_delta\",\"text\":\"{text}\"}}}}\n\n\
+             event: content_block_stop\n\
+             data: {{\"type\":\"content_block_stop\",\"index\":0}}\n\n\
+             event: message_delta\n\
+             data: {{\"type\":\"message_delta\",\"delta\":{{\"stop_reason\":\"end_turn\"}},\"usage\":{{\"output_tokens\":10}}}}\n\n\
+             event: message_stop\n\
+             data: {{\"type\":\"message_stop\"}}\n\n"
+        )
+    }
+
+    /// Spawn a mock HTTP server that returns canned SSE on each connection.
+    async fn mock_sse_server(sse_body: String) -> (String, tokio::task::JoinHandle<()>) {
+        use tokio::io::AsyncWriteExt;
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let base_url = format!("http://127.0.0.1:{port}");
+
+        let handle = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let (mut reader, mut writer) = stream.split();
+            // Drain the HTTP request.
+            let mut buf = vec![0u8; 16384];
+            let _ = tokio::io::AsyncReadExt::read(&mut reader, &mut buf).await;
+
+            let response = format!(
+                "HTTP/1.1 200 OK\r\n\
+                 Content-Type: text/event-stream\r\n\
+                 \r\n\
+                 {sse_body}"
+            );
+            writer.write_all(response.as_bytes()).await.unwrap();
+            writer.shutdown().await.unwrap();
+        });
+
+        (base_url, handle)
+    }
+
+    /// Build a model catalog containing a single test model pointing at a mock server.
+    fn mock_model_catalog(base_url: &str) -> shore_config::models::ModelCatalog {
+        use shore_config::models::{ModelCatalog, ResolvedModel, Sdk};
+
+        let model = ResolvedModel {
+            name: "test".into(),
+            qualified_name: "chat.anthropic.test".into(),
+            category: "chat".into(),
+            provider_key: "anthropic".into(),
+            sdk: Sdk::Anthropic,
+            model_id: "claude-test".into(),
+            api_key_env: None,
+            base_url: Some(base_url.to_string()),
+            max_context_tokens: None,
+            max_tokens: Some(4096),
+            temperature: Some(0.7),
+            top_p: None,
+            reasoning_effort: None,
+            budget_tokens: None,
+            cache_ttl: None,
+            keepalive_enabled: None,
+            keepalive_ttl_minutes: None,
+            keepalive_max_pings: None,
+            openrouter_provider: None,
+            vertex_project: None,
+            vertex_location: None,
+            gemini_generation: None,
+            gemini_web_search: None,
+        };
+
+        let mut chat = BTreeMap::new();
+        chat.insert("test".into(), model);
+        ModelCatalog { chat, ..Default::default() }
+    }
+
+    /// Build a `MessageHandler` with a model catalog pointing at a mock server.
+    fn make_handler_with_models(
+        tmp: &TempDir,
+        chars: &[&str],
+        models: shore_config::models::ModelCatalog,
+    ) -> (MessageHandler, broadcast::Receiver<ServerMessage>) {
+        let config_dir = tmp.path().join("config");
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+
+        for name in chars {
+            let char_dir = config_dir.join("characters").join(name);
+            std::fs::create_dir_all(&char_dir).unwrap();
+            std::fs::write(
+                char_dir.join("character.md"),
+                format!("You are {name}. Keep responses very short."),
+            )
+            .unwrap();
+        }
+
+        let (push_tx, push_rx) = broadcast::channel(64);
+
+        let mut app_config = shore_config::app::AppConfig::default();
+        app_config.defaults.model = Some("test".into());
+        // Disable tool_use to keep the pipeline simple (no tool loop).
+        app_config.behavior.tool_use.enabled = false;
+
+        let loaded_config = shore_config::LoadedConfig::new_for_test(
+            app_config,
+            models,
+            shore_config::ShoreDirs {
+                config: config_dir.clone(),
+                data: data_dir.clone(),
+                runtime: tmp.path().join("runtime"),
+            },
+        );
+
+        let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+        let (autonomy, _compaction_rx) = AutonomyManager::new(
+            Default::default(),
+            Default::default(),
+            data_dir.clone(),
+            shutdown_rx,
+        );
+
+        let registry = CharacterRegistry::new(
+            config_dir, data_dir.clone(), push_tx.clone(), loaded_config.clone(),
+        );
+
+        let cmd_ctx = CommandContext {
+            config: loaded_config.clone(),
+            push_tx: push_tx.clone(),
+            data_dir: data_dir.clone(),
+            active_model: None,
+            session_tokens: Arc::new(std::sync::Mutex::new(SessionTokens::default())),
+            autonomy: autonomy.clone(),
+            llm_client: LlmClient::new(),
+            diagnostics: Arc::new(std::sync::Mutex::new(shore_diagnostics::Diagnostics::default())),
+            memory_shell_sessions: std::collections::HashMap::new(),
+        };
+
+        let handler = MessageHandler {
+            registry: Arc::new(Mutex::new(registry)),
+            cmd_ctx,
+            llm_client: LlmClient::new(),
+            push_tx: push_tx.clone(),
+            is_first_after_restart: Arc::new(AtomicBool::new(false)),
+            has_seen_cache_read: Arc::new(AtomicBool::new(false)),
+            compaction_occurred: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            autonomy,
+            notifier: NotificationService::new(Default::default()),
+            generation_handle: None,
+        };
+
+        (handler, push_rx)
+    }
+
+    /// End-to-end pipeline: user message → prompt → LLM stream → persist.
+    ///
+    /// Uses a real ConversationEngine, real prompt assembly, and a mock HTTP
+    /// server returning canned Anthropic SSE. Verifies that both the user
+    /// message and the assistant response are persisted to the engine.
+    #[tokio::test]
+    async fn pipeline_user_message_to_persisted_response() {
+        let (base_url, _server) = mock_sse_server(sse_text_response("Hello from the mock LLM!")).await;
+        let models = mock_model_catalog(&base_url);
+
+        let tmp = TempDir::new().unwrap();
+        let (handler, mut push_rx) = make_handler_with_models(&tmp, &["Alice"], models);
+
+        // Resolve character and config (same steps the handler loop takes).
+        let (char_name, effective_config) = {
+            let mut registry = handler.registry.lock().await;
+            let char_name = registry.resolve_character(Some("Alice")).unwrap();
+            let effective_config = registry.effective_config(&char_name).clone();
+            (char_name, effective_config)
+        };
+
+        let body = ClientMessageBody {
+            rid: Some("test-rid".into()),
+            text: "Hello, Alice!".into(),
+            stream: true,
+            images: vec![],
+            absence_seconds: None,
+            overrides: None,
+        };
+
+        let gen = handler.gen_context();
+        let data_dir = handler.cmd_ctx.data_dir.clone();
+
+        // Run the full pipeline.
+        let result = handle_generation(
+            gen, body, false, char_name.clone(), Some("test-rid".into()),
+            effective_config, data_dir.clone(), None,
+        ).await;
+
+        assert!(result.is_ok(), "Pipeline should succeed: {:?}", result.err());
+
+        // Verify: messages are persisted in the engine.
+        let engine_arc = {
+            let mut registry = handler.registry.lock().await;
+            registry.get_or_create(&char_name).unwrap()
+        };
+        let engine = engine_arc.lock().await;
+        let messages = engine.messages();
+        assert_eq!(messages.len(), 2, "Should have user + assistant messages, got {}", messages.len());
+        assert_eq!(messages[0].role, Role::User);
+        assert_eq!(messages[0].content, "Hello, Alice!");
+        assert_eq!(messages[1].role, Role::Assistant);
+        assert!(
+            messages[1].content.contains("Hello from the mock LLM!"),
+            "Assistant content should contain mock response, got: {}",
+            messages[1].content
+        );
+
+        // Verify: active.jsonl was written to disk.
+        let active_path = data_dir.join(&char_name).join("active.jsonl");
+        assert!(active_path.exists(), "active.jsonl should exist");
+        let line_count = std::fs::read_to_string(&active_path)
+            .unwrap()
+            .lines()
+            .filter(|l| !l.is_empty())
+            .count();
+        assert_eq!(line_count, 2, "active.jsonl should have 2 lines (user + assistant)");
+
+        // Verify: broadcast events were sent (NewMessage for user message at minimum).
+        let mut saw_new_message = false;
+        while let Ok(msg) = push_rx.try_recv() {
+            if matches!(msg, ServerMessage::NewMessage(_)) {
+                saw_new_message = true;
+            }
+        }
+        assert!(saw_new_message, "Should have broadcast at least one NewMessage");
     }
 }

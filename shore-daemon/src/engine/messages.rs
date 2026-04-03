@@ -366,4 +366,194 @@ mod tests {
         let store = MessageStore::load(path).unwrap();
         assert!(store.messages().is_empty());
     }
+
+    // ── JSONL resilience tests ���───────────────────────────────────────
+
+    #[test]
+    fn load_skips_empty_lines() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("conv.jsonl");
+
+        // Create a store with one message, then manually inject blank lines.
+        let mut store = MessageStore::new(path.clone());
+        store.append(make_msg("m1", Role::User, "Hello")).unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        let with_blanks = format!("\n\n{}\n\n", content.trim());
+        std::fs::write(&path, with_blanks).unwrap();
+
+        let reloaded = MessageStore::load(path).unwrap();
+        assert_eq!(reloaded.messages().len(), 1);
+        assert_eq!(reloaded.messages()[0].msg_id, "m1");
+    }
+
+    #[test]
+    fn load_rejects_invalid_json_line() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("conv.jsonl");
+
+        std::fs::write(&path, "{broken json\n").unwrap();
+        let result = MessageStore::load(path);
+        assert!(
+            matches!(result, Err(EngineError::JsonParse { .. })),
+            "should return JsonParse error for malformed JSON"
+        );
+    }
+
+    #[test]
+    fn load_handles_trailing_newline() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("conv.jsonl");
+
+        let mut store = MessageStore::new(path.clone());
+        store.append(make_msg("m1", Role::User, "Hello")).unwrap();
+
+        // Append extra trailing newlines (simulating editor artifact).
+        let mut content = std::fs::read_to_string(&path).unwrap();
+        content.push_str("\n\n\n");
+        std::fs::write(&path, content).unwrap();
+
+        let reloaded = MessageStore::load(path).unwrap();
+        assert_eq!(reloaded.messages().len(), 1);
+    }
+
+    #[test]
+    fn load_normalizes_legacy_format() {
+        use shore_protocol::types::ContentBlock;
+
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("conv.jsonl");
+
+        // Write a legacy message with content but no content_blocks.
+        let legacy = serde_json::json!({
+            "msg_id": "legacy1",
+            "role": "user",
+            "content": "old format message",
+            "content_blocks": [],
+            "images": [],
+            "timestamp": "2026-01-01T00:00:00Z"
+        });
+        std::fs::write(&path, format!("{}\n", legacy)).unwrap();
+
+        let store = MessageStore::load(path).unwrap();
+        assert_eq!(store.messages().len(), 1);
+        let msg = &store.messages()[0];
+        // normalize() should populate content_blocks from content.
+        assert!(
+            !msg.content_blocks.is_empty(),
+            "normalize should populate content_blocks from content"
+        );
+        assert!(matches!(&msg.content_blocks[0], ContentBlock::Text { text } if text == "old format message"));
+    }
+
+    #[test]
+    fn persist_roundtrip_special_characters() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("conv.jsonl");
+        let mut store = MessageStore::new(path.clone());
+
+        let special = "Unicode: \u{1F600} \u{00E9}\nNewline in content\t\"Quoted\"\\Backslash";
+        store.append(make_msg("m1", Role::User, special)).unwrap();
+
+        let reloaded = MessageStore::load(path).unwrap();
+        assert_eq!(reloaded.messages()[0].content, special);
+    }
+
+    #[test]
+    fn turn_count_excludes_tool_result_messages() {
+        use shore_protocol::types::ContentBlock;
+
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("conv.jsonl");
+        let mut store = MessageStore::new(path);
+
+        // Real user turn.
+        store.append(make_msg("m1", Role::User, "Hello")).unwrap();
+        // Assistant with tool use.
+        store.append(make_msg("m2", Role::Assistant, "Let me search")).unwrap();
+        // Tool result (NOT a real user turn).
+        let mut tool_msg = Message {
+            msg_id: "m3".to_string(),
+            role: Role::User,
+            content: String::new(),
+            images: vec![],
+            content_blocks: vec![ContentBlock::ToolResult {
+                tool_use_id: "call_1".to_string(),
+                content: "5 results found".to_string(),
+                is_error: false,
+            }],
+            alt_index: None,
+            alt_count: None,
+            timestamp: "2026-01-01T00:00:00Z".to_string(),
+        };
+        tool_msg.content = "5 results found".to_string();
+        store.append(tool_msg).unwrap();
+        // Another real user turn.
+        store.append(make_msg("m4", Role::User, "Thanks")).unwrap();
+
+        assert_eq!(store.message_count(), 4);
+        assert_eq!(store.turn_count(), 2, "tool-result message should not count as a turn");
+    }
+
+    // ── JSONL corruption / edge-case tests ─────────────────────────────
+
+    #[test]
+    fn load_truncated_json_line() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("conv.jsonl");
+
+        // Write one valid message, then a truncated JSON line (simulating power loss).
+        let mut store = MessageStore::new(path.clone());
+        store.append(make_msg("m1", Role::User, "Hello")).unwrap();
+
+        let mut content = std::fs::read_to_string(&path).unwrap();
+        content.push_str(r#"{"msg_id":"m2","role":"user","content":"trunc"#);
+        content.push('\n');
+        std::fs::write(&path, content).unwrap();
+
+        let result = MessageStore::load(path);
+        assert!(
+            matches!(result, Err(EngineError::JsonParse { .. })),
+            "truncated JSON line should produce JsonParse error"
+        );
+    }
+
+    #[test]
+    fn load_skips_whitespace_only_lines() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("conv.jsonl");
+
+        let mut store = MessageStore::new(path.clone());
+        store.append(make_msg("m1", Role::User, "Hello")).unwrap();
+
+        let valid_line = std::fs::read_to_string(&path).unwrap();
+        let with_ws = format!("   \t  \n{}\n  \t\n", valid_line.trim());
+        std::fs::write(&path, with_ws).unwrap();
+
+        let reloaded = MessageStore::load(path).unwrap();
+        assert_eq!(reloaded.messages().len(), 1);
+        assert_eq!(reloaded.messages()[0].msg_id, "m1");
+    }
+
+    #[test]
+    fn load_large_file_1000_messages() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("conv.jsonl");
+        let mut store = MessageStore::new(path.clone());
+
+        for i in 0..1000 {
+            let role = if i % 2 == 0 { Role::User } else { Role::Assistant };
+            store
+                .append(make_msg(&format!("m{i}"), role, &format!("Message {i}")))
+                .unwrap();
+        }
+
+        assert_eq!(store.messages().len(), 1000);
+        assert_eq!(store.turn_count(), 500);
+
+        let reloaded = MessageStore::load(path).unwrap();
+        assert_eq!(reloaded.messages().len(), 1000);
+        assert_eq!(reloaded.messages()[0].msg_id, "m0");
+        assert_eq!(reloaded.messages()[999].msg_id, "m999");
+    }
 }

@@ -46,6 +46,10 @@ pub enum CliCommand {
         /// Enable extended thinking with optional budget (tokens)
         #[arg(long, num_args = 0..=1, default_missing_value = "10240")]
         thinking: Option<u32>,
+
+        /// Inject as a system instruction instead of a user message
+        #[arg(long)]
+        system: bool,
     },
 
     /// Regenerate the last assistant response
@@ -280,11 +284,15 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
     use serde_json::json;
     match cmd {
         // These use dedicated SWP message types or are handled locally.
-        CliCommand::Send { .. }
+        CliCommand::Send { system: false, .. }
         | CliCommand::Regen { .. }
         | CliCommand::Completions { .. }
         | CliCommand::Matrix { .. }
         | CliCommand::Config { path: true, check: false, reset: false, .. } => None,
+
+        CliCommand::Send { system: true, message, .. } => {
+            Some(("inject_system", json!({ "text": message.join(" ") })))
+        }
 
         // Character: list/switch/new handled locally, --info goes to daemon.
         CliCommand::Character { name, info, .. } => {
@@ -820,6 +828,7 @@ mod tests {
             temperature: None,
             top_p: None,
             thinking: None,
+            system: false,
         };
         assert!(to_swp_command(&cmd).is_none());
     }

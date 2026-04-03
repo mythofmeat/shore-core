@@ -5,7 +5,10 @@ use serde_json::{json, Value};
 use tokio::io::DuplexStream;
 
 use super::sse::SseEvent;
-use super::stream_helpers::{build_done_event, build_start_event, build_tool_use_event};
+use super::stream_helpers::{
+    build_done_event, build_start_event, build_tool_use_event, extract_anthropic_usage,
+    merge_anthropic_usage,
+};
 use crate::types::{ContentBlock, GenerateResponse, LlmRequest, Timing, Usage};
 use crate::LlmError;
 
@@ -221,11 +224,74 @@ fn build_output_config(opts: &Value) -> Option<Value> {
     }
 }
 
+/// Extract plain text from a message's content (string or array of blocks).
+fn extract_text_content(msg: &Value) -> String {
+    match msg.get("content") {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Array(blocks)) => blocks
+            .iter()
+            .filter_map(|b| {
+                if b.get("type").and_then(Value::as_str) == Some("text") {
+                    b.get("text").and_then(Value::as_str)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(""),
+        _ => String::new(),
+    }
+}
+
+/// Convert inline system-role messages to user/assistant pairs.
+///
+/// The Anthropic API does not support `role: "system"` in the messages array,
+/// so we wrap the instruction in XML tags and add a synthetic assistant ack
+/// to maintain alternating turns.  Adjacent user messages are avoided by
+/// merging the instruction into the preceding or following user turn when
+/// possible.
+fn convert_inline_system_messages(messages: &[Value]) -> Vec<Value> {
+    let has_system = messages.iter().any(|m| {
+        m.get("role").and_then(Value::as_str) == Some("system")
+    });
+    if !has_system {
+        return messages.to_vec();
+    }
+
+    let mut out: Vec<Value> = Vec::with_capacity(messages.len());
+    for msg in messages {
+        if msg.get("role").and_then(Value::as_str) == Some("system") {
+            let text = extract_text_content(msg);
+            let wrapped = format!("<system_instruction>{text}</system_instruction>");
+
+            // If the previous message is a user message, merge to avoid
+            // consecutive user roles (which the API rejects).
+            if let Some(prev) = out.last_mut() {
+                if prev.get("role").and_then(Value::as_str) == Some("user") {
+                    let prev_text = extract_text_content(prev);
+                    prev["content"] = json!(format!("{prev_text}\n\n{wrapped}"));
+                    continue;
+                }
+            }
+
+            out.push(json!({ "role": "user", "content": wrapped }));
+            out.push(json!({ "role": "assistant", "content": "Understood." }));
+        } else {
+            out.push(msg.clone());
+        }
+    }
+    out
+}
+
 /// Construct the JSON request body for the Anthropic Messages API.
 fn build_body(request: &LlmRequest, streaming: bool) -> Value {
     let opts = request.provider_options.as_ref();
     let empty_opts = json!({});
     let opts_ref = opts.unwrap_or(&empty_opts);
+
+    // Convert inline system-role messages to user/assistant pairs before
+    // any further processing (Anthropic rejects role: "system" in messages).
+    let converted_messages = convert_inline_system_messages(&request.messages);
 
     // Cache is enabled when cache_ttl is present and non-empty.
     let cache_ttl = opts_ref
@@ -233,20 +299,20 @@ fn build_body(request: &LlmRequest, streaming: bool) -> Value {
         .and_then(Value::as_str)
         .unwrap_or("");
     let cache_enabled = !cache_ttl.is_empty();
-    let has_existing_markers = messages_have_cache_control(&request.messages);
+    let has_existing_markers = messages_have_cache_control(&converted_messages);
 
     // On the first call of a turn (no existing markers), apply cache
     // breakpoints.  On tool-loop continuations (markers already present),
     // keep existing breakpoints immutable.
     let (messages, system) = if cache_enabled && !has_existing_markers {
         apply_cache_control(
-            &request.messages,
+            &converted_messages,
             request.system.as_ref().unwrap_or(&json!(null)),
             cache_ttl,
         )
     } else {
         (
-            request.messages.clone(),
+            converted_messages,
             request.system.clone().unwrap_or(json!(null)),
         )
     };
@@ -458,18 +524,7 @@ fn handle_message_start(data: &str, state: &mut StreamState) -> Option<String> {
     }
 
     if let Some(usage) = message.get("usage") {
-        state.usage.input_tokens = usage
-            .get("input_tokens")
-            .and_then(Value::as_u64)
-            .unwrap_or(0) as u32;
-        state.usage.cache_read_tokens = usage
-            .get("cache_read_input_tokens")
-            .and_then(Value::as_u64)
-            .unwrap_or(0) as u32;
-        state.usage.cache_creation_tokens = usage
-            .get("cache_creation_input_tokens")
-            .and_then(Value::as_u64)
-            .unwrap_or(0) as u32;
+        merge_anthropic_usage(&mut state.usage, usage);
     }
 
     Some(build_start_event(&state.model))
@@ -614,21 +669,7 @@ fn handle_message_delta(data: &str, state: &mut StreamState) {
     }
 
     if let Some(usage) = parsed.get("usage") {
-        // OpenRouter sends actual input_tokens in message_delta (0 in message_start).
-        if let Some(inp) = usage.get("input_tokens").and_then(Value::as_u64) {
-            if inp > 0 {
-                state.usage.input_tokens = inp as u32;
-            }
-        }
-        if let Some(out) = usage.get("output_tokens").and_then(Value::as_u64) {
-            state.usage.output_tokens = out as u32;
-        }
-        if let Some(cr) = usage.get("cache_read_input_tokens").and_then(Value::as_u64) {
-            state.usage.cache_read_tokens = cr as u32;
-        }
-        if let Some(cc) = usage.get("cache_creation_input_tokens").and_then(Value::as_u64) {
-            state.usage.cache_creation_tokens = cc as u32;
-        }
+        merge_anthropic_usage(&mut state.usage, usage);
     }
 }
 
@@ -676,25 +717,7 @@ pub async fn generate(
         .to_string();
 
     // Extract usage.
-    let usage_val = body.get("usage");
-    let usage = Usage {
-        input_tokens: usage_val
-            .and_then(|u| u.get("input_tokens"))
-            .and_then(Value::as_u64)
-            .unwrap_or(0) as u32,
-        output_tokens: usage_val
-            .and_then(|u| u.get("output_tokens"))
-            .and_then(Value::as_u64)
-            .unwrap_or(0) as u32,
-        cache_read_tokens: usage_val
-            .and_then(|u| u.get("cache_read_input_tokens"))
-            .and_then(Value::as_u64)
-            .unwrap_or(0) as u32,
-        cache_creation_tokens: usage_val
-            .and_then(|u| u.get("cache_creation_input_tokens"))
-            .and_then(Value::as_u64)
-            .unwrap_or(0) as u32,
-    };
+    let usage = extract_anthropic_usage(body.get("usage"));
 
     // Extract content blocks.
     let raw_blocks = body.get("content").and_then(Value::as_array);
@@ -770,4 +793,285 @@ pub async fn generate(
         timing,
         model,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn make_request(messages: Vec<Value>, system: Option<Value>) -> LlmRequest {
+        LlmRequest {
+            provider: "anthropic".into(),
+            model: "claude-test".into(),
+            api_key: "sk-test".into(),
+            base_url: None,
+            messages,
+            system,
+            tools: None,
+            max_tokens: 4096,
+            temperature: None,
+            top_p: None,
+            provider_options: None,
+            provider_key: None,
+        }
+    }
+
+    // ── apply_cache_control ────────────────────────────────────────────
+
+    #[test]
+    fn test_apply_cache_control_empty_messages() {
+        let (msgs, sys) = apply_cache_control(&[], &json!(null), "5m");
+        assert!(msgs.is_empty());
+        assert_eq!(sys, json!(null));
+    }
+
+    #[test]
+    fn test_apply_cache_control_places_system_breakpoint() {
+        let system = json!([
+            { "type": "text", "text": "stable system prompt" },
+            { "type": "text", "text": "recap that changes" }
+        ]);
+        let messages = vec![json!({"role": "user", "content": "hi"})];
+        let (_, sys) = apply_cache_control(&messages, &system, "5m");
+
+        // Breakpoint on second-to-last (index 0) — the stable block.
+        let blocks = sys.as_array().unwrap();
+        assert!(blocks[0].get("cache_control").is_some());
+        assert!(blocks[1].get("cache_control").is_none());
+    }
+
+    #[test]
+    fn test_apply_cache_control_single_system_block() {
+        let system = json!([{ "type": "text", "text": "only block" }]);
+        let messages = vec![json!({"role": "user", "content": "hi"})];
+        let (_, sys) = apply_cache_control(&messages, &system, "5m");
+
+        let blocks = sys.as_array().unwrap();
+        assert!(blocks[0].get("cache_control").is_some());
+    }
+
+    #[test]
+    fn test_apply_cache_control_normalizes_string_content() {
+        let messages = vec![
+            json!({"role": "user", "content": "hello"}),
+            json!({"role": "assistant", "content": "hi there"}),
+        ];
+        let (result, _) = apply_cache_control(&messages, &json!(null), "5m");
+
+        // All string content should be normalized to array format.
+        for msg in &result {
+            assert!(
+                msg["content"].is_array(),
+                "content should be normalized to array, got: {}",
+                msg["content"]
+            );
+        }
+    }
+
+    #[test]
+    fn test_apply_cache_control_custom_ttl() {
+        let system = json!([{ "type": "text", "text": "prompt" }]);
+        let messages = vec![json!({"role": "user", "content": "hi"})];
+        let (_, sys) = apply_cache_control(&messages, &system, "10m");
+
+        let cc = &sys.as_array().unwrap()[0]["cache_control"];
+        assert_eq!(cc["type"], "ephemeral");
+        assert_eq!(cc["ttl"], "10m");
+    }
+
+    // ── convert_inline_system_messages ─────────────────────────────────
+
+    #[test]
+    fn test_convert_inline_system_no_system_messages() {
+        let messages = vec![
+            json!({"role": "user", "content": "hello"}),
+            json!({"role": "assistant", "content": "hi"}),
+        ];
+        let result = convert_inline_system_messages(&messages);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0]["role"], "user");
+        assert_eq!(result[1]["role"], "assistant");
+    }
+
+    #[test]
+    fn test_convert_inline_system_standalone() {
+        let messages = vec![
+            json!({"role": "assistant", "content": "prev response"}),
+            json!({"role": "system", "content": "be helpful"}),
+            json!({"role": "user", "content": "hello"}),
+        ];
+        let result = convert_inline_system_messages(&messages);
+
+        // system becomes user + assistant pair.
+        assert_eq!(result.len(), 4);
+        assert_eq!(result[0]["role"], "assistant");
+        assert_eq!(result[1]["role"], "user");
+        assert!(result[1]["content"].as_str().unwrap().contains("<system_instruction>"));
+        assert!(result[1]["content"].as_str().unwrap().contains("be helpful"));
+        assert_eq!(result[2]["role"], "assistant");
+        assert_eq!(result[2]["content"], "Understood.");
+        assert_eq!(result[3]["role"], "user");
+    }
+
+    #[test]
+    fn test_convert_inline_system_merges_into_preceding_user() {
+        let messages = vec![
+            json!({"role": "user", "content": "hello"}),
+            json!({"role": "system", "content": "be concise"}),
+        ];
+        let result = convert_inline_system_messages(&messages);
+
+        // System merged into preceding user message to avoid consecutive user roles.
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0]["role"], "user");
+        let content = result[0]["content"].as_str().unwrap();
+        assert!(content.contains("hello"));
+        assert!(content.contains("<system_instruction>be concise</system_instruction>"));
+    }
+
+    // ── build_thinking_config ─────────────────────────────────────────
+
+    #[test]
+    fn test_build_thinking_config_adaptive() {
+        let opts = json!({"reasoning_effort": "adaptive"});
+        let config = build_thinking_config(&opts).unwrap();
+        assert_eq!(config["type"], "adaptive");
+    }
+
+    #[test]
+    fn test_build_thinking_config_budget() {
+        let opts = json!({"thinking": true, "budget_tokens": 2048});
+        let config = build_thinking_config(&opts).unwrap();
+        assert_eq!(config["type"], "enabled");
+        assert_eq!(config["budget_tokens"], 2048);
+    }
+
+    #[test]
+    fn test_build_thinking_config_none() {
+        let opts = json!({});
+        assert!(build_thinking_config(&opts).is_none());
+    }
+
+    // ── build_body ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_build_body_minimal() {
+        let request = make_request(
+            vec![json!({"role": "user", "content": "hi"})],
+            None,
+        );
+        let body = build_body(&request, false);
+
+        assert_eq!(body["model"], "claude-test");
+        assert_eq!(body["max_tokens"], 4096);
+        assert!(body["messages"].is_array());
+        assert!(body.get("stream").is_none());
+    }
+
+    #[test]
+    fn test_build_body_with_tools_and_system() {
+        let mut request = make_request(
+            vec![json!({"role": "user", "content": "search for cats"})],
+            Some(json!("You are helpful.")),
+        );
+        request.tools = Some(vec![json!({
+            "name": "web_search",
+            "description": "Search the web",
+            "input_schema": {"type": "object"}
+        })]);
+        let body = build_body(&request, false);
+
+        assert!(body.get("system").is_some());
+        assert!(body["tools"].is_array());
+        assert_eq!(body["tools"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_build_body_streaming_flag() {
+        let request = make_request(
+            vec![json!({"role": "user", "content": "hi"})],
+            None,
+        );
+        let body = build_body(&request, true);
+        assert_eq!(body["stream"], true);
+
+        let body_no_stream = build_body(&request, false);
+        assert!(body_no_stream.get("stream").is_none());
+    }
+
+    // ── SSE event handlers ────────────────────────────────────────────
+
+    #[test]
+    fn test_handle_sse_event_message_start() {
+        let data = json!({
+            "type": "message_start",
+            "message": {
+                "model": "claude-3-opus-20240229",
+                "usage": {"input_tokens": 100}
+            }
+        })
+        .to_string();
+
+        let mut state = StreamState::new("unknown");
+        let result = handle_message_start(&data, &mut state);
+
+        assert!(result.is_some());
+        let event: Value = serde_json::from_str(&result.unwrap()).unwrap();
+        assert_eq!(event["type"], "start");
+        assert_eq!(event["model"], "claude-3-opus-20240229");
+        assert_eq!(state.model, "claude-3-opus-20240229");
+        assert_eq!(state.usage.input_tokens, 100);
+    }
+
+    #[test]
+    fn test_handle_sse_event_tool_use_lifecycle() {
+        let mut state = StreamState::new("claude-test");
+
+        // 1. content_block_start: register tool block.
+        let start_data = json!({
+            "index": 0,
+            "content_block": {
+                "type": "tool_use",
+                "id": "toolu_123",
+                "name": "web_search"
+            }
+        })
+        .to_string();
+        let r1 = handle_content_block_start(&start_data, &mut state);
+        assert!(r1.is_none(), "content_block_start should not emit");
+        assert!(state.tool_blocks.contains_key(&0));
+
+        // 2. content_block_delta: accumulate JSON.
+        let delta_data = json!({
+            "index": 0,
+            "delta": {
+                "type": "input_json_delta",
+                "partial_json": "{\"query\":"
+            }
+        })
+        .to_string();
+        let r2 = handle_content_block_delta(&delta_data, &mut state);
+        assert!(r2.is_none(), "input_json_delta should not emit");
+
+        let delta_data2 = json!({
+            "index": 0,
+            "delta": {
+                "type": "input_json_delta",
+                "partial_json": "\"cats\"}"
+            }
+        })
+        .to_string();
+        handle_content_block_delta(&delta_data2, &mut state);
+
+        // 3. content_block_stop: emit tool_use event.
+        let stop_data = json!({"index": 0}).to_string();
+        let r3 = handle_content_block_stop(&stop_data, &mut state);
+        assert!(r3.is_some());
+        let event: Value = serde_json::from_str(&r3.unwrap()).unwrap();
+        assert_eq!(event["type"], "tool_use");
+        assert_eq!(event["id"], "toolu_123");
+        assert_eq!(event["name"], "web_search");
+        assert_eq!(event["input"]["query"], "cats");
+    }
 }
