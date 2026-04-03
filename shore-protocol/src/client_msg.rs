@@ -76,3 +76,99 @@ pub enum ClientMessage {
     Command(Command),
     Cancel(Cancel),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cancel_serialization_roundtrip() {
+        let msg = ClientMessage::Cancel(Cancel {});
+        let json = serde_json::to_value(&msg).unwrap();
+        assert_eq!(json["type"], "cancel");
+
+        let roundtrip: ClientMessage = serde_json::from_value(json).unwrap();
+        assert!(matches!(roundtrip, ClientMessage::Cancel(_)));
+    }
+
+    #[test]
+    fn message_overrides_with_values() {
+        let overrides = MessageOverrides {
+            temperature: Some(0.8),
+            top_p: Some(0.95),
+            thinking_budget: Some(4096),
+        };
+        let json = serde_json::to_value(&overrides).unwrap();
+        assert_eq!(json["temperature"], 0.8);
+        assert_eq!(json["top_p"], 0.95);
+        assert_eq!(json["thinking_budget"], 4096);
+    }
+
+    #[test]
+    fn message_overrides_none_fields_omitted() {
+        let overrides = MessageOverrides::default();
+        let json = serde_json::to_value(&overrides).unwrap();
+        assert!(json.get("temperature").is_none());
+        assert!(json.get("top_p").is_none());
+        assert!(json.get("thinking_budget").is_none());
+    }
+
+    #[test]
+    fn message_overrides_partial_fields() {
+        let overrides = MessageOverrides {
+            temperature: Some(0.5),
+            top_p: None,
+            thinking_budget: None,
+        };
+        let json = serde_json::to_value(&overrides).unwrap();
+        assert_eq!(json["temperature"], 0.5);
+        assert!(json.get("top_p").is_none());
+    }
+
+    #[test]
+    fn client_message_body_with_overrides_roundtrip() {
+        let body = ClientMessageBody {
+            rid: Some("r1".into()),
+            text: "hello".into(),
+            stream: true,
+            images: vec![],
+            absence_seconds: None,
+            overrides: Some(MessageOverrides {
+                temperature: Some(0.7),
+                top_p: None,
+                thinking_budget: Some(2048),
+            }),
+        };
+        let msg = ClientMessage::Message(body);
+        let json = serde_json::to_value(&msg).unwrap();
+        assert_eq!(json["type"], "message");
+        assert_eq!(json["overrides"]["temperature"], 0.7);
+        assert_eq!(json["overrides"]["thinking_budget"], 2048);
+        assert!(json["overrides"].get("top_p").is_none());
+
+        let roundtrip: ClientMessage = serde_json::from_value(json).unwrap();
+        match roundtrip {
+            ClientMessage::Message(b) => {
+                let o = b.overrides.unwrap();
+                assert_eq!(o.temperature, Some(0.7));
+                assert_eq!(o.thinking_budget, Some(2048));
+                assert_eq!(o.top_p, None);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn client_message_body_without_overrides() {
+        let body = ClientMessageBody {
+            rid: None,
+            text: "hi".into(),
+            stream: false,
+            images: vec![],
+            absence_seconds: None,
+            overrides: None,
+        };
+        let json = serde_json::to_value(&body).unwrap();
+        assert!(json.get("overrides").is_none());
+    }
+}

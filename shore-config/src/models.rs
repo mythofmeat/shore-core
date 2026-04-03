@@ -814,6 +814,111 @@ model_id = "claude-opus-4-6"
         assert_eq!(t.sdk, Sdk::Openai);
     }
 
+    // ── ModelConfigFields ────────────────────────────────────────────
+
+    #[test]
+    fn merge_from_overwrites_some_fields() {
+        let mut base = ModelConfigFields {
+            sdk: Some(Sdk::Anthropic),
+            api_key_env: Some("BASE_KEY".into()),
+            max_tokens: Some(1024),
+            temperature: Some(0.5),
+            ..Default::default()
+        };
+        let overlay = ModelConfigFields {
+            max_tokens: Some(4096),
+            top_p: Some(0.9),
+            ..Default::default()
+        };
+        base.merge_from(&overlay);
+
+        // Overwritten by overlay.
+        assert_eq!(base.max_tokens, Some(4096));
+        assert_eq!(base.top_p, Some(0.9));
+        // Preserved from base (overlay had None).
+        assert_eq!(base.sdk, Some(Sdk::Anthropic));
+        assert_eq!(base.api_key_env.as_deref(), Some("BASE_KEY"));
+        assert_eq!(base.temperature, Some(0.5));
+    }
+
+    #[test]
+    fn merge_from_none_overlay_is_noop() {
+        let mut base = ModelConfigFields {
+            sdk: Some(Sdk::Openai),
+            max_tokens: Some(2048),
+            ..Default::default()
+        };
+        let empty = ModelConfigFields::default();
+        base.merge_from(&empty);
+
+        assert_eq!(base.sdk, Some(Sdk::Openai));
+        assert_eq!(base.max_tokens, Some(2048));
+    }
+
+    #[test]
+    fn or_fallback_prefers_self() {
+        let primary = ModelConfigFields {
+            max_tokens: Some(1024),
+            temperature: Some(0.3),
+            ..Default::default()
+        };
+        let fallback = ModelConfigFields {
+            max_tokens: Some(4096),
+            temperature: Some(0.9),
+            api_key_env: Some("FALLBACK_KEY".into()),
+            ..Default::default()
+        };
+        let result = primary.or_fallback(&fallback);
+
+        assert_eq!(result.max_tokens, Some(1024), "self value wins");
+        assert_eq!(result.temperature, Some(0.3), "self value wins");
+        assert_eq!(result.api_key_env.as_deref(), Some("FALLBACK_KEY"), "fallback fills gap");
+    }
+
+    #[test]
+    fn or_fallback_both_none_stays_none() {
+        let a = ModelConfigFields::default();
+        let b = ModelConfigFields::default();
+        let result = a.or_fallback(&b);
+        assert!(result.max_tokens.is_none());
+        assert!(result.sdk.is_none());
+    }
+
+    // ── chat_model_names ───────────────────────────────────────────
+
+    #[test]
+    fn chat_model_names_returns_short_names() {
+        let table = parse_table(
+            r#"
+[anthropic.sonnet]
+model_id = "claude-sonnet-4-6"
+
+[anthropic.opus]
+model_id = "claude-opus-4-6"
+
+[openrouter.kimi]
+model_id = "kimi-k2"
+"#,
+        );
+        let catalog = ModelCatalog::from_sections(
+            Some(&table),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let mut names: Vec<&str> = catalog.chat_model_names().collect();
+        names.sort();
+        assert_eq!(names, vec!["kimi", "opus", "sonnet"]);
+    }
+
+    #[test]
+    fn chat_model_names_empty_catalog() {
+        let catalog = ModelCatalog::from_sections(None, None, None, None).unwrap();
+        assert_eq!(catalog.chat_model_names().count(), 0);
+    }
+
     #[test]
     fn sdk_as_provider_str() {
         assert_eq!(Sdk::Anthropic.as_provider_str(), "anthropic");

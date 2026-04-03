@@ -90,3 +90,72 @@ pub async fn image_generate(
     )
     .await
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn make_request(provider: &str) -> LlmRequest {
+        LlmRequest {
+            provider: provider.into(),
+            model: "test-model".into(),
+            api_key: "sk-test".into(),
+            base_url: Some("http://127.0.0.1:1".into()), // unreachable
+            messages: vec![json!({"role": "user", "content": "hi"})],
+            system: None,
+            tools: None,
+            max_tokens: 100,
+            temperature: None,
+            top_p: None,
+            provider_options: None,
+            provider_key: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn stream_unsupported_provider_returns_error() {
+        let client = reqwest::Client::new();
+        let request = make_request("unsupported");
+        let result = stream(&client, &request).await;
+        match result {
+            Err(LlmError::Provider { message }) => {
+                assert!(message.contains("unsupported provider: unsupported"));
+            }
+            other => panic!("expected Provider error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn generate_unsupported_provider_returns_error() {
+        let client = reqwest::Client::new();
+        let request = make_request("unsupported");
+        let result = generate(&client, &request).await;
+        match result {
+            Err(LlmError::Provider { message }) => {
+                assert!(message.contains("unsupported provider: unsupported"));
+            }
+            other => panic!("expected Provider error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn stream_known_providers_do_not_hit_unsupported_error() {
+        let client = reqwest::Client::new();
+        // These should route to real provider impls and fail on HTTP, not on
+        // the "unsupported provider" dispatch branch.
+        for provider in &["anthropic", "openai", "deepseek", "zhipuai", "xai", "gemini"] {
+            let request = make_request(provider);
+            let result = stream(&client, &request).await;
+            match &result {
+                Err(LlmError::Provider { message }) => {
+                    assert!(
+                        !message.contains("unsupported provider"),
+                        "{provider} should not hit unsupported provider path, got: {message}"
+                    );
+                }
+                _ => {} // Any other error (HTTP, connection) or Ok is fine.
+            }
+        }
+    }
+}

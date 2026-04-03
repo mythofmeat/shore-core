@@ -806,6 +806,33 @@ mod tests {
     // ── normalize_finish_reason ───────────────────────────────────────
 
     #[test]
+    fn test_translate_messages_empty() {
+        let request = make_request(vec![], None);
+        let contents = translate_messages(&request);
+        assert!(contents.is_empty());
+    }
+
+    #[test]
+    fn test_translate_messages_unknown_tool_use_id() {
+        // tool_result references a tool_use_id that was never in a tool_use block.
+        // The fallback should use the tool_use_id itself as the function name.
+        let request = make_request(
+            vec![json!({
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "orphan_id", "content": "some result"}
+                ]
+            })],
+            None,
+        );
+        let contents = translate_messages(&request);
+        assert_eq!(contents.len(), 1);
+        let fr = &contents[0]["parts"][0]["functionResponse"];
+        assert_eq!(fr["name"], "orphan_id", "should fallback to tool_use_id as name");
+        assert_eq!(fr["response"]["result"], "some result");
+    }
+
+    #[test]
     fn test_normalize_finish_reason() {
         assert_eq!(normalize_finish_reason(Some("STOP")), "end_turn");
         assert_eq!(normalize_finish_reason(Some("MAX_TOKENS")), "max_tokens");

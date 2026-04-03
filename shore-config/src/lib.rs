@@ -1122,6 +1122,120 @@ max_tokens = 16384
         assert_eq!(alice.models.find_model("opus").unwrap().max_tokens, Some(16384));
     }
 
+    // ── .env loading tests ────────────────────────────────────────────
+
+    #[test]
+    fn dotenv_file_loaded_into_env() {
+        let tmp = setup_config_dir(&[
+            ("config.toml", ""),
+            (".env", "SHORE_TEST_DOTENV_VAR_1234=hello_from_dotenv"),
+        ]);
+
+        let config_path = tmp.path().join("config.toml");
+        let _loaded = load_config(Some(&config_path)).unwrap();
+
+        assert_eq!(
+            std::env::var("SHORE_TEST_DOTENV_VAR_1234").ok().as_deref(),
+            Some("hello_from_dotenv"),
+        );
+        // Clean up.
+        std::env::remove_var("SHORE_TEST_DOTENV_VAR_1234");
+    }
+
+    #[test]
+    fn no_dotenv_file_is_fine() {
+        // No .env file — load_config should still succeed.
+        let tmp = setup_config_dir(&[("config.toml", "")]);
+        let config_path = tmp.path().join("config.toml");
+        let loaded = load_config(Some(&config_path));
+        assert!(loaded.is_ok());
+    }
+
+    // ── create_default_config tests ─────────────────────────────────
+
+    #[test]
+    fn create_default_config_creates_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sub = tmp.path().join("newdir");
+        // Directory doesn't exist yet — create_default_config should create it.
+        create_default_config(&sub);
+
+        let config_path = sub.join("config.toml");
+        assert!(config_path.exists(), "config.toml should be created");
+
+        let content = std::fs::read_to_string(&config_path).unwrap();
+        assert!(content.contains("Shore V2 configuration"));
+        assert!(content.contains("[defaults]"));
+        assert!(content.contains("[chat.anthropic]"));
+    }
+
+    #[test]
+    fn create_default_config_via_load_when_missing() {
+        // load_config with no existing config.toml should create default.
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join("config.toml");
+        assert!(!config_path.exists());
+
+        let loaded = load_config(Some(&config_path)).unwrap();
+        // Should produce defaults (empty app config).
+        assert!(loaded.app.defaults.model.is_none());
+
+        // The default config should now exist on disk.
+        assert!(config_path.exists());
+    }
+
+    // ── XDG override env var tests ──────────────────────────────────
+
+    #[test]
+    fn xdg_override_shore_config_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let custom = tmp.path().join("my_config");
+        std::fs::create_dir_all(&custom).unwrap();
+
+        // Set SHORE_CONFIG_DIR override — should be used as-is (no "/shore" suffix).
+        std::env::set_var("SHORE_CONFIG_DIR", &custom);
+        let dir = resolve_xdg_dir(
+            "SHORE_CONFIG_DIR",
+            "XDG_CONFIG_HOME",
+            dirs::config_dir,
+            "~/.config",
+        );
+        std::env::remove_var("SHORE_CONFIG_DIR");
+
+        assert_eq!(dir, custom, "SHORE_CONFIG_DIR should be used as-is");
+    }
+
+    #[test]
+    fn xdg_fallback_appends_shore() {
+        // No override set — fallback path should have /shore appended.
+        let unique = format!("SHORE_TEST_NO_OVERRIDE_{}", std::process::id());
+        let xdg_unique = format!("SHORE_TEST_XDG_NO_{}", std::process::id());
+        // Ensure neither env var is set.
+        std::env::remove_var(&unique);
+        std::env::remove_var(&xdg_unique);
+
+        let dir = resolve_xdg_dir(
+            &unique,
+            &xdg_unique,
+            || None, // no platform dir
+            "/tmp/shore_fallback_test",
+        );
+        assert_eq!(dir, PathBuf::from("/tmp/shore_fallback_test/shore"));
+    }
+
+    #[test]
+    fn xdg_empty_fallback_uses_temp_dir() {
+        let unique = format!("SHORE_TEST_EMPTY_{}", std::process::id());
+        let xdg_unique = format!("SHORE_TEST_XDG_EMPTY_{}", std::process::id());
+        std::env::remove_var(&unique);
+        std::env::remove_var(&xdg_unique);
+
+        let dir = resolve_xdg_dir(&unique, &xdg_unique, || None, "");
+        // Should use std::env::temp_dir() + "/shore"
+        assert!(dir.ends_with("shore"));
+        assert!(dir.parent().unwrap().exists(), "parent should be temp_dir");
+    }
+
     #[test]
     fn character_config_with_conf_d_models() {
         // Simulates: global config defines model in conf.d, character overrides default model.

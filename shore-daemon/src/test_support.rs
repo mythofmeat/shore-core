@@ -9,6 +9,7 @@ use std::pin::Pin;
 
 use shore_config::models::{ResolvedModel, Sdk};
 use shore_llm_client::LlmClient;
+use crate::autonomy::manager::AutonomyManager;
 use crate::memory::agent::types::{AgentError, AgentIndexer, AgentRag, RagHit};
 use crate::memory::agent::{CallerIdentity, MemoryAgent};
 use crate::memory::agent_llm::{AgentLlm, MockAgentLlm};
@@ -93,6 +94,8 @@ pub struct TestToolContext {
     pub researcher_llm_val: Option<MockAgentLlm>,
     pub researcher_model_val: Option<ResolvedModel>,
     pub search_config_val: SearchConfig,
+    pub autonomy_mgr: Option<AutonomyManager>,
+    pub character_name_val: String,
 }
 
 impl TestToolContext {
@@ -109,6 +112,8 @@ impl TestToolContext {
             researcher_llm_val: None,
             researcher_model_val: None,
             search_config_val: SearchConfig::default(),
+            autonomy_mgr: None,
+            character_name_val: String::new(),
         }
     }
 
@@ -127,6 +132,13 @@ impl TestToolContext {
     /// Set custom RAG results.
     pub fn with_rag(mut self, results: Vec<RagHit>) -> Self {
         self.rag = MockRag::with_results(results);
+        self
+    }
+
+    /// Set an autonomy manager and character name for activity tests.
+    pub fn with_autonomy(mut self, mgr: AutonomyManager, character: &str) -> Self {
+        self.autonomy_mgr = Some(mgr);
+        self.character_name_val = character.to_string();
         self
     }
 
@@ -183,6 +195,12 @@ impl ToolContext for TestToolContext {
     }
     fn search_config(&self) -> &SearchConfig {
         &self.search_config_val
+    }
+    fn autonomy_manager(&self) -> Option<&AutonomyManager> {
+        self.autonomy_mgr.as_ref()
+    }
+    fn character_name(&self) -> &str {
+        &self.character_name_val
     }
 }
 

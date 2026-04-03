@@ -272,4 +272,46 @@ mod tests {
         let empty = extract_gemini_usage(None);
         assert_eq!(empty.input_tokens, 0);
     }
+
+    #[test]
+    fn test_merge_anthropic_usage_all_zeros() {
+        let mut usage = Usage::default();
+        let raw = json!({"input_tokens": 0, "output_tokens": 0});
+        merge_anthropic_usage(&mut usage, &raw);
+        assert_eq!(usage.input_tokens, 0);
+        assert_eq!(usage.output_tokens, 0);
+    }
+
+    #[test]
+    fn test_merge_anthropic_usage_cache_only() {
+        let mut usage = Usage::default();
+        let raw = json!({
+            "cache_read_input_tokens": 500,
+            "cache_creation_input_tokens": 200
+        });
+        merge_anthropic_usage(&mut usage, &raw);
+        assert_eq!(usage.input_tokens, 0);
+        assert_eq!(usage.output_tokens, 0);
+        assert_eq!(usage.cache_read_tokens, 500);
+        assert_eq!(usage.cache_creation_tokens, 200);
+    }
+
+    #[test]
+    fn test_extract_anthropic_usage_missing_fields() {
+        let body = json!({"input_tokens": 100});
+        let usage = extract_anthropic_usage(Some(&body));
+        assert_eq!(usage.input_tokens, 100);
+        assert_eq!(usage.output_tokens, 0);
+        assert_eq!(usage.cache_read_tokens, 0);
+        assert_eq!(usage.cache_creation_tokens, 0);
+    }
+
+    #[test]
+    fn test_extract_gemini_usage_missing_fields() {
+        let meta = json!({"promptTokenCount": 100});
+        let usage = extract_gemini_usage(Some(&meta));
+        assert_eq!(usage.input_tokens, 100);
+        assert_eq!(usage.output_tokens, 0);
+        assert_eq!(usage.cache_read_tokens, 0);
+    }
 }

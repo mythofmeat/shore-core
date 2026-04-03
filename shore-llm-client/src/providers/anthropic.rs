@@ -1074,4 +1074,339 @@ mod tests {
         assert_eq!(event["name"], "web_search");
         assert_eq!(event["input"]["query"], "cats");
     }
+
+    // ── handle_sse_event dispatch ────────────────────────────────────
+
+    #[test]
+    fn test_handle_sse_event_unknown_type_returns_none() {
+        let mut state = StreamState::new("claude-test");
+        let event = SseEvent {
+            event: Some("totally_unknown".into()),
+            data: "{}".into(),
+        };
+        assert!(handle_sse_event(event, &mut state).is_none());
+    }
+
+    #[test]
+    fn test_handle_sse_event_ping_returns_none() {
+        let mut state = StreamState::new("claude-test");
+        let event = SseEvent {
+            event: Some("ping".into()),
+            data: "{}".into(),
+        };
+        assert!(handle_sse_event(event, &mut state).is_none());
+    }
+
+    #[test]
+    fn test_handle_sse_event_falls_back_to_json_type_field() {
+        // OpenRouter proxy case: no event: field, type inside data payload.
+        let mut state = StreamState::new("claude-test");
+        let data = json!({
+            "type": "message_start",
+            "message": {
+                "model": "claude-proxy",
+                "usage": {"input_tokens": 50}
+            }
+        })
+        .to_string();
+        let event = SseEvent { event: None, data };
+        let result = handle_sse_event(event, &mut state);
+        assert!(result.is_some());
+        let parsed: Value = serde_json::from_str(&result.unwrap()).unwrap();
+        assert_eq!(parsed["type"], "start");
+        assert_eq!(state.model, "claude-proxy");
+    }
+
+    // ── handle_content_block_delta ───────────────────────────────────
+
+    #[test]
+    fn test_text_delta_emits_and_accumulates() {
+        let mut state = StreamState::new("claude-test");
+        assert!(state.first_token_time.is_none());
+
+        let data = json!({
+            "index": 0,
+            "delta": { "type": "text_delta", "text": "Hello " }
+        })
+        .to_string();
+        let result = handle_content_block_delta(&data, &mut state);
+
+        assert!(result.is_some());
+        let event: Value = serde_json::from_str(&result.unwrap()).unwrap();
+        assert_eq!(event["type"], "text");
+        assert_eq!(event["text"], "Hello ");
+        assert_eq!(state.text_content, "Hello ");
+        assert!(state.first_token_time.is_some());
+
+        // Second delta accumulates.
+        let data2 = json!({
+            "index": 0,
+            "delta": { "type": "text_delta", "text": "world" }
+        })
+        .to_string();
+        handle_content_block_delta(&data2, &mut state);
+        assert_eq!(state.text_content, "Hello world");
+    }
+
+    #[test]
+    fn test_thinking_delta_emits() {
+        let mut state = StreamState::new("claude-test");
+        state.thinking_blocks.insert(0);
+
+        let data = json!({
+            "index": 0,
+            "delta": { "type": "thinking_delta", "thinking": "Let me consider..." }
+        })
+        .to_string();
+        let result = handle_content_block_delta(&data, &mut state);
+
+        assert!(result.is_some());
+        let event: Value = serde_json::from_str(&result.unwrap()).unwrap();
+        assert_eq!(event["type"], "thinking");
+        assert_eq!(event["text"], "Let me consider...");
+        assert!(state.first_token_time.is_some());
+    }
+
+    #[test]
+    fn test_signature_delta_accumulates_without_emitting() {
+        let mut state = StreamState::new("claude-test");
+        state.thinking_blocks.insert(0);
+
+        let data = json!({
+            "index": 0,
+            "delta": { "type": "signature_delta", "signature": "sig_part1" }
+        })
+        .to_string();
+        let result = handle_content_block_delta(&data, &mut state);
+        assert!(result.is_none());
+        assert_eq!(state.thinking_signatures.get(&0).unwrap(), "sig_part1");
+
+        // Second chunk appends.
+        let data2 = json!({
+            "index": 0,
+            "delta": { "type": "signature_delta", "signature": "_part2" }
+        })
+        .to_string();
+        handle_content_block_delta(&data2, &mut state);
+        assert_eq!(state.thinking_signatures.get(&0).unwrap(), "sig_part1_part2");
+    }
+
+    // ── handle_content_block_start ───────────────────────────────────
+
+    #[test]
+    fn test_content_block_start_redacted_thinking() {
+        let mut state = StreamState::new("claude-test");
+        let data = json!({
+            "index": 0,
+            "content_block": { "type": "redacted_thinking", "data": "encrypted_blob" }
+        })
+        .to_string();
+
+        let result = handle_content_block_start(&data, &mut state);
+        assert!(result.is_none());
+        assert_eq!(state.redacted_thinking_blocks.get(&0).unwrap(), "encrypted_blob");
+    }
+
+    #[test]
+    fn test_content_block_start_openrouter_redacted_filtered() {
+        let mut state = StreamState::new("claude-test");
+        let data = json!({
+            "index": 0,
+            "content_block": {
+                "type": "redacted_thinking",
+                "data": "openrouter.reasoning: some duplicate content"
+            }
+        })
+        .to_string();
+
+        let result = handle_content_block_start(&data, &mut state);
+        assert!(result.is_none());
+        assert!(
+            state.redacted_thinking_blocks.is_empty(),
+            "OpenRouter bogus redacted_thinking should be filtered"
+        );
+    }
+
+    // ── handle_content_block_stop ────────────────────────────────────
+
+    #[test]
+    fn test_content_block_stop_thinking_emits_signature() {
+        let mut state = StreamState::new("claude-test");
+        state.thinking_blocks.insert(0);
+        state.thinking_signatures.insert(0, "sig_complete".into());
+
+        let data = json!({"index": 0}).to_string();
+        let result = handle_content_block_stop(&data, &mut state);
+
+        assert!(result.is_some());
+        let event: Value = serde_json::from_str(&result.unwrap()).unwrap();
+        assert_eq!(event["type"], "thinking_signature");
+        assert_eq!(event["signature"], "sig_complete");
+        assert!(!state.thinking_blocks.contains(&0));
+        assert!(!state.thinking_signatures.contains_key(&0));
+    }
+
+    #[test]
+    fn test_content_block_stop_redacted_thinking_emits() {
+        let mut state = StreamState::new("claude-test");
+        state.redacted_thinking_blocks.insert(0, "opaque_data".into());
+
+        let data = json!({"index": 0}).to_string();
+        let result = handle_content_block_stop(&data, &mut state);
+
+        assert!(result.is_some());
+        let event: Value = serde_json::from_str(&result.unwrap()).unwrap();
+        assert_eq!(event["type"], "redacted_thinking");
+        assert_eq!(event["data"], "opaque_data");
+        assert!(!state.redacted_thinking_blocks.contains_key(&0));
+    }
+
+    // ── handle_message_delta ─────────────────────────────────────────
+
+    #[test]
+    fn test_message_delta_sets_finish_reason_and_usage() {
+        let mut state = StreamState::new("claude-test");
+        let data = json!({
+            "delta": { "stop_reason": "tool_use" },
+            "usage": { "output_tokens": 42 }
+        })
+        .to_string();
+
+        handle_message_delta(&data, &mut state);
+        assert_eq!(state.finish_reason, "tool_use");
+        assert_eq!(state.usage.output_tokens, 42);
+    }
+
+    // ── handle_message_stop ──────────────────────────────────────────
+
+    #[test]
+    fn test_message_stop_produces_done_event() {
+        let mut state = StreamState::new("claude-test");
+        state.text_content = "Final answer.".into();
+        state.finish_reason = "end_turn".into();
+        state.usage.input_tokens = 100;
+        state.usage.output_tokens = 50;
+
+        let result = handle_message_stop(&mut state);
+        let event: Value = serde_json::from_str(&result).unwrap();
+
+        assert_eq!(event["type"], "done");
+        assert_eq!(event["content"], "Final answer.");
+        assert_eq!(event["finish_reason"], "end_turn");
+        assert_eq!(event["usage"]["input_tokens"], 100);
+        assert_eq!(event["usage"]["output_tokens"], 50);
+        // Timing fields exist but values are non-deterministic.
+        assert!(event.get("timing").is_some());
+    }
+
+    // ── is_tool_result_message ──────────────────────────────────────
+
+    #[test]
+    fn test_is_tool_result_user_with_tool_results() {
+        let msg = json!({
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": "ok"}
+            ]
+        });
+        assert!(is_tool_result_message(&msg));
+    }
+
+    #[test]
+    fn test_is_tool_result_user_with_text() {
+        let msg = json!({"role": "user", "content": "hello"});
+        assert!(!is_tool_result_message(&msg));
+    }
+
+    #[test]
+    fn test_is_tool_result_assistant_message() {
+        let msg = json!({
+            "role": "assistant",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": "ok"}
+            ]
+        });
+        assert!(!is_tool_result_message(&msg));
+    }
+
+    #[test]
+    fn test_is_tool_result_mixed_blocks() {
+        let msg = json!({
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": "ok"},
+                {"type": "text", "text": "also some text"}
+            ]
+        });
+        assert!(!is_tool_result_message(&msg));
+    }
+
+    #[test]
+    fn test_is_tool_result_empty_content_array() {
+        let msg = json!({"role": "user", "content": []});
+        assert!(!is_tool_result_message(&msg));
+    }
+
+    // ── find_turn_boundary ──────────────────────────────────────────
+
+    #[test]
+    fn test_find_turn_boundary_empty_messages() {
+        assert_eq!(find_turn_boundary(&[], 2), None);
+    }
+
+    #[test]
+    fn test_find_turn_boundary_single_user_message() {
+        let msgs = vec![json!({"role": "user", "content": "hi"})];
+        assert_eq!(find_turn_boundary(&msgs, 2), None);
+    }
+
+    #[test]
+    fn test_find_turn_boundary_skips_tool_result_messages() {
+        // Tool-result-only user messages should not count as "real" user turns.
+        let msgs = vec![
+            json!({"role": "user", "content": "first question"}),
+            json!({"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "search", "input": {}}]}),
+            json!({"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "result"}]}),
+            json!({"role": "assistant", "content": "answer 1"}),
+            json!({"role": "user", "content": "second question"}),
+            json!({"role": "assistant", "content": "answer 2"}),
+            json!({"role": "user", "content": "third question"}),
+            json!({"role": "assistant", "content": "answer 3"}),
+        ];
+        // depth=1: skip current turn, then 1 more → breakpoint before "second question" (index 4)
+        // That means the boundary is at index 3 (last message of the turn before).
+        let result = find_turn_boundary(&msgs, 1);
+        assert_eq!(result, Some(3));
+    }
+
+    #[test]
+    fn test_find_turn_boundary_exact_depth() {
+        let msgs = vec![
+            json!({"role": "user", "content": "q1"}),
+            json!({"role": "assistant", "content": "a1"}),
+            json!({"role": "user", "content": "q2"}),
+            json!({"role": "assistant", "content": "a2"}),
+            json!({"role": "user", "content": "q3"}),
+            json!({"role": "assistant", "content": "a3"}),
+        ];
+        // depth=2: skip current turn (q3), then count 2 real user messages back.
+        // That's q2 (1) and q1 (2). depth+1=3 matches q1 at index 0.
+        // i > 0 check passes? No, i=0, so i > 0 is false. Returns None.
+        assert_eq!(find_turn_boundary(&msgs, 2), None);
+
+        // depth=1: skip q3, count 1 back → q2 at index 2, return i-1=1.
+        assert_eq!(find_turn_boundary(&msgs, 1), Some(1));
+    }
+
+    #[test]
+    fn test_find_turn_boundary_only_tool_result_users() {
+        let msgs = vec![
+            json!({"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "r1"}]}),
+            json!({"role": "assistant", "content": "a1"}),
+            json!({"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t2", "content": "r2"}]}),
+            json!({"role": "assistant", "content": "a2"}),
+        ];
+        // No real user messages → None.
+        assert_eq!(find_turn_boundary(&msgs, 1), None);
+    }
 }

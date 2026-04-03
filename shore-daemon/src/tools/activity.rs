@@ -90,6 +90,7 @@ pub async fn handle_activity_heatmap(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::autonomy::manager::AutonomyManager;
     use crate::test_support::TestToolContext;
 
     #[test]
@@ -118,5 +119,74 @@ mod tests {
         let ctx = TestToolContext::new();
         let result = handle_activity_heatmap(json!({"days": 7}), &ctx).await.unwrap();
         assert_eq!(result["days"], 7);
+    }
+
+    #[tokio::test]
+    async fn test_activity_heatmap_empty_heatmap_structure() {
+        let ctx = TestToolContext::new();
+        let result = handle_activity_heatmap(json!({}), &ctx).await.unwrap();
+
+        let hours = result["hours"].as_array().unwrap();
+        for (i, hour) in hours.iter().enumerate() {
+            assert_eq!(hour["hour"], i as u64);
+            assert_eq!(hour["density"], 0.0);
+            assert_eq!(hour["classification"], "normal");
+        }
+        assert_eq!(result["engagement_score"], 0.0);
+        assert_eq!(result["sessions_per_day"], 0.0);
+    }
+
+    #[tokio::test]
+    async fn test_activity_heatmap_with_autonomy_data() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_tx, rx) = tokio::sync::watch::channel(());
+        let (mgr, _compaction_rx) = AutonomyManager::new(
+            Default::default(),
+            Default::default(),
+            tmp.path().to_path_buf(),
+            rx,
+        );
+
+        // Initialize state and record some messages.
+        mgr.ensure_state("TestChar", None::<u64>);
+        for _ in 0..5 {
+            mgr.notify_user_message("TestChar", 1);
+            mgr.notify_assistant_message("TestChar", 1);
+        }
+
+        let ctx = TestToolContext::new().with_autonomy(mgr, "TestChar");
+        let result = handle_activity_heatmap(json!({}), &ctx).await.unwrap();
+
+        assert_eq!(result["days"], 30);
+        assert_eq!(result["total_messages"], 10);
+        let hours = result["hours"].as_array().unwrap();
+        assert_eq!(hours.len(), 24);
+        // At least one hour should have non-zero density.
+        assert!(
+            hours.iter().any(|h| h["density"].as_f64().unwrap() > 0.0),
+            "Should have activity in at least one hour"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_activity_heatmap_wrong_character_returns_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_tx, rx) = tokio::sync::watch::channel(());
+        let (mgr, _compaction_rx) = AutonomyManager::new(
+            Default::default(),
+            Default::default(),
+            tmp.path().to_path_buf(),
+            rx,
+        );
+
+        // State exists for "TestChar" but context asks for "OtherChar".
+        mgr.ensure_state("TestChar", None::<u64>);
+        mgr.notify_user_message("TestChar", 1);
+
+        let ctx = TestToolContext::new().with_autonomy(mgr, "OtherChar");
+        let result = handle_activity_heatmap(json!({}), &ctx).await.unwrap();
+
+        assert_eq!(result["total_messages"], 0);
+        assert_eq!(result["has_sufficient_data"], false);
     }
 }

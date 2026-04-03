@@ -239,6 +239,89 @@ mod tests {
         assert_eq!(derive_content_from_blocks(&blocks), "first\nsecond");
     }
 
+    // ── normalize() ──────────────────────────────────────────────────
+
+    fn make_msg(content: &str, blocks: Vec<ContentBlock>) -> Message {
+        Message {
+            msg_id: "m1".into(),
+            role: Role::User,
+            content: content.into(),
+            images: vec![],
+            content_blocks: blocks,
+            alt_index: None,
+            alt_count: None,
+            timestamp: "2026-01-01T00:00:00Z".into(),
+        }
+    }
+
+    #[test]
+    fn normalize_legacy_wraps_content_in_text_block() {
+        let mut msg = make_msg("hello world", vec![]);
+        msg.normalize();
+        assert_eq!(msg.content_blocks.len(), 1);
+        assert!(matches!(&msg.content_blocks[0], ContentBlock::Text { text } if text == "hello world"));
+        assert_eq!(msg.content, "hello world");
+    }
+
+    #[test]
+    fn normalize_canonical_derives_content_from_blocks() {
+        let mut msg = make_msg("", vec![
+            ContentBlock::Text { text: "derived".into() },
+        ]);
+        msg.normalize();
+        assert_eq!(msg.content, "derived");
+        assert_eq!(msg.content_blocks.len(), 1);
+    }
+
+    #[test]
+    fn normalize_both_empty_is_noop() {
+        let mut msg = make_msg("", vec![]);
+        msg.normalize();
+        assert_eq!(msg.content, "");
+        assert!(msg.content_blocks.is_empty());
+    }
+
+    // ── serialize_for_storage() ─────────────────────────────────────
+
+    #[test]
+    fn serialize_for_storage_omits_content_field() {
+        let msg = make_msg("should be removed", vec![
+            ContentBlock::Text { text: "canonical".into() },
+        ]);
+        let json_str = msg.serialize_for_storage().unwrap();
+        let val: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        assert!(val.get("content").is_none(), "content field should be omitted");
+        assert!(val.get("content_blocks").is_some());
+    }
+
+    #[test]
+    fn serialize_for_storage_roundtrips_other_fields() {
+        let msg = make_msg("ignored", vec![
+            ContentBlock::Text { text: "hello".into() },
+        ]);
+        let json_str = msg.serialize_for_storage().unwrap();
+        let val: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(val["msg_id"], "m1");
+        assert_eq!(val["role"], "user");
+        assert_eq!(val["timestamp"], "2026-01-01T00:00:00Z");
+    }
+
+    // ── derive_content_from_blocks_with ─────────────────────────────
+
+    #[test]
+    fn derive_content_excludes_tool_results_when_flag_false() {
+        let blocks = vec![
+            ContentBlock::Text { text: "hello".into() },
+            ContentBlock::ToolResult {
+                tool_use_id: "t1".into(),
+                content: "result".into(),
+                is_error: false,
+            },
+        ];
+        assert_eq!(derive_content_from_blocks_with(&blocks, false), "hello");
+        assert_eq!(derive_content_from_blocks_with(&blocks, true), "hello\nresult");
+    }
+
     #[test]
     fn derive_content_mixed_text_and_tool_result() {
         let blocks = vec![

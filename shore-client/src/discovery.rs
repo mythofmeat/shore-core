@@ -112,3 +112,98 @@ pub fn discover_or_default(config_path: Option<&str>) -> ServerAddr {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── entry_alive ──────────────────────────────────────────────────
+
+    #[test]
+    fn entry_alive_no_pid_assumes_alive() {
+        let entry = InstanceEntry {
+            id: None,
+            socket_path: "/tmp/shore.sock".into(),
+            pid: None,
+            tcp_addr: None,
+        };
+        assert!(entry_alive(&entry));
+    }
+
+    #[test]
+    fn entry_alive_current_process() {
+        let entry = InstanceEntry {
+            id: None,
+            socket_path: "/tmp/shore.sock".into(),
+            pid: Some(std::process::id()),
+            tcp_addr: None,
+        };
+        assert!(entry_alive(&entry));
+    }
+
+    #[test]
+    fn entry_alive_bogus_pid() {
+        let entry = InstanceEntry {
+            id: None,
+            socket_path: "/tmp/shore.sock".into(),
+            pid: Some(u32::MAX - 1),
+            tcp_addr: None,
+        };
+        assert!(!entry_alive(&entry));
+    }
+
+    // ── addr_from_socket ─────────────────────────────────────────────
+
+    #[test]
+    fn addr_from_socket_absolute_path() {
+        match addr_from_socket("/run/shore/shore.sock") {
+            ServerAddr::Unix(p) => assert_eq!(p, "/run/shore/shore.sock"),
+            other => panic!("expected Unix, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn addr_from_socket_tcp_address() {
+        match addr_from_socket("localhost:7320") {
+            ServerAddr::Tcp(a) => assert_eq!(a, "localhost:7320"),
+            other => panic!("expected Tcp, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn addr_from_socket_relative_path() {
+        match addr_from_socket("./shore.sock") {
+            ServerAddr::Unix(p) => assert_eq!(p, "./shore.sock"),
+            other => panic!("expected Unix, got {other:?}"),
+        }
+    }
+
+    // ── InstanceEntry deserialization ─────────────────────────────────
+
+    #[test]
+    fn instance_entry_full_fields() {
+        let json = r#"[{
+            "id": "default",
+            "socket_path": "/run/user/1000/shore/shore.sock",
+            "pid": 12345,
+            "tcp_addr": "127.0.0.1:7320"
+        }]"#;
+        let entries: Vec<InstanceEntry> = serde_json::from_str(json).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id.as_deref(), Some("default"));
+        assert_eq!(entries[0].socket_path, "/run/user/1000/shore/shore.sock");
+        assert_eq!(entries[0].pid, Some(12345));
+        assert_eq!(entries[0].tcp_addr.as_deref(), Some("127.0.0.1:7320"));
+    }
+
+    #[test]
+    fn instance_entry_minimal_fields_use_defaults() {
+        let json = r#"[{"socket_path": "/tmp/shore.sock"}]"#;
+        let entries: Vec<InstanceEntry> = serde_json::from_str(json).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].id.is_none());
+        assert!(entries[0].pid.is_none());
+        assert!(entries[0].tcp_addr.is_none());
+        assert_eq!(entries[0].socket_path, "/tmp/shore.sock");
+    }
+}

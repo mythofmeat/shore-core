@@ -460,6 +460,39 @@ mod tests {
     }
 
     #[test]
+    fn write_header_contains_name_and_time() {
+        set_color_enabled(false);
+        let mut buf = Vec::new();
+        write_header(&mut buf, "Alice", "14:30", Color::Cyan, 40);
+        let output = String::from_utf8(buf).unwrap();
+
+        assert!(output.contains("Alice"), "header should contain character name");
+        assert!(output.contains("14:30"), "header should contain time");
+        assert!(output.contains("\u{00b7}"), "header should contain middle dot separator");
+        assert!(output.contains("\u{2500}"), "header should contain box-drawing chars");
+    }
+
+    #[test]
+    fn write_header_pads_to_width() {
+        set_color_enabled(false);
+        let mut buf = Vec::new();
+        write_header(&mut buf, "X", "00:00", Color::Cyan, 60);
+        let output = String::from_utf8(buf).unwrap();
+        let line = output.trim_end_matches('\n');
+        // Width should roughly match requested width (all ASCII/box-drawing).
+        assert!(line.chars().count() >= 50, "header should pad to fill width, got {} chars", line.chars().count());
+    }
+
+    #[test]
+    fn format_time_date_boundary() {
+        // When prev_date differs, should include month abbreviation.
+        let dt = chrono::Local::now();
+        let result = format_time(&dt, Some("2020-01-01"));
+        // Should contain something like "Apr 04" (month day).
+        assert!(result.contains("\u{00b7}"), "cross-day format should contain middle dot");
+    }
+
+    #[test]
     fn print_log_does_not_panic() {
         set_color_enabled(false);
         let messages = vec![

@@ -235,15 +235,58 @@ pub fn print_phase(phase: &Phase) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::output::set_color_enabled;
 
     #[test]
     fn print_error_does_not_panic() {
-        // Smoke test: ensure formatting doesn't panic
         print_error(&"test error");
     }
 
     #[test]
     fn print_server_error_does_not_panic() {
         print_server_error("busy", "engine is busy");
+    }
+
+    // ── format_tool_input content assertions ────────────────────────
+
+    #[test]
+    fn format_tool_input_empty_object_returns_none() {
+        let input = serde_json::json!({});
+        assert!(format_tool_input(&input).is_none());
+    }
+
+    #[test]
+    fn format_tool_input_simple_object() {
+        let input = serde_json::json!({"query": "weather"});
+        let result = format_tool_input(&input).unwrap();
+        assert!(result.contains("query"));
+        assert!(result.contains("weather"));
+    }
+
+    #[test]
+    fn format_tool_input_truncates_large_input() {
+        let big = "x".repeat(MAX_TOOL_OUTPUT + 100);
+        let input = serde_json::json!({"data": big});
+        let result = format_tool_input(&input).unwrap();
+        assert!(result.ends_with("..."), "large input should be truncated with ...");
+        assert!(result.len() <= MAX_TOOL_OUTPUT + 50, "truncated output should be bounded");
+    }
+
+    #[test]
+    fn format_tool_input_small_input_not_truncated() {
+        let input = serde_json::json!({"key": "value", "num": 42});
+        let result = format_tool_input(&input).unwrap();
+        assert!(!result.ends_with("..."), "small input should not be truncated");
+        assert!(result.contains("42"));
+    }
+
+    // ── reset_chunk_state ───────────────────────────────────────────
+
+    #[test]
+    fn reset_chunk_state_clears_thinking() {
+        set_color_enabled(false);
+        WAS_THINKING.store(true, Ordering::Relaxed);
+        reset_chunk_state();
+        assert!(!WAS_THINKING.load(Ordering::Relaxed));
     }
 }

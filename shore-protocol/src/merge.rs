@@ -607,6 +607,48 @@ mod tests {
     // ── Error results ───────────────────────────────────────────────
 
     #[test]
+    fn unmatched_tool_use_id_no_result_paired() {
+        // Assistant calls tool "t1" but result message has "t999" — no match.
+        let msgs = vec![
+            user_msg("u1", "test"),
+            assistant_tool_use("a1", vec![("t1", "search")]),
+            user_tool_results("u2", vec![("t999", "orphan result", false)]),
+            assistant_text("a2", "Done"),
+        ];
+        let merged = merge_tool_loop_messages(&msgs);
+        assert_eq!(merged.len(), 2);
+        // ToolUse present but no ToolResult paired (mismatched IDs).
+        let blocks = &merged[1].content_blocks;
+        assert!(matches!(&blocks[0], ContentBlock::ToolUse { id, .. } if id == "t1"));
+        // No ToolResult for t1 in the merged output.
+        assert!(
+            !blocks.iter().any(|b| matches!(b, ContentBlock::ToolResult { tool_use_id, .. } if tool_use_id == "t1")),
+            "should not have a tool result for t1"
+        );
+    }
+
+    #[test]
+    fn multiple_tool_uses_partial_results() {
+        // Two tools called, but only one has a matching result.
+        let msgs = vec![
+            user_msg("u1", "test"),
+            assistant_tool_use("a1", vec![("t1", "search"), ("t2", "fetch")]),
+            user_tool_results("u2", vec![("t1", "found it", false)]),
+            assistant_text("a2", "Result"),
+        ];
+        let merged = merge_tool_loop_messages(&msgs);
+        let blocks = &merged[1].content_blocks;
+        // t1 should have its result paired, t2 should not.
+        assert!(matches!(&blocks[0], ContentBlock::ToolUse { id, .. } if id == "t1"));
+        assert!(matches!(&blocks[1], ContentBlock::ToolResult { tool_use_id, .. } if tool_use_id == "t1"));
+        assert!(matches!(&blocks[2], ContentBlock::ToolUse { id, .. } if id == "t2"));
+        // No ToolResult for t2.
+        assert!(
+            !blocks.iter().any(|b| matches!(b, ContentBlock::ToolResult { tool_use_id, .. } if tool_use_id == "t2"))
+        );
+    }
+
+    #[test]
     fn tool_error_results_preserved() {
         let msgs = vec![
             user_msg("u1", "search something"),

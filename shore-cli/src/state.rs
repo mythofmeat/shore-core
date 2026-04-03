@@ -43,32 +43,46 @@ pub fn write_active_character(name: &str) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn round_trip_with_custom_dir() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let file = tmp.path().join("active_character");
+    use super::*;
 
-        std::fs::write(&file, "alice").unwrap();
-        let content = std::fs::read_to_string(&file).unwrap();
-        assert_eq!(content.trim(), "alice");
+    #[test]
+    fn state_file_path_ends_with_active_character() {
+        let path = state_file_path();
+        assert!(
+            path.ends_with("active_character"),
+            "state_file_path should end with 'active_character', got: {path:?}"
+        );
     }
 
+    /// All env-var-dependent state tests are in one test to avoid
+    /// `SHORE_RUNTIME_DIR` races across parallel test threads.
     #[test]
-    fn read_returns_none_for_missing_file() {
-        // state_file_path points at the real runtime dir, but we can test
-        // the logic directly: reading a nonexistent file returns None.
-        let result = std::fs::read_to_string("/tmp/shore_test_nonexistent_12345");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn empty_content_returns_none() {
+    fn read_write_active_character_lifecycle() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let file = tmp.path().join("active_character");
-        std::fs::write(&file, "").unwrap();
+        let runtime = tmp.path().join("shore");
 
-        let content = std::fs::read_to_string(&file).ok();
-        let trimmed = content.as_deref().map(str::trim).filter(|s| !s.is_empty());
-        assert!(trimmed.is_none());
+        std::env::set_var("SHORE_RUNTIME_DIR", &runtime);
+        let result = std::panic::catch_unwind(|| {
+            // 1. Missing file → None.
+            assert!(read_active_character().is_none(), "missing file should return None");
+
+            // 2. Write and read back.
+            write_active_character("alice").unwrap();
+            assert_eq!(read_active_character().as_deref(), Some("alice"));
+
+            // 3. Overwrite.
+            write_active_character("bob").unwrap();
+            assert_eq!(read_active_character().as_deref(), Some("bob"));
+
+            // 4. Empty file → None.
+            std::fs::write(state_file_path(), "").unwrap();
+            assert!(read_active_character().is_none(), "empty file should return None");
+
+            // 5. Whitespace trimming.
+            std::fs::write(state_file_path(), "  carol  \n").unwrap();
+            assert_eq!(read_active_character().as_deref(), Some("carol"));
+        });
+        std::env::remove_var("SHORE_RUNTIME_DIR");
+        result.unwrap();
     }
 }

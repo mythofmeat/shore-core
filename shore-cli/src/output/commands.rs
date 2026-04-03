@@ -1038,6 +1038,61 @@ mod tests {
         print_status(&data, "Sable");
     }
 
+    // ── classification_color ─────────────────────────────────────────
+
+    #[test]
+    fn classification_color_maps_correctly() {
+        assert!(matches!(classification_color("peak"), Color::Cyan));
+        assert!(matches!(classification_color("trough"), Color::DarkGrey));
+        assert!(matches!(classification_color("normal"), Color::White));
+        assert!(matches!(classification_color("unknown"), Color::White));
+    }
+
+    // ── interiority_description edge cases ──────────────────────────
+
+    #[test]
+    fn interiority_description_unknown_state() {
+        // Unknown states pass through as-is.
+        assert_eq!(interiority_description("CustomState", 0, 8), "CustomState");
+    }
+
+    // ── format_command dispatch ─────────────────────────────────────
+
+    #[test]
+    fn format_command_dispatches_known_commands() {
+        set_color_enabled(false);
+        // These should all run without panic and hit their formatters.
+        format_command("memory_reindex", &serde_json::json!({"message": "done"}));
+        format_command("config_reset", &serde_json::json!({"message": "reloaded"}));
+        format_command("inject_system", &serde_json::json!({}));
+        format_command("edit", &serde_json::json!({"ref": "m42"}));
+    }
+
+    #[test]
+    fn format_command_fallback_for_unknown() {
+        set_color_enabled(false);
+        // Unknown commands should use fallback (JSON pretty print), not panic.
+        format_command("totally_unknown", &serde_json::json!({"key": "val"}));
+    }
+
+    #[test]
+    fn print_delete_confirmation_single_and_multiple() {
+        set_color_enabled(false);
+        // Single deletion.
+        print_delete_confirmation(&serde_json::json!({"deleted": ["msg_1"]}));
+        // Multiple deletions.
+        print_delete_confirmation(&serde_json::json!({"deleted": ["msg_1", "msg_2", "msg_3"]}));
+        // String form.
+        print_delete_confirmation(&serde_json::json!({"deleted": "msg_42"}));
+    }
+
+    #[test]
+    fn print_model_switched_shows_abbreviated_name() {
+        set_color_enabled(false);
+        // Should not panic and should abbreviate the date suffix.
+        print_model_switched(&serde_json::json!({"active": "claude-sonnet-4-20250514"}));
+    }
+
     #[test]
     fn density_to_block_ranges() {
         assert_eq!(density_to_block(0.0), '\u{2591}');   // below threshold

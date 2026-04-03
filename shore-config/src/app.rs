@@ -1003,4 +1003,68 @@ homeserver = "https://matrix.example.com"
         let mx = config.connections.matrix.unwrap();
         assert!(!mx.enabled);
     }
+
+    // ── resolve_display_name ────────────────────────────────────────
+
+    #[test]
+    fn resolve_display_name_from_config() {
+        let defaults = DefaultsConfig {
+            display_name: Some("Alice".into()),
+            ..Default::default()
+        };
+        assert_eq!(defaults.resolve_display_name(), "Alice");
+    }
+
+    #[test]
+    fn resolve_display_name_falls_back_to_user_env() {
+        let defaults = DefaultsConfig::default();
+        // $USER is almost always set on unix; verify we get *something* non-empty.
+        let name = defaults.resolve_display_name();
+        assert!(!name.is_empty());
+        // If $USER is set, we should get its value.
+        if let Ok(user) = std::env::var("USER") {
+            assert_eq!(name, user);
+        }
+    }
+
+    #[test]
+    fn resolve_display_name_ultimate_fallback() {
+        // When display_name is None and USER is unset, should return "User".
+        // We can't safely unset USER in a parallel test, so just test the
+        // branch structure via the method's known behavior.
+        let defaults = DefaultsConfig {
+            display_name: None,
+            ..Default::default()
+        };
+        // At minimum, resolve_display_name always returns a non-empty string.
+        let name = defaults.resolve_display_name();
+        assert!(!name.is_empty());
+    }
+
+    // ── ToolToggles::set ────────────────────────────────────────────
+
+    #[test]
+    fn tool_toggles_set_enables_and_disables() {
+        let mut toggles = ToolToggles::default();
+
+        // Default: all enabled.
+        assert!(toggles.memory());
+
+        // Disable memory.
+        toggles.set("memory", false);
+        assert!(!toggles.memory());
+
+        // Re-enable.
+        toggles.set("memory", true);
+        assert!(toggles.memory());
+    }
+
+    #[test]
+    fn tool_toggles_set_custom_tool() {
+        let mut toggles = ToolToggles::default();
+        assert!(toggles.is_enabled("custom_tool")); // default: enabled
+
+        toggles.set("custom_tool", false);
+        assert!(!toggles.is_enabled("custom_tool"));
+    }
 }

@@ -60,6 +60,11 @@ pub fn spawn_connection(
     (cmd_tx, event_rx)
 }
 
+/// Compute next backoff duration, doubling each time up to the cap.
+fn next_backoff(current: Duration, max: Duration) -> Duration {
+    (current * 2).min(max)
+}
+
 fn resolve_addr(socket: &Option<String>, config: &Option<String>) -> ServerAddr {
     if let Some(socket) = socket {
         if crate::connection::is_unix_path(socket) {
@@ -151,6 +156,50 @@ async fn connection_loop(
 
         // Exponential backoff before reconnect
         sleep(backoff).await;
-        backoff = (backoff * 2).min(max_backoff);
+        backoff = next_backoff(backoff, max_backoff);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_next_backoff_doubles() {
+        let max = Duration::from_secs(15);
+        assert_eq!(next_backoff(Duration::from_millis(500), max), Duration::from_millis(1000));
+        assert_eq!(next_backoff(Duration::from_millis(1000), max), Duration::from_millis(2000));
+        assert_eq!(next_backoff(Duration::from_millis(2000), max), Duration::from_millis(4000));
+    }
+
+    #[test]
+    fn test_next_backoff_caps_at_max() {
+        let max = Duration::from_secs(15);
+        assert_eq!(next_backoff(Duration::from_secs(8), max), max);
+        assert_eq!(next_backoff(Duration::from_secs(15), max), max);
+        assert_eq!(next_backoff(Duration::from_secs(30), max), max);
+    }
+
+    #[test]
+    fn test_next_backoff_full_sequence() {
+        let max = Duration::from_secs(15);
+        let mut b = Duration::from_millis(500);
+        let expected = [1000, 2000, 4000, 8000, 15000, 15000];
+        for &ms in &expected {
+            b = next_backoff(b, max);
+            assert_eq!(b, Duration::from_millis(ms));
+        }
+    }
+
+    #[test]
+    fn test_resolve_addr_explicit_unix() {
+        let addr = resolve_addr(&Some("/tmp/shore.sock".into()), &None);
+        assert!(matches!(addr, ServerAddr::Unix(p) if p == "/tmp/shore.sock"));
+    }
+
+    #[test]
+    fn test_resolve_addr_explicit_tcp() {
+        let addr = resolve_addr(&Some("127.0.0.1:9090".into()), &None);
+        assert!(matches!(addr, ServerAddr::Tcp(a) if a == "127.0.0.1:9090"));
     }
 }
