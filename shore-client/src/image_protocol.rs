@@ -4,7 +4,7 @@
 
 use std::fmt;
 use std::io::{Read, Write};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Supported inline image protocols.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,17 +89,30 @@ fn probe_kitty_graphics() -> bool {
         return false;
     }
 
-    // Read response with a short timeout.
-    // We need non-blocking or timed reads. Use poll via libc.
-    let mut buf = [0u8; 64];
-    let n = read_with_timeout(&mut tty, &mut buf, Duration::from_millis(100));
-    if n == 0 {
-        return false;
+    // Read response in a loop until we see the string terminator (\x1b\\)
+    // or the deadline expires. A single read can miss a slow or split response,
+    // and any unconsumed bytes leak into crossterm's event reader as phantom input.
+    let deadline = Instant::now() + Duration::from_millis(200);
+    let mut response = Vec::with_capacity(64);
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        let mut buf = [0u8; 64];
+        let n = read_with_timeout(&mut tty, &mut buf, remaining);
+        if n == 0 {
+            break;
+        }
+        response.extend_from_slice(&buf[..n]);
+        // Full kitty response ends with ST (ESC \)
+        if response.windows(2).any(|w| w == b"\x1b\\") {
+            break;
+        }
     }
 
-    // Check if the response contains "OK"
-    let response = std::str::from_utf8(&buf[..n]).unwrap_or("");
-    response.contains("OK")
+    let text = std::str::from_utf8(&response).unwrap_or("");
+    text.contains("OK")
 }
 
 /// Read from a file descriptor with a timeout using poll(2).

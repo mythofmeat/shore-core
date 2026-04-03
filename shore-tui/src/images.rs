@@ -125,7 +125,7 @@ impl ImageCache {
     pub fn clear(&mut self) {
         if self.protocol == Some(ImageProtocol::Kitty) && !self.cache.is_empty() {
             let mut stdout = std::io::stdout();
-            let _ = write!(stdout, "\x1b_Ga=d\x1b\\");
+            let _ = write!(stdout, "\x1b_Ga=d,q=2\x1b\\");
             let _ = stdout.flush();
         }
         self.cache.clear();
@@ -185,16 +185,16 @@ fn transmit_kitty<W: Write>(w: &mut W, id: u32, encoded: &str) {
     for (i, chunk) in chunks.iter().enumerate() {
         let more = if i + 1 < chunks.len() { 1 } else { 0 };
         if i == 0 {
-            let _ = write!(w, "\x1b_Ga=t,f=100,i={id},m={more};{chunk}\x1b\\");
+            let _ = write!(w, "\x1b_Ga=t,f=100,q=2,i={id},m={more};{chunk}\x1b\\");
         } else {
-            let _ = write!(w, "\x1b_Gm={more};{chunk}\x1b\\");
+            let _ = write!(w, "\x1b_Gq=2,m={more};{chunk}\x1b\\");
         }
     }
 }
 
 /// Create a virtual placement for Unicode placeholder rendering.
 fn place_kitty<W: Write>(w: &mut W, id: u32, cols: u16, rows: u16) {
-    let _ = write!(w, "\x1b_Ga=p,U=1,i={id},c={cols},r={rows}\x1b\\");
+    let _ = write!(w, "\x1b_Ga=p,U=1,q=2,i={id},c={cols},r={rows}\x1b\\");
 }
 
 /// Parse image dimensions from raw file bytes (PNG, JPEG, WebP).
@@ -314,7 +314,7 @@ mod tests {
         let mut buf = Vec::new();
         transmit_kitty(&mut buf, 42, "AAAA");
         let out = String::from_utf8(buf).unwrap();
-        assert!(out.contains("\x1b_Ga=t,f=100,i=42,m=0;AAAA\x1b\\"));
+        assert!(out.contains("\x1b_Ga=t,f=100,q=2,i=42,m=0;AAAA\x1b\\"));
     }
 
     #[test]
@@ -322,7 +322,7 @@ mod tests {
         let mut buf = Vec::new();
         place_kitty(&mut buf, 42, 10, 5);
         let out = String::from_utf8(buf).unwrap();
-        assert_eq!(out, "\x1b_Ga=p,U=1,i=42,c=10,r=5\x1b\\");
+        assert_eq!(out, "\x1b_Ga=p,U=1,q=2,i=42,c=10,r=5\x1b\\");
     }
 
     #[test]
