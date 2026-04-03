@@ -49,6 +49,24 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 }
 
+/// Word-wrap text and push it as bar-indented lines (`  │ content`).
+fn push_bar_wrapped(
+    lines: &mut Vec<Line<'static>>,
+    text: &str,
+    bar_style: Style,
+    content_style: Style,
+    text_width: usize,
+) {
+    for tline in text.lines() {
+        for wline in word_wrap(tline, text_width) {
+            lines.push(Line::from(vec![
+                Span::styled("  │ ".to_string(), bar_style),
+                Span::styled(wline, content_style),
+            ]));
+        }
+    }
+}
+
 /// Render accumulated thinking blocks as dimmed text under the character name.
 fn flush_thinking(lines: &mut Vec<Line<'static>>, pending: &mut Vec<String>, show: bool, wrap_width: u16) {
     if pending.is_empty() {
@@ -64,14 +82,7 @@ fn flush_thinking(lines: &mut Vec<Line<'static>>, pending: &mut Vec<String>, sho
     lines.push(Line::from(Span::styled("  ◆ thinking", header_style)));
     let text_width = wrap_width.saturating_sub(4) as usize; // "  │ " = 4 cols
     for thought in pending.drain(..) {
-        for tline in thought.lines() {
-            for wline in word_wrap(tline, text_width) {
-                lines.push(Line::from(vec![
-                    Span::styled("  │ ".to_string(), bar_style),
-                    Span::styled(wline, content_style),
-                ]));
-            }
-        }
+        push_bar_wrapped(lines, &thought, bar_style, content_style, text_width);
     }
     lines.push(Line::from(""));
 }
@@ -94,14 +105,7 @@ fn flush_tools(lines: &mut Vec<Line<'static>>, pending: &mut Vec<&ConversationEn
                     ),
                 ]));
                 let json = serde_json::to_string_pretty(input).unwrap_or_default();
-                for jline in json.lines() {
-                    for wline in word_wrap(jline, text_width) {
-                        lines.push(Line::from(vec![
-                            Span::styled("  │ ".to_string(), bar_style),
-                            Span::styled(wline, Style::default().fg(Color::DarkGray)),
-                        ]));
-                    }
-                }
+                push_bar_wrapped(lines, &json, bar_style, Style::default().fg(Color::DarkGray), text_width);
                 lines.push(Line::from(""));
             }
             ConversationEntry::ToolResult { tool_name, output, is_error, .. } => {
@@ -113,14 +117,7 @@ fn flush_tools(lines: &mut Vec<Line<'static>>, pending: &mut Vec<&ConversationEn
                         Style::default().fg(header_color).add_modifier(Modifier::BOLD),
                     ),
                 ]));
-                for oline in output.lines() {
-                    for wline in word_wrap(oline, text_width) {
-                        lines.push(Line::from(vec![
-                            Span::styled("  │ ".to_string(), bar_style),
-                            Span::styled(wline, Style::default().fg(Color::DarkGray)),
-                        ]));
-                    }
-                }
+                push_bar_wrapped(lines, output, bar_style, Style::default().fg(Color::DarkGray), text_width);
                 lines.push(Line::from(""));
             }
             _ => {}
@@ -226,6 +223,83 @@ fn pre_wrap_text(text: &str, max_width: usize) -> String {
     }
 
     result
+}
+
+/// Render in-progress streaming text or a phase-aware typing indicator.
+fn render_streaming_state(
+    lines: &mut Vec<Line<'static>>,
+    app: &App,
+    content_width: u16,
+) {
+    let name = if app.character_name.is_empty() {
+        "Assistant"
+    } else {
+        &app.character_name
+    };
+    if !app.stream.text.is_empty() {
+        if app.stream.regen {
+            lines.push(Line::from(Span::styled(
+                format!("{name} (regenerating)"),
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD | Modifier::ITALIC),
+            )));
+        } else {
+            lines.push(Line::from(Span::styled(
+                name.to_string(),
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            )));
+        }
+        lines.push(Line::from(""));
+        let wrap_w = content_width.saturating_sub(2) as usize;
+        lines.extend(indent_lines(markdown::render_markdown(&pre_wrap_text(&app.stream.text, wrap_w))));
+        lines.push(Line::from("")); // match trailing blank of finalized entries
+    } else {
+        // Typing indicator — stream started but no text yet
+        lines.push(Line::from(Span::styled(
+            name.to_string(),
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(""));
+
+        // Phase-aware indicator
+        let indicator_style = Style::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::ITALIC);
+        let indicator = if !app.stream.thinking.is_empty() {
+            "thinking ···"
+        } else if let Some(ref tool) = app.stream.tool_name {
+            // Tool call/execution in progress — show inline below
+            lines.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled("▶ ", Style::default().fg(Color::Magenta)),
+                Span::styled(
+                    tool.clone(),
+                    Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" ···", indicator_style),
+            ]));
+            lines.push(Line::from(""));
+            // Skip the default indicator push below
+            ""
+        } else if app.stream.phase == "tool_use" {
+            "waiting for tool ···"
+        } else {
+            "···"
+        };
+
+        if !indicator.is_empty() {
+            lines.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(indicator.to_string(), indicator_style),
+            ]));
+            lines.push(Line::from(""));
+        }
+    }
 }
 
 /// Render the scrollable conversation log.
@@ -356,75 +430,7 @@ fn draw_conversation(frame: &mut Frame, app: &mut App, area: Rect) {
 
     // Append in-progress streaming text (or typing indicator)
     if app.stream.active {
-        let name = if app.character_name.is_empty() {
-            "Assistant"
-        } else {
-            &app.character_name
-        };
-        if !app.stream.text.is_empty() {
-            if app.stream.regen {
-                lines.push(Line::from(Span::styled(
-                    format!("{name} (regenerating)"),
-                    Style::default()
-                        .fg(Color::Green)
-                        .add_modifier(Modifier::BOLD | Modifier::ITALIC),
-                )));
-            } else {
-                lines.push(Line::from(Span::styled(
-                    name.to_string(),
-                    Style::default()
-                        .fg(Color::Green)
-                        .add_modifier(Modifier::BOLD),
-                )));
-            }
-            lines.push(Line::from(""));
-            let wrap_w = content_width.saturating_sub(2) as usize;
-            lines.extend(indent_lines(markdown::render_markdown(&pre_wrap_text(&app.stream.text, wrap_w))));
-            lines.push(Line::from("")); // match trailing blank of finalized entries
-        } else {
-            // Typing indicator — stream started but no text yet
-            lines.push(Line::from(Span::styled(
-                name.to_string(),
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD),
-            )));
-            lines.push(Line::from(""));
-
-            // Phase-aware indicator
-            let indicator_style = Style::default()
-                .fg(Color::DarkGray)
-                .add_modifier(Modifier::ITALIC);
-            let indicator = if !app.stream.thinking.is_empty() {
-                "thinking ···"
-            } else if let Some(ref tool) = app.stream.tool_name {
-                // Tool call/execution in progress — show inline below
-                lines.push(Line::from(vec![
-                    Span::raw("  "),
-                    Span::styled("▶ ", Style::default().fg(Color::Magenta)),
-                    Span::styled(
-                        tool.clone(),
-                        Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(" ···", indicator_style),
-                ]));
-                lines.push(Line::from(""));
-                // Skip the default indicator push below
-                ""
-            } else if app.stream.phase == "tool_use" {
-                "waiting for tool ···"
-            } else {
-                "···"
-            };
-
-            if !indicator.is_empty() {
-                lines.push(Line::from(vec![
-                    Span::raw("  "),
-                    Span::styled(indicator.to_string(), indicator_style),
-                ]));
-                lines.push(Line::from(""));
-            }
-        }
+        render_streaming_state(&mut lines, app, content_width);
     }
 
     // Empty state: show a welcome hint

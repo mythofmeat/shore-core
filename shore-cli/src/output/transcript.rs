@@ -65,6 +65,115 @@ pub(crate) fn write_header(
     let _ = writeln!(out);
 }
 
+/// Render the content of a single message: content blocks if present, plain text fallback otherwise.
+fn render_message_content(
+    out: &mut impl Write,
+    content_blocks: Option<&Vec<serde_json::Value>>,
+    content: &str,
+    is_tool_result_msg: bool,
+) {
+    if let Some(blocks) = content_blocks {
+        if !blocks.is_empty() {
+            let mut was_thinking = false;
+            for block in blocks {
+                let block_type = block["type"].as_str().unwrap_or("text");
+                // Insert separator when transitioning from thinking -> non-thinking.
+                if was_thinking && block_type != "thinking" && block_type != "redacted_thinking" {
+                    was_thinking = false;
+                    if use_color() {
+                        let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+                    }
+                    let _ = writeln!(out, "---");
+                    if use_color() {
+                        let _ = crossterm::execute!(out, ResetColor);
+                    }
+                }
+                match block_type {
+                    "text" => {
+                        let text = block["text"].as_str().unwrap_or("");
+                        if !text.is_empty() {
+                            let _ = writeln!(out, "{text}");
+                        }
+                    }
+                    "thinking" => {
+                        was_thinking = true;
+                        let thinking = block["thinking"].as_str().unwrap_or("");
+                        if !thinking.is_empty() {
+                            if use_color() {
+                                let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+                            }
+                            let _ = writeln!(out, "{thinking}");
+                            if use_color() {
+                                let _ = crossterm::execute!(out, ResetColor);
+                            }
+                        }
+                    }
+                    "redacted_thinking" => {
+                        was_thinking = true;
+                        if use_color() {
+                            let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+                        }
+                        let _ = writeln!(out, "[redacted thinking]");
+                        if use_color() {
+                            let _ = crossterm::execute!(out, ResetColor);
+                        }
+                    }
+                    "tool_use" => {
+                        let name = block["name"].as_str().unwrap_or("?");
+                        if use_color() {
+                            let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkYellow));
+                        }
+                        let _ = write!(out, "[tool: {name}]");
+                        if use_color() {
+                            let _ = crossterm::execute!(out, ResetColor);
+                        }
+                        if let Some(input_str) = format_tool_input(&block["input"]) {
+                            if use_color() {
+                                let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+                            }
+                            let _ = write!(out, " {input_str}");
+                            if use_color() {
+                                let _ = crossterm::execute!(out, ResetColor);
+                            }
+                        }
+                        let _ = writeln!(out);
+                    }
+                    "tool_result" => {
+                        let output = block["content"].as_str().unwrap_or("");
+                        let is_error = block["is_error"].as_bool().unwrap_or(false);
+                        let color = if is_error { Color::Red } else { Color::DarkGrey };
+                        let label = if is_error { "error" } else { "result" };
+                        if use_color() {
+                            let _ = crossterm::execute!(out, SetForegroundColor(color));
+                        }
+                        if output.len() > MAX_TOOL_OUTPUT {
+                            let end = output.floor_char_boundary(MAX_TOOL_OUTPUT);
+                            let _ = write!(out, "[{label}: {}... truncated]", &output[..end]);
+                        } else {
+                            let _ = write!(out, "[{label}: {output}]");
+                        }
+                        if use_color() {
+                            let _ = crossterm::execute!(out, ResetColor);
+                        }
+                        let _ = writeln!(out);
+                    }
+                    _ => {}
+                }
+            }
+        } else {
+            // Empty content_blocks -- fall back to content string.
+            if !content.is_empty() {
+                let _ = writeln!(out, "{content}");
+            }
+        }
+    } else {
+        // No content_blocks field -- legacy message, show content string.
+        if !content.is_empty() || !is_tool_result_msg {
+            let _ = writeln!(out, "{content}");
+        }
+    }
+}
+
 /// Print the conversation log as a human-readable chat transcript.
 ///
 /// `character_name` is used for assistant messages; pass the active character
@@ -121,107 +230,7 @@ pub fn print_log(messages: &[serde_json::Value], character_name: &str) {
             }
         }
 
-        // Render content blocks if present, otherwise fall back to plain content.
-        if let Some(blocks) = content_blocks {
-            if !blocks.is_empty() {
-                let mut was_thinking = false;
-                for block in blocks {
-                    let block_type = block["type"].as_str().unwrap_or("text");
-                    // Insert separator when transitioning from thinking -> non-thinking.
-                    if was_thinking && block_type != "thinking" && block_type != "redacted_thinking" {
-                        was_thinking = false;
-                        if use_color() {
-                            let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
-                        }
-                        let _ = writeln!(out, "---");
-                        if use_color() {
-                            let _ = crossterm::execute!(out, ResetColor);
-                        }
-                    }
-                    match block_type {
-                        "text" => {
-                            let text = block["text"].as_str().unwrap_or("");
-                            if !text.is_empty() {
-                                let _ = writeln!(out, "{text}");
-                            }
-                        }
-                        "thinking" => {
-                            was_thinking = true;
-                            let thinking = block["thinking"].as_str().unwrap_or("");
-                            if !thinking.is_empty() {
-                                if use_color() {
-                                    let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
-                                }
-                                let _ = writeln!(out, "{thinking}");
-                                if use_color() {
-                                    let _ = crossterm::execute!(out, ResetColor);
-                                }
-                            }
-                        }
-                        "redacted_thinking" => {
-                            was_thinking = true;
-                            if use_color() {
-                                let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
-                            }
-                            let _ = writeln!(out, "[redacted thinking]");
-                            if use_color() {
-                                let _ = crossterm::execute!(out, ResetColor);
-                            }
-                        }
-                        "tool_use" => {
-                            let name = block["name"].as_str().unwrap_or("?");
-                            if use_color() {
-                                let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkYellow));
-                            }
-                            let _ = write!(out, "[tool: {name}]");
-                            if use_color() {
-                                let _ = crossterm::execute!(out, ResetColor);
-                            }
-                            if let Some(input_str) = format_tool_input(&block["input"]) {
-                                if use_color() {
-                                    let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
-                                }
-                                let _ = write!(out, " {input_str}");
-                                if use_color() {
-                                    let _ = crossterm::execute!(out, ResetColor);
-                                }
-                            }
-                            let _ = writeln!(out);
-                        }
-                        "tool_result" => {
-                            let output = block["content"].as_str().unwrap_or("");
-                            let is_error = block["is_error"].as_bool().unwrap_or(false);
-                            let color = if is_error { Color::Red } else { Color::DarkGrey };
-                            let label = if is_error { "error" } else { "result" };
-                            if use_color() {
-                                let _ = crossterm::execute!(out, SetForegroundColor(color));
-                            }
-                            if output.len() > MAX_TOOL_OUTPUT {
-                                let end = output.floor_char_boundary(MAX_TOOL_OUTPUT);
-                                let _ = write!(out, "[{label}: {}... truncated]", &output[..end]);
-                            } else {
-                                let _ = write!(out, "[{label}: {output}]");
-                            }
-                            if use_color() {
-                                let _ = crossterm::execute!(out, ResetColor);
-                            }
-                            let _ = writeln!(out);
-                        }
-                        _ => {}
-                    }
-                }
-            } else {
-                // Empty content_blocks -- fall back to content string.
-                if !content.is_empty() {
-                    let _ = writeln!(out, "{content}");
-                }
-            }
-        } else {
-            // No content_blocks field -- legacy message, show content string.
-            if !content.is_empty() || !is_tool_result_msg {
-                let _ = writeln!(out, "{content}");
-            }
-        }
+        render_message_content(&mut out, content_blocks, content, is_tool_result_msg);
 
         // System messages: close dimming.
         if role_str == "system" && use_color() {
