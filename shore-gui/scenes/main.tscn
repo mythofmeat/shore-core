@@ -1,7 +1,8 @@
-[gd_scene load_steps=14 format=3]
+[gd_scene load_steps=15 format=3]
 
 [ext_resource type="Script" path="res://scripts/main.gd" id="1"]
 [ext_resource type="Script" path="res://scripts/effects_manager.gd" id="2"]
+[ext_resource type="Script" path="res://scripts/haunting_manager.gd" id="7"]
 [ext_resource type="Shader" path="res://shaders/crt.gdshader" id="3"]
 [ext_resource type="Shader" path="res://shaders/glow.gdshader" id="4"]
 [ext_resource type="Shader" path="res://shaders/vhs.gdshader" id="5"]
@@ -15,6 +16,8 @@ shader_parameter/aberration = 1.0
 shader_parameter/brightness = 1.0
 shader_parameter/vignette_strength = 0.3
 shader_parameter/effect_enabled = 1.0
+shader_parameter/phosphor_tint = Color(1, 1, 1, 1)
+shader_parameter/pixel_shift = 0.0
 
 [sub_resource type="ShaderMaterial" id="glow_mat"]
 shader = ExtResource("4")
@@ -175,6 +178,11 @@ script = ExtResource("2")
 [node name="TypeAudio" type="AudioStreamPlayer" parent="EffectsManager"]
 
 [node name="AmbientAudio" type="AudioStreamPlayer" parent="EffectsManager"]
+
+[node name="HauntingManager" type="Node" parent="."]
+script = ExtResource("7")
+
+[node name="MysteryAudio" type="AudioStreamPlayer" parent="HauntingManager"]
 
 [node name="StarfieldLayer" type="CanvasLayer" parent="."]
 layer = -1

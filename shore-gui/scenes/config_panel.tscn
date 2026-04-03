@@ -49,6 +49,20 @@ text = "X"
 [node name="Sep0" type="HSeparator" parent="ScrollContainer/Margin/VBox"]
 layout_mode = 2
 
+[node name="PresetLabel" type="Label" parent="ScrollContainer/Margin/VBox"]
+layout_mode = 2
+text = "Preset"
+
+[node name="PresetOption" type="OptionButton" parent="ScrollContainer/Margin/VBox"]
+layout_mode = 2
+item_count = 2
+popup/item_0/text = "Default"
+popup/item_1/text = "Silent Shore"
+popup/item_1/id = 1
+
+[node name="Sep0a" type="HSeparator" parent="ScrollContainer/Margin/VBox"]
+layout_mode = 2
+
 [node name="ProfessionalMode" type="CheckButton" parent="ScrollContainer/Margin/VBox"]
 layout_mode = 2
 text = "Professional Mode (disable all)"
@@ -267,6 +281,7 @@ popup/item_2/text = "Normal"
 popup/item_2/id = 2
 
 [connection signal="pressed" from="ScrollContainer/Margin/VBox/Header/CloseButton" to="." method="_on_close"]
+[connection signal="item_selected" from="ScrollContainer/Margin/VBox/PresetOption" to="." method="_on_preset_selected"]
 [connection signal="toggled" from="ScrollContainer/Margin/VBox/ProfessionalMode" to="." method="_on_professional_mode"]
 [connection signal="toggled" from="ScrollContainer/Margin/VBox/CRTToggle" to="." method="_on_toggle" binds= ["crt_enabled"]]
 [connection signal="toggled" from="ScrollContainer/Margin/VBox/GlowToggle" to="." method="_on_toggle" binds= ["glow_enabled"]]

@@ -16,6 +16,13 @@ func _ready() -> void:
 func setup(effects: Node) -> void:
 	_effects = effects
 	_refresh_all()
+	# Set preset dropdown to match active preset
+	var preset_option := find_child("PresetOption", true, false) as OptionButton
+	if preset_option and _effects:
+		for i in preset_option.item_count:
+			if preset_option.get_item_text(i) == _effects._active_preset:
+				preset_option.select(i)
+				break
 
 func _refresh_all() -> void:
 	if not _effects:
@@ -66,6 +73,13 @@ func _on_slider(value: float, property: String) -> void:
 	if _effects:
 		_effects.set(property, value)
 		_effects._apply_toggles()
+
+func _on_preset_selected(index: int) -> void:
+	var preset_option := find_child("PresetOption", true, false) as OptionButton
+	if preset_option and _effects:
+		var preset_name := preset_option.get_item_text(index)
+		_effects.apply_preset(preset_name)
+		_refresh_all()
 
 func _on_professional_mode(pressed: bool) -> void:
 	if _effects:

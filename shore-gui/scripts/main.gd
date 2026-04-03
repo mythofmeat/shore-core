@@ -7,6 +7,34 @@ extends MarginContainer
 @onready var send_button: Button = $Layout/InputArea/SendButton
 @onready var scroll: ScrollContainer = $Layout/MessageScroll
 @onready var effects: Node = $EffectsManager
+@onready var haunting_manager: Node = $HauntingManager
+
+const COLOR_PALETTES := {
+	"default": {
+		"user": "white",
+		"assistant": "green",
+		"system": "gray",
+		"error": "red",
+		"tool_success": "cyan",
+		"tool_header": "magenta",
+		"thinking": "gray",
+		"metadata": "gray",
+		"regen": "cyan",
+		"phase": "gray",
+	},
+	"silent_shore": {
+		"user": "#f5deb3",
+		"assistant": "#8899aa",
+		"system": "#6b7b8d",
+		"error": "#a65050",
+		"tool_success": "#5f8a8a",
+		"tool_header": "#9988bb",
+		"thinking": "#5a6a7a",
+		"metadata": "#5a6570",
+		"regen": "#5f8a8a",
+		"phase": "#5a6570",
+	},
+}
 
 var _streaming := false
 var _character_name := "Assistant"
@@ -16,8 +44,16 @@ var _config_panel: Control = null
 var _config_scene := preload("res://scenes/config_panel.tscn")
 var _font_size := 16
 var _font_name := "default"  # "default", "mono", or a system font name
+var _colors: Dictionary = COLOR_PALETTES["default"]
+var _color_palette_name := "default"
+var _phosphor_effect: PhosphorEffect
 
 func _ready() -> void:
+	# Register RichTextEffects for text animations
+	_phosphor_effect = PhosphorEffect.new()
+	message_display.install_effect(FadeInEffect.new())
+	message_display.install_effect(_phosphor_effect)
+
 	# Bridge signals
 	bridge.connected.connect(_on_connected)
 	bridge.disconnected.connect(_on_disconnected)
@@ -32,6 +68,12 @@ func _ready() -> void:
 
 	# UI signals
 	send_button.pressed.connect(_on_send_pressed)
+
+	# Preset signal
+	effects.preset_changed.connect(_on_preset_changed)
+
+	# Haunting system
+	haunting_manager.setup(effects, _phosphor_effect)
 
 	# Auto-connect on launch
 	status_label.text = "Connecting..."
@@ -100,16 +142,18 @@ func _on_command_output(name: String, data_json: String) -> void:
 
 func _on_stream_start(is_regen: bool) -> void:
 	_streaming = true
+	var use_fx := _color_palette_name == "silent_shore"
 	if is_regen:
-		message_display.append_text("\n[color=cyan][b]Regenerating...[/b][/color]\n")
-	message_display.append_text("\n[color=green][b]%s:[/b][/color] " % _character_name)
+		message_display.append_text("\n[color=%s][b]Regenerating...[/b][/color]\n" % _colors["regen"])
+	var prefix := "[fadein][phosphor]" if use_fx else ""
+	message_display.append_text("\n%s[color=%s][b]%s:[/b][/color] " % [prefix, _colors["assistant"], _character_name])
 	effects.on_new_message()
 	effects.on_stream_start()
 
 func _on_stream_chunk(text: String, content_type: String) -> void:
 	if content_type == "thinking":
 		if _show_thinking:
-			message_display.append_text("[color=gray][i]%s[/i][/color]" % _escape_bbcode(text))
+			message_display.append_text("[color=%s][i]%s[/i][/color]" % [_colors["thinking"], _escape_bbcode(text)])
 	else:
 		message_display.append_text(_escape_bbcode(text))
 	effects.on_stream_chunk(text, content_type)
@@ -117,12 +161,15 @@ func _on_stream_chunk(text: String, content_type: String) -> void:
 
 func _on_stream_end(_content: String, metadata_json: String) -> void:
 	_streaming = false
+	if _color_palette_name == "silent_shore":
+		message_display.append_text("[/phosphor][/fadein]")
 	effects.on_stream_end()
 	var meta = JSON.parse_string(metadata_json)
 	if meta and meta is Dictionary:
 		var tokens = meta.get("tokens", {})
 		var timing = meta.get("timing", {})
-		message_display.append_text("\n[color=gray][i]%s | %d in / %d out | %dms[/i][/color]\n" % [
+		message_display.append_text("\n[color=%s][i]%s | %d in / %d out | %dms[/i][/color]\n" % [
+			_colors["metadata"],
 			meta.get("model", "?"),
 			tokens.get("input", 0),
 			tokens.get("output", 0),
@@ -131,35 +178,35 @@ func _on_stream_end(_content: String, metadata_json: String) -> void:
 	_scroll_to_bottom()
 
 func _on_error(message: String) -> void:
-	message_display.append_text("\n[color=red][b]Error:[/b] %s[/color]\n" % _escape_bbcode(message))
+	message_display.append_text("\n[color=%s][b]Error:[/b] %s[/color]\n" % [_colors["error"], _escape_bbcode(message)])
 	effects.on_error()
 	_scroll_to_bottom()
 
 func _on_tool_call(_tool_id: String, tool_name: String, input_json: String) -> void:
 	if not _show_tools:
 		return
-	message_display.append_text("\n[color=magenta][b]  ▶ %s[/b][/color]" % tool_name)
+	message_display.append_text("\n[color=%s][b]  ▶ %s[/b][/color]" % [_colors["tool_header"], tool_name])
 	var truncated := input_json.left(300)
 	if input_json.length() > 300:
 		truncated += "..."
-	message_display.append_text("\n[color=gray]  │ %s[/color]" % _escape_bbcode(truncated))
+	message_display.append_text("\n[color=%s]  │ %s[/color]" % [_colors["metadata"], _escape_bbcode(truncated)])
 
 func _on_tool_result(_tool_id: String, tool_name: String, output: String, is_error: bool) -> void:
 	if not _show_tools:
 		return
-	var color := "red" if is_error else "cyan"
+	var color: String = _colors["error"] if is_error else _colors["tool_success"]
 	var icon := "✗" if is_error else "◀"
 	message_display.append_text("\n[color=%s][b]  %s %s[/b][/color]" % [color, icon, tool_name])
 	var truncated := output.left(500)
 	if output.length() > 500:
 		truncated += "..."
-	message_display.append_text("\n[color=gray]  │ %s[/color]" % _escape_bbcode(truncated))
+	message_display.append_text("\n[color=%s]  │ %s[/color]" % [_colors["metadata"], _escape_bbcode(truncated)])
 
 func _on_phase_changed(phase: String, model: String) -> void:
 	var label := phase
 	if not model.is_empty():
 		label += " (%s)" % model
-	message_display.append_text("\n[color=gray][i]Phase: %s[/i][/color]" % label)
+	message_display.append_text("\n[color=%s][i]Phase: %s[/i][/color]" % [_colors["phase"], label])
 
 # ── History rendering ─────────────────────────────────────────────
 
@@ -170,16 +217,19 @@ func _render_history_message(msg: Dictionary) -> void:
 
 	match role:
 		"user":
-			message_display.append_text("\n[color=white][b]You:[/b][/color] %s\n" % _escape_bbcode(content))
+			message_display.append_text("\n[color=%s][b]You:[/b][/color] %s\n" % [_colors["user"], _escape_bbcode(content)])
 		"system":
-			message_display.append_text("\n[color=gray][b]System:[/b] %s[/color]\n" % _escape_bbcode(content))
+			message_display.append_text("\n[color=%s][b]System:[/b] %s[/color]\n" % [_colors["system"], _escape_bbcode(content)])
 		"assistant":
 			_render_assistant_message(content, content_blocks)
 
 func _render_assistant_message(content: String, content_blocks: Array) -> void:
+	var use_fx := _color_palette_name == "silent_shore"
 	if content_blocks.is_empty():
-		message_display.append_text("\n[color=green][b]%s:[/b][/color] %s\n" % [
-			_character_name, _escape_bbcode(content)
+		var open := "[phosphor]" if use_fx else ""
+		var close := "[/phosphor]" if use_fx else ""
+		message_display.append_text("\n%s[color=%s][b]%s:[/b][/color] %s%s\n" % [
+			open, _colors["assistant"], _character_name, _escape_bbcode(content), close
 		])
 		return
 
@@ -198,35 +248,35 @@ func _render_assistant_message(content: String, content_blocks: Array) -> void:
 				if _show_thinking:
 					var thinking: String = block.get("thinking", "")
 					if not thinking.is_empty():
-						message_display.append_text("\n[color=magenta][b]  ◆ thinking[/b][/color]")
+						message_display.append_text("\n[color=%s][b]  ◆ thinking[/b][/color]" % _colors["tool_header"])
 						for line in thinking.split("\n"):
-							message_display.append_text("\n[color=gray][i]  │ %s[/i][/color]" % _escape_bbcode(line))
+							message_display.append_text("\n[color=%s][i]  │ %s[/i][/color]" % [_colors["thinking"], _escape_bbcode(line)])
 			"redacted_thinking":
 				if _show_thinking:
-					message_display.append_text("\n[color=magenta][b]  ◆ thinking[/b][/color]")
-					message_display.append_text("\n[color=gray][i]  │ [lb]redacted][/i][/color]")
+					message_display.append_text("\n[color=%s][b]  ◆ thinking[/b][/color]" % _colors["tool_header"])
+					message_display.append_text("\n[color=%s][i]  │ [lb]redacted][/i][/color]" % _colors["thinking"])
 			"tool_use":
 				if _show_tools:
 					var tool_name: String = block.get("name", "tool")
 					var input_json := JSON.stringify(block.get("input", {}))
-					message_display.append_text("\n[color=magenta][b]  ▶ %s[/b][/color]" % tool_name)
+					message_display.append_text("\n[color=%s][b]  ▶ %s[/b][/color]" % [_colors["tool_header"], tool_name])
 					var truncated := input_json.left(300)
 					if input_json.length() > 300:
 						truncated += "..."
-					message_display.append_text("\n[color=gray]  │ %s[/color]" % _escape_bbcode(truncated))
+					message_display.append_text("\n[color=%s]  │ %s[/color]" % [_colors["metadata"], _escape_bbcode(truncated)])
 			"tool_result":
 				if _show_tools:
 					var tool_use_id: String = block.get("tool_use_id", "")
 					var tool_name: String = tool_names.get(tool_use_id, "tool")
 					var output: String = block.get("content", "")
 					var is_error: bool = block.get("is_error", false)
-					var color := "red" if is_error else "cyan"
+					var color: String = _colors["error"] if is_error else _colors["tool_success"]
 					var icon := "✗" if is_error else "◀"
 					message_display.append_text("\n[color=%s][b]  %s %s[/b][/color]" % [color, icon, tool_name])
 					var truncated := output.left(500)
 					if output.length() > 500:
 						truncated += "..."
-					message_display.append_text("\n[color=gray]  │ %s[/color]" % _escape_bbcode(truncated))
+					message_display.append_text("\n[color=%s]  │ %s[/color]" % [_colors["metadata"], _escape_bbcode(truncated)])
 			"text":
 				var text: String = block.get("text", "").strip_edges()
 				if not text.is_empty():
@@ -234,18 +284,31 @@ func _render_assistant_message(content: String, content_blocks: Array) -> void:
 
 	var combined := "\n".join(text_parts)
 	if not combined.strip_edges().is_empty():
-		message_display.append_text("\n[color=green][b]%s:[/b][/color] %s\n" % [
-			_character_name, _escape_bbcode(combined)
+		var open := "[phosphor]" if use_fx else ""
+		var close := "[/phosphor]" if use_fx else ""
+		message_display.append_text("\n%s[color=%s][b]%s:[/b][/color] %s%s\n" % [
+			open, _colors["assistant"], _character_name, _escape_bbcode(combined), close
 		])
 
 # ── Helpers ───────────────────────────────────────────────────────
 
 func _append_user_message(text: String) -> void:
-	message_display.append_text("\n[color=white][b]You:[/b][/color] %s\n" % _escape_bbcode(text))
+	var use_fx := _color_palette_name == "silent_shore"
+	var open := "[fadein]" if use_fx else ""
+	var close := "[/fadein]" if use_fx else ""
+	message_display.append_text("\n%s[color=%s][b]You:[/b][/color] %s%s\n" % [open, _colors["user"], _escape_bbcode(text), close])
 	_scroll_to_bottom()
 
 func _escape_bbcode(text: String) -> String:
 	return text.replace("[", "[lb]")
+
+func _on_preset_changed(_preset_name: String, color_palette: String, _audio_palette: String) -> void:
+	_apply_color_palette(color_palette)
+
+func _apply_color_palette(palette_name: String) -> void:
+	if palette_name in COLOR_PALETTES:
+		_colors = COLOR_PALETTES[palette_name]
+		_color_palette_name = palette_name
 
 func _scroll_to_bottom() -> void:
 	await get_tree().process_frame

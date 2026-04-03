@@ -7,6 +7,8 @@ uniform float aberration : hint_range(0.0, 10.0) = 1.0;
 uniform float brightness : hint_range(0.5, 1.5) = 1.0;
 uniform float vignette_strength : hint_range(0.0, 1.0) = 0.3;
 uniform float effect_enabled : hint_range(0.0, 1.0) = 1.0;
+uniform vec4 phosphor_tint : source_color = vec4(1.0, 1.0, 1.0, 1.0);
+uniform float pixel_shift : hint_range(0.0, 2.0) = 0.0;
 
 vec2 warp(vec2 uv, float distort) {
 	vec2 delta = uv - 0.5;
@@ -15,7 +17,8 @@ vec2 warp(vec2 uv, float distort) {
 }
 
 void fragment() {
-	vec2 uv = warp(SCREEN_UV, barrel_distortion * effect_enabled);
+	vec2 shifted_uv = SCREEN_UV + vec2(pixel_shift * SCREEN_PIXEL_SIZE.x, 0.0);
+	vec2 uv = warp(shifted_uv, barrel_distortion * effect_enabled);
 	float in_bounds = step(0.0, uv.x) * step(uv.x, 1.0) * step(0.0, uv.y) * step(uv.y, 1.0);
 
 	// Chromatic aberration
@@ -35,6 +38,9 @@ void fragment() {
 
 	// Brightness
 	col *= mix(1.0, brightness, effect_enabled);
+
+	// Phosphor tint (warm amber for Silent Shore, white for Default)
+	col *= phosphor_tint.rgb;
 
 	// Black outside warped bounds
 	col *= in_bounds;
