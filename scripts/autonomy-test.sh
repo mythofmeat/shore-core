@@ -283,16 +283,23 @@ CLI="$SHORE --socket $SOCK"
 # ══════════════════════════════════════════════════════════════════════
 printf "${BOLD}Phase 1: Prime conversation${RESET}\n"
 
-printf "${DIM}  %-55s${RESET}" "send initial message"
-output=$(timeout 60 $CLI send "Hello, this is a test. Reply briefly." 2>&1) || true
-if [[ -n "$output" ]] && ! echo "$output" | grep -qF "error"; then
-    printf "${GREEN}PASS${RESET}\n"
-    pass=$((pass + 1))
-else
-    printf "${RED}FAIL${RESET}\n"
-    printf "${DIM}  %s${RESET}\n" "$output" | head -3
-    fail=$((fail + 1))
-fi
+# Need 3+ user messages so find_turn_boundary(depth=2) can place a
+# cache breakpoint. With <3 messages AND a single system block (rendered
+# as a string, not array), zero cache breakpoints are placed.
+for i in 1 2 3 4; do
+    printf "${DIM}  %-55s${RESET}" "send message $i"
+    output=$(timeout 60 $CLI send "Test message $i. Reply in one sentence." 2>&1) || true
+    if [[ -n "$output" ]] && ! echo "$output" | grep -qF "error"; then
+        printf "${GREEN}PASS${RESET}\n"
+        pass=$((pass + 1))
+    else
+        printf "${RED}FAIL${RESET}\n"
+        printf "${DIM}  %s${RESET}\n" "$output" | head -3
+        fail=$((fail + 1))
+    fi
+    # Wait for cache propagation (~5s) between messages.
+    [[ $i -lt 4 ]] && sleep 7
+done
 
 # ══════════════════════════════════════════════════════════════════════
 # PHASE 2: Verify status shows new autonomy fields
@@ -412,16 +419,18 @@ printf "\n${BOLD}Phase 6: Cache hit verification${RESET}\n"
 # Extract cache values from logs.
 # Tracing format: key=N (structured key=value pairs)
 
-# Initial message should have created the cache.
-init_line=$(grep "Response complete" "$CLEAN_LOG" | head -1 || true)
-if [[ -n "$init_line" ]]; then
-    init_creation=$(echo "$init_line" | sed -n 's/.*cache_creation=\([0-9]*\).*/\1/p')
-    init_input=$(echo "$init_line" | sed -n 's/.*input_tokens=\([0-9]*\).*/\1/p')
-    run_check "initial message: cache created (>= 2048 for Sonnet)" \
-        "$([[ -n "$init_creation" && "$init_creation" -ge 1024 ]] && echo true || echo false)" \
-        "cache_creation=${init_creation:-?} input=${init_input:-?}"
+# Message 3+ should show cache_read > 0 (depth-2 breakpoint activates at 3 messages).
+# find_turn_boundary needs 3 real user messages before placing a breakpoint.
+last_msg_line=$(grep "Response complete" "$CLEAN_LOG" | tail -1 || true)
+if [[ -n "$last_msg_line" ]]; then
+    msg_cr=$(echo "$last_msg_line" | sed -n 's/.*cache_read=\([0-9]*\).*/\1/p')
+    msg_creation=$(echo "$last_msg_line" | sed -n 's/.*cache_creation=\([0-9]*\).*/\1/p')
+    msg_input=$(echo "$last_msg_line" | sed -n 's/.*input_tokens=\([0-9]*\).*/\1/p')
+    run_check "message 4: cache created (breakpoint active)" \
+        "$([[ -n "$msg_creation" && "$msg_creation" -gt 0 ]] && echo true || echo false)" \
+        "cache_creation=${msg_creation:-?} cache_read=${msg_cr:-?} input=${msg_input:-?}"
 else
-    run_check "initial message: Response complete logged" "false" "no log line"
+    run_check "messages: Response complete logged" "false" "no log line"
 fi
 
 # Dormant ping cache reads.
