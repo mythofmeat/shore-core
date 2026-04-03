@@ -17,11 +17,11 @@ use std::path::Path;
 // ---------------------------------------------------------------------------
 
 pub struct CollationManager {
-    config: CollationConfig,
+    config: DecayConfig,
 }
 
 impl CollationManager {
-    pub fn new(config: CollationConfig) -> Self {
+    pub fn new(config: DecayConfig) -> Self {
         Self { config }
     }
 
@@ -795,7 +795,7 @@ pub async fn run_collation(
     let refine_template = resolve_prompt_template(&config.dirs.config, character, "refine.md")
         .unwrap_or_else(|| DEFAULT_REFINE_PROMPT.to_string());
 
-    let mgr = CollationManager::new(CollationConfig::default());
+    let mgr = CollationManager::new(DecayConfig::default());
     let collation_limit = config.app.memory.collation.batch_limit;
 
     // Construct vector store + indexer for clustering and indexing (optional).
@@ -964,7 +964,7 @@ mod tests {
             }],
         };
 
-        let mgr = CollationManager::new(CollationConfig::default());
+        let mgr = CollationManager::new(DecayConfig::default());
         let outcome = run_pipeline(&db, &llm, &mgr, None).await;
 
         assert_eq!(outcome.refine_merges, 1);
@@ -1016,7 +1016,7 @@ mod tests {
             }],
         };
 
-        let mgr = CollationManager::new(CollationConfig::default());
+        let mgr = CollationManager::new(DecayConfig::default());
         let outcome = run_pipeline(&db, &llm, &mgr, None).await;
 
         assert_eq!(outcome.refine_merges, 0);
@@ -1059,7 +1059,7 @@ mod tests {
             }],
         };
 
-        let mgr = CollationManager::new(CollationConfig::default());
+        let mgr = CollationManager::new(DecayConfig::default());
         let outcome = run_pipeline(&db, &llm, &mgr, None).await;
 
         assert_eq!(outcome.refine_splits, 1);
@@ -1107,7 +1107,7 @@ mod tests {
             }],
         };
 
-        let mgr = CollationManager::new(CollationConfig::default());
+        let mgr = CollationManager::new(DecayConfig::default());
         let outcome = run_pipeline(&db, &llm, &mgr, None).await;
 
         assert_eq!(outcome.refine_splits, 0);
@@ -1137,7 +1137,7 @@ mod tests {
             }],
         };
 
-        let mgr = CollationManager::new(CollationConfig::default());
+        let mgr = CollationManager::new(DecayConfig::default());
         let outcome = run_pipeline(&db, &llm, &mgr, None).await;
 
         assert_eq!(outcome.refine_updates, 1);
@@ -1182,7 +1182,7 @@ mod tests {
             }],
         };
 
-        let mgr = CollationManager::new(CollationConfig::default());
+        let mgr = CollationManager::new(DecayConfig::default());
         let outcome = run_pipeline(&db, &llm, &mgr, None).await;
 
         assert_eq!(outcome.refine_updates, 0);
@@ -1200,7 +1200,7 @@ mod tests {
             .unwrap();
 
         let llm = MockCollationLlm::empty(); // no actions
-        let mgr = CollationManager::new(CollationConfig::default());
+        let mgr = CollationManager::new(DecayConfig::default());
         let outcome = run_pipeline(&db, &llm, &mgr, None).await;
 
         assert_eq!(outcome.refine_merges, 0);
@@ -1270,7 +1270,7 @@ mod tests {
             ],
         };
 
-        let mgr = CollationManager::new(CollationConfig::default());
+        let mgr = CollationManager::new(DecayConfig::default());
         let outcome = run_pipeline(&db, &llm, &mgr, None).await;
 
         assert_eq!(outcome.refine_merges, 1);
@@ -1315,7 +1315,7 @@ mod tests {
             }],
         };
 
-        let mgr = CollationManager::new(CollationConfig::default());
+        let mgr = CollationManager::new(DecayConfig::default());
         let outcome = run_pipeline(&db, &llm, &mgr, None).await;
 
         assert_eq!(outcome.refine_merges, 1);
@@ -1334,7 +1334,7 @@ mod tests {
             .unwrap();
 
         let llm = MockCollationLlm::empty();
-        let mgr = CollationManager::new(CollationConfig::default());
+        let mgr = CollationManager::new(DecayConfig::default());
         let outcome = run_pipeline(&db, &llm, &mgr, None).await;
 
         assert_eq!(outcome.entries_decayed, 1);
@@ -1354,7 +1354,7 @@ mod tests {
             .unwrap();
 
         let llm = MockCollationLlm::empty();
-        let mgr = CollationManager::new(CollationConfig {
+        let mgr = CollationManager::new(DecayConfig {
             decay_floor: 0.1,
             ..Default::default()
         });
@@ -1373,7 +1373,7 @@ mod tests {
             .unwrap();
 
         let llm = MockCollationLlm::empty();
-        let mgr = CollationManager::new(CollationConfig::default());
+        let mgr = CollationManager::new(DecayConfig::default());
         let outcome = run_pipeline(&db, &llm, &mgr, None).await;
 
         assert_eq!(outcome.entries_decayed, 0);
@@ -1389,7 +1389,7 @@ mod tests {
             .unwrap();
 
         let llm = MockCollationLlm::empty();
-        let mgr = CollationManager::new(CollationConfig::default());
+        let mgr = CollationManager::new(DecayConfig::default());
         run_pipeline(&db, &llm, &mgr, None).await;
 
         let logs = db.get_recent_changelog(10).unwrap();
@@ -1405,7 +1405,7 @@ mod tests {
         db.create_entry(&entry).unwrap();
 
         let llm = MockCollationLlm::empty();
-        let mgr = CollationManager::new(CollationConfig::default());
+        let mgr = CollationManager::new(DecayConfig::default());
         let outcome = run_pipeline(&db, &llm, &mgr, None).await;
 
         assert_eq!(outcome.entries_decayed, 1);
@@ -1421,7 +1421,7 @@ mod tests {
 
     #[test]
     fn test_new_entries_always_candidates() {
-        let mgr = CollationManager::new(CollationConfig::default());
+        let mgr = CollationManager::new(DecayConfig::default());
         let now = now_str();
         let entry = make_entry("e1", "New fact", 0.9, &now);
         assert!(mgr.is_refine_candidate(&entry));
@@ -1429,7 +1429,7 @@ mod tests {
 
     #[test]
     fn test_recently_collated_not_candidates() {
-        let mgr = CollationManager::new(CollationConfig::default());
+        let mgr = CollationManager::new(DecayConfig::default());
         let now = now_str();
         let mut entry = make_entry("e1", "Old fact", 0.9, &now);
         entry.collated_at = now;
@@ -1438,7 +1438,7 @@ mod tests {
 
     #[test]
     fn test_ttl_expired_are_candidates() {
-        let mgr = CollationManager::new(CollationConfig {
+        let mgr = CollationManager::new(DecayConfig {
             reconsider_ttl_days: 7.0,
             ..Default::default()
         });
@@ -1451,7 +1451,7 @@ mod tests {
 
     #[test]
     fn test_modified_since_collation_are_candidates() {
-        let mgr = CollationManager::new(CollationConfig::default());
+        let mgr = CollationManager::new(DecayConfig::default());
         let old = (Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
         let now = now_str();
         let mut entry = make_entry("e1", "Updated fact", 0.9, &now);
@@ -1461,7 +1461,7 @@ mod tests {
 
     #[test]
     fn test_image_excluded() {
-        let mgr = CollationManager::new(CollationConfig::default());
+        let mgr = CollationManager::new(DecayConfig::default());
         let now = now_str();
 
         let mut image_entry = make_entry("img1", "Photo memory", 0.9, &now);
@@ -1491,7 +1491,7 @@ mod tests {
             }],
         };
 
-        let mgr = CollationManager::new(CollationConfig::default());
+        let mgr = CollationManager::new(DecayConfig::default());
         let outcome = run_pipeline(&db, &llm, &mgr, None).await;
 
         assert_eq!(outcome.refine_updates, 0);
@@ -1511,7 +1511,7 @@ mod tests {
         }
 
         let llm = MockCollationLlm::empty();
-        let mgr = CollationManager::new(CollationConfig::default());
+        let mgr = CollationManager::new(DecayConfig::default());
         let _outcome = run_pipeline(&db, &llm, &mgr, Some(2)).await;
 
         let active = db.get_entries_by_status("active").unwrap();
@@ -1532,7 +1532,7 @@ mod tests {
         db.create_entry(&b).unwrap();
 
         let llm = MockCollationLlm::empty();
-        let mgr = CollationManager::new(CollationConfig::default());
+        let mgr = CollationManager::new(DecayConfig::default());
         run_pipeline(&db, &llm, &mgr, None).await;
 
         let a_after = db.get_entry("a").unwrap().unwrap();
@@ -1552,7 +1552,7 @@ mod tests {
         db.create_entry(&entry).unwrap();
 
         let llm = MockCollationLlm::empty();
-        let mgr = CollationManager::new(CollationConfig {
+        let mgr = CollationManager::new(DecayConfig {
             reconsider_ttl_days: 7.0,
             ..Default::default()
         });
@@ -1588,7 +1588,7 @@ mod tests {
                 reason: "test".to_string(),
             }],
         };
-        let mgr = CollationManager::new(CollationConfig::default());
+        let mgr = CollationManager::new(DecayConfig::default());
         let outcome = run_pipeline(&db, &llm, &mgr, None).await;
 
         // 3 from refine (no candidates) + 3 from decay (recent entries not decayed).
@@ -1675,7 +1675,7 @@ mod tests {
         child.source_entry_ids = "parent1".to_string();
         db.create_entry(&child).unwrap();
 
-        let mgr = CollationManager::new(CollationConfig::default());
+        let mgr = CollationManager::new(DecayConfig::default());
         let mut outcome = CollationOutcome::default();
         mgr.phase_backfill_timestamps(&db, 20, &mut outcome).unwrap();
 
@@ -1695,7 +1695,7 @@ mod tests {
         entry.end_timestamp = String::new();
         db.create_entry(&entry).unwrap();
 
-        let mgr = CollationManager::new(CollationConfig::default());
+        let mgr = CollationManager::new(DecayConfig::default());
         let mut outcome = CollationOutcome::default();
         mgr.phase_backfill_timestamps(&db, 20, &mut outcome).unwrap();
 
@@ -1716,7 +1716,7 @@ mod tests {
             db.create_entry(&entry).unwrap();
         }
 
-        let mgr = CollationManager::new(CollationConfig::default());
+        let mgr = CollationManager::new(DecayConfig::default());
         let mut outcome = CollationOutcome::default();
         mgr.phase_backfill_timestamps(&db, 3, &mut outcome).unwrap();
         assert_eq!(outcome.timestamps_backfilled, 3);
@@ -1742,7 +1742,7 @@ mod tests {
         child.source_entry_ids = "p1".to_string();
         db.create_entry(&child).unwrap();
 
-        let mgr = CollationManager::new(CollationConfig::default());
+        let mgr = CollationManager::new(DecayConfig::default());
         let mut outcome = CollationOutcome::default();
         mgr.phase_backfill_timestamps(&db, 20, &mut outcome).unwrap();
 

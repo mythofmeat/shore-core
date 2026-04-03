@@ -2,37 +2,10 @@ use std::future::Future;
 use std::pin::Pin;
 
 // ---------------------------------------------------------------------------
-// Configuration
+// Configuration — re-exported from shore-config (single source of truth)
 // ---------------------------------------------------------------------------
 
-pub(super) const DEFAULT_IDLE_TRIGGER_MINUTES: u32 = 30;
-pub(super) const DEFAULT_MIN_TURNS: usize = 8;
-pub(super) const DEFAULT_MAX_TURNS: usize = 16;
-pub(super) const DEFAULT_KEEP_RECENT_TURNS: usize = 2;
-
-/// Configuration for compaction triggers.
-#[derive(Debug, Clone)]
-pub struct CompactionConfig {
-    /// Minutes of idle time before proactive compaction fires.
-    pub idle_trigger_minutes: u32,
-    /// Minimum user turns before any compaction trigger fires.
-    pub min_turns: usize,
-    /// Force compaction when this user turn count is reached.
-    pub max_turns: usize,
-    /// User turns retained in active conversation after compaction.
-    pub keep_recent_turns: usize,
-}
-
-impl Default for CompactionConfig {
-    fn default() -> Self {
-        Self {
-            idle_trigger_minutes: DEFAULT_IDLE_TRIGGER_MINUTES,
-            min_turns: DEFAULT_MIN_TURNS,
-            max_turns: DEFAULT_MAX_TURNS,
-            keep_recent_turns: DEFAULT_KEEP_RECENT_TURNS,
-        }
-    }
-}
+pub use shore_config::app::CompactionConfig;
 
 // ---------------------------------------------------------------------------
 // Types

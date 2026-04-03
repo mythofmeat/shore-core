@@ -6249,6 +6249,7 @@ dependencies = [
  "arrow-schema",
  "base64",
  "chrono",
+ "dashmap",
  "fs2",
  "futures",
  "lancedb",

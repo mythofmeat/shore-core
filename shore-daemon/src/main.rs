@@ -145,7 +145,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Provide the autonomy manager with resources for interiority/keepalive execution.
     autonomy.set_resources(llm_client.clone(), push_tx.clone(), loaded.clone(), notifier.clone());
 
+    // In-memory diagnostic ring buffers (API calls, tool calls, errors).
+    // Writer: generation tasks (handler.rs). Reader: `status`/`diagnostics` commands.
     let diagnostics = Arc::new(std::sync::Mutex::new(Diagnostics::default()));
+    // Accumulated token counts for the daemon's lifetime.
+    // Writer: generation tasks after each API response. Reader: `status` command.
     let session_tokens = Arc::new(std::sync::Mutex::new(SessionTokens::default()));
 
     let cmd_ctx = CommandContext {
@@ -164,7 +168,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // message handler knows the next message is the first after compaction
     // (expected cache miss, not an invalidation).
     let compaction_occurred = Arc::new(AtomicBool::new(false));
+    // True at startup, cleared by the first successful generation. Suppresses
+    // cache-invalidation warning on the first message (expected cache miss).
+    // Writer/reader: generation task (handler.rs).
     let is_first_after_restart = Arc::new(AtomicBool::new(true));
+    // Set on first API response with cache_read_tokens > 0. Distinguishes
+    // "cache never populated" from "cache invalidated". Writer/reader: generation task.
     let has_seen_cache_read = Arc::new(AtomicBool::new(false));
 
     // Spawn background compaction task driven by autonomy idle triggers.

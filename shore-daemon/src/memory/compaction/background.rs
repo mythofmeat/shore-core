@@ -1,4 +1,4 @@
-use super::types::{CompactionConfig, CompactionOutcome, ConversationMessage};
+use super::types::{CompactionOutcome, ConversationMessage};
 use super::parser::DEFAULT_COMPACT_PROMPT;
 use super::CompactionManager;
 
@@ -94,14 +94,7 @@ pub async fn run_compaction(
     let indexer = RealVectorIndexer::new(store, llm_client.clone(), embed_config);
     let conv_mgr = RealConversationManager::new(&character_dir);
 
-    let app_compaction = &effective.app.memory.compaction;
-    let mgr_config = CompactionConfig {
-        idle_trigger_minutes: app_compaction.idle_trigger_minutes,
-        min_turns: app_compaction.min_turns,
-        max_turns: app_compaction.max_turns,
-        keep_recent_turns: app_compaction.keep_recent_turns,
-    };
-    let mgr = CompactionManager::new(mgr_config);
+    let mgr = CompactionManager::new(effective.app.memory.compaction.clone());
 
     // Load existing recap for folding.
     let recap_path = character_dir.join("memory").join("recap.md");

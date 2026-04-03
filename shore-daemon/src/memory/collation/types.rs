@@ -14,9 +14,12 @@ pub(super) const DEFAULT_DECAY_FLOOR: f64 = 0.1;
 /// Days before a previously-collated entry becomes eligible for reconsideration.
 pub(super) const DEFAULT_RECONSIDER_TTL_DAYS: f64 = 30.0;
 
-/// Configuration for the collation pipeline.
+/// Decay/reconsideration parameters for the collation pipeline.
+///
+/// Named `DecayConfig` (not `CollationConfig`) to avoid collision with the
+/// user-facing `shore_config::app::CollationConfig` which controls enable/auto_run/batch_limit.
 #[derive(Debug, Clone)]
-pub struct CollationConfig {
+pub struct DecayConfig {
     /// Half-life in days for Phase 4 confidence decay.
     pub decay_half_life_days: f64,
     /// Minimum confidence floor — entries at or below this are not decayed further.
@@ -25,7 +28,7 @@ pub struct CollationConfig {
     pub reconsider_ttl_days: f64,
 }
 
-impl Default for CollationConfig {
+impl Default for DecayConfig {
     fn default() -> Self {
         Self {
             decay_half_life_days: DEFAULT_DECAY_HALF_LIFE_DAYS,

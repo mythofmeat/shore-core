@@ -30,7 +30,7 @@ use shore_daemon::memory::agent::{
     AgentError, AgentIndexer, AgentRag, CallerIdentity, MemoryAgent, RagHit,
 };
 use shore_daemon::memory::collation::{
-    CollateMerge, CollationConfig, CollationError, CollationLlm, CollationManager,
+    CollateMerge, DecayConfig, CollationError, CollationLlm, CollationManager,
     EntityNormalization, TidyReplacement, TidySplit, DEFAULT_COLLATE_PROMPT,
     DEFAULT_NORMALIZE_PROMPT, DEFAULT_TIDY_PROMPT,
 };
@@ -819,7 +819,7 @@ async fn test_full_memory_system_e2e() {
     // than compaction (both use YYYYMMDD_HHMMSS_N format).
     tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
 
-    let collation_mgr = CollationManager::new(CollationConfig::default());
+    let collation_mgr = CollationManager::new(DecayConfig::default());
     let collation_outcome = collation_mgr
         .run(
             &db,

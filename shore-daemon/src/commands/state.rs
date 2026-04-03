@@ -7,12 +7,12 @@ use crate::engine::ConversationEngine;
 use crate::memory::agent::{CallerIdentity, MemoryAgent, RealAgentIndexer};
 use crate::memory::agent_llm::RealAgentLlm;
 use crate::memory::collation::{
-    CollationConfig as LibCollationConfig, CollationError, CollationManager, CollationOutcome,
+    DecayConfig, CollationError, CollationManager, CollationOutcome,
     DEFAULT_REFINE_PROMPT,
 };
 use crate::memory::collation_impls::RealCollationLlm;
 use crate::memory::compaction::{
-    CompactionConfig, CompactionError, CompactionManager, CompactionOutcome,
+    CompactionError, CompactionManager, CompactionOutcome,
     ConversationMessage, DEFAULT_COMPACT_PROMPT,
 };
 use crate::memory::compaction_impls::{
@@ -461,7 +461,7 @@ async fn run_post_compaction_collation(
     )
     .unwrap_or_else(|| DEFAULT_REFINE_PROMPT.to_string());
 
-    let collation_mgr = CollationManager::new(LibCollationConfig::default());
+    let collation_mgr = CollationManager::new(DecayConfig::default());
     let collation_limit = ctx.config.app.memory.collation.batch_limit;
 
     // Open a second vector store for collation (the compaction one was moved).
@@ -569,14 +569,7 @@ pub async fn compact(
     let conv_mgr = RealConversationManager::new(engine.character_dir());
 
     // Create compaction manager with config.
-    let app_compaction = &ctx.config.app.memory.compaction;
-    let config = CompactionConfig {
-        idle_trigger_minutes: app_compaction.idle_trigger_minutes,
-        min_turns: app_compaction.min_turns,
-        max_turns: app_compaction.max_turns,
-        keep_recent_turns: app_compaction.keep_recent_turns,
-    };
-    let mgr = CompactionManager::new(config);
+    let mgr = CompactionManager::new(ctx.config.app.memory.compaction.clone());
 
     // Load existing recap for folding.
     let recap_path = memory_dir(ctx, &char_name).join("recap.md");
@@ -732,7 +725,7 @@ pub async fn collate(
     let refine_template = resolve_prompt_template(&ctx.config.dirs.config, &char_name, "refine.md")
         .unwrap_or_else(|| DEFAULT_REFINE_PROMPT.to_string());
 
-    let mgr = CollationManager::new(LibCollationConfig::default());
+    let mgr = CollationManager::new(DecayConfig::default());
 
     // Resolve batch limit: CLI --limit overrides config default.
     let config_limit = ctx.config.app.memory.collation.batch_limit;
