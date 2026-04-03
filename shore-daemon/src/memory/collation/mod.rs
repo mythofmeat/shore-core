@@ -1750,4 +1750,144 @@ mod tests {
         let updated_child = db.get_entry("c1").unwrap().unwrap();
         assert_eq!(updated_child.start_timestamp, ts);
     }
+
+    // -- Partial failure tests ------------------------------------------------
+
+    #[tokio::test]
+    async fn test_partial_failure_merge_valid_split_nonexistent() {
+        let db = MemoryDB::open_in_memory().unwrap();
+        let now = now_str();
+        db.create_entry(&make_entry("e1", "Tea preference A", 0.8, &now)).unwrap();
+        db.create_entry(&make_entry("e2", "Tea preference B", 0.85, &now)).unwrap();
+        db.create_entry(&make_entry("e3", "Works at ACME", 0.9, &now)).unwrap();
+
+        let llm = MockCollationLlm {
+            refine_response: vec![
+                RefineAction::Merge {
+                    source_entry_ids: vec!["e1".to_string(), "e2".to_string()],
+                    result: RefineEntryFields {
+                        summary_text: "User prefers tea".to_string(),
+                        topic_tags: "preference".to_string(),
+                        topic_key: "preferences".to_string(),
+                        confidence: 0.9,
+                    },
+                    reason: "Duplicate tea entries".to_string(),
+                },
+                RefineAction::Split {
+                    source_entry_id: "ghost".to_string(),
+                    results: vec![
+                        RefineEntryFields {
+                            summary_text: "Part A".to_string(),
+                            topic_tags: "test".to_string(),
+                            topic_key: "test".to_string(),
+                            confidence: 0.8,
+                        },
+                        RefineEntryFields {
+                            summary_text: "Part B".to_string(),
+                            topic_tags: "test".to_string(),
+                            topic_key: "test".to_string(),
+                            confidence: 0.8,
+                        },
+                    ],
+                    reason: "Split nonexistent entry".to_string(),
+                },
+            ],
+        };
+
+        let mgr = CollationManager::new(DecayConfig::default());
+        let outcome = run_pipeline(&db, &llm, &mgr, None).await;
+
+        // Merge should succeed, split should silently fail.
+        assert_eq!(outcome.refine_merges, 1);
+        assert_eq!(outcome.refine_splits, 0);
+
+        assert_eq!(db.get_entry("e1").unwrap().unwrap().status, "superseded");
+        assert_eq!(db.get_entry("e2").unwrap().unwrap().status, "superseded");
+        assert_eq!(db.get_entry("e3").unwrap().unwrap().status, "active");
+
+        let active = db.get_entries_by_status("active").unwrap();
+        let merged: Vec<&Entry> = active
+            .iter()
+            .filter(|e| e.source == "collation_refine")
+            .collect();
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].summary_text, "User prefers tea");
+    }
+
+    #[tokio::test]
+    async fn test_partial_failure_split_valid_merge_non_candidate() {
+        let db = MemoryDB::open_in_memory().unwrap();
+        let now = now_str();
+
+        // s1 is a candidate (no collated_at).
+        db.create_entry(&make_entry("s1", "Broad: tea and work", 0.9, &now)).unwrap();
+
+        // nc1 is NOT a candidate (collated_at set to future).
+        let mut nc = make_entry("nc1", "Non-candidate fact", 0.8, &now);
+        nc.collated_at = (Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+        db.create_entry(&nc).unwrap();
+
+        let llm = MockCollationLlm {
+            refine_response: vec![
+                // Merge tries to include nc1 which is not in candidate_ids.
+                RefineAction::Merge {
+                    source_entry_ids: vec!["s1".to_string(), "nc1".to_string()],
+                    result: RefineEntryFields {
+                        summary_text: "Merged".to_string(),
+                        topic_tags: "test".to_string(),
+                        topic_key: "test".to_string(),
+                        confidence: 0.9,
+                    },
+                    reason: "Merge with non-candidate".to_string(),
+                },
+                // Split of s1 is valid (s1 is a candidate).
+                RefineAction::Split {
+                    source_entry_id: "s1".to_string(),
+                    results: vec![
+                        RefineEntryFields {
+                            summary_text: "User likes tea".to_string(),
+                            topic_tags: "beverage".to_string(),
+                            topic_key: "preferences".to_string(),
+                            confidence: 0.9,
+                        },
+                        RefineEntryFields {
+                            summary_text: "User works somewhere".to_string(),
+                            topic_tags: "work".to_string(),
+                            topic_key: "employment".to_string(),
+                            confidence: 0.85,
+                        },
+                    ],
+                    reason: "Two distinct topics".to_string(),
+                },
+            ],
+        };
+
+        let mgr = CollationManager::new(DecayConfig::default());
+        let outcome = run_pipeline(&db, &llm, &mgr, None).await;
+
+        // Merge fails (nc1 not a candidate), split succeeds.
+        assert_eq!(outcome.refine_merges, 0);
+        assert_eq!(outcome.refine_splits, 1);
+        assert_eq!(outcome.refine_new_entries, 2);
+
+        assert_eq!(db.get_entry("s1").unwrap().unwrap().status, "superseded");
+        assert_eq!(db.get_entry("nc1").unwrap().unwrap().status, "active");
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_empty_db() {
+        let db = MemoryDB::open_in_memory().unwrap();
+        let llm = MockCollationLlm::empty();
+        let mgr = CollationManager::new(DecayConfig::default());
+        let outcome = run_pipeline(&db, &llm, &mgr, None).await;
+
+        assert_eq!(outcome.refine_merges, 0);
+        assert_eq!(outcome.refine_splits, 0);
+        assert_eq!(outcome.refine_updates, 0);
+        assert_eq!(outcome.refine_new_entries, 0);
+        assert_eq!(outcome.refine_kept, 0);
+        assert_eq!(outcome.entries_decayed, 0);
+        assert_eq!(outcome.entries_skipped, 0);
+        assert_eq!(outcome.timestamps_backfilled, 0);
+    }
 }

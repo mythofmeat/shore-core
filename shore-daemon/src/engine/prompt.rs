@@ -1114,4 +1114,100 @@ mod tests {
         assert!(!all_text.contains("journal"));
         assert!(!all_text.contains("story"));
     }
+
+    // ── Trim: orphaned tool-loop stripping ────────────────────────────
+
+    fn make_tool_result_msg() -> Message {
+        Message {
+            msg_id: uuid::Uuid::new_v4().to_string(),
+            role: Role::User,
+            content: String::new(),
+            images: vec![],
+            content_blocks: vec![ContentBlock::ToolResult {
+                tool_use_id: "t1".into(),
+                content: "result".into(),
+                is_error: false,
+            }],
+            alt_index: None,
+            alt_count: None,
+            timestamp: "2026-01-01T00:00:00Z".into(),
+        }
+    }
+
+    fn make_tool_use_only_msg() -> Message {
+        Message {
+            msg_id: uuid::Uuid::new_v4().to_string(),
+            role: Role::Assistant,
+            content: String::new(),
+            images: vec![],
+            content_blocks: vec![ContentBlock::ToolUse {
+                id: "t1".into(),
+                name: "search".into(),
+                input: serde_json::json!({"q": "test"}),
+            }],
+            alt_index: None,
+            alt_count: None,
+            timestamp: "2026-01-01T00:00:00Z".into(),
+        }
+    }
+
+    #[test]
+    fn trim_drops_orphaned_tool_result() {
+        let msgs = vec![
+            make_msg(Role::User, "Hi"),
+            make_tool_use_only_msg(),
+            make_tool_result_msg(),
+            make_msg(Role::Assistant, "Done"),
+            make_msg(Role::User, "Recent"),
+        ];
+
+        // Budget tight enough to drop the first 2 messages.
+        // "Hi" = 1 token, tool_use msg ~10 tokens, tool_result ~4 tokens,
+        // "Done" = 1 token, "Recent" = 2 tokens.
+        // With budget=5, newest-first picks Recent(2) + Done(1) + tool_result(~4) = 7 > 5,
+        // so it stops. Result = [tool_result, Done, Recent].
+        // Then orphan stripping removes the leading tool_result.
+        let result = trim_messages(&msgs, 5);
+
+        // Leading ToolResult should be stripped.
+        assert!(
+            !result.is_empty(),
+            "Should have at least one message after stripping"
+        );
+        let first = &result[0];
+        let is_tool_result = first.role == Role::User
+            && first
+                .content_blocks
+                .iter()
+                .all(|b| matches!(b, ContentBlock::ToolResult { .. }));
+        assert!(!is_tool_result, "Leading ToolResult should be stripped");
+        assert_eq!(result.last().unwrap().content, "Recent");
+    }
+
+    #[test]
+    fn trim_drops_orphaned_tool_use_only_assistant() {
+        let msgs = vec![
+            make_msg(Role::User, "Old message here"),
+            make_tool_use_only_msg(),
+            make_tool_result_msg(),
+            make_msg(Role::User, "Recent"),
+        ];
+
+        // Budget tight enough to drop "Old message here" (~5 tokens).
+        // Newest-first: Recent(2) + tool_result(~4) + tool_use(~6) = 12 > 5,
+        // stops before tool_use. Result = [tool_result, Recent].
+        // Then orphan stripping removes leading tool_result.
+        let result = trim_messages(&msgs, 5);
+
+        assert!(
+            !result.is_empty(),
+            "Should have at least one message after stripping"
+        );
+        // The chain of tool_use-only + tool_result should be stripped.
+        assert_eq!(result.last().unwrap().content, "Recent");
+        for msg in &result {
+            let is_tool_loop = is_tool_loop_msg_prompt(msg);
+            assert!(!is_tool_loop, "No tool-loop messages should remain at front");
+        }
+    }
 }
