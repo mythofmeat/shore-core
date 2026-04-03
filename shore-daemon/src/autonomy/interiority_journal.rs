@@ -206,7 +206,6 @@ fn rendered_entry_len(entry: &JournalEntry) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write as _;
 
     fn entry(ty: JournalEntryType, content: &str) -> JournalEntry {
         JournalEntry {

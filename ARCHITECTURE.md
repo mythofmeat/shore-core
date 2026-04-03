@@ -420,8 +420,8 @@ shore-daemon/
 │   │
 │   ├── autonomy/
 │   │   ├── mod.rs              # Master autonomy controller
-│   │   ├── interiority.rs      # Interiority clock (timer + dormancy)
-│   │   ├── cache_keepalive.rs  # Cache TTL refresh
+│   │   ├── interiority.rs      # Interiority clock (dual-deadline timer + dormancy)
+│   │   ├── interiority_journal.rs # Rolling JSONL journal for tick continuity
 │   │   └── activity.rs         # Activity tracker (tempo, histograms)
 │   │
 │   ├── config/
@@ -682,8 +682,7 @@ Loaded by daemon on startup. Key changes from V1:
 
 - `[behavior.autonomy]` section replaces scattered autonomy knobs:
   - `enabled` (bool)
-- `[behavior.autonomy.interiority]` — interiority config (interval, jitter, max idle ticks, max tool rounds)
-- `[behavior.autonomy.cache_keepalive]` — cache TTL refresh
+- `[behavior.autonomy.interiority]` — interiority config (interval, jitter, max idle ticks)
 - `[memory.compaction]` — compaction triggers
 - `[memory.collation]` — collation settings
 - `[connections.matrix]` — replaces `matrix_external` and `matrix_embedded`
@@ -806,7 +805,7 @@ reason TEXT, resolved_at TEXT, resolution TEXT, created_at TEXT)
 | Full-text search | search.py | memory/search.rs | |
 | File importer | importer.py | memory/importer.rs | |
 | Heartbeat scheduler | heartbeat.py | autonomy/interiority.rs | **Replaced** by interiority system (see §13.1) |
-| Cache keepalive | cache_keepalive.py | autonomy/cache_keepalive.rs | |
+| Cache keepalive | cache_keepalive.py | autonomy/interiority.rs | **Merged** into unified interiority (see §13.1) |
 | Activity tracker | activity_tracker.py | autonomy/activity.rs | Fix: lower data threshold |
 | Server | server.py | server/mod.rs | |
 | Command dispatch | commands.py | commands/*.rs | 18 flat commands (see §3.7) |
@@ -950,24 +949,27 @@ pronouns in character queries.
 
 ### 13.1 Interiority — Autonomous Character Turns
 
-The V1 heartbeat (5-state probability machine) is replaced by the interiority
-system. Instead of complex scheduling heuristics, characters get periodic
-"turns to self" — full agentic turns with the same tool set as normal
-conversation, plus a scratchpad filesystem for private persistent notes.
+The V1 heartbeat (5-state probability machine) is replaced by the unified
+interiority system. Characters get periodic "turns to self" — full agentic
+turns with the same tool set as normal conversation, backed by a rolling JSONL
+journal for continuity across ticks. Cache refresh is unified into the same
+timer — no separate keepalive system.
 
 #### Design
 
 ```
             ┌─────────┐  tick()   ┌──────────────┐
-            │  Active  │─────────▶│  RunTick      │──▶ full LLM turn
-            └────┬────┘          └──────────────┘     with all tools
-                 │                                     + scratchpad
-          ticks_without_user                           
+            │  Active  │─────────▶│  RunTick      │──▶ ONE LLM call
+            └────┬────┘          └──────────────┘     reads journal
+                 │                 ┌──────────────┐   writes journal
+                 │  (cache only)──▶│RunDormantPing │──▶ max_tokens=1
+                 │                 └──────────────┘   cache refresh
+          ticks_without_user
           > max_idle_ticks                         optional:
                  │                                 <sendMessage>
             ┌────▼────┐                            tag → user
-            │ Dormant  │
-            └────┬────┘
+            │ Dormant  │──────────▶ RunDormantPing only
+            └────┬────┘            (cache stays warm)
                  │
            user messages
                  │
@@ -976,52 +978,73 @@ conversation, plus a scratchpad filesystem for private persistent notes.
             └─────────┘
 ```
 
+#### Dual-Deadline Timer
+
+InteriorityClock tracks two deadlines independently:
+
+| Deadline | Interval | Fires |
+|----------|----------|-------|
+| `next_tick_at` | `interval_secs ± jitter` | Full interiority tick (RunTick) |
+| `next_cache_ping_at` | `cache_ttl - 60s ± jitter×0.2` | Bare cache refresh (RunDormantPing) |
+
+A full tick resets both deadlines (the LLM call refreshes the cache).
+A cache ping only resets the cache deadline.
+
 #### States
 
 | State | Description |
 |-------|-------------|
-| `Active` | Timer fires at `interval_secs ± jitter_factor`. Each tick runs an LLM turn. If the character wants to message the user, it wraps text in `<sendMessage>` tags. |
-| `Dormant` | `ticks_without_user >= max_idle_ticks`. No ticks fire. Wakes on next user message. |
+| `Active` | Both timers run. Full interiority ticks fire at `interval_secs ± jitter_factor`. Between ticks, bare cache pings fire if the cache deadline passes. |
+| `Dormant` | `ticks_without_user >= max_idle_ticks`. Only cache pings fire (keeps cache warm). Wakes on next user message. |
+
+#### Rolling Journal (`interiority_journal.rs`)
+
+Each interiority tick reads the journal, renders it into the prompt, makes ONE
+LLM call, and appends new entries. Entry types:
+
+| Type | Content |
+|------|---------|
+| `Thought` | Text blocks from LLM response |
+| `ToolCall` | Tool use blocks (name + args) |
+| `ToolResult` | Tool execution results |
+| `MessageSent` | `<sendMessage>` content delivered to user |
+
+File: `{data_dir}/{character}/interiority_journal.jsonl`. Budget-capped at
+~16K chars (~4096 tokens). Oldest entries fall off. Compacted atomically
+(write-to-tmp + rename) when file exceeds 2× budget.
 
 #### Key Properties
 
-- **Identical tool set**: Interiority ticks use the exact same tools as normal
-  conversation (memory, web, image, scratchpad). This preserves Anthropic prompt
-  cache — the system prompt and tool definitions are identical.
-- **Scratchpad**: Per-character filesystem at `data_dir/<char>/scratchpad/`.
-  4 tools: `scratchpad_list`, `scratchpad_read`, `scratchpad_write`,
-  `scratchpad_delete`. Available in both normal conversation and interiority.
-- **Full conversation context**: Interiority ticks see the entire conversation
-  history (loaded from `active.jsonl`), enabling coherent continuation.
-- **No probability math**: Simple timer with jitter. No τ, engagement scores,
-  heatmaps, or social need bars.
+- **One call per tick**: Each tick makes exactly one LLM call. Tool calls from
+  the response are executed, but results are journaled for the next tick rather
+  than fed back in a loop. ~3.5× cheaper than the old multi-round approach.
+- **Identical tool set**: Preserves Anthropic prompt cache — system prompt and
+  tool definitions are identical to normal conversation.
+- **Journal continuity**: The character sees its recent thoughts, tool calls,
+  and results rendered as text in the prompt. No context loss between ticks.
+- **Unified cache refresh**: Every LLM call (tick or ping) refreshes the prompt
+  cache. No separate keepalive system needed.
 
 #### Config
 
 ```toml
 [behavior.autonomy.interiority]
 enabled = true           # default: true
-interval_secs = 3600     # default: 1 hour
+interval_secs = 7200     # default: 3600 (1 hour)
 jitter_factor = 0.25     # ±25% random variation
 max_idle_ticks = 8       # go dormant after 8 ticks with no user
-max_tool_rounds = 12     # max tool-use rounds per tick
+
+[chat.anthropic]
+cache_ttl = "1h"         # drives cache_refresh_interval = 3540s
 ```
 
-#### Persisted State (v2)
+#### Persisted State (v3)
 
-State is saved to `autonomy.json` per character. Version bumped from 1→2.
+State is saved to `autonomy.json` per character. Version bumped from 2→3.
 Fields: `interiority_state` (Active/Dormant), `ticks_without_user` (u32).
-V1 state files are migrated gracefully (old heartbeat fields ignored).
+V2 state files are migrated gracefully (`cache_ping_count` dropped).
 
-### 13.2 Cache Keepalive
-
-Unchanged from V1.
-
-**Trigger:** >10 min idle, Anthropic provider, cache_ttl configured
-**Mechanism:** minimal API call (max_tokens=1) every N minutes
-**Stops:** after max pings or on cache miss (prefix invalidated)
-
-### 13.3 Cache Invalidation Safeguard
+### 13.2 Cache Invalidation Safeguard
 
 An unexpected prompt cache invalidation means the entire prompt is re-sent
 uncached — expensive on long conversations. The daemon detects and warns.
@@ -1049,7 +1072,7 @@ cache_invalidation_warnings = true   # default: true, opt-out
 Implementation: one check in the LLM response handler, one push event, one
 config key. No state machine — just compare actual vs. expected and warn.
 
-### 13.4 Activity Tracker
+### 13.3 Activity Tracker
 
 Carried forward with fixes:
 

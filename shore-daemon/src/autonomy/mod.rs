@@ -1,5 +1,4 @@
 pub mod activity;
-pub mod cache_keepalive;
 pub mod interiority;
 pub mod interiority_journal;
 pub mod manager;
@@ -19,10 +18,8 @@ pub struct AutonomyStatus {
     pub ticks_without_user: u32,
     /// Max idle ticks before going dormant.
     pub max_idle_ticks: u32,
-    /// Current cache keepalive state label.
-    pub cache_keepalive_state: String,
-    /// Number of cache keepalive pings sent.
-    pub cache_keepalive_pings: u32,
+    /// Effective tick interval in seconds (min of interiority + cache refresh).
+    pub effective_interval_secs: u64,
 }
 
 // ---------------------------------------------------------------------------

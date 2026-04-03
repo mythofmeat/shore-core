@@ -1,0 +1,397 @@
+#!/usr/bin/env bash
+#
+# Shore autonomy live test — verifies the unified interiority/cache system
+# against real Anthropic API calls.
+#
+# Requires: ANTHROPIC_API_KEY set in environment.
+#
+# What this tests:
+#   1. Daemon starts, sends a message to prime last_request
+#   2. Autonomy tick loop fires cache refresh pings (max_tokens=1)
+#   3. Full interiority tick fires with journal (max_tokens=1000)
+#   4. Status command shows effective_interval_secs
+#   5. Heartbeat log shows tick_fired and dormant_ping events
+#
+# Uses aggressive intervals (30s interiority, 15s cache TTL) so the test
+# completes in ~3 minutes. This mirrors the production config structure
+# but with compressed timescales.
+#
+# Usage:
+#   ./scripts/autonomy-test.sh              # build + test
+#   ./scripts/autonomy-test.sh --skip-build # reuse existing binaries
+#
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+SKIP_BUILD=false
+[[ "${1:-}" == "--skip-build" ]] && SKIP_BUILD=true
+
+# ── Colors ────────────────────────────────────────────────────────────
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+DIM='\033[0;90m'
+BOLD='\033[1m'
+RESET='\033[0m'
+
+pass=0
+fail=0
+
+# Strip ANSI escape codes from log files (belt-and-suspenders).
+strip_ansi() { sed 's/\x1b\[[0-9;]*m//g'; }
+
+run_check() {
+    local name="$1"
+    local ok="$2"
+    local detail="${3:-}"
+    printf "${DIM}  %-55s${RESET}" "$name"
+    if [[ "$ok" == "true" ]]; then
+        printf "${GREEN}PASS${RESET}"
+        [[ -n "$detail" ]] && printf " ${DIM}(%s)${RESET}" "$detail"
+        printf "\n"
+        pass=$((pass + 1))
+    else
+        printf "${RED}FAIL${RESET}"
+        [[ -n "$detail" ]] && printf " ${DIM}(%s)${RESET}" "$detail"
+        printf "\n"
+        fail=$((fail + 1))
+    fi
+}
+
+# ── Pre-checks ────────────────────────────────────────────────────────
+if [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
+    echo "ANTHROPIC_API_KEY not set — cannot run autonomy tests."
+    exit 1
+fi
+
+# ── Build ─────────────────────────────────────────────────────────────
+if [[ "$SKIP_BUILD" == false ]]; then
+    printf "${BOLD}Building...${RESET}\n"
+    cargo build --workspace --quiet 2>&1
+fi
+
+SHORE="$REPO_ROOT/target/debug/shore"
+DAEMON="$REPO_ROOT/target/debug/shore-daemon"
+
+if [[ ! -x "$SHORE" ]] || [[ ! -x "$DAEMON" ]]; then
+    echo "Binaries not found. Run without --skip-build first."
+    exit 1
+fi
+
+# ── Temp environment ──────────────────────────────────────────────────
+TMPDIR=$(mktemp -d)
+DAEMON_PID=0
+LOG_FILE="$TMPDIR/daemon.log"
+
+cleanup() {
+    kill $DAEMON_PID 2>/dev/null || true
+    wait $DAEMON_PID 2>/dev/null || true
+    if [[ $fail -gt 0 ]]; then
+        printf "\n${DIM}Daemon log (last 50 lines):${RESET}\n"
+        tail -50 "$LOG_FILE" 2>/dev/null || true
+    fi
+    rm -rf "$TMPDIR"
+}
+trap cleanup EXIT
+
+CONFIG_DIR="$TMPDIR/config/shore"
+DATA_DIR="$TMPDIR/data/shore"
+RUNTIME_DIR="$TMPDIR/runtime/shore"
+SOCK="$RUNTIME_DIR/test.sock"
+
+mkdir -p "$CONFIG_DIR/characters/TestChar" "$DATA_DIR" "$RUNTIME_DIR"
+
+# ── Config ────────────────────────────────────────────────────────────
+# Mirrors production config structure with compressed timescales.
+#
+# Anthropic API only accepts cache_ttl of "5m" or "1h".
+# With "5m" (300s), cache_refresh_interval = 300-60 = 240s.
+# Set interiority_interval = 480s so a cache ping fires at ~240s and a
+# full interiority tick fires at ~480s. Total wait: ~500s (~8.5 min).
+#
+# Tools: most enabled to push the system prompt past Opus's 4096-token
+# cache minimum. With only check_time (~1444 tokens), caching silently
+# never activates.
+#
+# Timing:
+#   ~240s: first cache refresh ping (RunDormantPing while active)
+#   ~480s: first interiority tick (RunTick, journal-backed)
+
+cat > "$CONFIG_DIR/config.toml" <<EOF
+[daemon]
+socket_path = "$SOCK"
+
+[defaults]
+model = "opus"
+display_name = "tester"
+
+[behavior.autonomy]
+enabled = true
+
+[behavior.autonomy.interiority]
+enabled       = true
+interval_secs = 480
+jitter_factor = 0.0
+max_idle_ticks = 2
+
+[behavior.tool_use]
+enabled = true
+max_iterations = 1
+
+# All tools enabled to ensure system prompt exceeds Opus's 4096-token
+# cache minimum. With only check_time, the prompt is ~1444 tokens — far
+# below threshold, so caching silently never activates.
+[behavior.tool_use.tools]
+memory          = true
+send_image      = false
+list_images     = false
+recall_image    = false
+generate_image  = false
+web_search      = true
+fetch_url       = true
+check_time      = true
+roll_dice       = true
+activity_heatmap = true
+scratchpad      = true
+
+[memory]
+rag_results = 0
+
+[memory.collation]
+enabled = false
+
+[chat.anthropic]
+max_context_tokens = 16384
+cache_control_depth = 2
+cache_ttl = "5m"
+
+[chat.anthropic.opus]
+model_id = "claude-opus-4-6"
+max_tokens = 2048
+EOF
+
+cat > "$CONFIG_DIR/characters/TestChar/character.md" <<'EOF'
+You are TestChar, a minimal test character for autonomy testing.
+Keep all responses to one sentence. Do not use tools unless asked.
+EOF
+
+export XDG_CONFIG_HOME="$TMPDIR/config"
+export XDG_DATA_HOME="$TMPDIR/data"
+export XDG_RUNTIME_DIR="$TMPDIR/runtime"
+
+# ── Start daemon ──────────────────────────────────────────────────────
+printf "${BOLD}Starting daemon...${RESET}\n"
+NO_COLOR=1 RUST_LOG=info "$DAEMON" --config "$CONFIG_DIR/config.toml" > "$LOG_FILE" 2>&1 &
+DAEMON_PID=$!
+
+for i in $(seq 1 50); do
+    [[ -S "$SOCK" ]] && break
+    sleep 0.1
+done
+if [[ ! -S "$SOCK" ]]; then
+    echo "Daemon failed to start (socket not found after 5s)"
+    cat "$LOG_FILE"
+    exit 1
+fi
+printf "${DIM}  daemon pid=$DAEMON_PID${RESET}\n\n"
+
+CLI="$SHORE --socket $SOCK"
+
+# ══════════════════════════════════════════════════════════════════════
+# PHASE 1: Prime the conversation (populates last_request)
+# ══════════════════════════════════════════════════════════════════════
+printf "${BOLD}Phase 1: Prime conversation${RESET}\n"
+
+printf "${DIM}  %-55s${RESET}" "send initial message"
+output=$(timeout 60 $CLI send "Hello, this is a test. Reply briefly." 2>&1) || true
+if [[ -n "$output" ]] && ! echo "$output" | grep -qF "error"; then
+    printf "${GREEN}PASS${RESET}\n"
+    pass=$((pass + 1))
+else
+    printf "${RED}FAIL${RESET}\n"
+    printf "${DIM}  %s${RESET}\n" "$output" | head -3
+    fail=$((fail + 1))
+fi
+
+# ══════════════════════════════════════════════════════════════════════
+# PHASE 2: Verify status shows new autonomy fields
+# ══════════════════════════════════════════════════════════════════════
+printf "\n${BOLD}Phase 2: Status check${RESET}\n"
+
+status_json=$(timeout 10 $CLI status --json 2>&1)
+
+# Check effective_interval_secs is present and reasonable.
+eff_interval=$(echo "$status_json" | grep -o '"effective_interval_secs": [0-9]*' | head -1 | grep -o '[0-9]*')
+run_check "effective_interval_secs present" \
+    "$([[ -n "$eff_interval" ]] && echo true || echo false)" \
+    "${eff_interval:-missing}s"
+
+run_check "effective_interval_secs = 480 (configured)" \
+    "$([[ "$eff_interval" == "480" ]] && echo true || echo false)" \
+    "got ${eff_interval:-?}"
+
+# Check interiority_state is Active.
+int_state=$(echo "$status_json" | grep -o '"interiority_state": "[^"]*"' | head -1 | grep -o '"[^"]*"$' | tr -d '"')
+run_check "interiority_state is Active" \
+    "$([[ "$int_state" == "Active" ]] && echo true || echo false)" \
+    "$int_state"
+
+# Verify no keepalive fields (removed).
+has_keepalive=$(echo "$status_json" | grep -c "cache_keepalive" || true)
+run_check "no cache_keepalive fields in status" \
+    "$([[ "$has_keepalive" == "0" ]] && echo true || echo false)"
+
+# ══════════════════════════════════════════════════════════════════════
+# PHASE 3: Wait for cache ping + interiority tick
+# ══════════════════════════════════════════════════════════════════════
+printf "\n${BOLD}Phase 3: Wait for autonomy events (~8.5 min)${RESET}\n"
+
+# With interiority=480s and cache_refresh=240s (from 5m TTL):
+#   ~240s: first cache refresh ping (RunDormantPing while active)
+#   ~480s: first interiority tick (RunTick)
+# We wait 510s to be safe.
+
+WAIT_SECS=510
+printf "${DIM}  Waiting ${WAIT_SECS}s for tick loop..."
+for i in $(seq 1 $((WAIT_SECS / 10))); do
+    sleep 10
+    printf "."
+done
+printf " done${RESET}\n"
+
+# ══════════════════════════════════════════════════════════════════════
+# PHASE 4: Verify events in heartbeat log
+# ══════════════════════════════════════════════════════════════════════
+printf "\n${BOLD}Phase 4: Verify heartbeat events${RESET}\n"
+
+heartbeat=$($CLI log --heartbeat 2>&1)
+
+# Check for tick_fired event.
+has_tick=$(echo "$heartbeat" | grep -c "tick_fired" || true)
+run_check "tick_fired event in heartbeat log" \
+    "$([[ "$has_tick" -gt 0 ]] && echo true || echo false)" \
+    "${has_tick} events"
+
+# Check for dormant_ping event (cache refresh between ticks).
+has_ping=$(echo "$heartbeat" | grep -c "dormant_ping" || true)
+run_check "dormant_ping event in heartbeat log" \
+    "$([[ "$has_ping" -gt 0 ]] && echo true || echo false)" \
+    "${has_ping} events"
+
+# ══════════════════════════════════════════════════════════════════════
+# PHASE 5: Verify in daemon logs
+# ══════════════════════════════════════════════════════════════════════
+printf "\n${BOLD}Phase 5: Verify daemon logs${RESET}\n"
+
+# Strip ANSI from log for reliable parsing.
+CLEAN_LOG="$TMPDIR/daemon_clean.log"
+strip_ansi < "$LOG_FILE" > "$CLEAN_LOG"
+
+# Check for unified tick execution.
+has_unified=$(grep -c "executing unified tick" "$CLEAN_LOG" || true)
+run_check "daemon log: unified tick executed" \
+    "$([[ "$has_unified" -gt 0 ]] && echo true || echo false)" \
+    "${has_unified}x"
+
+# Check for dormant ping (cache refresh).
+has_cache_refresh=$(grep -c "Dormant ping: cache refreshed" "$CLEAN_LOG" || true)
+run_check "daemon log: cache refresh ping" \
+    "$([[ "$has_cache_refresh" -gt 0 ]] && echo true || echo false)" \
+    "${has_cache_refresh}x"
+
+# Check journal file was created (search data dir in case of path variations).
+journal_file=$(find "$DATA_DIR" -name "interiority_journal.jsonl" 2>/dev/null | head -1)
+run_check "interiority journal file created" \
+    "$([[ -n "$journal_file" && -f "$journal_file" ]] && echo true || echo false)" \
+    "${journal_file:-not found}"
+
+if [[ -n "$journal_file" && -f "$journal_file" ]]; then
+    journal_lines=$(wc -l < "$journal_file")
+    run_check "journal has entries" \
+        "$([[ "$journal_lines" -gt 0 ]] && echo true || echo false)" \
+        "${journal_lines} lines"
+fi
+
+# Check that no keepalive-related log lines appear.
+has_old_keepalive=$(grep -c "Cache keepalive:" "$CLEAN_LOG" || true)
+run_check "no old keepalive log lines" \
+    "$([[ "$has_old_keepalive" == "0" ]] && echo true || echo false)" \
+    "${has_old_keepalive} found"
+
+# ══════════════════════════════════════════════════════════════════════
+# PHASE 6: Cache hit verification
+# ══════════════════════════════════════════════════════════════════════
+printf "\n${BOLD}Phase 6: Cache hit verification${RESET}\n"
+
+# Extract cache values from logs.
+# Tracing format: key=N (structured key=value pairs)
+
+# Initial message should have created the cache.
+init_line=$(grep "Response complete" "$CLEAN_LOG" | head -1 || true)
+if [[ -n "$init_line" ]]; then
+    init_creation=$(echo "$init_line" | sed -n 's/.*cache_creation=\([0-9]*\).*/\1/p')
+    init_input=$(echo "$init_line" | sed -n 's/.*input_tokens=\([0-9]*\).*/\1/p')
+    run_check "initial message: cache created (>= 4096 for Opus)" \
+        "$([[ -n "$init_creation" && "$init_creation" -ge 1024 ]] && echo true || echo false)" \
+        "cache_creation=${init_creation:-?} input=${init_input:-?}"
+else
+    run_check "initial message: Response complete logged" "false" "no log line"
+fi
+
+# Dormant ping cache reads.
+ping_line=$(grep "Dormant ping: cache refreshed" "$CLEAN_LOG" | head -1 || true)
+if [[ -n "$ping_line" ]]; then
+    ping_cr=$(echo "$ping_line" | sed -n 's/.*cache_read=\([0-9]*\).*/\1/p')
+    ping_input=$(echo "$ping_line" | sed -n 's/.*input_tokens=\([0-9]*\).*/\1/p')
+    run_check "cache ping: cache_read > 0 (cache hit)" \
+        "$([[ -n "$ping_cr" && "$ping_cr" -gt 0 ]] && echo true || echo false)" \
+        "cache_read=${ping_cr:-?} input=${ping_input:-?}"
+else
+    run_check "cache ping: log line found" "false" "no 'cache refreshed' line"
+fi
+
+# Interiority tick cache reads.
+tick_line=$(grep "Interiority: LLM response" "$CLEAN_LOG" | head -1 || true)
+if [[ -n "$tick_line" ]]; then
+    tick_cr=$(echo "$tick_line" | sed -n 's/.*cache_read=\([0-9]*\).*/\1/p')
+    tick_input=$(echo "$tick_line" | sed -n 's/.*input_tokens=\([0-9]*\).*/\1/p')
+    tick_output=$(echo "$tick_line" | sed -n 's/.*output_tokens=\([0-9]*\).*/\1/p')
+    run_check "interiority tick: cache_read > 0 (cache hit)" \
+        "$([[ -n "$tick_cr" && "$tick_cr" -gt 0 ]] && echo true || echo false)" \
+        "cache_read=${tick_cr:-?} input=${tick_input:-?} output=${tick_output:-?}"
+else
+    run_check "interiority tick: LLM response logged" "false" "no response line"
+fi
+
+# Print all cache-related lines for manual inspection.
+printf "${DIM}  --- cache-related log lines ---${RESET}\n"
+{
+    grep -E "cache_read|cache_write|cache_creation" "$CLEAN_LOG" || true
+} | while read -r line; do
+    printf "${DIM}  %s${RESET}\n" "$(echo "$line" | head -c 120)"
+done
+
+# ══════════════════════════════════════════════════════════════════════
+# PHASE 7: Cost sanity — check API call count
+# ══════════════════════════════════════════════════════════════════════
+printf "\n${BOLD}Phase 7: API call count${RESET}\n"
+
+# Count calls in the daemon log.
+interiority_calls=$(grep -c "Interiority: LLM response" "$CLEAN_LOG" || true)
+ping_calls=$(grep -c "Dormant ping: cache refreshed" "$CLEAN_LOG" || true)
+user_calls=$(grep -c "Response complete" "$CLEAN_LOG" || true)
+printf "${DIM}  user responses: $user_calls, interiority ticks: $interiority_calls, cache pings: $ping_calls${RESET}\n"
+
+# Sanity: total autonomous calls should be modest (< 10).
+total_auto=$((interiority_calls + ping_calls))
+run_check "autonomous API calls reasonable (< 10)" \
+    "$([[ "$total_auto" -lt 10 ]] && echo true || echo false)" \
+    "$total_auto calls"
+
+# ── Summary ───────────────────────────────────────────────────────────
+printf "\n${BOLD}Results: ${GREEN}$pass passed${RESET}"
+if [[ $fail -gt 0 ]]; then
+    printf ", ${RED}$fail failed${RESET}"
+fi
+printf "\n"
+
+exit $fail

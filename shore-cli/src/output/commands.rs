@@ -199,17 +199,16 @@ pub fn print_status(data: &serde_json::Value, character_name: &str) {
             }
             let _ = writeln!(out);
 
-            // Cache keepalive (only when pings > 0).
-            let pings = autonomy["cache_keepalive_pings"].as_u64().unwrap_or(0);
-            if pings > 0 {
-                let cache_state = autonomy["cache_keepalive_state"].as_str().unwrap_or("?");
-                let label = match cache_state {
-                    "Pinging" => "warm",
-                    "Monitoring" => "warm",
-                    s if s.starts_with("Stopped") => "stopped",
-                    _ => cache_state,
+            // Effective tick interval.
+            if let Some(eff) = autonomy["effective_interval_secs"].as_u64() {
+                let mins = eff / 60;
+                let secs = eff % 60;
+                let label = if secs == 0 {
+                    format!("{mins}m")
+                } else {
+                    format!("{mins}m{secs}s")
                 };
-                write_row(&mut out, "Cache", &format!("{label} ({pings} pings)"));
+                write_row(&mut out, "Interval", &label);
             }
 
             let _ = writeln!(out);
@@ -945,8 +944,7 @@ mod tests {
                 "interiority_state": "Active",
                 "ticks_without_user": 1,
                 "max_idle_ticks": 3,
-                "cache_keepalive_state": "Pinging",
-                "cache_keepalive_pings": 3,
+                "effective_interval_secs": 3540,
             }
         });
         print_status(&data, "Sable");
@@ -975,8 +973,7 @@ mod tests {
                 "interiority_state": "Active",
                 "ticks_without_user": 0,
                 "max_idle_ticks": 3,
-                "cache_keepalive_state": "Monitoring",
-                "cache_keepalive_pings": 0,
+                "effective_interval_secs": 3600,
             }
         });
         print_status(&data, "Sable");

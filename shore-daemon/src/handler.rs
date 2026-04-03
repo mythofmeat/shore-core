@@ -21,7 +21,7 @@ use shore_protocol::types::{derive_content_from_blocks, ContentBlock, ImageRef, 
 use tokio::sync::{broadcast, Mutex};
 use tracing::{error, info, instrument, warn};
 
-use crate::autonomy::cache_keepalive::CacheKeepaliveConfig;
+use crate::autonomy::parse_cache_ttl_secs;
 use crate::autonomy::manager::AutonomyManager;
 use crate::characters::CharacterRegistry;
 use crate::commands::{self, CommandContext, SessionTokens};
@@ -443,17 +443,10 @@ async fn handle_generation(
         .and_then(|name| effective_config.models.find_model(name).ok())
         .cloned();
 
-    // 5. Ensure autonomy state with model-specific keepalive config.
+    // 5. Ensure autonomy state with cache TTL for unified interiority timer.
     // Must happen before notify_user_message so session_start is set on first message.
-    let keepalive_cfg = CacheKeepaliveConfig::from_resolved_model(
-        &resolved.provider_key,
-        resolved.cache_ttl.is_some(),
-        resolved.keepalive_enabled,
-        resolved.keepalive_ttl_minutes,
-        resolved.cache_ttl.as_deref(),
-        resolved.keepalive_max_pings,
-    );
-    ctx.autonomy.ensure_state_with_config(&char_name, keepalive_cfg, Some(&effective_config));
+    let cache_ttl_secs = resolved.cache_ttl.as_deref().and_then(parse_cache_ttl_secs);
+    ctx.autonomy.ensure_state_with_config(&char_name, cache_ttl_secs, Some(&effective_config));
 
     if !regen && (!body.text.is_empty() || !body.images.is_empty()) {
         let mut engine = engine_arc.lock().await;
@@ -878,17 +871,13 @@ async fn persist_and_notify(
             ctx.diagnostics.lock().unwrap().api_calls.push(entry);
         }
 
-        // Notify cache keepalive of API response.
-        ctx.autonomy.notify_api_response(
-            char_name,
-            result.usage.cache_read_tokens,
-            result.usage.input_tokens,
-        );
         ctx.autonomy.notify_last_request(char_name, request.clone());
 
         info!(
             input_tokens = result.usage.input_tokens,
             output_tokens = result.usage.output_tokens,
+            cache_read = result.usage.cache_read_tokens,
+            cache_creation = result.usage.cache_creation_tokens,
             model = %result.model,
             "Response complete"
         );
