@@ -508,64 +508,7 @@ async fn handle_generation(
     });
 
     // 7. Build LLM messages from assembled prompt.
-    //
-    // All content blocks are sent intact — the Anthropic API handles
-    // thinking block stripping for prior turns internally.
-    let llm_messages: Vec<Value> = prompt_result
-        .messages
-        .iter()
-        .map(|m| {
-            let role = match m.role {
-                Role::User => "user",
-                Role::Assistant => "assistant",
-                Role::System => "system",
-            };
-            let content = if !m.content_blocks.is_empty() {
-                let mut blocks: Vec<Value> = Vec::new();
-
-                // Prepend base64-encoded image blocks from m.images (fixes the
-                // bug where user-sent images were silently dropped because
-                // content_blocks was non-empty and build_content was dead code).
-                for img in &m.images {
-                    if let Some(media_type) = media_type_for_path(&img.path) {
-                        match std::fs::read(&img.path) {
-                            Ok(bytes) => {
-                                let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
-                                blocks.push(json!({
-                                    "type": "image",
-                                    "source": {
-                                        "type": "base64",
-                                        "media_type": media_type,
-                                        "data": encoded,
-                                    }
-                                }));
-                            }
-                            Err(e) => {
-                                warn!(path = %img.path, error = %e, "Failed to read image file for LLM");
-                            }
-                        }
-                    }
-                }
-
-                blocks.extend(m.content_blocks.iter()
-                    .filter_map(crate::content_util::content_block_to_api_json));
-                json!(blocks)
-            } else {
-                build_content(&m.content, &m.images)
-            };
-            json!({ "role": role, "content": content })
-        })
-        .collect();
-
-    let system = if prompt_result.system.is_empty() {
-        None
-    } else if prompt_result.system.len() == 1 {
-        Some(json!(prompt_result.system[0].content))
-    } else {
-        Some(json!(prompt_result.system.iter().map(|b| {
-            json!({"type": "text", "text": b.content})
-        }).collect::<Vec<_>>()))
-    };
+    let (llm_messages, system) = build_llm_messages(&prompt_result);
 
     // 8. Build tool definitions from unified tool system.
     let tool_defs = if effective_config.app.behavior.tool_use.enabled {
@@ -612,19 +555,136 @@ async fn handle_generation(
     );
 
     // 10. Stream response from shore-llm (with retry on transient errors).
+    let mut result = stream_with_retry(
+        &ctx, &request, &engine_arc, &resolved, &effective_config, regen, rid.as_deref(),
+    ).await?;
+
+    // Build cache context for tool loop.
+    let tool_cache_warnings = resolved.provider_key == "anthropic"
+        && effective_config.app.advanced.cache_invalidation_warnings;
+    let cache_ctx = CacheContext {
+        conversation_turn_count: engine_arc.lock().await.messages().len(),
+        is_first_after_restart: ctx.is_first_after_restart.load(Ordering::Acquire),
+        is_first_after_compaction: false,
+        cache_invalidation_warnings: tool_cache_warnings,
+        has_seen_cache_read: ctx.has_seen_cache_read.load(Ordering::Acquire),
+    };
+
+    ctx.is_first_after_restart.store(false, Ordering::Release);
+
+    // 11. Run tool loop if the LLM requested tool use.
+    let tool_intermediate_messages = if result.finish_reason == "tool_use"
+        && effective_config.app.behavior.tool_use.enabled
+    {
+        let tool_loop_result = run_tool_phase(
+            &ctx, &data_dir, &char_name, &effective_config,
+            &agent_model, &researcher_model,
+            &character_definition, &user_definition,
+            &mut request, result, &cache_ctx,
+        ).await?;
+        result = tool_loop_result.result;
+        tool_loop_result.intermediate_messages
+    } else {
+        Vec::new()
+    };
+
+    // 12. Persist intermediate tool messages and final assistant message.
+    persist_and_notify(
+        &ctx, &engine_arc, &char_name, &resolved,
+        &result, &request, tool_intermediate_messages, wall_clock_start,
+    ).await
+}
+
+// ---------------------------------------------------------------------------
+// Extracted helpers for handle_generation phases
+// ---------------------------------------------------------------------------
+
+/// Phase 7: Convert assembled prompt messages into LLM API JSON format.
+///
+/// Returns `(messages, system)` — the system parameter is `None` if empty,
+/// a plain string for a single block, or an array of `{type, text}` objects.
+fn build_llm_messages(
+    prompt_result: &prompt::AssembledPrompt,
+) -> (Vec<Value>, Option<Value>) {
+    let llm_messages: Vec<Value> = prompt_result
+        .messages
+        .iter()
+        .map(|m| {
+            let role = match m.role {
+                Role::User => "user",
+                Role::Assistant => "assistant",
+                Role::System => "system",
+            };
+            let content = if !m.content_blocks.is_empty() {
+                let mut blocks: Vec<Value> = Vec::new();
+
+                // Prepend base64-encoded image blocks from m.images.
+                for img in &m.images {
+                    if let Some(media_type) = media_type_for_path(&img.path) {
+                        match std::fs::read(&img.path) {
+                            Ok(bytes) => {
+                                let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                                blocks.push(json!({
+                                    "type": "image",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": media_type,
+                                        "data": encoded,
+                                    }
+                                }));
+                            }
+                            Err(e) => {
+                                warn!(path = %img.path, error = %e, "Failed to read image file for LLM");
+                            }
+                        }
+                    }
+                }
+
+                blocks.extend(m.content_blocks.iter()
+                    .filter_map(crate::content_util::content_block_to_api_json));
+                json!(blocks)
+            } else {
+                build_content(&m.content, &m.images)
+            };
+            json!({ "role": role, "content": content })
+        })
+        .collect();
+
+    let system = if prompt_result.system.is_empty() {
+        None
+    } else if prompt_result.system.len() == 1 {
+        Some(json!(prompt_result.system[0].content))
+    } else {
+        Some(json!(prompt_result.system.iter().map(|b| {
+            json!({"type": "text", "text": b.content})
+        }).collect::<Vec<_>>()))
+    };
+
+    (llm_messages, system)
+}
+
+/// Phase 10: Stream the LLM response with exponential backoff retry.
+async fn stream_with_retry(
+    ctx: &GenContext,
+    request: &shore_llm_client::types::LlmRequest,
+    engine_arc: &Arc<Mutex<crate::engine::ConversationEngine>>,
+    resolved: &shore_config::models::ResolvedModel,
+    effective_config: &LoadedConfig,
+    regen: bool,
+    rid: Option<&str>,
+) -> Result<shore_llm_client::types::StreamResult, Box<dyn std::error::Error + Send + Sync>> {
     let retry_policy = RetryPolicy {
         max_retries: effective_config.app.advanced.max_retries
             .unwrap_or(RetryPolicy::default().max_retries),
         ..RetryPolicy::default()
     };
     let mut attempt: u32 = 0;
-    let mut result;
 
     loop {
         let consumer = StreamConsumer::new(ctx.push_tx.clone());
 
         let stream_result = async {
-            let mut reader = ctx.llm_client.stream_raw(&request, rid.as_deref()).await?;
+            let mut reader = ctx.llm_client.stream_raw(request, rid).await?;
 
             let turn_count = engine_arc.lock().await.messages().len();
             let cache_warnings = resolved.provider_key == "anthropic"
@@ -647,8 +707,7 @@ async fn handle_generation(
                 if r.usage.cache_read_tokens > 0 {
                     ctx.has_seen_cache_read.store(true, Ordering::Release);
                 }
-                result = r;
-                break;
+                return Ok(r);
             }
             Err(e) => {
                 match retry::should_retry_error(&e, attempt, &retry_policy) {
@@ -669,116 +728,122 @@ async fn handle_generation(
             }
         }
     }
+}
 
-    // Build cache context for tool loop.
-    let tool_cache_warnings = resolved.provider_key == "anthropic"
-        && effective_config.app.advanced.cache_invalidation_warnings;
-    let cache_ctx = CacheContext {
-        conversation_turn_count: engine_arc.lock().await.messages().len(),
-        is_first_after_restart: ctx.is_first_after_restart.load(Ordering::Acquire),
-        is_first_after_compaction: false,
-        cache_invalidation_warnings: tool_cache_warnings,
-        has_seen_cache_read: ctx.has_seen_cache_read.load(Ordering::Acquire),
-    };
+/// Phase 11: Set up tool context and run the tool loop.
+#[allow(clippy::too_many_arguments)]
+async fn run_tool_phase(
+    ctx: &GenContext,
+    data_dir: &std::path::Path,
+    char_name: &str,
+    effective_config: &LoadedConfig,
+    agent_model: &shore_config::models::ResolvedModel,
+    researcher_model: &Option<shore_config::models::ResolvedModel>,
+    character_definition: &Option<String>,
+    user_definition: &Option<String>,
+    request: &mut shore_llm_client::types::LlmRequest,
+    result: shore_llm_client::types::StreamResult,
+    cache_ctx: &CacheContext,
+) -> Result<tools::ToolLoopResult, Box<dyn std::error::Error + Send + Sync>> {
+    let db_path = data_dir
+        .join(char_name)
+        .join("memory")
+        .join("memory.db");
+    let memory_db = MemoryDB::open(&db_path)
+        .map_err(|e| format!("failed to open memory DB: {e}"))?;
 
-    ctx.is_first_after_restart.store(false, Ordering::Release);
+    let char_def = character_definition.clone().unwrap_or_default();
+    let user_def = user_definition.clone().unwrap_or_default();
 
-    // 11. Run tool loop if the LLM requested tool use.
-    let mut tool_intermediate_messages: Vec<Message> = Vec::new();
+    let image_gen_config = crate::memory::compaction_impls::resolve_image_gen_config(
+        effective_config.app.defaults.image_generation.as_deref(),
+        &effective_config.models.image_generation,
+    ).ok();
 
-    if result.finish_reason == "tool_use"
-        && effective_config.app.behavior.tool_use.enabled
-    {
-        let db_path = data_dir
-            .join(&char_name)
-            .join("memory")
-            .join("memory.db");
-        let memory_db = MemoryDB::open(&db_path)
-            .map_err(|e| format!("failed to open memory DB: {e}"))?;
-
-        let char_def = character_definition.clone().unwrap_or_default();
-        let user_def = user_definition.clone().unwrap_or_default();
-
-        let image_gen_config = crate::memory::compaction_impls::resolve_image_gen_config(
-            effective_config.app.defaults.image_generation.as_deref(),
-            &effective_config.models.image_generation,
-        ).ok();
-
-        // Build semantic search context (graceful: None if no embedding model configured).
-        let search_ctx = match resolve_embed_config(
-            effective_config.app.defaults.embedding.as_deref(),
-            &effective_config.models.embedding,
-        ) {
-            Ok(embed_config) => {
-                let vs_path = data_dir
-                    .join(&char_name)
-                    .join("memory")
-                    .join("vectorstore");
-                match VectorStore::open(&vs_path, embed_config.dimensions).await {
-                    Ok(vs) => Some(AgentSearchContext::new(vs, ctx.llm_client.clone(), embed_config)),
-                    Err(e) => {
-                        warn!("Failed to open vector store for semantic search: {e}");
-                        None
-                    }
+    // Build semantic search context (graceful: None if no embedding model configured).
+    let search_ctx = match resolve_embed_config(
+        effective_config.app.defaults.embedding.as_deref(),
+        &effective_config.models.embedding,
+    ) {
+        Ok(embed_config) => {
+            let vs_path = data_dir
+                .join(char_name)
+                .join("memory")
+                .join("vectorstore");
+            match VectorStore::open(&vs_path, embed_config.dimensions).await {
+                Ok(vs) => Some(AgentSearchContext::new(vs, ctx.llm_client.clone(), embed_config)),
+                Err(e) => {
+                    warn!("Failed to open vector store for semantic search: {e}");
+                    None
                 }
             }
-            Err(_) => None, // No embedding model configured — semantic search unavailable.
-        };
+        }
+        Err(_) => None,
+    };
 
-        let tool_ctx = HandlerToolContext {
-            inner: SharedToolContext {
-                db: memory_db,
-                agent: MemoryAgent::one_shot(
-                    CallerIdentity::Char,
-                    &char_name,
-                    &effective_config.app.defaults.resolve_display_name(),
-                ),
-                agent_llm: RealAgentLlm::new(ctx.llm_client.clone()),
-                agent_model_val: agent_model.clone(),
-                researcher: researcher_model.as_ref().map(|_| {
-                    MemoryResearcher::new(char_def, user_def)
-                }),
-                researcher_llm_val: researcher_model.as_ref().map(|_| {
-                    RealAgentLlm::new(ctx.llm_client.clone())
-                }),
-                researcher_model_val: researcher_model.clone(),
-                rag: NoopRag,
-                search_ctx,
-                image_dir_val: data_dir
-                    .join(&char_name)
-                    .join("images")
-                    .to_string_lossy()
-                    .into_owned(),
-                llm_client_val: ctx.llm_client.clone(),
-                image_gen_config_val: image_gen_config,
-                search_config_val: effective_config.app.behavior.tool_use.search.clone(),
-                character_name_val: char_name.clone(),
-                scratchpad_dir_val: data_dir
-                    .join(&char_name)
-                    .join("scratchpad")
-                    .to_string_lossy()
-                    .into_owned(),
-            },
-            autonomy_val: ctx.autonomy.clone(),
-        };
+    let tool_ctx = HandlerToolContext {
+        inner: SharedToolContext {
+            db: memory_db,
+            agent: MemoryAgent::one_shot(
+                CallerIdentity::Char,
+                char_name,
+                &effective_config.app.defaults.resolve_display_name(),
+            ),
+            agent_llm: RealAgentLlm::new(ctx.llm_client.clone()),
+            agent_model_val: agent_model.clone(),
+            researcher: researcher_model.as_ref().map(|_| {
+                MemoryResearcher::new(char_def, user_def)
+            }),
+            researcher_llm_val: researcher_model.as_ref().map(|_| {
+                RealAgentLlm::new(ctx.llm_client.clone())
+            }),
+            researcher_model_val: researcher_model.clone(),
+            rag: NoopRag,
+            search_ctx,
+            image_dir_val: data_dir
+                .join(char_name)
+                .join("images")
+                .to_string_lossy()
+                .into_owned(),
+            llm_client_val: ctx.llm_client.clone(),
+            image_gen_config_val: image_gen_config,
+            search_config_val: effective_config.app.behavior.tool_use.search.clone(),
+            character_name_val: char_name.to_owned(),
+            scratchpad_dir_val: data_dir
+                .join(char_name)
+                .join("scratchpad")
+                .to_string_lossy()
+                .into_owned(),
+        },
+        autonomy_val: ctx.autonomy.clone(),
+    };
 
-        let tool_loop_result = tools::run_tool_loop(
-            &ctx.llm_client,
-            &ctx.push_tx,
-            &mut request,
-            result,
-            &tool_ctx,
-            effective_config.app.behavior.tool_use.max_iterations,
-            &cache_ctx,
-            &ctx.diagnostics,
-        )
-        .await?;
+    let tool_loop_result = tools::run_tool_loop(
+        &ctx.llm_client,
+        &ctx.push_tx,
+        request,
+        result,
+        &tool_ctx,
+        effective_config.app.behavior.tool_use.max_iterations,
+        cache_ctx,
+        &ctx.diagnostics,
+    )
+    .await?;
 
-        result = tool_loop_result.result;
-        tool_intermediate_messages = tool_loop_result.intermediate_messages;
-    }
+    Ok(tool_loop_result)
+}
 
-    // 12. Persist intermediate tool messages and final assistant message.
+/// Phase 12: Persist messages, record diagnostics, and send notifications.
+async fn persist_and_notify(
+    ctx: &GenContext,
+    engine_arc: &Arc<Mutex<crate::engine::ConversationEngine>>,
+    char_name: &str,
+    resolved: &shore_config::models::ResolvedModel,
+    result: &shore_llm_client::types::StreamResult,
+    request: &shore_llm_client::types::LlmRequest,
+    tool_intermediate_messages: Vec<Message>,
+    wall_clock_start: Instant,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let notify_content = {
         let mut engine = engine_arc.lock().await;
 
@@ -815,11 +880,11 @@ async fn handle_generation(
 
         // Notify cache keepalive of API response.
         ctx.autonomy.notify_api_response(
-            &char_name,
+            char_name,
             result.usage.cache_read_tokens,
             result.usage.input_tokens,
         );
-        ctx.autonomy.notify_last_request(&char_name, request.clone());
+        ctx.autonomy.notify_last_request(char_name, request.clone());
 
         info!(
             input_tokens = result.usage.input_tokens,
@@ -846,7 +911,7 @@ async fn handle_generation(
             timestamp: chrono::Utc::now().to_rfc3339(),
         };
         engine.append_message(assistant_msg)?;
-        ctx.autonomy.notify_assistant_message(&char_name, engine.turn_count());
+        ctx.autonomy.notify_assistant_message(char_name, engine.turn_count());
         notify_content
     }; // engine lock released
 
