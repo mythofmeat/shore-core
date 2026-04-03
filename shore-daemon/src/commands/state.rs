@@ -1598,4 +1598,82 @@ model_id = "gpt-4o"
         // so stream should be back to the default (true).
         assert!(ctx.config.app.defaults.stream, "config should be reloaded from defaults");
     }
+
+    // ── memory_reindex ──────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn memory_reindex_empty_returns_zero() {
+        let tmp = TempDir::new().unwrap();
+        let (engine, ctx, _rx) = make_ctx(&tmp);
+
+        let db_dir = ctx.data_dir.join("TestChar").join("memory");
+        std::fs::create_dir_all(&db_dir).unwrap();
+        let _db = MemoryDB::open(&db_dir.join("memory.db")).unwrap();
+
+        let result = memory_reindex(&engine, &ctx).await.unwrap();
+        assert_eq!(result["reindexed"], 0);
+        assert!(result["message"].as_str().unwrap().contains("No active entries"));
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires OPENROUTER_SHORE_EMBEDDING"]
+    async fn memory_reindex_rebuilds_fts_and_vectors() {
+        if std::env::var("OPENROUTER_SHORE_EMBEDDING").is_err() {
+            panic!("OPENROUTER_SHORE_EMBEDDING not set");
+        }
+
+        let tmp = TempDir::new().unwrap();
+
+        let embed_toml: toml::Table = r#"
+[text-embed]
+model_id = "openai/text-embedding-3-small"
+provider = "openai"
+api_key_env = "OPENROUTER_SHORE_EMBEDDING"
+base_url = "https://openrouter.ai/api/v1"
+dimensions = 1536
+"#
+        .parse()
+        .unwrap();
+        let models =
+            ModelCatalog::from_sections(None, None, Some(&embed_toml), None).unwrap();
+        let (engine, ctx, _rx) = make_ctx_with_models(&tmp, models);
+
+        let db_dir = ctx.data_dir.join("TestChar").join("memory");
+        std::fs::create_dir_all(&db_dir).unwrap();
+        let db = MemoryDB::open(&db_dir.join("memory.db")).unwrap();
+
+        for i in 0..3 {
+            db.create_entry(&crate::memory::db::Entry {
+                id: format!("entry_{i}"),
+                memory_type: "semantic".into(),
+                source: "test".into(),
+                reason: "reindex test".into(),
+                status: "active".into(),
+                confidence: 0.9,
+                summary_text: format!("Test memory entry number {i} about various topics"),
+                topic_tags: "test".into(),
+                topic_key: "test".into(),
+                start_timestamp: String::new(),
+                end_timestamp: String::new(),
+                message_count: 0,
+                source_entry_ids: String::new(),
+                related_entry_ids: String::new(),
+                superseded_by: String::new(),
+                created_at: "2026-01-01T00:00:00Z".into(),
+                updated_at: "2026-01-01T00:00:00Z".into(),
+                entry_type: String::new(),
+                image_path: String::new(),
+                collated_at: String::new(),
+            })
+            .unwrap();
+        }
+        drop(db);
+
+        let result = memory_reindex(&engine, &ctx).await.unwrap();
+        assert_eq!(result["reindexed"], 3);
+        assert!(result["message"]
+            .as_str()
+            .unwrap()
+            .contains("Reindexed 3 entries"));
+    }
 }
