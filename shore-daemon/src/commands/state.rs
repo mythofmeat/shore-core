@@ -1577,4 +1577,25 @@ model_id = "gpt-4o"
         assert!(db.get_entry("image-superseded").unwrap().is_some());
         assert!(db.get_entry("no-replacement").unwrap().is_some());
     }
+
+    // ── config_reset ────────────────────────────────────────────────────
+
+    #[test]
+    fn config_reset_clears_active_model_and_reloads() {
+        let tmp = TempDir::new().unwrap();
+        let (_engine, mut ctx, _rx) = make_ctx(&tmp);
+
+        // Simulate a runtime model override.
+        ctx.active_model = Some("custom-override".into());
+        // Mutate a config value so we can detect that it was replaced.
+        ctx.config.app.defaults.stream = false;
+
+        let result = config_reset(&mut ctx).unwrap();
+
+        assert_eq!(result["reset"], true);
+        assert!(ctx.active_model.is_none(), "active_model should be cleared");
+        // load_config(None) returns defaults when no config file exists,
+        // so stream should be back to the default (true).
+        assert!(ctx.config.app.defaults.stream, "config should be reloaded from defaults");
+    }
 }

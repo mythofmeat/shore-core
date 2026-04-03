@@ -469,6 +469,7 @@ mod tests {
     use super::*;
     use shore_protocol::client_msg::{ClientHello, ClientMessageBody, Command, Regen};
     use shore_protocol::types::Message;
+    use tempfile::TempDir;
     use tokio::io::{duplex, AsyncWriteExt, BufReader};
 
     /// Helper: write a ClientMessage as JSON line into the writer half.
@@ -905,5 +906,107 @@ mod tests {
 
         // Client should be deregistered.
         assert!(h.clients.read().await.is_empty());
+    }
+
+    // ── TCP ACL enforcement ─────────────────────────────────────────
+
+    /// Find an available TCP port by briefly binding to port 0.
+    fn available_port() -> u16 {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap().port()
+    }
+
+    /// Spin up a real `Server::run()` with TCP enabled and the given allowed_hosts.
+    /// Returns the server handle and a shutdown sender.
+    fn spawn_tcp_server(
+        tmp: &TempDir,
+        port: u16,
+        allowed_hosts: Vec<String>,
+    ) -> (
+        tokio::task::JoinHandle<std::io::Result<()>>,
+        tokio::sync::watch::Sender<()>,
+    ) {
+        let socket_path = tmp.path().join("shore.sock");
+        let config = ServerConfig {
+            socket_path,
+            tcp: Some(TcpConfig {
+                enabled: true,
+                addr: Some(format!("127.0.0.1:{port}")),
+                allowed_hosts,
+            }),
+            server_name: "test-acl-server".into(),
+        };
+        let server = Server::new(config);
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+        let handle = tokio::spawn(async move { server.run(shutdown_rx).await });
+
+        (handle, shutdown_tx)
+    }
+
+    /// Connect via TCP to the given port, complete the SWP handshake, and
+    /// return true if ServerHello was received (i.e. connection was accepted).
+    async fn tcp_handshake_succeeds(port: u16) -> bool {
+        use tokio::net::TcpStream;
+        use tokio::time::{timeout, Duration};
+
+        // Small delay to let the server bind.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let stream = match timeout(
+            Duration::from_secs(2),
+            TcpStream::connect(format!("127.0.0.1:{port}")),
+        ).await {
+            Ok(Ok(s)) => s,
+            _ => return false,
+        };
+
+        let (reader, _writer) = stream.into_split();
+        let mut reader = BufReader::new(reader);
+        let mut line = String::new();
+
+        match timeout(Duration::from_secs(2), reader.read_line(&mut line)).await {
+            Ok(Ok(n)) if n > 0 => {
+                // Parse as ServerMessage — a ServerHello means ACL passed.
+                serde_json::from_str::<ServerMessage>(line.trim())
+                    .map(|msg| matches!(msg, ServerMessage::Hello(_)))
+                    .unwrap_or(false)
+            }
+            _ => false,
+        }
+    }
+
+    #[tokio::test]
+    async fn tcp_acl_empty_allows_all() {
+        let tmp = TempDir::new().unwrap();
+        let port = available_port();
+        let (_handle, shutdown_tx) = spawn_tcp_server(&tmp, port, vec![]);
+
+        assert!(tcp_handshake_succeeds(port).await, "Empty allowed_hosts should allow all");
+
+        let _ = shutdown_tx.send(());
+    }
+
+    #[tokio::test]
+    async fn tcp_acl_allows_matching_ip() {
+        let tmp = TempDir::new().unwrap();
+        let port = available_port();
+        let (_handle, shutdown_tx) =
+            spawn_tcp_server(&tmp, port, vec!["127.0.0.1".into()]);
+
+        assert!(tcp_handshake_succeeds(port).await, "Matching IP should be allowed");
+
+        let _ = shutdown_tx.send(());
+    }
+
+    #[tokio::test]
+    async fn tcp_acl_rejects_non_matching_ip() {
+        let tmp = TempDir::new().unwrap();
+        let port = available_port();
+        let (_handle, shutdown_tx) =
+            spawn_tcp_server(&tmp, port, vec!["10.0.0.1".into()]);
+
+        assert!(!tcp_handshake_succeeds(port).await, "Non-matching IP should be rejected");
+
+        let _ = shutdown_tx.send(());
     }
 }

@@ -977,6 +977,7 @@ mod tests {
     use super::*;
     use shore_protocol::client_msg::{Command, Regen};
     use shore_protocol::error::ErrorCode;
+    use std::collections::BTreeMap;
     use tempfile::TempDir;
 
     /// Build a `MessageHandler` backed by a tempdir with the given characters.
@@ -1134,7 +1135,7 @@ mod tests {
     #[tokio::test]
     async fn handle_engine_message_regen_builds_empty_body() {
         let tmp = TempDir::new().unwrap();
-        let (mut handler, _rx) = make_handler(&tmp, &["Alice"]);
+        let (handler, _rx) = make_handler(&tmp, &["Alice"]);
 
         // Regen without a model configured will fail at model resolution,
         // but the important thing is it doesn't fail at message routing.
@@ -1253,5 +1254,244 @@ mod tests {
         // Only the text block remains (both images were skipped).
         assert_eq!(blocks.len(), 1);
         assert_eq!(blocks[0]["type"], "text");
+    }
+
+    // ── Pipeline integration ────────────────────────────────────────
+
+    /// Build a mock Anthropic SSE stream for a simple text response.
+    fn sse_text_response(text: &str) -> String {
+        format!(
+            "event: message_start\n\
+             data: {{\"type\":\"message_start\",\"message\":{{\"model\":\"test\",\"usage\":{{\"input_tokens\":20}}}}}}\n\n\
+             event: content_block_start\n\
+             data: {{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{{\"type\":\"text\",\"text\":\"\"}}}}\n\n\
+             event: content_block_delta\n\
+             data: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"text_delta\",\"text\":\"{text}\"}}}}\n\n\
+             event: content_block_stop\n\
+             data: {{\"type\":\"content_block_stop\",\"index\":0}}\n\n\
+             event: message_delta\n\
+             data: {{\"type\":\"message_delta\",\"delta\":{{\"stop_reason\":\"end_turn\"}},\"usage\":{{\"output_tokens\":10}}}}\n\n\
+             event: message_stop\n\
+             data: {{\"type\":\"message_stop\"}}\n\n"
+        )
+    }
+
+    /// Spawn a mock HTTP server that returns canned SSE on each connection.
+    async fn mock_sse_server(sse_body: String) -> (String, tokio::task::JoinHandle<()>) {
+        use tokio::io::AsyncWriteExt;
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let base_url = format!("http://127.0.0.1:{port}");
+
+        let handle = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let (mut reader, mut writer) = stream.split();
+            // Drain the HTTP request.
+            let mut buf = vec![0u8; 16384];
+            let _ = tokio::io::AsyncReadExt::read(&mut reader, &mut buf).await;
+
+            let response = format!(
+                "HTTP/1.1 200 OK\r\n\
+                 Content-Type: text/event-stream\r\n\
+                 \r\n\
+                 {sse_body}"
+            );
+            writer.write_all(response.as_bytes()).await.unwrap();
+            writer.shutdown().await.unwrap();
+        });
+
+        (base_url, handle)
+    }
+
+    /// Build a model catalog containing a single test model pointing at a mock server.
+    fn mock_model_catalog(base_url: &str) -> shore_config::models::ModelCatalog {
+        use shore_config::models::{ModelCatalog, ResolvedModel, Sdk};
+
+        let model = ResolvedModel {
+            name: "test".into(),
+            qualified_name: "chat.anthropic.test".into(),
+            category: "chat".into(),
+            provider_key: "anthropic".into(),
+            sdk: Sdk::Anthropic,
+            model_id: "claude-test".into(),
+            api_key_env: None,
+            base_url: Some(base_url.to_string()),
+            max_context_tokens: None,
+            max_tokens: Some(4096),
+            temperature: Some(0.7),
+            top_p: None,
+            reasoning_effort: None,
+            budget_tokens: None,
+            cache_ttl: None,
+            keepalive_enabled: None,
+            keepalive_ttl_minutes: None,
+            keepalive_max_pings: None,
+            openrouter_provider: None,
+            vertex_project: None,
+            vertex_location: None,
+            gemini_generation: None,
+            gemini_web_search: None,
+        };
+
+        let mut chat = BTreeMap::new();
+        chat.insert("test".into(), model);
+        ModelCatalog { chat, ..Default::default() }
+    }
+
+    /// Build a `MessageHandler` with a model catalog pointing at a mock server.
+    fn make_handler_with_models(
+        tmp: &TempDir,
+        chars: &[&str],
+        models: shore_config::models::ModelCatalog,
+    ) -> (MessageHandler, broadcast::Receiver<ServerMessage>) {
+        let config_dir = tmp.path().join("config");
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+
+        for name in chars {
+            let char_dir = config_dir.join("characters").join(name);
+            std::fs::create_dir_all(&char_dir).unwrap();
+            std::fs::write(
+                char_dir.join("character.md"),
+                format!("You are {name}. Keep responses very short."),
+            )
+            .unwrap();
+        }
+
+        let (push_tx, push_rx) = broadcast::channel(64);
+
+        let mut app_config = shore_config::app::AppConfig::default();
+        app_config.defaults.model = Some("test".into());
+        // Disable tool_use to keep the pipeline simple (no tool loop).
+        app_config.behavior.tool_use.enabled = false;
+
+        let loaded_config = shore_config::LoadedConfig::new_for_test(
+            app_config,
+            models,
+            shore_config::ShoreDirs {
+                config: config_dir.clone(),
+                data: data_dir.clone(),
+                runtime: tmp.path().join("runtime"),
+            },
+        );
+
+        let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+        let (autonomy, _compaction_rx) = AutonomyManager::new(
+            Default::default(),
+            Default::default(),
+            data_dir.clone(),
+            shutdown_rx,
+        );
+
+        let registry = CharacterRegistry::new(
+            config_dir, data_dir.clone(), push_tx.clone(), loaded_config.clone(),
+        );
+
+        let cmd_ctx = CommandContext {
+            config: loaded_config.clone(),
+            push_tx: push_tx.clone(),
+            data_dir: data_dir.clone(),
+            active_model: None,
+            session_tokens: Arc::new(std::sync::Mutex::new(SessionTokens::default())),
+            autonomy: autonomy.clone(),
+            llm_client: LlmClient::new(),
+            diagnostics: Arc::new(std::sync::Mutex::new(shore_diagnostics::Diagnostics::default())),
+            memory_shell_sessions: std::collections::HashMap::new(),
+        };
+
+        let handler = MessageHandler {
+            registry: Arc::new(Mutex::new(registry)),
+            cmd_ctx,
+            llm_client: LlmClient::new(),
+            push_tx: push_tx.clone(),
+            is_first_after_restart: Arc::new(AtomicBool::new(false)),
+            has_seen_cache_read: Arc::new(AtomicBool::new(false)),
+            compaction_occurred: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            autonomy,
+            notifier: NotificationService::new(Default::default()),
+            generation_handle: None,
+        };
+
+        (handler, push_rx)
+    }
+
+    /// End-to-end pipeline: user message → prompt → LLM stream → persist.
+    ///
+    /// Uses a real ConversationEngine, real prompt assembly, and a mock HTTP
+    /// server returning canned Anthropic SSE. Verifies that both the user
+    /// message and the assistant response are persisted to the engine.
+    #[tokio::test]
+    async fn pipeline_user_message_to_persisted_response() {
+        let (base_url, _server) = mock_sse_server(sse_text_response("Hello from the mock LLM!")).await;
+        let models = mock_model_catalog(&base_url);
+
+        let tmp = TempDir::new().unwrap();
+        let (handler, mut push_rx) = make_handler_with_models(&tmp, &["Alice"], models);
+
+        // Resolve character and config (same steps the handler loop takes).
+        let (char_name, effective_config) = {
+            let mut registry = handler.registry.lock().await;
+            let char_name = registry.resolve_character(Some("Alice")).unwrap();
+            let effective_config = registry.effective_config(&char_name).clone();
+            (char_name, effective_config)
+        };
+
+        let body = ClientMessageBody {
+            rid: Some("test-rid".into()),
+            text: "Hello, Alice!".into(),
+            stream: true,
+            images: vec![],
+            absence_seconds: None,
+            overrides: None,
+        };
+
+        let gen = handler.gen_context();
+        let data_dir = handler.cmd_ctx.data_dir.clone();
+
+        // Run the full pipeline.
+        let result = handle_generation(
+            gen, body, false, char_name.clone(), Some("test-rid".into()),
+            effective_config, data_dir.clone(), None,
+        ).await;
+
+        assert!(result.is_ok(), "Pipeline should succeed: {:?}", result.err());
+
+        // Verify: messages are persisted in the engine.
+        let engine_arc = {
+            let mut registry = handler.registry.lock().await;
+            registry.get_or_create(&char_name).unwrap()
+        };
+        let engine = engine_arc.lock().await;
+        let messages = engine.messages();
+        assert_eq!(messages.len(), 2, "Should have user + assistant messages, got {}", messages.len());
+        assert_eq!(messages[0].role, Role::User);
+        assert_eq!(messages[0].content, "Hello, Alice!");
+        assert_eq!(messages[1].role, Role::Assistant);
+        assert!(
+            messages[1].content.contains("Hello from the mock LLM!"),
+            "Assistant content should contain mock response, got: {}",
+            messages[1].content
+        );
+
+        // Verify: active.jsonl was written to disk.
+        let active_path = data_dir.join(&char_name).join("active.jsonl");
+        assert!(active_path.exists(), "active.jsonl should exist");
+        let line_count = std::fs::read_to_string(&active_path)
+            .unwrap()
+            .lines()
+            .filter(|l| !l.is_empty())
+            .count();
+        assert_eq!(line_count, 2, "active.jsonl should have 2 lines (user + assistant)");
+
+        // Verify: broadcast events were sent (NewMessage for user message at minimum).
+        let mut saw_new_message = false;
+        while let Ok(msg) = push_rx.try_recv() {
+            if matches!(msg, ServerMessage::NewMessage(_)) {
+                saw_new_message = true;
+            }
+        }
+        assert!(saw_new_message, "Should have broadcast at least one NewMessage");
     }
 }
