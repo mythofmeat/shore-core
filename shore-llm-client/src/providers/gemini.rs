@@ -97,10 +97,6 @@ fn translate_messages(request: &LlmRequest) -> Vec<Value> {
                     "role": "user",
                     "parts": [{"text": wrapped}]
                 }));
-                contents.push(json!({
-                    "role": "model",
-                    "parts": [{"text": "Understood."}]
-                }));
                 continue;
             }
             Some(r) => r,
@@ -740,14 +736,12 @@ mod tests {
             None,
         );
         let contents = translate_messages(&request);
-        assert_eq!(contents.len(), 2);
+        assert_eq!(contents.len(), 1);
         assert_eq!(contents[0]["role"], "user");
         assert!(contents[0]["parts"][0]["text"]
             .as_str()
             .unwrap()
             .contains("<system_instruction>"));
-        assert_eq!(contents[1]["role"], "model");
-        assert_eq!(contents[1]["parts"][0]["text"], "Understood.");
     }
 
     // ── merge_consecutive_roles ───────────────────────────────────────

@@ -243,13 +243,12 @@ fn extract_text_content(msg: &Value) -> String {
     }
 }
 
-/// Convert inline system-role messages to user/assistant pairs.
+/// Convert inline system-role messages to user messages.
 ///
 /// The Anthropic API does not support `role: "system"` in the messages array,
-/// so we wrap the instruction in XML tags and add a synthetic assistant ack
-/// to maintain alternating turns.  Adjacent user messages are avoided by
-/// merging the instruction into the preceding or following user turn when
-/// possible.
+/// so we wrap the instruction in `<system_instruction>` XML tags and emit it
+/// as a user message.  When the preceding message is already a user turn,
+/// the instruction is merged into it to avoid consecutive user roles.
 fn convert_inline_system_messages(messages: &[Value]) -> Vec<Value> {
     let has_system = messages.iter().any(|m| {
         m.get("role").and_then(Value::as_str) == Some("system")
@@ -275,7 +274,6 @@ fn convert_inline_system_messages(messages: &[Value]) -> Vec<Value> {
             }
 
             out.push(json!({ "role": "user", "content": wrapped }));
-            out.push(json!({ "role": "assistant", "content": "Understood." }));
         } else {
             out.push(msg.clone());
         }
@@ -903,15 +901,13 @@ mod tests {
         ];
         let result = convert_inline_system_messages(&messages);
 
-        // system becomes user + assistant pair.
-        assert_eq!(result.len(), 4);
+        // system becomes a user message with XML wrapper; no synthetic ack.
+        assert_eq!(result.len(), 3);
         assert_eq!(result[0]["role"], "assistant");
         assert_eq!(result[1]["role"], "user");
         assert!(result[1]["content"].as_str().unwrap().contains("<system_instruction>"));
         assert!(result[1]["content"].as_str().unwrap().contains("be helpful"));
-        assert_eq!(result[2]["role"], "assistant");
-        assert_eq!(result[2]["content"], "Understood.");
-        assert_eq!(result[3]["role"], "user");
+        assert_eq!(result[2]["role"], "user");
     }
 
     #[test]
