@@ -1,10 +1,8 @@
-//! Interiority clock — periodic "turns to self" replacing the heartbeat FSM.
+//! Interiority clock — periodic "turns to self" with unified cache refresh.
 //!
 //! Simple timer with jitter and dormancy counter. Each tick gives the character
-//! a full agentic turn with its existing tools plus scratchpad. The character
-//! decides what to do — write notes, research things, or optionally message
-//! the user (the `<sendMessage>` mechanism is explained in the ephemeral
-//! interiority prompt, not in the cached system prompt).
+//! a single agentic turn backed by a rolling journal. When dormant, ticks
+//! degrade to bare `max_tokens=1` pings to keep the prompt cache warm.
 
 use std::time::{Duration, Instant};
 
@@ -34,7 +32,11 @@ impl std::fmt::Display for InteriorityState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InteriorityAction {
     None,
+    /// Fire a full interiority tick (journal-backed, one LLM call with tools).
     RunTick,
+    /// Fire a bare cache-refresh ping (max_tokens=1, no journal, no tools).
+    /// Only returned when dormant with a cache TTL configured.
+    RunDormantPing,
 }
 
 // ---------------------------------------------------------------------------
@@ -50,6 +52,10 @@ pub struct InteriorityClock {
     ticks_without_user: u32,
     next_tick_at: Option<Instant>,
     last_user_ts: Option<Instant>,
+    /// Cache TTL in seconds (from provider config). When set, the effective
+    /// tick interval becomes `min(interval_secs, cache_ttl - 60)` so that
+    /// every tick also refreshes the prompt cache.
+    cache_refresh_interval_secs: Option<u64>,
 }
 
 impl InteriorityClock {
@@ -63,6 +69,7 @@ impl InteriorityClock {
             ticks_without_user: 0,
             next_tick_at: None,
             last_user_ts: None,
+            cache_refresh_interval_secs: None,
         }
     }
 
@@ -76,6 +83,7 @@ impl InteriorityClock {
             ticks_without_user: 0,
             next_tick_at: None,
             last_user_ts: None,
+            cache_refresh_interval_secs: None,
         }
     }
 
@@ -102,11 +110,32 @@ impl InteriorityClock {
         }
     }
 
+    /// Set the cache TTL so the clock can compute an effective interval that
+    /// keeps the prompt cache warm. Pass `None` for non-Anthropic providers.
+    pub fn set_cache_refresh_interval(&mut self, cache_ttl_secs: Option<u64>) {
+        self.cache_refresh_interval_secs =
+            cache_ttl_secs.map(|ttl| ttl.saturating_sub(60).max(60));
+    }
+
+    /// The actual interval used for scheduling — the minimum of the configured
+    /// interiority interval and the cache refresh interval (if set).
+    pub fn effective_interval_secs(&self) -> u64 {
+        match self.cache_refresh_interval_secs {
+            Some(refresh) => self.interval_secs.min(refresh),
+            None => self.interval_secs,
+        }
+    }
+
     /// Main tick method. Call on each autonomy tick interval (~30s).
     /// Returns what the manager should do.
     pub fn tick(&mut self, now: Instant) -> InteriorityAction {
-        if self.paused || self.state == InteriorityState::Dormant {
+        if self.paused {
             return InteriorityAction::None;
+        }
+
+        // When dormant, still track the timer for cache refresh pings.
+        if self.state == InteriorityState::Dormant {
+            return self.tick_dormant(now);
         }
 
         // First tick: schedule and return.
@@ -125,6 +154,8 @@ impl InteriorityClock {
 
         if self.ticks_without_user > self.max_idle_ticks {
             self.state = InteriorityState::Dormant;
+            // Schedule the dormant timer immediately so it starts ticking.
+            self.schedule_next(now);
             return InteriorityAction::None;
         }
 
@@ -154,24 +185,31 @@ impl InteriorityClock {
         self.ticks_without_user = ticks_without_user;
     }
 
-    /// Snap the next scheduled tick forward to `deadline` if it falls after
-    /// the deadline but within the jitter range. This lets an interiority tick
-    /// serve as a cache keepalive, avoiding a redundant ping.
-    pub fn snap_to_deadline(&mut self, deadline: Instant) {
-        let Some(next) = self.next_tick_at else { return };
-        if next <= deadline {
-            return; // Already fires before deadline — no snap needed.
+    // -- internal ---------------------------------------------------------
+
+    /// Dormant tick: if a cache refresh interval is configured, fire bare
+    /// pings on the timer to keep the cache warm. Otherwise return None.
+    fn tick_dormant(&mut self, now: Instant) -> InteriorityAction {
+        if self.cache_refresh_interval_secs.is_none() {
+            return InteriorityAction::None;
         }
-        // Only snap if the pull-forward distance is within the jitter range.
-        // Beyond that, let keepalive handle it independently.
-        let max_snap = Duration::from_secs_f64(self.interval_secs as f64 * self.jitter_factor);
-        if next.duration_since(deadline) <= max_snap {
-            self.next_tick_at = Some(deadline);
+
+        if self.next_tick_at.is_none() {
+            self.schedule_next(now);
+            return InteriorityAction::None;
         }
+
+        let next = self.next_tick_at.unwrap();
+        if now < next {
+            return InteriorityAction::None;
+        }
+
+        self.schedule_next(now);
+        InteriorityAction::RunDormantPing
     }
 
     fn schedule_next(&mut self, now: Instant) {
-        let base = self.interval_secs as f64;
+        let base = self.effective_interval_secs() as f64;
         let jitter_range = base * self.jitter_factor;
         let jitter: f64 = rand::thread_rng().gen_range(-jitter_range..=jitter_range);
         let secs = (base + jitter).max(60.0); // minimum 60s
@@ -264,10 +302,11 @@ mod tests {
     }
 
     #[test]
-    fn dormant_returns_none() {
+    fn dormant_without_cache_returns_none() {
         let mut clock = clock_with_interval(60, 3);
         clock.restore(InteriorityState::Dormant, 5);
         let now = Instant::now();
+        // No cache_refresh_interval → dormant returns None (no cache to keep warm)
         assert_eq!(clock.tick(now), InteriorityAction::None);
     }
 
@@ -285,84 +324,98 @@ mod tests {
         assert_eq!(clock.ticks_without_user, 0);
     }
 
-    // -- snap_to_deadline tests -------------------------------------------
+    // -- effective interval tests ----------------------------------------
 
     #[test]
-    fn snap_when_after_deadline_within_jitter() {
-        // interval=100, jitter=0.25 → max_snap=25s
-        let config = InteriorityConfig {
-            enabled: true,
-            interval_secs: 100,
-            jitter_factor: 0.25,
-            max_idle_ticks: 3,
-            max_tool_rounds: 3,
-        };
-        let mut clock = InteriorityClock::with_config(&config);
-        let now = Instant::now();
-        clock.tick(now); // schedule next (jitter=0 in with_config? no, jitter_factor is set)
-
-        // Force next_tick_at to a known value.
-        let deadline = now + Duration::from_secs(90);
-        clock.next_tick_at = Some(deadline + Duration::from_secs(20)); // 20s after deadline, within 25s max_snap
-
-        clock.snap_to_deadline(deadline);
-        assert_eq!(clock.next_tick_at, Some(deadline));
+    fn effective_interval_no_cache() {
+        let clock = clock_with_interval(3600, 3);
+        assert_eq!(clock.effective_interval_secs(), 3600);
     }
 
     #[test]
-    fn no_snap_when_after_deadline_beyond_jitter() {
-        let config = InteriorityConfig {
-            enabled: true,
-            interval_secs: 100,
-            jitter_factor: 0.25,
-            max_idle_ticks: 3,
-            max_tool_rounds: 3,
-        };
-        let mut clock = InteriorityClock::with_config(&config);
-        let now = Instant::now();
-
-        let deadline = now + Duration::from_secs(90);
-        let original = deadline + Duration::from_secs(30); // 30s after deadline, beyond 25s max_snap
-        clock.next_tick_at = Some(original);
-
-        clock.snap_to_deadline(deadline);
-        assert_eq!(clock.next_tick_at, Some(original)); // unchanged
+    fn effective_interval_with_cache_shorter() {
+        let mut clock = clock_with_interval(7200, 3);
+        clock.set_cache_refresh_interval(Some(3600)); // 1h TTL → 3540s refresh
+        assert_eq!(clock.effective_interval_secs(), 3540);
     }
 
     #[test]
-    fn no_snap_when_before_deadline() {
-        let config = InteriorityConfig {
-            enabled: true,
-            interval_secs: 100,
-            jitter_factor: 0.25,
-            max_idle_ticks: 3,
-            max_tool_rounds: 3,
-        };
-        let mut clock = InteriorityClock::with_config(&config);
-        let now = Instant::now();
-
-        let deadline = now + Duration::from_secs(90);
-        let original = deadline - Duration::from_secs(10); // before deadline
-        clock.next_tick_at = Some(original);
-
-        clock.snap_to_deadline(deadline);
-        assert_eq!(clock.next_tick_at, Some(original)); // unchanged
+    fn effective_interval_with_cache_longer() {
+        let mut clock = clock_with_interval(1800, 3); // 30 min interiority
+        clock.set_cache_refresh_interval(Some(7200)); // 2h TTL → 7140s refresh
+        // Interiority interval is shorter, so it wins.
+        assert_eq!(clock.effective_interval_secs(), 1800);
     }
 
     #[test]
-    fn no_snap_when_no_tick_scheduled() {
-        let config = InteriorityConfig {
-            enabled: true,
-            interval_secs: 100,
-            jitter_factor: 0.25,
-            max_idle_ticks: 3,
-            max_tool_rounds: 3,
-        };
-        let mut clock = InteriorityClock::with_config(&config);
-        let now = Instant::now();
-        let deadline = now + Duration::from_secs(90);
+    fn effective_interval_cache_floor() {
+        let mut clock = clock_with_interval(3600, 3);
+        // Very short TTL — saturating_sub(60) floors at 60.
+        clock.set_cache_refresh_interval(Some(30));
+        assert_eq!(clock.effective_interval_secs(), 60);
+    }
 
-        clock.snap_to_deadline(deadline); // next_tick_at is None
-        assert_eq!(clock.next_tick_at, None);
+    // -- dormant ping tests ----------------------------------------------
+
+    #[test]
+    fn dormant_with_cache_fires_ping() {
+        let mut clock = clock_with_interval(60, 1);
+        clock.set_cache_refresh_interval(Some(120)); // 2min TTL → 60s refresh
+        let mut now = Instant::now();
+
+        // Go active → tick → dormant.
+        clock.tick(now); // schedule
+        now += Duration::from_secs(61);
+        clock.tick(now); // tick 1 (RunTick)
+        now += Duration::from_secs(61);
+        clock.tick(now); // → dormant
+        assert_eq!(clock.state(), InteriorityState::Dormant);
+
+        // Dormant tick should schedule and then fire a ping.
+        now += Duration::from_secs(61);
+        assert_eq!(clock.tick(now), InteriorityAction::RunDormantPing);
+    }
+
+    #[test]
+    fn dormant_without_cache_no_ping() {
+        let mut clock = clock_with_interval(60, 1);
+        // No cache_refresh_interval set.
+        let mut now = Instant::now();
+
+        clock.tick(now);
+        now += Duration::from_secs(61);
+        clock.tick(now);
+        now += Duration::from_secs(61);
+        clock.tick(now); // → dormant
+        assert_eq!(clock.state(), InteriorityState::Dormant);
+
+        now += Duration::from_secs(61);
+        assert_eq!(clock.tick(now), InteriorityAction::None);
+    }
+
+    #[test]
+    fn dormant_ping_respects_effective_interval() {
+        let mut clock = clock_with_interval(60, 1);
+        clock.set_cache_refresh_interval(Some(120)); // effective = 60s
+        let mut now = Instant::now();
+
+        // Push to dormant.
+        clock.tick(now);
+        now += Duration::from_secs(61);
+        clock.tick(now);
+        now += Duration::from_secs(61);
+        clock.tick(now); // dormant
+
+        // First dormant tick schedules.
+        now += Duration::from_secs(10);
+        assert_eq!(clock.tick(now), InteriorityAction::None); // just scheduled
+
+        // Not enough time elapsed.
+        now += Duration::from_secs(30);
+        assert_eq!(clock.tick(now), InteriorityAction::None);
+
+        // After full interval, fires.
+        now += Duration::from_secs(40);
+        assert_eq!(clock.tick(now), InteriorityAction::RunDormantPing);
     }
 }

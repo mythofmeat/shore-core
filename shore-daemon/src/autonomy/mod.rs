@@ -1,6 +1,7 @@
 pub mod activity;
 pub mod cache_keepalive;
 pub mod interiority;
+pub mod interiority_journal;
 pub mod manager;
 
 use std::collections::VecDeque;
@@ -60,6 +61,8 @@ pub enum InteriorityEventKind {
     Wake,
     /// Interiority tick was killed by the timeout guard.
     Timeout,
+    /// Dormant bare ping sent to keep cache warm.
+    DormantPing,
 }
 
 impl std::fmt::Display for InteriorityEventKind {
@@ -72,6 +75,7 @@ impl std::fmt::Display for InteriorityEventKind {
             Self::Dormant => write!(f, "dormant"),
             Self::Wake => write!(f, "wake"),
             Self::Timeout => write!(f, "timeout"),
+            Self::DormantPing => write!(f, "dormant_ping"),
         }
     }
 }
@@ -104,5 +108,21 @@ impl InteriorityLog {
     pub fn recent(&self, limit: usize) -> Vec<&InteriorityEvent> {
         let start = self.events.len().saturating_sub(limit);
         self.events.range(start..).collect()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Cache TTL parsing (shared between handler and interiority)
+// ---------------------------------------------------------------------------
+
+/// Parse a `cache_ttl` duration string (e.g. `"1h"`, `"5m"`) into seconds.
+pub fn parse_cache_ttl_secs(s: &str) -> Option<u64> {
+    let s = s.trim();
+    if let Some(h) = s.strip_suffix('h') {
+        h.parse::<u64>().ok().map(|v| v * 3600)
+    } else if let Some(m) = s.strip_suffix('m') {
+        m.parse::<u64>().ok().map(|v| v * 60)
+    } else {
+        None
     }
 }
