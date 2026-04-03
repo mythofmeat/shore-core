@@ -1470,4 +1470,41 @@ model_id = "gpt-4o"
         let (code, _msg) = result.unwrap_err();
         assert_eq!(code, ErrorCode::NotFound);
     }
+
+    // ── diagnostics / heartbeat / reset_model ──────────────────────────
+
+    #[test]
+    fn test_diagnostics_empty() {
+        let tmp = TempDir::new().unwrap();
+        let (_engine, ctx, _rx) = make_ctx(&tmp);
+
+        let result = diagnostics(&ctx, &json!({})).unwrap();
+        assert_eq!(result["api_calls"]["count"], 0);
+        assert_eq!(result["tool_calls"]["count"], 0);
+        assert_eq!(result["errors"]["count"], 0);
+        assert!(result["api_calls"]["recent"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_heartbeat_log_empty() {
+        let tmp = TempDir::new().unwrap();
+        let (engine, ctx, _rx) = make_ctx(&tmp);
+
+        let result = heartbeat_log(&engine, &ctx, &json!({})).unwrap();
+        assert!(result["events"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_reset_model_clears_override() {
+        let tmp = TempDir::new().unwrap();
+        let (_engine, mut ctx, _rx) = make_ctx(&tmp);
+
+        ctx.active_model = Some("custom-override".to_string());
+        let result = reset_model(&mut ctx).unwrap();
+
+        assert_eq!(result["previous"], "custom-override");
+        assert_eq!(result["reset_to"], "config default");
+        // AppConfig::default() has no defaults.model, so active_model should be None.
+        assert!(ctx.active_model.is_none());
+    }
 }

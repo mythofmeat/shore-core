@@ -991,3 +991,240 @@ async fn try_openrouter_image(
 
     Ok((image_url.to_string(), revised_prompt))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn make_request(messages: Vec<Value>, system: Option<Value>) -> LlmRequest {
+        LlmRequest {
+            provider: "openai".into(),
+            model: "gpt-4".into(),
+            api_key: "sk-test".into(),
+            base_url: None,
+            messages,
+            system,
+            tools: None,
+            max_tokens: 4096,
+            temperature: None,
+            top_p: None,
+            provider_options: None,
+            provider_key: None,
+        }
+    }
+
+    // ── translate_messages ─────────────────────────────────────────────
+
+    #[test]
+    fn test_translate_messages_system_string() {
+        let request = make_request(vec![], Some(json!("Be helpful.")));
+        let msgs = translate_messages(&request);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0]["role"], "system");
+        assert_eq!(msgs[0]["content"], "Be helpful.");
+    }
+
+    #[test]
+    fn test_translate_messages_system_array() {
+        let request = make_request(
+            vec![],
+            Some(json!([
+                {"type": "text", "text": "Part one. "},
+                {"type": "text", "text": "Part two."}
+            ])),
+        );
+        let msgs = translate_messages(&request);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0]["role"], "system");
+        assert_eq!(msgs[0]["content"], "Part one. Part two.");
+    }
+
+    #[test]
+    fn test_translate_messages_assistant_with_tool_use() {
+        let request = make_request(
+            vec![json!({
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Let me search."},
+                    {"type": "tool_use", "id": "call_1", "name": "search", "input": {"q": "cats"}}
+                ]
+            })],
+            None,
+        );
+        let msgs = translate_messages(&request);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0]["role"], "assistant");
+        assert_eq!(msgs[0]["content"], "Let me search.");
+        let tool_calls = msgs[0]["tool_calls"].as_array().unwrap();
+        assert_eq!(tool_calls.len(), 1);
+        assert_eq!(tool_calls[0]["id"], "call_1");
+        assert_eq!(tool_calls[0]["function"]["name"], "search");
+        // Arguments are serialized JSON string.
+        let args: Value = serde_json::from_str(
+            tool_calls[0]["function"]["arguments"].as_str().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(args["q"], "cats");
+    }
+
+    #[test]
+    fn test_translate_messages_user_with_tool_result() {
+        let request = make_request(
+            vec![json!({
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "call_1", "content": "Found 5 results"}
+                ]
+            })],
+            None,
+        );
+        let msgs = translate_messages(&request);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0]["role"], "tool");
+        assert_eq!(msgs[0]["tool_call_id"], "call_1");
+        assert_eq!(msgs[0]["content"], "Found 5 results");
+    }
+
+    #[test]
+    fn test_translate_messages_user_with_image() {
+        let request = make_request(
+            vec![json!({
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "What is this?"},
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "image/png",
+                            "data": "iVBORw0KGgo="
+                        }
+                    }
+                ]
+            })],
+            None,
+        );
+        let msgs = translate_messages(&request);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0]["role"], "user");
+        let parts = msgs[0]["content"].as_array().unwrap();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0]["type"], "text");
+        assert_eq!(parts[1]["type"], "image_url");
+        let url = parts[1]["image_url"]["url"].as_str().unwrap();
+        assert!(url.starts_with("data:image/png;base64,"));
+    }
+
+    // ── translate_tools ───────────────────────────────────────────────
+
+    #[test]
+    fn test_translate_tools_maps_format() {
+        let tools = Some(vec![json!({
+            "name": "web_search",
+            "description": "Search the web",
+            "input_schema": {"type": "object", "properties": {"q": {"type": "string"}}}
+        })]);
+        let result = translate_tools(&tools).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0]["type"], "function");
+        assert_eq!(result[0]["function"]["name"], "web_search");
+        assert_eq!(result[0]["function"]["description"], "Search the web");
+        assert!(result[0]["function"]["parameters"]["properties"]["q"].is_object());
+    }
+
+    #[test]
+    fn test_translate_tools_none_and_empty() {
+        assert!(translate_tools(&None).is_none());
+        assert!(translate_tools(&Some(vec![])).is_none());
+    }
+
+    // ── normalize_finish_reason & extract_usage ────────────────────────
+
+    #[test]
+    fn test_normalize_finish_reason() {
+        assert_eq!(normalize_finish_reason(Some("stop")), "end_turn");
+        assert_eq!(normalize_finish_reason(Some("tool_calls")), "tool_use");
+        assert_eq!(normalize_finish_reason(Some("length")), "max_tokens");
+        assert_eq!(normalize_finish_reason(Some("content_filter")), "content_filter");
+        assert_eq!(normalize_finish_reason(None), "end_turn");
+        assert_eq!(normalize_finish_reason(Some("unknown")), "end_turn");
+    }
+
+    #[test]
+    fn test_extract_usage_with_cached_tokens() {
+        let usage_json = json!({
+            "prompt_tokens": 500,
+            "completion_tokens": 200,
+            "prompt_tokens_details": {
+                "cached_tokens": 350
+            }
+        });
+        let usage = extract_usage(&usage_json);
+        assert_eq!(usage.input_tokens, 500);
+        assert_eq!(usage.output_tokens, 200);
+        assert_eq!(usage.cache_read_tokens, 350);
+        assert_eq!(usage.cache_creation_tokens, 0);
+
+        // Without prompt_tokens_details.
+        let usage_simple = json!({"prompt_tokens": 100, "completion_tokens": 50});
+        let usage2 = extract_usage(&usage_simple);
+        assert_eq!(usage2.cache_read_tokens, 0);
+    }
+
+    // ── build_chat_body ───────────────────────────────────────────────
+
+    #[test]
+    fn test_build_chat_body_basic() {
+        let request = make_request(
+            vec![json!({"role": "user", "content": "hi"})],
+            None,
+        );
+        let body = build_chat_body(&request, true);
+
+        assert_eq!(body["model"], "gpt-4");
+        assert_eq!(body["stream"], true);
+        assert!(body["stream_options"]["include_usage"].as_bool().unwrap());
+        assert!(body["messages"].is_array());
+
+        // Non-streaming should not have stream_options.
+        let body_ns = build_chat_body(&request, false);
+        assert_eq!(body_ns["stream"], false);
+        assert!(body_ns.get("stream_options").is_none());
+    }
+
+    #[test]
+    fn test_build_chat_body_openrouter_provider() {
+        let mut request = make_request(
+            vec![json!({"role": "user", "content": "hi"})],
+            None,
+        );
+        request.provider = "openai".into();
+        request.provider_key = Some("openrouter".into());
+        request.provider_options = Some(json!({
+            "openrouter_provider": {
+                "order": ["anthropic"]
+            }
+        }));
+
+        let body = build_chat_body(&request, false);
+        let provider = &body["provider"];
+        assert_eq!(provider["order"], json!(["anthropic"]));
+        // allow_fallbacks defaults to false when order is specified.
+        assert_eq!(provider["allow_fallbacks"], false);
+    }
+
+    #[test]
+    fn test_build_headers_openrouter() {
+        let mut request = make_request(vec![], None);
+        request.provider_key = Some("openrouter".into());
+        request.provider_options = Some(json!({
+            "http_referer": "https://shore.ai",
+            "x_title": "Shore"
+        }));
+
+        let headers = build_headers(&request);
+        assert_eq!(headers.get("HTTP-Referer").unwrap(), "https://shore.ai");
+        assert_eq!(headers.get("X-Title").unwrap(), "Shore");
+    }
+}

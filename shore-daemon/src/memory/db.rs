@@ -1343,4 +1343,51 @@ mod tests {
         let path = MemoryDB::default_path("shore");
         assert!(path.ends_with("shore/shore/memory/memory.db"));
     }
+
+    // -- stamp_collated / get_collation_skips --------------------------------
+
+    #[test]
+    fn test_stamp_collated_direct() {
+        let db = MemoryDB::open_in_memory().unwrap();
+        let entry = make_entry("20250401_120000_0", "episodic");
+        db.create_entry(&entry).unwrap();
+
+        // Stamp and verify row count.
+        let rows = db.stamp_collated("20250401_120000_0", "2026-04-03T12:00:00Z").unwrap();
+        assert_eq!(rows, 1);
+
+        // Verify the field was updated.
+        let fetched = db.get_entry("20250401_120000_0").unwrap().unwrap();
+        assert_eq!(fetched.collated_at, "2026-04-03T12:00:00Z");
+
+        // Non-existent ID returns 0.
+        let rows = db.stamp_collated("nonexistent", "2026-04-03T12:00:00Z").unwrap();
+        assert_eq!(rows, 0);
+    }
+
+    #[test]
+    fn test_get_collation_skips_filters_by_phase() {
+        let db = MemoryDB::open_in_memory().unwrap();
+        let entry = make_entry("20250401_120000_0", "episodic");
+        db.create_entry(&entry).unwrap();
+
+        // Add skips for two different phases.
+        db.add_collation_skip("20250401_120000_0", "refine").unwrap();
+        db.add_collation_skip("20250401_120000_0", "decay").unwrap();
+
+        // Query by phase.
+        let refine_skips = db.get_collation_skips("refine").unwrap();
+        assert_eq!(refine_skips.len(), 1);
+        assert_eq!(refine_skips[0].entry_id, "20250401_120000_0");
+        assert_eq!(refine_skips[0].phase, "refine");
+        assert!(!refine_skips[0].skipped_at.is_empty());
+
+        let decay_skips = db.get_collation_skips("decay").unwrap();
+        assert_eq!(decay_skips.len(), 1);
+        assert_eq!(decay_skips[0].phase, "decay");
+
+        // Non-existent phase returns empty.
+        let empty = db.get_collation_skips("nonexistent").unwrap();
+        assert!(empty.is_empty());
+    }
 }

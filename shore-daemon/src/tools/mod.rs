@@ -189,6 +189,7 @@ pub fn dispatch_tool<'a>(
 mod tests {
     use super::*;
     use shore_config::app::ToolToggles;
+    use crate::test_support::TestToolContext;
 
     #[test]
     fn test_all_tools_returns_expected_count() {
@@ -269,5 +270,130 @@ mod tests {
         names.sort();
         names.dedup();
         assert_eq!(names.len(), original_len, "duplicate tool names found");
+    }
+
+    // ── dispatch_tool tests ───────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_dispatch_check_time() {
+        let ctx = TestToolContext::new();
+        let result = dispatch_tool("check_time", serde_json::json!({}), &ctx).await;
+        assert!(result.is_ok(), "check_time should succeed");
+        let val = result.unwrap();
+        // Should contain a datetime string.
+        assert!(val.get("time").is_some() || val.is_string());
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_roll_dice() {
+        let ctx = TestToolContext::new();
+        let result = dispatch_tool(
+            "roll_dice",
+            serde_json::json!({"notation": "2d6"}),
+            &ctx,
+        )
+        .await;
+        assert!(result.is_ok(), "roll_dice should succeed");
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_unknown_tool() {
+        let ctx = TestToolContext::new();
+        let result = dispatch_tool("nonexistent_tool", serde_json::json!({}), &ctx).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, ToolError::NotImplemented(_)),
+            "unknown tool should return NotImplemented, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_send_image_invalid_args() {
+        let ctx = TestToolContext::new();
+        // Missing required "path" arg — handler should return InvalidArgs, not NotImplemented.
+        let result = dispatch_tool("send_image", serde_json::json!({}), &ctx).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            !matches!(err, ToolError::NotImplemented(_)),
+            "send_image with bad args should reach handler, not return NotImplemented"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_fetch_url_routes_correctly() {
+        let ctx = TestToolContext::new();
+        // Invalid URL — handler should return an error (not NotImplemented).
+        let result = dispatch_tool(
+            "fetch_url",
+            serde_json::json!({"url": "not-a-valid-url"}),
+            &ctx,
+        )
+        .await;
+        // May succeed or fail, but should NOT be NotImplemented.
+        if let Err(ref e) = result {
+            assert!(
+                !matches!(e, ToolError::NotImplemented(_)),
+                "fetch_url should reach handler"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_memory_routes_correctly() {
+        let ctx = TestToolContext::new();
+        let result = dispatch_tool(
+            "memory",
+            serde_json::json!({"request": "search for test"}),
+            &ctx,
+        )
+        .await;
+        // The handler may return Ok or an error from the agent, but NOT NotImplemented.
+        if let Err(ref e) = result {
+            assert!(
+                !matches!(e, ToolError::NotImplemented(_)),
+                "memory should reach handler, got: {e}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_all_registered_names_route() {
+        let ctx = TestToolContext::new();
+        let tools = all_tools();
+
+        for tool in &tools {
+            let result = dispatch_tool(tool.name, serde_json::json!({}), &ctx).await;
+            // Every registered tool name should route to a handler.
+            // The handler may succeed or fail with InvalidArgs/Agent/etc,
+            // but must NOT return NotImplemented.
+            if let Err(ref e) = result {
+                assert!(
+                    !matches!(e, ToolError::NotImplemented(_)),
+                    "registered tool '{}' returned NotImplemented — dispatch arm missing",
+                    tool.name
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_scratchpad_routes_correctly() {
+        let ctx = TestToolContext::new();
+        // scratchpad_dir is "" by default, which the handler rejects — but that
+        // proves the dispatch routed to the handler (not NotImplemented).
+        let result = dispatch_tool(
+            "scratchpad_list",
+            serde_json::json!({}),
+            &ctx,
+        )
+        .await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            !matches!(err, ToolError::NotImplemented(_)),
+            "scratchpad_list should reach handler"
+        );
     }
 }

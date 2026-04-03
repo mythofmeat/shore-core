@@ -1849,6 +1849,46 @@ mod tests {
         assert!(!after.collated_at.is_empty());
     }
 
+    #[tokio::test]
+    async fn test_refine_empty_candidates_skips_llm() {
+        let db = MemoryDB::open_in_memory().unwrap();
+        let now = now_str();
+
+        // All entries have a recent collated_at — none are candidates.
+        for i in 0..3 {
+            let mut entry = make_entry(&format!("e{i}"), &format!("Fact {i}"), 0.9, &now);
+            entry.collated_at = now.clone();
+            db.create_entry(&entry).unwrap();
+        }
+
+        // LLM returns actions — but should never be called.
+        let llm = MockCollationLlm {
+            refine_response: vec![RefineAction::Update {
+                entry_id: "e0".to_string(),
+                result: RefineEntryFields {
+                    summary_text: "SHOULD NOT APPEAR".to_string(),
+                    topic_tags: "bad".to_string(),
+                    topic_key: "bad".to_string(),
+                    confidence: 0.5,
+                },
+                reason: "test".to_string(),
+            }],
+        };
+        let mgr = CollationManager::new(CollationConfig::default());
+        let outcome = run_pipeline(&db, &llm, &mgr, None).await;
+
+        // 3 from refine (no candidates) + 3 from decay (recent entries not decayed).
+        assert_eq!(outcome.entries_skipped, 6, "all entries should be skipped by both phases");
+        assert_eq!(outcome.refine_merges, 0);
+        assert_eq!(outcome.refine_splits, 0);
+        assert_eq!(outcome.refine_updates, 0);
+        assert_eq!(outcome.refine_kept, 0);
+
+        // Entries should be untouched.
+        let e0 = db.get_entry("e0").unwrap().unwrap();
+        assert_eq!(e0.summary_text, "Fact 0", "entry should not be modified");
+    }
+
     // -- Prompt building tests ---------------------------------------------
 
     #[test]

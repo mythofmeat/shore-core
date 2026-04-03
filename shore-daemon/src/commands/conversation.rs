@@ -590,4 +590,32 @@ mod tests {
         assert_eq!(engine.messages().len(), 1);
         assert_eq!(engine.messages()[0].msg_id, "m1");
     }
+
+    #[test]
+    fn test_inject_system_appends_message() {
+        let tmp = TempDir::new().unwrap();
+        let (mut engine, mut ctx, _rx) = make_ctx(&tmp);
+
+        let result =
+            inject_system(&mut engine, &mut ctx, &json!({"text": "Stop using actions"})).unwrap();
+        assert_eq!(result["injected"], true);
+
+        assert_eq!(engine.messages().len(), 1);
+        let msg = &engine.messages()[0];
+        assert_eq!(msg.role, Role::System);
+        assert_eq!(msg.content, "Stop using actions");
+        assert!(msg.msg_id.starts_with("m_"));
+    }
+
+    #[test]
+    fn test_inject_system_missing_text() {
+        let tmp = TempDir::new().unwrap();
+        let (mut engine, mut ctx, _rx) = make_ctx(&tmp);
+
+        let result = inject_system(&mut engine, &mut ctx, &json!({}));
+        assert!(result.is_err());
+        let (code, msg) = result.unwrap_err();
+        assert_eq!(code, ErrorCode::InvalidRequest);
+        assert!(msg.contains("text"));
+    }
 }

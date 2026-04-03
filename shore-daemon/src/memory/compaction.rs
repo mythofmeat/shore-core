@@ -829,6 +829,74 @@ They discussed daily activities and the user's beverage preferences.
         assert_eq!(entries.len(), 1);
     }
 
+    #[test]
+    fn test_parse_empty_topic_tags() {
+        let raw = r#"<entry>
+<summary>User discussed preferences</summary>
+<topic_tags></topic_tags>
+<memory_type>episodic</memory_type>
+</entry>"#;
+        let (_, entries) = parse_compaction_response(raw).unwrap();
+        assert_eq!(entries.len(), 1);
+        // extract_xml_tag returns None for empty tags, unwrap_or_default gives "".
+        assert_eq!(entries[0].topic_tags, "");
+        assert_eq!(entries[0].topic_key, "", "empty topic_tags produces empty topic_key");
+    }
+
+    #[test]
+    fn test_parse_unclosed_summary_tag() {
+        // Missing </summary> — extract_xml_tag can't find the closing tag, returns None.
+        let raw = r#"<entry>
+<summary>Some text that never closes
+<topic_tags>preferences</topic_tags>
+<memory_type>episodic</memory_type>
+</entry>"#;
+        let (_, entries) = parse_compaction_response(raw).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].summary_text, "", "unclosed summary tag falls to empty default");
+        assert_eq!(entries[0].topic_tags, "preferences");
+    }
+
+    #[test]
+    fn test_parse_html_entities_passthrough() {
+        let raw = r#"<entry>
+<summary>User said &lt;hello&gt; &amp; goodbye</summary>
+<topic_tags>greetings &amp; farewells</topic_tags>
+<memory_type>episodic</memory_type>
+</entry>"#;
+        let (_, entries) = parse_compaction_response(raw).unwrap();
+        assert_eq!(entries.len(), 1);
+        // String-based parser does NOT decode HTML entities.
+        assert!(entries[0].summary_text.contains("&lt;hello&gt;"));
+        assert!(entries[0].topic_tags.contains("&amp;"));
+    }
+
+    #[test]
+    fn test_parse_prose_with_recap_no_entries() {
+        let raw = r#"<recap>The conversation was about cats</recap>
+
+The user discussed various topics including their preference for cats
+over dogs. They also mentioned enjoying tea in the afternoon."#;
+        let result = parse_compaction_response(raw);
+        assert!(
+            matches!(result, Err(CompactionError::Parse(ref msg)) if msg.contains("no <entry> blocks")),
+            "prose-only response (with recap) should fail with Parse error"
+        );
+    }
+
+    #[test]
+    fn test_parse_entry_missing_memory_type() {
+        let raw = r#"<entry>
+<summary>User likes cats</summary>
+<topic_tags>preferences,animals</topic_tags>
+</entry>"#;
+        let (_, entries) = parse_compaction_response(raw).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].memory_type, "episodic", "missing memory_type defaults to episodic");
+        assert_eq!(entries[0].summary_text, "User likes cats");
+        assert_eq!(entries[0].topic_key, "preferences");
+    }
+
     // -- Tests: prompt building -----------------------------------------------
 
     #[test]
