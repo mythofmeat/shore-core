@@ -10,7 +10,7 @@ use tokio::time::Duration;
 // Configuration
 // ---------------------------------------------------------------------------
 
-const DEFAULT_IDLE_TRIGGER_MINUTES: u64 = 30;
+const DEFAULT_IDLE_TRIGGER_MINUTES: u32 = 30;
 const DEFAULT_MIN_TURNS: usize = 8;
 const DEFAULT_MAX_TURNS: usize = 16;
 const DEFAULT_KEEP_RECENT_TURNS: usize = 2;
@@ -19,7 +19,7 @@ const DEFAULT_KEEP_RECENT_TURNS: usize = 2;
 #[derive(Debug, Clone)]
 pub struct CompactionConfig {
     /// Minutes of idle time before proactive compaction fires.
-    pub idle_trigger_minutes: u64,
+    pub idle_trigger_minutes: u32,
     /// Minimum user turns before any compaction trigger fires.
     pub min_turns: usize,
     /// Force compaction when this user turn count is reached.
@@ -590,7 +590,7 @@ impl CompactionManager {
     /// Create an idle timer bound to this manager's activity signal.
     pub fn idle_timer(&self) -> IdleTimer {
         IdleTimer {
-            idle_duration: Duration::from_secs(self.config.idle_trigger_minutes * 60),
+            idle_duration: Duration::from_secs(u64::from(self.config.idle_trigger_minutes) * 60),
             activity_notify: Arc::clone(&self.activity_notify),
         }
     }

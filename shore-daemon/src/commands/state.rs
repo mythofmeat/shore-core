@@ -16,10 +16,9 @@ use crate::memory::compaction::{
     ConversationMessage, DEFAULT_COMPACT_PROMPT,
 };
 use crate::memory::compaction_impls::{
-    resolve_embed_config, RealCompactionLlm, RealConversationManager, RealVectorIndexer,
+    RealCompactionLlm, RealConversationManager, RealVectorIndexer,
 };
 use crate::memory::db::MemoryDB;
-use crate::memory::vectorstore::VectorStore;
 
 use crate::autonomy::activity::HourClassification;
 
@@ -498,26 +497,11 @@ pub async fn compact(
     )
     .unwrap_or_else(|| DEFAULT_COMPACT_PROMPT.to_string());
 
-    // Resolve model: always use the active conversation model.
-    let model = ctx
-        .active_model
-        .as_deref()
-        .and_then(|name| ctx.config.models.find_model(name).ok())
-        .ok_or_else(|| (ErrorCode::InternalError, "No active model for compaction".to_string()))?
-        .clone();
+    // Resolve model: memory_agent default → active model → first chat model.
+    let model = super::resolve_agent_model(ctx)?;
 
-    // Resolve embedding config.
-    let embed_config = resolve_embed_config(
-        ctx.config.app.defaults.embedding.as_deref(),
-        &ctx.config.models.embedding,
-    )
-    .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
-
-    // Open vector store.
-    let vs_path = memory_dir(ctx, &char_name).join("vectorstore");
-    let store = VectorStore::open(&vs_path, embed_config.dimensions)
-        .await
-        .map_err(|e| (ErrorCode::InternalError, format!("Failed to open vector store: {e}")))?;
+    // Resolve embedding + vector store.
+    let (store, embed_config) = super::open_embed_and_vectorstore(ctx, &char_name).await?;
 
     // Create trait implementations.
     let llm = RealCompactionLlm::new(ctx.llm_client.clone(), model);
@@ -527,7 +511,7 @@ pub async fn compact(
     // Create compaction manager with config.
     let app_compaction = &ctx.config.app.memory.compaction;
     let config = CompactionConfig {
-        idle_trigger_minutes: app_compaction.idle_trigger_minutes as u64,
+        idle_trigger_minutes: app_compaction.idle_trigger_minutes,
         min_turns: app_compaction.min_turns,
         max_turns: app_compaction.max_turns,
         keep_recent_turns: app_compaction.keep_recent_turns,
@@ -1032,16 +1016,7 @@ pub async fn memory_reindex(engine: &ConversationEngine, ctx: &CommandContext) -
         .map_err(|e| (ErrorCode::InternalError, format!("Failed to rebuild FTS: {e}")))?;
 
     // Resolve embedding config and rebuild vector index.
-    let embed_config = resolve_embed_config(
-        ctx.config.app.defaults.embedding.as_deref(),
-        &ctx.config.models.embedding,
-    )
-    .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
-
-    let vs_path = memory_dir(ctx, &char_name).join("vectorstore");
-    let store = VectorStore::open(&vs_path, embed_config.dimensions)
-        .await
-        .map_err(|e| (ErrorCode::InternalError, format!("Failed to open vector store: {e}")))?;
+    let (store, embed_config) = super::open_embed_and_vectorstore(ctx, &char_name).await?;
 
     // Embed entries in batches to avoid overrunning the Unix socket with a
     // single huge JSON response (the socket may close before the client

@@ -40,6 +40,95 @@ impl Sdk {
     }
 }
 
+// ── Shared model config fields ──────────────────────────────────────────
+
+/// The 18 configuration fields shared by provider configs, model entries,
+/// and resolved models.  All fields are `Option<T>` — `None` means "inherit
+/// from the next level up" (model → provider → hardcoded defaults).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default)]
+pub struct ModelConfigFields {
+    pub sdk: Option<Sdk>,
+    pub api_key_env: Option<String>,
+    pub base_url: Option<String>,
+    pub max_context_tokens: Option<u32>,
+    pub max_tokens: Option<u32>,
+    pub temperature: Option<f64>,
+    pub top_p: Option<f64>,
+    pub reasoning_effort: Option<String>,
+    pub budget_tokens: Option<u32>,
+    pub cache_ttl: Option<String>,
+    pub keepalive_enabled: Option<bool>,
+    pub keepalive_ttl_minutes: Option<u32>,
+    pub keepalive_max_pings: Option<u32>,
+    pub openrouter_provider: Option<toml::Value>,
+    pub vertex_project: Option<String>,
+    pub vertex_location: Option<String>,
+    pub gemini_generation: Option<u32>,
+    pub gemini_web_search: Option<bool>,
+}
+
+impl ModelConfigFields {
+    /// Overwrite `self` fields with any non-None fields from `overlay`.
+    pub fn merge_from(&mut self, overlay: &Self) {
+        macro_rules! merge_opt {
+            ($field:ident) => {
+                if overlay.$field.is_some() {
+                    self.$field = overlay.$field.clone();
+                }
+            };
+        }
+        merge_opt!(sdk);
+        merge_opt!(api_key_env);
+        merge_opt!(base_url);
+        merge_opt!(max_context_tokens);
+        merge_opt!(max_tokens);
+        merge_opt!(temperature);
+        merge_opt!(top_p);
+        merge_opt!(reasoning_effort);
+        merge_opt!(budget_tokens);
+        merge_opt!(cache_ttl);
+        merge_opt!(keepalive_enabled);
+        merge_opt!(keepalive_ttl_minutes);
+        merge_opt!(keepalive_max_pings);
+        merge_opt!(openrouter_provider);
+        merge_opt!(vertex_project);
+        merge_opt!(vertex_location);
+        merge_opt!(gemini_generation);
+        merge_opt!(gemini_web_search);
+    }
+
+    /// Produce a new `ModelConfigFields` where each field is taken from `self`
+    /// if present, otherwise from `fallback`.
+    pub fn or_fallback(&self, fallback: &Self) -> Self {
+        macro_rules! or_opt {
+            ($field:ident) => {
+                self.$field.clone().or(fallback.$field.clone())
+            };
+        }
+        Self {
+            sdk: or_opt!(sdk),
+            api_key_env: or_opt!(api_key_env),
+            base_url: or_opt!(base_url),
+            max_context_tokens: or_opt!(max_context_tokens),
+            max_tokens: or_opt!(max_tokens),
+            temperature: or_opt!(temperature),
+            top_p: or_opt!(top_p),
+            reasoning_effort: or_opt!(reasoning_effort),
+            budget_tokens: or_opt!(budget_tokens),
+            cache_ttl: or_opt!(cache_ttl),
+            keepalive_enabled: or_opt!(keepalive_enabled),
+            keepalive_ttl_minutes: or_opt!(keepalive_ttl_minutes),
+            keepalive_max_pings: or_opt!(keepalive_max_pings),
+            openrouter_provider: or_opt!(openrouter_provider),
+            vertex_project: or_opt!(vertex_project),
+            vertex_location: or_opt!(vertex_location),
+            gemini_generation: or_opt!(gemini_generation),
+            gemini_web_search: or_opt!(gemini_web_search),
+        }
+    }
+}
+
 // ── Provider config ─────────────────────────────────────────────────────
 
 /// Provider-level configuration — the scalar keys under `[chat.<provider>]`.
@@ -49,79 +138,21 @@ impl Sdk {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(default)]
 pub struct ProviderConfig {
-    pub sdk: Option<Sdk>,
-    pub api_key_env: Option<String>,
-    pub base_url: Option<String>,
-    pub max_context_tokens: Option<u32>,
-    pub max_tokens: Option<u32>,
-    pub temperature: Option<f64>,
-    pub top_p: Option<f64>,
-    pub reasoning_effort: Option<String>,
-    pub budget_tokens: Option<u32>,
-    pub cache_ttl: Option<String>,
-    pub keepalive_enabled: Option<bool>,
-    pub keepalive_ttl_minutes: Option<u32>,
-    pub keepalive_max_pings: Option<u32>,
-    pub openrouter_provider: Option<toml::Value>,
-    pub vertex_project: Option<String>,
-    pub vertex_location: Option<String>,
-    pub gemini_generation: Option<u32>,
-    pub gemini_web_search: Option<bool>,
+    #[serde(flatten)]
+    pub fields: ModelConfigFields,
 }
 
 // ── Model entry ─────────────────────────────────────────────────────────
 
 /// Per-model configuration — sub-tables under `[chat.<provider>.<model>]`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(default)]
 pub struct ModelEntry {
     /// The upstream model identifier (e.g. `"claude-opus-4-6"`).  Required.
     pub model_id: Option<String>,
-    // All overrides — None means inherit from provider.
-    pub sdk: Option<Sdk>,
-    pub api_key_env: Option<String>,
-    pub base_url: Option<String>,
-    pub max_context_tokens: Option<u32>,
-    pub max_tokens: Option<u32>,
-    pub temperature: Option<f64>,
-    pub top_p: Option<f64>,
-    pub reasoning_effort: Option<String>,
-    pub budget_tokens: Option<u32>,
-    pub cache_ttl: Option<String>,
-    pub keepalive_enabled: Option<bool>,
-    pub keepalive_ttl_minutes: Option<u32>,
-    pub keepalive_max_pings: Option<u32>,
-    pub openrouter_provider: Option<toml::Value>,
-    pub vertex_project: Option<String>,
-    pub vertex_location: Option<String>,
-    pub gemini_generation: Option<u32>,
-    pub gemini_web_search: Option<bool>,
-}
-
-impl Default for ModelEntry {
-    fn default() -> Self {
-        Self {
-            model_id: None,
-            sdk: None,
-            api_key_env: None,
-            base_url: None,
-            max_context_tokens: None,
-            max_tokens: None,
-            temperature: None,
-            top_p: None,
-            reasoning_effort: None,
-            budget_tokens: None,
-            cache_ttl: None,
-            keepalive_enabled: None,
-            keepalive_ttl_minutes: None,
-            keepalive_max_pings: None,
-            openrouter_provider: None,
-            vertex_project: None,
-            vertex_location: None,
-            gemini_generation: None,
-            gemini_web_search: None,
-        }
-    }
+    /// All overrides — None means inherit from provider.
+    #[serde(flatten)]
+    pub fields: ModelConfigFields,
 }
 
 // ── Resolved model ──────────────────────────────────────────────────────
@@ -158,6 +189,47 @@ pub struct ResolvedModel {
     pub vertex_location: Option<String>,
     pub gemini_generation: Option<u32>,
     pub gemini_web_search: Option<bool>,
+}
+
+impl ResolvedModel {
+    /// Build a `ResolvedModel` from metadata + merged config fields.
+    ///
+    /// `sdk_fallback` is used if `fields.sdk` is `None`.
+    pub fn from_parts(
+        name: String,
+        qualified_name: String,
+        category: String,
+        provider_key: String,
+        model_id: String,
+        sdk_fallback: Sdk,
+        fields: ModelConfigFields,
+    ) -> Self {
+        Self {
+            name,
+            qualified_name,
+            category,
+            provider_key,
+            sdk: fields.sdk.clone().unwrap_or(sdk_fallback),
+            model_id,
+            api_key_env: fields.api_key_env,
+            base_url: fields.base_url,
+            max_context_tokens: fields.max_context_tokens,
+            max_tokens: fields.max_tokens,
+            temperature: fields.temperature,
+            top_p: fields.top_p,
+            reasoning_effort: fields.reasoning_effort,
+            budget_tokens: fields.budget_tokens,
+            cache_ttl: fields.cache_ttl,
+            keepalive_enabled: fields.keepalive_enabled,
+            keepalive_ttl_minutes: fields.keepalive_ttl_minutes,
+            keepalive_max_pings: fields.keepalive_max_pings,
+            openrouter_provider: fields.openrouter_provider,
+            vertex_project: fields.vertex_project,
+            vertex_location: fields.vertex_location,
+            gemini_generation: fields.gemini_generation,
+            gemini_web_search: fields.gemini_web_search,
+        }
+    }
 }
 
 // ── Model catalog ───────────────────────────────────────────────────────
@@ -339,7 +411,7 @@ fn parse_category(
         if let Ok(explicit) =
             toml::Value::Table(provider_scalars).try_into::<ProviderConfig>()
         {
-            merge_provider(&mut provider_config, &explicit);
+            provider_config.fields.merge_from(&explicit.fields);
         }
 
         // ── Extract model sub-tables ────────────────────────────────
@@ -365,54 +437,16 @@ fn parse_category(
                 name: model_name.to_string(),
             })?;
 
-            let resolved = ResolvedModel {
-                name: model_name.clone(),
-                qualified_name: format!("{category}.{provider_key}.{model_name}"),
-                category: category.to_string(),
-                provider_key: provider_key.clone(),
-                sdk: entry
-                    .sdk
-                    .or(provider_config.sdk.clone())
-                    .unwrap_or_else(|| default_sdk(provider_key)),
+            let merged = entry.fields.or_fallback(&provider_config.fields);
+            let resolved = ResolvedModel::from_parts(
+                model_name.clone(),
+                format!("{category}.{provider_key}.{model_name}"),
+                category.to_string(),
+                provider_key.clone(),
                 model_id,
-                api_key_env: entry.api_key_env.or(provider_config.api_key_env.clone()),
-                base_url: entry.base_url.or(provider_config.base_url.clone()),
-                max_context_tokens: entry
-                    .max_context_tokens
-                    .or(provider_config.max_context_tokens),
-                max_tokens: entry.max_tokens.or(provider_config.max_tokens),
-                temperature: entry.temperature.or(provider_config.temperature),
-                top_p: entry.top_p.or(provider_config.top_p),
-                reasoning_effort: entry
-                    .reasoning_effort
-                    .or(provider_config.reasoning_effort.clone()),
-                budget_tokens: entry.budget_tokens.or(provider_config.budget_tokens),
-                cache_ttl: entry.cache_ttl.or(provider_config.cache_ttl.clone()),
-                keepalive_enabled: entry
-                    .keepalive_enabled
-                    .or(provider_config.keepalive_enabled),
-                keepalive_ttl_minutes: entry
-                    .keepalive_ttl_minutes
-                    .or(provider_config.keepalive_ttl_minutes),
-                keepalive_max_pings: entry
-                    .keepalive_max_pings
-                    .or(provider_config.keepalive_max_pings),
-                openrouter_provider: entry
-                    .openrouter_provider
-                    .or(provider_config.openrouter_provider.clone()),
-                vertex_project: entry
-                    .vertex_project
-                    .or(provider_config.vertex_project.clone()),
-                vertex_location: entry
-                    .vertex_location
-                    .or(provider_config.vertex_location.clone()),
-                gemini_generation: entry
-                    .gemini_generation
-                    .or(provider_config.gemini_generation),
-                gemini_web_search: entry
-                    .gemini_web_search
-                    .or(provider_config.gemini_web_search),
-            };
+                default_sdk(provider_key),
+                merged,
+            );
 
             models.insert(model_name.clone(), resolved);
         }
@@ -424,8 +458,8 @@ fn parse_category(
 // ── Provider defaults ───────────────────────────────────────────────────
 
 /// Shared baseline for all known providers.
-fn base_provider_defaults() -> ProviderConfig {
-    ProviderConfig {
+fn base_provider_defaults() -> ModelConfigFields {
+    ModelConfigFields {
         temperature: Some(1.0),
         max_tokens: Some(8192),
         max_context_tokens: Some(200_000),
@@ -435,43 +469,44 @@ fn base_provider_defaults() -> ProviderConfig {
 
 /// Hardcoded provider defaults (ported from V1 `PROVIDER_DEFAULTS`).
 fn hardcoded_defaults(provider_key: &str) -> ProviderConfig {
-    match provider_key {
-        "anthropic" => ProviderConfig {
+    let fields = match provider_key {
+        "anthropic" => ModelConfigFields {
             sdk: Some(Sdk::Anthropic),
             api_key_env: Some("ANTHROPIC_API_KEY".into()),
             ..base_provider_defaults()
         },
-        "openrouter" => ProviderConfig {
+        "openrouter" => ModelConfigFields {
             sdk: Some(Sdk::Openai),
             api_key_env: Some("OPENROUTER_API_KEY".into()),
             base_url: Some("https://openrouter.ai/api/v1".into()),
             ..base_provider_defaults()
         },
-        "deepseek" => ProviderConfig {
+        "deepseek" => ModelConfigFields {
             sdk: Some(Sdk::Deepseek),
             api_key_env: Some("DEEPSEEK_API_KEY".into()),
             base_url: Some("https://api.deepseek.com/v1".into()),
             ..base_provider_defaults()
         },
-        "gemini" => ProviderConfig {
+        "gemini" => ModelConfigFields {
             sdk: Some(Sdk::Gemini),
             api_key_env: Some("GEMINI_API_KEY".into()),
             ..base_provider_defaults()
         },
-        "xai" => ProviderConfig {
+        "xai" => ModelConfigFields {
             sdk: Some(Sdk::Openai),
             api_key_env: Some("XAI_API_KEY".into()),
             base_url: Some("https://api.x.ai/v1".into()),
             ..base_provider_defaults()
         },
-        "zhipuai" => ProviderConfig {
+        "zhipuai" => ModelConfigFields {
             sdk: Some(Sdk::Zhipuai),
             api_key_env: Some("ZAI_API_KEY".into()),
             base_url: Some("https://open.bigmodel.cn/api/paas/v4".into()),
             ..base_provider_defaults()
         },
-        _ => ProviderConfig::default(),
-    }
+        _ => ModelConfigFields::default(),
+    };
+    ProviderConfig { fields }
 }
 
 /// Default SDK for a provider key (used when neither hardcoded nor TOML specifies one).
@@ -484,35 +519,6 @@ fn default_sdk(provider_key: &str) -> Sdk {
         // Everything else (openrouter, xai, custom) defaults to OpenAI-compatible.
         _ => Sdk::Openai,
     }
-}
-
-/// Merge explicit provider config on top of defaults (only overwrite non-None fields).
-fn merge_provider(base: &mut ProviderConfig, overlay: &ProviderConfig) {
-    macro_rules! merge_opt {
-        ($field:ident) => {
-            if overlay.$field.is_some() {
-                base.$field = overlay.$field.clone();
-            }
-        };
-    }
-    merge_opt!(sdk);
-    merge_opt!(api_key_env);
-    merge_opt!(base_url);
-    merge_opt!(max_context_tokens);
-    merge_opt!(max_tokens);
-    merge_opt!(temperature);
-    merge_opt!(top_p);
-    merge_opt!(reasoning_effort);
-    merge_opt!(budget_tokens);
-    merge_opt!(cache_ttl);
-    merge_opt!(keepalive_enabled);
-    merge_opt!(keepalive_ttl_minutes);
-    merge_opt!(keepalive_max_pings);
-    merge_opt!(openrouter_provider);
-    merge_opt!(vertex_project);
-    merge_opt!(vertex_location);
-    merge_opt!(gemini_generation);
-    merge_opt!(gemini_web_search);
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────

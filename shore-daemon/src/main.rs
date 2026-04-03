@@ -363,7 +363,7 @@ async fn run_compaction(
 
     let app_compaction = &effective.app.memory.compaction;
     let mgr_config = CompactionConfig {
-        idle_trigger_minutes: app_compaction.idle_trigger_minutes as u64,
+        idle_trigger_minutes: app_compaction.idle_trigger_minutes,
         min_turns: app_compaction.min_turns,
         max_turns: app_compaction.max_turns,
         keep_recent_turns: app_compaction.keep_recent_turns,

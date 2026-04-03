@@ -652,7 +652,7 @@ async fn tick_character(
                 );
             } else if s.active_turn_count >= compaction.min_turns {
                 let idle_secs = now.duration_since(s.last_compaction_activity).as_secs();
-                let threshold_secs = compaction.idle_trigger_minutes as u64 * 60;
+                let threshold_secs = u64::from(compaction.idle_trigger_minutes) * 60;
                 if threshold_secs > 0 && idle_secs >= threshold_secs {
                     s.compaction_triggered = true;
                     compaction_needed = true;

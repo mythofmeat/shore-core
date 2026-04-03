@@ -107,6 +107,26 @@ pub async fn setup_search_context(
     Some(AgentSearchContext::new(vs, ctx.llm_client.clone(), embed_config))
 }
 
+/// Open a vector store with embedding config for a character (error-returning variant).
+///
+/// Unlike `setup_search_context()` which returns `Option` for graceful degradation,
+/// this propagates errors for callers that need diagnostics (e.g. compaction, reindex).
+pub async fn open_embed_and_vectorstore(
+    ctx: &CommandContext,
+    char_name: &str,
+) -> Result<(VectorStore, crate::memory::compaction_impls::EmbedConfig), (ErrorCode, String)> {
+    let embed_config = resolve_embed_config(
+        ctx.config.app.defaults.embedding.as_deref(),
+        &ctx.config.models.embedding,
+    )
+    .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
+    let vs_path = memory_dir(ctx, char_name).join("vectorstore");
+    let store = VectorStore::open(&vs_path, embed_config.dimensions)
+        .await
+        .map_err(|e| (ErrorCode::InternalError, format!("Failed to open vector store: {e}")))?;
+    Ok((store, embed_config))
+}
+
 /// Build the template variable map used by collation.
 pub fn build_collation_vars(
     ctx: &CommandContext,

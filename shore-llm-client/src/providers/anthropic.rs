@@ -5,7 +5,10 @@ use serde_json::{json, Value};
 use tokio::io::DuplexStream;
 
 use super::sse::SseEvent;
-use super::stream_helpers::{build_done_event, build_start_event, build_tool_use_event};
+use super::stream_helpers::{
+    build_done_event, build_start_event, build_tool_use_event, extract_anthropic_usage,
+    merge_anthropic_usage,
+};
 use crate::types::{ContentBlock, GenerateResponse, LlmRequest, Timing, Usage};
 use crate::LlmError;
 
@@ -521,18 +524,7 @@ fn handle_message_start(data: &str, state: &mut StreamState) -> Option<String> {
     }
 
     if let Some(usage) = message.get("usage") {
-        state.usage.input_tokens = usage
-            .get("input_tokens")
-            .and_then(Value::as_u64)
-            .unwrap_or(0) as u32;
-        state.usage.cache_read_tokens = usage
-            .get("cache_read_input_tokens")
-            .and_then(Value::as_u64)
-            .unwrap_or(0) as u32;
-        state.usage.cache_creation_tokens = usage
-            .get("cache_creation_input_tokens")
-            .and_then(Value::as_u64)
-            .unwrap_or(0) as u32;
+        merge_anthropic_usage(&mut state.usage, usage);
     }
 
     Some(build_start_event(&state.model))
@@ -677,21 +669,7 @@ fn handle_message_delta(data: &str, state: &mut StreamState) {
     }
 
     if let Some(usage) = parsed.get("usage") {
-        // OpenRouter sends actual input_tokens in message_delta (0 in message_start).
-        if let Some(inp) = usage.get("input_tokens").and_then(Value::as_u64) {
-            if inp > 0 {
-                state.usage.input_tokens = inp as u32;
-            }
-        }
-        if let Some(out) = usage.get("output_tokens").and_then(Value::as_u64) {
-            state.usage.output_tokens = out as u32;
-        }
-        if let Some(cr) = usage.get("cache_read_input_tokens").and_then(Value::as_u64) {
-            state.usage.cache_read_tokens = cr as u32;
-        }
-        if let Some(cc) = usage.get("cache_creation_input_tokens").and_then(Value::as_u64) {
-            state.usage.cache_creation_tokens = cc as u32;
-        }
+        merge_anthropic_usage(&mut state.usage, usage);
     }
 }
 
@@ -739,25 +717,7 @@ pub async fn generate(
         .to_string();
 
     // Extract usage.
-    let usage_val = body.get("usage");
-    let usage = Usage {
-        input_tokens: usage_val
-            .and_then(|u| u.get("input_tokens"))
-            .and_then(Value::as_u64)
-            .unwrap_or(0) as u32,
-        output_tokens: usage_val
-            .and_then(|u| u.get("output_tokens"))
-            .and_then(Value::as_u64)
-            .unwrap_or(0) as u32,
-        cache_read_tokens: usage_val
-            .and_then(|u| u.get("cache_read_input_tokens"))
-            .and_then(Value::as_u64)
-            .unwrap_or(0) as u32,
-        cache_creation_tokens: usage_val
-            .and_then(|u| u.get("cache_creation_input_tokens"))
-            .and_then(Value::as_u64)
-            .unwrap_or(0) as u32,
-    };
+    let usage = extract_anthropic_usage(body.get("usage"));
 
     // Extract content blocks.
     let raw_blocks = body.get("content").and_then(Value::as_array);

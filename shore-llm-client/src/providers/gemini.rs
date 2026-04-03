@@ -7,7 +7,9 @@ use crate::types::{ContentBlock, GenerateResponse, LlmRequest, Timing, Usage};
 use crate::LlmError;
 
 use super::sse::{read_sse_events, SseEvent};
-use super::stream_helpers::{build_done_event, build_start_event, build_tool_use_event};
+use super::stream_helpers::{
+    build_done_event, build_start_event, build_tool_use_event, extract_gemini_usage,
+};
 
 const DEFAULT_BASE_URL: &str = "https://generativelanguage.googleapis.com";
 
@@ -504,10 +506,8 @@ pub async fn stream(
                 }
 
                 // Update usage (last chunk wins).
-                if let Some(meta) = chunk.get("usageMetadata") {
-                    usage.input_tokens = meta.get("promptTokenCount").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-                    usage.output_tokens = meta.get("candidatesTokenCount").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-                    usage.cache_read_tokens = meta.get("cachedContentTokenCount").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                if chunk.get("usageMetadata").is_some() {
+                    usage = extract_gemini_usage(chunk.get("usageMetadata"));
                 }
 
                 if lines.is_empty() { None } else { Some(lines.join("\n")) }
@@ -625,22 +625,7 @@ pub async fn generate(
         .and_then(|r| r.as_str());
     let finish_reason = normalize_finish_reason(finish_reason).to_string();
 
-    let meta = resp.get("usageMetadata");
-    let usage = Usage {
-        input_tokens: meta
-            .and_then(|m| m.get("promptTokenCount"))
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as u32,
-        output_tokens: meta
-            .and_then(|m| m.get("candidatesTokenCount"))
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as u32,
-        cache_read_tokens: meta
-            .and_then(|m| m.get("cachedContentTokenCount"))
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as u32,
-        cache_creation_tokens: 0,
-    };
+    let usage = extract_gemini_usage(resp.get("usageMetadata"));
 
     Ok(GenerateResponse {
         content: text_content,
