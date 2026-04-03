@@ -403,47 +403,7 @@ async fn handle_generation(
         if regen {
             engine.truncate_after_last_user_turn()?;
         } else if !body.text.is_empty() || !body.images.is_empty() {
-            // Copy incoming images to durable attachments/ directory.
-            let character_data_dir = data_dir.join(&char_name);
-            let attachments_dir = character_data_dir.join("images").join("attachments");
-            let mut images: Vec<ImageRef> = Vec::with_capacity(body.images.len());
-            let mut content_blocks: Vec<ContentBlock> = Vec::new();
-
-            for src_path_str in &body.images {
-                let src_path = std::path::Path::new(src_path_str);
-                if !src_path.exists() {
-                    warn!(path = %src_path_str, "Skipping non-existent image");
-                    continue;
-                }
-                if let Err(e) = std::fs::create_dir_all(&attachments_dir) {
-                    warn!(error = %e, "Failed to create attachments directory");
-                    continue;
-                }
-                let original_name = src_path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "image".to_string());
-                let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
-                let dest_name = format!("{timestamp}_{original_name}");
-                let dest_path = attachments_dir.join(&dest_name);
-
-                match std::fs::copy(src_path, &dest_path) {
-                    Ok(_) => {
-                        let abs_path = dest_path.to_string_lossy().to_string();
-                        let rel_path = format!("attachments/{dest_name}");
-                        images.push(ImageRef { path: abs_path, caption: None });
-                        content_blocks.push(ContentBlock::Text {
-                            text: format!("[Attached image saved as: {rel_path}]"),
-                        });
-                        info!(src = %src_path_str, dest = %rel_path, "Copied incoming image to attachments");
-                    }
-                    Err(e) => {
-                        warn!(src = %src_path_str, error = %e, "Failed to copy image to attachments");
-                        // Fall back to the original path so the image still reaches the LLM.
-                        images.push(ImageRef { path: src_path_str.clone(), caption: None });
-                    }
-                }
-            }
+            let (images, mut content_blocks) = ingest_images(&data_dir, &char_name, &body.images);
 
             // User text comes after the image annotations.
             content_blocks.push(ContentBlock::Text { text: body.text.clone() });
@@ -898,6 +858,60 @@ async fn handle_generation(
     );
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Image ingestion
+// ---------------------------------------------------------------------------
+
+/// Copy incoming image paths to durable attachments/ directory.
+/// Returns (persisted ImageRefs, annotation ContentBlocks).
+fn ingest_images(
+    data_dir: &std::path::Path,
+    char_name: &str,
+    image_paths: &[String],
+) -> (Vec<ImageRef>, Vec<ContentBlock>) {
+    let character_data_dir = data_dir.join(char_name);
+    let attachments_dir = character_data_dir.join("images").join("attachments");
+    let mut images: Vec<ImageRef> = Vec::with_capacity(image_paths.len());
+    let mut content_blocks: Vec<ContentBlock> = Vec::new();
+
+    for src_path_str in image_paths {
+        let src_path = std::path::Path::new(src_path_str);
+        if !src_path.exists() {
+            warn!(path = %src_path_str, "Skipping non-existent image");
+            continue;
+        }
+        if let Err(e) = std::fs::create_dir_all(&attachments_dir) {
+            warn!(error = %e, "Failed to create attachments directory");
+            continue;
+        }
+        let original_name = src_path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "image".to_string());
+        let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+        let dest_name = format!("{timestamp}_{original_name}");
+        let dest_path = attachments_dir.join(&dest_name);
+
+        match std::fs::copy(src_path, &dest_path) {
+            Ok(_) => {
+                let abs_path = dest_path.to_string_lossy().to_string();
+                let rel_path = format!("attachments/{dest_name}");
+                images.push(ImageRef { path: abs_path, caption: None });
+                content_blocks.push(ContentBlock::Text {
+                    text: format!("[Attached image saved as: {rel_path}]"),
+                });
+                info!(src = %src_path_str, dest = %rel_path, "Copied incoming image to attachments");
+            }
+            Err(e) => {
+                warn!(src = %src_path_str, error = %e, "Failed to copy image to attachments");
+                images.push(ImageRef { path: src_path_str.clone(), caption: None });
+            }
+        }
+    }
+
+    (images, content_blocks)
 }
 
 // ---------------------------------------------------------------------------

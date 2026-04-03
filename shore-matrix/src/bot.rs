@@ -11,7 +11,6 @@ use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
 /// Configuration for the Matrix bot.
-#[allow(dead_code)]
 pub struct BotConfig {
     pub homeserver: String,
     pub user_id: String,
@@ -23,7 +22,6 @@ pub struct BotConfig {
 
 /// Events from Matrix forwarded to the bridge loop.
 #[derive(Debug)]
-#[allow(dead_code)]
 pub enum MatrixEvent {
     /// A text message was sent in a room.
     Message {

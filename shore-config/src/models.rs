@@ -265,6 +265,8 @@ pub enum CatalogError {
     },
     #[error("ambiguous model name \"{name}\" — found in: {locations}")]
     AmbiguousName { name: String, locations: String },
+    #[error("model \"{name}\" not found")]
+    NotFound { name: String },
 }
 
 /// Dict-valued TOML keys at the provider level that are config fields,
@@ -337,10 +339,8 @@ impl ModelCatalog {
 
         match matches.len() {
             0 => {
-                // Not found — return a helpful error.
-                Err(CatalogError::AmbiguousName {
+                Err(CatalogError::NotFound {
                     name: name.to_string(),
-                    locations: "nowhere (model not found)".to_string(),
                 })
             }
             1 => Ok(matches[0]),
@@ -741,7 +741,7 @@ model_id = "tools-fast"
     fn find_model_not_found() {
         let catalog = ModelCatalog::default();
         let err = catalog.find_model("nonexistent").unwrap_err();
-        assert!(matches!(err, CatalogError::AmbiguousName { .. }));
+        assert!(matches!(err, CatalogError::NotFound { .. }));
     }
 
     #[test]

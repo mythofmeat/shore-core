@@ -6,7 +6,6 @@ use crate::images::ImageCache;
 
 /// A single entry in the conversation log.
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
 pub enum ConversationEntry {
     User {
         content: String,
@@ -27,11 +26,13 @@ pub enum ConversationEntry {
         content: String,
     },
     ToolCall {
+        #[allow(dead_code)] // stored for protocol fidelity; TUI renders by tool_name
         tool_id: String,
         tool_name: String,
         input: serde_json::Value,
     },
     ToolResult {
+        #[allow(dead_code)] // stored for protocol fidelity; TUI renders by tool_name
         tool_id: String,
         tool_name: String,
         output: String,

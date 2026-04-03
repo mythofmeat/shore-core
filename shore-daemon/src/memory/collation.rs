@@ -4,6 +4,7 @@ use crate::memory::vectorstore::VectorStore;
 use chrono::Utc;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
+use std::path::Path;
 use std::pin::Pin;
 
 // ---------------------------------------------------------------------------
@@ -2085,4 +2086,98 @@ mod tests {
         assert_eq!(clusters[0].len(), 15);
         assert_eq!(clusters[1].len(), 15);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Background collation (moved from main.rs)
+// ---------------------------------------------------------------------------
+
+/// Run the collation pipeline for a single character.
+///
+/// Called after compaction (auto-trigger) or could be invoked independently.
+pub async fn run_collation(
+    character: &str,
+    config: &shore_config::LoadedConfig,
+    llm_client: &shore_llm_client::LlmClient,
+    data_dir: &Path,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use crate::commands::state::resolve_collation_model;
+    use crate::memory::agent::{AgentSearchContext, RealAgentIndexer};
+    use crate::memory::collation_impls::RealCollationLlm;
+    use crate::memory::compaction_impls::resolve_embed_config;
+    use shore_config::{load_character_definition, resolve_prompt_template, resolve_user_definition};
+    use tracing::info;
+
+    let character_dir = data_dir.join(character);
+
+    // Open memory DB.
+    let db_path = character_dir.join("memory").join("memory.db");
+    let db = MemoryDB::open(&db_path)
+        .map_err(|e| format!("Failed to open memory DB: {e}"))?;
+
+    let model = resolve_collation_model(config)
+        .ok_or("No model configured")?;
+
+    let llm = RealCollationLlm::new(llm_client.clone(), model);
+
+    // Resolve prompt template.
+    let refine_template = resolve_prompt_template(&config.dirs.config, character, "refine.md")
+        .unwrap_or_else(|| DEFAULT_REFINE_PROMPT.to_string());
+
+    let mgr = CollationManager::new(CollationConfig::default());
+    let collation_limit = config.app.memory.collation.batch_limit;
+
+    // Construct vector store + indexer for clustering and indexing (optional).
+    let search_ctx = match resolve_embed_config(
+        config.app.defaults.embedding.as_deref(),
+        &config.models.embedding,
+    ) {
+        Ok(embed_config) => {
+            let vs_path = character_dir.join("memory").join("vectorstore");
+            match VectorStore::open(&vs_path, embed_config.dimensions).await {
+                Ok(vs) => Some(AgentSearchContext::new(
+                    vs, llm_client.clone(), embed_config,
+                )),
+                Err(e) => {
+                    tracing::warn!("Vector store unavailable for auto-collation: {e}");
+                    None
+                }
+            }
+        }
+        Err(_) => None,
+    };
+    let indexer = search_ctx.as_ref().map(|ctx| {
+        RealAgentIndexer::new(ctx)
+    });
+
+    let collation_display_name = config.app.defaults.resolve_display_name();
+    let mut collation_vars = HashMap::new();
+    collation_vars.insert("char".to_string(), character.to_string());
+    collation_vars.insert("user".to_string(), collation_display_name);
+    if let Some(cd) = load_character_definition(&config.dirs.config, character) {
+        collation_vars.insert("char_description".to_string(), cd);
+    }
+    if let Some(ud) = resolve_user_definition(&config.dirs.config, character) {
+        collation_vars.insert("user_description".to_string(), ud);
+    }
+
+    let outcome = mgr
+        .run(
+            &db, &llm, &refine_template, &collation_vars,
+            indexer.as_ref().map(|i| i as &dyn AgentIndexer),
+            search_ctx.as_ref().map(|ctx| &ctx.vector_store),
+            Some(collation_limit),
+        )
+        .await?;
+
+    info!(
+        character = %character,
+        refine_merges = outcome.refine_merges,
+        refine_splits = outcome.refine_splits,
+        refine_updates = outcome.refine_updates,
+        entries_decayed = outcome.entries_decayed,
+        "Auto-collation completed"
+    );
+
+    Ok(())
 }

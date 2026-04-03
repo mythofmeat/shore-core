@@ -12,7 +12,6 @@ use tokio::time::{sleep, Duration};
 
 /// Events sent from the connection task to the application loop.
 #[derive(Debug)]
-#[allow(dead_code)]
 pub enum ConnEvent {
     Connected {
         server_name: String,

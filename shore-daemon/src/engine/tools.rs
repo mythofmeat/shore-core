@@ -16,7 +16,7 @@ use shore_protocol::types::{derive_content_from_blocks, ContentBlock, Message, R
 // ── Errors ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, thiserror::Error)]
-pub enum ToolError {
+pub enum ToolLoopError {
     #[error("LLM error during tool loop: {0}")]
     Llm(#[from] LlmError),
 }
@@ -51,7 +51,7 @@ pub async fn run_tool_loop(
     max_iterations: u32,
     cache_ctx: &CacheContext,
     diag: &Arc<Mutex<Diagnostics>>,
-) -> Result<ToolLoopResult, ToolError> {
+) -> Result<ToolLoopResult, ToolLoopError> {
     let consumer = StreamConsumer::new(push_tx.clone());
     let mut intermediate_messages: Vec<Message> = Vec::new();
 
