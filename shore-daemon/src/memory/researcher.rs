@@ -535,4 +535,63 @@ mod tests {
         assert!(!researcher.char_definition.is_empty());
         assert!(!researcher.user_description.is_empty());
     }
+
+    /// Researcher always requests tool calls → exhausts MAX_RESEARCHER_ITERATIONS,
+    /// then falls back to raw tool outputs.
+    #[tokio::test]
+    async fn max_iterations_reached() {
+        // 15 ask_memory_agent tool_use responses from the researcher.
+        let researcher_responses: Vec<AgentLlmResponse> = (0..MAX_RESEARCHER_ITERATIONS)
+            .map(|i| AgentLlmResponse {
+                text: String::new(),
+                content_blocks: vec![ContentBlock::ToolUse {
+                    id: format!("tu_{i}"),
+                    name: "ask_memory_agent".into(),
+                    input: json!({"question": format!("query {i}")}),
+                }],
+                finish_reason: "tool_use".into(),
+            })
+            .collect();
+
+        // Agent returns a simple text response for each ask().
+        // Each ask() invokes run_agent_loop which consumes one agent_mock response.
+        let agent_responses: Vec<AgentLlmResponse> = (0..MAX_RESEARCHER_ITERATIONS)
+            .map(|i| AgentLlmResponse {
+                text: format!("Agent result {i}"),
+                content_blocks: vec![ContentBlock::Text {
+                    text: format!("Agent result {i}"),
+                }],
+                finish_reason: "end_turn".into(),
+            })
+            .collect();
+
+        let researcher_mock = MockAgentLlm::new(researcher_responses);
+        let agent_mock = MockAgentLlm::new(agent_responses);
+
+        let db = MemoryDB::open_in_memory().unwrap();
+        let agent = MemoryAgent::one_shot(CallerIdentity::Char, "Alice", "Bob");
+        let researcher = MemoryResearcher::new(String::new(), String::new());
+
+        let result = researcher
+            .research(
+                "loop test",
+                &researcher_mock,
+                &test_model(),
+                &agent,
+                &agent_mock,
+                &test_model(),
+                &db,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        // After exhausting iterations, researcher falls back to raw tool outputs.
+        assert_eq!(researcher_mock.call_count(), MAX_RESEARCHER_ITERATIONS);
+        assert_eq!(agent_mock.call_count(), MAX_RESEARCHER_ITERATIONS);
+        // Result should contain the raw agent outputs joined together.
+        assert!(result.contains("Agent result 0"));
+        assert!(result.contains(&format!("Agent result {}", MAX_RESEARCHER_ITERATIONS - 1)));
+    }
 }

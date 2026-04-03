@@ -1336,4 +1336,53 @@ mod tests {
             None
         );
     }
+
+    // -- state resilience -----------------------------------------------------
+
+    #[test]
+    fn load_state_corrupt_file_returns_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path();
+        let char_dir = data_dir.join("alice");
+        std::fs::create_dir_all(&char_dir).unwrap();
+
+        // Write garbage bytes.
+        std::fs::write(state_path(data_dir, "alice"), b"not valid json {{{{").unwrap();
+
+        let loaded = load_state(data_dir, "alice");
+        assert!(loaded.is_none(), "Corrupt state file should return None");
+    }
+
+    #[test]
+    fn load_state_future_version_returns_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path();
+        let char_dir = data_dir.join("alice");
+        std::fs::create_dir_all(&char_dir).unwrap();
+
+        // Write valid JSON but with a future version number.
+        let future = serde_json::json!({
+            "version": 99,
+            "interiority_state": "Active",
+            "ticks_without_user": 0,
+            "cache_ping_count": 0,
+        });
+        std::fs::write(state_path(data_dir, "alice"), future.to_string()).unwrap();
+
+        let loaded = load_state(data_dir, "alice");
+        assert!(loaded.is_none(), "Future version should return None (migration path)");
+    }
+
+    #[test]
+    fn restore_unknown_interiority_state_defaults_to_active() {
+        let persisted = PersistedState {
+            version: STATE_VERSION,
+            interiority_state: "SomeFutureState".into(),
+            ticks_without_user: 7,
+            cache_ping_count: 0,
+        };
+        let (state, ticks) = restore_interiority(&persisted);
+        assert_eq!(state, InteriorityState::Active);
+        assert_eq!(ticks, 7);
+    }
 }

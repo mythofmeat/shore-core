@@ -321,4 +321,51 @@ mod tests {
             other => panic!("Expected CommandOutput, got {:?}", other),
         }
     }
+
+    // ── dispatch_characterless ───────────────────────────────────────────
+
+    #[test]
+    fn dispatch_characterless_list_characters() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        // Create a character directory so list_characters finds something.
+        let char_dir = tmp.path().join("config").join("characters").join("alice");
+        std::fs::create_dir_all(&char_dir).unwrap();
+        std::fs::write(
+            char_dir.join("definition.toml"),
+            "[character]\nname = \"Alice\"\n",
+        )
+        .unwrap();
+
+        let (_engine, ctx, _rx) = make_ctx(&tmp);
+
+        let cmd = Command {
+            rid: None,
+            name: "list_characters".into(),
+            args: serde_json::json!({}),
+        };
+
+        let result = dispatch_characterless(&ctx, &cmd);
+        assert!(result.is_ok());
+        let data = result.unwrap();
+        assert!(data["characters"].is_array());
+    }
+
+    #[test]
+    fn dispatch_characterless_rejects_unknown_command() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_engine, ctx, _rx) = make_ctx(&tmp);
+
+        let cmd = Command {
+            rid: None,
+            name: "status".into(),
+            args: serde_json::json!({}),
+        };
+
+        let result = dispatch_characterless(&ctx, &cmd);
+        assert!(result.is_err());
+        let (code, msg) = result.unwrap_err();
+        assert_eq!(code, ErrorCode::InvalidRequest);
+        assert!(msg.contains("requires a character"));
+    }
 }

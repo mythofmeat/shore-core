@@ -442,6 +442,66 @@ pub fn memory_shell_end(
     Ok(json!({ "ok": true }))
 }
 
+/// Run collation after a successful compaction, if enabled.
+async fn run_post_compaction_collation(
+    ctx: &CommandContext,
+    char_name: &str,
+    display_name: &str,
+    db: &MemoryDB,
+) -> Option<serde_json::Value> {
+    let collation_model = resolve_collation_model(&ctx.config);
+
+    let cmodel = collation_model?;
+
+    let collation_llm = RealCollationLlm::new(ctx.llm_client.clone(), cmodel);
+    let refine_template = resolve_prompt_template(
+        &ctx.config.dirs.config,
+        char_name,
+        "refine.md",
+    )
+    .unwrap_or_else(|| DEFAULT_REFINE_PROMPT.to_string());
+
+    let collation_mgr = CollationManager::new(LibCollationConfig::default());
+    let collation_limit = ctx.config.app.memory.collation.batch_limit;
+
+    // Open a second vector store for collation (the compaction one was moved).
+    let collation_search_ctx = setup_search_context(ctx, char_name).await;
+    let collation_indexer = collation_search_ctx.as_ref().map(RealAgentIndexer::new);
+
+    let collation_vars = build_collation_vars(ctx, char_name, display_name);
+    match collation_mgr
+        .run(
+            db,
+            &collation_llm,
+            &refine_template,
+            &collation_vars,
+            collation_indexer.as_ref().map(|i| i as &dyn crate::memory::agent::AgentIndexer),
+            collation_search_ctx.as_ref().map(|ctx| &ctx.vector_store),
+            Some(collation_limit),
+        )
+        .await
+    {
+        Ok(outcome) => Some(json!({
+            "timestamps_backfilled": outcome.timestamps_backfilled,
+            "refine_merges": outcome.refine_merges,
+            "refine_splits": outcome.refine_splits,
+            "refine_updates": outcome.refine_updates,
+            "refine_new_entries": outcome.refine_new_entries,
+            "refine_kept": outcome.refine_kept,
+            "entries_decayed": outcome.entries_decayed,
+            "entries_skipped": outcome.entries_skipped,
+        })),
+        Err(e) => {
+            tracing::warn!(
+                character = %char_name,
+                error = %e,
+                "Collation after compaction failed"
+            );
+            None
+        }
+    }
+}
+
 /// Run compaction on the current character's conversation.
 ///
 /// Extracts memories from the active conversation via an LLM, stores them
@@ -558,60 +618,7 @@ pub async fn compact(
             let collation_result = if do_collate
                 && ctx.config.app.memory.collation.enabled
             {
-                let collation_model = resolve_collation_model(&ctx.config);
-
-                if let Some(cmodel) = collation_model {
-                    let collation_llm =
-                        RealCollationLlm::new(ctx.llm_client.clone(), cmodel);
-                    let refine_template = resolve_prompt_template(
-                        &ctx.config.dirs.config,
-                        &char_name,
-                        "refine.md",
-                    )
-                    .unwrap_or_else(|| DEFAULT_REFINE_PROMPT.to_string());
-
-                    let collation_mgr = CollationManager::new(LibCollationConfig::default());
-                    let collation_limit = ctx.config.app.memory.collation.batch_limit;
-
-                    // Open a second vector store for collation (the compaction one was moved).
-                    let collation_search_ctx = setup_search_context(ctx, &char_name).await;
-                    let collation_indexer = collation_search_ctx.as_ref().map(RealAgentIndexer::new);
-
-                    let collation_vars = build_collation_vars(ctx, &char_name, &display_name);
-                    match collation_mgr
-                        .run(
-                            &db,
-                            &collation_llm,
-                            &refine_template,
-                            &collation_vars,
-                            collation_indexer.as_ref().map(|i| i as &dyn crate::memory::agent::AgentIndexer),
-                            collation_search_ctx.as_ref().map(|ctx| &ctx.vector_store),
-                            Some(collation_limit),
-                        )
-                        .await
-                    {
-                        Ok(outcome) => Some(json!({
-                            "timestamps_backfilled": outcome.timestamps_backfilled,
-                            "refine_merges": outcome.refine_merges,
-                            "refine_splits": outcome.refine_splits,
-                            "refine_updates": outcome.refine_updates,
-                            "refine_new_entries": outcome.refine_new_entries,
-                            "refine_kept": outcome.refine_kept,
-                            "entries_decayed": outcome.entries_decayed,
-                            "entries_skipped": outcome.entries_skipped,
-                        })),
-                        Err(e) => {
-                            tracing::warn!(
-                                character = %char_name,
-                                error = %e,
-                                "Collation after compaction failed"
-                            );
-                            None
-                        }
-                    }
-                } else {
-                    None
-                }
+                run_post_compaction_collation(ctx, &char_name, &display_name, &db).await
             } else {
                 None
             };
@@ -1506,5 +1513,75 @@ model_id = "gpt-4o"
         assert_eq!(result["reset_to"], "config default");
         // AppConfig::default() has no defaults.model, so active_model should be None.
         assert!(ctx.active_model.is_none());
+    }
+
+    // ── memory_purge ─────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn memory_purge_deletes_old_superseded_entries() {
+        use crate::memory::db::Entry;
+
+        let tmp = TempDir::new().unwrap();
+        let (mut engine, ctx, _rx) = make_ctx(&tmp);
+
+        // Create memory DB on disk at the path memory_purge expects.
+        let mem_dir = ctx.data_dir.join("TestChar").join("memory");
+        std::fs::create_dir_all(&mem_dir).unwrap();
+        let db = MemoryDB::open(&mem_dir.join("memory.db")).unwrap();
+
+        let old_ts = "2020-01-01T00:00:00Z".to_string();
+        let recent_ts = chrono::Utc::now().to_rfc3339();
+        let empty = String::new();
+
+        let make_entry = |id: &str, status: &str, superseded_by: &str, image_path: &str, ts: &str| Entry {
+            id: id.into(),
+            memory_type: "observation".into(),
+            source: "test".into(),
+            reason: empty.clone(),
+            status: status.into(),
+            confidence: 1.0,
+            summary_text: format!("Entry {id}"),
+            topic_tags: empty.clone(),
+            topic_key: empty.clone(),
+            start_timestamp: empty.clone(),
+            end_timestamp: empty.clone(),
+            message_count: 0,
+            source_entry_ids: empty.clone(),
+            related_entry_ids: empty.clone(),
+            superseded_by: superseded_by.into(),
+            created_at: ts.into(),
+            updated_at: ts.into(),
+            entry_type: empty.clone(),
+            image_path: image_path.into(),
+            collated_at: empty.clone(),
+        };
+
+        // Active entry that serves as the replacement target.
+        db.create_entry(&make_entry("active-1", "active", "", "", &old_ts)).unwrap();
+        // Old superseded entry with valid replacement → should be deleted.
+        db.create_entry(&make_entry("old-superseded", "superseded", "active-1", "", &old_ts)).unwrap();
+        // Recent superseded entry → should be skipped (not old enough).
+        db.create_entry(&make_entry("recent-superseded", "superseded", "active-1", "", &recent_ts)).unwrap();
+        // Superseded entry with image_path → should be skipped.
+        db.create_entry(&make_entry("image-superseded", "superseded", "active-1", "/some/image.png", &old_ts)).unwrap();
+        // Superseded entry with empty superseded_by → should be skipped.
+        db.create_entry(&make_entry("no-replacement", "superseded", "", "", &old_ts)).unwrap();
+
+        drop(db); // Close so memory_purge can open it.
+
+        let result = memory_purge(&mut engine, &ctx, &json!({"older_than": "1d"}))
+            .await
+            .unwrap();
+
+        assert_eq!(result["deleted"], 1);
+        assert_eq!(result["skipped_image"], 1);
+        assert_eq!(result["skipped_no_replacement"], 1);
+
+        // Verify the entry was actually removed from the DB.
+        let db = MemoryDB::open(&mem_dir.join("memory.db")).unwrap();
+        assert!(db.get_entry("old-superseded").unwrap().is_none());
+        assert!(db.get_entry("recent-superseded").unwrap().is_some());
+        assert!(db.get_entry("image-superseded").unwrap().is_some());
+        assert!(db.get_entry("no-replacement").unwrap().is_some());
     }
 }

@@ -491,4 +491,42 @@ mod tests {
         let tool_results = &second_messages[2]["content"];
         assert_eq!(tool_results.as_array().unwrap().len(), 2);
     }
+
+    /// LLM always requests tool calls → loop exhausts MAX_ITERATIONS.
+    #[tokio::test]
+    async fn max_iterations_reached() {
+        // 40 identical search_entries responses (read-only, no confirmation needed).
+        let responses: Vec<AgentLlmResponse> = (0..MAX_ITERATIONS)
+            .map(|i| AgentLlmResponse {
+                text: String::new(),
+                content_blocks: vec![ContentBlock::ToolUse {
+                    id: format!("tu_{i}"),
+                    name: "search_entries".into(),
+                    input: json!({"query": "loop forever"}),
+                }],
+                finish_reason: "tool_use".into(),
+            })
+            .collect();
+
+        let mock = MockAgentLlm::new(responses);
+        let db = test_db();
+        let model = test_model();
+
+        let (text, mutations) = run_agent_loop(
+            &mock,
+            &db,
+            None,
+            None,
+            &model,
+            "system",
+            vec![json!({"role": "user", "content": "loop test"})],
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(text, "Agent loop reached maximum iterations.");
+        assert!(mutations.is_empty());
+        assert_eq!(mock.call_count(), MAX_ITERATIONS);
+    }
 }

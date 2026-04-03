@@ -1189,4 +1189,80 @@ mod tests {
 
         assert!(result.is_err(), "Expected error due to no model configured");
     }
+
+    // ── image helpers ────────────────────────────────────────────────────
+
+    #[test]
+    fn media_type_for_path_supported() {
+        assert_eq!(media_type_for_path("photo.jpg"), Some("image/jpeg"));
+        assert_eq!(media_type_for_path("photo.jpeg"), Some("image/jpeg"));
+        assert_eq!(media_type_for_path("photo.JPG"), Some("image/jpeg"));
+        assert_eq!(media_type_for_path("photo.png"), Some("image/png"));
+        assert_eq!(media_type_for_path("photo.gif"), Some("image/gif"));
+        assert_eq!(media_type_for_path("photo.webp"), Some("image/webp"));
+    }
+
+    #[test]
+    fn media_type_for_path_unsupported() {
+        assert_eq!(media_type_for_path("photo.bmp"), None);
+        assert_eq!(media_type_for_path("photo.tiff"), None);
+        assert_eq!(media_type_for_path("file.txt"), None);
+        assert_eq!(media_type_for_path("noext"), None);
+    }
+
+    #[test]
+    fn build_content_text_only() {
+        let result = build_content("hello", &[]);
+        assert_eq!(result, serde_json::json!("hello"));
+    }
+
+    #[test]
+    fn build_content_with_image() {
+        let tmp = TempDir::new().unwrap();
+        let img_path = tmp.path().join("test.png");
+        // Minimal valid PNG: 8-byte header.
+        std::fs::write(&img_path, b"\x89PNG\r\n\x1a\n").unwrap();
+
+        let images = vec![ImageRef {
+            path: img_path.to_str().unwrap().to_string(),
+            caption: None,
+        }];
+
+        let result = build_content("describe this", &images);
+        let blocks = result.as_array().expect("Should be a JSON array");
+        assert_eq!(blocks.len(), 2); // image block + text block
+
+        // Image block.
+        assert_eq!(blocks[0]["type"], "image");
+        assert_eq!(blocks[0]["source"]["type"], "base64");
+        assert_eq!(blocks[0]["source"]["media_type"], "image/png");
+        assert!(!blocks[0]["source"]["data"].as_str().unwrap().is_empty());
+
+        // Text block.
+        assert_eq!(blocks[1]["type"], "text");
+        assert_eq!(blocks[1]["text"], "describe this");
+    }
+
+    #[test]
+    fn build_content_skips_unsupported_and_missing() {
+        let tmp = TempDir::new().unwrap();
+        let images = vec![
+            // Unsupported extension → skipped.
+            ImageRef {
+                path: tmp.path().join("file.bmp").to_str().unwrap().to_string(),
+                caption: None,
+            },
+            // Missing file → skipped.
+            ImageRef {
+                path: tmp.path().join("ghost.png").to_str().unwrap().to_string(),
+                caption: None,
+            },
+        ];
+
+        let result = build_content("text", &images);
+        let blocks = result.as_array().expect("Should be a JSON array");
+        // Only the text block remains (both images were skipped).
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0]["type"], "text");
+    }
 }
