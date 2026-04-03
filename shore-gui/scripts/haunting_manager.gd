@@ -18,6 +18,8 @@ var _target_rain_angle := 0.15
 
 # Mystery sound
 var _mystery_stream: AudioStreamWAV
+var _foghorn_stream: AudioStreamWAV
+var _car_engine_stream: AudioStreamWAV
 
 const MIN_INTERVAL := 15.0
 const MAX_INTERVAL := 45.0
@@ -30,6 +32,8 @@ const HAUNTING_WEIGHTS := {
 	"wind_shift": 3,
 	"mystery_sound": 2,
 	"phosphor_linger": 3,
+	"foghorn": 2,
+	"car_engine": 1,
 }
 
 func setup(effects: Node, phosphor_effect: PhosphorEffect) -> void:
@@ -39,6 +43,8 @@ func setup(effects: Node, phosphor_effect: PhosphorEffect) -> void:
 	_starfield_rect = effects.get_node("../StarfieldLayer/StarfieldRect")
 	_mystery_audio = $MysteryAudio
 	_mystery_stream = _generate_mystery_sound()
+	_foghorn_stream = _generate_foghorn()
+	_car_engine_stream = _generate_car_engine()
 	_mystery_audio.stream = _mystery_stream
 	_mystery_audio.volume_db = -24.0
 
@@ -94,6 +100,18 @@ func _start_haunting(haunting_type: String) -> void:
 			_haunting_duration = 3.0
 			if _phosphor_effect:
 				_phosphor_effect.linger_active = true
+		"foghorn":
+			_haunting_duration = 3.5
+			_mystery_audio.stream = _foghorn_stream
+			_mystery_audio.pitch_scale = randf_range(0.85, 1.1)
+			_mystery_audio.volume_db = -20.0
+			_mystery_audio.play()
+		"car_engine":
+			_haunting_duration = 4.0
+			_mystery_audio.stream = _car_engine_stream
+			_mystery_audio.pitch_scale = randf_range(0.9, 1.05)
+			_mystery_audio.volume_db = -26.0  # very distant
+			_mystery_audio.play()
 
 func _process_active_haunting(_delta: float) -> void:
 	var t := _haunting_timer
@@ -150,6 +168,10 @@ func _end_haunting() -> void:
 		"phosphor_linger":
 			if _phosphor_effect:
 				_phosphor_effect.linger_active = false
+		"foghorn", "car_engine":
+			# Restore mystery stream for next mystery_sound haunting
+			_mystery_audio.stream = _mystery_stream
+			_mystery_audio.volume_db = -24.0
 	_active_haunting = ""
 
 func _generate_mystery_sound() -> AudioStreamWAV:
@@ -170,6 +192,78 @@ func _generate_mystery_sound() -> AudioStreamWAV:
 		var sample := sin(t * TAU * freq) * env * am
 		# Add slight harmonic
 		sample += sin(t * TAU * freq * 1.5) * env * am * 0.3
+		var s16 := int(clampf(sample, -1.0, 1.0) * 32767.0)
+		data.append(s16 & 0xFF)
+		data.append((s16 >> 8) & 0xFF)
+	stream.data = data
+	return stream
+
+func _generate_foghorn() -> AudioStreamWAV:
+	# Distant foghorn — low drone with slow attack/sustain/decay, slight AM wobble
+	var stream := AudioStreamWAV.new()
+	stream.format = AudioStreamWAV.FORMAT_16_BITS
+	stream.mix_rate = MIX_RATE
+	var data := PackedByteArray()
+	var duration := 3.0
+	var total := int(MIX_RATE * duration)
+	for i in total:
+		var t := float(i) / float(MIX_RATE)
+		# Envelope: 0.8s attack, 1.4s sustain, 0.8s decay
+		var env: float
+		if t < 0.8:
+			env = t / 0.8
+		elif t < 2.2:
+			env = 1.0
+		else:
+			env = clampf((duration - t) / 0.8, 0.0, 1.0)
+		env *= env  # soften edges
+		# Core tone: low fundamental + harmonics
+		var fundamental := 85.0
+		var sample := sin(t * TAU * fundamental) * 0.5
+		sample += sin(t * TAU * fundamental * 2.0) * 0.25
+		sample += sin(t * TAU * fundamental * 3.0) * 0.1
+		# Slow AM wobble for that distant foghorn warble
+		var am := sin(t * TAU * 1.8) * 0.15 + 0.85
+		sample *= env * am * 0.15
+		var s16 := int(clampf(sample, -1.0, 1.0) * 32767.0)
+		data.append(s16 & 0xFF)
+		data.append((s16 >> 8) & 0xFF)
+	stream.data = data
+	return stream
+
+func _generate_car_engine() -> AudioStreamWAV:
+	# Distant idling car — rough low-frequency rumble, irregular rhythm
+	var stream := AudioStreamWAV.new()
+	stream.format = AudioStreamWAV.FORMAT_16_BITS
+	stream.mix_rate = MIX_RATE
+	var data := PackedByteArray()
+	var duration := 3.5
+	var total := int(MIX_RATE * duration)
+	var rng_state := 31337
+	for i in total:
+		var t := float(i) / float(MIX_RATE)
+		# Envelope: fade in 0.5s, sustain, fade out 0.8s
+		var env: float
+		if t < 0.5:
+			env = t / 0.5
+		elif t < duration - 0.8:
+			env = 1.0
+		else:
+			env = clampf((duration - t) / 0.8, 0.0, 1.0)
+		# Engine fundamental (~40Hz) with harmonics — rough idle
+		var rpm_wobble := sin(t * TAU * 0.4) * 3.0  # slight RPM variation
+		var fundamental := 40.0 + rpm_wobble
+		var sample := sin(t * TAU * fundamental) * 0.4
+		sample += sin(t * TAU * fundamental * 2.0) * 0.3
+		sample += sin(t * TAU * fundamental * 3.5) * 0.15
+		sample += sin(t * TAU * fundamental * 5.0) * 0.08
+		# Rough combustion texture — modulated noise
+		rng_state = (rng_state * 1103515245 + 12345) & 0x7FFFFFFF
+		var noise := float(rng_state) / float(0x7FFFFFFF) * 2.0 - 1.0
+		# Gate noise to cylinder firing pulses (~20Hz bursts)
+		var pulse := maxf(sin(t * TAU * fundamental * 0.5), 0.0)
+		sample += noise * pulse * 0.1
+		sample *= env * 0.08  # very quiet
 		var s16 := int(clampf(sample, -1.0, 1.0) * 32767.0)
 		data.append(s16 & 0xFF)
 		data.append((s16 >> 8) & 0xFF)

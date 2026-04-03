@@ -93,6 +93,17 @@ var _vhs_max_intensity := 1.0  # capped lower for Silent Shore
 # For haunting system (set externally by haunting_manager)
 var phosphor_linger_active := false
 
+# Rain intensity fluctuation
+var _rain_intensity := 1.0
+var _rain_intensity_target := 1.0
+var _rain_shift_timer := 0.0
+var _rain_shift_interval := 20.0  # seconds until next target change
+
+# Thought-lights (typing glow)
+var _thought_intensity := 0.0
+var _thought_light_rect: ColorRect
+var _thought_light_material: ShaderMaterial
+
 # ── Node refs (set in _ready) ────────────────────────────────────
 
 var _crt_rect: ColorRect
@@ -158,6 +169,8 @@ var _crt_boot_stream: AudioStreamWAV
 var _soft_whoosh_stream: AudioStreamWAV
 var _muffled_keypress_stream: AudioStreamWAV
 var _rain_ambient_stream: AudioStreamWAV
+var _ocean_stream: AudioStreamWAV
+var _ocean_audio: AudioStreamPlayer
 var _effects_bus_idx := -1
 
 const MIX_RATE := 44100
@@ -175,12 +188,18 @@ func _ready() -> void:
 	_rain_fog_material = ShaderMaterial.new()
 	_rain_fog_material.shader = rain_fog_shader
 
+	# Thought-lights
+	_thought_light_rect = get_node("../ThoughtLightsLayer/ThoughtLightsRect")
+	if _thought_light_rect:
+		_thought_light_material = _thought_light_rect.material as ShaderMaterial
+
 	_token_audio = $TokenAudio
 	_error_audio = $ErrorAudio
 	_complete_audio = $CompleteAudio
 	_boot_audio = $BootAudio
 	_type_audio = $TypeAudio
 	_ambient_audio = $AmbientAudio
+	_ocean_audio = $OceanAudio
 	_input_field = get_node("../Layout/InputArea/InputField")
 	_fire_cursor = _input_field.get_node("FireCursor")
 	_completion_burst = get_node("../Layout/MessageScroll/CompletionBurst")
@@ -207,6 +226,7 @@ func _ready() -> void:
 	_soft_whoosh_stream = _generate_soft_whoosh()
 	_muffled_keypress_stream = _generate_muffled_keypress()
 	_rain_ambient_stream = _generate_rain_ambient()
+	_ocean_stream = _generate_ocean_waves()
 
 	# Audio bus for Silent Shore reverb/muffling
 	_effects_bus_idx = AudioServer.bus_count
@@ -238,6 +258,9 @@ func _ready() -> void:
 	_type_audio.volume_db = master_volume_db - 3.0
 	_ambient_audio.stream = _ambient_stream
 	_ambient_audio.volume_db = ambient_volume_db
+	_ocean_audio.stream = _ocean_stream
+	_ocean_audio.volume_db = -30.0  # very faint undertone
+	_ocean_audio.bus = "Master"
 
 	if _wpm_label:
 		_wpm_label.visible = false
@@ -302,6 +325,18 @@ func _process(delta: float) -> void:
 		var scroll_val := float(_scroll.scroll_vertical)
 		_starfield_rect.material.set_shader_parameter("scroll_offset", scroll_val)
 
+	# ── Rain intensity fluctuation ────────────────────────────────
+	if background_shader == "rain_fog" and _rain_fog_material:
+		_rain_shift_timer -= delta
+		if _rain_shift_timer <= 0.0:
+			# Pick new target: 0.3 (drizzle) to 1.8 (downpour)
+			_rain_intensity_target = randf_range(0.3, 1.8)
+			_rain_shift_interval = randf_range(10.0, 30.0)
+			_rain_shift_timer = _rain_shift_interval
+		# Slow lerp toward target — transitions take several seconds
+		_rain_intensity = lerpf(_rain_intensity, _rain_intensity_target, delta * 0.15)
+		_rain_fog_material.set_shader_parameter("rain_intensity", _rain_intensity)
+
 	# ── Ambient pitch modulation ──────────────────────────────────
 	if ambient_enabled and _ambient_audio:
 		if not _ambient_audio.playing:
@@ -310,9 +345,29 @@ func _process(delta: float) -> void:
 	elif _ambient_audio and _ambient_audio.playing:
 		_ambient_audio.stop()
 
+	# ── Ocean waves undertone (Silent Shore only) ─────────────────
+	if ambient_enabled and _ocean_audio and background_shader == "rain_fog":
+		if not _ocean_audio.playing:
+			_ocean_audio.play()
+		_ocean_audio.volume_db = ambient_volume_db - 6.0
+	elif _ocean_audio and _ocean_audio.playing:
+		_ocean_audio.stop()
+
 	# ── Fire cursor + typing speed + typing sounds ────────────────
 	if _fire_cursor and _input_field:
 		_update_fire_cursor(delta)
+
+	# ── Thought-lights (typing glow in background) ────────────────
+	if _thought_light_material:
+		# Ramp up when typing, slow fade when idle
+		var target := clampf(_typing_speed / 8.0, 0.0, 1.0)
+		if target > _thought_intensity:
+			_thought_intensity = lerpf(_thought_intensity, target, delta * 4.0)
+		else:
+			_thought_intensity = lerpf(_thought_intensity, 0.0, delta * 0.4)
+		_thought_light_material.set_shader_parameter("typing_intensity", _thought_intensity)
+		if _scroll:
+			_thought_light_material.set_shader_parameter("scroll_offset", float(_scroll.scroll_vertical))
 
 	# ── WPM display ───────────────────────────────────────────────
 	if wpm_enabled and _wpm_label:
@@ -479,6 +534,9 @@ func _apply_audio_palette(palette: String) -> void:
 	# Stop ambient so _process restarts it with the new stream
 	if _ambient_audio.playing:
 		_ambient_audio.stop()
+	# Ocean audio is managed by _process — stop it here so it restarts correctly
+	if _ocean_audio and _ocean_audio.playing:
+		_ocean_audio.stop()
 	if palette == "silent_shore":
 		_token_audio.stream = _water_drop_stream
 		_complete_audio.stream = _distant_thunk_stream
@@ -880,6 +938,50 @@ func _generate_rain_ambient() -> AudioStreamWAV:
 			fade = (1.0 - loop_t) / 0.05
 		elif loop_t < 0.05:
 			fade = loop_t / 0.05
+		filtered *= fade
+		var s16 := int(clampf(filtered, -1.0, 1.0) * 32767.0)
+		data.append(s16 & 0xFF)
+		data.append((s16 >> 8) & 0xFF)
+	stream.data = data
+	return stream
+
+func _generate_ocean_waves() -> AudioStreamWAV:
+	# Distant ocean — slow filtered noise surges, very low frequency
+	var stream := AudioStreamWAV.new()
+	stream.format = AudioStreamWAV.FORMAT_16_BITS
+	stream.mix_rate = MIX_RATE
+	stream.loop_mode = AudioStreamWAV.LOOP_FORWARD
+	var loop_seconds := 8.0  # longer loop for ocean variation
+	var total_samples := int(MIX_RATE * loop_seconds)
+	stream.loop_end = total_samples
+	var data := PackedByteArray()
+	var prev := 0.0
+	var prev2 := 0.0
+	var prev3 := 0.0
+	var rng_state := 77777
+	for i in total_samples:
+		var t := float(i) / float(MIX_RATE)
+		# White noise source
+		rng_state = (rng_state * 1103515245 + 12345) & 0x7FFFFFFF
+		var white := float(rng_state) / float(0x7FFFFFFF) * 2.0 - 1.0
+		# Heavy low-pass filtering (3 cascaded IIR stages for deep rumble)
+		prev = prev * 0.92 + white * 0.08
+		prev2 = prev2 * 0.94 + prev * 0.06
+		prev3 = prev3 * 0.96 + prev2 * 0.04
+		var filtered := prev3
+		# Wave surge envelope — slow sine modulation at ~0.12Hz (one surge per ~8s)
+		var surge := sin(t * TAU * 0.125) * 0.5 + 0.5
+		surge *= surge  # sharpen peaks
+		# Secondary smaller wave at ~0.3Hz
+		var ripple := sin(t * TAU * 0.31) * 0.25 + 0.75
+		filtered *= surge * ripple * 0.4
+		# Crossfade for seamless loop
+		var loop_t := float(i) / float(total_samples)
+		var fade := 1.0
+		if loop_t > 0.94:
+			fade = (1.0 - loop_t) / 0.06
+		elif loop_t < 0.06:
+			fade = loop_t / 0.06
 		filtered *= fade
 		var s16 := int(clampf(filtered, -1.0, 1.0) * 32767.0)
 		data.append(s16 & 0xFF)

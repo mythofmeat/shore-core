@@ -8,6 +8,11 @@ extends MarginContainer
 @onready var scroll: ScrollContainer = $Layout/MessageScroll
 @onready var effects: Node = $EffectsManager
 @onready var haunting_manager: Node = $HauntingManager
+@onready var seagull_manager: Node = $SeagullManager
+@onready var seagull_layer: CanvasLayer = $SeagullLayer
+@onready var glass_manager: Node = $GlassManager
+@onready var condensation_rect: ColorRect = $CondensationLayer/CondensationRect
+@onready var glass_cracks_rect: ColorRect = $GlassCracksLayer/GlassCracksRect
 
 const COLOR_PALETTES := {
 	"default": {
@@ -47,12 +52,18 @@ var _font_name := "default"  # "default", "mono", or a system font name
 var _colors: Dictionary = COLOR_PALETTES["default"]
 var _color_palette_name := "default"
 var _phosphor_effect: PhosphorEffect
+var _droplet_overlay: Control
+var _dead_bird_label: Label
+var _dead_bird_timer := 0.0
+var _dead_bird_visible := false
+var _tilted := false
 
 func _ready() -> void:
 	# Register RichTextEffects for text animations
 	_phosphor_effect = PhosphorEffect.new()
 	message_display.install_effect(FadeInEffect.new())
 	message_display.install_effect(_phosphor_effect)
+	message_display.install_effect(WobbleEffect.new())
 
 	# Bridge signals
 	bridge.connected.connect(_on_connected)
@@ -75,6 +86,29 @@ func _ready() -> void:
 	# Haunting system
 	haunting_manager.setup(effects, _phosphor_effect)
 
+	# Seagull system
+	seagull_manager.setup(effects, seagull_layer)
+
+	# Glass / condensation system
+	glass_manager.setup(effects, condensation_rect, glass_cracks_rect)
+
+	# Droplet overlay (rain accumulates on old messages)
+	_droplet_overlay = preload("res://scripts/droplet_overlay.gd").new()
+	scroll.add_child(_droplet_overlay)
+	_droplet_overlay.setup(effects, message_display)
+	_droplet_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+
+	# Dead bird in the corner
+	_dead_bird_label = Label.new()
+	_dead_bird_label.text = "🐦"
+	_dead_bird_label.add_theme_font_size_override("font_size", 20)
+	_dead_bird_label.position = Vector2(8.0, 8.0)
+	_dead_bird_label.modulate.a = 0.3
+	_dead_bird_label.visible = false
+	_dead_bird_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(_dead_bird_label)
+	_dead_bird_timer = randf_range(30.0, 120.0)
+
 	# Auto-connect on launch
 	status_label.text = "Connecting..."
 	bridge.connect_to_daemon("", "")
@@ -91,6 +125,27 @@ func _input(event: InputEvent) -> void:
 	if event.keycode == KEY_F2:
 		_toggle_config_panel()
 		get_viewport().set_input_as_handled()
+
+func _process(delta: float) -> void:
+	# ── Dead bird appearances ─────────────────────────────────────
+	if effects.background_shader == "rain_fog":
+		_dead_bird_timer -= delta
+		if _dead_bird_timer <= 0.0:
+			_dead_bird_visible = not _dead_bird_visible
+			_dead_bird_label.visible = _dead_bird_visible
+			# Visible for 15-45s, hidden for 30-120s
+			if _dead_bird_visible:
+				_dead_bird_timer = randf_range(15.0, 45.0)
+			else:
+				_dead_bird_timer = randf_range(30.0, 120.0)
+	elif _dead_bird_label.visible:
+		_dead_bird_label.visible = false
+
+	# ── Warm rain (check input for character name) ────────────────
+	if effects.background_shader == "rain_fog" and effects._rain_fog_material:
+		var text := input_field.text.to_lower()
+		var warmth := 1.0 if _character_name.to_lower() in text else 0.0
+		effects._rain_fog_material.set_shader_parameter("rain_warmth", warmth)
 
 func _on_send_pressed() -> void:
 	var text := input_field.text.strip_edges()
@@ -145,7 +200,7 @@ func _on_stream_start(is_regen: bool) -> void:
 	var use_fx := _color_palette_name == "silent_shore"
 	if is_regen:
 		message_display.append_text("\n[color=%s][b]Regenerating...[/b][/color]\n" % _colors["regen"])
-	var prefix := "[fadein][phosphor]" if use_fx else ""
+	var prefix := "[fadein][phosphor][wobble]" if use_fx else ""
 	message_display.append_text("\n%s[color=%s][b]%s:[/b][/color] " % [prefix, _colors["assistant"], _character_name])
 	effects.on_new_message()
 	effects.on_stream_start()
@@ -162,7 +217,12 @@ func _on_stream_chunk(text: String, content_type: String) -> void:
 func _on_stream_end(_content: String, metadata_json: String) -> void:
 	_streaming = false
 	if _color_palette_name == "silent_shore":
-		message_display.append_text("[/phosphor][/fadein]")
+		message_display.append_text("[/wobble][/phosphor][/fadein]")
+
+	# ── THE CURSED TILT (0.1% chance per message, permanent) ─────
+	if not _tilted and randf() < 0.001:
+		_tilted = true
+		rotation_degrees = 2.0
 	effects.on_stream_end()
 	var meta = JSON.parse_string(metadata_json)
 	if meta and meta is Dictionary:
@@ -226,8 +286,8 @@ func _render_history_message(msg: Dictionary) -> void:
 func _render_assistant_message(content: String, content_blocks: Array) -> void:
 	var use_fx := _color_palette_name == "silent_shore"
 	if content_blocks.is_empty():
-		var open := "[phosphor]" if use_fx else ""
-		var close := "[/phosphor]" if use_fx else ""
+		var open := "[wobble][phosphor]" if use_fx else ""
+		var close := "[/phosphor][/wobble]" if use_fx else ""
 		message_display.append_text("\n%s[color=%s][b]%s:[/b][/color] %s%s\n" % [
 			open, _colors["assistant"], _character_name, _escape_bbcode(content), close
 		])
@@ -284,8 +344,8 @@ func _render_assistant_message(content: String, content_blocks: Array) -> void:
 
 	var combined := "\n".join(text_parts)
 	if not combined.strip_edges().is_empty():
-		var open := "[phosphor]" if use_fx else ""
-		var close := "[/phosphor]" if use_fx else ""
+		var open := "[wobble][phosphor]" if use_fx else ""
+		var close := "[/phosphor][/wobble]" if use_fx else ""
 		message_display.append_text("\n%s[color=%s][b]%s:[/b][/color] %s%s\n" % [
 			open, _colors["assistant"], _character_name, _escape_bbcode(combined), close
 		])

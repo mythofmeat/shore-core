@@ -7,6 +7,8 @@ uniform float fog_depth : hint_range(0.0, 1.0) = 0.6;
 uniform float scroll_offset : hint_range(-1000.0, 1000.0) = 0.0;
 uniform float wind_offset : hint_range(-1.0, 1.0) = 0.0;
 uniform float time_scale : hint_range(0.1, 3.0) = 1.0;
+uniform float rain_intensity : hint_range(0.0, 2.0) = 1.0;
+uniform float rain_warmth : hint_range(0.0, 1.0) = 0.0;
 
 // Pseudo-random hash
 float hash(vec2 p) {
@@ -124,15 +126,18 @@ void fragment() {
 	vec3 col = bg_color.rgb + deep_color + mid_color + near_color;
 
 	// ── Rain layers (two depths for parallax) ────────────────────
-	float rain_near = rain_layer(uv + vec2(0.0, parallax * 0.6), 40.0, 1.2, rain_density * 0.5, t);
-	float rain_far = rain_layer(uv + vec2(0.0, parallax * 0.3), 25.0, 0.7, rain_density * 0.7, t);
+	// rain_intensity modulates density threshold, speed, and brightness
+	float ri = rain_intensity;
+	float rain_near = rain_layer(uv + vec2(0.0, parallax * 0.6), 40.0, 1.2 * (0.6 + ri * 0.4), rain_density * 0.5 * ri, t);
+	float rain_far = rain_layer(uv + vec2(0.0, parallax * 0.3), 25.0, 0.7 * (0.6 + ri * 0.4), rain_density * 0.7 * ri, t);
 
 	// Rain color: bright cool streaks against dark background
 	vec3 rain_col = vec3(0.4, 0.45, 0.55);
-	col += rain_col * (rain_near * 0.7 + rain_far * 0.35);
+	col += rain_col * (rain_near * 0.7 + rain_far * 0.35) * (0.5 + ri * 0.5);
 
 	// ── Condensation on glass ────────────────────────────────────
-	float cond = condensation(uv, t);
+	// More condensation during heavier rain
+	float cond = condensation(uv, t) * (0.6 + ri * 0.4);
 	col += vec3(0.2, 0.22, 0.28) * cond;
 
 	// ── Subtle color variation (sea-glass tint) ──────────────────

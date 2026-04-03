@@ -1,12 +1,17 @@
-[gd_scene load_steps=15 format=3]
+[gd_scene load_steps=21 format=3]
 
 [ext_resource type="Script" path="res://scripts/main.gd" id="1"]
 [ext_resource type="Script" path="res://scripts/effects_manager.gd" id="2"]
 [ext_resource type="Script" path="res://scripts/haunting_manager.gd" id="7"]
+[ext_resource type="Script" path="res://scripts/seagull_manager.gd" id="8"]
+[ext_resource type="Script" path="res://scripts/glass_manager.gd" id="10"]
 [ext_resource type="Shader" path="res://shaders/crt.gdshader" id="3"]
 [ext_resource type="Shader" path="res://shaders/glow.gdshader" id="4"]
 [ext_resource type="Shader" path="res://shaders/vhs.gdshader" id="5"]
 [ext_resource type="Shader" path="res://shaders/starfield.gdshader" id="6"]
+[ext_resource type="Shader" path="res://shaders/thought_lights.gdshader" id="9"]
+[ext_resource type="Shader" path="res://shaders/condensation.gdshader" id="11"]
+[ext_resource type="Shader" path="res://shaders/glass_cracks.gdshader" id="12"]
 
 [sub_resource type="ShaderMaterial" id="crt_mat"]
 shader = ExtResource("3")
@@ -36,6 +41,23 @@ shader_parameter/bg_color = Color(0.02, 0.02, 0.06, 1)
 shader_parameter/scroll_offset = 0.0
 shader_parameter/star_density = 0.4
 shader_parameter/rotation_speed = 0.01
+
+[sub_resource type="ShaderMaterial" id="thought_lights_mat"]
+shader = ExtResource("9")
+shader_parameter/typing_intensity = 0.0
+shader_parameter/scroll_offset = 0.0
+shader_parameter/light_count = 12
+
+[sub_resource type="ShaderMaterial" id="condensation_mat"]
+shader = ExtResource("11")
+shader_parameter/idle_time = 0.0
+shader_parameter/fog_buildup = 0.0
+shader_parameter/wipe_pos = Vector2(-1, -1)
+shader_parameter/wipe_radius = 0.12
+shader_parameter/wipe_age = 10.0
+
+[sub_resource type="ShaderMaterial" id="glass_cracks_mat"]
+shader = ExtResource("12")
 
 [sub_resource type="ParticleProcessMaterial" id="fire_mat"]
 direction = Vector3(0, -1, 0)
@@ -179,6 +201,8 @@ script = ExtResource("2")
 
 [node name="AmbientAudio" type="AudioStreamPlayer" parent="EffectsManager"]
 
+[node name="OceanAudio" type="AudioStreamPlayer" parent="EffectsManager"]
+
 [node name="HauntingManager" type="Node" parent="."]
 script = ExtResource("7")
 
@@ -195,6 +219,24 @@ grow_horizontal = 2
 grow_vertical = 2
 mouse_filter = 2
 material = SubResource("starfield_mat")
+
+[node name="ThoughtLightsLayer" type="CanvasLayer" parent="."]
+layer = -1
+
+[node name="ThoughtLightsRect" type="ColorRect" parent="ThoughtLightsLayer"]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+material = SubResource("thought_lights_mat")
+
+[node name="SeagullManager" type="Node" parent="."]
+script = ExtResource("8")
+
+[node name="SeagullLayer" type="CanvasLayer" parent="."]
+layer = 2
 
 [node name="CRTLayer" type="CanvasLayer" parent="."]
 layer = 10
@@ -231,3 +273,30 @@ grow_horizontal = 2
 grow_vertical = 2
 mouse_filter = 2
 material = SubResource("vhs_mat")
+
+[node name="GlassCracksLayer" type="CanvasLayer" parent="."]
+layer = 3
+
+[node name="GlassCracksRect" type="ColorRect" parent="GlassCracksLayer"]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+material = SubResource("glass_cracks_mat")
+
+[node name="CondensationLayer" type="CanvasLayer" parent="."]
+layer = 9
+
+[node name="CondensationRect" type="ColorRect" parent="CondensationLayer"]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+material = SubResource("condensation_mat")
+
+[node name="GlassManager" type="Node" parent="."]
+script = ExtResource("10")
