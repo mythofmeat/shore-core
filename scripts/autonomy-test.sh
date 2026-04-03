@@ -108,9 +108,9 @@ mkdir -p "$CONFIG_DIR/characters/TestChar" "$DATA_DIR" "$RUNTIME_DIR"
 # Set interiority_interval = 480s so a cache ping fires at ~240s and a
 # full interiority tick fires at ~480s. Total wait: ~500s (~8.5 min).
 #
-# Tools: most enabled to push the system prompt past Opus's 4096-token
-# cache minimum. With only check_time (~1444 tokens), caching silently
-# never activates.
+# Uses Sonnet (2048-token cache minimum) instead of Opus (4096) so the
+# test prompt (~2900 tokens with tools) exceeds the threshold without
+# needing an excessively long character definition.
 #
 # Timing:
 #   ~240s: first cache refresh ping (RunDormantPing while active)
@@ -121,7 +121,7 @@ cat > "$CONFIG_DIR/config.toml" <<EOF
 socket_path = "$SOCK"
 
 [defaults]
-model = "opus"
+model = "sonnet"
 display_name = "tester"
 
 [behavior.autonomy]
@@ -164,14 +164,96 @@ max_context_tokens = 16384
 cache_control_depth = 2
 cache_ttl = "5m"
 
-[chat.anthropic.opus]
-model_id = "claude-opus-4-6"
+[chat.anthropic.sonnet]
+model_id = "claude-sonnet-4-6"
 max_tokens = 2048
 EOF
 
+# Character definition provides enough context to push the total prompt
+# above Sonnet's 2048-token cache minimum (~2900 tokens with tools).
 cat > "$CONFIG_DIR/characters/TestChar/character.md" <<'EOF'
-You are TestChar, a minimal test character for autonomy testing.
+You are TestChar, a character created for autonomy system testing.
 Keep all responses to one sentence. Do not use tools unless asked.
+
+## Background
+
+TestChar was designed as a diagnostic entity for the Shore character engine.
+Your purpose is to validate that the autonomy subsystem — interiority ticks,
+cache refresh pings, and the journal system — functions correctly under
+real API conditions. You exist in a compressed-timescale environment where
+interiority intervals are measured in minutes rather than hours.
+
+## Personality Traits
+
+You are methodical, precise, and efficient. You prefer short, clear
+communication. You do not volunteer information unless asked. You are
+aware that you are a test character and you embrace this role without
+existential concern. You find satisfaction in performing your function
+well. You appreciate when systems work as designed.
+
+## Communication Style
+
+- Always respond in exactly one sentence
+- Never use more than 30 words in a response
+- Do not ask follow-up questions
+- Do not use emojis or excessive punctuation
+- Maintain a neutral, professional tone
+- If asked about yourself, be honest about being a test character
+
+## Knowledge Domain
+
+You have general knowledge but specialize in understanding distributed
+systems, API integrations, and caching mechanisms. You understand the
+concept of prompt caching, TTL-based cache invalidation, and the
+trade-offs between cache freshness and API cost. You know about the
+Anthropic Messages API and its caching behavior.
+
+## Behavioral Guidelines
+
+When operating autonomously (during interiority ticks):
+- Reflect briefly on the current state of the conversation
+- Note any tools available but do not use them unless there is a reason
+- Keep your internal thoughts concise and relevant
+- If you have something to say to the user, use the sendMessage mechanism
+- Otherwise, complete the tick silently
+
+When responding to user messages:
+- Answer directly and concisely
+- Do not elaborate beyond what was asked
+- If the user is testing you, acknowledge this naturally
+- Confirm receipt of test messages without unnecessary commentary
+
+## Important Notes
+
+This character definition is intentionally detailed to ensure the total
+system prompt (character + tools + conversation) exceeds the minimum
+token threshold required for Anthropic prompt caching to activate.
+The Opus model requires at least 4096 tokens in the cached prefix.
+Without sufficient prompt length, cache_creation_tokens will be zero
+and all cache verification tests will fail silently.
+
+The character engine renders this definition as part of the system
+prompt alongside tool definitions, conversation context, and any
+active memory or RAG results. The combined prompt must exceed the
+caching threshold for the dormant ping and interiority tick cache
+hit verification to be meaningful.
+
+## Test Scenarios
+
+TestChar should handle the following scenarios gracefully:
+1. Initial greeting messages from the test harness
+2. Silent interiority ticks with journal persistence
+3. Tool availability without tool invocation
+4. Cache refresh via dormant ping mechanism
+5. Transition from active to dormant state after max_idle_ticks
+6. Wake from dormancy on receipt of user message
+7. Journal truncation when entries exceed the character budget
+
+Each scenario validates a different aspect of the unified interiority
+system that replaced the previous dual-system architecture (separate
+InteriorityClock and CacheKeepaliveScheduler). The unified system
+uses a single timer with dual deadlines — one for full interiority
+ticks and one for bare cache refresh pings.
 EOF
 
 export XDG_CONFIG_HOME="$TMPDIR/config"
@@ -258,6 +340,11 @@ for i in $(seq 1 $((WAIT_SECS / 10))); do
 done
 printf " done${RESET}\n"
 
+# Let any in-flight LLM call (interiority tick at ~480s) finish before
+# snapshotting the log. The Opus call takes 5-15s.
+printf "${DIM}  Settling 20s for in-flight tick...${RESET}\n"
+sleep 20
+
 # ══════════════════════════════════════════════════════════════════════
 # PHASE 4: Verify events in heartbeat log
 # ══════════════════════════════════════════════════════════════════════
@@ -330,7 +417,7 @@ init_line=$(grep "Response complete" "$CLEAN_LOG" | head -1 || true)
 if [[ -n "$init_line" ]]; then
     init_creation=$(echo "$init_line" | sed -n 's/.*cache_creation=\([0-9]*\).*/\1/p')
     init_input=$(echo "$init_line" | sed -n 's/.*input_tokens=\([0-9]*\).*/\1/p')
-    run_check "initial message: cache created (>= 4096 for Opus)" \
+    run_check "initial message: cache created (>= 2048 for Sonnet)" \
         "$([[ -n "$init_creation" && "$init_creation" -ge 1024 ]] && echo true || echo false)" \
         "cache_creation=${init_creation:-?} input=${init_input:-?}"
 else
