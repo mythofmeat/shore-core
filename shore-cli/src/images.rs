@@ -99,95 +99,95 @@ mod tests {
 
     #[test]
     fn shore_images_kitty_override() {
-        let proto = detect_protocol_from_env(Some("kitty"), None, None);
+        let proto = detect_protocol_from_env(Some("kitty"), None, None, false, false);
         assert_eq!(proto, Some(ImageProtocol::Kitty));
     }
 
     #[test]
     fn shore_images_iterm2_override() {
-        let proto = detect_protocol_from_env(Some("iterm2"), None, None);
+        let proto = detect_protocol_from_env(Some("iterm2"), None, None, false, false);
         assert_eq!(proto, Some(ImageProtocol::Iterm2));
     }
 
     #[test]
     fn shore_images_off_override() {
-        let proto = detect_protocol_from_env(Some("off"), None, None);
+        let proto = detect_protocol_from_env(Some("off"), None, None, false, false);
         assert_eq!(proto, None);
     }
 
     #[test]
     fn shore_images_case_insensitive() {
         assert_eq!(
-            detect_protocol_from_env(Some("KITTY"), None, None),
+            detect_protocol_from_env(Some("KITTY"), None, None, false, false),
             Some(ImageProtocol::Kitty)
         );
         assert_eq!(
-            detect_protocol_from_env(Some("iTerm2"), None, None),
+            detect_protocol_from_env(Some("iTerm2"), None, None, false, false),
             Some(ImageProtocol::Iterm2)
         );
         assert_eq!(
-            detect_protocol_from_env(Some("OFF"), None, None),
+            detect_protocol_from_env(Some("OFF"), None, None, false, false),
             None
         );
     }
 
     #[test]
     fn shore_images_unknown_value_is_off() {
-        let proto = detect_protocol_from_env(Some("sixel"), None, None);
+        let proto = detect_protocol_from_env(Some("sixel"), None, None, false, false);
         assert_eq!(proto, None);
     }
 
     #[test]
     fn shore_images_overrides_term_program() {
-        let proto = detect_protocol_from_env(Some("kitty"), Some("iTerm.app"), None);
+        let proto = detect_protocol_from_env(Some("kitty"), Some("iTerm.app"), None, false, false);
         assert_eq!(proto, Some(ImageProtocol::Kitty));
     }
 
     #[test]
     fn shore_images_off_overrides_term_program() {
-        let proto = detect_protocol_from_env(Some("off"), Some("iTerm.app"), None);
+        let proto = detect_protocol_from_env(Some("off"), Some("iTerm.app"), None, false, false);
         assert_eq!(proto, None);
     }
 
     #[test]
     fn detect_iterm_from_term_program() {
-        let proto = detect_protocol_from_env(None, Some("iTerm.app"), None);
+        let proto = detect_protocol_from_env(None, Some("iTerm.app"), None, false, false);
         assert_eq!(proto, Some(ImageProtocol::Iterm2));
     }
 
     #[test]
     fn detect_iterm_from_term_program_case_insensitive() {
-        let proto = detect_protocol_from_env(None, Some("ITERM.APP"), None);
+        let proto = detect_protocol_from_env(None, Some("ITERM.APP"), None, false, false);
         assert_eq!(proto, Some(ImageProtocol::Iterm2));
     }
 
     #[test]
     fn detect_kitty_from_term_program() {
-        let proto = detect_protocol_from_env(None, Some("kitty"), None);
+        let proto = detect_protocol_from_env(None, Some("kitty"), None, false, false);
         assert_eq!(proto, Some(ImageProtocol::Kitty));
     }
 
     #[test]
     fn detect_kitty_from_term() {
-        let proto = detect_protocol_from_env(None, None, Some("xterm-kitty"));
+        let proto = detect_protocol_from_env(None, None, Some("xterm-kitty"), false, false);
         assert_eq!(proto, Some(ImageProtocol::Kitty));
     }
 
     #[test]
     fn no_detection_on_generic_terminal() {
-        let proto = detect_protocol_from_env(None, None, Some("xterm-256color"));
+        let proto = detect_protocol_from_env(None, None, Some("xterm-256color"), false, false);
         assert_eq!(proto, None);
     }
 
     #[test]
     fn no_detection_when_all_none() {
-        let proto = detect_protocol_from_env(None, None, None);
+        let proto = detect_protocol_from_env(None, None, None, false, false);
         assert_eq!(proto, None);
     }
 
     #[test]
     fn term_program_takes_priority_over_term() {
-        let proto = detect_protocol_from_env(None, Some("iTerm.app"), Some("xterm-kitty"));
+        let proto = detect_protocol_from_env(None, Some("iTerm.app"), Some("xterm-kitty"), false, false);
         assert_eq!(proto, Some(ImageProtocol::Iterm2));
     }
 

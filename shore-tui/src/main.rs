@@ -9,7 +9,7 @@ use std::io;
 use std::time::Duration;
 
 use clap::Parser;
-use crossterm::event;
+use crossterm::event::{self, DisableBracketedPaste, EnableBracketedPaste};
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
@@ -111,6 +111,7 @@ fn open_in_editor(
     let tmp = std::env::temp_dir().join("shore_input.md");
     std::fs::write(&tmp, input.text.as_str())?;
 
+    io::stdout().execute(DisableBracketedPaste)?;
     disable_raw_mode()?;
     io::stdout().execute(LeaveAlternateScreen)?;
 
@@ -118,6 +119,7 @@ fn open_in_editor(
 
     enable_raw_mode()?;
     io::stdout().execute(EnterAlternateScreen)?;
+    io::stdout().execute(EnableBracketedPaste)?;
     terminal.clear()?;
 
     if let Ok(contents) = std::fs::read_to_string(&tmp) {
@@ -140,6 +142,7 @@ fn pick_image(
 
     let start = start_dir.unwrap_or(".");
 
+    io::stdout().execute(DisableBracketedPaste)?;
     disable_raw_mode()?;
     io::stdout().execute(LeaveAlternateScreen)?;
 
@@ -148,6 +151,7 @@ fn pick_image(
 
     enable_raw_mode()?;
     io::stdout().execute(EnterAlternateScreen)?;
+    io::stdout().execute(EnableBracketedPaste)?;
     terminal.clear()?;
 
     match result {
@@ -243,6 +247,7 @@ async fn run_tui(cli: Cli) -> io::Result<()> {
     // Set up terminal
     enable_raw_mode()?;
     io::stdout().execute(EnterAlternateScreen)?;
+    io::stdout().execute(EnableBracketedPaste)?;
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
 
@@ -252,6 +257,8 @@ async fn run_tui(cli: Cli) -> io::Result<()> {
         connection_status: ConnectionStatus::Connecting,
         ..App::default()
     };
+    // Probe terminal for kitty graphics support (raw mode is now active).
+    app.image_cache.probe_protocol();
     load_prefs(&mut app);
 
     // Spawn connection manager
@@ -336,6 +343,7 @@ async fn run_tui(cli: Cli) -> io::Result<()> {
     let _ = cmd_tx.send(ConnCommand::Shutdown).await;
 
     // Restore terminal
+    io::stdout().execute(DisableBracketedPaste)?;
     disable_raw_mode()?;
     io::stdout().execute(LeaveAlternateScreen)?;
 

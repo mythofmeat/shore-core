@@ -105,6 +105,12 @@ impl InputState {
         self.insert_char('\n');
     }
 
+    /// Insert a string at the cursor position (used for paste).
+    pub fn insert_str(&mut self, s: &str) {
+        self.text.insert_str(self.cursor, s);
+        self.cursor += s.len();
+    }
+
     pub fn backspace(&mut self) {
         if self.cursor > 0 {
             let prev = self.text[..self.cursor]
@@ -385,6 +391,8 @@ pub struct App {
     pub show_help: bool,
     /// Images queued for attachment to the next outgoing message.
     pub pending_images: Vec<String>,
+    /// When editing a message, holds the ref (e.g. "last", "-1") being edited.
+    pub editing_ref: Option<String>,
 }
 
 impl Default for App {
@@ -415,6 +423,7 @@ impl Default for App {
             show_tools: true,
             show_help: false,
             pending_images: Vec::new(),
+            editing_ref: None,
         }
     }
 }
@@ -437,6 +446,35 @@ impl App {
         self.auto_scroll = true;
     }
 
+    /// Resolve a ref (e.g. "last", "-1", "-2") to the content of a
+    /// User or Assistant entry for local editing preview.
+    pub fn resolve_ref_content(&self, raw_ref: &str) -> Option<String> {
+        // Filter to only User/Assistant entries (what the daemon considers messages).
+        let messages: Vec<&ConversationEntry> = self
+            .entries
+            .iter()
+            .filter(|e| matches!(e, ConversationEntry::User { .. } | ConversationEntry::Assistant { .. }))
+            .collect();
+
+        let entry = match raw_ref {
+            "last" => messages.last().copied(),
+            s if s.starts_with('-') => {
+                let n: usize = s[1..].parse().ok()?;
+                if n == 0 || n > messages.len() {
+                    return None;
+                }
+                Some(messages[messages.len() - n])
+            }
+            _ => None,
+        };
+
+        entry.and_then(|e| match e {
+            ConversationEntry::User { content, .. }
+            | ConversationEntry::Assistant { content, .. } => Some(content.clone()),
+            _ => None,
+        })
+    }
+
     pub fn set_status(&mut self, msg: impl Into<String>) {
         self.entries.push(ConversationEntry::System {
             content: msg.into(),
@@ -449,7 +487,7 @@ impl App {
 
     /// Static command names for completion.
     const COMMANDS: &'static [&'static str] = &[
-        "character", "compact", "delete",
+        "character", "compact", "delete", "edit",
         "help", "image", "memory", "model", "quit", "regen", "status", "sys",
     ];
 

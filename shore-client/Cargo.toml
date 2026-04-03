@@ -12,5 +12,8 @@ toml = { workspace = true }
 tokio = { version = "1", features = ["net", "io-util", "sync", "rt", "macros", "time"] }
 thiserror = "2"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }

@@ -496,21 +496,24 @@ fn render_images(
     cache: &images::ImageCache,
 ) {
     for img in img_refs {
+        // Extract display name: caption, filename, or full path
+        let display = img.caption.as_deref().unwrap_or_else(|| {
+            std::path::Path::new(&img.path)
+                .file_name()
+                .and_then(|f| f.to_str())
+                .unwrap_or(&img.path)
+        });
+
         if let Some(transmitted) = cache.get(&img.path) {
-            if let Some(cap) = &img.caption {
-                lines.push(Line::from(Span::styled(
-                    format!("  {cap}"),
-                    Style::default().fg(Color::DarkGray),
-                )));
-            }
+            lines.push(Line::from(Span::styled(
+                format!("  [{display}]"),
+                Style::default().fg(Color::Magenta),
+            )));
             lines.extend(images::placeholder_lines(transmitted));
         } else {
             lines.push(Line::from(Span::styled(
-                format!(
-                    "  [img: {}]",
-                    img.caption.as_deref().unwrap_or(&img.path)
-                ),
-                Style::default().fg(Color::DarkGray),
+                format!("  [image: {display}]"),
+                Style::default().fg(Color::Magenta),
             )));
         }
     }
@@ -622,10 +625,14 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
         Text::from(lines.into_iter().map(Line::from).collect::<Vec<_>>())
     };
 
-    let (mode_label, border_color) = match app.input.mode {
-        InputMode::Insert => (" [INSERT] ".to_string(), Color::Cyan),
-        InputMode::Normal => (" [NORMAL] ".to_string(), Color::DarkGray),
-        InputMode::Command => unreachable!(),
+    let (mode_label, border_color) = if app.editing_ref.is_some() {
+        (" [EDIT] ".to_string(), Color::Yellow)
+    } else {
+        match app.input.mode {
+            InputMode::Insert => (" [INSERT] ".to_string(), Color::Cyan),
+            InputMode::Normal => (" [NORMAL] ".to_string(), Color::DarkGray),
+            InputMode::Command => unreachable!(),
+        }
     };
     let img_count = app.pending_images.len();
     let mut block = Block::default()
@@ -638,8 +645,9 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
         } else {
             format!(" {} images ", img_count)
         };
-        block = block.title_bottom(
+        block = block.title(
             Line::from(Span::styled(label, Style::default().fg(Color::Magenta)))
+                .right_aligned()
         );
     }
     let paragraph = Paragraph::new(input_content)
@@ -692,6 +700,7 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         Line::from(Span::styled("    :character      switch character", Style::default().fg(Color::White))),
         Line::from(Span::styled("    :model          switch model", Style::default().fg(Color::White))),
         Line::from(Span::styled("    :image          attach image (picker)", Style::default().fg(Color::White))),
+        Line::from(Span::styled("    :edit <ref>     edit message (last, -1, -2)", Style::default().fg(Color::White))),
         Line::from(Span::styled("    :quit           exit", Style::default().fg(Color::White))),
         Line::from(Span::styled("    :memory  :compact  :regen  :status", Style::default().fg(Color::DarkGray))),
         Line::from(""),
