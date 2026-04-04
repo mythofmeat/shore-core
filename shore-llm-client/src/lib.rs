@@ -5,7 +5,7 @@ pub mod types;
 
 use std::path::PathBuf;
 
-use chrono::Utc;
+use chrono::Local;
 use tokio::io::{BufReader, DuplexStream};
 use tracing::{debug, warn};
 
@@ -217,7 +217,7 @@ impl LlmClient {
             return;
         };
         let path = dir.join("api_payloads.jsonl");
-        let ts = Utc::now().to_rfc3339();
+        let ts = Local::now().to_rfc3339();
         // Redact api_key from request payloads.
         let sanitized = if direction == "request" {
             if let Ok(mut v) = serde_json::from_str::<serde_json::Value>(payload) {

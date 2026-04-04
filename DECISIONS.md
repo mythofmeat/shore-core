@@ -362,3 +362,13 @@ A single holistic call lets the LLM see all candidates + nearby context and make
 **Why:** Z.AI's thinking parameter format (`{"type": "enabled"}` vs Anthropic's `{"budget_tokens": N}`) and reasoning field (`reasoning_content` as a separate field, not embedded in content) are different enough from standard OpenAI that routing through the OpenAI handler would require too many special cases. A dedicated module keeps provider-specific logic isolated.
 
 **Trade-off:** Some code duplication with `openai.rs` (message translation, tool translation, SSE streaming). Accepted because: (a) the duplicated parts are simple and stable, (b) a shared abstraction would need to accommodate three different thinking parameter formats (Anthropic, OpenAI, Z.AI), making it more complex than the duplication it eliminates.
+
+## Timestamps: UTC → Local-Offset RFC 3339
+
+**Decision:** All timestamps are generated with `Local::now().to_rfc3339()` (e.g. `2026-04-04T20:00:00-07:00`) instead of `Utc::now().to_rfc3339()` (e.g. `2026-04-05T03:00:00+00:00`). The `check_time` tool returns a human-friendly format (`"Friday, April 4th, 2026 at 4:34 PM"`).
+
+**Why:** UTC timestamps were displayed as-is in time-gap markers (e.g. `[6 hours later · 3:00 AM]` when the local time was 8 PM), the memory agent prompt labeled its time "UTC" while the system prompt used local, and `check_time` returned local RFC 3339 while everything else stored UTC. Three inconsistent conventions fed into the LLM's context simultaneously.
+
+**Backward compatibility:** Old `+00:00` data in SQLite coexists safely with new local-offset data. chrono's `DateTime<FixedOffset>` arithmetic is offset-aware, so age calculations (`now - stored_timestamp`) produce correct durations regardless of offset. Lexicographic `ORDER BY` may mis-sort entries from the transition day; this affects only display ordering, not correctness. No data migration needed.
+
+**Trade-off:** Timestamps in the database are no longer uniformly UTC. Any future tool that needs absolute ordering across timezones would need to parse rather than string-sort. Accepted because: all current consumers already parse timestamps for arithmetic, and the string-sort sites only affect best-effort display ordering.

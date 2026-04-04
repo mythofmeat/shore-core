@@ -121,7 +121,7 @@ pub async fn run_tool_loop(
             content_blocks: assistant_blocks,
             alt_index: None,
             alt_count: None,
-            timestamp: chrono::Utc::now().to_rfc3339(),
+            timestamp: chrono::Local::now().to_rfc3339(),
         });
 
         // Execute each tool and collect results.
@@ -165,7 +165,7 @@ pub async fn run_tool_loop(
             {
                 let input_str = serde_json::to_string(&tool_use.input).unwrap_or_default();
                 let entry = diagnostics::ToolCallEntry {
-                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    timestamp: chrono::Local::now().to_rfc3339(),
                     tool_name: tool_use.name.clone(),
                     tool_id: tool_use.id.clone(),
                     success: !is_error,
@@ -225,7 +225,7 @@ pub async fn run_tool_loop(
             content_blocks: tool_result_blocks,
             alt_index: None,
             alt_count: None,
-            timestamp: chrono::Utc::now().to_rfc3339(),
+            timestamp: chrono::Local::now().to_rfc3339(),
         });
 
         // Call LLM again with the extended conversation.
@@ -454,7 +454,7 @@ mod tests {
                 assert_eq!(res.tool_id, "t1");
                 assert_eq!(res.tool_name, "check_time");
                 assert!(!res.is_error);
-                assert!(res.output.contains('T'));
+                assert!(res.output.contains(" at "), "expected friendly format: {}", res.output);
             }
             other => panic!("Expected ToolResult, got {:?}", other),
         }

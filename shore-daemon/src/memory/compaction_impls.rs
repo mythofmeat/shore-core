@@ -8,7 +8,7 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 
-use chrono::Utc;
+use chrono::Local;
 use serde_json::json;
 use tracing::debug;
 use uuid::Uuid;
@@ -402,7 +402,7 @@ impl ConversationManager for RealConversationManager {
             manifest.segments.push(SegmentEntry {
                 file: segment_file,
                 message_count: archive_lines.len(),
-                compacted_at: Utc::now().to_rfc3339(),
+                compacted_at: Local::now().to_rfc3339(),
             });
             manifest.total_compacted_messages += archive_lines.len();
 

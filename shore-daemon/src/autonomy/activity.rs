@@ -1,4 +1,4 @@
-use chrono::{Datelike, NaiveDateTime, Timelike, Utc, Weekday};
+use chrono::{Datelike, Local, NaiveDateTime, Timelike, Weekday};
 use std::time::Instant;
 
 // ---------------------------------------------------------------------------
@@ -96,8 +96,8 @@ impl ActivityTracker {
 
     /// Record a new message event at the current time.
     pub fn record_message(&mut self) {
-        let now_utc = Utc::now().naive_utc();
-        self.record_message_at(Instant::now(), now_utc);
+        let now_local = Local::now().naive_local();
+        self.record_message_at(Instant::now(), now_local);
     }
 
     /// Record a message with explicit timestamps (useful for testing).
@@ -169,7 +169,7 @@ impl ActivityTracker {
 
     fn compute_stats(&self) -> ActivityStats {
         let now = Instant::now();
-        let current_weekday = Utc::now().naive_utc().weekday();
+        let current_weekday = Local::now().naive_local().weekday();
 
         let distinct_days = self.distinct_days();
         let msg_count = self.timestamps.len();

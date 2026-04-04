@@ -8,7 +8,7 @@ pub use types::*;
 use crate::memory::agent::AgentIndexer;
 use crate::memory::db::{Entry, MemoryDB};
 use crate::memory::vectorstore::VectorStore;
-use chrono::Utc;
+use chrono::Local;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
@@ -27,7 +27,7 @@ impl CollationManager {
 
     /// Generate an entry ID in the standard format: YYYYMMDD_HHMMSS_N
     fn generate_entry_id(index: usize) -> String {
-        let now = Utc::now();
+        let now = Local::now();
         format!("{}_{}", now.format("%Y%m%d_%H%M%S"), index)
     }
 
@@ -52,7 +52,7 @@ impl CollationManager {
         let ttl_seconds = self.config.reconsider_ttl_days * 86400.0;
         chrono::DateTime::parse_from_rfc3339(&e.collated_at)
             .map(|ca| {
-                let age = (Utc::now() - ca.with_timezone(&Utc)).num_seconds() as f64;
+                let age = (Local::now().fixed_offset() - ca).num_seconds() as f64;
                 age > ttl_seconds
             })
             .unwrap_or(true)
@@ -98,7 +98,7 @@ impl CollationManager {
         self.phase_confidence_decay(db, &mut outcome, &mut candidates_processed)?;
 
         // Stamp only entries that were examined as candidates this run.
-        let stamp = Utc::now().to_rfc3339();
+        let stamp = Local::now().to_rfc3339();
         for id in &candidates_processed {
             let _ = db.stamp_collated(id, &stamp);
         }
@@ -139,7 +139,7 @@ impl CollationManager {
             let mut updated = (*entry).clone();
             updated.start_timestamp = start.clone();
             updated.end_timestamp = end.clone();
-            updated.updated_at = Utc::now().to_rfc3339();
+            updated.updated_at = Local::now().to_rfc3339();
             db.update_entry(&updated)
                 .map_err(|e| CollationError::Db(e.to_string()))?;
 
@@ -299,7 +299,7 @@ impl CollationManager {
         // Cluster candidates by semantic similarity.
         let clusters = clustering::cluster_candidates(&candidates, vector_store).await;
 
-        let now_str = Utc::now().to_rfc3339();
+        let now_str = Local::now().to_rfc3339();
 
         for cluster in &clusters {
             // Fetch context entries (nearby non-candidates).
@@ -739,7 +739,7 @@ impl CollationManager {
             .get_entries_by_status("active")
             .map_err(|e| CollationError::Db(e.to_string()))?;
 
-        let now = Utc::now();
+        let now = Local::now().fixed_offset();
 
         for entry in &entries {
             // Skip entries already at or below floor.
@@ -750,8 +750,8 @@ impl CollationManager {
 
             // Calculate days since last update.
             let updated_at = chrono::DateTime::parse_from_rfc3339(&entry.updated_at)
-                .unwrap_or_else(|_| now.fixed_offset());
-            let days_since = (now - updated_at.with_timezone(&Utc)).num_seconds() as f64 / 86400.0;
+                .unwrap_or_else(|_| now);
+            let days_since = (now - updated_at).num_seconds() as f64 / 86400.0;
 
             if days_since <= 0.0 {
                 outcome.entries_skipped += 1;
@@ -961,7 +961,7 @@ mod tests {
     }
 
     fn now_str() -> String {
-        Utc::now().to_rfc3339()
+        Local::now().to_rfc3339()
     }
 
     /// Helper to run the pipeline with defaults.
@@ -1210,7 +1210,7 @@ mod tests {
 
         // Entry with collated_at in the future — NOT a candidate.
         let mut entry = make_entry("context_e", "Context fact", 0.9, &now);
-        let future = (Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+        let future = (Local::now() + chrono::Duration::hours(1)).to_rfc3339();
         entry.collated_at = future;
         db.create_entry(&entry).unwrap();
 
@@ -1384,7 +1384,7 @@ mod tests {
     #[tokio::test]
     async fn test_confidence_decay_reduces_stale_entries() {
         let db = MemoryDB::open_in_memory().unwrap();
-        let thirty_days_ago = (Utc::now() - chrono::Duration::days(30)).to_rfc3339();
+        let thirty_days_ago = (Local::now() - chrono::Duration::days(30)).to_rfc3339();
         db.create_entry(&make_entry("old_entry", "Old fact", 0.8, &thirty_days_ago))
             .unwrap();
 
@@ -1404,7 +1404,7 @@ mod tests {
     #[tokio::test]
     async fn test_confidence_decay_respects_floor() {
         let db = MemoryDB::open_in_memory().unwrap();
-        let very_old = (Utc::now() - chrono::Duration::days(365)).to_rfc3339();
+        let very_old = (Local::now() - chrono::Duration::days(365)).to_rfc3339();
         db.create_entry(&make_entry("ancient", "Very old fact", 0.2, &very_old))
             .unwrap();
 
@@ -1443,7 +1443,7 @@ mod tests {
     #[tokio::test]
     async fn test_confidence_decay_records_changelog() {
         let db = MemoryDB::open_in_memory().unwrap();
-        let old = (Utc::now() - chrono::Duration::days(30)).to_rfc3339();
+        let old = (Local::now() - chrono::Duration::days(30)).to_rfc3339();
         db.create_entry(&make_entry("decaying", "Old fact", 0.8, &old))
             .unwrap();
 
@@ -1458,7 +1458,7 @@ mod tests {
     #[tokio::test]
     async fn test_decay_runs_every_time_regardless_of_collated_at() {
         let db = MemoryDB::open_in_memory().unwrap();
-        let old = (Utc::now() - chrono::Duration::days(30)).to_rfc3339();
+        let old = (Local::now() - chrono::Duration::days(30)).to_rfc3339();
         let mut entry = make_entry("old_e", "Old fact", 0.8, &old);
         entry.collated_at = old.clone();
         db.create_entry(&entry).unwrap();
@@ -1503,7 +1503,7 @@ mod tests {
         });
         let now = now_str();
         let mut entry = make_entry("e1", "Old fact", 0.9, &now);
-        let ten_days_ago = (Utc::now() - chrono::Duration::days(10)).to_rfc3339();
+        let ten_days_ago = (Local::now() - chrono::Duration::days(10)).to_rfc3339();
         entry.collated_at = ten_days_ago;
         assert!(mgr.is_refine_candidate(&entry));
     }
@@ -1511,7 +1511,7 @@ mod tests {
     #[test]
     fn test_modified_since_collation_are_candidates() {
         let mgr = CollationManager::new(DecayConfig::default());
-        let old = (Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
+        let old = (Local::now() - chrono::Duration::hours(1)).to_rfc3339();
         let now = now_str();
         let mut entry = make_entry("e1", "Updated fact", 0.9, &now);
         entry.collated_at = old; // collated before updated_at
@@ -1533,7 +1533,7 @@ mod tests {
         let db = MemoryDB::open_in_memory().unwrap();
         let now = now_str();
         let mut entry = make_entry("e1", "A fact", 0.9, &now);
-        let later = (Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+        let later = (Local::now() + chrono::Duration::hours(1)).to_rfc3339();
         entry.collated_at = later;
         db.create_entry(&entry).unwrap();
 
@@ -1617,7 +1617,7 @@ mod tests {
         let db = MemoryDB::open_in_memory().unwrap();
         let now = now_str();
         let mut entry = make_entry("old", "Old fact", 0.9, &now);
-        let ten_days_ago = (Utc::now() - chrono::Duration::days(10)).to_rfc3339();
+        let ten_days_ago = (Local::now() - chrono::Duration::days(10)).to_rfc3339();
         entry.collated_at = ten_days_ago.clone();
         db.create_entry(&entry).unwrap();
 
@@ -1736,7 +1736,7 @@ mod tests {
     #[tokio::test]
     async fn test_backfill_from_ancestors() {
         let db = MemoryDB::open_in_memory().unwrap();
-        let now = Utc::now().to_rfc3339();
+        let now = Local::now().to_rfc3339();
 
         let parent = make_entry("parent1", "Parent entry", 0.9, &now);
         db.create_entry(&parent).unwrap();
@@ -1761,7 +1761,7 @@ mod tests {
     #[tokio::test]
     async fn test_backfill_falls_back_to_created_at() {
         let db = MemoryDB::open_in_memory().unwrap();
-        let now = Utc::now().to_rfc3339();
+        let now = Local::now().to_rfc3339();
 
         let mut entry = make_entry("orphan1", "Orphan entry", 0.8, &now);
         entry.start_timestamp = String::new();
@@ -1781,7 +1781,7 @@ mod tests {
     #[tokio::test]
     async fn test_backfill_respects_batch_size() {
         let db = MemoryDB::open_in_memory().unwrap();
-        let now = Utc::now().to_rfc3339();
+        let now = Local::now().to_rfc3339();
 
         for i in 0..5 {
             let mut entry = make_entry(&format!("e{i}"), &format!("Entry {i}"), 0.8, &now);
@@ -1903,7 +1903,7 @@ mod tests {
 
         // nc1 is NOT a candidate (collated_at set to future).
         let mut nc = make_entry("nc1", "Non-candidate fact", 0.8, &now);
-        nc.collated_at = (Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+        nc.collated_at = (Local::now() + chrono::Duration::hours(1)).to_rfc3339();
         db.create_entry(&nc).unwrap();
 
         let llm = MockCollationLlm {

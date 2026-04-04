@@ -7,7 +7,7 @@ pub use parser::{parse_compaction_response, DEFAULT_COMPACT_PROMPT};
 pub use types::*;
 
 use crate::memory::db::{Entry, MemoryDB};
-use chrono::Utc;
+use chrono::Local;
 use std::sync::Arc;
 use tokio::sync::Notify;
 use tokio::time::Duration;
@@ -137,7 +137,7 @@ impl CompactionManager {
 
     /// Generate an entry ID in the standard format: YYYYMMDD_HHMMSS_N
     fn generate_entry_id(index: usize) -> String {
-        let now = Utc::now();
+        let now = Local::now();
         format!("{}_{}", now.format("%Y%m%d_%H%M%S"), index)
     }
 
@@ -217,7 +217,7 @@ impl CompactionManager {
             .map(|m| m.timestamp.clone())
             .unwrap_or_default();
 
-        let now_str = Utc::now().to_rfc3339();
+        let now_str = Local::now().to_rfc3339();
         let mut entry_ids = Vec::new();
 
         for (i, ce) in compacted.iter().enumerate() {
@@ -429,7 +429,7 @@ mod tests {
                     "assistant".to_string()
                 },
                 content: format!("Message {i}"),
-                timestamp: Utc::now().to_rfc3339(),
+                timestamp: Local::now().to_rfc3339(),
                 is_tool_result_only: false,
             })
             .collect()

@@ -7,7 +7,7 @@
 //! tracked. Per-character overrides (`characters/{character}/prompts/`) are
 //! always user-managed and never appear in the manifest.
 
-use chrono::Utc;
+use chrono::Local;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -194,7 +194,7 @@ fn write_template(
         name.to_string(),
         TemplateEntry {
             hash,
-            updated_at: Utc::now().to_rfc3339(),
+            updated_at: Local::now().to_rfc3339(),
         },
     );
     Ok(())

@@ -100,7 +100,7 @@ impl RagPipeline {
         let meta_map: HashMap<&str, &EntryMeta> =
             metadata.iter().map(|m| (m.entry_id.as_str(), m)).collect();
 
-        let now = chrono::Utc::now();
+        let now = chrono::Local::now().fixed_offset();
 
         for result in &mut rrf_scores {
             if let Some(meta) = meta_map.get(result.entry_id.as_str()) {
@@ -167,7 +167,7 @@ impl RagPipeline {
 /// - **Status weight**: active=1.0, protected=0.9, superseded=0.3
 /// - **Recency boost**: exponential decay from creation time (max +0.15)
 /// - **Confidence penalty**: entries below the confidence floor are penalized
-fn lifecycle_score(meta: &EntryMeta, now: chrono::DateTime<chrono::Utc>) -> f64 {
+fn lifecycle_score(meta: &EntryMeta, now: chrono::DateTime<chrono::FixedOffset>) -> f64 {
     let status_w = match meta.status.as_str() {
         "active" => STATUS_WEIGHT_ACTIVE,
         "protected" => STATUS_WEIGHT_PROTECTED,
@@ -177,9 +177,7 @@ fn lifecycle_score(meta: &EntryMeta, now: chrono::DateTime<chrono::Utc>) -> f64 
 
     // Recency boost: exponential decay based on age.
     let recency = if let Ok(created) = chrono::DateTime::parse_from_rfc3339(&meta.created_at) {
-        let age_secs = (now - created.with_timezone(&chrono::Utc))
-            .num_seconds()
-            .max(0) as f64;
+        let age_secs = (now - created).num_seconds().max(0) as f64;
         RECENCY_BOOST_MAX * (-age_secs * (2.0_f64.ln()) / RECENCY_HALF_LIFE_SECS).exp()
     } else {
         0.0 // unparseable timestamp → no boost
@@ -221,11 +219,11 @@ mod tests {
     }
 
     fn recent_timestamp() -> String {
-        chrono::Utc::now().to_rfc3339()
+        chrono::Local::now().to_rfc3339()
     }
 
     fn old_timestamp() -> String {
-        (chrono::Utc::now() - chrono::Duration::days(30)).to_rfc3339()
+        (chrono::Local::now() - chrono::Duration::days(30)).to_rfc3339()
     }
 
     // -- RRF fusion -------------------------------------------------------

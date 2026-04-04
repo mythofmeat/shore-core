@@ -210,7 +210,7 @@ impl ToolContext for TestToolContext {
 
 /// Build a memory `Entry` with memory_type "image" for testing image tools.
 pub fn make_image_entry(id: &str, summary: &str, image_path: &str) -> crate::memory::db::Entry {
-    let now = chrono::Utc::now().to_rfc3339();
+    let now = chrono::Local::now().to_rfc3339();
     crate::memory::db::Entry {
         id: id.to_string(),
         memory_type: "image".to_string(),

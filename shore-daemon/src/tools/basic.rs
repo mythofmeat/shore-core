@@ -2,6 +2,7 @@
 //!
 //! Migrated from the legacy `engine/tools.rs` ToolRegistry.
 
+use chrono::{Datelike, Local};
 use rand::Rng;
 use serde_json::{json, Value};
 
@@ -15,7 +16,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
     vec![
         ToolDef {
             name: "check_time",
-            description: "Returns the current date and time in ISO 8601 format.",
+            description: "Returns the current date and time in a human-readable format.",
             parameters: json!({
                 "type": "object",
                 "properties": {},
@@ -42,12 +43,34 @@ pub fn tool_defs() -> Vec<ToolDef> {
 }
 
 // ---------------------------------------------------------------------------
+// Friendly datetime formatting
+// ---------------------------------------------------------------------------
+
+fn ordinal_suffix(n: u32) -> &'static str {
+    match (n % 10, n % 100) {
+        (1, 11) | (2, 12) | (3, 13) => "th",
+        (1, _) => "st",
+        (2, _) => "nd",
+        (3, _) => "rd",
+        _ => "th",
+    }
+}
+
+/// Human-friendly datetime string, e.g. `"Friday, April 4th, 2026 at 4:34 PM"`.
+pub(crate) fn format_friendly_datetime() -> String {
+    let now = Local::now();
+    let day = now.day();
+    let suffix = ordinal_suffix(day);
+    now.format(&format!("%A, %B {day}{suffix}, %Y at %-I:%M %p"))
+        .to_string()
+}
+
+// ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
 
 pub async fn handle_check_time(_input: Value) -> Result<Value, ToolError> {
-    let now = chrono::Local::now();
-    Ok(json!(now.to_rfc3339()))
+    Ok(json!(format_friendly_datetime()))
 }
 
 pub async fn handle_roll_dice(input: Value) -> Result<Value, ToolError> {
@@ -237,10 +260,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn handle_check_time_returns_datetime() {
+    async fn handle_check_time_returns_friendly_datetime() {
         let result = handle_check_time(json!({})).await.unwrap();
         let s = result.as_str().unwrap();
-        assert!(s.contains('T'));
+        // e.g. "Friday, April 4th, 2026 at 4:34 PM"
+        assert!(s.contains(" at "), "expected friendly format, got: {s}");
+        assert!(s.contains(','), "expected friendly format, got: {s}");
+    }
+
+    #[test]
+    fn ordinal_suffix_cases() {
+        assert_eq!(ordinal_suffix(1), "st");
+        assert_eq!(ordinal_suffix(2), "nd");
+        assert_eq!(ordinal_suffix(3), "rd");
+        assert_eq!(ordinal_suffix(4), "th");
+        assert_eq!(ordinal_suffix(11), "th");
+        assert_eq!(ordinal_suffix(12), "th");
+        assert_eq!(ordinal_suffix(13), "th");
+        assert_eq!(ordinal_suffix(21), "st");
+        assert_eq!(ordinal_suffix(22), "nd");
+        assert_eq!(ordinal_suffix(23), "rd");
+        assert_eq!(ordinal_suffix(31), "st");
     }
 
     #[tokio::test]

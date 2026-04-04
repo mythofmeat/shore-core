@@ -1,4 +1,4 @@
-use chrono::Utc;
+use chrono::Local;
 use rusqlite::{params, Connection, Result as SqlResult};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -466,7 +466,7 @@ impl MemoryDB {
 
     /// Mark an entry as superseded and point it at the replacement entry.
     pub fn supersede_entry(&self, old_id: &str, new_id: &str) -> SqlResult<usize> {
-        let now = Utc::now().to_rfc3339();
+        let now = Local::now().to_rfc3339();
         self.conn.execute(
             "UPDATE entries SET status = 'superseded', superseded_by = ?2, updated_at = ?3
              WHERE id = ?1",
@@ -509,7 +509,7 @@ impl MemoryDB {
         entity_type: &str,
         description: &str,
     ) -> SqlResult<i64> {
-        let now = Utc::now().to_rfc3339();
+        let now = Local::now().to_rfc3339();
 
         // Check for existing entity.
         let existing: Option<(i64, String)> = self
@@ -652,7 +652,7 @@ impl MemoryDB {
 
     /// Append a changelog record. Returns the new changelog_id.
     pub fn append_changelog(&self, operation: &str, description: &str) -> SqlResult<i64> {
-        let now = Utc::now().to_rfc3339();
+        let now = Local::now().to_rfc3339();
         self.conn.execute(
             "INSERT INTO changelog (operation, description, timestamp) VALUES (?1, ?2, ?3)",
             params![operation, description, now],
@@ -700,7 +700,7 @@ impl MemoryDB {
     // ------------------------------------------------------------------
 
     pub fn create_flag(&self, entry_id: &str, flag_type: &str, reason: &str) -> SqlResult<i64> {
-        let now = Utc::now().to_rfc3339();
+        let now = Local::now().to_rfc3339();
         self.conn.execute(
             "INSERT INTO flags (entry_id, flag_type, reason, created_at)
              VALUES (?1, ?2, ?3, ?4)",
@@ -710,7 +710,7 @@ impl MemoryDB {
     }
 
     pub fn resolve_flag(&self, flag_id: i64, resolution: &str) -> SqlResult<usize> {
-        let now = Utc::now().to_rfc3339();
+        let now = Local::now().to_rfc3339();
         self.conn.execute(
             "UPDATE flags SET resolved_at = ?2, resolution = ?3 WHERE flag_id = ?1",
             params![flag_id, now, resolution],
@@ -741,7 +741,7 @@ impl MemoryDB {
     // ------------------------------------------------------------------
 
     pub fn add_collation_skip(&self, entry_id: &str, phase: &str) -> SqlResult<()> {
-        let now = Utc::now().to_rfc3339();
+        let now = Local::now().to_rfc3339();
         self.conn.execute(
             "INSERT OR IGNORE INTO collation_skip (entry_id, phase, skipped_at)
              VALUES (?1, ?2, ?3)",
@@ -921,7 +921,7 @@ impl MemoryDB {
 
     /// Update an entry's confidence score.
     pub fn set_confidence(&self, entry_id: &str, confidence: f64) -> SqlResult<usize> {
-        let now = Utc::now().to_rfc3339();
+        let now = Local::now().to_rfc3339();
         self.conn.execute(
             "UPDATE entries SET confidence = ?2, updated_at = ?3 WHERE id = ?1",
             params![entry_id, confidence, now],
@@ -1033,7 +1033,7 @@ mod tests {
     use tempfile::TempDir;
 
     fn make_entry(id: &str, memory_type: &str) -> Entry {
-        let now = Utc::now().to_rfc3339();
+        let now = Local::now().to_rfc3339();
         Entry {
             id: id.to_string(),
             memory_type: memory_type.to_string(),
@@ -1111,7 +1111,7 @@ mod tests {
         // Update
         let mut updated = fetched;
         updated.summary_text = "Updated text".to_string();
-        updated.updated_at = Utc::now().to_rfc3339();
+        updated.updated_at = Local::now().to_rfc3339();
         db.update_entry(&updated).unwrap();
         let re_fetched = db.get_entry("20250101_120000_0").unwrap().unwrap();
         assert_eq!(re_fetched.summary_text, "Updated text");

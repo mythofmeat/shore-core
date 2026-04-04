@@ -247,7 +247,7 @@ pub async fn handle_remember_image(
         )));
     }
 
-    let now = chrono::Utc::now().to_rfc3339();
+    let now = chrono::Local::now().to_rfc3339();
     let entry = crate::memory::db::Entry {
         id: format!("img_{}", uuid::Uuid::new_v4()),
         memory_type: "image".into(),
@@ -358,7 +358,7 @@ pub async fn handle_generate_image(
     std::fs::create_dir_all(&generated_dir)
         .map_err(|e| ToolError::Io(format!("failed to create directory: {e}")))?;
 
-    let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+    let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
     let filename = format!("{timestamp}.{extension}");
     let save_path = generated_dir.join(&filename);
 
@@ -373,7 +373,7 @@ pub async fn handle_generate_image(
     } else {
         result.revised_prompt.clone()
     };
-    let now = chrono::Utc::now().to_rfc3339();
+    let now = chrono::Local::now().to_rfc3339();
     let entry = crate::memory::db::Entry {
         id: format!("img_{}", uuid::Uuid::new_v4()),
         memory_type: "image".into(),

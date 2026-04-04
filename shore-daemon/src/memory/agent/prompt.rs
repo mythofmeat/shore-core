@@ -3,7 +3,7 @@
 //! Embeds the built-in `memory_agent.md` template and renders it with
 //! character/user/date substitution.
 
-use chrono::Utc;
+use chrono::Local;
 
 /// Built-in memory agent system prompt template.
 ///
@@ -161,9 +161,9 @@ Entity descriptions should be **stable, canonical identifiers** — not per-conv
 ///
 /// Variables: `{{char}}`, `{{user}}`, `{{date}}`, `{{time}}`.
 pub fn render_system_prompt(char_name: &str, user_name: &str) -> String {
-    let now = Utc::now();
+    let now = Local::now();
     let date = now.format("%Y-%m-%d").to_string();
-    let time = now.format("%H:%M UTC").to_string();
+    let time = now.format("%H:%M").to_string();
 
     BUILTIN_MEMORY_AGENT_PROMPT
         .replace("{{char}}", char_name)

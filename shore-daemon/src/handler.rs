@@ -477,7 +477,7 @@ async fn handle_generation(
                 content_blocks,
                 alt_index: None,
                 alt_count: None,
-                timestamp: chrono::Utc::now().to_rfc3339(),
+                timestamp: chrono::Local::now().to_rfc3339(),
             };
             engine.append_message(user_msg.clone())?;
             // Embed image data before broadcasting so clients can display
@@ -534,13 +534,13 @@ async fn handle_generation(
     // Only include the last 90 days — older data would pollute availability signals.
     if is_new_autonomy_state {
         let engine = engine_arc.lock().await;
-        let cutoff = chrono::Utc::now().naive_utc() - chrono::Duration::days(90);
+        let cutoff = chrono::Local::now().naive_local() - chrono::Duration::days(90);
         let mut timestamps: Vec<chrono::NaiveDateTime> = Vec::new();
 
         // Active window messages.
         for msg in engine.messages() {
             if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&msg.timestamp) {
-                let naive = dt.naive_utc();
+                let naive = dt.with_timezone(&chrono::Local).naive_local();
                 if naive >= cutoff {
                     timestamps.push(naive);
                 }
@@ -553,7 +553,7 @@ async fn handle_generation(
             if let Ok(segment_msgs) = segments.read_segment(i) {
                 for msg in &segment_msgs {
                     if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&msg.timestamp) {
-                        let naive = dt.naive_utc();
+                        let naive = dt.with_timezone(&chrono::Local).naive_local();
                         if naive >= cutoff {
                             timestamps.push(naive);
                         }
@@ -1026,7 +1026,7 @@ async fn persist_and_notify(
         // Record API call in diagnostics ring buffer.
         {
             let entry = shore_diagnostics::ApiCallEntry {
-                timestamp: chrono::Utc::now().to_rfc3339(),
+                timestamp: chrono::Local::now().to_rfc3339(),
                 model: result.model.clone(),
                 provider: resolved.provider_key.clone(),
                 input_tokens: result.usage.input_tokens,
@@ -1083,7 +1083,7 @@ async fn persist_and_notify(
             content_blocks,
             alt_index: None,
             alt_count: None,
-            timestamp: chrono::Utc::now().to_rfc3339(),
+            timestamp: chrono::Local::now().to_rfc3339(),
         };
         engine.append_message(assistant_msg)?;
         ctx.autonomy
@@ -1136,7 +1136,7 @@ fn ingest_images(
                 continue;
             }
         };
-        let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+        let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
         let dest_name = format!("{timestamp}_{}", upload.filename);
         let dest_path = attachments_dir.join(&dest_name);
 
@@ -1176,7 +1176,7 @@ fn ingest_images(
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_else(|| "image".to_string());
-            let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+            let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
             let dest_name = format!("{timestamp}_{original_name}");
             let dest_path = attachments_dir.join(&dest_name);
 

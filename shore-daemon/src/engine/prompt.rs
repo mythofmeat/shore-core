@@ -472,7 +472,7 @@ fn format_time_gap(gap_secs: f64, current_ts: &DateTime<FixedOffset>) -> Option<
         format!("{days} days later")
     };
 
-    let time_str = current_ts.format("%-I:%M %p").to_string();
+    let time_str = current_ts.with_timezone(&Local).format("%-I:%M %p").to_string();
     Some(format!("[{relative} · {time_str}]"))
 }
 
@@ -1024,7 +1024,9 @@ mod tests {
         let ts = DateTime::parse_from_rfc3339("2026-04-04T10:30:00-07:00").unwrap();
         let result = format_time_gap(3600.0, &ts).unwrap();
         assert!(result.contains("about an hour later"));
-        assert!(result.contains("10:30 AM"));
+        // Time is converted to local; verify it contains a clock time (not a specific value).
+        let local_str = ts.with_timezone(&Local).format("%-I:%M %p").to_string();
+        assert!(result.contains(&local_str));
     }
 
     #[test]
@@ -1032,7 +1034,8 @@ mod tests {
         let ts = DateTime::parse_from_rfc3339("2026-04-04T21:14:00-07:00").unwrap();
         let result = format_time_gap(6.0 * 3600.0, &ts).unwrap();
         assert!(result.contains("6 hours later"));
-        assert!(result.contains("9:14 PM"));
+        let local_str = ts.with_timezone(&Local).format("%-I:%M %p").to_string();
+        assert!(result.contains(&local_str));
     }
 
     #[test]
@@ -1062,7 +1065,9 @@ mod tests {
         assert!(!result[0].content.contains("later"));
         // Third message (user, 6.5h gap): should have marker.
         assert!(result[2].content.contains("hours later"));
-        assert!(result[2].content.contains("3:30 PM"));
+        let ts3 = DateTime::parse_from_rfc3339("2026-04-04T15:30:00-07:00").unwrap();
+        let local_str = ts3.with_timezone(&Local).format("%-I:%M %p").to_string();
+        assert!(result[2].content.contains(&local_str));
         assert!(result[2].content.contains("I'm back"));
         // content_blocks should also be updated.
         if let Some(ContentBlock::Text { text }) = result[2].content_blocks.first() {

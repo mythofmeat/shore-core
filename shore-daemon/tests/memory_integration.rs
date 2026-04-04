@@ -11,7 +11,7 @@
 //! - Collation (refine, decay)
 //! - Memory agent create_entry persists entries
 
-use chrono::Utc;
+use chrono::Local;
 use std::future::Future;
 use std::pin::Pin;
 use tempfile::TempDir;
@@ -227,7 +227,7 @@ async fn run_rag_pipeline(
 // ---------------------------------------------------------------------------
 
 fn make_conversation() -> Vec<ConversationMessage> {
-    let base = Utc::now();
+    let base = Local::now();
     vec![
         ConversationMessage {
             role: "user".to_string(),
@@ -463,8 +463,8 @@ async fn test_full_memory_system_e2e() {
     // -----------------------------------------------------------------------
 
     // Add some entries for collation to work on
-    let now_str = Utc::now().to_rfc3339();
-    let thirty_days_ago = (Utc::now() - chrono::Duration::days(30)).to_rfc3339();
+    let now_str = Local::now().to_rfc3339();
+    let thirty_days_ago = (Local::now() - chrono::Duration::days(30)).to_rfc3339();
 
     // Entry pair that will be merged by refine
     let sim1 = Entry {

@@ -101,7 +101,7 @@ impl InteriorityLog {
             self.events.pop_front();
         }
         self.events.push_back(InteriorityEvent {
-            timestamp: chrono::Utc::now().to_rfc3339(),
+            timestamp: chrono::Local::now().to_rfc3339(),
             kind,
             detail: detail.into(),
         });

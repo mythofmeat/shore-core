@@ -6,7 +6,7 @@
 //!
 //! Ported from V1 `memory_agent.py` lines 582-848.
 
-use chrono::Utc;
+use chrono::Local;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
@@ -293,7 +293,7 @@ pub async fn handle_create_entry(
     let tags_str = input["topic_tags"].as_str().unwrap_or("").to_string();
     let topic_key = infer_topic_key(&tags_str, &summary_text);
 
-    let now = Utc::now();
+    let now = Local::now();
     let entry_id = format!("{}_{}", now.format("%Y%m%d_%H%M%S"), 0);
     let now_str = now.to_rfc3339();
 
@@ -390,7 +390,7 @@ pub async fn handle_update_entry(
         return Err("Error: no fields to update".into());
     }
 
-    entry.updated_at = Utc::now().to_rfc3339();
+    entry.updated_at = Local::now().to_rfc3339();
 
     let rows = db
         .update_entry(&entry)
@@ -672,7 +672,7 @@ mod tests {
     }
 
     fn seed_entry(db: &MemoryDB, id: &str, summary: &str) {
-        let now = Utc::now().to_rfc3339();
+        let now = Local::now().to_rfc3339();
         let entry = Entry {
             id: id.to_string(),
             memory_type: "semantic".to_string(),

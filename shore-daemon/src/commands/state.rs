@@ -827,7 +827,7 @@ pub async fn memory_purge(
 
     let db = open_memory_db(ctx, &char_name)?;
 
-    let cutoff = (chrono::Utc::now() - chrono::Duration::days(days)).to_rfc3339();
+    let cutoff = (chrono::Local::now() - chrono::Duration::days(days)).to_rfc3339();
 
     let superseded = db
         .get_entries_by_status("superseded")
@@ -1582,7 +1582,7 @@ model_id = "gpt-4o"
         let db = MemoryDB::open(&mem_dir.join("memory.db")).unwrap();
 
         let old_ts = "2020-01-01T00:00:00Z".to_string();
-        let recent_ts = chrono::Utc::now().to_rfc3339();
+        let recent_ts = chrono::Local::now().to_rfc3339();
         let empty = String::new();
 
         let make_entry =

@@ -208,7 +208,7 @@ pub fn inject_system(
         }],
         alt_index: None,
         alt_count: None,
-        timestamp: chrono::Utc::now().to_rfc3339(),
+        timestamp: chrono::Local::now().to_rfc3339(),
     };
 
     engine.append_message(msg).map_err(engine_err)?;

@@ -172,7 +172,7 @@ pub(super) fn compute_centroid(embeddings: &HashMap<String, Vec<f32>>) -> Option
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::Utc;
+    use chrono::Local;
 
     fn make_entry(id: &str, summary: &str, confidence: f64, updated_at: &str) -> Entry {
         Entry {
@@ -201,7 +201,7 @@ mod tests {
     }
 
     fn now_str() -> String {
-        Utc::now().to_rfc3339()
+        Local::now().to_rfc3339()
     }
 
     #[test]

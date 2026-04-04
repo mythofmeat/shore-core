@@ -1037,7 +1037,7 @@ provider = "anthropic"
         let db = MemoryDB::open_in_memory().unwrap();
 
         // Insert entries with different statuses.
-        let now = chrono::Utc::now().to_rfc3339();
+        let now = chrono::Local::now().to_rfc3339();
         let make = |id: &str, status: &str, text: &str| crate::memory::db::Entry {
             id: id.to_string(),
             memory_type: "episodic".to_string(),

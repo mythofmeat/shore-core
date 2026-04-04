@@ -777,7 +777,7 @@ async fn execute_unified_tick(
         }
     };
     let active_path = data_dir.join(character).join("active.jsonl");
-    let ts = chrono::Utc::now().to_rfc3339();
+    let ts = chrono::Local::now().to_rfc3339();
 
     info!(
         character,
@@ -903,7 +903,7 @@ async fn execute_unified_tick(
             content_blocks,
             alt_index: None,
             alt_count: None,
-            timestamp: chrono::Utc::now().to_rfc3339(),
+            timestamp: chrono::Local::now().to_rfc3339(),
         };
 
         if let Ok(line) = msg.serialize_for_storage() {
