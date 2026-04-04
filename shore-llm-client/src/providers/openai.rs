@@ -6,7 +6,9 @@ use tokio::io::DuplexStream;
 
 use shore_protocol::types::ContentBlock;
 
-use crate::types::{GenerateResponse, ImageGenerateResponse, LlmRequest, Timing, Usage};
+use crate::types::{
+    GenerateResponse, ImageGenerateParams, ImageGenerateResponse, LlmRequest, Timing, Usage,
+};
 use crate::LlmError;
 
 use super::sse::{read_sse_events, SseEvent};
@@ -709,28 +711,20 @@ pub async fn embed(
 /// endpoint is used.
 pub async fn image_generate(
     client: &reqwest::Client,
-    provider: &str,
-    model: &str,
-    api_key: &str,
-    base_url: Option<&str>,
-    prompt: &str,
-    size: Option<&str>,
-    quality: Option<&str>,
-    aspect_ratio: Option<&str>,
-    image_size: Option<&str>,
+    params: &ImageGenerateParams<'_>,
 ) -> Result<ImageGenerateResponse, LlmError> {
     let start = Instant::now();
 
-    if provider == "openrouter" {
-        let base = base_url.unwrap_or("https://openrouter.ai/api/v1");
+    if params.provider == "openrouter" {
+        let base = params.base_url.unwrap_or("https://openrouter.ai/api/v1");
         let result = openrouter_image_generate(
             client,
             base,
-            api_key,
-            model,
-            prompt,
-            aspect_ratio,
-            image_size,
+            params.api_key,
+            params.model,
+            params.prompt,
+            params.aspect_ratio,
+            params.image_size,
         )
         .await?;
         let total_ms = start.elapsed().as_millis() as u32;
@@ -742,23 +736,26 @@ pub async fn image_generate(
     }
 
     // Standard OpenAI images/generations endpoint.
-    let base = base_url.unwrap_or(OPENAI_BASE_URL);
+    let base = params.base_url.unwrap_or(OPENAI_BASE_URL);
     let url = format!("{base}/images/generations");
 
     let mut body = json!({
-        "model": model,
-        "prompt": prompt,
+        "model": params.model,
+        "prompt": params.prompt,
     });
-    if let Some(s) = size {
+    if let Some(s) = params.size {
         body["size"] = json!(s);
     }
-    if let Some(q) = quality {
+    if let Some(q) = params.quality {
         body["quality"] = json!(q);
     }
 
     let response = client
         .post(&url)
-        .header(reqwest::header::AUTHORIZATION, format!("Bearer {api_key}"))
+        .header(
+            reqwest::header::AUTHORIZATION,
+            format!("Bearer {}", params.api_key),
+        )
         .header(reqwest::header::CONTENT_TYPE, "application/json")
         .json(&body)
         .send()
@@ -841,6 +838,7 @@ async fn openrouter_image_generate(
     .await
 }
 
+#[allow(clippy::too_many_arguments)] // modalities is inherent to the retry logic
 async fn try_openrouter_image(
     client: &reqwest::Client,
     base_url: &str,

@@ -61,6 +61,7 @@ impl CollationManager {
     /// Run the collation pipeline: backfill → refine → confidence decay → stamp.
     ///
     /// `vars` provides template variables like `{{char}}` and `{{user}}`.
+    #[allow(clippy::too_many_arguments)]
     pub async fn run(
         &self,
         db: &MemoryDB,
@@ -213,9 +214,9 @@ impl CollationManager {
                         if !ancestor.end_timestamp.is_empty()
                             && (max_end.is_empty()
                                 || ancestor.end_timestamp.as_str() > max_end.as_str())
-                            {
-                                max_end = ancestor.end_timestamp.clone();
-                            }
+                        {
+                            max_end = ancestor.end_timestamp.clone();
+                        }
                         // If this ancestor also lacks timestamps, walk its sources
                         if ancestor.start_timestamp.is_empty()
                             && !ancestor.source_entry_ids.is_empty()
@@ -257,6 +258,7 @@ impl CollationManager {
     /// Maximum context entries (non-candidates) to include per cluster prompt.
     const MAX_CONTEXT: usize = 10;
 
+    #[allow(clippy::too_many_arguments)]
     async fn phase_refine(
         &self,
         db: &MemoryDB,
@@ -438,6 +440,7 @@ impl CollationManager {
     }
 
     /// Apply a merge action: combine N entries into 1. Returns true if applied.
+    #[allow(clippy::too_many_arguments)]
     async fn apply_merge(
         &self,
         db: &MemoryDB,
@@ -563,6 +566,7 @@ impl CollationManager {
     }
 
     /// Apply a split action: break 1 entry into N. Returns true if applied.
+    #[allow(clippy::too_many_arguments)]
     async fn apply_split(
         &self,
         db: &MemoryDB,
@@ -670,6 +674,7 @@ impl CollationManager {
     }
 
     /// Apply an update action: rewrite entry in-place. Returns true if applied.
+    #[allow(clippy::too_many_arguments)]
     async fn apply_update(
         &self,
         db: &MemoryDB,

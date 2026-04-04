@@ -1,6 +1,7 @@
 use super::{ToolCategory, ToolContext, ToolDef, ToolError};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde_json::{json, Value};
+use shore_llm_client::types::ImageGenerateParams;
 use tracing::info;
 
 // ---------------------------------------------------------------------------
@@ -307,18 +308,19 @@ pub async fn handle_generate_image(
         .unwrap_or(&config.size);
 
     // 1. Call shore-llm to generate the image.
+    let params = ImageGenerateParams {
+        provider: &config.provider,
+        model: &config.model_id,
+        api_key: &config.api_key,
+        base_url: config.base_url.as_deref(),
+        prompt,
+        size: Some(size),
+        quality: config.quality.as_deref(),
+        aspect_ratio: config.aspect_ratio.as_deref(),
+        image_size: config.image_size.as_deref(),
+    };
     let result = client
-        .image_generate(
-            &config.provider,
-            &config.model_id,
-            &config.api_key,
-            config.base_url.as_deref(),
-            prompt,
-            Some(size),
-            config.quality.as_deref(),
-            config.aspect_ratio.as_deref(),
-            config.image_size.as_deref(),
-        )
+        .image_generate(&params)
         .await
         .map_err(|e| ToolError::Http(format!("image generation failed: {e}")))?;
 

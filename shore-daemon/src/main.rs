@@ -256,6 +256,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///
 /// Reads character names from the channel and runs compaction for each.
 /// Reads `active.jsonl` directly (no engine access needed).
+#[allow(clippy::too_many_arguments)]
 async fn compaction_task(
     mut rx: mpsc::Receiver<String>,
     config: LoadedConfig,

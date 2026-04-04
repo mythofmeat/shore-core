@@ -113,6 +113,7 @@ impl MemoryResearcher {
     ///
     /// The researcher calls the inner agent's `ask()` method through a single
     /// `ask_memory_agent` tool, then synthesizes the results.
+    #[allow(clippy::too_many_arguments)]
     pub async fn research(
         &self,
         request: &str,

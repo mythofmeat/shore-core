@@ -148,6 +148,20 @@ pub struct StreamResult {
     pub content_blocks: Vec<ContentBlock>,
 }
 
+/// Parameters for an image generation request.
+#[derive(Debug, Clone)]
+pub struct ImageGenerateParams<'a> {
+    pub provider: &'a str,
+    pub model: &'a str,
+    pub api_key: &'a str,
+    pub base_url: Option<&'a str>,
+    pub prompt: &'a str,
+    pub size: Option<&'a str>,
+    pub quality: Option<&'a str>,
+    pub aspect_ratio: Option<&'a str>,
+    pub image_size: Option<&'a str>,
+}
+
 /// Response from shore-llm's POST /v1/image/generate endpoint.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ImageGenerateResponse {

@@ -38,6 +38,23 @@ use shore_llm_client::types::LlmRequest;
 use shore_llm_client::LlmClient;
 
 // ---------------------------------------------------------------------------
+// Tick context — shared state for the per-character autonomy loop
+// ---------------------------------------------------------------------------
+
+/// Shared context passed to the per-character tick loop.
+struct TickContext {
+    state: Arc<Mutex<AutonomyState>>,
+    config: Arc<AutonomyConfig>,
+    compaction: Arc<CompactionConfig>,
+    data_dir: PathBuf,
+    compaction_tx: mpsc::Sender<String>,
+    llm_client: Option<LlmClient>,
+    push_tx: Option<broadcast::Sender<ServerMessage>>,
+    loaded_config: Option<Arc<LoadedConfig>>,
+    notifier: Option<NotificationService>,
+}
+
+// ---------------------------------------------------------------------------
 // Per-character state
 // ---------------------------------------------------------------------------
 
@@ -304,21 +321,19 @@ impl AutonomyManager {
             .or_else(|| self.loaded_config.clone());
         let notifier = self.notifier.clone();
 
+        let tick_ctx = TickContext {
+            state,
+            config,
+            compaction,
+            data_dir,
+            compaction_tx,
+            llm_client,
+            push_tx,
+            loaded_config,
+            notifier,
+        };
         let handle = tokio::spawn(async move {
-            character_tick_loop(
-                name,
-                state,
-                config,
-                compaction,
-                data_dir,
-                shutdown_rx,
-                compaction_tx,
-                llm_client,
-                push_tx,
-                loaded_config,
-                notifier,
-            )
-            .await;
+            character_tick_loop(name, tick_ctx, shutdown_rx).await;
         });
 
         self.handles.lock().unwrap().push(handle);
@@ -520,16 +535,8 @@ fn lock_state(m: &Mutex<AutonomyState>) -> std::sync::MutexGuard<'_, AutonomySta
 
 async fn character_tick_loop(
     character: String,
-    state: Arc<Mutex<AutonomyState>>,
-    config: Arc<AutonomyConfig>,
-    compaction: Arc<CompactionConfig>,
-    data_dir: PathBuf,
+    ctx: TickContext,
     mut shutdown_rx: tokio::sync::watch::Receiver<()>,
-    compaction_tx: mpsc::Sender<String>,
-    llm_client: Option<LlmClient>,
-    push_tx: Option<broadcast::Sender<ServerMessage>>,
-    loaded_config: Option<Arc<LoadedConfig>>,
-    notifier: Option<NotificationService>,
 ) {
     let mut interval = tokio::time::interval(TICK_INTERVAL);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -543,24 +550,13 @@ async fn character_tick_loop(
     loop {
         tokio::select! {
             _ = interval.tick() => {
-                tick_character(
-                    &character,
-                    &state,
-                    &config,
-                    &compaction,
-                    &data_dir,
-                    &compaction_tx,
-                    llm_client.as_ref(),
-                    push_tx.as_ref(),
-                    loaded_config.as_deref(),
-                    notifier.as_ref(),
-                ).await;
+                tick_character(&character, &ctx).await;
             }
             _ = shutdown_rx.changed() => {
                 // Final save before shutdown.
-                let mut s = lock_state(&state);
+                let mut s = lock_state(&ctx.state);
                 s.mark_dirty();
-                save_state(&data_dir, &character, &mut s);
+                save_state(&ctx.data_dir, &character, &mut s);
                 info!(character = %character, "Autonomy tick task shutting down");
                 break;
             }
@@ -569,26 +565,15 @@ async fn character_tick_loop(
 }
 
 /// One tick for a single character.
-async fn tick_character(
-    character: &str,
-    state: &Arc<Mutex<AutonomyState>>,
-    config: &AutonomyConfig,
-    compaction: &CompactionConfig,
-    data_dir: &Path,
-    compaction_tx: &mpsc::Sender<String>,
-    llm_client: Option<&LlmClient>,
-    push_tx: Option<&broadcast::Sender<ServerMessage>>,
-    loaded_config: Option<&LoadedConfig>,
-    notifier: Option<&NotificationService>,
-) {
+async fn tick_character(character: &str, ctx: &TickContext) {
     let now = Instant::now();
 
     // Collect actions under the lock, then release before any async work.
     let (int_action, compaction_needed) = {
-        let mut s = lock_state(state);
+        let mut s = lock_state(&ctx.state);
 
         // -- interiority ------------------------------------------------------
-        let int_action = if config.enabled && config.interiority.enabled {
+        let int_action = if ctx.config.enabled && ctx.config.interiority.enabled {
             let state_before = s.interiority.state();
             let action = s.interiority.tick(now);
             let state_after = s.interiority.state();
@@ -612,22 +597,22 @@ async fn tick_character(
 
         // -- compaction triggers ---------------------------------------------
         let mut compaction_needed = false;
-        if config.enabled && compaction.enabled && !s.compaction_triggered {
-            if compaction.max_turns > 0
-                && s.active_turn_count >= compaction.max_turns
-                && s.active_turn_count >= compaction.min_turns
+        if ctx.config.enabled && ctx.compaction.enabled && !s.compaction_triggered {
+            if ctx.compaction.max_turns > 0
+                && s.active_turn_count >= ctx.compaction.max_turns
+                && s.active_turn_count >= ctx.compaction.min_turns
             {
                 s.compaction_triggered = true;
                 compaction_needed = true;
                 info!(
                     character = %character,
                     turn_count = s.active_turn_count,
-                    max_turns = compaction.max_turns,
+                    max_turns = ctx.compaction.max_turns,
                     "Compaction: max turns trigger fired"
                 );
-            } else if s.active_turn_count >= compaction.min_turns {
+            } else if s.active_turn_count >= ctx.compaction.min_turns {
                 let idle_secs = now.duration_since(s.last_compaction_activity).as_secs();
-                let threshold_secs = u64::from(compaction.idle_trigger_minutes) * 60;
+                let threshold_secs = u64::from(ctx.compaction.idle_trigger_minutes) * 60;
                 if threshold_secs > 0 && idle_secs >= threshold_secs {
                     s.compaction_triggered = true;
                     compaction_needed = true;
@@ -642,12 +627,12 @@ async fn tick_character(
             }
         }
 
-        save_state(data_dir, character, &mut s);
+        save_state(&ctx.data_dir, character, &mut s);
         (int_action, compaction_needed)
     };
 
     if compaction_needed {
-        let _ = compaction_tx.try_send(character.to_string());
+        let _ = ctx.compaction_tx.try_send(character.to_string());
     }
 
     // -- execute interiority action with timeout (async, outside lock) ----
@@ -655,7 +640,7 @@ async fn tick_character(
         InteriorityAction::None => {}
         InteriorityAction::RunTick => {
             {
-                let mut s = lock_state(state);
+                let mut s = lock_state(&ctx.state);
                 s.interiority_log
                     .push(InteriorityEventKind::TickFired, "Interiority tick fired");
             }
@@ -663,12 +648,12 @@ async fn tick_character(
                 INTERIORITY_TIMEOUT,
                 execute_unified_tick(
                     character,
-                    state,
-                    data_dir,
-                    llm_client,
-                    push_tx,
-                    loaded_config,
-                    notifier,
+                    &ctx.state,
+                    &ctx.data_dir,
+                    ctx.llm_client.as_ref(),
+                    ctx.push_tx.as_ref(),
+                    ctx.loaded_config.as_deref(),
+                    ctx.notifier.as_ref(),
                 ),
             )
             .await
@@ -680,7 +665,7 @@ async fn tick_character(
                         timeout_secs = INTERIORITY_TIMEOUT.as_secs(),
                         "Interiority tick timed out, dropping to keep tick loop alive"
                     );
-                    let mut s = lock_state(state);
+                    let mut s = lock_state(&ctx.state);
                     s.interiority_log.push(
                         InteriorityEventKind::Timeout,
                         format!("Tick timed out after {}s", INTERIORITY_TIMEOUT.as_secs()),
@@ -690,14 +675,14 @@ async fn tick_character(
             }
         }
         InteriorityAction::RunDormantPing => {
-            execute_dormant_ping(character, state, llm_client).await;
+            execute_dormant_ping(character, &ctx.state, ctx.llm_client.as_ref()).await;
         }
     }
 
     // -- final persist (in case async actions dirtied state) ---------------
     {
-        let mut s = lock_state(state);
-        save_state(data_dir, character, &mut s);
+        let mut s = lock_state(&ctx.state);
+        save_state(&ctx.data_dir, character, &mut s);
     }
 }
 
@@ -1393,19 +1378,18 @@ mod tests {
             s.activity.record_message();
         }
 
-        tick_character(
-            "alice",
-            &state,
-            &config,
-            &Default::default(),
-            tmp.path(),
-            &compaction_tx,
-            None,
-            None,
-            None,
-            None,
-        )
-        .await;
+        let tick_ctx = TickContext {
+            state,
+            config: Arc::new(config),
+            compaction: Arc::new(Default::default()),
+            data_dir: tmp.path().to_path_buf(),
+            compaction_tx,
+            llm_client: None,
+            push_tx: None,
+            loaded_config: None,
+            notifier: None,
+        };
+        tick_character("alice", &tick_ctx).await;
     }
 
     #[test]

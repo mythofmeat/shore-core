@@ -30,6 +30,7 @@ const DENIED_MESSAGE: &str =
 ///
 /// Returns `(response_text, mutations)` where mutations is a list of
 /// human-readable descriptions of successful write operations.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_agent_loop(
     llm: &dyn AgentLlm,
     db: &MemoryDB,

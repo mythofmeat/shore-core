@@ -32,10 +32,16 @@ pub enum ConfigError {
     },
 
     #[error("failed to parse model catalog: {0}")]
-    Catalog(#[from] models::CatalogError),
+    Catalog(Box<models::CatalogError>),
 
     #[error("validation error: {0}")]
     Validation(String),
+}
+
+impl From<models::CatalogError> for ConfigError {
+    fn from(e: models::CatalogError) -> Self {
+        ConfigError::Catalog(Box::new(e))
+    }
 }
 
 /// Resolved XDG directory paths for Shore.

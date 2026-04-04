@@ -273,7 +273,7 @@ pub enum CatalogError {
         category: String,
         provider: String,
         name: String,
-        source: toml::de::Error,
+        source: Box<toml::de::Error>,
     },
     #[error("ambiguous model name \"{name}\" — found in: {locations}")]
     AmbiguousName { name: String, locations: String },
@@ -429,7 +429,7 @@ fn parse_category(
                         category: category.to_string(),
                         provider: provider_key.to_string(),
                         name: model_name.to_string(),
-                        source: e,
+                        source: Box::new(e),
                     })?;
 
             let model_id = entry.model_id.ok_or_else(|| CatalogError::MissingModelId {

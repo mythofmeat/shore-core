@@ -358,7 +358,6 @@ pub struct CompletionState {
     pub selected: Option<usize>,
 }
 
-
 /// Main application state.
 pub struct App {
     pub entries: Vec<ConversationEntry>,

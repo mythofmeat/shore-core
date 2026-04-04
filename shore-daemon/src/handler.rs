@@ -129,6 +129,17 @@ struct GenContext {
     notifier: NotificationService,
 }
 
+/// Per-generation parameters that vary with each request.
+struct GenerationParams {
+    body: ClientMessageBody,
+    regen: bool,
+    char_name: String,
+    rid: Option<String>,
+    effective_config: LoadedConfig,
+    data_dir: PathBuf,
+    active_model: Option<String>,
+}
+
 // ── MessageHandler ────────────────────────────────────────────────────
 
 /// The message processing handler.
@@ -288,25 +299,21 @@ impl MessageHandler {
 
                     let rid = body.rid.clone();
                     let gen = self.gen_context();
-                    let data_dir = self.cmd_ctx.data_dir.clone();
-                    let active_model = self.cmd_ctx.active_model.clone();
                     let push_tx = self.push_tx.clone();
                     let notifier = self.notifier.clone();
+                    let params = GenerationParams {
+                        body,
+                        regen,
+                        char_name,
+                        rid,
+                        effective_config,
+                        data_dir: self.cmd_ctx.data_dir.clone(),
+                        active_model: self.cmd_ctx.active_model.clone(),
+                    };
 
                     self.generation_handle = Some(tokio::spawn(async move {
-                        let notify_name = char_name.clone();
-                        if let Err(e) = handle_generation(
-                            gen,
-                            body,
-                            regen,
-                            char_name,
-                            rid,
-                            effective_config,
-                            data_dir,
-                            active_model,
-                        )
-                        .await
-                        {
+                        let notify_name = params.char_name.clone();
+                        if let Err(e) = handle_generation(gen, params).await {
                             error!(error = %e, "Error processing engine message");
                             let err_msg = e.to_string();
                             let _ = push_tx.send(ServerMessage::Error(SwpError {
@@ -414,17 +421,20 @@ impl MessageHandler {
 // Generation task (free async fn, runs in spawned tokio task)
 // ---------------------------------------------------------------------------
 
-#[instrument(skip(ctx, body), fields(char = %char_name, rid = rid.as_deref().unwrap_or("-")))]
+#[instrument(skip(ctx, params), fields(char = %params.char_name, rid = params.rid.as_deref().unwrap_or("-")))]
 async fn handle_generation(
     ctx: GenContext,
-    body: ClientMessageBody,
-    regen: bool,
-    char_name: String,
-    rid: Option<String>,
-    effective_config: LoadedConfig,
-    data_dir: PathBuf,
-    active_model: Option<String>,
+    params: GenerationParams,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let GenerationParams {
+        body,
+        regen,
+        char_name,
+        rid,
+        effective_config,
+        data_dir,
+        active_model,
+    } = params;
     let wall_clock_start = Instant::now();
 
     // Get engine Arc from registry (brief lock — registry released immediately after).
@@ -986,6 +996,7 @@ async fn run_tool_phase(
 }
 
 /// Phase 12: Persist messages, record diagnostics, and send notifications.
+#[allow(clippy::too_many_arguments)]
 async fn persist_and_notify(
     ctx: &GenContext,
     engine_arc: &Arc<Mutex<crate::engine::ConversationEngine>>,
@@ -1433,13 +1444,15 @@ mod tests {
         // This will return an Err (no model configured) — that's expected.
         let result = handle_generation(
             gen,
-            body,
-            is_regen,
-            char_name,
-            None,
-            effective_config,
-            data_dir,
-            None,
+            GenerationParams {
+                body,
+                regen: is_regen,
+                char_name,
+                rid: None,
+                effective_config,
+                data_dir,
+                active_model: None,
+            },
         )
         .await;
 
@@ -1734,13 +1747,15 @@ mod tests {
         // Run the full pipeline.
         let result = handle_generation(
             gen,
-            body,
-            false,
-            char_name.clone(),
-            Some("test-rid".into()),
-            effective_config,
-            data_dir.clone(),
-            None,
+            GenerationParams {
+                body,
+                regen: false,
+                char_name: char_name.clone(),
+                rid: Some("test-rid".into()),
+                effective_config,
+                data_dir: data_dir.clone(),
+                active_model: None,
+            },
         )
         .await;
 

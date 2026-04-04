@@ -5,7 +5,7 @@ pub(crate) mod sse;
 pub(crate) mod stream_helpers;
 pub(crate) mod zai;
 
-use crate::types::{GenerateResponse, ImageGenerateResponse, LlmRequest};
+use crate::types::{GenerateResponse, ImageGenerateParams, ImageGenerateResponse, LlmRequest};
 use crate::LlmError;
 use tokio::io::DuplexStream;
 
@@ -81,29 +81,9 @@ pub async fn embed(
 /// Dispatch an image generation request.
 pub async fn image_generate(
     client: &reqwest::Client,
-    provider: &str,
-    model: &str,
-    api_key: &str,
-    base_url: Option<&str>,
-    prompt: &str,
-    size: Option<&str>,
-    quality: Option<&str>,
-    aspect_ratio: Option<&str>,
-    image_size: Option<&str>,
+    params: &ImageGenerateParams<'_>,
 ) -> Result<ImageGenerateResponse, LlmError> {
-    openai::image_generate(
-        client,
-        provider,
-        model,
-        api_key,
-        base_url,
-        prompt,
-        size,
-        quality,
-        aspect_ratio,
-        image_size,
-    )
-    .await
+    openai::image_generate(client, params).await
 }
 
 #[cfg(test)]

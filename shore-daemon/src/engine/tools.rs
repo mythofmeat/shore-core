@@ -42,6 +42,7 @@ pub struct ToolLoopResult {
 /// `finish_reason != "tool_use"` or `max_iterations` is reached.
 ///
 /// Returns both the final result and any intermediate messages for persistence.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_tool_loop(
     client: &LlmClient,
     push_tx: &broadcast::Sender<ServerMessage>,

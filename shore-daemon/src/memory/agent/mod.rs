@@ -171,6 +171,7 @@ impl MemoryAgent {
     /// Process a user query with conversation history.
     ///
     /// Used by the researcher and engine. Returns a mutations summary string.
+    #[allow(clippy::too_many_arguments)]
     pub async fn run_query(
         &self,
         content: &str,

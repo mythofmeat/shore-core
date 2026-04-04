@@ -133,7 +133,6 @@ pub struct AutonomyConfig {
     pub interiority: InteriorityConfig,
 }
 
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct InteriorityConfig {
@@ -606,7 +605,6 @@ pub struct NotificationsConfig {
     pub events: NotificationEventsConfig,
 }
 
-
 /// Notification delivery backend.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -620,7 +618,6 @@ pub enum NotificationBackend {
     /// User-defined shell command.
     Command,
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -658,7 +655,6 @@ pub struct CommandNotifyConfig {
     #[serde(default)]
     pub template: String,
 }
-
 
 /// Per-event notification toggles. All default to true (fire when enabled).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

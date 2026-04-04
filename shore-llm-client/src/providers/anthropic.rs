@@ -60,9 +60,7 @@ fn messages_have_cache_control(messages: &[Value]) -> bool {
     messages.iter().any(|m| {
         m.get("content")
             .and_then(Value::as_array)
-            .is_some_and(|arr| {
-                arr.iter().any(|b| b.get("cache_control").is_some())
-            })
+            .is_some_and(|arr| arr.iter().any(|b| b.get("cache_control").is_some()))
     })
 }
 

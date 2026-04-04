@@ -10,7 +10,7 @@ use tokio::io::{BufReader, DuplexStream};
 use tracing::{debug, warn};
 
 use shore_config::models::ResolvedModel;
-use types::{ImageGenerateResponse, LlmRequest};
+use types::{ImageGenerateParams, ImageGenerateResponse, LlmRequest};
 
 /// Errors from the LLM client.
 #[derive(Debug, thiserror::Error)]
@@ -206,29 +206,9 @@ impl LlmClient {
     /// Send an image generation request to the provider.
     pub async fn image_generate(
         &self,
-        provider: &str,
-        model: &str,
-        api_key: &str,
-        base_url: Option<&str>,
-        prompt: &str,
-        size: Option<&str>,
-        quality: Option<&str>,
-        aspect_ratio: Option<&str>,
-        image_size: Option<&str>,
+        params: &ImageGenerateParams<'_>,
     ) -> Result<ImageGenerateResponse, LlmError> {
-        providers::image_generate(
-            &self.http_client,
-            provider,
-            model,
-            api_key,
-            base_url,
-            prompt,
-            size,
-            quality,
-            aspect_ratio,
-            image_size,
-        )
-        .await
+        providers::image_generate(&self.http_client, params).await
     }
 
     /// Log an API payload to `{payload_log_dir}/api_payloads.jsonl` if logging is enabled.
