@@ -15,6 +15,10 @@ pub struct TransmittedImage {
     pub id: KittyImageId,
     pub cols: u16,
     pub rows: u16,
+    /// Original pixel width of the source image.
+    pub pw: u32,
+    /// Original pixel height of the source image.
+    pub ph: u32,
 }
 
 /// Cache of transmitted images, keyed by file path.
@@ -176,7 +180,7 @@ impl ImageCache {
         let _ = tty.flush();
 
         self.cache
-            .insert(path.to_string(), TransmittedImage { id, cols, rows });
+            .insert(path.to_string(), TransmittedImage { id, cols, rows, pw, ph });
         self.cache.get(path)
     }
 
@@ -214,7 +218,7 @@ impl ImageCache {
         let _ = tty.flush();
 
         self.cache
-            .insert(key.to_string(), TransmittedImage { id, cols, rows });
+            .insert(key.to_string(), TransmittedImage { id, cols, rows, pw, ph });
         self.cache.get(key)
     }
 
@@ -234,7 +238,7 @@ impl ImageCache {
         self.cache.clear();
     }
 
-    fn calculate_cells(&self, pw: u32, ph: u32, max_cols: u16, max_rows: u16) -> (u16, u16) {
+    pub fn calculate_cells(&self, pw: u32, ph: u32, max_cols: u16, max_rows: u16) -> (u16, u16) {
         let cw = self.cell_width as f64;
         let ch = self.cell_height as f64;
 
@@ -478,6 +482,8 @@ mod tests {
             id: 1,
             cols: 3,
             rows: 2,
+            pw: 24,
+            ph: 32,
         };
         let lines = placeholder_lines(&img);
         assert_eq!(lines.len(), 2);
@@ -494,6 +500,8 @@ mod tests {
             id: 5,
             cols: 2,
             rows: 1,
+            pw: 160,
+            ph: 80,
         };
         let lines = placeholder_lines(&img);
         let text = &lines[0].spans[0].content;
@@ -516,6 +524,8 @@ mod tests {
             id: 5,
             cols: 2,
             rows: 1,
+            pw: 160,
+            ph: 80,
         };
         let lines = placeholder_lines(&img);
         let area = Rect::new(0, 0, 10, 1);
