@@ -378,6 +378,7 @@ pub struct App {
     pub image_cache: ImageCache,
     pub show_thinking: bool,
     pub show_tools: bool,
+    pub show_images: bool,
     pub show_help: bool,
     /// Images queued for attachment to the next outgoing message.
     pub pending_images: Vec<String>,
@@ -411,6 +412,7 @@ impl Default for App {
             image_cache: ImageCache::new(),
             show_thinking: true,
             show_tools: true,
+            show_images: true,
             show_help: false,
             pending_images: Vec::new(),
             editing_ref: None,
