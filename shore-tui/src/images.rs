@@ -284,6 +284,23 @@ pub fn placeholder_lines(img: &TransmittedImage) -> Vec<Line<'static>> {
     lines
 }
 
+/// Generate placeholder lines for an image at arbitrary cell dimensions.
+/// Used for fullscreen display where dimensions differ from the cached inline size.
+pub fn placeholder_lines_at(id: KittyImageId, cols: u16, rows: u16) -> Vec<Line<'static>> {
+    let style = id_to_style(id);
+    let mut lines = Vec::with_capacity(rows as usize);
+    for row in 0..rows {
+        let mut text = String::with_capacity(cols as usize * 12);
+        for col in 0..cols {
+            text.push('\u{2800}');
+            text.push(diacritic(row as u8));
+            text.push(diacritic(col as u8));
+        }
+        lines.push(Line::from(Span::styled(text, style)));
+    }
+    lines
+}
+
 /// Replace U+2800 stand-in characters with U+10EEEE kitty placeholders in a
 /// rendered buffer. Must be called after Paragraph renders but before the
 /// frame is flushed to the terminal.

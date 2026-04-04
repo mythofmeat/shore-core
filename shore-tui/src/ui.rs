@@ -47,6 +47,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     if app.show_help {
         draw_help(frame, size);
     }
+
+    if app.fullscreen.is_some() {
+        draw_fullscreen_image(frame, app, size);
+    }
 }
 
 /// Word-wrap text and push it as bar-indented lines (`  │ content`).
@@ -581,6 +585,59 @@ fn draw_conversation(frame: &mut Frame, app: &mut App, area: Rect) {
 
     // Swap U+2800 stand-in → U+10EEEE kitty placeholder in rendered cells.
     images::fixup_placeholder_cells(frame.buffer_mut(), area);
+}
+
+/// Render the fullscreen image viewer overlay.
+fn draw_fullscreen_image(frame: &mut Frame, app: &App, area: Rect) {
+    let idx = match app.fullscreen {
+        Some(i) if i < app.image_index.len() => i,
+        _ => return,
+    };
+    let entry = &app.image_index[idx];
+    let transmitted = match app.image_cache.get(&entry.path) {
+        Some(t) => t,
+        None => return,
+    };
+
+    // Layout: image area + 1-row status bar
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(1),    // image
+            Constraint::Length(1), // status bar
+        ])
+        .split(area);
+
+    let img_area = chunks[0];
+    let status_area = chunks[1];
+
+    // Compute fullscreen cell dimensions preserving aspect ratio
+    let (fs_cols, fs_rows) =
+        app.image_cache
+            .calculate_cells(transmitted.pw, transmitted.ph, img_area.width, img_area.height);
+
+    // Center the image vertically in the image area
+    let v_pad = img_area.height.saturating_sub(fs_rows) / 2;
+    let mut img_lines: Vec<Line<'static>> = Vec::new();
+    for _ in 0..v_pad {
+        img_lines.push(Line::from(""));
+    }
+    img_lines.extend(images::placeholder_lines_at(transmitted.id, fs_cols, fs_rows));
+
+    let paragraph = Paragraph::new(Text::from(img_lines));
+    frame.render_widget(paragraph, img_area);
+
+    // Status bar: "  3/7 — filename.png"
+    let total = app.image_index.len();
+    let status_text = format!("  {}/{} \u{2014} {}", idx + 1, total, entry.display_name);
+    let status = Paragraph::new(Line::from(Span::styled(
+        status_text,
+        Style::default().fg(Color::DarkGray),
+    )));
+    frame.render_widget(status, status_area);
+
+    // Fix up placeholder cells in the image area
+    images::fixup_placeholder_cells(frame.buffer_mut(), img_area);
 }
 
 /// Render image entries — kitty placeholders when available, text fallback otherwise.
