@@ -9,6 +9,7 @@ use crate::LlmError;
 use super::sse::{read_sse_events, SseEvent};
 use super::stream_helpers::{
     build_done_event, build_start_event, build_tool_use_event, extract_gemini_usage,
+    extract_system_text, normalize_finish_reason, translate_tool_declarations,
 };
 
 const DEFAULT_BASE_URL: &str = "https://generativelanguage.googleapis.com";
@@ -76,21 +77,9 @@ fn translate_messages(request: &LlmRequest) -> Vec<Value> {
             Some("system") => {
                 // Inline system instructions → user/model pair.
                 // merge_consecutive_roles() handles adjacent same-role merging.
-                let text = match msg.get("content") {
-                    Some(Value::String(s)) => s.clone(),
-                    Some(Value::Array(blocks)) => blocks
-                        .iter()
-                        .filter_map(|b| {
-                            if b.get("type").and_then(|t| t.as_str()) == Some("text") {
-                                b.get("text").and_then(|t| t.as_str()).map(String::from)
-                            } else {
-                                None
-                            }
-                        })
-                        .collect::<Vec<_>>()
-                        .join(""),
-                    _ => String::new(),
-                };
+                let text = extract_system_text(
+                    msg.get("content").unwrap_or(&Value::Null),
+                );
                 let wrapped =
                     format!("<system_instruction>{text}</system_instruction>");
                 contents.push(json!({
@@ -176,21 +165,8 @@ fn translate_messages(request: &LlmRequest) -> Vec<Value> {
 
 /// Translate Anthropic-format tool definitions into Gemini `tools` array.
 fn translate_tools(tools: &Option<Vec<Value>>) -> Option<Value> {
-    let tools = tools.as_ref()?;
-    if tools.is_empty() {
-        return None;
-    }
-    let declarations: Vec<Value> = tools
-        .iter()
-        .map(|t| {
-            json!({
-                "name": t.get("name").cloned().unwrap_or(Value::Null),
-                "description": t.get("description").cloned().unwrap_or(Value::Null),
-                "parameters": t.get("input_schema").cloned().unwrap_or(json!({}))
-            })
-        })
-        .collect();
-    Some(json!([{"functionDeclarations": declarations}]))
+    translate_tool_declarations(tools)
+        .map(|decls| json!([{"functionDeclarations": decls}]))
 }
 
 /// Build the Gemini `systemInstruction` from the request's system prompt.
@@ -374,29 +350,6 @@ fn base_url(request: &LlmRequest) -> &str {
         .as_deref()
         .unwrap_or(DEFAULT_BASE_URL)
         .trim_end_matches('/')
-}
-
-// ── Finish reason mapping ────────────────────────────────────────────
-
-fn normalize_finish_reason(reason: Option<&str>) -> &str {
-    match reason {
-        Some("STOP") => "end_turn",
-        Some("MAX_TOKENS") => "max_tokens",
-        Some("SAFETY") => "safety",
-        Some("RECITATION") => "recitation",
-        Some("MALFORMED_FUNCTION_CALL") => "tool_use",
-        Some(other) => {
-            // Return a static str for known lowercase values; otherwise fall through.
-            // We leak a small string here for uncommon unknown reasons.
-            // In practice Gemini returns a small fixed set.
-            match other {
-                "end_turn" => "end_turn",
-                "max_tokens" => "max_tokens",
-                _ => "end_turn",
-            }
-        }
-        None => "end_turn",
-    }
 }
 
 // ── Streaming ────────────────────────────────────────────────────────

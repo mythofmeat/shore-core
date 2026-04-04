@@ -6,8 +6,8 @@ use tokio::io::DuplexStream;
 
 use super::sse::SseEvent;
 use super::stream_helpers::{
-    build_done_event, build_start_event, build_tool_use_event, extract_anthropic_usage,
-    merge_anthropic_usage,
+    apply_common_params, build_done_event, build_start_event, build_tool_use_event,
+    extract_anthropic_usage, extract_system_text, merge_anthropic_usage,
 };
 use crate::types::{ContentBlock, GenerateResponse, LlmRequest, Timing, Usage};
 use crate::LlmError;
@@ -226,21 +226,7 @@ fn build_output_config(opts: &Value) -> Option<Value> {
 
 /// Extract plain text from a message's content (string or array of blocks).
 fn extract_text_content(msg: &Value) -> String {
-    match msg.get("content") {
-        Some(Value::String(s)) => s.clone(),
-        Some(Value::Array(blocks)) => blocks
-            .iter()
-            .filter_map(|b| {
-                if b.get("type").and_then(Value::as_str) == Some("text") {
-                    b.get("text").and_then(Value::as_str)
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(""),
-        _ => String::new(),
-    }
+    extract_system_text(msg.get("content").unwrap_or(&Value::Null))
 }
 
 /// Convert inline system-role messages to user messages.
@@ -339,13 +325,7 @@ fn build_body(request: &LlmRequest, streaming: bool) -> Value {
         }
     }
 
-    if let Some(temp) = request.temperature {
-        body["temperature"] = json!(temp);
-    }
-
-    if let Some(top_p) = request.top_p {
-        body["top_p"] = json!(top_p);
-    }
+    apply_common_params(&mut body, request);
 
     if let Some(thinking) = thinking {
         body["thinking"] = thinking;

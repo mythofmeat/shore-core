@@ -2,7 +2,7 @@ use std::time::Instant;
 
 use serde_json::{json, Value};
 
-use crate::types::Usage;
+use crate::types::{LlmRequest, Usage};
 
 /// Timing helper shared across streaming providers.
 pub(crate) struct StreamTiming {
@@ -142,6 +142,116 @@ pub(crate) fn build_tool_use_event(id: &str, name: &str, input: &serde_json::Val
         "input": input,
     })
     .to_string()
+}
+
+// ── Shared translation helpers ─────────────────────────────────────────
+
+/// Extract plain text from a value that is either a JSON string or an array
+/// of `{type: "text", text: "..."}` content blocks.  All text blocks are
+/// concatenated into a single string.
+pub(crate) fn extract_system_text(value: &Value) -> String {
+    match value {
+        Value::String(s) => s.clone(),
+        Value::Array(blocks) => blocks
+            .iter()
+            .filter_map(|b| {
+                if b.get("type").and_then(Value::as_str) == Some("text") {
+                    b.get("text").and_then(Value::as_str).map(String::from)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(""),
+        _ => String::new(),
+    }
+}
+
+/// Extract token usage from an OpenAI usage object, including cached tokens
+/// from `prompt_tokens_details.cached_tokens`.
+pub(crate) fn extract_openai_usage(u: &Value) -> Usage {
+    let cached = u
+        .get("prompt_tokens_details")
+        .and_then(|d| d.get("cached_tokens"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as u32;
+
+    Usage {
+        input_tokens: u
+            .get("prompt_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as u32,
+        output_tokens: u
+            .get("completion_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as u32,
+        cache_read_tokens: cached,
+        cache_creation_tokens: 0,
+    }
+}
+
+/// Normalize a provider-specific finish reason into a canonical string.
+///
+/// Covers OpenAI (lowercase), Gemini (UPPERCASE), and Anthropic (already
+/// canonical) values in a single collision-free match table.
+pub(crate) fn normalize_finish_reason(reason: Option<&str>) -> &'static str {
+    match reason {
+        // OpenAI
+        Some("stop") => "end_turn",
+        Some("tool_calls") => "tool_use",
+        Some("length") => "max_tokens",
+        Some("content_filter") => "content_filter",
+        // Gemini
+        Some("STOP") => "end_turn",
+        Some("MAX_TOKENS") => "max_tokens",
+        Some("SAFETY") => "safety",
+        Some("RECITATION") => "recitation",
+        Some("MALFORMED_FUNCTION_CALL") => "tool_use",
+        // Already canonical (Anthropic passthrough)
+        Some("end_turn") => "end_turn",
+        Some("max_tokens") => "max_tokens",
+        Some("tool_use") => "tool_use",
+        _ => "end_turn",
+    }
+}
+
+/// Apply common sampling parameters (`temperature`, `top_p`) to a JSON body.
+///
+/// Uses snake_case keys — suitable for Anthropic and OpenAI.  Gemini uses
+/// different key names (`topP`) on a sub-object, so it is NOT covered here.
+pub(crate) fn apply_common_params(body: &mut Value, request: &LlmRequest) {
+    if let Some(temp) = request.temperature {
+        body["temperature"] = json!(temp);
+    }
+    if let Some(top_p) = request.top_p {
+        body["top_p"] = json!(top_p);
+    }
+}
+
+/// Translate Anthropic-format tool definitions into provider-neutral
+/// declarations with `name`, `description`, and `parameters` (from
+/// `input_schema`).  Returns `None` when tools are absent or empty.
+///
+/// Each provider wraps the result in its own envelope:
+/// - OpenAI: `{type: "function", function: <decl>}`
+/// - Gemini: `[{functionDeclarations: <decls>}]`
+pub(crate) fn translate_tool_declarations(tools: &Option<Vec<Value>>) -> Option<Vec<Value>> {
+    let tools = tools.as_ref()?;
+    if tools.is_empty() {
+        return None;
+    }
+    Some(
+        tools
+            .iter()
+            .map(|t| {
+                json!({
+                    "name": t.get("name").and_then(|n| n.as_str()).unwrap_or(""),
+                    "description": t.get("description").and_then(|d| d.as_str()).unwrap_or(""),
+                    "parameters": t.get("input_schema").cloned().unwrap_or(json!({})),
+                })
+            })
+            .collect(),
+    )
 }
 
 #[cfg(test)]
@@ -313,5 +423,133 @@ mod tests {
         assert_eq!(usage.input_tokens, 100);
         assert_eq!(usage.output_tokens, 0);
         assert_eq!(usage.cache_read_tokens, 0);
+    }
+
+    // ── extract_system_text ────────────────────────────────────────────
+
+    #[test]
+    fn test_extract_system_text_string() {
+        let val = json!("You are a helpful assistant.");
+        assert_eq!(extract_system_text(&val), "You are a helpful assistant.");
+    }
+
+    #[test]
+    fn test_extract_system_text_array() {
+        let val = json!([
+            {"type": "text", "text": "Part one. "},
+            {"type": "text", "text": "Part two."}
+        ]);
+        assert_eq!(extract_system_text(&val), "Part one. Part two.");
+    }
+
+    #[test]
+    fn test_extract_system_text_empty_array() {
+        assert_eq!(extract_system_text(&json!([])), "");
+    }
+
+    #[test]
+    fn test_extract_system_text_null() {
+        assert_eq!(extract_system_text(&Value::Null), "");
+    }
+
+    #[test]
+    fn test_extract_system_text_skips_non_text_blocks() {
+        let val = json!([
+            {"type": "text", "text": "Hello"},
+            {"type": "image", "data": "..."},
+            {"type": "text", "text": " world"}
+        ]);
+        assert_eq!(extract_system_text(&val), "Hello world");
+    }
+
+    // ── extract_openai_usage ───────────────────────────────────────────
+
+    #[test]
+    fn test_extract_openai_usage() {
+        let u = json!({
+            "prompt_tokens": 100,
+            "completion_tokens": 50,
+            "prompt_tokens_details": {"cached_tokens": 30}
+        });
+        let usage = extract_openai_usage(&u);
+        assert_eq!(usage.input_tokens, 100);
+        assert_eq!(usage.output_tokens, 50);
+        assert_eq!(usage.cache_read_tokens, 30);
+        assert_eq!(usage.cache_creation_tokens, 0);
+    }
+
+    #[test]
+    fn test_extract_openai_usage_no_cache() {
+        let u = json!({"prompt_tokens": 80, "completion_tokens": 20});
+        let usage = extract_openai_usage(&u);
+        assert_eq!(usage.input_tokens, 80);
+        assert_eq!(usage.output_tokens, 20);
+        assert_eq!(usage.cache_read_tokens, 0);
+    }
+
+    // ── normalize_finish_reason ────────────────────────────────────────
+
+    #[test]
+    fn test_normalize_finish_reason_openai() {
+        assert_eq!(normalize_finish_reason(Some("stop")), "end_turn");
+        assert_eq!(normalize_finish_reason(Some("tool_calls")), "tool_use");
+        assert_eq!(normalize_finish_reason(Some("length")), "max_tokens");
+        assert_eq!(normalize_finish_reason(Some("content_filter")), "content_filter");
+    }
+
+    #[test]
+    fn test_normalize_finish_reason_gemini() {
+        assert_eq!(normalize_finish_reason(Some("STOP")), "end_turn");
+        assert_eq!(normalize_finish_reason(Some("MAX_TOKENS")), "max_tokens");
+        assert_eq!(normalize_finish_reason(Some("SAFETY")), "safety");
+        assert_eq!(normalize_finish_reason(Some("RECITATION")), "recitation");
+        assert_eq!(normalize_finish_reason(Some("MALFORMED_FUNCTION_CALL")), "tool_use");
+    }
+
+    #[test]
+    fn test_normalize_finish_reason_canonical_passthrough() {
+        assert_eq!(normalize_finish_reason(Some("end_turn")), "end_turn");
+        assert_eq!(normalize_finish_reason(Some("max_tokens")), "max_tokens");
+        assert_eq!(normalize_finish_reason(Some("tool_use")), "tool_use");
+    }
+
+    #[test]
+    fn test_normalize_finish_reason_none() {
+        assert_eq!(normalize_finish_reason(None), "end_turn");
+    }
+
+    // ── translate_tool_declarations ────────────────────────────────────
+
+    #[test]
+    fn test_translate_tool_declarations() {
+        let tools = Some(vec![json!({
+            "name": "get_weather",
+            "description": "Get the weather",
+            "input_schema": {"type": "object", "properties": {"city": {"type": "string"}}}
+        })]);
+        let decls = translate_tool_declarations(&tools).unwrap();
+        assert_eq!(decls.len(), 1);
+        assert_eq!(decls[0]["name"], "get_weather");
+        assert_eq!(decls[0]["description"], "Get the weather");
+        assert_eq!(decls[0]["parameters"]["type"], "object");
+    }
+
+    #[test]
+    fn test_translate_tool_declarations_empty() {
+        assert!(translate_tool_declarations(&Some(vec![])).is_none());
+    }
+
+    #[test]
+    fn test_translate_tool_declarations_none() {
+        assert!(translate_tool_declarations(&None).is_none());
+    }
+
+    #[test]
+    fn test_translate_tool_declarations_missing_fields() {
+        let tools = Some(vec![json!({})]);
+        let decls = translate_tool_declarations(&tools).unwrap();
+        assert_eq!(decls[0]["name"], "");
+        assert_eq!(decls[0]["description"], "");
+        assert_eq!(decls[0]["parameters"], json!({}));
     }
 }

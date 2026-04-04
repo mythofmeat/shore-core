@@ -10,7 +10,11 @@ use crate::types::{GenerateResponse, ImageGenerateResponse, LlmRequest, Timing, 
 use crate::LlmError;
 
 use super::sse::{read_sse_events, SseEvent};
-use super::stream_helpers::{build_done_event, build_start_event, build_tool_use_event, StreamTiming};
+use super::stream_helpers::{
+    apply_common_params, build_done_event, build_start_event, build_tool_use_event,
+    extract_openai_usage, extract_system_text, normalize_finish_reason,
+    translate_tool_declarations, StreamTiming,
+};
 
 // ── Default base URLs ───────────────────────────────────────────────
 
@@ -24,24 +28,9 @@ fn translate_messages(request: &LlmRequest) -> Vec<Value> {
 
     // Inject system prompt if present.
     if let Some(system) = &request.system {
-        if let Some(s) = system.as_str() {
-            out.push(json!({"role": "system", "content": s}));
-        } else if let Some(arr) = system.as_array() {
-            // System may be an array of content blocks; concatenate text.
-            let text: String = arr
-                .iter()
-                .filter_map(|b| {
-                    if b.get("type").and_then(|t| t.as_str()) == Some("text") {
-                        b.get("text").and_then(|t| t.as_str()).map(String::from)
-                    } else {
-                        None
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join("");
-            if !text.is_empty() {
-                out.push(json!({"role": "system", "content": text}));
-            }
+        let text = extract_system_text(system);
+        if !text.is_empty() {
+            out.push(json!({"role": "system", "content": text}));
         }
     }
 
@@ -195,18 +184,7 @@ fn translate_messages(request: &LlmRequest) -> Vec<Value> {
                 }
 
                 "system" => {
-                    // System messages with array content: extract text blocks.
-                    let text: String = blocks
-                        .iter()
-                        .filter_map(|b| {
-                            if b.get("type").and_then(|t| t.as_str()) == Some("text") {
-                                b.get("text").and_then(|t| t.as_str())
-                            } else {
-                                None
-                            }
-                        })
-                        .collect::<Vec<_>>()
-                        .join("");
+                    let text = extract_system_text(&Value::Array(blocks.clone()));
                     if !text.is_empty() {
                         out.push(json!({"role": "system", "content": text}));
                     }
@@ -224,62 +202,12 @@ fn translate_messages(request: &LlmRequest) -> Vec<Value> {
 
 /// Translate Anthropic-format tool definitions to OpenAI function-calling format.
 fn translate_tools(tools: &Option<Vec<Value>>) -> Option<Vec<Value>> {
-    let tools = tools.as_ref()?;
-    if tools.is_empty() {
-        return None;
-    }
-    Some(
-        tools
-            .iter()
-            .map(|t| {
-                json!({
-                    "type": "function",
-                    "function": {
-                        "name": t.get("name").and_then(|n| n.as_str()).unwrap_or(""),
-                        "description": t.get("description").and_then(|d| d.as_str()).unwrap_or(""),
-                        "parameters": t.get("input_schema").cloned().unwrap_or(json!({})),
-                    }
-                })
-            })
-            .collect(),
-    )
-}
-
-// ── Finish reason mapping ───────────────────────────────────────────
-
-fn normalize_finish_reason(reason: Option<&str>) -> &'static str {
-    match reason {
-        Some("stop") => "end_turn",
-        Some("tool_calls") => "tool_use",
-        Some("length") => "max_tokens",
-        Some("content_filter") => "content_filter",
-        _ => "end_turn",
-    }
-}
-
-// ── Usage extraction ───────────────────────────────────────────────
-
-/// Extract token usage from an OpenAI usage object, including cached tokens
-/// from `prompt_tokens_details.cached_tokens`.
-fn extract_usage(u: &Value) -> Usage {
-    let cached = u
-        .get("prompt_tokens_details")
-        .and_then(|d| d.get("cached_tokens"))
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0) as u32;
-
-    Usage {
-        input_tokens: u
-            .get("prompt_tokens")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as u32,
-        output_tokens: u
-            .get("completion_tokens")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as u32,
-        cache_read_tokens: cached,
-        cache_creation_tokens: 0,
-    }
+    translate_tool_declarations(tools).map(|decls| {
+        decls
+            .into_iter()
+            .map(|d| json!({"type": "function", "function": d}))
+            .collect()
+    })
 }
 
 // ── Reasoning field selection ───────────────────────────────────────
@@ -376,12 +304,7 @@ fn build_chat_body(request: &LlmRequest, streaming: bool) -> Value {
     if let Some(tools) = tools {
         body["tools"] = Value::Array(tools);
     }
-    if let Some(temp) = request.temperature {
-        body["temperature"] = json!(temp);
-    }
-    if let Some(top_p) = request.top_p {
-        body["top_p"] = json!(top_p);
-    }
+    apply_common_params(&mut body, request);
 
     // reasoning_effort for providers that support it.
     let pk = provider_key(request);
@@ -565,7 +488,7 @@ pub async fn stream(
 
                 // Usage (final chunk with stream_options.include_usage).
                 if let Some(u) = chunk.get("usage") {
-                    usage = extract_usage(u);
+                    usage = extract_openai_usage(u);
                 }
 
                 if lines_out.is_empty() { None } else { Some(lines_out.join("\n")) }
@@ -711,7 +634,7 @@ pub async fn generate(
 
     let usage = resp_body
         .get("usage")
-        .map(extract_usage)
+        .map(extract_openai_usage)
         .unwrap_or_default();
 
     let resp_model = resp_body
@@ -1160,7 +1083,7 @@ mod tests {
                 "cached_tokens": 350
             }
         });
-        let usage = extract_usage(&usage_json);
+        let usage = extract_openai_usage(&usage_json);
         assert_eq!(usage.input_tokens, 500);
         assert_eq!(usage.output_tokens, 200);
         assert_eq!(usage.cache_read_tokens, 350);
@@ -1168,7 +1091,7 @@ mod tests {
 
         // Without prompt_tokens_details.
         let usage_simple = json!({"prompt_tokens": 100, "completion_tokens": 50});
-        let usage2 = extract_usage(&usage_simple);
+        let usage2 = extract_openai_usage(&usage_simple);
         assert_eq!(usage2.cache_read_tokens, 0);
     }
 
