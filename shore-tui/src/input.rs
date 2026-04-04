@@ -144,6 +144,12 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) -> Action {
             Action::Redraw
         }
 
+        // Toggle inline images in history
+        (KeyModifiers::NONE, KeyCode::Char('p')) => {
+            app.show_images = !app.show_images;
+            Action::Redraw
+        }
+
         // Open input in $EDITOR
         (KeyModifiers::CONTROL, KeyCode::Char('g')) => Action::OpenInEditor,
 

@@ -91,6 +91,9 @@ fn load_prefs(app: &mut App) {
             if let Some(b) = v.get("show_tools").and_then(|v| v.as_bool()) {
                 app.show_tools = b;
             }
+            if let Some(b) = v.get("show_images").and_then(|v| v.as_bool()) {
+                app.show_images = b;
+            }
         }
     }
 }
@@ -99,6 +102,7 @@ fn save_prefs(app: &App) {
     let v = serde_json::json!({
         "show_thinking": app.show_thinking,
         "show_tools": app.show_tools,
+        "show_images": app.show_images,
     });
     let _ = std::fs::write(prefs_path(), v.to_string());
 }

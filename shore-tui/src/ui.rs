@@ -822,6 +822,10 @@ fn draw_help(frame: &mut Frame, area: Rect) {
             "    T               toggle tool-use blocks",
             Style::default().fg(Color::White),
         )),
+        Line::from(Span::styled(
+            "    p               toggle inline images",
+            Style::default().fg(Color::White),
+        )),
         Line::from(""),
         Line::from(vec![
             Span::styled(
