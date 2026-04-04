@@ -926,6 +926,38 @@ mod tests {
         assert!(content.contains("<system_instruction>be concise</system_instruction>"));
     }
 
+    /// Regression: trailing system message (the interiority case) must
+    /// produce a final *user* turn so the model generates a fresh response.
+    /// Previously a synthetic `assistant: "Understood."` was appended,
+    /// creating an unintentional prefill that caused verbatim-identical
+    /// output across interiority ticks.
+    #[test]
+    fn test_trailing_system_message_no_prefill() {
+        // Simulates the interiority tick: conversation ends with assistant,
+        // then a system message is appended as the final message.
+        let messages = vec![
+            json!({"role": "user", "content": "How are you?"}),
+            json!({"role": "assistant", "content": "Doing well, thanks!"}),
+            json!({"role": "system", "content": "This is your private moment. Reflect freely."}),
+        ];
+        let result = convert_inline_system_messages(&messages);
+
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0]["role"], "user");
+        assert_eq!(result[1]["role"], "assistant");
+        // Final message must be user — the model generates from here.
+        assert_eq!(result[2]["role"], "user");
+        assert!(result[2]["content"].as_str().unwrap()
+            .contains("<system_instruction>"));
+        assert!(result[2]["content"].as_str().unwrap()
+            .contains("Reflect freely."));
+        // No "Understood." anywhere — it would create a prefill.
+        for msg in &result {
+            assert_ne!(msg["content"], "Understood.",
+                "synthetic ack must not appear — it creates an unintentional prefill");
+        }
+    }
+
     // ── build_thinking_config ─────────────────────────────────────────
 
     #[test]
