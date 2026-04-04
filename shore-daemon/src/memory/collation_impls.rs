@@ -46,7 +46,11 @@ fn extract_json(raw: &str) -> &str {
 
 /// Truncate raw LLM output for error messages.
 fn truncate_raw(s: &str, max: usize) -> &str {
-    if s.len() <= max { s } else { &s[..max] }
+    if s.len() <= max {
+        s
+    } else {
+        &s[..max]
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -95,11 +99,12 @@ impl CollationLlm for RealCollationLlm {
             if json_str.is_empty() {
                 return Ok(vec![]);
             }
-            let resp: RefineResponse = serde_json::from_str(json_str)
-                .map_err(|e| CollationError::Llm(format!(
+            let resp: RefineResponse = serde_json::from_str(json_str).map_err(|e| {
+                CollationError::Llm(format!(
                     "failed to parse refine JSON: {e}\nraw response: {}",
                     truncate_raw(&raw, 500),
-                )))?;
+                ))
+            })?;
             Ok(resp.actions)
         })
     }
@@ -143,7 +148,11 @@ mod tests {
         let resp: RefineResponse = serde_json::from_str(json).unwrap();
         assert_eq!(resp.actions.len(), 1);
         match &resp.actions[0] {
-            RefineAction::Merge { source_entry_ids, result, reason } => {
+            RefineAction::Merge {
+                source_entry_ids,
+                result,
+                reason,
+            } => {
                 assert_eq!(source_entry_ids, &vec!["e1", "e2"]);
                 assert_eq!(result.summary_text, "combined");
                 assert_eq!(reason, "dup");
@@ -158,7 +167,11 @@ mod tests {
         let resp: RefineResponse = serde_json::from_str(json).unwrap();
         assert_eq!(resp.actions.len(), 1);
         match &resp.actions[0] {
-            RefineAction::Split { source_entry_id, results, .. } => {
+            RefineAction::Split {
+                source_entry_id,
+                results,
+                ..
+            } => {
                 assert_eq!(source_entry_id, "e1");
                 assert_eq!(results.len(), 2);
             }
@@ -172,7 +185,11 @@ mod tests {
         let resp: RefineResponse = serde_json::from_str(json).unwrap();
         assert_eq!(resp.actions.len(), 1);
         match &resp.actions[0] {
-            RefineAction::Update { entry_id, result, reason } => {
+            RefineAction::Update {
+                entry_id,
+                result,
+                reason,
+            } => {
                 assert_eq!(entry_id, "e1");
                 assert_eq!(result.summary_text, "better");
                 assert_eq!(reason, "clarity");

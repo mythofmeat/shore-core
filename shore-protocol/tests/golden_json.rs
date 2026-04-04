@@ -105,10 +105,7 @@ fn history_golden() {
             assert_eq!(h.messages[1].role, Role::Assistant);
             assert_eq!(h.messages[1].images.len(), 1);
             assert_eq!(h.messages[1].images[0].path, "/img/wave.png");
-            assert_eq!(
-                h.messages[1].images[0].caption.as_deref(),
-                Some("waving")
-            );
+            assert_eq!(h.messages[1].images[0].caption.as_deref(), Some("waving"));
             assert_eq!(h.messages[1].alt_index, Some(0));
             assert_eq!(h.messages[1].alt_count, Some(2));
             // Config
@@ -172,10 +169,7 @@ fn error_golden() {
     match msg {
         ServerMessage::Error(e) => {
             assert_eq!(e.code, ErrorCode::Busy);
-            assert_eq!(
-                e.message,
-                "Engine is currently processing another request"
-            );
+            assert_eq!(e.message, "Engine is currently processing another request");
         }
         other => panic!("expected Error, got {:?}", other),
     }
@@ -946,8 +940,7 @@ fn all_error_codes_golden() {
             r#"{{"type": "error", "code": "{}", "message": "test"}}"#,
             json_str
         );
-        let msg: ServerMessage =
-            serde_json::from_str(&fixture).expect("error code deserializes");
+        let msg: ServerMessage = serde_json::from_str(&fixture).expect("error code deserializes");
         match msg {
             ServerMessage::Error(e) => {
                 assert_eq!(e.code, expected_code);
@@ -972,8 +965,7 @@ fn all_roles_golden() {
         ("system", Role::System),
     ];
     for (json_str, expected_role) in cases {
-        let val: Role =
-            serde_json::from_value(json!(json_str)).expect("role deserializes");
+        let val: Role = serde_json::from_value(json!(json_str)).expect("role deserializes");
         assert_eq!(val, expected_role);
         let serialized = serde_json::to_value(&val).unwrap();
         assert_eq!(serialized.as_str().unwrap(), json_str);

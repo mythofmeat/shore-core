@@ -33,10 +33,7 @@ pub async fn handle_activity_heatmap(
     input: Value,
     ctx: &dyn ToolContext,
 ) -> Result<Value, ToolError> {
-    let days = input
-        .get("days")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(30);
+    let days = input.get("days").and_then(|v| v.as_u64()).unwrap_or(30);
 
     let character = ctx.character_name();
     let autonomy = ctx.autonomy_manager();
@@ -117,7 +114,9 @@ mod tests {
     #[tokio::test]
     async fn test_activity_heatmap_custom_days() {
         let ctx = TestToolContext::new();
-        let result = handle_activity_heatmap(json!({"days": 7}), &ctx).await.unwrap();
+        let result = handle_activity_heatmap(json!({"days": 7}), &ctx)
+            .await
+            .unwrap();
         assert_eq!(result["days"], 7);
     }
 

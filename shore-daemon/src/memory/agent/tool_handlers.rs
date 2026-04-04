@@ -24,18 +24,15 @@ const FTS_OPERATORS: &[&str] = &["AND", "OR", "NOT", "NEAR"];
 
 /// Common stop words that add noise to FTS5 queries without helping relevance.
 const STOP_WORDS: &[&str] = &[
-    "a", "an", "the", "is", "was", "are", "were", "be", "been", "being",
-    "have", "has", "had", "do", "does", "did", "will", "would", "could",
-    "should", "may", "might", "shall", "can", "to", "of", "in", "for",
-    "on", "with", "at", "by", "from", "as", "into", "about", "between",
-    "through", "during", "before", "after", "above", "below", "up", "down",
-    "out", "off", "over", "under", "again", "then", "once", "here", "there",
-    "when", "where", "why", "how", "all", "each", "every", "both", "few",
-    "more", "most", "other", "some", "such", "no", "nor", "only", "own",
-    "same", "so", "than", "too", "very", "just", "because", "but", "if",
-    "while", "that", "this", "these", "those", "what", "which", "who",
-    "whom", "its", "it", "he", "she", "they", "them", "his", "her",
-    "their", "my", "your", "our", "me", "him", "us", "i", "we", "you",
+    "a", "an", "the", "is", "was", "are", "were", "be", "been", "being", "have", "has", "had",
+    "do", "does", "did", "will", "would", "could", "should", "may", "might", "shall", "can", "to",
+    "of", "in", "for", "on", "with", "at", "by", "from", "as", "into", "about", "between",
+    "through", "during", "before", "after", "above", "below", "up", "down", "out", "off", "over",
+    "under", "again", "then", "once", "here", "there", "when", "where", "why", "how", "all",
+    "each", "every", "both", "few", "more", "most", "other", "some", "such", "no", "nor", "only",
+    "own", "same", "so", "than", "too", "very", "just", "because", "but", "if", "while", "that",
+    "this", "these", "those", "what", "which", "who", "whom", "its", "it", "he", "she", "they",
+    "them", "his", "her", "their", "my", "your", "our", "me", "him", "us", "i", "we", "you",
     "trying", "like", "also", "any", "get",
 ];
 
@@ -72,11 +69,7 @@ fn sanitize_fts_query(raw: &str) -> String {
 // ---------------------------------------------------------------------------
 
 pub fn handle_search_entries(db: &MemoryDB, input: &Value) -> Result<String, String> {
-    let query = input["query"]
-        .as_str()
-        .unwrap_or("")
-        .trim()
-        .to_string();
+    let query = input["query"].as_str().unwrap_or("").trim().to_string();
     if query.is_empty() {
         return Err("Error: empty search query".into());
     }
@@ -150,10 +143,7 @@ pub async fn handle_semantic_search(
     if query.is_empty() {
         return Err("Error: empty search query".into());
     }
-    let top_k = input["top_k"]
-        .as_u64()
-        .unwrap_or(20)
-        .min(50) as usize;
+    let top_k = input["top_k"].as_u64().unwrap_or(20).min(50) as usize;
 
     // 1. Lazy-populate BM25 index.
     ctx.populate_bm25_if_needed(db)
@@ -548,9 +538,7 @@ pub fn handle_resolve_flag(db: &MemoryDB, input: &Value) -> Result<String, Strin
     let resolution = input["resolution"].as_str().unwrap_or("").to_string();
 
     // Get the flag first so we can boost confidence
-    let flag = db
-        .get_flag(flag_id)
-        .map_err(|e| format!("DB error: {e}"))?;
+    let flag = db.get_flag(flag_id).map_err(|e| format!("DB error: {e}"))?;
 
     db.resolve_flag(flag_id, &resolution)
         .map_err(|e| format!("DB error: {e}"))?;
@@ -611,10 +599,12 @@ pub async fn execute_tool(
 ) -> String {
     let result = match name {
         "search_entries" => handle_search_entries(db, input),
-        "semantic_search" => return match handle_semantic_search(db, search_ctx, input).await {
-            Ok(s) => s,
-            Err(e) => e,
-        },
+        "semantic_search" => {
+            return match handle_semantic_search(db, search_ctx, input).await {
+                Ok(s) => s,
+                Err(e) => e,
+            }
+        }
         "query_db" => handle_query_db(db, input),
         "create_entry" => handle_create_entry(db, indexer, input).await,
         "update_entry" => handle_update_entry(db, indexer, input).await,
@@ -641,7 +631,11 @@ pub async fn execute_tool(
 /// Matches V1 `infer_topic_key_from_parts`: uses first tag if available,
 /// otherwise first 3 words of summary lowercased with underscores.
 fn infer_topic_key(tags: &str, summary: &str) -> String {
-    let tag_list: Vec<&str> = tags.split(',').map(|t| t.trim()).filter(|t| !t.is_empty()).collect();
+    let tag_list: Vec<&str> = tags
+        .split(',')
+        .map(|t| t.trim())
+        .filter(|t| !t.is_empty())
+        .collect();
     if let Some(first_tag) = tag_list.first() {
         return first_tag
             .to_lowercase()
@@ -834,12 +828,8 @@ mod tests {
     #[tokio::test]
     async fn create_entry_empty_summary_error() {
         let db = test_db();
-        let result = handle_create_entry(
-            &db,
-            None,
-            &json!({"summary_text": "", "reason": "test"}),
-        )
-        .await;
+        let result =
+            handle_create_entry(&db, None, &json!({"summary_text": "", "reason": "test"})).await;
         assert!(result.is_err());
     }
 
@@ -889,12 +879,8 @@ mod tests {
     async fn update_entry_no_fields_error() {
         let db = test_db();
         seed_entry(&db, "e1", "test");
-        let result = handle_update_entry(
-            &db,
-            None,
-            &json!({"entry_id": "e1", "reason": "test"}),
-        )
-        .await;
+        let result =
+            handle_update_entry(&db, None, &json!({"entry_id": "e1", "reason": "test"})).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("no fields"));
     }
@@ -951,10 +937,7 @@ mod tests {
         db.upsert_entity("Rosa Do", "person", "canonical name")
             .unwrap();
 
-        let result = handle_merge_entity(
-            &db,
-            &json!({"from_name": "Rosa", "to_name": "Rosa Do"}),
-        );
+        let result = handle_merge_entity(&db, &json!({"from_name": "Rosa", "to_name": "Rosa Do"}));
         let text = result.unwrap();
         assert!(text.contains("Merged 'Rosa' into 'Rosa Do'"));
     }
@@ -982,13 +965,17 @@ mod tests {
         // Set low confidence
         db.set_confidence("e1", 0.5).unwrap();
 
-        let flag_id = db.create_flag("e1", "contradiction", "test reason").unwrap();
+        let flag_id = db
+            .create_flag("e1", "contradiction", "test reason")
+            .unwrap();
 
         let result = handle_resolve_flag(
             &db,
             &json!({"flag_id": flag_id, "resolution": "confirmed correct"}),
         );
-        assert!(result.unwrap().contains(&format!("Resolved flag {flag_id}")));
+        assert!(result
+            .unwrap()
+            .contains(&format!("Resolved flag {flag_id}")));
 
         // Confidence should be boosted to 0.8
         let entry = db.get_entry("e1").unwrap().unwrap();

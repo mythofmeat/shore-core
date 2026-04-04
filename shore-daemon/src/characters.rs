@@ -12,8 +12,11 @@ use shore_protocol::server_msg::ServerMessage;
 use tokio::sync::{broadcast, Mutex};
 use tracing::{info, warn};
 
-use shore_config::{discover_characters, load_character_config, load_character_definition, resolve_user_definition, LoadedConfig};
 use crate::engine::{ConversationEngine, EngineError};
+use shore_config::{
+    discover_characters, load_character_config, load_character_definition, resolve_user_definition,
+    LoadedConfig,
+};
 
 /// Manages multiple character engines with lazy initialization.
 pub struct CharacterRegistry {
@@ -95,7 +98,8 @@ impl CharacterRegistry {
                 self.push_tx.clone(),
             )?;
             info!(character = name, "Created engine for character");
-            self.engines.insert(name.to_string(), Arc::new(Mutex::new(engine)));
+            self.engines
+                .insert(name.to_string(), Arc::new(Mutex::new(engine)));
         }
 
         Ok(self.engines[name].clone())
@@ -159,10 +163,7 @@ impl CharacterRegistry {
     /// - If `requested` is `Some`, validates it exists.
     /// - If `None` and exactly one character is available, auto-selects it.
     /// - Otherwise returns an error.
-    pub fn resolve_character(
-        &self,
-        requested: Option<&str>,
-    ) -> Result<String, CharacterError> {
+    pub fn resolve_character(&self, requested: Option<&str>) -> Result<String, CharacterError> {
         match requested {
             Some(name) => {
                 if self.has_character(name) {
@@ -313,9 +314,19 @@ mod tests {
         let mut reg = make_registry(&tmp, &["Alice"]);
 
         // First call creates the engine.
-        let name1 = reg.get_or_create("Alice").unwrap().blocking_lock().character_name().to_string();
+        let name1 = reg
+            .get_or_create("Alice")
+            .unwrap()
+            .blocking_lock()
+            .character_name()
+            .to_string();
         // Second call returns the same engine (cached).
-        let name2 = reg.get_or_create("Alice").unwrap().blocking_lock().character_name().to_string();
+        let name2 = reg
+            .get_or_create("Alice")
+            .unwrap()
+            .blocking_lock()
+            .character_name()
+            .to_string();
         assert_eq!(name1, "Alice");
         assert_eq!(name2, "Alice");
     }
@@ -367,9 +378,6 @@ mod tests {
             .join("Alice")
             .join("user.md");
         std::fs::write(&user_path, "Alice user context").unwrap();
-        assert_eq!(
-            reg.user_definition("Alice").unwrap(),
-            "Alice user context"
-        );
+        assert_eq!(reg.user_definition("Alice").unwrap(), "Alice user context");
     }
 }

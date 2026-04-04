@@ -4,8 +4,10 @@ use chrono::{DateTime, Local};
 use crossterm::style::{Color, ResetColor, SetForegroundColor};
 use shore_protocol::server_msg::NewMessage;
 
-use super::{parse_timestamp, term_width, use_color, write_section_header, print_dim_line, MAX_TOOL_OUTPUT};
 use super::styling::{format_tool_input, print_image_refs};
+use super::{
+    parse_timestamp, print_dim_line, term_width, use_color, write_section_header, MAX_TOOL_OUTPUT,
+};
 
 // ---------------------------------------------------------------------------
 // Log formatter -- human-readable chat transcript (Option B)
@@ -25,7 +27,9 @@ const CHARACTER_PALETTE: &[Color] = &[
 
 /// Deterministic color derived from a character name.
 pub(crate) fn character_color(name: &str) -> Color {
-    let hash = name.bytes().fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32));
+    let hash = name
+        .bytes()
+        .fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32));
     CHARACTER_PALETTE[(hash as usize) % CHARACTER_PALETTE.len()]
 }
 
@@ -52,7 +56,11 @@ pub(crate) fn write_header(
     // "-- Name . HH:MM " = 4 + name.len() + 3 + time.len() + 1
     let prefix = format!("\u{2500}\u{2500} {} \u{00b7} {} ", name, time_str);
     let prefix_len = prefix.chars().count();
-    let trail = if width > prefix_len { width - prefix_len } else { 0 };
+    let trail = if width > prefix_len {
+        width - prefix_len
+    } else {
+        0
+    };
     let rule: String = "\u{2500}".repeat(trail);
 
     if use_color() {
@@ -100,7 +108,8 @@ fn render_message_content(
                         let thinking = block["thinking"].as_str().unwrap_or("");
                         if !thinking.is_empty() {
                             if use_color() {
-                                let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+                                let _ =
+                                    crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
                             }
                             let _ = writeln!(out, "{thinking}");
                             if use_color() {
@@ -129,7 +138,8 @@ fn render_message_content(
                         }
                         if let Some(input_str) = format_tool_input(&block["input"]) {
                             if use_color() {
-                                let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+                                let _ =
+                                    crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
                             }
                             let _ = write!(out, " {input_str}");
                             if use_color() {
@@ -141,7 +151,11 @@ fn render_message_content(
                     "tool_result" => {
                         let output = block["content"].as_str().unwrap_or("");
                         let is_error = block["is_error"].as_bool().unwrap_or(false);
-                        let color = if is_error { Color::Red } else { Color::DarkGrey };
+                        let color = if is_error {
+                            Color::Red
+                        } else {
+                            Color::DarkGrey
+                        };
                         let label = if is_error { "error" } else { "result" };
                         if use_color() {
                             let _ = crossterm::execute!(out, SetForegroundColor(color));
@@ -208,7 +222,9 @@ pub fn print_log(messages: &[serde_json::Value], character_name: &str) {
         let is_tool_result_msg = role_str == "user"
             && content_blocks.map_or(false, |blocks| {
                 !blocks.is_empty()
-                    && blocks.iter().all(|b| b["type"].as_str() == Some("tool_result"))
+                    && blocks
+                        .iter()
+                        .all(|b| b["type"].as_str() == Some("tool_result"))
             });
 
         // Write header (skip for tool result messages -- they're continuations).
@@ -222,7 +238,11 @@ pub fn print_log(messages: &[serde_json::Value], character_name: &str) {
                     }
                     let prefix = format!("\u{2500}\u{2500} system \u{00b7} {} ", time_str);
                     let prefix_len = prefix.chars().count();
-                    let trail = if width > prefix_len { width - prefix_len } else { 0 };
+                    let trail = if width > prefix_len {
+                        width - prefix_len
+                    } else {
+                        0
+                    };
                     let _ = write!(out, "{prefix}{}", "\u{2500}".repeat(trail));
                     let _ = writeln!(out);
                 }
@@ -243,11 +263,7 @@ pub fn print_log(messages: &[serde_json::Value], character_name: &str) {
                 let label = img["caption"]
                     .as_str()
                     .filter(|s| !s.is_empty())
-                    .or_else(|| {
-                        img["path"].as_str().and_then(|p| {
-                            p.rsplit('/').next()
-                        })
-                    })
+                    .or_else(|| img["path"].as_str().and_then(|p| p.rsplit('/').next()))
                     .unwrap_or("image");
 
                 if use_color() {
@@ -265,7 +281,6 @@ pub fn print_log(messages: &[serde_json::Value], character_name: &str) {
         let _ = writeln!(out);
     }
 }
-
 
 /// Print a push NewMessage in the transcript format (used in follow mode).
 pub fn print_new_message(msg: &NewMessage, character_name: &str) {
@@ -360,7 +375,12 @@ pub fn print_heartbeat_log(data: &serde_json::Value) {
         return;
     }
 
-    write_section_header(&mut out, "Interiority Log", &format!("{} events", events.len()), width);
+    write_section_header(
+        &mut out,
+        "Interiority Log",
+        &format!("{} events", events.len()),
+        width,
+    );
 
     let mut prev_date: Option<String> = None;
     for event in events {
@@ -466,10 +486,19 @@ mod tests {
         write_header(&mut buf, "Alice", "14:30", Color::Cyan, 40);
         let output = String::from_utf8(buf).unwrap();
 
-        assert!(output.contains("Alice"), "header should contain character name");
+        assert!(
+            output.contains("Alice"),
+            "header should contain character name"
+        );
         assert!(output.contains("14:30"), "header should contain time");
-        assert!(output.contains("\u{00b7}"), "header should contain middle dot separator");
-        assert!(output.contains("\u{2500}"), "header should contain box-drawing chars");
+        assert!(
+            output.contains("\u{00b7}"),
+            "header should contain middle dot separator"
+        );
+        assert!(
+            output.contains("\u{2500}"),
+            "header should contain box-drawing chars"
+        );
     }
 
     #[test]
@@ -480,7 +509,11 @@ mod tests {
         let output = String::from_utf8(buf).unwrap();
         let line = output.trim_end_matches('\n');
         // Width should roughly match requested width (all ASCII/box-drawing).
-        assert!(line.chars().count() >= 50, "header should pad to fill width, got {} chars", line.chars().count());
+        assert!(
+            line.chars().count() >= 50,
+            "header should pad to fill width, got {} chars",
+            line.chars().count()
+        );
     }
 
     #[test]
@@ -489,7 +522,10 @@ mod tests {
         let dt = chrono::Local::now();
         let result = format_time(&dt, Some("2020-01-01"));
         // Should contain something like "Apr 04" (month day).
-        assert!(result.contains("\u{00b7}"), "cross-day format should contain middle dot");
+        assert!(
+            result.contains("\u{00b7}"),
+            "cross-day format should contain middle dot"
+        );
     }
 
     #[test]

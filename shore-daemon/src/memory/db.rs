@@ -477,9 +477,16 @@ impl MemoryDB {
     /// Permanently delete an entry by ID.
     pub fn delete_entry(&self, id: &str) -> SqlResult<usize> {
         // Clean up FK references before deleting.
-        self.conn.execute("DELETE FROM entry_entities WHERE entry_id = ?1", params![id])?;
-        self.conn.execute("DELETE FROM changelog_entries WHERE entry_id = ?1", params![id])?;
-        self.conn.execute("DELETE FROM flags WHERE entry_id = ?1", params![id])?;
+        self.conn.execute(
+            "DELETE FROM entry_entities WHERE entry_id = ?1",
+            params![id],
+        )?;
+        self.conn.execute(
+            "DELETE FROM changelog_entries WHERE entry_id = ?1",
+            params![id],
+        )?;
+        self.conn
+            .execute("DELETE FROM flags WHERE entry_id = ?1", params![id])?;
         self.conn
             .execute("DELETE FROM entries WHERE id = ?1", params![id])
     }
@@ -692,12 +699,7 @@ impl MemoryDB {
     // Flags
     // ------------------------------------------------------------------
 
-    pub fn create_flag(
-        &self,
-        entry_id: &str,
-        flag_type: &str,
-        reason: &str,
-    ) -> SqlResult<i64> {
+    pub fn create_flag(&self, entry_id: &str, flag_type: &str, reason: &str) -> SqlResult<i64> {
         let now = Utc::now().to_rfc3339();
         self.conn.execute(
             "INSERT INTO flags (entry_id, flag_type, reason, created_at)
@@ -758,9 +760,9 @@ impl MemoryDB {
     }
 
     pub fn get_collation_skips(&self, phase: &str) -> SqlResult<Vec<CollationSkip>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT entry_id, phase, skipped_at FROM collation_skip WHERE phase = ?1",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT entry_id, phase, skipped_at FROM collation_skip WHERE phase = ?1")?;
         let rows = stmt.query_map(params![phase], |row| {
             Ok(CollationSkip {
                 entry_id: row.get(0)?,
@@ -859,11 +861,7 @@ impl MemoryDB {
         }
 
         let mut stmt = self.conn.prepare(trimmed)?;
-        let column_names: Vec<String> = stmt
-            .column_names()
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
+        let column_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
 
         let mut results = Vec::new();
         let mut rows = stmt.query([])?;
@@ -1007,9 +1005,7 @@ fn row_value_to_json(row: &rusqlite::Row<'_>, idx: usize) -> serde_json::Value {
         Ok(ValueRef::Null) => serde_json::Value::Null,
         Ok(ValueRef::Integer(i)) => serde_json::json!(i),
         Ok(ValueRef::Real(f)) => serde_json::json!(f),
-        Ok(ValueRef::Text(t)) => {
-            serde_json::Value::String(String::from_utf8_lossy(t).into_owned())
-        }
+        Ok(ValueRef::Text(t)) => serde_json::Value::String(String::from_utf8_lossy(t).into_owned()),
         Ok(ValueRef::Blob(b)) => serde_json::json!(format!("<blob {} bytes>", b.len())),
         Err(_) => serde_json::Value::Null,
     }
@@ -1202,7 +1198,9 @@ mod tests {
         let entry = make_entry("20250101_120000_0", "episodic");
         db.create_entry(&entry).unwrap();
 
-        let cl_id = db.append_changelog("create_entry", "Created entry").unwrap();
+        let cl_id = db
+            .append_changelog("create_entry", "Created entry")
+            .unwrap();
         db.link_changelog_entry(cl_id, "20250101_120000_0").unwrap();
 
         let eid = db.upsert_entity("Charlie", "person", "Test").unwrap();
@@ -1229,7 +1227,11 @@ mod tests {
 
         // Create flags
         let f1 = db
-            .create_flag("20250101_120000_0", "low_confidence", "Confidence below threshold")
+            .create_flag(
+                "20250101_120000_0",
+                "low_confidence",
+                "Confidence below threshold",
+            )
             .unwrap();
         let f2 = db
             .create_flag("20250101_120000_0", "duplicate", "Possible duplicate")
@@ -1353,7 +1355,9 @@ mod tests {
         db.create_entry(&entry).unwrap();
 
         // Stamp and verify row count.
-        let rows = db.stamp_collated("20250401_120000_0", "2026-04-03T12:00:00Z").unwrap();
+        let rows = db
+            .stamp_collated("20250401_120000_0", "2026-04-03T12:00:00Z")
+            .unwrap();
         assert_eq!(rows, 1);
 
         // Verify the field was updated.
@@ -1361,7 +1365,9 @@ mod tests {
         assert_eq!(fetched.collated_at, "2026-04-03T12:00:00Z");
 
         // Non-existent ID returns 0.
-        let rows = db.stamp_collated("nonexistent", "2026-04-03T12:00:00Z").unwrap();
+        let rows = db
+            .stamp_collated("nonexistent", "2026-04-03T12:00:00Z")
+            .unwrap();
         assert_eq!(rows, 0);
     }
 
@@ -1372,7 +1378,8 @@ mod tests {
         db.create_entry(&entry).unwrap();
 
         // Add skips for two different phases.
-        db.add_collation_skip("20250401_120000_0", "refine").unwrap();
+        db.add_collation_skip("20250401_120000_0", "refine")
+            .unwrap();
         db.add_collation_skip("20250401_120000_0", "decay").unwrap();
 
         // Query by phase.

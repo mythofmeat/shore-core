@@ -411,7 +411,9 @@ mod tests {
 
     #[test]
     fn content_block_text_round_trip() {
-        let block = ContentBlock::Text { text: "hello world".into() };
+        let block = ContentBlock::Text {
+            text: "hello world".into(),
+        };
         let json = serde_json::to_value(&block).unwrap();
         assert_eq!(json["type"], "text");
         assert_eq!(json["text"], "hello world");
@@ -421,7 +423,10 @@ mod tests {
 
     #[test]
     fn content_block_thinking_round_trip() {
-        let block = ContentBlock::Thinking { thinking: "Let me consider...".into(), signature: None };
+        let block = ContentBlock::Thinking {
+            thinking: "Let me consider...".into(),
+            signature: None,
+        };
         let json = serde_json::to_value(&block).unwrap();
         assert_eq!(json["type"], "thinking");
         assert_eq!(json["thinking"], "Let me consider...");
@@ -445,7 +450,9 @@ mod tests {
 
     #[test]
     fn content_block_redacted_thinking_round_trip() {
-        let block = ContentBlock::RedactedThinking { data: "opaque_data_abc".into() };
+        let block = ContentBlock::RedactedThinking {
+            data: "opaque_data_abc".into(),
+        };
         let json = serde_json::to_value(&block).unwrap();
         assert_eq!(json["type"], "redacted_thinking");
         assert_eq!(json["data"], "opaque_data_abc");
@@ -459,7 +466,10 @@ mod tests {
         let json = json!({"type": "thinking", "thinking": "old block"});
         let block: ContentBlock = serde_json::from_value(json).unwrap();
         match block {
-            ContentBlock::Thinking { thinking, signature } => {
+            ContentBlock::Thinking {
+                thinking,
+                signature,
+            } => {
                 assert_eq!(thinking, "old block");
                 assert!(signature.is_none());
             }
@@ -531,13 +541,18 @@ mod tests {
             content: "The time is noon.".into(),
             images: vec![],
             content_blocks: vec![
-                ContentBlock::Thinking { thinking: "User wants the time.".into(), signature: None },
+                ContentBlock::Thinking {
+                    thinking: "User wants the time.".into(),
+                    signature: None,
+                },
                 ContentBlock::ToolUse {
                     id: "tu_1".into(),
                     name: "check_time".into(),
                     input: json!({}),
                 },
-                ContentBlock::Text { text: "The time is noon.".into() },
+                ContentBlock::Text {
+                    text: "The time is noon.".into(),
+                },
             ],
             alt_index: None,
             alt_count: None,
@@ -569,7 +584,10 @@ mod tests {
             timestamp: "2026-01-01T00:00:00Z".into(),
         };
         let json = serde_json::to_value(&msg).unwrap();
-        assert!(json.get("content_blocks").is_some(), "content_blocks should always be serialized");
+        assert!(
+            json.get("content_blocks").is_some(),
+            "content_blocks should always be serialized"
+        );
     }
 
     #[test]

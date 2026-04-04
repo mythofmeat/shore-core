@@ -243,11 +243,7 @@ impl ActivityTracker {
     /// Consistency: ratio of active days to total span days.
     fn compute_consistency(&self) -> f64 {
         if self.timestamps.len() < 2 {
-            return if self.timestamps.is_empty() {
-                0.0
-            } else {
-                1.0
-            };
+            return if self.timestamps.is_empty() { 0.0 } else { 1.0 };
         }
 
         let first = self.timestamps.first().unwrap().wall_clock.date();
@@ -375,8 +371,7 @@ impl ActivityTracker {
         }
 
         let mean = gaps.iter().sum::<f64>() / gaps.len() as f64;
-        let variance =
-            gaps.iter().map(|g| (g - mean).powi(2)).sum::<f64>() / gaps.len() as f64;
+        let variance = gaps.iter().map(|g| (g - mean).powi(2)).sum::<f64>() / gaps.len() as f64;
         let std_dev = variance.sqrt();
 
         if std_dev < f64::EPSILON {
@@ -779,10 +774,7 @@ mod tests {
         tracker.record_message();
         assert_eq!(tracker.message_count(), 1);
 
-        tracker.backfill(vec![
-            dt(2026, 3, 20, 10, 0, 0),
-            dt(2026, 3, 21, 14, 0, 0),
-        ]);
+        tracker.backfill(vec![dt(2026, 3, 20, 10, 0, 0), dt(2026, 3, 21, 14, 0, 0)]);
         assert_eq!(tracker.message_count(), 1);
     }
 
@@ -796,10 +788,7 @@ mod tests {
     #[test]
     fn test_backfill_then_record_message() {
         let mut tracker = ActivityTracker::new();
-        tracker.backfill(vec![
-            dt(2026, 3, 20, 10, 0, 0),
-            dt(2026, 3, 21, 14, 0, 0),
-        ]);
+        tracker.backfill(vec![dt(2026, 3, 20, 10, 0, 0), dt(2026, 3, 21, 14, 0, 0)]);
         assert_eq!(tracker.message_count(), 2);
 
         tracker.record_message();

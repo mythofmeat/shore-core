@@ -7,8 +7,6 @@ pub mod scratchpad;
 pub mod web;
 
 use crate::autonomy::manager::AutonomyManager;
-use shore_config::models::ResolvedModel;
-use shore_llm_client::LlmClient;
 use crate::memory::agent::types::{AgentIndexer, AgentSearchContext};
 use crate::memory::agent::{AgentError, AgentRag, MemoryAgent};
 use crate::memory::agent_llm::AgentLlm;
@@ -16,6 +14,8 @@ use crate::memory::compaction_impls::ImageGenConfig;
 use crate::memory::db::MemoryDB;
 use crate::memory::researcher::MemoryResearcher;
 use serde_json::Value;
+use shore_config::models::ResolvedModel;
+use shore_llm_client::LlmClient;
 use std::future::Future;
 use std::pin::Pin;
 
@@ -105,14 +105,22 @@ pub trait ToolContext: Sync {
     fn search_config(&self) -> &shore_config::app::SearchConfig;
 
     // Semantic search context (vector + BM25 + embeddings)
-    fn search_context(&self) -> Option<&AgentSearchContext> { None }
+    fn search_context(&self) -> Option<&AgentSearchContext> {
+        None
+    }
 
     // Autonomy access — used by activity heatmap tool
-    fn autonomy_manager(&self) -> Option<&AutonomyManager> { None }
-    fn character_name(&self) -> &str { "" }
+    fn autonomy_manager(&self) -> Option<&AutonomyManager> {
+        None
+    }
+    fn character_name(&self) -> &str {
+        ""
+    }
 
     // Scratchpad directory for per-character scratch storage
-    fn scratchpad_dir(&self) -> &str { "" }
+    fn scratchpad_dir(&self) -> &str {
+        ""
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -172,10 +180,18 @@ pub fn dispatch_tool<'a>(
             // Other
             "activity_heatmap" => activity::handle_activity_heatmap(input, ctx).await,
             // Scratchpad tools
-            "scratchpad_list" => scratchpad::handle_scratchpad_list(input, ctx.scratchpad_dir()).await,
-            "scratchpad_read" => scratchpad::handle_scratchpad_read(input, ctx.scratchpad_dir()).await,
-            "scratchpad_write" => scratchpad::handle_scratchpad_write(input, ctx.scratchpad_dir()).await,
-            "scratchpad_delete" => scratchpad::handle_scratchpad_delete(input, ctx.scratchpad_dir()).await,
+            "scratchpad_list" => {
+                scratchpad::handle_scratchpad_list(input, ctx.scratchpad_dir()).await
+            }
+            "scratchpad_read" => {
+                scratchpad::handle_scratchpad_read(input, ctx.scratchpad_dir()).await
+            }
+            "scratchpad_write" => {
+                scratchpad::handle_scratchpad_write(input, ctx.scratchpad_dir()).await
+            }
+            "scratchpad_delete" => {
+                scratchpad::handle_scratchpad_delete(input, ctx.scratchpad_dir()).await
+            }
             _ => Err(ToolError::NotImplemented(name.to_string())),
         }
     })
@@ -188,8 +204,8 @@ pub fn dispatch_tool<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shore_config::app::ToolToggles;
     use crate::test_support::TestToolContext;
+    use shore_config::app::ToolToggles;
 
     #[test]
     fn test_all_tools_returns_expected_count() {
@@ -287,12 +303,7 @@ mod tests {
     #[tokio::test]
     async fn test_dispatch_roll_dice() {
         let ctx = TestToolContext::new();
-        let result = dispatch_tool(
-            "roll_dice",
-            serde_json::json!({"notation": "2d6"}),
-            &ctx,
-        )
-        .await;
+        let result = dispatch_tool("roll_dice", serde_json::json!({"notation": "2d6"}), &ctx).await;
         assert!(result.is_ok(), "roll_dice should succeed");
     }
 
@@ -383,12 +394,7 @@ mod tests {
         let ctx = TestToolContext::new();
         // scratchpad_dir is "" by default, which the handler rejects — but that
         // proves the dispatch routed to the handler (not NotImplemented).
-        let result = dispatch_tool(
-            "scratchpad_list",
-            serde_json::json!({}),
-            &ctx,
-        )
-        .await;
+        let result = dispatch_tool("scratchpad_list", serde_json::json!({}), &ctx).await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(

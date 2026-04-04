@@ -88,20 +88,24 @@ impl StreamConsumer {
         };
 
         // Flush accumulated thinking buffer into content_blocks, attaching any pending signature.
-        let flush_thinking = |buf: &mut String, blocks: &mut Vec<ContentBlock>, sig: &mut Option<String>| {
-            if !buf.is_empty() {
-                blocks.push(ContentBlock::Thinking {
-                    thinking: std::mem::take(buf),
-                    signature: sig.take(),
-                });
-            }
-        };
+        let flush_thinking =
+            |buf: &mut String, blocks: &mut Vec<ContentBlock>, sig: &mut Option<String>| {
+                if !buf.is_empty() {
+                    blocks.push(ContentBlock::Thinking {
+                        thinking: std::mem::take(buf),
+                        signature: sig.take(),
+                    });
+                }
+            };
 
         loop {
             let mut line = String::new();
-            let n = reader.read_line(&mut line).await.map_err(|e| {
-                LlmError::Provider { message: format!("stream read error: {e}") }
-            })?;
+            let n = reader
+                .read_line(&mut line)
+                .await
+                .map_err(|e| LlmError::Provider {
+                    message: format!("stream read error: {e}"),
+                })?;
             if n == 0 {
                 // EOF — stream ended without "done" event.
                 return Err(LlmError::IncompleteStream);
@@ -116,9 +120,7 @@ impl StreamConsumer {
                 serde_json::from_str(trimmed).map_err(LlmError::Deserialize)?;
 
             match event {
-                StreamEvent::Start {
-                    model: start_model,
-                } => {
+                StreamEvent::Start { model: start_model } => {
                     model = start_model;
                     started = true;
 
@@ -132,16 +134,18 @@ impl StreamConsumer {
 
                 StreamEvent::Text { text } => {
                     // Flush any pending thinking before accumulating text.
-                    flush_thinking(&mut thinking_buf, &mut content_blocks, &mut pending_signature);
+                    flush_thinking(
+                        &mut thinking_buf,
+                        &mut content_blocks,
+                        &mut pending_signature,
+                    );
                     text_buf.push_str(&text);
 
                     // Relay as StreamChunk with content_type "text".
-                    let _ = self.push_tx.send(ServerMessage::StreamChunk(
-                        StreamChunk {
-                            text,
-                            content_type: "text".into(),
-                        },
-                    ));
+                    let _ = self.push_tx.send(ServerMessage::StreamChunk(StreamChunk {
+                        text,
+                        content_type: "text".into(),
+                    }));
                 }
 
                 StreamEvent::Thinking { text } => {
@@ -150,12 +154,10 @@ impl StreamConsumer {
                     thinking_buf.push_str(&text);
 
                     // Relay as StreamChunk with content_type "thinking".
-                    let _ = self.push_tx.send(ServerMessage::StreamChunk(
-                        StreamChunk {
-                            text,
-                            content_type: "thinking".into(),
-                        },
-                    ));
+                    let _ = self.push_tx.send(ServerMessage::StreamChunk(StreamChunk {
+                        text,
+                        content_type: "thinking".into(),
+                    }));
                 }
 
                 StreamEvent::ThinkingSignature { signature } => {
@@ -166,14 +168,22 @@ impl StreamConsumer {
                 StreamEvent::RedactedThinking { data } => {
                     // Redacted thinking is a complete block — flush buffers and push directly.
                     flush_text(&mut text_buf, &mut content_blocks);
-                    flush_thinking(&mut thinking_buf, &mut content_blocks, &mut pending_signature);
+                    flush_thinking(
+                        &mut thinking_buf,
+                        &mut content_blocks,
+                        &mut pending_signature,
+                    );
                     content_blocks.push(ContentBlock::RedactedThinking { data });
                 }
 
                 StreamEvent::ToolUse { id, name, input } => {
                     // Flush pending buffers before tool_use block.
                     flush_text(&mut text_buf, &mut content_blocks);
-                    flush_thinking(&mut thinking_buf, &mut content_blocks, &mut pending_signature);
+                    flush_thinking(
+                        &mut thinking_buf,
+                        &mut content_blocks,
+                        &mut pending_signature,
+                    );
 
                     content_blocks.push(ContentBlock::ToolUse {
                         id: id.clone(),
@@ -181,11 +191,7 @@ impl StreamConsumer {
                         input: input.clone(),
                     });
 
-                    tool_uses.push(ToolUseEvent {
-                        id,
-                        name,
-                        input,
-                    });
+                    tool_uses.push(ToolUseEvent { id, name, input });
                 }
 
                 StreamEvent::Done {
@@ -196,7 +202,11 @@ impl StreamConsumer {
                 } => {
                     // Flush any remaining buffers.
                     flush_text(&mut text_buf, &mut content_blocks);
-                    flush_thinking(&mut thinking_buf, &mut content_blocks, &mut pending_signature);
+                    flush_thinking(
+                        &mut thinking_buf,
+                        &mut content_blocks,
+                        &mut pending_signature,
+                    );
                     let metadata = StreamMetadata {
                         tokens: TokenCounts {
                             input: usage.input_tokens,
@@ -223,28 +233,18 @@ impl StreamConsumer {
                     );
 
                     // Broadcast stream_end to SWP clients.
-                    let _ = self.push_tx.send(ServerMessage::StreamEnd(
-                        StreamEnd {
-                            content: content.clone(),
-                            metadata,
-                            finish_reason: finish_reason.clone(),
-                        },
-                    ));
+                    let _ = self.push_tx.send(ServerMessage::StreamEnd(StreamEnd {
+                        content: content.clone(),
+                        metadata,
+                        finish_reason: finish_reason.clone(),
+                    }));
 
                     // Check for cache invalidation (section 13.3).
-                    check_cache_invalidation(
-                        &self.push_tx,
-                        cache_ctx,
-                        &usage,
-                    );
+                    check_cache_invalidation(&self.push_tx, cache_ctx, &usage);
 
                     return Ok(StreamResult {
                         content,
-                        model: if started {
-                            model
-                        } else {
-                            String::new()
-                        },
+                        model: if started { model } else { String::new() },
                         finish_reason,
                         usage,
                         timing,
@@ -292,10 +292,7 @@ fn check_cache_invalidation(
     //
     // Also suppress when no cache read has been observed this session — the
     // first cache creation is always a cold start, not an invalidation.
-    if usage.cache_creation_tokens > 0
-        && usage.cache_read_tokens == 0
-        && ctx.has_seen_cache_read
-    {
+    if usage.cache_creation_tokens > 0 && usage.cache_read_tokens == 0 && ctx.has_seen_cache_read {
         let expected = usage.input_tokens;
         let message = format!(
             "Unexpected cache invalidation: cache_read=0 cache_write={} with {} input tokens \
@@ -332,8 +329,7 @@ mod tests {
 
     #[tokio::test]
     async fn consume_simple_stream() {
-        let (mut writer, mut reader, push_tx, mut push_rx) =
-            setup_stream_pair();
+        let (mut writer, mut reader, push_tx, mut push_rx) = setup_stream_pair();
         let consumer = StreamConsumer::new(push_tx);
 
         let ctx = CacheContext {
@@ -374,7 +370,10 @@ mod tests {
 
         // Verify broadcast messages.
         let msg1 = push_rx.try_recv().unwrap();
-        assert!(matches!(msg1, ServerMessage::StreamStart(StreamStart { regen: false })));
+        assert!(matches!(
+            msg1,
+            ServerMessage::StreamStart(StreamStart { regen: false })
+        ));
 
         let msg2 = push_rx.try_recv().unwrap();
         match msg2 {
@@ -411,8 +410,7 @@ mod tests {
 
     #[tokio::test]
     async fn consume_stream_with_thinking_and_tools() {
-        let (mut writer, mut reader, push_tx, mut push_rx) =
-            setup_stream_pair();
+        let (mut writer, mut reader, push_tx, mut push_rx) = setup_stream_pair();
         let consumer = StreamConsumer::new(push_tx);
 
         let ctx = CacheContext::default();
@@ -442,10 +440,20 @@ mod tests {
         assert_eq!(result.tool_uses[0].input["q"], "test");
 
         // Verify content_blocks accumulated correctly.
-        assert_eq!(result.content_blocks.len(), 3, "Should have thinking + tool_use + text blocks");
-        assert!(matches!(&result.content_blocks[0], ContentBlock::Thinking { thinking, signature } if thinking == "Let me think..." && signature.is_none()));
-        assert!(matches!(&result.content_blocks[1], ContentBlock::ToolUse { id, name, .. } if id == "t1" && name == "search"));
-        assert!(matches!(&result.content_blocks[2], ContentBlock::Text { text } if text == "Found it"));
+        assert_eq!(
+            result.content_blocks.len(),
+            3,
+            "Should have thinking + tool_use + text blocks"
+        );
+        assert!(
+            matches!(&result.content_blocks[0], ContentBlock::Thinking { thinking, signature } if thinking == "Let me think..." && signature.is_none())
+        );
+        assert!(
+            matches!(&result.content_blocks[1], ContentBlock::ToolUse { id, name, .. } if id == "t1" && name == "search")
+        );
+        assert!(
+            matches!(&result.content_blocks[2], ContentBlock::Text { text } if text == "Found it")
+        );
 
         // Verify thinking chunk was broadcast with correct content_type.
         let _ = push_rx.try_recv().unwrap(); // StreamStart
@@ -463,8 +471,7 @@ mod tests {
 
     #[tokio::test]
     async fn consume_stream_with_thinking_signature() {
-        let (mut writer, mut reader, push_tx, _push_rx) =
-            setup_stream_pair();
+        let (mut writer, mut reader, push_tx, _push_rx) = setup_stream_pair();
         let consumer = StreamConsumer::new(push_tx);
         let ctx = CacheContext::default();
 
@@ -489,21 +496,25 @@ mod tests {
 
         assert_eq!(result.content_blocks.len(), 2);
         match &result.content_blocks[0] {
-            ContentBlock::Thinking { thinking, signature } => {
+            ContentBlock::Thinking {
+                thinking,
+                signature,
+            } => {
                 assert_eq!(thinking, "Let me reason...");
                 assert_eq!(signature.as_deref(), Some("sig_test_abc"));
             }
             other => panic!("Expected Thinking with signature, got {:?}", other),
         }
-        assert!(matches!(&result.content_blocks[1], ContentBlock::Text { text } if text == "The answer"));
+        assert!(
+            matches!(&result.content_blocks[1], ContentBlock::Text { text } if text == "The answer")
+        );
 
         server_handle.await.unwrap();
     }
 
     #[tokio::test]
     async fn consume_stream_with_redacted_thinking() {
-        let (mut writer, mut reader, push_tx, _push_rx) =
-            setup_stream_pair();
+        let (mut writer, mut reader, push_tx, _push_rx) = setup_stream_pair();
         let consumer = StreamConsumer::new(push_tx);
         let ctx = CacheContext::default();
 
@@ -528,7 +539,10 @@ mod tests {
 
         assert_eq!(result.content_blocks.len(), 3);
         match &result.content_blocks[0] {
-            ContentBlock::Thinking { thinking, signature } => {
+            ContentBlock::Thinking {
+                thinking,
+                signature,
+            } => {
                 assert_eq!(thinking, "Visible thinking");
                 assert_eq!(signature.as_deref(), Some("sig_1"));
             }
@@ -540,15 +554,16 @@ mod tests {
             }
             other => panic!("Expected RedactedThinking, got {:?}", other),
         }
-        assert!(matches!(&result.content_blocks[2], ContentBlock::Text { text } if text == "Answer"));
+        assert!(
+            matches!(&result.content_blocks[2], ContentBlock::Text { text } if text == "Answer")
+        );
 
         server_handle.await.unwrap();
     }
 
     #[tokio::test]
     async fn consume_regen_sets_flag() {
-        let (mut writer, mut reader, push_tx, mut push_rx) =
-            setup_stream_pair();
+        let (mut writer, mut reader, push_tx, mut push_rx) = setup_stream_pair();
         let consumer = StreamConsumer::new(push_tx);
         let ctx = CacheContext::default();
 
@@ -564,10 +579,7 @@ mod tests {
             writer.shutdown().await.unwrap();
         });
 
-        consumer
-            .consume(&mut reader, true, &ctx)
-            .await
-            .unwrap();
+        consumer.consume(&mut reader, true, &ctx).await.unwrap();
 
         let msg = push_rx.try_recv().unwrap();
         match msg {
@@ -580,8 +592,7 @@ mod tests {
 
     #[tokio::test]
     async fn incomplete_stream_returns_error() {
-        let (mut writer, mut reader, push_tx, _push_rx) =
-            setup_stream_pair();
+        let (mut writer, mut reader, push_tx, _push_rx) = setup_stream_pair();
         let consumer = StreamConsumer::new(push_tx);
         let ctx = CacheContext::default();
 
@@ -607,8 +618,7 @@ mod tests {
 
     #[tokio::test]
     async fn content_blocks_merge_consecutive_text() {
-        let (mut writer, mut reader, push_tx, _push_rx) =
-            setup_stream_pair();
+        let (mut writer, mut reader, push_tx, _push_rx) = setup_stream_pair();
         let consumer = StreamConsumer::new(push_tx);
         let ctx = CacheContext::default();
 
@@ -632,15 +642,16 @@ mod tests {
 
         // Consecutive text chunks should be merged into a single Text block.
         assert_eq!(result.content_blocks.len(), 1);
-        assert!(matches!(&result.content_blocks[0], ContentBlock::Text { text } if text == "Hello world!"));
+        assert!(
+            matches!(&result.content_blocks[0], ContentBlock::Text { text } if text == "Hello world!")
+        );
 
         server_handle.await.unwrap();
     }
 
     #[tokio::test]
     async fn content_blocks_merge_consecutive_thinking() {
-        let (mut writer, mut reader, push_tx, _push_rx) =
-            setup_stream_pair();
+        let (mut writer, mut reader, push_tx, _push_rx) = setup_stream_pair();
         let consumer = StreamConsumer::new(push_tx);
         let ctx = CacheContext::default();
 
@@ -664,16 +675,19 @@ mod tests {
 
         // Consecutive thinking chunks merged, then text block.
         assert_eq!(result.content_blocks.len(), 2);
-        assert!(matches!(&result.content_blocks[0], ContentBlock::Thinking { thinking, signature } if thinking == "First thought" && signature.is_none()));
-        assert!(matches!(&result.content_blocks[1], ContentBlock::Text { text } if text == "Answer"));
+        assert!(
+            matches!(&result.content_blocks[0], ContentBlock::Thinking { thinking, signature } if thinking == "First thought" && signature.is_none())
+        );
+        assert!(
+            matches!(&result.content_blocks[1], ContentBlock::Text { text } if text == "Answer")
+        );
 
         server_handle.await.unwrap();
     }
 
     #[tokio::test]
     async fn content_blocks_type_change_flushes_buffer() {
-        let (mut writer, mut reader, push_tx, _push_rx) =
-            setup_stream_pair();
+        let (mut writer, mut reader, push_tx, _push_rx) = setup_stream_pair();
         let consumer = StreamConsumer::new(push_tx);
         let ctx = CacheContext::default();
 
@@ -698,17 +712,22 @@ mod tests {
 
         // Type change should flush: text, thinking, text → 3 blocks.
         assert_eq!(result.content_blocks.len(), 3);
-        assert!(matches!(&result.content_blocks[0], ContentBlock::Text { text } if text == "pre-thought "));
-        assert!(matches!(&result.content_blocks[1], ContentBlock::Thinking { thinking, signature } if thinking == "hmm..." && signature.is_none()));
-        assert!(matches!(&result.content_blocks[2], ContentBlock::Text { text } if text == "post-thought"));
+        assert!(
+            matches!(&result.content_blocks[0], ContentBlock::Text { text } if text == "pre-thought ")
+        );
+        assert!(
+            matches!(&result.content_blocks[1], ContentBlock::Thinking { thinking, signature } if thinking == "hmm..." && signature.is_none())
+        );
+        assert!(
+            matches!(&result.content_blocks[2], ContentBlock::Text { text } if text == "post-thought")
+        );
 
         server_handle.await.unwrap();
     }
 
     #[tokio::test]
     async fn content_blocks_text_only_stream() {
-        let (mut writer, mut reader, push_tx, _push_rx) =
-            setup_stream_pair();
+        let (mut writer, mut reader, push_tx, _push_rx) = setup_stream_pair();
         let consumer = StreamConsumer::new(push_tx);
         let ctx = CacheContext::default();
 
@@ -729,15 +748,16 @@ mod tests {
         let result = consumer.consume(&mut reader, false, &ctx).await.unwrap();
 
         assert_eq!(result.content_blocks.len(), 1);
-        assert!(matches!(&result.content_blocks[0], ContentBlock::Text { text } if text == "Just text"));
+        assert!(
+            matches!(&result.content_blocks[0], ContentBlock::Text { text } if text == "Just text")
+        );
 
         server_handle.await.unwrap();
     }
 
     #[tokio::test]
     async fn content_blocks_empty_on_no_content() {
-        let (mut writer, mut reader, push_tx, _push_rx) =
-            setup_stream_pair();
+        let (mut writer, mut reader, push_tx, _push_rx) = setup_stream_pair();
         let consumer = StreamConsumer::new(push_tx);
         let ctx = CacheContext::default();
 
@@ -969,7 +989,9 @@ mod tests {
 
         // Only a text block — the orphaned signature is discarded.
         assert_eq!(result.content_blocks.len(), 1);
-        assert!(matches!(&result.content_blocks[0], ContentBlock::Text { text } if text == "Hello"));
+        assert!(
+            matches!(&result.content_blocks[0], ContentBlock::Text { text } if text == "Hello")
+        );
         assert_eq!(result.content, "Hello");
 
         server_handle.await.unwrap();
@@ -1002,7 +1024,9 @@ mod tests {
         let result = consumer.consume(&mut reader, false, &ctx).await.unwrap();
         assert_eq!(result.content, "Hello world");
         assert_eq!(result.content_blocks.len(), 1);
-        assert!(matches!(&result.content_blocks[0], ContentBlock::Text { text } if text == "Hello world"));
+        assert!(
+            matches!(&result.content_blocks[0], ContentBlock::Text { text } if text == "Hello world")
+        );
 
         server_handle.await.unwrap();
     }

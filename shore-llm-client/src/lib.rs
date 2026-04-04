@@ -92,10 +92,9 @@ impl LlmClient {
             .as_deref()
             .unwrap_or(default_api_key_env(&model.provider_key));
 
-        let api_key =
-            std::env::var(api_key_env).map_err(|_| LlmError::MissingApiKey {
-                var: api_key_env.to_string(),
-            })?;
+        let api_key = std::env::var(api_key_env).map_err(|_| LlmError::MissingApiKey {
+            var: api_key_env.to_string(),
+        })?;
 
         // Build provider_options from V1-style fields if not explicitly provided.
         let opts = provider_options.unwrap_or_else(|| {
@@ -166,8 +165,7 @@ impl LlmClient {
         request: &LlmRequest,
         _rid: Option<&str>,
     ) -> Result<BufReader<DuplexStream>, LlmError> {
-        let body =
-            serde_json::to_string(request).map_err(LlmError::Serialize)?;
+        let body = serde_json::to_string(request).map_err(LlmError::Serialize)?;
         self.log_payload("request", &body);
 
         debug!(
@@ -186,8 +184,7 @@ impl LlmClient {
         request: &LlmRequest,
         _rid: Option<&str>,
     ) -> Result<types::GenerateResponse, LlmError> {
-        let body =
-            serde_json::to_string(request).map_err(LlmError::Serialize)?;
+        let body = serde_json::to_string(request).map_err(LlmError::Serialize)?;
         self.log_payload("request", &body);
 
         let resp = providers::generate(&self.http_client, request).await?;
@@ -220,8 +217,16 @@ impl LlmClient {
         image_size: Option<&str>,
     ) -> Result<ImageGenerateResponse, LlmError> {
         providers::image_generate(
-            &self.http_client, provider, model, api_key, base_url, prompt,
-            size, quality, aspect_ratio, image_size,
+            &self.http_client,
+            provider,
+            model,
+            api_key,
+            base_url,
+            prompt,
+            size,
+            quality,
+            aspect_ratio,
+            image_size,
         )
         .await
     }
@@ -361,14 +366,7 @@ mod tests {
 
         let model = test_model("test", "anthropic", Sdk::Anthropic);
 
-        let req = LlmClient::build_request(
-            &model,
-            vec![],
-            None,
-            None,
-            None,
-        )
-        .unwrap();
+        let req = LlmClient::build_request(&model, vec![], None, None, None).unwrap();
 
         assert_eq!(req.api_key, "sk-ant-test");
         assert_eq!(req.max_tokens, 4096);
@@ -383,8 +381,7 @@ mod tests {
         let mut model = test_model("test", "anthropic", Sdk::Anthropic);
         model.api_key_env = Some("NONEXISTENT_KEY_015".into());
 
-        let err = LlmClient::build_request(&model, vec![], None, None, None)
-            .unwrap_err();
+        let err = LlmClient::build_request(&model, vec![], None, None, None).unwrap_err();
         match err {
             LlmError::MissingApiKey { var } => {
                 assert_eq!(var, "NONEXISTENT_KEY_015");

@@ -34,9 +34,9 @@ fn is_tool_result_message(msg: &Value) -> bool {
         return false;
     };
     !arr.is_empty()
-        && arr.iter().all(|b| {
-            b.get("type").and_then(Value::as_str) == Some("tool_result")
-        })
+        && arr
+            .iter()
+            .all(|b| b.get("type").and_then(Value::as_str) == Some("tool_result"))
 }
 
 /// Strip all `cache_control` keys from every content block in `messages`.
@@ -58,9 +58,11 @@ fn strip_cache_control(messages: &mut [Value]) {
 /// already placed on the first call of the turn.
 fn messages_have_cache_control(messages: &[Value]) -> bool {
     messages.iter().any(|m| {
-        m.get("content").and_then(Value::as_array).map_or(false, |arr| {
-            arr.iter().any(|b| b.get("cache_control").is_some())
-        })
+        m.get("content")
+            .and_then(Value::as_array)
+            .map_or(false, |arr| {
+                arr.iter().any(|b| b.get("cache_control").is_some())
+            })
     })
 }
 
@@ -101,7 +103,6 @@ fn make_cache_control(cache_ttl: &str) -> Value {
 
 /// Apply cache_control breakpoint to the last text block of a message.
 fn apply_breakpoint_to_message(msg: &mut Value, cc: &Value) {
-
     let content = msg.get("content").cloned();
     match content {
         Some(Value::String(text)) => {
@@ -160,12 +161,9 @@ fn apply_cache_control(messages: &[Value], system: &Value, cache_ttl: &str) -> (
     }
 
     // Step 3: Find the last real (non-tool-result) user message.
-    let _last_real_user: Option<usize> = result
-        .iter()
-        .rposition(|m| {
-            m.get("role").and_then(Value::as_str) == Some("user")
-                && !is_tool_result_message(m)
-        });
+    let _last_real_user: Option<usize> = result.iter().rposition(|m| {
+        m.get("role").and_then(Value::as_str) == Some("user") && !is_tool_result_message(m)
+    });
 
     // Step 4: Single message breakpoint at depth 2.
     {
@@ -182,7 +180,13 @@ fn apply_cache_control(messages: &[Value], system: &Value, cache_ttl: &str) -> (
     let cc_sys = make_cache_control(cache_ttl);
     let mut sys = system.clone();
     if let Some(arr) = sys.as_array_mut() {
-        let target_idx = if arr.len() >= 2 { arr.len() - 2 } else if arr.len() == 1 { 0 } else { usize::MAX };
+        let target_idx = if arr.len() >= 2 {
+            arr.len() - 2
+        } else if arr.len() == 1 {
+            0
+        } else {
+            usize::MAX
+        };
         if let Some(obj) = arr.get_mut(target_idx).and_then(Value::as_object_mut) {
             obj.insert("cache_control".into(), cc_sys);
         }
@@ -201,7 +205,10 @@ fn build_thinking_config(opts: &Value) -> Option<Value> {
     }
 
     // Explicit budget: enable thinking with the given token budget.
-    let thinking_flag = opts.get("thinking").and_then(Value::as_bool).unwrap_or(false);
+    let thinking_flag = opts
+        .get("thinking")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let budget = opts.get("budget_tokens").and_then(Value::as_u64);
 
     if thinking_flag || budget.is_some() {
@@ -236,9 +243,9 @@ fn extract_text_content(msg: &Value) -> String {
 /// as a user message.  When the preceding message is already a user turn,
 /// the instruction is merged into it to avoid consecutive user roles.
 fn convert_inline_system_messages(messages: &[Value]) -> Vec<Value> {
-    let has_system = messages.iter().any(|m| {
-        m.get("role").and_then(Value::as_str) == Some("system")
-    });
+    let has_system = messages
+        .iter()
+        .any(|m| m.get("role").and_then(Value::as_str) == Some("system"));
     if !has_system {
         return messages.to_vec();
     }
@@ -516,13 +523,24 @@ fn handle_content_block_start(data: &str, state: &mut StreamState) -> Option<Str
 
     match block_type {
         "tool_use" => {
-            let id = block.get("id").and_then(Value::as_str).unwrap_or("").to_string();
-            let name = block.get("name").and_then(Value::as_str).unwrap_or("").to_string();
-            state.tool_blocks.insert(index, ToolBlockState {
-                id,
-                name,
-                json_chunks: Vec::new(),
-            });
+            let id = block
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let name = block
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            state.tool_blocks.insert(
+                index,
+                ToolBlockState {
+                    id,
+                    name,
+                    json_chunks: Vec::new(),
+                },
+            );
             None
         }
         "thinking" => {
@@ -530,7 +548,11 @@ fn handle_content_block_start(data: &str, state: &mut StreamState) -> Option<Str
             None
         }
         "redacted_thinking" => {
-            let data_str = block.get("data").and_then(Value::as_str).unwrap_or("").to_string();
+            let data_str = block
+                .get("data")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
             // OpenRouter injects bogus redacted_thinking blocks that duplicate
             // real thinking content. Filter them at the source.
             if data_str.starts_with("openrouter.reasoning:") {
@@ -618,18 +640,14 @@ fn handle_content_block_stop(data: &str, state: &mut StreamState) -> Option<Stri
     // Check for thinking block completion — emit accumulated signature.
     if state.thinking_blocks.remove(&index) {
         if let Some(sig) = state.thinking_signatures.remove(&index) {
-            return Some(
-                json!({ "type": "thinking_signature", "signature": sig }).to_string(),
-            );
+            return Some(json!({ "type": "thinking_signature", "signature": sig }).to_string());
         }
         return None;
     }
 
     // Check for redacted_thinking block completion.
     if let Some(redacted_data) = state.redacted_thinking_blocks.remove(&index) {
-        return Some(
-            json!({ "type": "redacted_thinking", "data": redacted_data }).to_string(),
-        );
+        return Some(json!({ "type": "redacted_thinking", "data": redacted_data }).to_string());
     }
 
     None
@@ -657,7 +675,13 @@ fn handle_message_stop(state: &mut StreamState) -> String {
         .first_token_time
         .map(|t| t.duration_since(state.start_time).as_millis() as u32)
         .unwrap_or(total_ms);
-    build_done_event(&state.text_content, &state.finish_reason, &state.usage, total_ms, ttft_ms)
+    build_done_event(
+        &state.text_content,
+        &state.finish_reason,
+        &state.usage,
+        total_ms,
+        ttft_ms,
+    )
 }
 
 // ── Non-streaming ────────────────────────────────────────────────────────
@@ -885,8 +909,14 @@ mod tests {
         assert_eq!(result.len(), 3);
         assert_eq!(result[0]["role"], "assistant");
         assert_eq!(result[1]["role"], "user");
-        assert!(result[1]["content"].as_str().unwrap().contains("<system_instruction>"));
-        assert!(result[1]["content"].as_str().unwrap().contains("be helpful"));
+        assert!(result[1]["content"]
+            .as_str()
+            .unwrap()
+            .contains("<system_instruction>"));
+        assert!(result[1]["content"]
+            .as_str()
+            .unwrap()
+            .contains("be helpful"));
         assert_eq!(result[2]["role"], "user");
     }
 
@@ -927,14 +957,20 @@ mod tests {
         assert_eq!(result[1]["role"], "assistant");
         // Final message must be user — the model generates from here.
         assert_eq!(result[2]["role"], "user");
-        assert!(result[2]["content"].as_str().unwrap()
+        assert!(result[2]["content"]
+            .as_str()
+            .unwrap()
             .contains("<system_instruction>"));
-        assert!(result[2]["content"].as_str().unwrap()
+        assert!(result[2]["content"]
+            .as_str()
+            .unwrap()
             .contains("Reflect freely."));
         // No "Understood." anywhere — it would create a prefill.
         for msg in &result {
-            assert_ne!(msg["content"], "Understood.",
-                "synthetic ack must not appear — it creates an unintentional prefill");
+            assert_ne!(
+                msg["content"], "Understood.",
+                "synthetic ack must not appear — it creates an unintentional prefill"
+            );
         }
     }
 
@@ -965,10 +1001,7 @@ mod tests {
 
     #[test]
     fn test_build_body_minimal() {
-        let request = make_request(
-            vec![json!({"role": "user", "content": "hi"})],
-            None,
-        );
+        let request = make_request(vec![json!({"role": "user", "content": "hi"})], None);
         let body = build_body(&request, false);
 
         assert_eq!(body["model"], "claude-test");
@@ -997,10 +1030,7 @@ mod tests {
 
     #[test]
     fn test_build_body_streaming_flag() {
-        let request = make_request(
-            vec![json!({"role": "user", "content": "hi"})],
-            None,
-        );
+        let request = make_request(vec![json!({"role": "user", "content": "hi"})], None);
         let body = build_body(&request, true);
         assert_eq!(body["stream"], true);
 
@@ -1196,7 +1226,10 @@ mod tests {
         })
         .to_string();
         handle_content_block_delta(&data2, &mut state);
-        assert_eq!(state.thinking_signatures.get(&0).unwrap(), "sig_part1_part2");
+        assert_eq!(
+            state.thinking_signatures.get(&0).unwrap(),
+            "sig_part1_part2"
+        );
     }
 
     // ── handle_content_block_start ───────────────────────────────────
@@ -1212,7 +1245,10 @@ mod tests {
 
         let result = handle_content_block_start(&data, &mut state);
         assert!(result.is_none());
-        assert_eq!(state.redacted_thinking_blocks.get(&0).unwrap(), "encrypted_blob");
+        assert_eq!(
+            state.redacted_thinking_blocks.get(&0).unwrap(),
+            "encrypted_blob"
+        );
     }
 
     #[test]
@@ -1257,7 +1293,9 @@ mod tests {
     #[test]
     fn test_content_block_stop_redacted_thinking_emits() {
         let mut state = StreamState::new("claude-test");
-        state.redacted_thinking_blocks.insert(0, "opaque_data".into());
+        state
+            .redacted_thinking_blocks
+            .insert(0, "opaque_data".into());
 
         let data = json!({"index": 0}).to_string();
         let result = handle_content_block_stop(&data, &mut state);

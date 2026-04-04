@@ -34,7 +34,9 @@ impl PartialEq for ImageRef {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentBlock {
-    Text { text: String },
+    Text {
+        text: String,
+    },
     Thinking {
         thinking: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -45,7 +47,9 @@ pub enum ContentBlock {
         name: String,
         input: serde_json::Value,
     },
-    RedactedThinking { data: String },
+    RedactedThinking {
+        data: String,
+    },
     ToolResult {
         tool_use_id: String,
         content: String,
@@ -149,7 +153,10 @@ pub struct StreamMetadata {
 /// When `include_tool_results` is true, this is the canonical way to produce
 /// `Message.content`. When false, only `Text` blocks contribute (used for
 /// merged messages where tool results are already embedded in content_blocks).
-pub fn derive_content_from_blocks_with(blocks: &[ContentBlock], include_tool_results: bool) -> String {
+pub fn derive_content_from_blocks_with(
+    blocks: &[ContentBlock],
+    include_tool_results: bool,
+) -> String {
     let mut parts: Vec<&str> = Vec::new();
 
     for block in blocks {
@@ -216,10 +223,7 @@ mod tests {
             content: "2026-03-29T10:00:00Z".into(),
             is_error: false,
         }];
-        assert_eq!(
-            derive_content_from_blocks(&blocks),
-            "2026-03-29T10:00:00Z"
-        );
+        assert_eq!(derive_content_from_blocks(&blocks), "2026-03-29T10:00:00Z");
     }
 
     #[test]
@@ -277,15 +281,20 @@ mod tests {
         let mut msg = make_msg("hello world", vec![]);
         msg.normalize();
         assert_eq!(msg.content_blocks.len(), 1);
-        assert!(matches!(&msg.content_blocks[0], ContentBlock::Text { text } if text == "hello world"));
+        assert!(
+            matches!(&msg.content_blocks[0], ContentBlock::Text { text } if text == "hello world")
+        );
         assert_eq!(msg.content, "hello world");
     }
 
     #[test]
     fn normalize_canonical_derives_content_from_blocks() {
-        let mut msg = make_msg("", vec![
-            ContentBlock::Text { text: "derived".into() },
-        ]);
+        let mut msg = make_msg(
+            "",
+            vec![ContentBlock::Text {
+                text: "derived".into(),
+            }],
+        );
         msg.normalize();
         assert_eq!(msg.content, "derived");
         assert_eq!(msg.content_blocks.len(), 1);
@@ -303,20 +312,29 @@ mod tests {
 
     #[test]
     fn serialize_for_storage_omits_content_field() {
-        let msg = make_msg("should be removed", vec![
-            ContentBlock::Text { text: "canonical".into() },
-        ]);
+        let msg = make_msg(
+            "should be removed",
+            vec![ContentBlock::Text {
+                text: "canonical".into(),
+            }],
+        );
         let json_str = msg.serialize_for_storage().unwrap();
         let val: serde_json::Value = serde_json::from_str(&json_str).unwrap();
-        assert!(val.get("content").is_none(), "content field should be omitted");
+        assert!(
+            val.get("content").is_none(),
+            "content field should be omitted"
+        );
         assert!(val.get("content_blocks").is_some());
     }
 
     #[test]
     fn serialize_for_storage_roundtrips_other_fields() {
-        let msg = make_msg("ignored", vec![
-            ContentBlock::Text { text: "hello".into() },
-        ]);
+        let msg = make_msg(
+            "ignored",
+            vec![ContentBlock::Text {
+                text: "hello".into(),
+            }],
+        );
         let json_str = msg.serialize_for_storage().unwrap();
         let val: serde_json::Value = serde_json::from_str(&json_str).unwrap();
         assert_eq!(val["msg_id"], "m1");
@@ -329,7 +347,9 @@ mod tests {
     #[test]
     fn derive_content_excludes_tool_results_when_flag_false() {
         let blocks = vec![
-            ContentBlock::Text { text: "hello".into() },
+            ContentBlock::Text {
+                text: "hello".into(),
+            },
             ContentBlock::ToolResult {
                 tool_use_id: "t1".into(),
                 content: "result".into(),
@@ -337,7 +357,10 @@ mod tests {
             },
         ];
         assert_eq!(derive_content_from_blocks_with(&blocks, false), "hello");
-        assert_eq!(derive_content_from_blocks_with(&blocks, true), "hello\nresult");
+        assert_eq!(
+            derive_content_from_blocks_with(&blocks, true),
+            "hello\nresult"
+        );
     }
 
     #[test]

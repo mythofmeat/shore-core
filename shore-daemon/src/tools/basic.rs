@@ -109,11 +109,7 @@ pub fn parse_dice_notation(notation: &str) -> Result<DiceNotation, String> {
         .position(|(i, c)| i > 0 && (c == '+' || c == '-'));
 
     let (sides_str, modifier) = if let Some(pos) = modifier_pos {
-        let byte_pos = after_d
-            .char_indices()
-            .nth(pos)
-            .map(|(i, _)| i)
-            .unwrap();
+        let byte_pos = after_d.char_indices().nth(pos).map(|(i, _)| i).unwrap();
         let sides = &after_d[..byte_pos];
         let mod_str = &after_d[byte_pos..];
         let modifier = mod_str
@@ -159,25 +155,53 @@ mod tests {
     #[test]
     fn parse_standard_notation() {
         let r = parse_dice_notation("2d6").unwrap();
-        assert_eq!(r, DiceNotation { count: 2, sides: 6, modifier: 0 });
+        assert_eq!(
+            r,
+            DiceNotation {
+                count: 2,
+                sides: 6,
+                modifier: 0
+            }
+        );
     }
 
     #[test]
     fn parse_with_positive_modifier() {
         let r = parse_dice_notation("1d20+5").unwrap();
-        assert_eq!(r, DiceNotation { count: 1, sides: 20, modifier: 5 });
+        assert_eq!(
+            r,
+            DiceNotation {
+                count: 1,
+                sides: 20,
+                modifier: 5
+            }
+        );
     }
 
     #[test]
     fn parse_with_negative_modifier() {
         let r = parse_dice_notation("4d6-1").unwrap();
-        assert_eq!(r, DiceNotation { count: 4, sides: 6, modifier: -1 });
+        assert_eq!(
+            r,
+            DiceNotation {
+                count: 4,
+                sides: 6,
+                modifier: -1
+            }
+        );
     }
 
     #[test]
     fn parse_implicit_count() {
         let r = parse_dice_notation("d8").unwrap();
-        assert_eq!(r, DiceNotation { count: 1, sides: 8, modifier: 0 });
+        assert_eq!(
+            r,
+            DiceNotation {
+                count: 1,
+                sides: 8,
+                modifier: 0
+            }
+        );
     }
 
     #[test]
@@ -197,7 +221,11 @@ mod tests {
 
     #[test]
     fn dice_roll_within_range() {
-        let notation = DiceNotation { count: 2, sides: 6, modifier: 3 };
+        let notation = DiceNotation {
+            count: 2,
+            sides: 6,
+            modifier: 3,
+        };
         for _ in 0..100 {
             let (rolls, total) = execute_dice_roll(&notation);
             assert_eq!(rolls.len(), 2);

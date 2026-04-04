@@ -1,10 +1,10 @@
-pub mod types;
-pub mod parser;
 pub mod background;
+pub mod parser;
+pub mod types;
 
-pub use types::*;
-pub use parser::{DEFAULT_COMPACT_PROMPT, parse_compaction_response};
 pub use background::run_compaction;
+pub use parser::{parse_compaction_response, DEFAULT_COMPACT_PROMPT};
+pub use types::*;
 
 use crate::memory::db::{Entry, MemoryDB};
 use chrono::Utc;
@@ -99,10 +99,9 @@ impl CompactionManager {
         let mut result = template.replace("{{conversation}}", &conversation_text);
 
         // Handle {{#if recap}}...{{/if}} conditional block.
-        if let (Some(if_start), Some(endif_pos)) = (
-            result.find("{{#if recap}}"),
-            result.find("{{/if}}"),
-        ) {
+        if let (Some(if_start), Some(endif_pos)) =
+            (result.find("{{#if recap}}"), result.find("{{/if}}"))
+        {
             if let Some(recap) = existing_recap.filter(|r| !r.is_empty()) {
                 // Keep the block content, strip the tags.
                 let block_start = if_start + "{{#if recap}}".len();
@@ -182,7 +181,13 @@ impl CompactionManager {
         let compacted_part = &messages[..split_at];
 
         // Build and send prompt to LLM (only compacted messages, not retained).
-        let prompt = Self::build_prompt(prompt_template, compacted_part, existing_recap, char_name, user_name);
+        let prompt = Self::build_prompt(
+            prompt_template,
+            compacted_part,
+            existing_recap,
+            char_name,
+            user_name,
+        );
         let raw_response = llm.summarize(&prompt).await?;
 
         // Parse recap + entries from LLM response.
@@ -330,10 +335,10 @@ impl IdleTimer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::Mutex as StdMutex;
     use std::future::Future;
     use std::pin::Pin;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Mutex as StdMutex;
 
     // -- Mock implementations ------------------------------------------------
 
@@ -482,8 +487,13 @@ They discussed daily activities and the user's beverage preferences.
             },
         ];
 
-        let prompt =
-            CompactionManager::build_prompt("Template:\n{{conversation}}", &messages, None, "Char", "User");
+        let prompt = CompactionManager::build_prompt(
+            "Template:\n{{conversation}}",
+            &messages,
+            None,
+            "Char",
+            "User",
+        );
         assert!(prompt.contains("[2026-03-25T10:00:00Z] user: Hello!"));
         assert!(prompt.contains("[2026-03-25T10:00:01Z] assistant: Hi there!"));
         assert!(!prompt.contains("{{conversation}}"));
@@ -492,11 +502,15 @@ They discussed daily activities and the user's beverage preferences.
     #[test]
     fn test_build_prompt_with_recap() {
         let messages = make_messages(2);
-        let template =
-            "Before\n{{#if recap}}RECAP: {{recap}}{{/if}}\nAfter\n{{conversation}}";
+        let template = "Before\n{{#if recap}}RECAP: {{recap}}{{/if}}\nAfter\n{{conversation}}";
 
-        let prompt =
-            CompactionManager::build_prompt(template, &messages, Some("Previous events."), "Char", "User");
+        let prompt = CompactionManager::build_prompt(
+            template,
+            &messages,
+            Some("Previous events."),
+            "Char",
+            "User",
+        );
         assert!(prompt.contains("RECAP: Previous events."));
         assert!(!prompt.contains("{{#if recap}}"));
         assert!(!prompt.contains("{{/if}}"));
@@ -505,8 +519,7 @@ They discussed daily activities and the user's beverage preferences.
     #[test]
     fn test_build_prompt_recap_stripped_when_none() {
         let messages = make_messages(2);
-        let template =
-            "Before\n{{#if recap}}RECAP: {{recap}}{{/if}}\nAfter\n{{conversation}}";
+        let template = "Before\n{{#if recap}}RECAP: {{recap}}{{/if}}\nAfter\n{{conversation}}";
 
         let prompt = CompactionManager::build_prompt(template, &messages, None, "Char", "User");
         assert!(!prompt.contains("RECAP"));

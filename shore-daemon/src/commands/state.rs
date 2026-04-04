@@ -2,65 +2,70 @@ use serde_json::json;
 use shore_protocol::error::ErrorCode;
 use shore_protocol::types::{ContentBlock, Role};
 
-use shore_config::resolve_prompt_template;
 use crate::engine::ConversationEngine;
 use crate::memory::agent::{CallerIdentity, MemoryAgent, RealAgentIndexer};
 use crate::memory::agent_llm::RealAgentLlm;
 use crate::memory::collation::{
-    DecayConfig, CollationError, CollationManager, CollationOutcome,
-    DEFAULT_REFINE_PROMPT,
+    CollationError, CollationManager, CollationOutcome, DecayConfig, DEFAULT_REFINE_PROMPT,
 };
 use crate::memory::collation_impls::RealCollationLlm;
 use crate::memory::compaction::{
-    CompactionError, CompactionManager, CompactionOutcome,
-    ConversationMessage, DEFAULT_COMPACT_PROMPT,
+    CompactionError, CompactionManager, CompactionOutcome, ConversationMessage,
+    DEFAULT_COMPACT_PROMPT,
 };
 use crate::memory::compaction_impls::{
     RealCompactionLlm, RealConversationManager, RealVectorIndexer,
 };
 use crate::memory::db::MemoryDB;
+use shore_config::resolve_prompt_template;
 
 use crate::autonomy::activity::HourClassification;
 
 use super::{
-    build_collation_vars, memory_dir, resolve_agent_model, setup_search_context,
-    CommandContext, CommandResult, MemoryShellSession,
+    build_collation_vars, memory_dir, resolve_agent_model, setup_search_context, CommandContext,
+    CommandResult, MemoryShellSession,
 };
 
 /// Build the memory DB path for a character and open it.
 fn open_memory_db(ctx: &CommandContext, char_name: &str) -> Result<MemoryDB, (ErrorCode, String)> {
     let db_path = memory_dir(ctx, char_name).join("memory.db");
-    MemoryDB::open(&db_path)
-        .map_err(|e| (ErrorCode::InternalError, format!("Failed to open memory DB: {e}")))
+    MemoryDB::open(&db_path).map_err(|e| {
+        (
+            ErrorCode::InternalError,
+            format!("Failed to open memory DB: {e}"),
+        )
+    })
 }
 
 /// Return system status: character, message count, model, token counts.
 pub fn status(engine: &ConversationEngine, ctx: &CommandContext) -> CommandResult {
-    let activity = ctx
-        .autonomy
-        .activity_stats(engine.character_name())
-        .map(|(stats, msg_count)| {
-            let classifications: Vec<&str> = stats
-                .hour_classifications
-                .iter()
-                .map(|c| match c {
-                    HourClassification::Peak => "peak",
-                    HourClassification::Trough => "trough",
-                    HourClassification::Normal => "normal",
+    let activity =
+        ctx.autonomy
+            .activity_stats(engine.character_name())
+            .map(|(stats, msg_count)| {
+                let classifications: Vec<&str> = stats
+                    .hour_classifications
+                    .iter()
+                    .map(|c| match c {
+                        HourClassification::Peak => "peak",
+                        HourClassification::Trough => "trough",
+                        HourClassification::Normal => "normal",
+                    })
+                    .collect();
+                json!({
+                    "hour_histogram": stats.hour_histogram.to_vec(),
+                    "hour_classifications": classifications,
+                    "has_sufficient_heatmap": stats.has_sufficient_heatmap,
+                    "engagement_score": stats.engagement_score,
+                    "sessions_per_day": stats.sessions_per_day,
+                    "message_count": msg_count,
                 })
-                .collect();
-            json!({
-                "hour_histogram": stats.hour_histogram.to_vec(),
-                "hour_classifications": classifications,
-                "has_sufficient_heatmap": stats.has_sufficient_heatmap,
-                "engagement_score": stats.engagement_score,
-                "sessions_per_day": stats.sessions_per_day,
-                "message_count": msg_count,
-            })
-        });
+            });
 
     // Show the effective model: runtime override → per-character/global default.
-    let effective_model = ctx.active_model.as_deref()
+    let effective_model = ctx
+        .active_model
+        .as_deref()
         .or(ctx.config.app.defaults.model.as_deref());
 
     let tokens = ctx.session_tokens.lock().unwrap();
@@ -83,10 +88,7 @@ pub fn status(engine: &ConversationEngine, ctx: &CommandContext) -> CommandResul
 
 /// Return recent diagnostics from in-memory ring buffers.
 pub fn diagnostics(ctx: &CommandContext, args: &serde_json::Value) -> CommandResult {
-    let count = args
-        .get("count")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(10) as usize;
+    let count = args.get("count").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
     let diag = ctx.diagnostics.lock().unwrap();
     Ok(diag.to_json(count))
 }
@@ -97,10 +99,7 @@ pub fn heartbeat_log(
     ctx: &CommandContext,
     args: &serde_json::Value,
 ) -> CommandResult {
-    let limit = args
-        .get("count")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(20) as usize;
+    let limit = args.get("count").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
     let events = ctx.autonomy.heartbeat_log(engine.character_name(), limit);
     let events_json: Vec<serde_json::Value> = events
         .iter()
@@ -171,8 +170,12 @@ pub fn model_info(ctx: &CommandContext, args: &serde_json::Value) -> CommandResu
         .find_model(name)
         .map_err(|e| (ErrorCode::NotFound, e.to_string()))?;
 
-    let data = serde_json::to_value(&resolved)
-        .map_err(|e| (ErrorCode::InternalError, format!("Failed to serialize model: {e}")))?;
+    let data = serde_json::to_value(&resolved).map_err(|e| {
+        (
+            ErrorCode::InternalError,
+            format!("Failed to serialize model: {e}"),
+        )
+    })?;
 
     Ok(data)
 }
@@ -187,9 +190,7 @@ pub fn switch_model(ctx: &mut CommandContext, args: &serde_json::Value) -> Comma
             if ctx.config.models.find_model(name).is_err() {
                 return Err((
                     ErrorCode::NotFound,
-                    format!(
-                        "Model not found: {name}. Use list_models to see available models."
-                    ),
+                    format!("Model not found: {name}. Use list_models to see available models."),
                 ));
             }
             ctx.active_model = Some(name.to_string());
@@ -215,10 +216,7 @@ pub fn memory_changelog(
     ctx: &CommandContext,
     args: &serde_json::Value,
 ) -> CommandResult {
-    let limit = args
-        .get("limit")
-        .and_then(|v| v.as_i64())
-        .unwrap_or(20);
+    let limit = args.get("limit").and_then(|v| v.as_i64()).unwrap_or(20);
 
     let char_name = engine.character_name();
     let db_path = memory_dir(ctx, char_name).join("memory.db");
@@ -315,12 +313,26 @@ async fn memory_query(
 
     let search_ctx = setup_search_context(ctx, char_name).await;
     let real_indexer = search_ctx.as_ref().map(RealAgentIndexer::new);
-    let indexer = real_indexer.as_ref().map(|i| i as &dyn crate::memory::agent::AgentIndexer);
+    let indexer = real_indexer
+        .as_ref()
+        .map(|i| i as &dyn crate::memory::agent::AgentIndexer);
 
     let result = agent
-        .ask(query, &agent_llm, &db, indexer, search_ctx.as_ref(), &agent_model)
+        .ask(
+            query,
+            &agent_llm,
+            &db,
+            indexer,
+            search_ctx.as_ref(),
+            &agent_model,
+        )
         .await
-        .map_err(|e| (ErrorCode::InternalError, format!("Memory query failed: {e}")))?;
+        .map_err(|e| {
+            (
+                ErrorCode::InternalError,
+                format!("Memory query failed: {e}"),
+            )
+        })?;
 
     Ok(json!({
         "character": char_name,
@@ -390,7 +402,9 @@ pub async fn memory_shell_query(
     let agent_llm = RealAgentLlm::new(ctx.llm_client.clone());
     let search_ctx = setup_search_context(ctx, &char_name).await;
     let real_indexer = search_ctx.as_ref().map(RealAgentIndexer::new);
-    let indexer = real_indexer.as_ref().map(|i| i as &dyn crate::memory::agent::AgentIndexer);
+    let indexer = real_indexer
+        .as_ref()
+        .map(|i| i as &dyn crate::memory::agent::AgentIndexer);
 
     let session = ctx
         .memory_shell_sessions
@@ -428,10 +442,7 @@ pub async fn memory_shell_query(
 }
 
 /// End a memory shell session.
-pub fn memory_shell_end(
-    ctx: &mut CommandContext,
-    args: &serde_json::Value,
-) -> CommandResult {
+pub fn memory_shell_end(ctx: &mut CommandContext, args: &serde_json::Value) -> CommandResult {
     let session_id = args
         .get("session_id")
         .and_then(|v| v.as_str())
@@ -454,12 +465,8 @@ async fn run_post_compaction_collation(
     let cmodel = collation_model?;
 
     let collation_llm = RealCollationLlm::new(ctx.llm_client.clone(), cmodel);
-    let refine_template = resolve_prompt_template(
-        &ctx.config.dirs.config,
-        char_name,
-        "refine.md",
-    )
-    .unwrap_or_else(|| DEFAULT_REFINE_PROMPT.to_string());
+    let refine_template = resolve_prompt_template(&ctx.config.dirs.config, char_name, "refine.md")
+        .unwrap_or_else(|| DEFAULT_REFINE_PROMPT.to_string());
 
     let collation_mgr = CollationManager::new(DecayConfig::default());
     let collation_limit = ctx.config.app.memory.collation.batch_limit;
@@ -475,7 +482,9 @@ async fn run_post_compaction_collation(
             &collation_llm,
             &refine_template,
             &collation_vars,
-            collation_indexer.as_ref().map(|i| i as &dyn crate::memory::agent::AgentIndexer),
+            collation_indexer
+                .as_ref()
+                .map(|i| i as &dyn crate::memory::agent::AgentIndexer),
             collation_search_ctx.as_ref().map(|ctx| &ctx.vector_store),
             Some(collation_limit),
         )
@@ -550,12 +559,9 @@ pub async fn compact(
     let db = open_memory_db(ctx, &char_name)?;
 
     // Resolve the compaction prompt template.
-    let prompt_template = resolve_prompt_template(
-        &ctx.config.dirs.config,
-        &char_name,
-        "compact.md",
-    )
-    .unwrap_or_else(|| DEFAULT_COMPACT_PROMPT.to_string());
+    let prompt_template =
+        resolve_prompt_template(&ctx.config.dirs.config, &char_name, "compact.md")
+            .unwrap_or_else(|| DEFAULT_COMPACT_PROMPT.to_string());
 
     // Resolve model: memory_agent default → active model → first chat model.
     let model = super::resolve_agent_model(ctx)?;
@@ -608,9 +614,7 @@ pub async fn compact(
                 .get("collate")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            let collation_result = if do_collate
-                && ctx.config.app.memory.collation.enabled
-            {
+            let collation_result = if do_collate && ctx.config.app.memory.collation.enabled {
                 run_post_compaction_collation(ctx, &char_name, &display_name, &db).await
             } else {
                 None
@@ -749,8 +753,13 @@ pub async fn collate(
         passes += 1;
         let outcome = mgr
             .run(
-                &db, &llm, &refine_template, &collation_vars,
-                indexer.as_ref().map(|i| i as &dyn crate::memory::agent::AgentIndexer),
+                &db,
+                &llm,
+                &refine_template,
+                &collation_vars,
+                indexer
+                    .as_ref()
+                    .map(|i| i as &dyn crate::memory::agent::AgentIndexer),
                 search_ctx.as_ref().map(|ctx| &ctx.vector_store),
                 Some(limit),
             )
@@ -767,7 +776,9 @@ pub async fn collate(
         total.entries_skipped += outcome.entries_skipped;
 
         if !full_mode
-            || (outcome.refine_merges == 0 && outcome.refine_splits == 0 && outcome.refine_updates == 0)
+            || (outcome.refine_merges == 0
+                && outcome.refine_splits == 0
+                && outcome.refine_updates == 0)
             || passes >= MAX_PASSES
         {
             break;
@@ -816,8 +827,7 @@ pub async fn memory_purge(
 
     let db = open_memory_db(ctx, &char_name)?;
 
-    let cutoff = (chrono::Utc::now() - chrono::Duration::days(days))
-        .to_rfc3339();
+    let cutoff = (chrono::Utc::now() - chrono::Duration::days(days)).to_rfc3339();
 
     let superseded = db
         .get_entries_by_status("superseded")
@@ -917,7 +927,10 @@ pub fn config_check(ctx: &CommandContext) -> CommandResult {
     if ctx.config.models.chat.is_empty() {
         warnings.push("No chat models configured. Add [chat.*] sections to config.".into());
     } else {
-        info.push(format!("{} chat model(s) configured", ctx.config.models.chat.len()));
+        info.push(format!(
+            "{} chat model(s) configured",
+            ctx.config.models.chat.len()
+        ));
     }
 
     // Check: default model set?
@@ -940,14 +953,22 @@ pub fn config_check(ctx: &CommandContext) -> CommandResult {
     if ctx.config.models.tools.is_empty() {
         info.push("No tool models configured (chat models will be used for tools)".into());
     } else {
-        info.push(format!("{} tool model(s) configured", ctx.config.models.tools.len()));
+        info.push(format!(
+            "{} tool model(s) configured",
+            ctx.config.models.tools.len()
+        ));
     }
 
     // Check: embedding models
     if ctx.config.models.embedding.is_empty() {
-        warnings.push("No embedding models configured. Memory vector search will be unavailable.".into());
+        warnings.push(
+            "No embedding models configured. Memory vector search will be unavailable.".into(),
+        );
     } else {
-        info.push(format!("{} embedding model(s) configured", ctx.config.models.embedding.len()));
+        info.push(format!(
+            "{} embedding model(s) configured",
+            ctx.config.models.embedding.len()
+        ));
     }
 
     // Check: default embedding reference
@@ -960,13 +981,17 @@ pub fn config_check(ctx: &CommandContext) -> CommandResult {
     // Check: memory agent model reference
     if let Some(ref ma) = ctx.config.app.defaults.memory_agent {
         if ctx.config.models.find_model(ma).is_err() {
-            warnings.push(format!("Default memory_agent \"{ma}\" not found in catalog"));
+            warnings.push(format!(
+                "Default memory_agent \"{ma}\" not found in catalog"
+            ));
         }
     }
 
     // Check: LLM service configured?
-    if ctx.config.app.services.llm.command.is_none() && ctx.config.app.services.llm.socket.is_none() {
-        warnings.push("No LLM service configured. Set [services.llm] command or socket_path.".into());
+    if ctx.config.app.services.llm.command.is_none() && ctx.config.app.services.llm.socket.is_none()
+    {
+        warnings
+            .push("No LLM service configured. Set [services.llm] command or socket_path.".into());
     }
 
     // Check: API key env vars are set for configured providers
@@ -1004,16 +1029,24 @@ pub async fn memory_reindex(engine: &ConversationEngine, ctx: &CommandContext) -
     let db = open_memory_db(ctx, &char_name)?;
 
     // Load all active entries.
-    let entries = db.get_entries_by_status("active")
-        .map_err(|e| (ErrorCode::InternalError, format!("Failed to load entries: {e}")))?;
+    let entries = db.get_entries_by_status("active").map_err(|e| {
+        (
+            ErrorCode::InternalError,
+            format!("Failed to load entries: {e}"),
+        )
+    })?;
 
     if entries.is_empty() {
         return Ok(json!({ "reindexed": 0, "message": "No active entries to reindex" }));
     }
 
     // Rebuild FTS index.
-    db.rebuild_fts()
-        .map_err(|e| (ErrorCode::InternalError, format!("Failed to rebuild FTS: {e}")))?;
+    db.rebuild_fts().map_err(|e| {
+        (
+            ErrorCode::InternalError,
+            format!("Failed to rebuild FTS: {e}"),
+        )
+    })?;
 
     // Resolve embedding config and rebuild vector index.
     let (store, embed_config) = super::open_embed_and_vectorstore(ctx, &char_name).await?;
@@ -1025,7 +1058,8 @@ pub async fn memory_reindex(engine: &ConversationEngine, ctx: &CommandContext) -
     let mut embeddings: Vec<Vec<f32>> = Vec::with_capacity(entries.len());
     for chunk in entries.chunks(EMBED_BATCH_SIZE) {
         let texts: Vec<&str> = chunk.iter().map(|e| e.summary_text.as_str()).collect();
-        let batch = ctx.llm_client
+        let batch = ctx
+            .llm_client
             .embed(
                 &embed_config.provider,
                 &embed_config.model_id,
@@ -1044,9 +1078,12 @@ pub async fn memory_reindex(engine: &ConversationEngine, ctx: &CommandContext) -
         .map(|(e, v)| (e.id.as_str(), v.as_slice()))
         .collect();
 
-    store.reindex(&pairs)
-        .await
-        .map_err(|e| (ErrorCode::InternalError, format!("Vector reindex failed: {e}")))?;
+    store.reindex(&pairs).await.map_err(|e| {
+        (
+            ErrorCode::InternalError,
+            format!("Vector reindex failed: {e}"),
+        )
+    })?;
 
     Ok(json!({
         "reindexed": entries.len(),
@@ -1064,8 +1101,12 @@ pub fn config(ctx: &mut CommandContext, args: &serde_json::Value) -> CommandResu
     }
 
     // Otherwise, read-only config display.
-    let app_json = serde_json::to_value(&ctx.config.app)
-        .map_err(|e| (ErrorCode::InternalError, format!("Failed to serialize config: {e}")))?;
+    let app_json = serde_json::to_value(&ctx.config.app).map_err(|e| {
+        (
+            ErrorCode::InternalError,
+            format!("Failed to serialize config: {e}"),
+        )
+    })?;
 
     match key {
         None => Ok(json!({ "config": app_json })),
@@ -1116,7 +1157,10 @@ pub fn config_reset(ctx: &mut CommandContext) -> CommandResult {
             ctx.config = fresh;
             Ok(json!({ "reset": true, "message": "Configuration reloaded from disk" }))
         }
-        Err(e) => Err((ErrorCode::InternalError, format!("Failed to reload config: {e}"))),
+        Err(e) => Err((
+            ErrorCode::InternalError,
+            format!("Failed to reload config: {e}"),
+        )),
     }
 }
 
@@ -1124,8 +1168,8 @@ pub fn config_reset(ctx: &mut CommandContext) -> CommandResult {
 mod tests {
     use super::*;
     use crate::commands::CommandContext;
-    use shore_config::models::ModelCatalog;
     use crate::engine::ConversationEngine;
+    use shore_config::models::ModelCatalog;
     use shore_protocol::server_msg::ServerMessage;
     use shore_protocol::types::{Message, Role};
     use tempfile::TempDir;
@@ -1166,17 +1210,26 @@ mod tests {
         );
 
         let (_tx, rx) = tokio::sync::watch::channel(());
-        let (autonomy, _compaction_rx) = crate::autonomy::manager::AutonomyManager::new(Default::default(), Default::default(), data_dir.clone(), rx);
+        let (autonomy, _compaction_rx) = crate::autonomy::manager::AutonomyManager::new(
+            Default::default(),
+            Default::default(),
+            data_dir.clone(),
+            rx,
+        );
 
         let ctx = CommandContext {
             config,
             push_tx,
             data_dir: data_dir.clone(),
             active_model: None,
-            session_tokens: std::sync::Arc::new(std::sync::Mutex::new(crate::commands::SessionTokens::default())),
+            session_tokens: std::sync::Arc::new(std::sync::Mutex::new(
+                crate::commands::SessionTokens::default(),
+            )),
             autonomy,
             llm_client: shore_llm_client::LlmClient::new(),
-            diagnostics: std::sync::Arc::new(std::sync::Mutex::new(shore_diagnostics::Diagnostics::default())),
+            diagnostics: std::sync::Arc::new(std::sync::Mutex::new(
+                shore_diagnostics::Diagnostics::default(),
+            )),
             memory_shell_sessions: std::collections::HashMap::new(),
         };
         (engine, ctx, push_rx)
@@ -1386,7 +1439,9 @@ model_id = "gpt-4o"
         let tmp = TempDir::new().unwrap();
         let (engine, ctx, _rx) = make_ctx(&tmp);
 
-        let result = memory(&engine, &ctx, &json!({"query": null})).await.unwrap();
+        let result = memory(&engine, &ctx, &json!({"query": null}))
+            .await
+            .unwrap();
         assert_eq!(result["character"], "TestChar");
         assert!(result.get("entries").is_some());
     }
@@ -1427,7 +1482,9 @@ model_id = "gpt-4o"
         let result = config_check(&ctx).unwrap();
         assert!(!result["valid"].as_bool().unwrap());
         let warnings = result["warnings"].as_array().unwrap();
-        assert!(warnings.iter().any(|w| w.as_str().unwrap().contains("No chat models")));
+        assert!(warnings
+            .iter()
+            .any(|w| w.as_str().unwrap().contains("No chat models")));
         assert_eq!(result["chat_models"], 0);
     }
 
@@ -1439,7 +1496,9 @@ model_id = "gpt-4o"
         let result = config_check(&ctx).unwrap();
         assert_eq!(result["chat_models"], 2);
         let info = result["info"].as_array().unwrap();
-        assert!(info.iter().any(|i| i.as_str().unwrap().contains("2 chat model")));
+        assert!(info
+            .iter()
+            .any(|i| i.as_str().unwrap().contains("2 chat model")));
     }
 
     #[test]
@@ -1526,39 +1585,63 @@ model_id = "gpt-4o"
         let recent_ts = chrono::Utc::now().to_rfc3339();
         let empty = String::new();
 
-        let make_entry = |id: &str, status: &str, superseded_by: &str, image_path: &str, ts: &str| Entry {
-            id: id.into(),
-            memory_type: "observation".into(),
-            source: "test".into(),
-            reason: empty.clone(),
-            status: status.into(),
-            confidence: 1.0,
-            summary_text: format!("Entry {id}"),
-            topic_tags: empty.clone(),
-            topic_key: empty.clone(),
-            start_timestamp: empty.clone(),
-            end_timestamp: empty.clone(),
-            message_count: 0,
-            source_entry_ids: empty.clone(),
-            related_entry_ids: empty.clone(),
-            superseded_by: superseded_by.into(),
-            created_at: ts.into(),
-            updated_at: ts.into(),
-            entry_type: empty.clone(),
-            image_path: image_path.into(),
-            collated_at: empty.clone(),
-        };
+        let make_entry =
+            |id: &str, status: &str, superseded_by: &str, image_path: &str, ts: &str| Entry {
+                id: id.into(),
+                memory_type: "observation".into(),
+                source: "test".into(),
+                reason: empty.clone(),
+                status: status.into(),
+                confidence: 1.0,
+                summary_text: format!("Entry {id}"),
+                topic_tags: empty.clone(),
+                topic_key: empty.clone(),
+                start_timestamp: empty.clone(),
+                end_timestamp: empty.clone(),
+                message_count: 0,
+                source_entry_ids: empty.clone(),
+                related_entry_ids: empty.clone(),
+                superseded_by: superseded_by.into(),
+                created_at: ts.into(),
+                updated_at: ts.into(),
+                entry_type: empty.clone(),
+                image_path: image_path.into(),
+                collated_at: empty.clone(),
+            };
 
         // Active entry that serves as the replacement target.
-        db.create_entry(&make_entry("active-1", "active", "", "", &old_ts)).unwrap();
+        db.create_entry(&make_entry("active-1", "active", "", "", &old_ts))
+            .unwrap();
         // Old superseded entry with valid replacement → should be deleted.
-        db.create_entry(&make_entry("old-superseded", "superseded", "active-1", "", &old_ts)).unwrap();
+        db.create_entry(&make_entry(
+            "old-superseded",
+            "superseded",
+            "active-1",
+            "",
+            &old_ts,
+        ))
+        .unwrap();
         // Recent superseded entry → should be skipped (not old enough).
-        db.create_entry(&make_entry("recent-superseded", "superseded", "active-1", "", &recent_ts)).unwrap();
+        db.create_entry(&make_entry(
+            "recent-superseded",
+            "superseded",
+            "active-1",
+            "",
+            &recent_ts,
+        ))
+        .unwrap();
         // Superseded entry with image_path → should be skipped.
-        db.create_entry(&make_entry("image-superseded", "superseded", "active-1", "/some/image.png", &old_ts)).unwrap();
+        db.create_entry(&make_entry(
+            "image-superseded",
+            "superseded",
+            "active-1",
+            "/some/image.png",
+            &old_ts,
+        ))
+        .unwrap();
         // Superseded entry with empty superseded_by → should be skipped.
-        db.create_entry(&make_entry("no-replacement", "superseded", "", "", &old_ts)).unwrap();
+        db.create_entry(&make_entry("no-replacement", "superseded", "", "", &old_ts))
+            .unwrap();
 
         drop(db); // Close so memory_purge can open it.
 
@@ -1596,7 +1679,10 @@ model_id = "gpt-4o"
         assert!(ctx.active_model.is_none(), "active_model should be cleared");
         // load_config(None) returns defaults when no config file exists,
         // so stream should be back to the default (true).
-        assert!(ctx.config.app.defaults.stream, "config should be reloaded from defaults");
+        assert!(
+            ctx.config.app.defaults.stream,
+            "config should be reloaded from defaults"
+        );
     }
 
     // ── memory_reindex ──────────────────────────────────────────────────
@@ -1612,7 +1698,10 @@ model_id = "gpt-4o"
 
         let result = memory_reindex(&engine, &ctx).await.unwrap();
         assert_eq!(result["reindexed"], 0);
-        assert!(result["message"].as_str().unwrap().contains("No active entries"));
+        assert!(result["message"]
+            .as_str()
+            .unwrap()
+            .contains("No active entries"));
     }
 
     #[tokio::test]
@@ -1634,8 +1723,7 @@ dimensions = 1536
 "#
         .parse()
         .unwrap();
-        let models =
-            ModelCatalog::from_sections(None, None, Some(&embed_toml), None).unwrap();
+        let models = ModelCatalog::from_sections(None, None, Some(&embed_toml), None).unwrap();
         let (engine, ctx, _rx) = make_ctx_with_models(&tmp, models);
 
         let db_dir = ctx.data_dir.join("TestChar").join("memory");

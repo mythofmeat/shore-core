@@ -7,6 +7,9 @@ pub fn spawn_connection(
     socket: Option<String>,
     config: Option<String>,
     character: Option<String>,
-) -> (tokio::sync::mpsc::Sender<ConnCommand>, tokio::sync::mpsc::Receiver<ConnEvent>) {
+) -> (
+    tokio::sync::mpsc::Sender<ConnCommand>,
+    tokio::sync::mpsc::Receiver<ConnEvent>,
+) {
     shore_client::spawn_connection(socket, config, "tui", "shore-tui", character)
 }

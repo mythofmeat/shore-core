@@ -1,9 +1,9 @@
-pub mod types;
-pub mod prompt;
 pub mod clustering;
+pub mod prompt;
+pub mod types;
 
-pub use types::*;
 pub use prompt::DEFAULT_REFINE_PROMPT;
+pub use types::*;
 
 use crate::memory::agent::AgentIndexer;
 use crate::memory::db::{Entry, MemoryDB};
@@ -80,10 +80,18 @@ impl CollationManager {
 
         // Phase 1: Refine (unified merge/split/update)
         self.phase_refine(
-            db, llm, refine_template, vars, &mut outcome,
-            &mut id_counter, indexer, vector_store, limit,
+            db,
+            llm,
+            refine_template,
+            vars,
+            &mut outcome,
+            &mut id_counter,
+            indexer,
+            vector_store,
+            limit,
             &mut candidates_processed,
-        ).await?;
+        )
+        .await?;
 
         // Phase 2: Confidence decay (math only)
         self.phase_confidence_decay(db, &mut outcome, &mut candidates_processed)?;
@@ -125,8 +133,7 @@ impl CollationManager {
         let mut from_created_at = 0usize;
 
         for entry in &candidates {
-            let (start, end, source) =
-                self.resolve_timestamps_from_ancestors(db, entry)?;
+            let (start, end, source) = self.resolve_timestamps_from_ancestors(db, entry)?;
 
             let mut updated = (*entry).clone();
             updated.start_timestamp = start.clone();
@@ -311,11 +318,21 @@ impl CollationManager {
                         result,
                         reason,
                     } => {
-                        if self.apply_merge(
-                            db, source_entry_ids, result, reason,
-                            id_counter, indexer, &now_str,
-                            outcome, candidates_processed, &candidate_ids,
-                        ).await? {
+                        if self
+                            .apply_merge(
+                                db,
+                                source_entry_ids,
+                                result,
+                                reason,
+                                id_counter,
+                                indexer,
+                                &now_str,
+                                outcome,
+                                candidates_processed,
+                                &candidate_ids,
+                            )
+                            .await?
+                        {
                             for id in source_entry_ids {
                                 acted_on.insert(id.clone());
                             }
@@ -326,11 +343,21 @@ impl CollationManager {
                         results,
                         reason,
                     } => {
-                        if self.apply_split(
-                            db, source_entry_id, results, reason,
-                            id_counter, indexer, &now_str,
-                            outcome, candidates_processed, &candidate_ids,
-                        ).await? {
+                        if self
+                            .apply_split(
+                                db,
+                                source_entry_id,
+                                results,
+                                reason,
+                                id_counter,
+                                indexer,
+                                &now_str,
+                                outcome,
+                                candidates_processed,
+                                &candidate_ids,
+                            )
+                            .await?
+                        {
                             acted_on.insert(source_entry_id.clone());
                         }
                     }
@@ -339,10 +366,19 @@ impl CollationManager {
                         result,
                         reason,
                     } => {
-                        if self.apply_update(
-                            db, entry_id, result, reason,
-                            &now_str, indexer, outcome, &candidate_ids,
-                        ).await? {
+                        if self
+                            .apply_update(
+                                db,
+                                entry_id,
+                                result,
+                                reason,
+                                &now_str,
+                                indexer,
+                                outcome,
+                                &candidate_ids,
+                            )
+                            .await?
+                        {
                             acted_on.insert(entry_id.clone());
                         }
                     }
@@ -350,10 +386,7 @@ impl CollationManager {
             }
 
             // Count candidates in this cluster that had no actions.
-            let kept = cluster
-                .iter()
-                .filter(|e| !acted_on.contains(&e.id))
-                .count();
+            let kept = cluster.iter().filter(|e| !acted_on.contains(&e.id)).count();
             outcome.refine_kept += kept;
         }
 
@@ -428,7 +461,10 @@ impl CollationManager {
             if !candidate_ids.contains(id) {
                 return Ok(false);
             }
-            match db.get_entry(id).map_err(|e| CollationError::Db(e.to_string()))? {
+            match db
+                .get_entry(id)
+                .map_err(|e| CollationError::Db(e.to_string()))?
+            {
                 Some(e) if e.status == "active" => {}
                 _ => return Ok(false),
             }
@@ -711,9 +747,7 @@ impl CollationManager {
             // Calculate days since last update.
             let updated_at = chrono::DateTime::parse_from_rfc3339(&entry.updated_at)
                 .unwrap_or_else(|_| now.fixed_offset());
-            let days_since = (now - updated_at.with_timezone(&Utc))
-                .num_seconds() as f64
-                / 86400.0;
+            let days_since = (now - updated_at.with_timezone(&Utc)).num_seconds() as f64 / 86400.0;
 
             if days_since <= 0.0 {
                 outcome.entries_skipped += 1;
@@ -776,18 +810,18 @@ pub async fn run_collation(
     use crate::memory::agent::{AgentSearchContext, RealAgentIndexer};
     use crate::memory::collation_impls::RealCollationLlm;
     use crate::memory::compaction_impls::resolve_embed_config;
-    use shore_config::{load_character_definition, resolve_prompt_template, resolve_user_definition};
+    use shore_config::{
+        load_character_definition, resolve_prompt_template, resolve_user_definition,
+    };
     use tracing::info;
 
     let character_dir = data_dir.join(character);
 
     // Open memory DB.
     let db_path = character_dir.join("memory").join("memory.db");
-    let db = MemoryDB::open(&db_path)
-        .map_err(|e| format!("Failed to open memory DB: {e}"))?;
+    let db = MemoryDB::open(&db_path).map_err(|e| format!("Failed to open memory DB: {e}"))?;
 
-    let model = resolve_collation_model(config)
-        .ok_or("No model configured")?;
+    let model = resolve_collation_model(config).ok_or("No model configured")?;
 
     let llm = RealCollationLlm::new(llm_client.clone(), model);
 
@@ -807,7 +841,9 @@ pub async fn run_collation(
             let vs_path = character_dir.join("memory").join("vectorstore");
             match VectorStore::open(&vs_path, embed_config.dimensions).await {
                 Ok(vs) => Some(AgentSearchContext::new(
-                    vs, llm_client.clone(), embed_config,
+                    vs,
+                    llm_client.clone(),
+                    embed_config,
                 )),
                 Err(e) => {
                     tracing::warn!("Vector store unavailable for auto-collation: {e}");
@@ -817,9 +853,7 @@ pub async fn run_collation(
         }
         Err(_) => None,
     };
-    let indexer = search_ctx.as_ref().map(|ctx| {
-        RealAgentIndexer::new(ctx)
-    });
+    let indexer = search_ctx.as_ref().map(|ctx| RealAgentIndexer::new(ctx));
 
     let collation_display_name = config.app.defaults.resolve_display_name();
     let mut collation_vars = HashMap::new();
@@ -834,7 +868,10 @@ pub async fn run_collation(
 
     let outcome = mgr
         .run(
-            &db, &llm, &refine_template, &collation_vars,
+            &db,
+            &llm,
+            &refine_template,
+            &collation_vars,
             indexer.as_ref().map(|i| i as &dyn AgentIndexer),
             search_ctx.as_ref().map(|ctx| &ctx.vector_store),
             Some(collation_limit),
@@ -879,8 +916,13 @@ mod tests {
         fn refine(
             &self,
             _prompt: &str,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<RefineAction>, CollationError>> + Send + '_>>
-        {
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<Vec<RefineAction>, CollationError>>
+                    + Send
+                    + '_,
+            >,
+        > {
             let result = Ok(self.refine_response.clone());
             Box::pin(async move { result })
         }
@@ -992,8 +1034,9 @@ mod tests {
 
         // Changelog should include reason.
         let logs = db.get_recent_changelog(10).unwrap();
-        assert!(logs.iter().any(|l| l.operation == "collation_refine"
-            && l.description.contains("tea preferences")));
+        assert!(logs.iter().any(
+            |l| l.operation == "collation_refine" && l.description.contains("tea preferences")
+        ));
     }
 
     #[tokio::test]
@@ -1083,8 +1126,9 @@ mod tests {
         }
 
         let logs = db.get_recent_changelog(10).unwrap();
-        assert!(logs.iter().any(|l| l.operation == "collation_refine"
-            && l.description.contains("Split")));
+        assert!(logs
+            .iter()
+            .any(|l| l.operation == "collation_refine" && l.description.contains("Split")));
     }
 
     #[tokio::test]
@@ -1150,8 +1194,9 @@ mod tests {
         assert!((e1.confidence - 0.85).abs() < 0.001);
 
         let logs = db.get_recent_changelog(10).unwrap();
-        assert!(logs.iter().any(|l| l.operation == "collation_refine"
-            && l.description.contains("Update")));
+        assert!(logs
+            .iter()
+            .any(|l| l.operation == "collation_refine" && l.description.contains("Update")));
     }
 
     #[tokio::test]
@@ -1320,8 +1365,14 @@ mod tests {
 
         assert_eq!(outcome.refine_merges, 1);
         let active = db.get_entries_by_status("active").unwrap();
-        let merged = active.iter().find(|e| e.source == "collation_refine").unwrap();
-        assert!((merged.confidence - 1.0).abs() < 0.001, "Should clamp to 1.0");
+        let merged = active
+            .iter()
+            .find(|e| e.source == "collation_refine")
+            .unwrap();
+        assert!(
+            (merged.confidence - 1.0).abs() < 0.001,
+            "Should clamp to 1.0"
+        );
     }
 
     // -- Confidence decay tests -------------------------------------------
@@ -1362,7 +1413,11 @@ mod tests {
 
         assert_eq!(outcome.entries_decayed, 1);
         let entry = db.get_entry("ancient").unwrap().unwrap();
-        assert!(entry.confidence >= 0.1, "Confidence {} below floor", entry.confidence);
+        assert!(
+            entry.confidence >= 0.1,
+            "Confidence {} below floor",
+            entry.confidence
+        );
     }
 
     #[tokio::test]
@@ -1506,8 +1561,13 @@ mod tests {
         let db = MemoryDB::open_in_memory().unwrap();
         let now = now_str();
         for i in 0..5 {
-            db.create_entry(&make_entry(&format!("e{i}"), &format!("Fact {i}"), 0.9, &now))
-                .unwrap();
+            db.create_entry(&make_entry(
+                &format!("e{i}"),
+                &format!("Fact {i}"),
+                0.9,
+                &now,
+            ))
+            .unwrap();
         }
 
         let llm = MockCollationLlm::empty();
@@ -1538,8 +1598,14 @@ mod tests {
         let a_after = db.get_entry("a").unwrap().unwrap();
         let b_after = db.get_entry("b").unwrap().unwrap();
 
-        assert!(!a_after.collated_at.is_empty(), "Candidate A should be stamped");
-        assert_eq!(b_after.collated_at, now, "Non-candidate B should keep original stamp");
+        assert!(
+            !a_after.collated_at.is_empty(),
+            "Candidate A should be stamped"
+        );
+        assert_eq!(
+            b_after.collated_at, now,
+            "Non-candidate B should keep original stamp"
+        );
     }
 
     #[tokio::test]
@@ -1559,7 +1625,10 @@ mod tests {
         run_pipeline(&db, &llm, &mgr, None).await;
 
         let after = db.get_entry("old").unwrap().unwrap();
-        assert_ne!(after.collated_at, ten_days_ago, "TTL-expired entry should be re-stamped");
+        assert_ne!(
+            after.collated_at, ten_days_ago,
+            "TTL-expired entry should be re-stamped"
+        );
         assert!(!after.collated_at.is_empty());
     }
 
@@ -1592,7 +1661,10 @@ mod tests {
         let outcome = run_pipeline(&db, &llm, &mgr, None).await;
 
         // 3 from refine (no candidates) + 3 from decay (recent entries not decayed).
-        assert_eq!(outcome.entries_skipped, 6, "all entries should be skipped by both phases");
+        assert_eq!(
+            outcome.entries_skipped, 6,
+            "all entries should be skipped by both phases"
+        );
         assert_eq!(outcome.refine_merges, 0);
         assert_eq!(outcome.refine_splits, 0);
         assert_eq!(outcome.refine_updates, 0);
@@ -1650,12 +1722,8 @@ mod tests {
         let ts = "2026-03-15T12:00:00Z";
         let candidates = vec![make_entry("e1", "Test", 0.9, ts)];
         let vars = HashMap::new();
-        let prompt = prompt::build_refine_prompt(
-            "{{candidates}}\n{{context}}",
-            &candidates,
-            &[],
-            &vars,
-        );
+        let prompt =
+            prompt::build_refine_prompt("{{candidates}}\n{{context}}", &candidates, &[], &vars);
         assert!(prompt.contains("Time: 2026-03-15T12:00:00Z"));
     }
 
@@ -1677,7 +1745,8 @@ mod tests {
 
         let mgr = CollationManager::new(DecayConfig::default());
         let mut outcome = CollationOutcome::default();
-        mgr.phase_backfill_timestamps(&db, 20, &mut outcome).unwrap();
+        mgr.phase_backfill_timestamps(&db, 20, &mut outcome)
+            .unwrap();
 
         assert_eq!(outcome.timestamps_backfilled, 1);
         let updated = db.get_entry("child1").unwrap().unwrap();
@@ -1697,7 +1766,8 @@ mod tests {
 
         let mgr = CollationManager::new(DecayConfig::default());
         let mut outcome = CollationOutcome::default();
-        mgr.phase_backfill_timestamps(&db, 20, &mut outcome).unwrap();
+        mgr.phase_backfill_timestamps(&db, 20, &mut outcome)
+            .unwrap();
 
         assert_eq!(outcome.timestamps_backfilled, 1);
         let updated = db.get_entry("orphan1").unwrap().unwrap();
@@ -1744,7 +1814,8 @@ mod tests {
 
         let mgr = CollationManager::new(DecayConfig::default());
         let mut outcome = CollationOutcome::default();
-        mgr.phase_backfill_timestamps(&db, 20, &mut outcome).unwrap();
+        mgr.phase_backfill_timestamps(&db, 20, &mut outcome)
+            .unwrap();
 
         assert_eq!(outcome.timestamps_backfilled, 2);
         let updated_child = db.get_entry("c1").unwrap().unwrap();
@@ -1757,9 +1828,12 @@ mod tests {
     async fn test_partial_failure_merge_valid_split_nonexistent() {
         let db = MemoryDB::open_in_memory().unwrap();
         let now = now_str();
-        db.create_entry(&make_entry("e1", "Tea preference A", 0.8, &now)).unwrap();
-        db.create_entry(&make_entry("e2", "Tea preference B", 0.85, &now)).unwrap();
-        db.create_entry(&make_entry("e3", "Works at ACME", 0.9, &now)).unwrap();
+        db.create_entry(&make_entry("e1", "Tea preference A", 0.8, &now))
+            .unwrap();
+        db.create_entry(&make_entry("e2", "Tea preference B", 0.85, &now))
+            .unwrap();
+        db.create_entry(&make_entry("e3", "Works at ACME", 0.9, &now))
+            .unwrap();
 
         let llm = MockCollationLlm {
             refine_response: vec![
@@ -1820,7 +1894,8 @@ mod tests {
         let now = now_str();
 
         // s1 is a candidate (no collated_at).
-        db.create_entry(&make_entry("s1", "Broad: tea and work", 0.9, &now)).unwrap();
+        db.create_entry(&make_entry("s1", "Broad: tea and work", 0.9, &now))
+            .unwrap();
 
         // nc1 is NOT a candidate (collated_at set to future).
         let mut nc = make_entry("nc1", "Non-candidate fact", 0.8, &now);

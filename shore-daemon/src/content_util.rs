@@ -11,11 +11,14 @@ use shore_protocol::types::ContentBlock;
 pub fn content_block_to_api_json(block: &ContentBlock) -> Option<Value> {
     match block {
         ContentBlock::Text { text } => Some(json!({ "type": "text", "text": text })),
-        ContentBlock::Thinking { thinking, signature } => {
+        ContentBlock::Thinking {
+            thinking,
+            signature,
+        } => {
             // Require signature — Anthropic API rejects unsigned thinking blocks.
-            signature.as_ref().map(|sig| {
-                json!({ "type": "thinking", "thinking": thinking, "signature": sig })
-            })
+            signature
+                .as_ref()
+                .map(|sig| json!({ "type": "thinking", "thinking": thinking, "signature": sig }))
         }
         ContentBlock::RedactedThinking { data } => Some(json!({
             "type": "redacted_thinking", "data": data,
@@ -23,7 +26,11 @@ pub fn content_block_to_api_json(block: &ContentBlock) -> Option<Value> {
         ContentBlock::ToolUse { id, name, input } => Some(json!({
             "type": "tool_use", "id": id, "name": name, "input": input,
         })),
-        ContentBlock::ToolResult { tool_use_id, content, is_error } => {
+        ContentBlock::ToolResult {
+            tool_use_id,
+            content,
+            is_error,
+        } => {
             let mut v = json!({
                 "type": "tool_result", "tool_use_id": tool_use_id, "content": content,
             });
@@ -46,7 +53,10 @@ pub fn content_block_to_json(block: &ContentBlock) -> Value {
         ContentBlock::ToolUse { id, name, input } => {
             json!({"type": "tool_use", "id": id, "name": name, "input": input})
         }
-        ContentBlock::Thinking { thinking, signature } => {
+        ContentBlock::Thinking {
+            thinking,
+            signature,
+        } => {
             let mut block = json!({"type": "thinking", "thinking": thinking});
             if let Some(sig) = signature {
                 block["signature"] = json!(sig);
@@ -56,8 +66,13 @@ pub fn content_block_to_json(block: &ContentBlock) -> Value {
         ContentBlock::RedactedThinking { data } => {
             json!({"type": "redacted_thinking", "data": data})
         }
-        ContentBlock::ToolResult { tool_use_id, content, is_error } => {
-            let mut v = json!({"type": "tool_result", "tool_use_id": tool_use_id, "content": content});
+        ContentBlock::ToolResult {
+            tool_use_id,
+            content,
+            is_error,
+        } => {
+            let mut v =
+                json!({"type": "tool_result", "tool_use_id": tool_use_id, "content": content});
             if *is_error {
                 v["is_error"] = json!(true);
             }
@@ -89,7 +104,9 @@ mod tests {
 
     #[test]
     fn api_json_text_block() {
-        let block = ContentBlock::Text { text: "hello".into() };
+        let block = ContentBlock::Text {
+            text: "hello".into(),
+        };
         let result = content_block_to_api_json(&block).unwrap();
         assert_eq!(result["type"], "text");
         assert_eq!(result["text"], "hello");
@@ -121,7 +138,9 @@ mod tests {
 
     #[test]
     fn api_json_redacted_thinking() {
-        let block = ContentBlock::RedactedThinking { data: "opaque".into() };
+        let block = ContentBlock::RedactedThinking {
+            data: "opaque".into(),
+        };
         let result = content_block_to_api_json(&block).unwrap();
         assert_eq!(result["type"], "redacted_thinking");
         assert_eq!(result["data"], "opaque");
@@ -163,7 +182,10 @@ mod tests {
         };
         let result = content_block_to_api_json(&block).unwrap();
         assert_eq!(result["type"], "tool_result");
-        assert!(result.get("is_error").is_none(), "is_error should be omitted when false");
+        assert!(
+            result.get("is_error").is_none(),
+            "is_error should be omitted when false"
+        );
     }
 
     // ── content_block_to_json ─────────────────────────────────────────
@@ -202,7 +224,10 @@ mod tests {
         ];
         for block in &blocks {
             let val = content_block_to_json(block);
-            assert!(val.get("type").is_some(), "every block must have a type field");
+            assert!(
+                val.get("type").is_some(),
+                "every block must have a type field"
+            );
         }
     }
 
@@ -227,13 +252,18 @@ mod tests {
     #[test]
     fn extract_tool_uses_mixed_blocks() {
         let blocks = vec![
-            ContentBlock::Text { text: "preamble".into() },
+            ContentBlock::Text {
+                text: "preamble".into(),
+            },
             ContentBlock::ToolUse {
                 id: "t1".into(),
                 name: "check_time".into(),
                 input: json!({}),
             },
-            ContentBlock::Thinking { thinking: "hmm".into(), signature: None },
+            ContentBlock::Thinking {
+                thinking: "hmm".into(),
+                signature: None,
+            },
             ContentBlock::ToolUse {
                 id: "t2".into(),
                 name: "roll_dice".into(),
@@ -252,8 +282,13 @@ mod tests {
     #[test]
     fn extract_tool_uses_no_tool_blocks() {
         let blocks = vec![
-            ContentBlock::Text { text: "just text".into() },
-            ContentBlock::Thinking { thinking: "thought".into(), signature: None },
+            ContentBlock::Text {
+                text: "just text".into(),
+            },
+            ContentBlock::Thinking {
+                thinking: "thought".into(),
+                signature: None,
+            },
         ];
         assert!(extract_tool_uses(&blocks).is_empty());
     }

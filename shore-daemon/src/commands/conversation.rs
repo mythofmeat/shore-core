@@ -73,10 +73,8 @@ pub fn get(
         .find(|m| m.msg_id == msg_id)
         .ok_or_else(|| (ErrorCode::NotFound, format!("Message not found: {msg_id}")))?;
 
-    Ok(serde_json::to_value(msg)
-        .map_err(|e| (ErrorCode::InternalError, e.to_string()))?)
+    Ok(serde_json::to_value(msg).map_err(|e| (ErrorCode::InternalError, e.to_string()))?)
 }
-
 
 /// Show conversation history, optionally limited to the last N messages.
 ///
@@ -89,7 +87,10 @@ pub fn log(
 ) -> CommandResult {
     let merged = shore_protocol::merge::merge_tool_loop_messages(engine.messages());
 
-    let count = args.get("count").and_then(|v| v.as_u64()).map(|c| c as usize);
+    let count = args
+        .get("count")
+        .and_then(|v| v.as_u64())
+        .map(|c| c as usize);
 
     // Embed image data so clients can display without filesystem access.
     let mut with_data: Vec<Message> = match count {
@@ -190,15 +191,12 @@ pub fn inject_system(
     _ctx: &mut CommandContext,
     args: &serde_json::Value,
 ) -> CommandResult {
-    let text = args
-        .get("text")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            (
-                ErrorCode::InvalidRequest,
-                "Missing required argument: text".into(),
-            )
-        })?;
+    let text = args.get("text").and_then(|v| v.as_str()).ok_or_else(|| {
+        (
+            ErrorCode::InvalidRequest,
+            "Missing required argument: text".into(),
+        )
+    })?;
 
     let msg = Message {
         msg_id: format!("m_{}", uuid::Uuid::new_v4()),
@@ -250,7 +248,12 @@ mod tests {
         );
 
         let (_tx, rx) = tokio::sync::watch::channel(());
-        let (autonomy, _compaction_rx) = crate::autonomy::manager::AutonomyManager::new(Default::default(), Default::default(), data_dir.clone(), rx);
+        let (autonomy, _compaction_rx) = crate::autonomy::manager::AutonomyManager::new(
+            Default::default(),
+            Default::default(),
+            data_dir.clone(),
+            rx,
+        );
 
         let ctx = CommandContext {
             config,
@@ -260,7 +263,9 @@ mod tests {
             session_tokens: std::sync::Arc::new(std::sync::Mutex::new(SessionTokens::default())),
             autonomy,
             llm_client: shore_llm_client::LlmClient::new(),
-            diagnostics: std::sync::Arc::new(std::sync::Mutex::new(shore_diagnostics::Diagnostics::default())),
+            diagnostics: std::sync::Arc::new(std::sync::Mutex::new(
+                shore_diagnostics::Diagnostics::default(),
+            )),
             memory_shell_sessions: std::collections::HashMap::new(),
         };
         (engine, ctx, push_rx)
@@ -338,8 +343,12 @@ mod tests {
             .append_message(make_msg("m1", Role::User, "Original"))
             .unwrap();
 
-        let result =
-            edit(&mut engine, &mut ctx, &json!({"ref": "m1", "content": "Edited"})).unwrap();
+        let result = edit(
+            &mut engine,
+            &mut ctx,
+            &json!({"ref": "m1", "content": "Edited"}),
+        )
+        .unwrap();
         assert_eq!(result["ref"], "m1");
         assert_eq!(result["edited"], true);
         assert_eq!(engine.messages()[0].content, "Edited");
@@ -372,7 +381,11 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let (mut engine, mut ctx, _rx) = make_ctx(&tmp);
 
-        let result = edit(&mut engine, &mut ctx, &json!({"ref": "nope", "content": "x"}));
+        let result = edit(
+            &mut engine,
+            &mut ctx,
+            &json!({"ref": "nope", "content": "x"}),
+        );
         assert!(result.is_err());
         let (code, _msg) = result.unwrap_err();
         assert_eq!(code, ErrorCode::NotFound);
@@ -387,7 +400,12 @@ mod tests {
             .unwrap();
         while rx.try_recv().is_ok() {}
 
-        edit(&mut engine, &mut ctx, &json!({"ref": "m1", "content": "Edited"})).unwrap();
+        edit(
+            &mut engine,
+            &mut ctx,
+            &json!({"ref": "m1", "content": "Edited"}),
+        )
+        .unwrap();
 
         let msg = rx.try_recv().unwrap();
         assert!(matches!(msg, ServerMessage::History(_)));
@@ -538,8 +556,12 @@ mod tests {
             .append_message(make_msg("m2", Role::Assistant, "Second"))
             .unwrap();
 
-        let result =
-            edit(&mut engine, &mut ctx, &json!({"ref": "last", "content": "Edited"})).unwrap();
+        let result = edit(
+            &mut engine,
+            &mut ctx,
+            &json!({"ref": "last", "content": "Edited"}),
+        )
+        .unwrap();
         assert_eq!(result["ref"], "m2");
         assert_eq!(engine.messages()[1].content, "Edited");
     }
@@ -555,8 +577,12 @@ mod tests {
             .append_message(make_msg("m2", Role::Assistant, "Second"))
             .unwrap();
 
-        let result =
-            edit(&mut engine, &mut ctx, &json!({"ref": "-1", "content": "Edited"})).unwrap();
+        let result = edit(
+            &mut engine,
+            &mut ctx,
+            &json!({"ref": "-1", "content": "Edited"}),
+        )
+        .unwrap();
         assert_eq!(result["ref"], "m2");
         assert_eq!(engine.messages()[1].content, "Edited");
     }
@@ -572,8 +598,12 @@ mod tests {
             .append_message(make_msg("m2", Role::Assistant, "Second"))
             .unwrap();
 
-        let result =
-            edit(&mut engine, &mut ctx, &json!({"ref": "1", "content": "Edited"})).unwrap();
+        let result = edit(
+            &mut engine,
+            &mut ctx,
+            &json!({"ref": "1", "content": "Edited"}),
+        )
+        .unwrap();
         assert_eq!(result["ref"], "m1");
         assert_eq!(engine.messages()[0].content, "Edited");
     }
@@ -600,8 +630,12 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let (mut engine, mut ctx, _rx) = make_ctx(&tmp);
 
-        let result =
-            inject_system(&mut engine, &mut ctx, &json!({"text": "Stop using actions"})).unwrap();
+        let result = inject_system(
+            &mut engine,
+            &mut ctx,
+            &json!({"text": "Stop using actions"}),
+        )
+        .unwrap();
         assert_eq!(result["injected"], true);
 
         assert_eq!(engine.messages().len(), 1);

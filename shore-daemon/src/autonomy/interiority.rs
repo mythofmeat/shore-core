@@ -120,8 +120,7 @@ impl InteriorityClock {
     /// Set the cache TTL so the clock fires bare refresh pings between
     /// interiority ticks. Pass `None` for non-Anthropic providers.
     pub fn set_cache_refresh_interval(&mut self, cache_ttl_secs: Option<u64>) {
-        self.cache_refresh_interval_secs =
-            cache_ttl_secs.map(|ttl| ttl.saturating_sub(60).max(60));
+        self.cache_refresh_interval_secs = cache_ttl_secs.map(|ttl| ttl.saturating_sub(60).max(60));
     }
 
     /// The effective interiority tick interval (user-configured).
@@ -540,27 +539,47 @@ mod tests {
         }
 
         // Interiority ticks: should fire at ~7200, ~14400.
-        assert_eq!(ticks.len(), 2, "Expected 2 interiority ticks in 5h, got: {ticks:?}");
-        assert!(ticks[0] >= 7170 && ticks[0] <= 7230, "First tick at {}", ticks[0]);
-        assert!(ticks[1] >= 14370 && ticks[1] <= 14430, "Second tick at {}", ticks[1]);
+        assert_eq!(
+            ticks.len(),
+            2,
+            "Expected 2 interiority ticks in 5h, got: {ticks:?}"
+        );
+        assert!(
+            ticks[0] >= 7170 && ticks[0] <= 7230,
+            "First tick at {}",
+            ticks[0]
+        );
+        assert!(
+            ticks[1] >= 14370 && ticks[1] <= 14430,
+            "Second tick at {}",
+            ticks[1]
+        );
 
         // Cache pings: fire at ~3540s intervals. Between each 7200s interiority
         // tick there are 2 pings (~3540 and ~7080). Full tick resets cache timer.
         // Over 18000s: 2 (before tick1) + 2 (before tick2) + 1 (after tick2) = 5.
-        assert!(pings.len() >= 4 && pings.len() <= 6,
-            "Expected 4-6 cache pings in 5h, got {}: {pings:?}", pings.len());
+        assert!(
+            pings.len() >= 4 && pings.len() <= 6,
+            "Expected 4-6 cache pings in 5h, got {}: {pings:?}",
+            pings.len()
+        );
 
         // First cache ping should be around 3540s.
-        assert!(pings[0] >= 3510 && pings[0] <= 3570,
-            "First cache ping at {}", pings[0]);
+        assert!(
+            pings[0] >= 3510 && pings[0] <= 3570,
+            "First cache ping at {}",
+            pings[0]
+        );
 
         // No cache pings should be too close to an interiority tick
         // (within 30s) since the full tick resets the cache timer.
         for &ping_time in &pings {
             for &tick_time in &ticks {
                 let gap = (ping_time as i64 - tick_time as i64).unsigned_abs() as usize;
-                assert!(gap >= step,
-                    "Cache ping at {ping_time}s too close to tick at {tick_time}s (gap={gap}s)");
+                assert!(
+                    gap >= step,
+                    "Cache ping at {ping_time}s too close to tick at {tick_time}s (gap={gap}s)"
+                );
             }
         }
     }
@@ -607,8 +626,10 @@ mod tests {
             }
         }
         // 200 * 30s = 6000s. With 3540s cache interval, expect 1-2 pings.
-        assert!(dormant_pings >= 1 && dormant_pings <= 2,
-            "Expected 1-2 dormant pings in 6000s, got {dormant_pings}");
+        assert!(
+            dormant_pings >= 1 && dormant_pings <= 2,
+            "Expected 1-2 dormant pings in 6000s, got {dormant_pings}"
+        );
 
         // User returns → wake.
         clock.on_user_message(now);
@@ -623,8 +644,11 @@ mod tests {
             if action == InteriorityAction::RunTick {
                 break;
             }
-            assert_ne!(action, InteriorityAction::None,
-                "Expected a tick or ping, not None after 7201s");
+            assert_ne!(
+                action,
+                InteriorityAction::None,
+                "Expected a tick or ping, not None after 7201s"
+            );
             now += Duration::from_secs(30);
         }
     }

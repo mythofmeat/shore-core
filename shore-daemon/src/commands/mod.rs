@@ -13,14 +13,14 @@ use tokio::sync::broadcast;
 use tracing::info;
 
 use crate::autonomy::manager::AutonomyManager;
-use shore_config::models::ResolvedModel;
-use shore_config::{load_character_definition, resolve_user_definition, LoadedConfig};
-use shore_diagnostics::Diagnostics;
 use crate::engine::{ConversationEngine, EngineError};
-use shore_llm_client::LlmClient;
 use crate::memory::agent::{AgentSearchContext, MemoryAgent};
 use crate::memory::compaction_impls::resolve_embed_config;
 use crate::memory::vectorstore::VectorStore;
+use shore_config::models::ResolvedModel;
+use shore_config::{load_character_definition, resolve_user_definition, LoadedConfig};
+use shore_diagnostics::Diagnostics;
+use shore_llm_client::LlmClient;
 
 /// Cumulative token usage tracked across the daemon session.
 #[derive(Debug, Default)]
@@ -104,7 +104,11 @@ pub async fn setup_search_context(
     let vs = VectorStore::open(&vs_path, embed_config.dimensions)
         .await
         .ok()?;
-    Some(AgentSearchContext::new(vs, ctx.llm_client.clone(), embed_config))
+    Some(AgentSearchContext::new(
+        vs,
+        ctx.llm_client.clone(),
+        embed_config,
+    ))
 }
 
 /// Open a vector store with embedding config for a character (error-returning variant).
@@ -123,7 +127,12 @@ pub async fn open_embed_and_vectorstore(
     let vs_path = memory_dir(ctx, char_name).join("vectorstore");
     let store = VectorStore::open(&vs_path, embed_config.dimensions)
         .await
-        .map_err(|e| (ErrorCode::InternalError, format!("Failed to open vector store: {e}")))?;
+        .map_err(|e| {
+            (
+                ErrorCode::InternalError,
+                format!("Failed to open vector store: {e}"),
+            )
+        })?;
     Ok((store, embed_config))
 }
 
@@ -144,7 +153,6 @@ pub fn build_collation_vars(
     }
     vars
 }
-
 
 /// Dispatch a command to the appropriate handler.
 pub async fn dispatch(
@@ -207,10 +215,7 @@ pub async fn dispatch(
 }
 
 /// Dispatch commands that don't require a character/engine (e.g. list_characters).
-pub fn dispatch_characterless(
-    ctx: &CommandContext,
-    cmd: &Command,
-) -> CommandResult {
+pub fn dispatch_characterless(ctx: &CommandContext, cmd: &Command) -> CommandResult {
     match cmd.name.as_str() {
         "list_characters" => navigation::list_characters_standalone(ctx),
         _ => Err((
@@ -244,12 +249,9 @@ mod tests {
     ) {
         let (push_tx, push_rx) = broadcast::channel(16);
         let data_dir = tmp.path().to_path_buf();
-        let engine = ConversationEngine::new(
-            "TestChar".to_string(),
-            data_dir.clone(),
-            push_tx.clone(),
-        )
-        .unwrap();
+        let engine =
+            ConversationEngine::new("TestChar".to_string(), data_dir.clone(), push_tx.clone())
+                .unwrap();
 
         let config = shore_config::LoadedConfig::new_for_test(
             shore_config::app::AppConfig::default(),
@@ -262,7 +264,8 @@ mod tests {
         );
 
         let (_tx, rx) = tokio::sync::watch::channel(());
-        let (autonomy, _compaction_rx) = AutonomyManager::new(Default::default(), Default::default(), data_dir.clone(), rx);
+        let (autonomy, _compaction_rx) =
+            AutonomyManager::new(Default::default(), Default::default(), data_dir.clone(), rx);
 
         let ctx = CommandContext {
             config,

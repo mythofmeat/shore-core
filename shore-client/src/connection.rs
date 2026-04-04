@@ -45,9 +45,9 @@ impl SWPConnection {
         match addr {
             #[cfg(unix)]
             ServerAddr::Unix(path) => {
-                let stream = UnixStream::connect(path).await.map_err(|e| {
-                    ClientError::Connect(format!("unix:{path}: {e}"))
-                })?;
+                let stream = UnixStream::connect(path)
+                    .await
+                    .map_err(|e| ClientError::Connect(format!("unix:{path}: {e}")))?;
                 let (r, w) = stream.into_split();
                 Ok(Self {
                     reader: BufReader::new(Box::new(tokio::io::join(r, tokio::io::sink()))),
@@ -55,15 +55,13 @@ impl SWPConnection {
                 })
             }
             #[cfg(not(unix))]
-            ServerAddr::Unix(_) => {
-                Err(ClientError::Connect(
-                    "Unix sockets are not supported on this platform".into(),
-                ))
-            }
+            ServerAddr::Unix(_) => Err(ClientError::Connect(
+                "Unix sockets are not supported on this platform".into(),
+            )),
             ServerAddr::Tcp(addr) => {
-                let stream = TcpStream::connect(addr).await.map_err(|e| {
-                    ClientError::Connect(format!("tcp:{addr}: {e}"))
-                })?;
+                let stream = TcpStream::connect(addr)
+                    .await
+                    .map_err(|e| ClientError::Connect(format!("tcp:{addr}: {e}")))?;
                 let (r, w) = stream.into_split();
                 Ok(Self {
                     reader: BufReader::new(Box::new(tokio::io::join(r, tokio::io::sink()))),
@@ -88,7 +86,9 @@ impl SWPConnection {
         character: Option<String>,
     ) -> Result<(Self, ServerHello, History)> {
         let mut conn = Self::open(addr).await?;
-        let (server_hello, history) = conn.do_handshake(client_type.into(), client_name.into(), character).await?;
+        let (server_hello, history) = conn
+            .do_handshake(client_type.into(), client_name.into(), character)
+            .await?;
         Ok((conn, server_hello, history))
     }
 
@@ -297,7 +297,9 @@ impl SWPConnection {
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static,
     {
         let mut conn = Self::from_raw_stream(stream);
-        let (server_hello, history) = conn.do_handshake(client_type.into(), client_name.into(), character).await?;
+        let (server_hello, history) = conn
+            .do_handshake(client_type.into(), client_name.into(), character)
+            .await?;
         Ok((conn, server_hello, history))
     }
 }
@@ -314,5 +316,8 @@ fn uuid_v4() -> String {
 
 /// Check whether a path looks like it could be a Unix socket path.
 pub fn is_unix_path(s: &str) -> bool {
-    Path::new(s).is_absolute() || s.starts_with("./") || s.starts_with("../") || s.ends_with(".sock")
+    Path::new(s).is_absolute()
+        || s.starts_with("./")
+        || s.starts_with("../")
+        || s.ends_with(".sock")
 }

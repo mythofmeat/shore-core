@@ -2,11 +2,11 @@ use std::io::{self, Write};
 
 use crossterm::style::{Attribute, Color, ResetColor, SetAttribute, SetForegroundColor};
 
-use super::{
-    abbreviate_model, parse_timestamp, print_dim_line, term_width, use_color,
-    write_dim, write_fg, write_row, write_row_colored, write_section_header,
-};
 use super::transcript::character_color;
+use super::{
+    abbreviate_model, parse_timestamp, print_dim_line, term_width, use_color, write_dim, write_fg,
+    write_row, write_row_colored, write_section_header,
+};
 
 // ---------------------------------------------------------------------------
 // Status formatter -- human-readable dashboard
@@ -27,7 +27,10 @@ fn interiority_description(state: &str, ticks: u64, max_ticks: u64) -> String {
 /// Uses 8 Unicode block elements for non-zero values and a light shade for
 /// effectively-zero values.
 fn density_to_block(normalized: f64) -> char {
-    const BLOCKS: [char; 8] = ['\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}', '\u{2587}', '\u{2588}'];
+    const BLOCKS: [char; 8] = [
+        '\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}', '\u{2587}',
+        '\u{2588}',
+    ];
     if normalized < 0.05 {
         '\u{2591}'
     } else {
@@ -49,11 +52,7 @@ fn classification_color(class: &str) -> Color {
 ///
 /// Renders a 24-character bar chart (one block per hour) with hour labels
 /// underneath, plus engagement and session stats.
-fn write_activity_section(
-    out: &mut impl Write,
-    activity: &serde_json::Value,
-    width: usize,
-) {
+fn write_activity_section(out: &mut impl Write, activity: &serde_json::Value, width: usize) {
     let histogram: Vec<f64> = match activity["hour_histogram"].as_array() {
         Some(arr) => arr.iter().filter_map(|v| v.as_f64()).collect(),
         None => return,
@@ -73,7 +72,9 @@ fn write_activity_section(
         return;
     }
 
-    let sufficient = activity["has_sufficient_heatmap"].as_bool().unwrap_or(false);
+    let sufficient = activity["has_sufficient_heatmap"]
+        .as_bool()
+        .unwrap_or(false);
     let suffix = if sufficient { "" } else { "sparse" };
     write_section_header(out, "Activity", suffix, width);
 
@@ -84,7 +85,11 @@ fn write_activity_section(
     }
     let _ = write!(out, "  {:<13}", "");
     for (i, &density) in histogram.iter().enumerate() {
-        let linear = if max_val > 0.0 { density / max_val } else { 0.0 };
+        let linear = if max_val > 0.0 {
+            density / max_val
+        } else {
+            0.0
+        };
         // Log scale: ln(1 + x*k) / ln(1+k) -- spreads low values, compresses peaks.
         let normalized = (1.0 + linear * 9.0).ln() / 10.0_f64.ln();
         let ch = density_to_block(normalized);
@@ -123,7 +128,6 @@ fn write_activity_section(
     let _ = writeln!(out);
 }
 
-
 /// Print the status dashboard.
 pub fn print_status(data: &serde_json::Value, character_name: &str) {
     let stdout = io::stdout();
@@ -150,7 +154,11 @@ pub fn print_status(data: &serde_json::Value, character_name: &str) {
         let total = mem["total_entries"].as_u64().unwrap_or(0);
         let active = mem["active_entries"].as_u64().unwrap_or(0);
         if total > 0 {
-            write_row(&mut out, "Memory", &format!("{total} entries ({active} active)"));
+            write_row(
+                &mut out,
+                "Memory",
+                &format!("{total} entries ({active} active)"),
+            );
         }
     }
 
@@ -307,8 +315,7 @@ fn print_model_list(data: &serde_json::Value) {
         for m in models {
             let name = m["name"].as_str().unwrap_or("?");
             let provider = m["provider"].as_str().unwrap_or("?");
-            let is_active = name == active
-                || m["qualified_name"].as_str() == Some(active);
+            let is_active = name == active || m["qualified_name"].as_str() == Some(active);
 
             let marker = if is_active { "*" } else { " " };
 
@@ -523,7 +530,12 @@ fn print_changelog(data: &serde_json::Value) {
                 let op_color = match op {
                     s if s.starts_with("create") || s.starts_with("compaction") => Color::Green,
                     s if s.starts_with("update") || s.starts_with("collation") => Color::DarkYellow,
-                    s if s.starts_with("supersede") || s.starts_with("delete") || s.starts_with("decay") => Color::Red,
+                    s if s.starts_with("supersede")
+                        || s.starts_with("delete")
+                        || s.starts_with("decay") =>
+                    {
+                        Color::Red
+                    }
                     _ => Color::White,
                 };
                 if use_color() {
@@ -558,13 +570,21 @@ fn print_compact_result(data: &serde_json::Value) {
         write_row(&mut out, "Would create", &format!("{would} entries"));
         let msgs = data["message_count"].as_u64().unwrap_or(0);
         let retained_turns = data["retained_turns"].as_u64().unwrap_or(0);
-        write_row(&mut out, "Messages", &format!("{msgs} compacted, {retained_turns} turns retained"));
+        write_row(
+            &mut out,
+            "Messages",
+            &format!("{msgs} compacted, {retained_turns} turns retained"),
+        );
     } else {
         let entries = data["entries_created"].as_u64().unwrap_or(0);
         write_row(&mut out, "Entries", &format!("{entries} new"));
         let msgs = data["message_count"].as_u64().unwrap_or(0);
         let retained_turns = data["retained_turns"].as_u64().unwrap_or(0);
-        write_row(&mut out, "Messages", &format!("{msgs} compacted, {retained_turns} turns retained"));
+        write_row(
+            &mut out,
+            "Messages",
+            &format!("{msgs} compacted, {retained_turns} turns retained"),
+        );
         if data["recap_generated"].as_bool().unwrap_or(false) {
             write_row(&mut out, "Recap", "generated");
         }
@@ -578,13 +598,21 @@ fn print_compact_result(data: &serde_json::Value) {
         let tidy_splits = collation["tidy_splits"].as_u64().unwrap_or(0);
         let tidy_new = collation["tidy_new_entries"].as_u64().unwrap_or(0);
         if tidy_splits > 0 {
-            write_row(&mut out, "Tidy", &format!("{tidy_splits} splits \u{2192} {tidy_new} new"));
+            write_row(
+                &mut out,
+                "Tidy",
+                &format!("{tidy_splits} splits \u{2192} {tidy_new} new"),
+            );
         }
 
         let merges = collation["collate_merges"].as_u64().unwrap_or(0);
         let merge_new = collation["collate_new_entries"].as_u64().unwrap_or(0);
         if merges > 0 {
-            write_row(&mut out, "Merge", &format!("{merges} merges \u{2192} {merge_new} new"));
+            write_row(
+                &mut out,
+                "Merge",
+                &format!("{merges} merges \u{2192} {merge_new} new"),
+            );
         }
 
         let normalized = collation["entities_normalized"].as_u64().unwrap_or(0);
@@ -634,13 +662,21 @@ fn print_collate_result(data: &serde_json::Value) {
     let tidy_splits = data["tidy_splits"].as_u64().unwrap_or(0);
     let tidy_new = data["tidy_new_entries"].as_u64().unwrap_or(0);
     if tidy_splits > 0 {
-        write_row(&mut out, "Tidy", &format!("{tidy_splits} splits \u{2192} {tidy_new} new"));
+        write_row(
+            &mut out,
+            "Tidy",
+            &format!("{tidy_splits} splits \u{2192} {tidy_new} new"),
+        );
     }
 
     let merges = data["collate_merges"].as_u64().unwrap_or(0);
     let merge_new = data["collate_new_entries"].as_u64().unwrap_or(0);
     if merges > 0 {
-        write_row(&mut out, "Merge", &format!("{merges} merges \u{2192} {merge_new} new"));
+        write_row(
+            &mut out,
+            "Merge",
+            &format!("{merges} merges \u{2192} {merge_new} new"),
+        );
     }
 
     let normalized = data["entities_normalized"].as_u64().unwrap_or(0);
@@ -683,12 +719,20 @@ fn print_purge_result(data: &serde_json::Value) {
 
     let skipped_image = data["skipped_image"].as_u64().unwrap_or(0);
     if skipped_image > 0 {
-        write_row(&mut out, "Skipped (image)", &format!("{skipped_image} entries"));
+        write_row(
+            &mut out,
+            "Skipped (image)",
+            &format!("{skipped_image} entries"),
+        );
     }
 
     let skipped_no_repl = data["skipped_no_replacement"].as_u64().unwrap_or(0);
     if skipped_no_repl > 0 {
-        write_row(&mut out, "Skipped (no repl)", &format!("{skipped_no_repl} entries"));
+        write_row(
+            &mut out,
+            "Skipped (no repl)",
+            &format!("{skipped_no_repl} entries"),
+        );
     }
 
     let _ = writeln!(out);
@@ -754,9 +798,14 @@ fn print_config_section(out: &mut impl Write, value: &serde_json::Value, depth: 
                             serde_json::Value::Bool(b) => b.to_string(),
                             serde_json::Value::Number(n) => n.to_string(),
                             serde_json::Value::Array(arr) => {
-                                let items: Vec<String> = arr.iter().map(|i| {
-                                    i.as_str().map(String::from).unwrap_or_else(|| i.to_string())
-                                }).collect();
+                                let items: Vec<String> = arr
+                                    .iter()
+                                    .map(|i| {
+                                        i.as_str()
+                                            .map(String::from)
+                                            .unwrap_or_else(|| i.to_string())
+                                    })
+                                    .collect();
                                 items.join(", ")
                             }
                             _ => v.to_string(),
@@ -792,7 +841,11 @@ fn print_config_check(data: &serde_json::Value) {
     let chat = data["chat_models"].as_u64().unwrap_or(0);
     let tool = data["tool_models"].as_u64().unwrap_or(0);
     let embed = data["embedding_models"].as_u64().unwrap_or(0);
-    write_row(&mut out, "Models", &format!("{chat} chat, {tool} tool, {embed} embedding"));
+    write_row(
+        &mut out,
+        "Models",
+        &format!("{chat} chat, {tool} tool, {embed} embedding"),
+    );
 
     let _ = writeln!(out);
 
@@ -832,7 +885,9 @@ fn print_config_check(data: &serde_json::Value) {
 
 /// Print config reset confirmation.
 fn print_config_reset(data: &serde_json::Value) {
-    let msg = data["message"].as_str().unwrap_or("Configuration reloaded from disk");
+    let msg = data["message"]
+        .as_str()
+        .unwrap_or("Configuration reloaded from disk");
     println!("{msg}");
 }
 
@@ -843,36 +898,59 @@ pub fn print_diagnostics(data: &serde_json::Value) {
     let width = term_width();
 
     // -- API Calls --
-    print_diagnostics_section(&mut out, "API Calls", &data["api_calls"], width, |out, call| {
-        let model = abbreviate_model(call["model"].as_str().unwrap_or("?"));
-        let input = call["input_tokens"].as_u64().unwrap_or(0);
-        let output_t = call["output_tokens"].as_u64().unwrap_or(0);
-        let cr = call["cache_read_tokens"].as_u64().unwrap_or(0);
-        let cw = call["cache_write_tokens"].as_u64().unwrap_or(0);
-        let total = call["total_ms"].as_u64().unwrap_or(0);
-        let secs = total as f64 / 1000.0;
+    print_diagnostics_section(
+        &mut out,
+        "API Calls",
+        &data["api_calls"],
+        width,
+        |out, call| {
+            let model = abbreviate_model(call["model"].as_str().unwrap_or("?"));
+            let input = call["input_tokens"].as_u64().unwrap_or(0);
+            let output_t = call["output_tokens"].as_u64().unwrap_or(0);
+            let cr = call["cache_read_tokens"].as_u64().unwrap_or(0);
+            let cw = call["cache_write_tokens"].as_u64().unwrap_or(0);
+            let total = call["total_ms"].as_u64().unwrap_or(0);
+            let secs = total as f64 / 1000.0;
 
-        let _ = write!(out, "{model:<24}");
-        write_dim(out, &format!("in:{input:<5} out:{output_t:<5} cache:{cr}/{cw}  {secs:.1}s"));
+            let _ = write!(out, "{model:<24}");
+            write_dim(
+                out,
+                &format!("in:{input:<5} out:{output_t:<5} cache:{cr}/{cw}  {secs:.1}s"),
+            );
 
-        if let Some(err) = call.get("error").filter(|v| !v.is_null()) {
-            write_fg(out, Color::Red, &format!("  ERR: {}", err.as_str().unwrap_or("?")));
-        }
-        let _ = writeln!(out);
-    });
+            if let Some(err) = call.get("error").filter(|v| !v.is_null()) {
+                write_fg(
+                    out,
+                    Color::Red,
+                    &format!("  ERR: {}", err.as_str().unwrap_or("?")),
+                );
+            }
+            let _ = writeln!(out);
+        },
+    );
 
     // -- Tool Calls --
-    print_diagnostics_section(&mut out, "Tool Calls", &data["tool_calls"], width, |out, call| {
-        let name = call["tool_name"].as_str().unwrap_or("?");
-        let dur = call["duration_ms"].as_u64().unwrap_or(0);
-        let ok = call["success"].as_bool().unwrap_or(true);
+    print_diagnostics_section(
+        &mut out,
+        "Tool Calls",
+        &data["tool_calls"],
+        width,
+        |out, call| {
+            let name = call["tool_name"].as_str().unwrap_or("?");
+            let dur = call["duration_ms"].as_u64().unwrap_or(0);
+            let ok = call["success"].as_bool().unwrap_or(true);
 
-        let _ = write!(out, "{name:<24}");
-        write_dim(out, &format!("{dur}ms  "));
-        let (marker_color, marker_text) = if ok { (Color::Green, "ok") } else { (Color::Red, "FAIL") };
-        write_fg(out, marker_color, marker_text);
-        let _ = writeln!(out);
-    });
+            let _ = write!(out, "{name:<24}");
+            write_dim(out, &format!("{dur}ms  "));
+            let (marker_color, marker_text) = if ok {
+                (Color::Green, "ok")
+            } else {
+                (Color::Red, "FAIL")
+            };
+            write_fg(out, marker_color, marker_text);
+            let _ = writeln!(out);
+        },
+    );
 
     // -- Errors --
     print_diagnostics_section(&mut out, "Errors", &data["errors"], width, |out, err| {
@@ -921,9 +999,18 @@ mod tests {
 
     #[test]
     fn interiority_description_maps_states() {
-        assert_eq!(interiority_description("Active", 0, 3), "active \u{2014} in conversation");
-        assert_eq!(interiority_description("Active", 2, 3), "active \u{2014} idle 2/3 ticks");
-        assert_eq!(interiority_description("Dormant", 4, 3), "dormant \u{2014} waiting for you");
+        assert_eq!(
+            interiority_description("Active", 0, 3),
+            "active \u{2014} in conversation"
+        );
+        assert_eq!(
+            interiority_description("Active", 2, 3),
+            "active \u{2014} idle 2/3 ticks"
+        );
+        assert_eq!(
+            interiority_description("Dormant", 4, 3),
+            "dormant \u{2014} waiting for you"
+        );
     }
 
     #[test]
@@ -1095,10 +1182,10 @@ mod tests {
 
     #[test]
     fn density_to_block_ranges() {
-        assert_eq!(density_to_block(0.0), '\u{2591}');   // below threshold
-        assert_eq!(density_to_block(0.04), '\u{2591}');  // below threshold
-        assert_eq!(density_to_block(0.06), '\u{2581}');  // 0.06 * 7 = 0.42 -> round 0 -> first block
-        assert_eq!(density_to_block(0.5), '\u{2585}');   // 0.5 * 7 = 3.5 -> round 4 -> fifth block
-        assert_eq!(density_to_block(1.0), '\u{2588}');   // 1.0 * 7 = 7.0 -> index 7 -> full block
+        assert_eq!(density_to_block(0.0), '\u{2591}'); // below threshold
+        assert_eq!(density_to_block(0.04), '\u{2591}'); // below threshold
+        assert_eq!(density_to_block(0.06), '\u{2581}'); // 0.06 * 7 = 0.42 -> round 0 -> first block
+        assert_eq!(density_to_block(0.5), '\u{2585}'); // 0.5 * 7 = 3.5 -> round 4 -> fifth block
+        assert_eq!(density_to_block(1.0), '\u{2588}'); // 1.0 * 7 = 7.0 -> index 7 -> full block
     }
 }

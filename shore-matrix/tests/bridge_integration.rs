@@ -541,7 +541,9 @@ async fn provision_lifecycle_create_save_reload() {
         assert!(paths.crypto_store.exists());
 
         // Reload and verify
-        let loaded = ProvisionState::load(&paths.provision_file).unwrap().unwrap();
+        let loaded = ProvisionState::load(&paths.provision_file)
+            .unwrap()
+            .unwrap();
         assert_eq!(loaded.character, *character);
         assert_eq!(
             loaded.user_id,
@@ -699,7 +701,10 @@ fn full_bridge_message_flow() {
     ];
 
     // Verify response types
-    assert!(matches!(response_sequence[0], ServerMessage::StreamStart(_)));
+    assert!(matches!(
+        response_sequence[0],
+        ServerMessage::StreamStart(_)
+    ));
     if let ServerMessage::StreamEnd(end) = &response_sequence[1] {
         assert_eq!(end.content, "Hello! How can I help you today?");
     }
@@ -791,11 +796,8 @@ async fn live_matrix_health_check() {
     let url = std::env::var("SHORE_TEST_MATRIX_URL")
         .expect("SHORE_TEST_MATRIX_URL required for live tests");
 
-    let healthy = shore_matrix::homeserver::wait_for_healthy(
-        &url,
-        std::time::Duration::from_secs(10),
-    )
-    .await;
+    let healthy =
+        shore_matrix::homeserver::wait_for_healthy(&url, std::time::Duration::from_secs(10)).await;
     assert!(healthy, "homeserver at {url} is not healthy");
 }
 
@@ -887,7 +889,9 @@ async fn live_matrix_full_provision_lifecycle() {
             Ok(state) => {
                 assert_eq!(state.character, *character);
                 assert!(state.user_id.starts_with("@shore-"));
-                let loaded = ProvisionState::load(&paths.provision_file).unwrap().unwrap();
+                let loaded = ProvisionState::load(&paths.provision_file)
+                    .unwrap()
+                    .unwrap();
                 assert_eq!(loaded.user_id, state.user_id);
             }
             Err(e) => {

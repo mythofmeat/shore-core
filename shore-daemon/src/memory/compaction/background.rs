@@ -1,5 +1,5 @@
-use super::types::{CompactionOutcome, ConversationMessage};
 use super::parser::DEFAULT_COMPACT_PROMPT;
+use super::types::{CompactionOutcome, ConversationMessage};
 use super::CompactionManager;
 
 /// Run compaction for a single character (called from the background task).
@@ -37,7 +37,8 @@ pub async fn run_compaction(
         msg.normalize();
         let is_tool_result_only = msg.role == shore_protocol::types::Role::User
             && !msg.content_blocks.is_empty()
-            && msg.content_blocks
+            && msg
+                .content_blocks
                 .iter()
                 .all(|b| matches!(b, ContentBlock::ToolResult { .. }));
         messages.push(ConversationMessage {
@@ -55,8 +56,7 @@ pub async fn run_compaction(
 
     // Open memory DB.
     let db_path = character_dir.join("memory").join("memory.db");
-    let db = MemoryDB::open(&db_path)
-        .map_err(|e| format!("Failed to open memory DB: {e}"))?;
+    let db = MemoryDB::open(&db_path).map_err(|e| format!("Failed to open memory DB: {e}"))?;
 
     // Resolve effective config: merge per-character overrides over global.
     let effective = load_character_config(config, character)
@@ -86,7 +86,8 @@ pub async fn run_compaction(
 
     // Open vector store.
     let vs_path = character_dir.join("memory").join("vectorstore");
-    let store = VectorStore::open(&vs_path, embed_config.dimensions).await
+    let store = VectorStore::open(&vs_path, embed_config.dimensions)
+        .await
         .map_err(|e| format!("Failed to open vector store: {e}"))?;
 
     // Create trait implementations.
@@ -132,14 +133,21 @@ pub async fn run_compaction(
             notifier.notify(
                 NotificationEvent::CompactionComplete,
                 &format!("Shore — {character}"),
-                &format!("Compaction complete: {} entries from {} messages", result.entries_created.len(), result.message_count),
+                &format!(
+                    "Compaction complete: {} entries from {} messages",
+                    result.entries_created.len(),
+                    result.message_count
+                ),
             );
 
             // Run collation after successful compaction if configured.
-            if config.app.memory.collation.enabled
-                && config.app.memory.collation.auto_run {
+            if config.app.memory.collation.enabled && config.app.memory.collation.auto_run {
                 info!(character = %character, "Running auto-collation after compaction");
-                match crate::memory::collation::run_collation(character, config, llm_client, data_dir).await {
+                match crate::memory::collation::run_collation(
+                    character, config, llm_client, data_dir,
+                )
+                .await
+                {
                     Ok(()) => {
                         notifier.notify(
                             NotificationEvent::CollationComplete,

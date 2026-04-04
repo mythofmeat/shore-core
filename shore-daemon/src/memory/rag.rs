@@ -97,10 +97,8 @@ impl RagPipeline {
         let mut rrf_scores = self.reciprocal_rank_fusion(vector_results, bm25_results);
 
         // Step 2: Apply lifecycle scoring.
-        let meta_map: HashMap<&str, &EntryMeta> = metadata
-            .iter()
-            .map(|m| (m.entry_id.as_str(), m))
-            .collect();
+        let meta_map: HashMap<&str, &EntryMeta> =
+            metadata.iter().map(|m| (m.entry_id.as_str(), m)).collect();
 
         let now = chrono::Utc::now();
 

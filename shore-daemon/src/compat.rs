@@ -555,7 +555,12 @@ pub fn validate_v1_data(
     let conversations_dir = character_dir.join("conversations");
     let conversation_count = if conversations_dir.is_dir() {
         std::fs::read_dir(&conversations_dir)
-            .map(|entries| entries.filter_map(Result::ok).filter(|e| e.path().is_dir()).count())
+            .map(|entries| {
+                entries
+                    .filter_map(Result::ok)
+                    .filter(|e| e.path().is_dir())
+                    .count()
+            })
             .unwrap_or(0)
     } else {
         0
@@ -652,16 +657,15 @@ mod tests {
     fn test_read_v1_manifest_without_private() {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("manifest.json");
-        std::fs::write(
-            &path,
-            r#"{"id":"conv-001","title":"First chat"}"#,
-        )
-        .unwrap();
+        std::fs::write(&path, r#"{"id":"conv-001","title":"First chat"}"#).unwrap();
 
         let manifest = read_v1_manifest(&path).unwrap();
         assert_eq!(manifest.id, "conv-001");
         assert_eq!(manifest.title, "First chat");
-        assert!(!manifest.private, "V1 manifest missing private should default to false");
+        assert!(
+            !manifest.private,
+            "V1 manifest missing private should default to false"
+        );
         assert!(manifest.created_at.is_none());
     }
 
@@ -700,16 +704,8 @@ mod tests {
         let dir = tmp.path().join("manifests");
         std::fs::create_dir_all(&dir).unwrap();
 
-        std::fs::write(
-            dir.join("a.json"),
-            r#"{"id":"a","title":"Chat A"}"#,
-        )
-        .unwrap();
-        std::fs::write(
-            dir.join("b.json"),
-            r#"{"id":"b","title":"Chat B"}"#,
-        )
-        .unwrap();
+        std::fs::write(dir.join("a.json"), r#"{"id":"a","title":"Chat A"}"#).unwrap();
+        std::fs::write(dir.join("b.json"), r#"{"id":"b","title":"Chat B"}"#).unwrap();
         // Non-json file should be skipped.
         std::fs::write(dir.join("readme.txt"), "ignore me").unwrap();
 
@@ -1065,9 +1061,12 @@ provider = "anthropic"
             collated_at: String::new(),
         };
 
-        db.create_entry(&make("e1", "active", "Active entry")).unwrap();
-        db.create_entry(&make("e2", "protected", "Protected entry")).unwrap();
-        db.create_entry(&make("e3", "superseded", "Old entry")).unwrap();
+        db.create_entry(&make("e1", "active", "Active entry"))
+            .unwrap();
+        db.create_entry(&make("e2", "protected", "Protected entry"))
+            .unwrap();
+        db.create_entry(&make("e3", "superseded", "Old entry"))
+            .unwrap();
         db.create_entry(&make("e4", "active", "")).unwrap(); // empty text
 
         let entries = extract_entries_for_reindex(&db).unwrap();

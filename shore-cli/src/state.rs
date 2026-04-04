@@ -64,7 +64,10 @@ mod tests {
         std::env::set_var("SHORE_RUNTIME_DIR", &runtime);
         let result = std::panic::catch_unwind(|| {
             // 1. Missing file → None.
-            assert!(read_active_character().is_none(), "missing file should return None");
+            assert!(
+                read_active_character().is_none(),
+                "missing file should return None"
+            );
 
             // 2. Write and read back.
             write_active_character("alice").unwrap();
@@ -76,7 +79,10 @@ mod tests {
 
             // 4. Empty file → None.
             std::fs::write(state_file_path(), "").unwrap();
-            assert!(read_active_character().is_none(), "empty file should return None");
+            assert!(
+                read_active_character().is_none(),
+                "empty file should return None"
+            );
 
             // 5. Whitespace trimming.
             std::fs::write(state_file_path(), "  carol  \n").unwrap();

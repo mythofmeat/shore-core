@@ -197,14 +197,24 @@ mod tests {
         let model = test_model();
 
         let r1 = mock
-            .generate(vec![json!({"role": "user", "content": "hi"})], None, None, &model)
+            .generate(
+                vec![json!({"role": "user", "content": "hi"})],
+                None,
+                None,
+                &model,
+            )
             .await
             .unwrap();
         assert_eq!(r1.text, "First response");
         assert_eq!(r1.finish_reason, "end_turn");
 
         let r2 = mock
-            .generate(vec![json!({"role": "user", "content": "bye"})], None, None, &model)
+            .generate(
+                vec![json!({"role": "user", "content": "bye"})],
+                None,
+                None,
+                &model,
+            )
             .await
             .unwrap();
         assert_eq!(r2.text, "Second response");
@@ -233,9 +243,14 @@ mod tests {
 
         let model = test_model();
         let tools = vec![json!({"name": "search", "input_schema": {}})];
-        mock.generate(vec![], Some(json!("system prompt")), Some(tools.clone()), &model)
-            .await
-            .unwrap();
+        mock.generate(
+            vec![],
+            Some(json!("system prompt")),
+            Some(tools.clone()),
+            &model,
+        )
+        .await
+        .unwrap();
 
         let calls = mock.calls.lock().unwrap();
         assert_eq!(calls[0].system, Some(json!("system prompt")));

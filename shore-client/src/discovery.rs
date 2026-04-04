@@ -35,13 +35,10 @@ pub fn instances_path() -> PathBuf {
 /// Read the instances file and return all live entries (dead PIDs are skipped).
 pub fn read_instances() -> Result<Vec<InstanceEntry>> {
     let path = instances_path();
-    let data = std::fs::read_to_string(&path).map_err(|e| {
-        ClientError::Discovery(format!("cannot read {}: {e}", path.display()))
-    })?;
-    let entries: InstancesFile =
-        serde_json::from_str(&data).map_err(|e| {
-            ClientError::Discovery(format!("invalid JSON in {}: {e}", path.display()))
-        })?;
+    let data = std::fs::read_to_string(&path)
+        .map_err(|e| ClientError::Discovery(format!("cannot read {}: {e}", path.display())))?;
+    let entries: InstancesFile = serde_json::from_str(&data)
+        .map_err(|e| ClientError::Discovery(format!("invalid JSON in {}: {e}", path.display())))?;
     Ok(entries.into_iter().filter(|e| entry_alive(e)).collect())
 }
 
@@ -63,14 +60,10 @@ pub fn discover(config_path: Option<&str>) -> Result<ServerAddr> {
         Some(wanted) => entries
             .iter()
             .find(|e| e.id.as_deref() == Some(wanted))
-            .ok_or_else(|| {
-                ClientError::Discovery(format!(
-                    "no daemon found for id: {wanted}"
-                ))
-            })?,
-        None => entries.first().ok_or_else(|| {
-            ClientError::Discovery("instances file is empty".into())
-        })?,
+            .ok_or_else(|| ClientError::Discovery(format!("no daemon found for id: {wanted}")))?,
+        None => entries
+            .first()
+            .ok_or_else(|| ClientError::Discovery("instances file is empty".into()))?,
     };
 
     Ok(addr_from_socket(&entry.socket_path))

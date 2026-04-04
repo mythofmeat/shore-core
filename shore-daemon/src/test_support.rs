@@ -7,17 +7,17 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use shore_config::models::{ResolvedModel, Sdk};
-use shore_llm_client::LlmClient;
 use crate::autonomy::manager::AutonomyManager;
 use crate::memory::agent::types::{AgentError, AgentIndexer, AgentRag, RagHit};
 use crate::memory::agent::{CallerIdentity, MemoryAgent};
 use crate::memory::agent_llm::{AgentLlm, MockAgentLlm};
-use shore_config::app::SearchConfig;
 use crate::memory::compaction_impls::ImageGenConfig;
 use crate::memory::db::MemoryDB;
 use crate::memory::researcher::MemoryResearcher;
 use crate::tools::ToolContext;
+use shore_config::app::SearchConfig;
+use shore_config::models::{ResolvedModel, Sdk};
+use shore_llm_client::LlmClient;
 
 // ── test_model ──────────────────────────────────────────────────────────
 

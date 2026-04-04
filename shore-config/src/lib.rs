@@ -87,9 +87,24 @@ impl ShoreDirs {
     /// 3. Platform defaults + `/shore`
     pub fn resolve() -> Self {
         Self {
-            config: resolve_xdg_dir("SHORE_CONFIG_DIR", "XDG_CONFIG_HOME", dirs::config_dir, "~/.config"),
-            data: resolve_xdg_dir("SHORE_DATA_DIR", "XDG_DATA_HOME", dirs::data_dir, "~/.local/share"),
-            runtime: resolve_xdg_dir("SHORE_RUNTIME_DIR", "XDG_RUNTIME_DIR", dirs::runtime_dir, ""),
+            config: resolve_xdg_dir(
+                "SHORE_CONFIG_DIR",
+                "XDG_CONFIG_HOME",
+                dirs::config_dir,
+                "~/.config",
+            ),
+            data: resolve_xdg_dir(
+                "SHORE_DATA_DIR",
+                "XDG_DATA_HOME",
+                dirs::data_dir,
+                "~/.local/share",
+            ),
+            runtime: resolve_xdg_dir(
+                "SHORE_RUNTIME_DIR",
+                "XDG_RUNTIME_DIR",
+                dirs::runtime_dir,
+                "",
+            ),
         }
     }
 }
@@ -156,10 +171,7 @@ pub fn load_config(config_path: Option<&Path>) -> Result<LoadedConfig, ConfigErr
     // Determine the config directory (either from --config path or XDG).
     let config_dir = match config_path {
         Some(p) => {
-            let dir = p
-                .parent()
-                .unwrap_or(Path::new("."))
-                .to_path_buf();
+            let dir = p.parent().unwrap_or(Path::new(".")).to_path_buf();
             // When a custom config path is provided, use its parent as the
             // config directory so that character lookups etc. are relative to it.
             dirs.config = dir.clone();
@@ -205,14 +217,14 @@ pub fn load_config(config_path: Option<&Path>) -> Result<LoadedConfig, ConfigErr
                 if let Some(rel_path) = item.as_str() {
                     let include_path = config_dir.join(rel_path);
                     if include_path.exists() {
-                        let content = std::fs::read_to_string(&include_path)
-                            .map_err(|e| ConfigError::ReadFile {
+                        let content = std::fs::read_to_string(&include_path).map_err(|e| {
+                            ConfigError::ReadFile {
                                 path: include_path.clone(),
                                 source: e,
-                            })?;
-                        let include_table: toml::Table = content
-                            .parse()
-                            .map_err(|e| ConfigError::ParseInclude {
+                            }
+                        })?;
+                        let include_table: toml::Table =
+                            content.parse().map_err(|e| ConfigError::ParseInclude {
                                 path: include_path.clone(),
                                 source: e,
                             })?;
@@ -290,17 +302,16 @@ pub fn load_character_config(
         return Ok(None);
     }
 
-    let content = std::fs::read_to_string(&char_config_path).map_err(|e| ConfigError::ReadFile {
-        path: char_config_path.clone(),
-        source: e,
-    })?;
-
-    let char_table: toml::Table = content
-        .parse()
-        .map_err(|e| ConfigError::ParseInclude {
+    let content =
+        std::fs::read_to_string(&char_config_path).map_err(|e| ConfigError::ReadFile {
             path: char_config_path.clone(),
             source: e,
         })?;
+
+    let char_table: toml::Table = content.parse().map_err(|e| ConfigError::ParseInclude {
+        path: char_config_path.clone(),
+        source: e,
+    })?;
 
     info!(
         character = character_name,
@@ -313,8 +324,7 @@ pub fn load_character_config(
     let mut merged = base;
     deep_merge(&mut merged, &char_table);
 
-    parse_config_table(merged, global.dirs.clone())
-        .map(Some)
+    parse_config_table(merged, global.dirs.clone()).map(Some)
 }
 
 /// Recursively deep-merge `overlay` into `base`.
@@ -426,7 +436,10 @@ fn validate_config(app: &AppConfig, catalog: &ModelCatalog) -> Result<(), Config
     for (field, value) in [
         ("defaults.model", app.defaults.model.as_deref()),
         ("defaults.tool_model", app.defaults.tool_model.as_deref()),
-        ("defaults.memory_agent", app.defaults.memory_agent.as_deref()),
+        (
+            "defaults.memory_agent",
+            app.defaults.memory_agent.as_deref(),
+        ),
         ("defaults.collation", app.defaults.collation.as_deref()),
     ] {
         validate_model_ref(catalog, field, value)?;
@@ -717,7 +730,10 @@ jitter_factor = 1.5
         let config_path = tmp.path().join("config.toml");
         let err = load_config(Some(&config_path)).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("jitter_factor"), "Should mention jitter_factor: {msg}");
+        assert!(
+            msg.contains("jitter_factor"),
+            "Should mention jitter_factor: {msg}"
+        );
     }
 
     #[test]
@@ -933,19 +949,26 @@ c = 4
 
     #[test]
     fn character_definition_loaded() {
-        let tmp = setup_config_dir(&[
-            ("characters/TestChar/character.md", "You are TestChar, a helpful assistant."),
-        ]);
+        let tmp = setup_config_dir(&[(
+            "characters/TestChar/character.md",
+            "You are TestChar, a helpful assistant.",
+        )]);
 
         let def = load_character_definition(tmp.path(), "TestChar");
-        assert_eq!(def.as_deref(), Some("You are TestChar, a helpful assistant."));
+        assert_eq!(
+            def.as_deref(),
+            Some("You are TestChar, a helpful assistant.")
+        );
     }
 
     #[test]
     fn user_definition_character_specific_overrides_global() {
         let tmp = setup_config_dir(&[
             ("user.md", "Global user definition"),
-            ("characters/TestChar/user.md", "Character-specific user definition"),
+            (
+                "characters/TestChar/user.md",
+                "Character-specific user definition",
+            ),
         ]);
 
         let def = resolve_user_definition(tmp.path(), "TestChar");
@@ -954,9 +977,7 @@ c = 4
 
     #[test]
     fn user_definition_falls_back_to_global() {
-        let tmp = setup_config_dir(&[
-            ("user.md", "Global user definition"),
-        ]);
+        let tmp = setup_config_dir(&[("user.md", "Global user definition")]);
 
         let def = resolve_user_definition(tmp.path(), "TestChar");
         assert_eq!(def.as_deref(), Some("Global user definition"));
@@ -986,18 +1007,15 @@ c = 4
         ]);
 
         // Character-specific wins.
-        let result =
-            resolve_prompt_template(tmp.path(), "TestChar", "system.md");
+        let result = resolve_prompt_template(tmp.path(), "TestChar", "system.md");
         assert_eq!(result.as_deref(), Some("Character system prompt"));
 
         // Falls back to global.
-        let result =
-            resolve_prompt_template(tmp.path(), "TestChar", "compact.md");
+        let result = resolve_prompt_template(tmp.path(), "TestChar", "compact.md");
         assert_eq!(result.as_deref(), Some("Global compact prompt"));
 
         // Returns None if no file exists.
-        let result =
-            resolve_prompt_template(tmp.path(), "TestChar", "nonexistent.md");
+        let result = resolve_prompt_template(tmp.path(), "TestChar", "nonexistent.md");
         assert!(result.is_none());
     }
 
@@ -1034,10 +1052,7 @@ model_id = "claude-sonnet-4-6"
 model_id = "claude-opus-4-6"
 "#,
             ),
-            (
-                "characters/Alice/character.md",
-                "You are Alice.",
-            ),
+            ("characters/Alice/character.md", "You are Alice."),
             (
                 "characters/Alice/config.toml",
                 r#"
@@ -1095,10 +1110,7 @@ interval_secs = 1800
 model_id = "claude-sonnet-4-6"
 "#,
             ),
-            (
-                "characters/Alice/character.md",
-                "You are Alice.",
-            ),
+            ("characters/Alice/character.md", "You are Alice."),
             (
                 "characters/Alice/config.toml",
                 r#"
@@ -1119,7 +1131,10 @@ max_tokens = 16384
         let alice = load_character_config(&global, "Alice").unwrap().unwrap();
         assert!(alice.models.find_model("sonnet").is_ok());
         assert!(alice.models.find_model("opus").is_ok());
-        assert_eq!(alice.models.find_model("opus").unwrap().max_tokens, Some(16384));
+        assert_eq!(
+            alice.models.find_model("opus").unwrap().max_tokens,
+            Some(16384)
+        );
     }
 
     // ── .env loading tests ────────────────────────────────────────────
@@ -1257,10 +1272,7 @@ model_id = "claude-opus-4-6"
 model_id = "kimi-k2"
 "#,
             ),
-            (
-                "characters/qifei/character.md",
-                "You are qifei.",
-            ),
+            ("characters/qifei/character.md", "You are qifei."),
             (
                 "characters/qifei/config.toml",
                 r#"
@@ -1275,7 +1287,10 @@ model = "chat.anthropic.opus"
         assert_eq!(global.app.defaults.model.as_deref(), Some("kimi"));
 
         let qifei = load_character_config(&global, "qifei").unwrap().unwrap();
-        assert_eq!(qifei.app.defaults.model.as_deref(), Some("chat.anthropic.opus"));
+        assert_eq!(
+            qifei.app.defaults.model.as_deref(),
+            Some("chat.anthropic.opus")
+        );
         // conf.d models should still be available after merge.
         assert!(qifei.models.find_model("opus").is_ok());
         assert!(qifei.models.find_model("kimi").is_ok());

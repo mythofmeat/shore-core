@@ -8,8 +8,8 @@
 //! inline and always return immediately.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
 
 use base64::Engine as _;
@@ -21,8 +21,8 @@ use shore_protocol::types::{derive_content_from_blocks, ContentBlock, ImageRef, 
 use tokio::sync::{broadcast, Mutex};
 use tracing::{error, info, instrument, warn};
 
-use crate::autonomy::parse_cache_ttl_secs;
 use crate::autonomy::manager::AutonomyManager;
+use crate::autonomy::parse_cache_ttl_secs;
 use crate::characters::CharacterRegistry;
 use crate::commands::{self, CommandContext, SessionTokens};
 use crate::engine::prompt::{self, CapabilitiesConfig, PromptParams};
@@ -30,20 +30,20 @@ use crate::engine::tools;
 use crate::memory::agent::{AgentSearchContext, CallerIdentity, MemoryAgent};
 use crate::memory::agent_llm::{AgentLlm, RealAgentLlm};
 use crate::memory::compaction_impls::resolve_embed_config;
+use crate::memory::compaction_impls::ImageGenConfig;
 use crate::memory::db::MemoryDB;
 use crate::memory::researcher::MemoryResearcher;
 use crate::memory::vectorstore::VectorStore;
-use crate::tools::{self as tool_system, ToolContext};
-use crate::tools::context::{NoopRag, SharedToolContext};
-use shore_llm_client::retry::{self, RetryDecision, RetryPolicy};
-use shore_llm_client::stream::{CacheContext, StreamConsumer};
-use shore_llm_client::LlmClient;
 use crate::notifications::{NotificationEvent, NotificationService};
+use crate::server::RoutedMessage;
+use crate::tools::context::{NoopRag, SharedToolContext};
+use crate::tools::{self as tool_system, ToolContext};
 use shore_config::app::SearchConfig;
 use shore_config::models::Sdk;
 use shore_config::LoadedConfig;
-use crate::memory::compaction_impls::ImageGenConfig;
-use crate::server::RoutedMessage;
+use shore_llm_client::retry::{self, RetryDecision, RetryPolicy};
+use shore_llm_client::stream::{CacheContext, StreamConsumer};
+use shore_llm_client::LlmClient;
 
 // ── Per-request tool context (wraps SharedToolContext + autonomy) ────
 
@@ -53,25 +53,57 @@ struct HandlerToolContext {
 }
 
 impl ToolContext for HandlerToolContext {
-    fn memory_db(&self) -> &MemoryDB { self.inner.memory_db() }
-    fn memory_agent(&self) -> &MemoryAgent { self.inner.memory_agent() }
-    fn agent_llm(&self) -> &dyn AgentLlm { self.inner.agent_llm() }
-    fn agent_model(&self) -> &shore_config::models::ResolvedModel { self.inner.agent_model() }
-    fn researcher_llm(&self) -> Option<&dyn AgentLlm> { self.inner.researcher_llm() }
+    fn memory_db(&self) -> &MemoryDB {
+        self.inner.memory_db()
+    }
+    fn memory_agent(&self) -> &MemoryAgent {
+        self.inner.memory_agent()
+    }
+    fn agent_llm(&self) -> &dyn AgentLlm {
+        self.inner.agent_llm()
+    }
+    fn agent_model(&self) -> &shore_config::models::ResolvedModel {
+        self.inner.agent_model()
+    }
+    fn researcher_llm(&self) -> Option<&dyn AgentLlm> {
+        self.inner.researcher_llm()
+    }
     fn researcher_model(&self) -> Option<&shore_config::models::ResolvedModel> {
         self.inner.researcher_model()
     }
-    fn memory_researcher(&self) -> Option<&MemoryResearcher> { self.inner.memory_researcher() }
-    fn indexer(&self) -> Option<&dyn crate::memory::agent::types::AgentIndexer> { self.inner.indexer() }
-    fn search_context(&self) -> Option<&AgentSearchContext> { self.inner.search_context() }
-    fn rag(&self) -> &dyn crate::memory::agent::AgentRag { self.inner.rag() }
-    fn image_dir(&self) -> &str { self.inner.image_dir() }
-    fn llm_client(&self) -> Option<&LlmClient> { self.inner.llm_client() }
-    fn image_gen_config(&self) -> Option<&ImageGenConfig> { self.inner.image_gen_config() }
-    fn search_config(&self) -> &SearchConfig { self.inner.search_config() }
-    fn autonomy_manager(&self) -> Option<&AutonomyManager> { Some(&self.autonomy_val) }
-    fn character_name(&self) -> &str { self.inner.character_name() }
-    fn scratchpad_dir(&self) -> &str { self.inner.scratchpad_dir() }
+    fn memory_researcher(&self) -> Option<&MemoryResearcher> {
+        self.inner.memory_researcher()
+    }
+    fn indexer(&self) -> Option<&dyn crate::memory::agent::types::AgentIndexer> {
+        self.inner.indexer()
+    }
+    fn search_context(&self) -> Option<&AgentSearchContext> {
+        self.inner.search_context()
+    }
+    fn rag(&self) -> &dyn crate::memory::agent::AgentRag {
+        self.inner.rag()
+    }
+    fn image_dir(&self) -> &str {
+        self.inner.image_dir()
+    }
+    fn llm_client(&self) -> Option<&LlmClient> {
+        self.inner.llm_client()
+    }
+    fn image_gen_config(&self) -> Option<&ImageGenConfig> {
+        self.inner.image_gen_config()
+    }
+    fn search_config(&self) -> &SearchConfig {
+        self.inner.search_config()
+    }
+    fn autonomy_manager(&self) -> Option<&AutonomyManager> {
+        Some(&self.autonomy_val)
+    }
+    fn character_name(&self) -> &str {
+        self.inner.character_name()
+    }
+    fn scratchpad_dir(&self) -> &str {
+        self.inner.scratchpad_dir()
+    }
 }
 
 // ── Shared context for spawned generation tasks ───────────────────────
@@ -180,10 +212,7 @@ impl MessageHandler {
     /// Commands are processed inline (no LLM I/O, always fast).
     /// Engine messages (Message/Regen) are spawned as independent tokio tasks,
     /// so this loop never blocks on LLM streaming.
-    pub async fn run(
-        &mut self,
-        route_rx: Arc<Mutex<tokio::sync::mpsc::Receiver<RoutedMessage>>>,
-    ) {
+    pub async fn run(&mut self, route_rx: Arc<Mutex<tokio::sync::mpsc::Receiver<RoutedMessage>>>) {
         let mut rx = route_rx.lock().await;
         while let Some(msg) = rx.recv().await {
             match msg {
@@ -203,10 +232,14 @@ impl MessageHandler {
                                     content: String::new(),
                                     metadata: shore_protocol::types::StreamMetadata {
                                         tokens: shore_protocol::types::TokenCounts {
-                                            input: 0, output: 0, cache_read: 0, cache_write: 0,
+                                            input: 0,
+                                            output: 0,
+                                            cache_read: 0,
+                                            cache_write: 0,
                                         },
                                         timing: shore_protocol::types::TimingInfo {
-                                            total_ms: 0, ttft_ms: 0,
+                                            total_ms: 0,
+                                            ttft_ms: 0,
                                         },
                                         model: String::new(),
                                     },
@@ -263,16 +296,28 @@ impl MessageHandler {
                     self.generation_handle = Some(tokio::spawn(async move {
                         let notify_name = char_name.clone();
                         if let Err(e) = handle_generation(
-                            gen, body, regen, char_name, rid,
-                            effective_config, data_dir, active_model,
-                        ).await {
+                            gen,
+                            body,
+                            regen,
+                            char_name,
+                            rid,
+                            effective_config,
+                            data_dir,
+                            active_model,
+                        )
+                        .await
+                        {
                             error!(error = %e, "Error processing engine message");
                             let err_msg = e.to_string();
                             let _ = push_tx.send(ServerMessage::Error(SwpError {
                                 code: ErrorCode::InternalError,
                                 message: err_msg.clone(),
                             }));
-                            notifier.notify(NotificationEvent::Error, &format!("Shore — {notify_name}"), &err_msg);
+                            notifier.notify(
+                                NotificationEvent::Error,
+                                &format!("Shore — {notify_name}"),
+                                &err_msg,
+                            );
                         }
                     }));
                 }
@@ -308,14 +353,13 @@ impl MessageHandler {
         // are available and none is explicitly selected.
         if cmd.name == "list_characters" {
             return match commands::dispatch_characterless(&self.cmd_ctx, cmd) {
-                Ok(data) => ServerMessage::CommandOutput(shore_protocol::server_msg::CommandOutput {
-                    name: cmd.name.clone(),
-                    data,
-                }),
-                Err((code, msg)) => ServerMessage::Error(SwpError {
-                    code,
-                    message: msg,
-                }),
+                Ok(data) => {
+                    ServerMessage::CommandOutput(shore_protocol::server_msg::CommandOutput {
+                        name: cmd.name.clone(),
+                        data,
+                    })
+                }
+                Err((code, msg)) => ServerMessage::Error(SwpError { code, message: msg }),
             };
         }
 
@@ -386,7 +430,9 @@ async fn handle_generation(
     // Get engine Arc from registry (brief lock — registry released immediately after).
     let engine_arc = {
         let mut registry = ctx.registry.lock().await;
-        registry.get_or_create(&char_name).map_err(|e| e.to_string())?
+        registry
+            .get_or_create(&char_name)
+            .map_err(|e| e.to_string())?
     };
 
     // 1. Reload engine if compaction ran since the last message.
@@ -405,10 +451,13 @@ async fn handle_generation(
         if regen {
             engine.truncate_after_last_user_turn()?;
         } else if !body.text.is_empty() || !body.images.is_empty() || !body.image_data.is_empty() {
-            let (images, mut content_blocks) = ingest_images(&data_dir, &char_name, &body.images, &body.image_data);
+            let (images, mut content_blocks) =
+                ingest_images(&data_dir, &char_name, &body.images, &body.image_data);
 
             // User text comes after the image annotations.
-            content_blocks.push(ContentBlock::Text { text: body.text.clone() });
+            content_blocks.push(ContentBlock::Text {
+                text: body.text.clone(),
+            });
 
             let user_msg = Message {
                 msg_id: format!("m_{}", uuid::Uuid::new_v4()),
@@ -432,27 +481,44 @@ async fn handle_generation(
     } // engine lock released
 
     // 3. Resolve model.
-    let model_name = active_model.as_deref()
+    let model_name = active_model
+        .as_deref()
         .or(effective_config.app.defaults.model.as_deref());
     let resolved = match model_name {
-        Some(name) => effective_config.models.find_model(name).map_err(|e| e.to_string())?,
-        None => effective_config.models.first_chat_model().ok_or("No model configured")?,
+        Some(name) => effective_config
+            .models
+            .find_model(name)
+            .map_err(|e| e.to_string())?,
+        None => effective_config
+            .models
+            .first_chat_model()
+            .ok_or("No model configured")?,
     };
 
     // 4. Resolve memory agent and researcher models.
-    let agent_model = effective_config.app.defaults.memory_agent.as_deref()
+    let agent_model = effective_config
+        .app
+        .defaults
+        .memory_agent
+        .as_deref()
         .and_then(|name| effective_config.models.find_model(name).ok())
         .unwrap_or(resolved)
         .clone();
 
-    let researcher_model = effective_config.app.defaults.tool_model.as_deref()
+    let researcher_model = effective_config
+        .app
+        .defaults
+        .tool_model
+        .as_deref()
         .and_then(|name| effective_config.models.find_model(name).ok())
         .cloned();
 
     // 5. Ensure autonomy state with cache TTL for unified interiority timer.
     // Must happen before notify_user_message so session_start is set on first message.
     let cache_ttl_secs = resolved.cache_ttl.as_deref().and_then(parse_cache_ttl_secs);
-    let is_new_autonomy_state = ctx.autonomy.ensure_state_with_config(&char_name, cache_ttl_secs, Some(&effective_config));
+    let is_new_autonomy_state =
+        ctx.autonomy
+            .ensure_state_with_config(&char_name, cache_ttl_secs, Some(&effective_config));
 
     // Backfill activity tracker from existing chat history on first creation.
     // Only include the last 90 days — older data would pollute availability signals.
@@ -513,7 +579,10 @@ async fn handle_generation(
     // 5. Load character and user definitions (brief registry lock).
     let (character_definition, user_definition) = {
         let registry = ctx.registry.lock().await;
-        (registry.character_definition(&char_name), registry.user_definition(&char_name))
+        (
+            registry.character_definition(&char_name),
+            registry.user_definition(&char_name),
+        )
     };
 
     // 6. Read messages for prompt assembly (brief engine lock, then clone).
@@ -561,11 +630,13 @@ async fn handle_generation(
         let toggles = &effective_config.app.behavior.tool_use.tools;
         let defs: Vec<Value> = tool_system::available_tools(false, toggles)
             .iter()
-            .map(|t| json!({
-                "name": t.name,
-                "description": t.description,
-                "input_schema": t.parameters.clone(),
-            }))
+            .map(|t| {
+                json!({
+                    "name": t.name,
+                    "description": t.description,
+                    "input_schema": t.parameters.clone(),
+                })
+            })
             .collect();
         Some(defs)
     } else {
@@ -573,8 +644,7 @@ async fn handle_generation(
     };
 
     // 9. Build LLM request.
-    let mut request =
-        LlmClient::build_request(&resolved, llm_messages, system, tool_defs, None)?;
+    let mut request = LlmClient::build_request(&resolved, llm_messages, system, tool_defs, None)?;
 
     // Apply per-message parameter overrides from the client.
     if let Some(ref ov) = body.overrides {
@@ -585,9 +655,9 @@ async fn handle_generation(
             request.top_p = Some(p);
         }
         if let Some(budget) = ov.thinking_budget {
-            let opts = request.provider_options.get_or_insert_with(|| {
-                serde_json::Value::Object(serde_json::Map::new())
-            });
+            let opts = request
+                .provider_options
+                .get_or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
             if let Some(map) = opts.as_object_mut() {
                 map.insert("budget_tokens".into(), serde_json::json!(budget));
             }
@@ -602,8 +672,15 @@ async fn handle_generation(
 
     // 10. Stream response from shore-llm (with retry on transient errors).
     let mut result = stream_with_retry(
-        &ctx, &request, &engine_arc, &resolved, &effective_config, regen, rid.as_deref(),
-    ).await?;
+        &ctx,
+        &request,
+        &engine_arc,
+        &resolved,
+        &effective_config,
+        regen,
+        rid.as_deref(),
+    )
+    .await?;
 
     // Build cache context for tool loop.
     let tool_cache_warnings = resolved.provider_key == "anthropic"
@@ -619,26 +696,40 @@ async fn handle_generation(
     ctx.is_first_after_restart.store(false, Ordering::Release);
 
     // 11. Run tool loop if the LLM requested tool use.
-    let tool_intermediate_messages = if result.finish_reason == "tool_use"
-        && effective_config.app.behavior.tool_use.enabled
-    {
-        let tool_loop_result = run_tool_phase(
-            &ctx, &data_dir, &char_name, &effective_config,
-            &agent_model, &researcher_model,
-            &character_definition, &user_definition,
-            &mut request, result, &cache_ctx,
-        ).await?;
-        result = tool_loop_result.result;
-        tool_loop_result.intermediate_messages
-    } else {
-        Vec::new()
-    };
+    let tool_intermediate_messages =
+        if result.finish_reason == "tool_use" && effective_config.app.behavior.tool_use.enabled {
+            let tool_loop_result = run_tool_phase(
+                &ctx,
+                &data_dir,
+                &char_name,
+                &effective_config,
+                &agent_model,
+                &researcher_model,
+                &character_definition,
+                &user_definition,
+                &mut request,
+                result,
+                &cache_ctx,
+            )
+            .await?;
+            result = tool_loop_result.result;
+            tool_loop_result.intermediate_messages
+        } else {
+            Vec::new()
+        };
 
     // 12. Persist intermediate tool messages and final assistant message.
     persist_and_notify(
-        &ctx, &engine_arc, &char_name, &resolved,
-        &result, &request, tool_intermediate_messages, wall_clock_start,
-    ).await
+        &ctx,
+        &engine_arc,
+        &char_name,
+        &resolved,
+        &result,
+        &request,
+        tool_intermediate_messages,
+        wall_clock_start,
+    )
+    .await
 }
 
 // ---------------------------------------------------------------------------
@@ -707,9 +798,11 @@ fn build_llm_messages(
     } else if prompt_result.system.len() == 1 {
         Some(json!(prompt_result.system[0].content))
     } else {
-        Some(json!(prompt_result.system.iter().map(|b| {
-            json!({"type": "text", "text": b.content})
-        }).collect::<Vec<_>>()))
+        Some(json!(prompt_result
+            .system
+            .iter()
+            .map(|b| { json!({"type": "text", "text": b.content}) })
+            .collect::<Vec<_>>()))
     };
 
     (llm_messages, system)
@@ -726,7 +819,10 @@ async fn stream_with_retry(
     rid: Option<&str>,
 ) -> Result<shore_llm_client::types::StreamResult, Box<dyn std::error::Error + Send + Sync>> {
     let retry_policy = RetryPolicy {
-        max_retries: effective_config.app.advanced.max_retries
+        max_retries: effective_config
+            .app
+            .advanced
+            .max_retries
             .unwrap_or(RetryPolicy::default().max_retries),
         ..RetryPolicy::default()
     };
@@ -761,23 +857,28 @@ async fn stream_with_retry(
                 }
                 return Ok(r);
             }
-            Err(e) => {
-                match retry::should_retry_error(&e, attempt, &retry_policy) {
-                    RetryDecision::Retry => {
-                        let base_ms = effective_config.app.advanced.retry_backoff_seconds
-                            .map(|s| (s * 1000.0) as u64)
-                            .unwrap_or(500);
-                        let delay = std::time::Duration::from_millis(base_ms * 2u64.pow(attempt));
-                        warn!(attempt, delay_ms = delay.as_millis() as u64, "Retrying after transient LLM error");
-                        tokio::time::sleep(delay).await;
-                        attempt += 1;
-                    }
-                    RetryDecision::FallbackModel(_model) => {
-                        return Err(e.into());
-                    }
-                    RetryDecision::Fail => return Err(e.into()),
+            Err(e) => match retry::should_retry_error(&e, attempt, &retry_policy) {
+                RetryDecision::Retry => {
+                    let base_ms = effective_config
+                        .app
+                        .advanced
+                        .retry_backoff_seconds
+                        .map(|s| (s * 1000.0) as u64)
+                        .unwrap_or(500);
+                    let delay = std::time::Duration::from_millis(base_ms * 2u64.pow(attempt));
+                    warn!(
+                        attempt,
+                        delay_ms = delay.as_millis() as u64,
+                        "Retrying after transient LLM error"
+                    );
+                    tokio::time::sleep(delay).await;
+                    attempt += 1;
                 }
-            }
+                RetryDecision::FallbackModel(_model) => {
+                    return Err(e.into());
+                }
+                RetryDecision::Fail => return Err(e.into()),
+            },
         }
     }
 }
@@ -797,12 +898,9 @@ async fn run_tool_phase(
     result: shore_llm_client::types::StreamResult,
     cache_ctx: &CacheContext,
 ) -> Result<tools::ToolLoopResult, Box<dyn std::error::Error + Send + Sync>> {
-    let db_path = data_dir
-        .join(char_name)
-        .join("memory")
-        .join("memory.db");
-    let memory_db = MemoryDB::open(&db_path)
-        .map_err(|e| format!("failed to open memory DB: {e}"))?;
+    let db_path = data_dir.join(char_name).join("memory").join("memory.db");
+    let memory_db =
+        MemoryDB::open(&db_path).map_err(|e| format!("failed to open memory DB: {e}"))?;
 
     let char_def = character_definition.clone().unwrap_or_default();
     let user_def = user_definition.clone().unwrap_or_default();
@@ -810,7 +908,8 @@ async fn run_tool_phase(
     let image_gen_config = crate::memory::compaction_impls::resolve_image_gen_config(
         effective_config.app.defaults.image_generation.as_deref(),
         &effective_config.models.image_generation,
-    ).ok();
+    )
+    .ok();
 
     // Build semantic search context (graceful: None if no embedding model configured).
     let search_ctx = match resolve_embed_config(
@@ -818,12 +917,13 @@ async fn run_tool_phase(
         &effective_config.models.embedding,
     ) {
         Ok(embed_config) => {
-            let vs_path = data_dir
-                .join(char_name)
-                .join("memory")
-                .join("vectorstore");
+            let vs_path = data_dir.join(char_name).join("memory").join("vectorstore");
             match VectorStore::open(&vs_path, embed_config.dimensions).await {
-                Ok(vs) => Some(AgentSearchContext::new(vs, ctx.llm_client.clone(), embed_config)),
+                Ok(vs) => Some(AgentSearchContext::new(
+                    vs,
+                    ctx.llm_client.clone(),
+                    embed_config,
+                )),
                 Err(e) => {
                     warn!("Failed to open vector store for semantic search: {e}");
                     None
@@ -843,12 +943,12 @@ async fn run_tool_phase(
             ),
             agent_llm: RealAgentLlm::new(ctx.llm_client.clone()),
             agent_model_val: agent_model.clone(),
-            researcher: researcher_model.as_ref().map(|_| {
-                MemoryResearcher::new(char_def, user_def)
-            }),
-            researcher_llm_val: researcher_model.as_ref().map(|_| {
-                RealAgentLlm::new(ctx.llm_client.clone())
-            }),
+            researcher: researcher_model
+                .as_ref()
+                .map(|_| MemoryResearcher::new(char_def, user_def)),
+            researcher_llm_val: researcher_model
+                .as_ref()
+                .map(|_| RealAgentLlm::new(ctx.llm_client.clone())),
             researcher_model_val: researcher_model.clone(),
             rag: NoopRag,
             search_ctx,
@@ -940,7 +1040,9 @@ async fn persist_and_notify(
         );
 
         let content_blocks = if result.content_blocks.is_empty() && !result.content.is_empty() {
-            vec![ContentBlock::Text { text: result.content.clone() }]
+            vec![ContentBlock::Text {
+                text: result.content.clone(),
+            }]
         } else {
             result.content_blocks.clone()
         };
@@ -951,7 +1053,8 @@ async fn persist_and_notify(
         // assistant turn — not the user turn that triggered this call.
         {
             let mut full_request = request.clone();
-            let assistant_api_content: Vec<serde_json::Value> = content_blocks.iter()
+            let assistant_api_content: Vec<serde_json::Value> = content_blocks
+                .iter()
                 .filter_map(crate::content_util::content_block_to_api_json)
                 .collect();
             full_request.messages.push(serde_json::json!({
@@ -972,7 +1075,8 @@ async fn persist_and_notify(
             timestamp: chrono::Utc::now().to_rfc3339(),
         };
         engine.append_message(assistant_msg)?;
-        ctx.autonomy.notify_assistant_message(char_name, engine.turn_count());
+        ctx.autonomy
+            .notify_assistant_message(char_name, engine.turn_count());
         notify_content
     }; // engine lock released
 
@@ -1029,7 +1133,11 @@ fn ingest_images(
             Ok(()) => {
                 let abs_path = dest_path.to_string_lossy().to_string();
                 let rel_path = format!("attachments/{dest_name}");
-                images.push(ImageRef { path: abs_path, caption: None, data: None });
+                images.push(ImageRef {
+                    path: abs_path,
+                    caption: None,
+                    data: None,
+                });
                 content_blocks.push(ContentBlock::Text {
                     text: format!("[Attached image saved as: {rel_path}]"),
                 });
@@ -1065,7 +1173,11 @@ fn ingest_images(
                 Ok(_) => {
                     let abs_path = dest_path.to_string_lossy().to_string();
                     let rel_path = format!("attachments/{dest_name}");
-                    images.push(ImageRef { path: abs_path, caption: None, data: None });
+                    images.push(ImageRef {
+                        path: abs_path,
+                        caption: None,
+                        data: None,
+                    });
                     content_blocks.push(ContentBlock::Text {
                         text: format!("[Attached image saved as: {rel_path}]"),
                     });
@@ -1073,7 +1185,11 @@ fn ingest_images(
                 }
                 Err(e) => {
                     warn!(src = %src_path_str, error = %e, "Failed to copy image to attachments");
-                    images.push(ImageRef { path: src_path_str.clone(), caption: None, data: None });
+                    images.push(ImageRef {
+                        path: src_path_str.clone(),
+                        caption: None,
+                        data: None,
+                    });
                 }
             }
         }
@@ -1153,7 +1269,12 @@ mod tests {
             shutdown_rx,
         );
 
-        let registry = CharacterRegistry::new(config_dir, data_dir.clone(), push_tx.clone(), loaded_config.clone());
+        let registry = CharacterRegistry::new(
+            config_dir,
+            data_dir.clone(),
+            push_tx.clone(),
+            loaded_config.clone(),
+        );
 
         let cmd_ctx = CommandContext {
             config: loaded_config.clone(),
@@ -1163,7 +1284,9 @@ mod tests {
             session_tokens: Arc::new(std::sync::Mutex::new(SessionTokens::default())),
             autonomy: autonomy.clone(),
             llm_client: LlmClient::new(),
-            diagnostics: Arc::new(std::sync::Mutex::new(shore_diagnostics::Diagnostics::default())),
+            diagnostics: Arc::new(std::sync::Mutex::new(
+                shore_diagnostics::Diagnostics::default(),
+            )),
             memory_shell_sessions: std::collections::HashMap::new(),
         };
 
@@ -1309,8 +1432,16 @@ mod tests {
 
         // This will return an Err (no model configured) — that's expected.
         let result = handle_generation(
-            gen, body, is_regen, char_name, None, effective_config, data_dir, None,
-        ).await;
+            gen,
+            body,
+            is_regen,
+            char_name,
+            None,
+            effective_config,
+            data_dir,
+            None,
+        )
+        .await;
 
         assert!(result.is_err(), "Expected error due to no model configured");
     }
@@ -1477,7 +1608,10 @@ mod tests {
 
         let mut chat = BTreeMap::new();
         chat.insert("test".into(), model);
-        ModelCatalog { chat, ..Default::default() }
+        ModelCatalog {
+            chat,
+            ..Default::default()
+        }
     }
 
     /// Build a `MessageHandler` with a model catalog pointing at a mock server.
@@ -1526,7 +1660,10 @@ mod tests {
         );
 
         let registry = CharacterRegistry::new(
-            config_dir, data_dir.clone(), push_tx.clone(), loaded_config.clone(),
+            config_dir,
+            data_dir.clone(),
+            push_tx.clone(),
+            loaded_config.clone(),
         );
 
         let cmd_ctx = CommandContext {
@@ -1537,7 +1674,9 @@ mod tests {
             session_tokens: Arc::new(std::sync::Mutex::new(SessionTokens::default())),
             autonomy: autonomy.clone(),
             llm_client: LlmClient::new(),
-            diagnostics: Arc::new(std::sync::Mutex::new(shore_diagnostics::Diagnostics::default())),
+            diagnostics: Arc::new(std::sync::Mutex::new(
+                shore_diagnostics::Diagnostics::default(),
+            )),
             memory_shell_sessions: std::collections::HashMap::new(),
         };
 
@@ -1564,7 +1703,8 @@ mod tests {
     /// message and the assistant response are persisted to the engine.
     #[tokio::test]
     async fn pipeline_user_message_to_persisted_response() {
-        let (base_url, _server) = mock_sse_server(sse_text_response("Hello from the mock LLM!")).await;
+        let (base_url, _server) =
+            mock_sse_server(sse_text_response("Hello from the mock LLM!")).await;
         let models = mock_model_catalog(&base_url);
 
         let tmp = TempDir::new().unwrap();
@@ -1593,11 +1733,22 @@ mod tests {
 
         // Run the full pipeline.
         let result = handle_generation(
-            gen, body, false, char_name.clone(), Some("test-rid".into()),
-            effective_config, data_dir.clone(), None,
-        ).await;
+            gen,
+            body,
+            false,
+            char_name.clone(),
+            Some("test-rid".into()),
+            effective_config,
+            data_dir.clone(),
+            None,
+        )
+        .await;
 
-        assert!(result.is_ok(), "Pipeline should succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Pipeline should succeed: {:?}",
+            result.err()
+        );
 
         // Verify: messages are persisted in the engine.
         let engine_arc = {
@@ -1606,7 +1757,12 @@ mod tests {
         };
         let engine = engine_arc.lock().await;
         let messages = engine.messages();
-        assert_eq!(messages.len(), 2, "Should have user + assistant messages, got {}", messages.len());
+        assert_eq!(
+            messages.len(),
+            2,
+            "Should have user + assistant messages, got {}",
+            messages.len()
+        );
         assert_eq!(messages[0].role, Role::User);
         assert_eq!(messages[0].content, "Hello, Alice!");
         assert_eq!(messages[1].role, Role::Assistant);
@@ -1624,7 +1780,10 @@ mod tests {
             .lines()
             .filter(|l| !l.is_empty())
             .count();
-        assert_eq!(line_count, 2, "active.jsonl should have 2 lines (user + assistant)");
+        assert_eq!(
+            line_count, 2,
+            "active.jsonl should have 2 lines (user + assistant)"
+        );
 
         // Verify: broadcast events were sent (NewMessage for user message at minimum).
         let mut saw_new_message = false;
@@ -1633,6 +1792,9 @@ mod tests {
                 saw_new_message = true;
             }
         }
-        assert!(saw_new_message, "Should have broadcast at least one NewMessage");
+        assert!(
+            saw_new_message,
+            "Should have broadcast at least one NewMessage"
+        );
     }
 }

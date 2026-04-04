@@ -306,17 +306,11 @@ impl ModelCatalog {
 
         // Embedding and image_generation are stored as raw TOML for now.
         let embedding_profiles = match embedding {
-            Some(t) => t
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect(),
+            Some(t) => t.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
             None => BTreeMap::new(),
         };
         let image_gen_profiles = match image_generation {
-            Some(t) => t
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect(),
+            Some(t) => t.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
             None => BTreeMap::new(),
         };
 
@@ -350,17 +344,13 @@ impl ModelCatalog {
         }
 
         match matches.len() {
-            0 => {
-                Err(CatalogError::NotFound {
-                    name: name.to_string(),
-                })
-            }
+            0 => Err(CatalogError::NotFound {
+                name: name.to_string(),
+            }),
             1 => Ok(matches[0]),
             _ => {
-                let locations: Vec<&str> = matches
-                    .iter()
-                    .map(|m| m.qualified_name.as_str())
-                    .collect();
+                let locations: Vec<&str> =
+                    matches.iter().map(|m| m.qualified_name.as_str()).collect();
                 Err(CatalogError::AmbiguousName {
                     name: name.to_string(),
                     locations: locations.join(", "),
@@ -420,9 +410,7 @@ fn parse_category(
         let mut provider_config = hardcoded_defaults(provider_key);
 
         // Overlay explicit TOML scalars.
-        if let Ok(explicit) =
-            toml::Value::Table(provider_scalars).try_into::<ProviderConfig>()
-        {
+        if let Ok(explicit) = toml::Value::Table(provider_scalars).try_into::<ProviderConfig>() {
             provider_config.fields.merge_from(&explicit.fields);
         }
 
@@ -433,15 +421,16 @@ fn parse_category(
                 continue;
             }
 
-            let entry: ModelEntry = model_value
-                .clone()
-                .try_into()
-                .map_err(|e| CatalogError::ParseEntry {
-                    category: category.to_string(),
-                    provider: provider_key.to_string(),
-                    name: model_name.to_string(),
-                    source: e,
-                })?;
+            let entry: ModelEntry =
+                model_value
+                    .clone()
+                    .try_into()
+                    .map_err(|e| CatalogError::ParseEntry {
+                        category: category.to_string(),
+                        provider: provider_key.to_string(),
+                        name: model_name.to_string(),
+                        source: e,
+                    })?;
 
             let model_id = entry.model_id.ok_or_else(|| CatalogError::MissingModelId {
                 category: category.to_string(),
@@ -749,8 +738,7 @@ model_id = "chat-fast"
 model_id = "tools-fast"
 "#,
         );
-        let catalog =
-            ModelCatalog::from_sections(Some(&chat), Some(&tools), None, None).unwrap();
+        let catalog = ModelCatalog::from_sections(Some(&chat), Some(&tools), None, None).unwrap();
 
         // Ambiguous short name.
         let err = catalog.find_model("fast").unwrap_err();
@@ -820,10 +808,7 @@ model_id = "claude-opus-4-6"
 
     #[test]
     fn sdk_serialization() {
-        assert_eq!(
-            serde_json::to_value(Sdk::Anthropic).unwrap(),
-            "anthropic"
-        );
+        assert_eq!(serde_json::to_value(Sdk::Anthropic).unwrap(), "anthropic");
         assert_eq!(serde_json::to_value(Sdk::Openai).unwrap(), "openai");
         assert_eq!(serde_json::to_value(Sdk::Deepseek).unwrap(), "deepseek");
     }
@@ -898,7 +883,11 @@ model_id = "claude-opus-4-6"
 
         assert_eq!(result.max_tokens, Some(1024), "self value wins");
         assert_eq!(result.temperature, Some(0.3), "self value wins");
-        assert_eq!(result.api_key_env.as_deref(), Some("FALLBACK_KEY"), "fallback fills gap");
+        assert_eq!(
+            result.api_key_env.as_deref(),
+            Some("FALLBACK_KEY"),
+            "fallback fills gap"
+        );
     }
 
     #[test]
@@ -926,13 +915,7 @@ model_id = "claude-opus-4-6"
 model_id = "kimi-k2"
 "#,
         );
-        let catalog = ModelCatalog::from_sections(
-            Some(&table),
-            None,
-            None,
-            None,
-        )
-        .unwrap();
+        let catalog = ModelCatalog::from_sections(Some(&table), None, None, None).unwrap();
 
         let mut names: Vec<&str> = catalog.chat_model_names().collect();
         names.sort();

@@ -38,12 +38,11 @@ impl MessageStore {
                 if line.is_empty() {
                     continue;
                 }
-                let mut msg: Message = serde_json::from_str(line).map_err(|e| {
-                    EngineError::JsonParse {
+                let mut msg: Message =
+                    serde_json::from_str(line).map_err(|e| EngineError::JsonParse {
                         path: path.clone(),
                         source: e,
-                    }
-                })?;
+                    })?;
                 msg.normalize();
                 msgs.push(msg);
             }
@@ -72,19 +71,24 @@ impl MessageStore {
     /// part of the same turn as the preceding real user message.
     pub fn turn_count(&self) -> usize {
         use shore_protocol::types::{ContentBlock, Role};
-        self.messages.iter().filter(|m| {
-            if m.role != Role::User {
-                return false;
-            }
-            // A user message whose content_blocks are ALL ToolResult is a
-            // tool-loop message, not a real turn.
-            if !m.content_blocks.is_empty()
-                && m.content_blocks.iter().all(|b| matches!(b, ContentBlock::ToolResult { .. }))
-            {
-                return false;
-            }
-            true
-        }).count()
+        self.messages
+            .iter()
+            .filter(|m| {
+                if m.role != Role::User {
+                    return false;
+                }
+                // A user message whose content_blocks are ALL ToolResult is a
+                // tool-loop message, not a real turn.
+                if !m.content_blocks.is_empty()
+                    && m.content_blocks
+                        .iter()
+                        .all(|b| matches!(b, ContentBlock::ToolResult { .. }))
+                {
+                    return false;
+                }
+                true
+            })
+            .count()
     }
 
     /// Clear all messages and truncate the backing file.
@@ -131,11 +135,18 @@ impl MessageStore {
     /// Returns the number of messages removed.
     pub fn truncate_after_last_user_turn(&mut self) -> Result<usize, EngineError> {
         use shore_protocol::types::{ContentBlock, Role};
-        let keep = self.messages.iter().rposition(|m| {
-            m.role == Role::User
-                && (m.content_blocks.is_empty()
-                    || !m.content_blocks.iter().all(|b| matches!(b, ContentBlock::ToolResult { .. })))
-        }).map_or(0, |i| i + 1);
+        let keep = self
+            .messages
+            .iter()
+            .rposition(|m| {
+                m.role == Role::User
+                    && (m.content_blocks.is_empty()
+                        || !m
+                            .content_blocks
+                            .iter()
+                            .all(|b| matches!(b, ContentBlock::ToolResult { .. })))
+            })
+            .map_or(0, |i| i + 1);
         let removed = self.messages.len() - keep;
         if removed > 0 {
             info!(removed, "Truncating messages after last user turn");
@@ -165,7 +176,12 @@ impl MessageStore {
             .iter_mut()
             .find(|m| m.msg_id == msg_id)
             .ok_or_else(|| EngineError::MessageNotFound(msg_id.to_string()))?;
-        info!(msg_id, alt_index = index, alt_count = count, "Setting swipe");
+        info!(
+            msg_id,
+            alt_index = index,
+            alt_count = count,
+            "Setting swipe"
+        );
         msg.alt_index = Some(index);
         msg.alt_count = Some(count);
         self.persist()
@@ -199,10 +215,12 @@ impl MessageStore {
         }
         let mut buf = String::new();
         for msg in &self.messages {
-            let line = msg.serialize_for_storage().map_err(|e| EngineError::JsonSerialize {
-                context: "message".into(),
-                source: e,
-            })?;
+            let line = msg
+                .serialize_for_storage()
+                .map_err(|e| EngineError::JsonSerialize {
+                    context: "message".into(),
+                    source: e,
+                })?;
             buf.push_str(&line);
             buf.push('\n');
         }
@@ -230,7 +248,9 @@ mod tests {
             content_blocks: if content.is_empty() {
                 vec![]
             } else {
-                vec![ContentBlock::Text { text: content.to_string() }]
+                vec![ContentBlock::Text {
+                    text: content.to_string(),
+                }]
             },
             alt_index: None,
             alt_count: None,
@@ -244,9 +264,7 @@ mod tests {
         let path = tmp.path().join("conv.jsonl");
         let mut store = MessageStore::new(path.clone());
 
-        store
-            .append(make_msg("m1", Role::User, "Hello"))
-            .unwrap();
+        store.append(make_msg("m1", Role::User, "Hello")).unwrap();
         store
             .append(make_msg("m2", Role::Assistant, "Hi there"))
             .unwrap();
@@ -296,15 +314,11 @@ mod tests {
         let path = tmp.path().join("conv.jsonl");
         let mut store = MessageStore::new(path.clone());
 
-        store
-            .append(make_msg("m1", Role::User, "First"))
-            .unwrap();
+        store.append(make_msg("m1", Role::User, "First")).unwrap();
         store
             .append(make_msg("m2", Role::Assistant, "Second"))
             .unwrap();
-        store
-            .append(make_msg("m3", Role::User, "Third"))
-            .unwrap();
+        store.append(make_msg("m3", Role::User, "Third")).unwrap();
 
         store.delete("m2").unwrap();
 
@@ -443,7 +457,9 @@ mod tests {
             !msg.content_blocks.is_empty(),
             "normalize should populate content_blocks from content"
         );
-        assert!(matches!(&msg.content_blocks[0], ContentBlock::Text { text } if text == "old format message"));
+        assert!(
+            matches!(&msg.content_blocks[0], ContentBlock::Text { text } if text == "old format message")
+        );
     }
 
     #[test]
@@ -470,7 +486,9 @@ mod tests {
         // Real user turn.
         store.append(make_msg("m1", Role::User, "Hello")).unwrap();
         // Assistant with tool use.
-        store.append(make_msg("m2", Role::Assistant, "Let me search")).unwrap();
+        store
+            .append(make_msg("m2", Role::Assistant, "Let me search"))
+            .unwrap();
         // Tool result (NOT a real user turn).
         let mut tool_msg = Message {
             msg_id: "m3".to_string(),
@@ -492,7 +510,11 @@ mod tests {
         store.append(make_msg("m4", Role::User, "Thanks")).unwrap();
 
         assert_eq!(store.message_count(), 4);
-        assert_eq!(store.turn_count(), 2, "tool-result message should not count as a turn");
+        assert_eq!(
+            store.turn_count(),
+            2,
+            "tool-result message should not count as a turn"
+        );
     }
 
     // ── JSONL corruption / edge-case tests ─────────────────────────────
@@ -542,7 +564,11 @@ mod tests {
         let mut store = MessageStore::new(path.clone());
 
         for i in 0..1000 {
-            let role = if i % 2 == 0 { Role::User } else { Role::Assistant };
+            let role = if i % 2 == 0 {
+                Role::User
+            } else {
+                Role::Assistant
+            };
             store
                 .append(make_msg(&format!("m{i}"), role, &format!("Message {i}")))
                 .unwrap();

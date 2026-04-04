@@ -19,14 +19,14 @@ use std::time::Duration;
 
 use serde_json::json;
 use shore_client::connection::{SWPConnection, ServerAddr};
-use shore_daemon::characters::CharacterRegistry;
-use shore_daemon::commands::{CommandContext, SessionTokens};
 use shore_config::app::{AppConfig, ServiceEntry, ServicesConfig};
 use shore_config::models::ModelCatalog;
 use shore_config::{LoadedConfig, ShoreDirs};
+use shore_daemon::characters::CharacterRegistry;
+use shore_daemon::commands::{CommandContext, SessionTokens};
 use shore_daemon::handler::MessageHandler;
-use shore_llm_client::LlmClient;
 use shore_daemon::server::{Server, ServerConfig};
+use shore_llm_client::LlmClient;
 use shore_protocol::server_msg::ServerMessage;
 use tokio::time::timeout;
 
@@ -37,10 +37,7 @@ const RECV_TIMEOUT: Duration = Duration::from_secs(60);
 const CMD_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Helper: receive next ServerMessage with a timeout.
-async fn recv_timeout(
-    conn: &mut SWPConnection,
-    dur: Duration,
-) -> ServerMessage {
+async fn recv_timeout(conn: &mut SWPConnection, dur: Duration) -> ServerMessage {
     timeout(dur, conn.recv())
         .await
         .expect("Timed out waiting for server message")
@@ -48,11 +45,7 @@ async fn recv_timeout(
 }
 
 /// Helper: drain messages until we find one matching the predicate, or timeout.
-async fn recv_until<F>(
-    conn: &mut SWPConnection,
-    dur: Duration,
-    pred: F,
-) -> ServerMessage
+async fn recv_until<F>(conn: &mut SWPConnection, dur: Duration, pred: F) -> ServerMessage
 where
     F: Fn(&ServerMessage) -> bool,
 {
@@ -135,7 +128,10 @@ fn build_test_config_inner(
     app.behavior.tool_use.max_iterations = 5;
     app.services = ServicesConfig {
         llm: ServiceEntry {
-            command: Some(format!("node {}", llm_dist.canonicalize().unwrap().display())),
+            command: Some(format!(
+                "node {}",
+                llm_dist.canonicalize().unwrap().display()
+            )),
             socket: Some(llm_socket.display().to_string()),
             enabled: true,
         },
@@ -223,7 +219,9 @@ async fn e2e_conversation_milestone() {
         session_tokens: std::sync::Arc::new(std::sync::Mutex::new(SessionTokens::default())),
         autonomy: autonomy.clone(),
         llm_client: llm_client.clone(),
-        diagnostics: std::sync::Arc::new(std::sync::Mutex::new(shore_diagnostics::Diagnostics::default())),
+        diagnostics: std::sync::Arc::new(std::sync::Mutex::new(
+            shore_diagnostics::Diagnostics::default(),
+        )),
         memory_shell_sessions: std::collections::HashMap::new(),
     };
 
@@ -267,32 +265,47 @@ async fn e2e_conversation_milestone() {
 
     assert_eq!(server_hello.v, shore_protocol::SWP_V1);
     assert_eq!(server_hello.server_name, "shore-daemon-test");
-    assert!(history.messages.is_empty(), "Initial history should be empty");
-    eprintln!("  Handshake OK: v={}, server={}", server_hello.v, server_hello.server_name);
+    assert!(
+        history.messages.is_empty(),
+        "Initial history should be empty"
+    );
+    eprintln!(
+        "  Handshake OK: v={}, server={}",
+        server_hello.v, server_hello.server_name
+    );
 
     // ── AC 3: Send commands (status, list_characters, new_chat) ───────
     eprintln!("=== AC 3: Commands ===");
 
     // status
     conn.send_command("status", json!({})).await.unwrap();
-    let status_msg = recv_until(&mut conn, CMD_TIMEOUT, |m| {
-        matches!(m, ServerMessage::CommandOutput(o) if o.name == "status")
-    })
+    let status_msg = recv_until(
+        &mut conn,
+        CMD_TIMEOUT,
+        |m| matches!(m, ServerMessage::CommandOutput(o) if o.name == "status"),
+    )
     .await;
     match &status_msg {
         ServerMessage::CommandOutput(o) => {
             assert!(o.data.is_object());
-            assert!(o.data.get("tokens").is_some(), "status should include token counts");
+            assert!(
+                o.data.get("tokens").is_some(),
+                "status should include token counts"
+            );
             eprintln!("  status OK: {:?}", o.data);
         }
         _ => panic!("Expected CommandOutput"),
     }
 
     // list_characters
-    conn.send_command("list_characters", json!({})).await.unwrap();
-    let chars_msg = recv_until(&mut conn, CMD_TIMEOUT, |m| {
-        matches!(m, ServerMessage::CommandOutput(o) if o.name == "list_characters")
-    })
+    conn.send_command("list_characters", json!({}))
+        .await
+        .unwrap();
+    let chars_msg = recv_until(
+        &mut conn,
+        CMD_TIMEOUT,
+        |m| matches!(m, ServerMessage::CommandOutput(o) if o.name == "list_characters"),
+    )
     .await;
     match &chars_msg {
         ServerMessage::CommandOutput(o) => {
@@ -351,11 +364,20 @@ async fn e2e_conversation_milestone() {
     }
 
     assert!(got_stream_start, "Should have received StreamStart");
-    assert!(got_stream_chunks > 0, "Should have received at least one StreamChunk");
-    assert!(!stream_end_content.is_empty(), "StreamEnd content should not be empty");
+    assert!(
+        got_stream_chunks > 0,
+        "Should have received at least one StreamChunk"
+    );
+    assert!(
+        !stream_end_content.is_empty(),
+        "StreamEnd content should not be empty"
+    );
 
     // Drain the final History message (assistant message appended).
-    let _ = recv_until(&mut conn, CMD_TIMEOUT, |m| matches!(m, ServerMessage::History(_))).await;
+    let _ = recv_until(&mut conn, CMD_TIMEOUT, |m| {
+        matches!(m, ServerMessage::History(_))
+    })
+    .await;
 
     // ── AC 4: Tool use — "What time is it?" triggers check_time ───────
     eprintln!("=== AC 4: Tool Use (check_time) ===");
@@ -440,10 +462,18 @@ async fn e2e_conversation_milestone() {
     eprintln!("=== AC 5: JSONL Persistence ===");
     let char_data_dir = tmp.path().join("data").join("TestChar");
     let jsonl_path = char_data_dir.join("active.jsonl");
-    assert!(jsonl_path.exists(), "active.jsonl should exist: {}", jsonl_path.display());
+    assert!(
+        jsonl_path.exists(),
+        "active.jsonl should exist: {}",
+        jsonl_path.display()
+    );
     let jsonl_content = std::fs::read_to_string(&jsonl_path).unwrap();
     let lines: Vec<&str> = jsonl_content.lines().filter(|l| !l.is_empty()).collect();
-    eprintln!("  JSONL file: {}, lines: {}", jsonl_path.display(), lines.len());
+    eprintln!(
+        "  JSONL file: {}, lines: {}",
+        jsonl_path.display(),
+        lines.len()
+    );
 
     // Should have at least user + assistant messages from "Hello" exchange.
     assert!(
@@ -454,8 +484,8 @@ async fn e2e_conversation_milestone() {
 
     // Verify each line is valid JSON with msg_id field.
     for (i, line) in lines.iter().enumerate() {
-        let parsed: serde_json::Value =
-            serde_json::from_str(line).unwrap_or_else(|e| panic!("Line {i} is not valid JSON: {e}"));
+        let parsed: serde_json::Value = serde_json::from_str(line)
+            .unwrap_or_else(|e| panic!("Line {i} is not valid JSON: {e}"));
         assert!(
             parsed.get("msg_id").is_some(),
             "Line {i} should have msg_id field: {line}"
@@ -505,10 +535,19 @@ async fn e2e_conversation_milestone() {
                     let block_type = block["type"].as_str().unwrap_or("");
                     match block_type {
                         "tool_use" => {
-                            assert_eq!(role, "assistant", "tool_use block should be on assistant message");
+                            assert_eq!(
+                                role, "assistant",
+                                "tool_use block should be on assistant message"
+                            );
                             assert!(block.get("id").is_some(), "tool_use block should have id");
-                            assert!(block.get("name").is_some(), "tool_use block should have name");
-                            assert!(block.get("input").is_some(), "tool_use block should have input");
+                            assert!(
+                                block.get("name").is_some(),
+                                "tool_use block should have name"
+                            );
+                            assert!(
+                                block.get("input").is_some(),
+                                "tool_use block should have input"
+                            );
                             found_tool_use_blocks = true;
                             eprintln!(
                                 "  Line {i}: assistant tool_use block: name={}",
@@ -567,9 +606,11 @@ async fn e2e_conversation_milestone() {
     // ── AC 6: Verify status shows token counts after API usage ────────
     eprintln!("=== AC 6: Token counts in status ===");
     conn.send_command("status", json!({})).await.unwrap();
-    let final_status = recv_until(&mut conn, CMD_TIMEOUT, |m| {
-        matches!(m, ServerMessage::CommandOutput(o) if o.name == "status")
-    })
+    let final_status = recv_until(
+        &mut conn,
+        CMD_TIMEOUT,
+        |m| matches!(m, ServerMessage::CommandOutput(o) if o.name == "status"),
+    )
     .await;
     match &final_status {
         ServerMessage::CommandOutput(o) => {
@@ -657,7 +698,9 @@ impl E2EHarness {
             session_tokens: std::sync::Arc::new(std::sync::Mutex::new(SessionTokens::default())),
             autonomy: autonomy.clone(),
             llm_client: llm_client.clone(),
-            diagnostics: std::sync::Arc::new(std::sync::Mutex::new(shore_diagnostics::Diagnostics::default())),
+            diagnostics: std::sync::Arc::new(std::sync::Mutex::new(
+                shore_diagnostics::Diagnostics::default(),
+            )),
             memory_shell_sessions: std::collections::HashMap::new(),
         };
 
@@ -794,12 +837,17 @@ async fn e2e_generate_image() {
 
     // ── Assertions ────────────────────────────────────────────────────
     assert!(got_tool_call, "LLM should have called a tool");
-    assert_eq!(tool_call_name, "generate_image", "Tool called should be generate_image");
+    assert_eq!(
+        tool_call_name, "generate_image",
+        "Tool called should be generate_image"
+    );
     assert!(got_tool_result, "Tool result should have been returned");
 
     // Parse the tool result JSON and verify it contains a path.
-    let result_json: serde_json::Value = serde_json::from_str(&tool_result_output)
-        .unwrap_or_else(|e| panic!("Tool result should be valid JSON: {e}\nGot: {tool_result_output}"));
+    let result_json: serde_json::Value =
+        serde_json::from_str(&tool_result_output).unwrap_or_else(|e| {
+            panic!("Tool result should be valid JSON: {e}\nGot: {tool_result_output}")
+        });
     let image_path = result_json["path"]
         .as_str()
         .expect("Tool result should contain 'path' field");
@@ -810,7 +858,11 @@ async fn e2e_generate_image() {
     eprintln!("  Image saved to: {image_path}");
 
     // Verify the file actually exists on disk.
-    let full_path = harness.data_dir.join("TestChar").join("images").join(image_path);
+    let full_path = harness
+        .data_dir
+        .join("TestChar")
+        .join("images")
+        .join(image_path);
     assert!(
         full_path.exists(),
         "Generated image file should exist at: {}",
@@ -880,7 +932,9 @@ async fn e2e_web_search() {
                 tool_result_output = tr.output.clone();
                 eprintln!(
                     "  ToolResult: name={}, is_error={}, output_len={}",
-                    tr.tool_name, tr.is_error, tr.output.len()
+                    tr.tool_name,
+                    tr.is_error,
+                    tr.output.len()
                 );
             }
             ServerMessage::StreamEnd(end) => {
@@ -912,12 +966,17 @@ async fn e2e_web_search() {
 
     // ── Assertions ────────────────────────────────────────────────────
     assert!(got_tool_call, "LLM should have called a tool");
-    assert_eq!(tool_call_name, "web_search", "Tool called should be web_search");
+    assert_eq!(
+        tool_call_name, "web_search",
+        "Tool called should be web_search"
+    );
     assert!(got_tool_result, "Tool result should have been returned");
 
     // Parse the tool result JSON and verify structure.
-    let result_json: serde_json::Value = serde_json::from_str(&tool_result_output)
-        .unwrap_or_else(|e| panic!("Tool result should be valid JSON: {e}\nGot: {tool_result_output}"));
+    let result_json: serde_json::Value =
+        serde_json::from_str(&tool_result_output).unwrap_or_else(|e| {
+            panic!("Tool result should be valid JSON: {e}\nGot: {tool_result_output}")
+        });
     assert!(
         result_json.get("query").is_some(),
         "Tool result should contain 'query' field"
@@ -925,15 +984,15 @@ async fn e2e_web_search() {
     let results = result_json["results"]
         .as_array()
         .expect("Tool result should contain 'results' array");
-    assert!(
-        !results.is_empty(),
-        "Search results should not be empty"
-    );
+    assert!(!results.is_empty(), "Search results should not be empty");
     // Each result should have title, url, content.
     for r in results {
         assert!(r["title"].as_str().is_some(), "Result should have title");
         assert!(r["url"].as_str().is_some(), "Result should have url");
-        assert!(r["content"].as_str().is_some(), "Result should have content");
+        assert!(
+            r["content"].as_str().is_some(),
+            "Result should have content"
+        );
     }
     eprintln!("  Search returned {} results", results.len());
 

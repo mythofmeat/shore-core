@@ -121,7 +121,10 @@ impl Server {
             }
             _ => None,
         };
-        let tcp_allowed_hosts: Vec<String> = self.config.tcp.as_ref()
+        let tcp_allowed_hosts: Vec<String> = self
+            .config
+            .tcp
+            .as_ref()
             .map(|t| t.allowed_hosts.clone())
             .unwrap_or_default();
 
@@ -403,7 +406,11 @@ where
             // Update per-connection character when switching.
             if cmd.name == "switch_character" {
                 if let Some(name) = cmd.args.get("name").and_then(|v| v.as_str()) {
-                    info!(client_id, new_character = name, "Updating connection character");
+                    info!(
+                        client_id,
+                        new_character = name,
+                        "Updating connection character"
+                    );
                     *character = Some(name.to_string());
                 }
             }
@@ -424,9 +431,8 @@ async fn write_message<W>(writer: &mut W, msg: &ServerMessage) -> std::io::Resul
 where
     W: tokio::io::AsyncWrite + Unpin,
 {
-    let mut json = serde_json::to_string(msg).map_err(|e| {
-        std::io::Error::new(std::io::ErrorKind::InvalidData, e)
-    })?;
+    let mut json = serde_json::to_string(msg)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     json.push('\n');
     writer.write_all(json.as_bytes()).await?;
     writer.flush().await?;
@@ -435,7 +441,9 @@ where
 
 /// Read one ClientMessage from a newline-delimited JSON stream.
 /// Returns `None` on EOF.
-async fn read_message<R>(reader: &mut BufReader<R>) -> Result<Option<ClientMessage>, Box<dyn std::error::Error + Send + Sync>>
+async fn read_message<R>(
+    reader: &mut BufReader<R>,
+) -> Result<Option<ClientMessage>, Box<dyn std::error::Error + Send + Sync>>
 where
     R: tokio::io::AsyncRead + Unpin,
 {
@@ -484,9 +492,7 @@ mod tests {
     }
 
     /// Helper: read one ServerMessage from the reader half.
-    async fn recv_server_msg(
-        reader: &mut BufReader<tokio::io::DuplexStream>,
-    ) -> ServerMessage {
+    async fn recv_server_msg(reader: &mut BufReader<tokio::io::DuplexStream>) -> ServerMessage {
         let mut line = String::new();
         reader.read_line(&mut line).await.unwrap();
         serde_json::from_str(line.trim()).unwrap()
@@ -507,8 +513,7 @@ mod tests {
         let (client_stream, server_stream) = duplex(8192);
         let (client_stream2, server_stream2) = duplex(8192);
 
-        let clients: Arc<RwLock<HashMap<u64, ClientInfo>>> =
-            Arc::new(RwLock::new(HashMap::new()));
+        let clients: Arc<RwLock<HashMap<u64, ClientInfo>>> = Arc::new(RwLock::new(HashMap::new()));
         let (push_tx, _) = broadcast::channel(16);
         let push_rx = push_tx.subscribe();
         let (route_tx, route_rx) = tokio::sync::mpsc::channel(16);
@@ -626,7 +631,10 @@ mod tests {
 
         let routed = h.route_rx.recv().await.unwrap();
         match routed {
-            RoutedMessage::Engine { msg: ClientMessage::Message(body), .. } => {
+            RoutedMessage::Engine {
+                msg: ClientMessage::Message(body),
+                ..
+            } => {
                 assert_eq!(body.text, "Hello world");
                 assert_eq!(body.rid, Some("msg_01".into()));
             }
@@ -646,7 +654,10 @@ mod tests {
 
         let routed = h.route_rx.recv().await.unwrap();
         match routed {
-            RoutedMessage::Engine { msg: ClientMessage::Regen(r), .. } => {
+            RoutedMessage::Engine {
+                msg: ClientMessage::Regen(r),
+                ..
+            } => {
                 assert_eq!(r.rid, Some("regen_01".into()));
             }
             other => panic!("Expected Engine(Regen), got {:?}", other),
@@ -819,8 +830,7 @@ mod tests {
     #[tokio::test]
     async fn broadcast_reaches_two_clients() {
         // Shared state for both clients.
-        let clients: Arc<RwLock<HashMap<u64, ClientInfo>>> =
-            Arc::new(RwLock::new(HashMap::new()));
+        let clients: Arc<RwLock<HashMap<u64, ClientInfo>>> = Arc::new(RwLock::new(HashMap::new()));
         let (push_tx, _) = broadcast::channel::<ServerMessage>(16);
         let (route_tx, _route_rx) = tokio::sync::mpsc::channel::<RoutedMessage>(16);
         let (shutdown_tx, _) = tokio::sync::watch::channel(());
@@ -958,7 +968,9 @@ mod tests {
         let stream = match timeout(
             Duration::from_secs(2),
             TcpStream::connect(format!("127.0.0.1:{port}")),
-        ).await {
+        )
+        .await
+        {
             Ok(Ok(s)) => s,
             _ => return false,
         };
@@ -984,7 +996,10 @@ mod tests {
         let port = available_port();
         let (_handle, shutdown_tx) = spawn_tcp_server(&tmp, port, vec![]);
 
-        assert!(tcp_handshake_succeeds(port).await, "Empty allowed_hosts should allow all");
+        assert!(
+            tcp_handshake_succeeds(port).await,
+            "Empty allowed_hosts should allow all"
+        );
 
         let _ = shutdown_tx.send(());
     }
@@ -993,10 +1008,12 @@ mod tests {
     async fn tcp_acl_allows_matching_ip() {
         let tmp = TempDir::new().unwrap();
         let port = available_port();
-        let (_handle, shutdown_tx) =
-            spawn_tcp_server(&tmp, port, vec!["127.0.0.1".into()]);
+        let (_handle, shutdown_tx) = spawn_tcp_server(&tmp, port, vec!["127.0.0.1".into()]);
 
-        assert!(tcp_handshake_succeeds(port).await, "Matching IP should be allowed");
+        assert!(
+            tcp_handshake_succeeds(port).await,
+            "Matching IP should be allowed"
+        );
 
         let _ = shutdown_tx.send(());
     }
@@ -1005,10 +1022,12 @@ mod tests {
     async fn tcp_acl_rejects_non_matching_ip() {
         let tmp = TempDir::new().unwrap();
         let port = available_port();
-        let (_handle, shutdown_tx) =
-            spawn_tcp_server(&tmp, port, vec!["10.0.0.1".into()]);
+        let (_handle, shutdown_tx) = spawn_tcp_server(&tmp, port, vec!["10.0.0.1".into()]);
 
-        assert!(!tcp_handshake_succeeds(port).await, "Non-matching IP should be rejected");
+        assert!(
+            !tcp_handshake_succeeds(port).await,
+            "Non-matching IP should be rejected"
+        );
 
         let _ = shutdown_tx.send(());
     }

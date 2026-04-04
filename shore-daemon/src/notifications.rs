@@ -96,7 +96,9 @@ async fn dispatch(
     match config.backend {
         NotificationBackend::NotifySend => dispatch_notify_send(title, body).await,
         NotificationBackend::Ntfy => dispatch_ntfy(client, &config.ntfy, title, body).await,
-        NotificationBackend::Command => dispatch_command(&config.command.template, title, body).await,
+        NotificationBackend::Command => {
+            dispatch_command(&config.command.template, title, body).await
+        }
     }
 }
 
@@ -123,7 +125,10 @@ async fn dispatch_ntfy(
         return Err("ntfy topic is not configured".into());
     }
     let url = format!("{}/{}", config.url.trim_end_matches('/'), config.topic);
-    let mut req = client.post(&url).header("Title", title).body(body.to_string());
+    let mut req = client
+        .post(&url)
+        .header("Title", title)
+        .body(body.to_string());
     if !config.token.is_empty() {
         req = req.header("Authorization", format!("Bearer {}", config.token));
     }
@@ -142,9 +147,7 @@ async fn dispatch_command(
     if template.is_empty() {
         return Err("notification command template is not configured".into());
     }
-    let rendered = template
-        .replace("{title}", title)
-        .replace("{body}", body);
+    let rendered = template.replace("{title}", title).replace("{body}", body);
     tokio::process::Command::new("sh")
         .arg("-c")
         .arg(&rendered)
@@ -158,9 +161,7 @@ async fn dispatch_command(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shore_config::app::{
-        CommandNotifyConfig, NotificationEventsConfig,
-    };
+    use shore_config::app::{CommandNotifyConfig, NotificationEventsConfig};
 
     fn make_service(enabled: bool, events: NotificationEventsConfig) -> NotificationService {
         NotificationService::new(NotificationsConfig {

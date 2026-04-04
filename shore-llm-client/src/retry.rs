@@ -39,11 +39,7 @@ pub enum RetryDecision {
 /// Determine whether to retry after an LLM error.
 ///
 /// Called when `stream_raw` or stream consumption fails.
-pub fn should_retry_error(
-    error: &LlmError,
-    attempt: u32,
-    policy: &RetryPolicy,
-) -> RetryDecision {
+pub fn should_retry_error(error: &LlmError, attempt: u32, policy: &RetryPolicy) -> RetryDecision {
     if attempt >= policy.max_retries {
         // Exhausted retries — try fallback model if available.
         if let Some(ref fallback) = policy.fallback_model {
@@ -65,9 +61,7 @@ pub fn should_retry_error(
         }
 
         // HTTP 5xx or 429 — retry.
-        LlmError::HttpStatus { status, .. }
-            if *status >= 500 || *status == 429 =>
-        {
+        LlmError::HttpStatus { status, .. } if *status >= 500 || *status == 429 => {
             warn!(attempt, status = %status, "Server error, retrying");
             RetryDecision::Retry
         }
@@ -76,9 +70,7 @@ pub fn should_retry_error(
         LlmError::HttpStatus { .. } => RetryDecision::Fail,
 
         // Serialization/deserialization — not transient.
-        LlmError::Serialize(_) | LlmError::Deserialize(_) => {
-            RetryDecision::Fail
-        }
+        LlmError::Serialize(_) | LlmError::Deserialize(_) => RetryDecision::Fail,
 
         // Missing API key — not transient.
         LlmError::MissingApiKey { .. } => RetryDecision::Fail,
@@ -261,13 +253,19 @@ mod tests {
             status: 500,
             body: "".into(),
         };
-        assert_eq!(should_retry_error(&err_500, 0, &policy), RetryDecision::Retry);
+        assert_eq!(
+            should_retry_error(&err_500, 0, &policy),
+            RetryDecision::Retry
+        );
 
         let err_429 = LlmError::HttpStatus {
             status: 429,
             body: "".into(),
         };
-        assert_eq!(should_retry_error(&err_429, 0, &policy), RetryDecision::Retry);
+        assert_eq!(
+            should_retry_error(&err_429, 0, &policy),
+            RetryDecision::Retry
+        );
     }
 
     #[test]
@@ -278,7 +276,10 @@ mod tests {
             status: 400,
             body: "invalid json".into(),
         };
-        assert_eq!(should_retry_error(&err_400, 0, &policy), RetryDecision::Fail);
+        assert_eq!(
+            should_retry_error(&err_400, 0, &policy),
+            RetryDecision::Fail
+        );
     }
 
     #[test]

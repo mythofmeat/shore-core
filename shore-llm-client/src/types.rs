@@ -390,7 +390,10 @@ mod tests {
         let resp: GenerateResponse = serde_json::from_str(json).unwrap();
         assert_eq!(resp.content_blocks.len(), 2);
         match &resp.content_blocks[0] {
-            ContentBlock::Thinking { thinking, signature } => {
+            ContentBlock::Thinking {
+                thinking,
+                signature,
+            } => {
                 assert_eq!(thinking, "Let me think...");
                 assert!(signature.is_none());
             }

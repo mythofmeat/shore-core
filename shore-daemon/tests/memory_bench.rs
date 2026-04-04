@@ -96,7 +96,11 @@ impl AgentLlm for InstrumentedLlm {
             let n_tools = tools.as_ref().map(|t| t.len()).unwrap_or(0);
             eprintln!(
                 "  [{} call #{}, {} tools, {} msgs] → {}",
-                self.label, n, n_tools, messages.len(), model.model_id
+                self.label,
+                n,
+                n_tools,
+                messages.len(),
+                model.model_id
             );
 
             let start = Instant::now();
@@ -109,9 +113,9 @@ impl AgentLlm for InstrumentedLlm {
                         .content_blocks
                         .iter()
                         .filter_map(|b| match b {
-                            shore_llm_client::types::ContentBlock::ToolUse {
-                                name, ..
-                            } => Some(name.clone()),
+                            shore_llm_client::types::ContentBlock::ToolUse { name, .. } => {
+                                Some(name.clone())
+                            }
                             _ => None,
                         })
                         .collect();
@@ -206,7 +210,10 @@ fn all_models() -> Vec<(&'static str, ResolvedModel)> {
         ),
         (
             "gemini-3.1-flash-lite",
-            openrouter_tool_model("gemini-3.1-flash-lite", "google/gemini-3.1-flash-lite-preview"),
+            openrouter_tool_model(
+                "gemini-3.1-flash-lite",
+                "google/gemini-3.1-flash-lite-preview",
+            ),
         ),
         (
             "deepseek-v3.2",
@@ -250,7 +257,12 @@ fn socket_path() -> PathBuf {
     let uid: u32 = std::process::Command::new("id")
         .arg("-u")
         .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().parse().unwrap_or(1000))
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .trim()
+                .parse()
+                .unwrap_or(1000)
+        })
         .unwrap_or(1000);
     PathBuf::from(format!("/run/user/{uid}/shore/llm.sock"))
 }
@@ -453,7 +465,10 @@ async fn memory_model_benchmark() {
 fn mixed_model_pairs() -> Vec<(&'static str, ResolvedModel, ResolvedModel)> {
     let kimi = openrouter_primary_model("kimi-k2.5", "moonshotai/kimi-k2.5");
     let qwen_flash = openrouter_tool_model("qwen3.5-flash", "qwen/qwen3.5-flash-02-23");
-    let gemini = openrouter_tool_model("gemini-3.1-flash-lite", "google/gemini-3.1-flash-lite-preview");
+    let gemini = openrouter_tool_model(
+        "gemini-3.1-flash-lite",
+        "google/gemini-3.1-flash-lite-preview",
+    );
     let qwen_moe = openrouter_tool_model("qwen3-235b", "qwen/qwen3-235b-a22b-2507");
 
     vec![
@@ -476,7 +491,11 @@ fn mixed_model_pairs() -> Vec<(&'static str, ResolvedModel, ResolvedModel)> {
 #[ignore = "Requires running shore-llm and OPENROUTER keys"]
 async fn memory_mixed_model_benchmark() {
     let db_path = memory_db_path();
-    assert!(db_path.exists(), "Memory DB not found at {}", db_path.display());
+    assert!(
+        db_path.exists(),
+        "Memory DB not found at {}",
+        db_path.display()
+    );
     assert!(backup_db_path().exists(), "Backup not found");
 
     let char_def = char_definition();
@@ -556,7 +575,10 @@ async fn memory_bench_finalists() {
 
     let kimi = openrouter_primary_model("kimi-k2.5", "moonshotai/kimi-k2.5");
     let qwen_flash = openrouter_tool_model("qwen3.5-flash", "qwen/qwen3.5-flash-02-23");
-    let gemini = openrouter_tool_model("gemini-3.1-flash-lite", "google/gemini-3.1-flash-lite-preview");
+    let gemini = openrouter_tool_model(
+        "gemini-3.1-flash-lite",
+        "google/gemini-3.1-flash-lite-preview",
+    );
     let qwen_moe = openrouter_tool_model("qwen3-235b", "qwen/qwen3-235b-a22b-2507");
 
     let pairs: Vec<(&str, &ResolvedModel, &ResolvedModel)> = vec![
@@ -570,14 +592,24 @@ async fn memory_bench_finalists() {
 
     for (label, r_model, a_model) in &pairs {
         eprintln!("\n{}", "━".repeat(80));
-        eprintln!(">>> {} (R={}, A={}) <<<", label, r_model.model_id, a_model.model_id);
+        eprintln!(
+            ">>> {} (R={}, A={}) <<<",
+            label, r_model.model_id, a_model.model_id
+        );
 
         let db = MemoryDB::open(&db_path).expect("Failed to open memory DB");
         let (output, rc, ac, ms) =
             run_benchmark_mixed(label, r_model, a_model, query, &db, &char_def).await;
 
-        eprintln!("\n  {} | {} calls (R:{} A:{}) | {}ms | {} chars",
-            label, rc + ac, rc, ac, ms, output.len());
+        eprintln!(
+            "\n  {} | {} calls (R:{} A:{}) | {}ms | {} chars",
+            label,
+            rc + ac,
+            rc,
+            ac,
+            ms,
+            output.len()
+        );
         eprintln!("{}", "─".repeat(80));
         eprintln!("{output}");
         eprintln!("{}", "─".repeat(80));
@@ -605,7 +637,10 @@ async fn memory_bench_single() {
     let (output, rc, ac, ms) = run_benchmark("test", &model, query, &db, &char_def).await;
 
     eprintln!("\nRESULT:");
-    eprintln!("  Researcher: {rc} calls | Agent: {ac} calls | Total: {}ms", ms);
+    eprintln!(
+        "  Researcher: {rc} calls | Agent: {ac} calls | Total: {}ms",
+        ms
+    );
     eprintln!("  Output ({} chars):", output.len());
     eprintln!("{output}");
 

@@ -12,7 +12,10 @@ pub(crate) struct StreamTiming {
 
 impl StreamTiming {
     pub(crate) fn new() -> Self {
-        Self { start: Instant::now(), first_token_ms: None }
+        Self {
+            start: Instant::now(),
+            first_token_ms: None,
+        }
     }
 
     /// Record the first token time (idempotent — only records the first call).
@@ -81,7 +84,10 @@ pub(crate) fn merge_anthropic_usage(usage: &mut Usage, raw: &Value) {
     if let Some(v) = raw.get("cache_read_input_tokens").and_then(Value::as_u64) {
         usage.cache_read_tokens = v as u32;
     }
-    if let Some(v) = raw.get("cache_creation_input_tokens").and_then(Value::as_u64) {
+    if let Some(v) = raw
+        .get("cache_creation_input_tokens")
+        .and_then(Value::as_u64)
+    {
         usage.cache_creation_tokens = v as u32;
     }
 }
@@ -91,10 +97,7 @@ pub(crate) fn extract_anthropic_usage(body: Option<&Value>) -> Usage {
     let mut usage = Usage::default();
     if let Some(raw) = body {
         // Non-streaming: all fields present in one object, set unconditionally.
-        usage.input_tokens = raw
-            .get("input_tokens")
-            .and_then(Value::as_u64)
-            .unwrap_or(0) as u32;
+        usage.input_tokens = raw.get("input_tokens").and_then(Value::as_u64).unwrap_or(0) as u32;
         usage.output_tokens = raw
             .get("output_tokens")
             .and_then(Value::as_u64)
@@ -177,10 +180,7 @@ pub(crate) fn extract_openai_usage(u: &Value) -> Usage {
         .unwrap_or(0) as u32;
 
     Usage {
-        input_tokens: u
-            .get("prompt_tokens")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as u32,
+        input_tokens: u.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
         output_tokens: u
             .get("completion_tokens")
             .and_then(|v| v.as_u64())
@@ -314,7 +314,10 @@ mod tests {
         // OpenRouter sends input_tokens=0 in message_start; must not overwrite.
         let raw = json!({"input_tokens": 0, "output_tokens": 42});
         merge_anthropic_usage(&mut usage, &raw);
-        assert_eq!(usage.input_tokens, 500, "input_tokens=0 should not overwrite");
+        assert_eq!(
+            usage.input_tokens, 500,
+            "input_tokens=0 should not overwrite"
+        );
         assert_eq!(usage.output_tokens, 42);
     }
 
@@ -498,7 +501,10 @@ mod tests {
         assert_eq!(normalize_finish_reason(Some("stop")), "end_turn");
         assert_eq!(normalize_finish_reason(Some("tool_calls")), "tool_use");
         assert_eq!(normalize_finish_reason(Some("length")), "max_tokens");
-        assert_eq!(normalize_finish_reason(Some("content_filter")), "content_filter");
+        assert_eq!(
+            normalize_finish_reason(Some("content_filter")),
+            "content_filter"
+        );
     }
 
     #[test]
@@ -507,7 +513,10 @@ mod tests {
         assert_eq!(normalize_finish_reason(Some("MAX_TOKENS")), "max_tokens");
         assert_eq!(normalize_finish_reason(Some("SAFETY")), "safety");
         assert_eq!(normalize_finish_reason(Some("RECITATION")), "recitation");
-        assert_eq!(normalize_finish_reason(Some("MALFORMED_FUNCTION_CALL")), "tool_use");
+        assert_eq!(
+            normalize_finish_reason(Some("MALFORMED_FUNCTION_CALL")),
+            "tool_use"
+        );
     }
 
     #[test]

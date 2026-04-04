@@ -208,10 +208,7 @@ mod tests {
         let tools = tool_definitions();
         assert_eq!(tools.len(), 10);
 
-        let names: Vec<&str> = tools
-            .iter()
-            .map(|t| t["name"].as_str().unwrap())
-            .collect();
+        let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
         assert!(names.contains(&"search_entries"));
         assert!(names.contains(&"query_db"));
         assert!(names.contains(&"create_entry"));

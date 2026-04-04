@@ -77,11 +77,8 @@ fn translate_messages(request: &LlmRequest) -> Vec<Value> {
             Some("system") => {
                 // Inline system instructions → user/model pair.
                 // merge_consecutive_roles() handles adjacent same-role merging.
-                let text = extract_system_text(
-                    msg.get("content").unwrap_or(&Value::Null),
-                );
-                let wrapped =
-                    format!("<system_instruction>{text}</system_instruction>");
+                let text = extract_system_text(msg.get("content").unwrap_or(&Value::Null));
+                let wrapped = format!("<system_instruction>{text}</system_instruction>");
                 contents.push(json!({
                     "role": "user",
                     "parts": [{"text": wrapped}]
@@ -105,10 +102,7 @@ fn translate_messages(request: &LlmRequest) -> Vec<Value> {
                         parts.push(json!({"text": text}));
                     }
                     Some("tool_use") => {
-                        let name = block
-                            .get("name")
-                            .and_then(|n| n.as_str())
-                            .unwrap_or("");
+                        let name = block.get("name").and_then(|n| n.as_str()).unwrap_or("");
                         let args = block.get("input").cloned().unwrap_or(json!({}));
                         parts.push(json!({
                             "functionCall": {
@@ -165,8 +159,7 @@ fn translate_messages(request: &LlmRequest) -> Vec<Value> {
 
 /// Translate Anthropic-format tool definitions into Gemini `tools` array.
 fn translate_tools(tools: &Option<Vec<Value>>) -> Option<Value> {
-    translate_tool_declarations(tools)
-        .map(|decls| json!([{"functionDeclarations": decls}]))
+    translate_tool_declarations(tools).map(|decls| json!([{"functionDeclarations": decls}]))
 }
 
 /// Build the Gemini `systemInstruction` from the request's system prompt.
@@ -211,7 +204,11 @@ fn merge_consecutive_roles(contents: &mut Vec<Value>) {
 
     for msg in contents.drain(..) {
         let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
-        let parts = msg.get("parts").and_then(|p| p.as_array()).cloned().unwrap_or_default();
+        let parts = msg
+            .get("parts")
+            .and_then(|p| p.as_array())
+            .cloned()
+            .unwrap_or_default();
 
         let should_merge = if let Some(prev) = merged.last() {
             prev.get("role").and_then(|r| r.as_str()) == Some(role)
@@ -221,7 +218,10 @@ fn merge_consecutive_roles(contents: &mut Vec<Value>) {
 
         if should_merge {
             let prev = merged.last_mut().unwrap();
-            let prev_parts = prev.get_mut("parts").and_then(|p| p.as_array_mut()).unwrap();
+            let prev_parts = prev
+                .get_mut("parts")
+                .and_then(|p| p.as_array_mut())
+                .unwrap();
             for part in parts {
                 // Check if this is a plain text part (not thought)
                 let is_text = part.get("text").is_some()
@@ -234,7 +234,10 @@ fn merge_consecutive_roles(contents: &mut Vec<Value>) {
                             && p.get("thought").and_then(|t| t.as_bool()) != Some(true)
                     });
                     if let Some(idx) = existing_text_idx {
-                        let old = prev_parts[idx].get("text").and_then(|t| t.as_str()).unwrap_or("");
+                        let old = prev_parts[idx]
+                            .get("text")
+                            .and_then(|t| t.as_str())
+                            .unwrap_or("");
                         let combined = format!("{}\n\n{}", old, new_text);
                         prev_parts[idx]["text"] = json!(combined);
                     } else {
@@ -422,22 +425,34 @@ pub async fn stream(
                         if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
                             timing.record_first_token();
                             if part.get("thought").and_then(|t| t.as_bool()) == Some(true) {
-                                if let Ok(line) = serde_json::to_string(&json!({"type": "thinking", "text": text})) {
+                                if let Ok(line) = serde_json::to_string(
+                                    &json!({"type": "thinking", "text": text}),
+                                ) {
                                     lines.push(line);
                                 }
-                                if let Some(sig) = part.get("thoughtSignature").and_then(|s| s.as_str()) {
-                                    if let Ok(sig_line) = serde_json::to_string(&json!({"type": "thinking_signature", "signature": sig})) {
+                                if let Some(sig) =
+                                    part.get("thoughtSignature").and_then(|s| s.as_str())
+                                {
+                                    if let Ok(sig_line) = serde_json::to_string(
+                                        &json!({"type": "thinking_signature", "signature": sig}),
+                                    ) {
                                         lines.push(sig_line);
                                     }
                                 }
                             } else {
                                 text_content.push_str(text);
-                                if let Ok(line) = serde_json::to_string(&json!({"type": "text", "text": text})) {
+                                if let Ok(line) =
+                                    serde_json::to_string(&json!({"type": "text", "text": text}))
+                                {
                                     lines.push(line);
                                 }
                             }
                         } else if let Some(fc) = part.get("functionCall") {
-                            let name = fc.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string();
+                            let name = fc
+                                .get("name")
+                                .and_then(|n| n.as_str())
+                                .unwrap_or("")
+                                .to_string();
                             let args = fc.get("args").cloned().unwrap_or(json!({}));
                             function_calls.push((name, args));
                         }
@@ -459,7 +474,11 @@ pub async fn stream(
                     usage = extract_gemini_usage(chunk.get("usageMetadata"));
                 }
 
-                if lines.is_empty() { None } else { Some(lines.join("\n")) }
+                if lines.is_empty() {
+                    None
+                } else {
+                    Some(lines.join("\n"))
+                }
             },
             &mut writer,
         )
@@ -477,7 +496,13 @@ pub async fn stream(
         }
 
         // Emit done event.
-        let done = build_done_event(&text_content, &finish_reason, &usage, timing.total_ms(), timing.ttft_ms());
+        let done = build_done_event(
+            &text_content,
+            &finish_reason,
+            &usage,
+            timing.total_ms(),
+            timing.ttft_ms(),
+        );
         let _ = writer.write_all(done.as_bytes()).await;
         let _ = writer.write_all(b"\n").await;
 
@@ -517,14 +542,11 @@ pub async fn generate(
     let response = super::check_response(response).await?;
 
     let resp_text = response.text().await.map_err(LlmError::Request)?;
-    let resp: Value =
-        serde_json::from_str(&resp_text).map_err(LlmError::Deserialize)?;
+    let resp: Value = serde_json::from_str(&resp_text).map_err(LlmError::Deserialize)?;
 
     let total_ms = start.elapsed().as_millis() as u32;
 
-    let candidate = resp
-        .get("candidates")
-        .and_then(|c| c.get(0));
+    let candidate = resp.get("candidates").and_then(|c| c.get(0));
 
     let parts = candidate
         .and_then(|c| c.get("content"))
@@ -775,7 +797,10 @@ mod tests {
         let contents = translate_messages(&request);
         assert_eq!(contents.len(), 1);
         let fr = &contents[0]["parts"][0]["functionResponse"];
-        assert_eq!(fr["name"], "orphan_id", "should fallback to tool_use_id as name");
+        assert_eq!(
+            fr["name"], "orphan_id",
+            "should fallback to tool_use_id as name"
+        );
         assert_eq!(fr["response"]["result"], "some result");
     }
 
@@ -784,7 +809,10 @@ mod tests {
         assert_eq!(normalize_finish_reason(Some("STOP")), "end_turn");
         assert_eq!(normalize_finish_reason(Some("MAX_TOKENS")), "max_tokens");
         assert_eq!(normalize_finish_reason(Some("SAFETY")), "safety");
-        assert_eq!(normalize_finish_reason(Some("MALFORMED_FUNCTION_CALL")), "tool_use");
+        assert_eq!(
+            normalize_finish_reason(Some("MALFORMED_FUNCTION_CALL")),
+            "tool_use"
+        );
         assert_eq!(normalize_finish_reason(None), "end_turn");
         assert_eq!(normalize_finish_reason(Some("UNKNOWN_THING")), "end_turn");
     }

@@ -4,9 +4,9 @@ use std::io::Write;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 
-pub use shore_client::image_protocol::ImageProtocol;
 pub use shore_client::image_protocol::detect_protocol as detect_protocol_from_env;
 pub use shore_client::image_protocol::detect_protocol_probe;
+pub use shore_client::image_protocol::ImageProtocol;
 
 pub type KittyImageId = u32;
 
@@ -311,7 +311,10 @@ mod tests {
 
     #[test]
     fn detect_none() {
-        assert_eq!(detect_protocol(None, None, Some("xterm-256color"), false, false), None);
+        assert_eq!(
+            detect_protocol(None, None, Some("xterm-256color"), false, false),
+            None
+        );
     }
 
     #[test]

@@ -146,8 +146,7 @@ fn pick_image(
     disable_raw_mode()?;
     io::stdout().execute(LeaveAlternateScreen)?;
 
-    let result = try_yazi(&chooser_file, start)
-        .or_else(|| try_fzf(&chooser_file, start));
+    let result = try_yazi(&chooser_file, start).or_else(|| try_fzf(&chooser_file, start));
 
     enable_raw_mode()?;
     io::stdout().execute(EnterAlternateScreen)?;
@@ -262,8 +261,7 @@ async fn run_tui(cli: Cli) -> io::Result<()> {
     load_prefs(&mut app);
 
     // Spawn connection manager
-    let (cmd_tx, mut event_rx) =
-        connection::spawn_connection(cli.socket, cli.config, character);
+    let (cmd_tx, mut event_rx) = connection::spawn_connection(cli.socket, cli.config, character);
 
     // Main event loop
     let result = loop {
@@ -407,9 +405,7 @@ fn handle_conn_event(app: &mut App, event: ConnEvent) -> Vec<ConnCommand> {
             vec![]
         }
 
-        ConnEvent::Message(msg) => {
-            handle_server_message(app, msg)
-        }
+        ConnEvent::Message(msg) => handle_server_message(app, msg),
     }
 }
 
@@ -480,9 +476,7 @@ fn expand_msg(msg: Message, entries: &mut Vec<ConversationEntry>) {
                 content,
                 is_error,
             } => {
-                let name = tool_names
-                    .get(tool_use_id.as_str())
-                    .unwrap_or(&"tool");
+                let name = tool_names.get(tool_use_id.as_str()).unwrap_or(&"tool");
                 entries.push(ConversationEntry::ToolResult {
                     tool_id: tool_use_id.clone(),
                     tool_name: name.to_string(),
@@ -752,7 +746,13 @@ fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<ConnCommand> 
                         let list = chars
                             .iter()
                             .filter_map(|c| c.get("name").and_then(|n| n.as_str()))
-                            .map(|n| if n == active { format!("  * {n}") } else { format!("    {n}") })
+                            .map(|n| {
+                                if n == active {
+                                    format!("  * {n}")
+                                } else {
+                                    format!("    {n}")
+                                }
+                            })
                             .collect::<Vec<_>>()
                             .join("\n");
                         app.entries.push(ConversationEntry::System {
@@ -784,7 +784,13 @@ fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<ConnCommand> 
                             let active = &app.model;
                             let list = names
                                 .iter()
-                                .map(|n| if *n == active { format!("  * {n}") } else { format!("    {n}") })
+                                .map(|n| {
+                                    if *n == active {
+                                        format!("  * {n}")
+                                    } else {
+                                        format!("    {n}")
+                                    }
+                                })
                                 .collect::<Vec<_>>()
                                 .join("\n");
                             app.entries.push(ConversationEntry::System {
@@ -826,7 +832,9 @@ fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<ConnCommand> 
                     // Log re-fetch follows automatically (sent as SendMulti)
                 }
                 "compact" | "collate" => {
-                    let status = co.data.get("status")
+                    let status = co
+                        .data
+                        .get("status")
                         .and_then(|v| v.as_str())
                         .unwrap_or("done");
                     app.set_status(format!("{}: {status}", co.name));

@@ -258,7 +258,11 @@ mod tests {
             let ids: Vec<&str> = cluster.iter().map(|e| e.id.as_str()).collect();
             let all_food = ids.iter().all(|id| ["e0", "e1", "e2"].contains(id));
             let all_tech = ids.iter().all(|id| ["e3", "e4", "e5"].contains(id));
-            assert!(all_food || all_tech, "Cluster should be homogeneous, got: {:?}", ids);
+            assert!(
+                all_food || all_tech,
+                "Cluster should be homogeneous, got: {:?}",
+                ids
+            );
         }
     }
 

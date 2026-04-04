@@ -85,7 +85,6 @@ pub fn print_stream_end(end: &StreamEnd) {
     let _ = writeln!(out); // blank line after metadata
 }
 
-
 /// Print an error in red to stderr.
 pub fn print_error(err: &dyn std::fmt::Display) {
     let stderr = io::stderr();
@@ -174,7 +173,11 @@ pub fn print_tool_result(result: &ToolResult) {
     let stdout = io::stdout();
     let mut out = stdout.lock();
 
-    let color = if result.is_error { Color::Red } else { Color::DarkGrey };
+    let color = if result.is_error {
+        Color::Red
+    } else {
+        Color::DarkGrey
+    };
     if use_color() {
         let _ = crossterm::execute!(out, SetForegroundColor(color));
     }
@@ -183,7 +186,12 @@ pub fn print_tool_result(result: &ToolResult) {
     let output = &result.output;
     if output.len() > MAX_TOOL_OUTPUT {
         let end = output.floor_char_boundary(MAX_TOOL_OUTPUT);
-        let _ = write!(out, "[{label}: {}... truncated, {} bytes total]", &output[..end], output.len());
+        let _ = write!(
+            out,
+            "[{label}: {}... truncated, {} bytes total]",
+            &output[..end],
+            output.len()
+        );
     } else {
         let _ = write!(out, "[{label}: {output}]");
     }
@@ -268,15 +276,24 @@ mod tests {
         let big = "x".repeat(MAX_TOOL_OUTPUT + 100);
         let input = serde_json::json!({"data": big});
         let result = format_tool_input(&input).unwrap();
-        assert!(result.ends_with("..."), "large input should be truncated with ...");
-        assert!(result.len() <= MAX_TOOL_OUTPUT + 50, "truncated output should be bounded");
+        assert!(
+            result.ends_with("..."),
+            "large input should be truncated with ..."
+        );
+        assert!(
+            result.len() <= MAX_TOOL_OUTPUT + 50,
+            "truncated output should be bounded"
+        );
     }
 
     #[test]
     fn format_tool_input_small_input_not_truncated() {
         let input = serde_json::json!({"key": "value", "num": 42});
         let result = format_tool_input(&input).unwrap();
-        assert!(!result.ends_with("..."), "small input should not be truncated");
+        assert!(
+            !result.ends_with("..."),
+            "small input should not be truncated"
+        );
         assert!(result.contains("42"));
     }
 

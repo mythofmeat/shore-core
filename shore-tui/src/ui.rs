@@ -68,7 +68,12 @@ fn push_bar_wrapped(
 }
 
 /// Render accumulated thinking blocks as dimmed text under the character name.
-fn flush_thinking(lines: &mut Vec<Line<'static>>, pending: &mut Vec<String>, show: bool, wrap_width: u16) {
+fn flush_thinking(
+    lines: &mut Vec<Line<'static>>,
+    pending: &mut Vec<String>,
+    show: bool,
+    wrap_width: u16,
+) {
     if pending.is_empty() {
         return;
     }
@@ -76,8 +81,12 @@ fn flush_thinking(lines: &mut Vec<Line<'static>>, pending: &mut Vec<String>, sho
         pending.clear();
         return;
     }
-    let header_style = Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD);
-    let content_style = Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC);
+    let header_style = Style::default()
+        .fg(Color::Magenta)
+        .add_modifier(Modifier::BOLD);
+    let content_style = Style::default()
+        .fg(Color::DarkGray)
+        .add_modifier(Modifier::ITALIC);
     let bar_style = Style::default().fg(Color::DarkGray);
     lines.push(Line::from(Span::styled("  ◆ thinking", header_style)));
     let text_width = wrap_width.saturating_sub(4) as usize; // "  │ " = 4 cols
@@ -87,7 +96,12 @@ fn flush_thinking(lines: &mut Vec<Line<'static>>, pending: &mut Vec<String>, sho
     lines.push(Line::from(""));
 }
 
-fn flush_tools(lines: &mut Vec<Line<'static>>, pending: &mut Vec<&ConversationEntry>, show: bool, wrap_width: u16) {
+fn flush_tools(
+    lines: &mut Vec<Line<'static>>,
+    pending: &mut Vec<&ConversationEntry>,
+    show: bool,
+    wrap_width: u16,
+) {
     if !show {
         pending.clear();
         return;
@@ -96,28 +110,51 @@ fn flush_tools(lines: &mut Vec<Line<'static>>, pending: &mut Vec<&ConversationEn
     let text_width = wrap_width.saturating_sub(4) as usize; // "  │ " = 4 cols
     for entry in pending.drain(..) {
         match entry {
-            ConversationEntry::ToolCall { tool_name, input, .. } => {
+            ConversationEntry::ToolCall {
+                tool_name, input, ..
+            } => {
                 lines.push(Line::from(vec![
                     Span::styled("  ▶ ", Style::default().fg(Color::Magenta)),
                     Span::styled(
                         tool_name.clone(),
-                        Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(Color::Magenta)
+                            .add_modifier(Modifier::BOLD),
                     ),
                 ]));
                 let json = serde_json::to_string_pretty(input).unwrap_or_default();
-                push_bar_wrapped(lines, &json, bar_style, Style::default().fg(Color::DarkGray), text_width);
+                push_bar_wrapped(
+                    lines,
+                    &json,
+                    bar_style,
+                    Style::default().fg(Color::DarkGray),
+                    text_width,
+                );
                 lines.push(Line::from(""));
             }
-            ConversationEntry::ToolResult { tool_name, output, is_error, .. } => {
+            ConversationEntry::ToolResult {
+                tool_name,
+                output,
+                is_error,
+                ..
+            } => {
                 let header_color = if *is_error { Color::Red } else { Color::Cyan };
                 lines.push(Line::from(vec![
                     Span::styled("  ◀ ", Style::default().fg(header_color)),
                     Span::styled(
                         tool_name.clone(),
-                        Style::default().fg(header_color).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(header_color)
+                            .add_modifier(Modifier::BOLD),
                     ),
                 ]));
-                push_bar_wrapped(lines, output, bar_style, Style::default().fg(Color::DarkGray), text_width);
+                push_bar_wrapped(
+                    lines,
+                    output,
+                    bar_style,
+                    Style::default().fg(Color::DarkGray),
+                    text_width,
+                );
                 lines.push(Line::from(""));
             }
             _ => {}
@@ -204,20 +241,26 @@ fn pre_wrap_text(text: &str, max_width: usize) -> String {
     for line in text.lines() {
         if line.starts_with("```") {
             in_code_block = !in_code_block;
-            if !result.is_empty() { result.push('\n'); }
+            if !result.is_empty() {
+                result.push('\n');
+            }
             result.push_str(line);
             continue;
         }
 
         // Don't wrap inside code blocks, headings, or blockquotes
         if in_code_block || line.starts_with('#') || line.starts_with("> ") {
-            if !result.is_empty() { result.push('\n'); }
+            if !result.is_empty() {
+                result.push('\n');
+            }
             result.push_str(line);
             continue;
         }
 
         for wrapped in word_wrap(line, max_width) {
-            if !result.is_empty() { result.push('\n'); }
+            if !result.is_empty() {
+                result.push('\n');
+            }
             result.push_str(&wrapped);
         }
     }
@@ -226,11 +269,7 @@ fn pre_wrap_text(text: &str, max_width: usize) -> String {
 }
 
 /// Render in-progress streaming text or a phase-aware typing indicator.
-fn render_streaming_state(
-    lines: &mut Vec<Line<'static>>,
-    app: &App,
-    content_width: u16,
-) {
+fn render_streaming_state(lines: &mut Vec<Line<'static>>, app: &App, content_width: u16) {
     let name = if app.character_name.is_empty() {
         "Assistant"
     } else {
@@ -254,7 +293,10 @@ fn render_streaming_state(
         }
         lines.push(Line::from(""));
         let wrap_w = content_width.saturating_sub(2) as usize;
-        lines.extend(indent_lines(markdown::render_markdown(&pre_wrap_text(&app.stream.text, wrap_w))));
+        lines.extend(indent_lines(markdown::render_markdown(&pre_wrap_text(
+            &app.stream.text,
+            wrap_w,
+        ))));
         lines.push(Line::from("")); // match trailing blank of finalized entries
     } else {
         // Typing indicator — stream started but no text yet
@@ -279,7 +321,9 @@ fn render_streaming_state(
                 Span::styled("▶ ", Style::default().fg(Color::Magenta)),
                 Span::styled(
                     tool.clone(),
-                    Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::Magenta)
+                        .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(" ···", indicator_style),
             ]));
@@ -343,8 +387,18 @@ fn draw_conversation(frame: &mut Frame, app: &mut App, area: Rect) {
             ConversationEntry::User {
                 content, images, ..
             } => {
-                flush_thinking(&mut lines, &mut pending_thinking, app.show_thinking, content_width);
-                flush_tools(&mut lines, &mut pending_tools, app.show_tools, content_width);
+                flush_thinking(
+                    &mut lines,
+                    &mut pending_thinking,
+                    app.show_thinking,
+                    content_width,
+                );
+                flush_tools(
+                    &mut lines,
+                    &mut pending_tools,
+                    app.show_tools,
+                    content_width,
+                );
                 lines.push(Line::from(Span::styled(
                     "You",
                     Style::default()
@@ -353,7 +407,9 @@ fn draw_conversation(frame: &mut Frame, app: &mut App, area: Rect) {
                 )));
                 lines.push(Line::from(""));
                 let wrap_w = content_width.saturating_sub(2) as usize;
-                lines.extend(indent_lines(markdown::render_markdown(&pre_wrap_text(content, wrap_w))));
+                lines.extend(indent_lines(markdown::render_markdown(&pre_wrap_text(
+                    content, wrap_w,
+                ))));
                 render_images(&mut lines, images, &app.image_cache);
                 lines.push(Line::from(""));
             }
@@ -376,10 +432,22 @@ fn draw_conversation(frame: &mut Frame, app: &mut App, area: Rect) {
                 )));
                 lines.push(Line::from(""));
                 // Render thinking and tool calls under the character name
-                flush_thinking(&mut lines, &mut pending_thinking, app.show_thinking, content_width);
-                flush_tools(&mut lines, &mut pending_tools, app.show_tools, content_width);
+                flush_thinking(
+                    &mut lines,
+                    &mut pending_thinking,
+                    app.show_thinking,
+                    content_width,
+                );
+                flush_tools(
+                    &mut lines,
+                    &mut pending_tools,
+                    app.show_tools,
+                    content_width,
+                );
                 let wrap_w = content_width.saturating_sub(2) as usize;
-                lines.extend(indent_lines(markdown::render_markdown(&pre_wrap_text(content, wrap_w))));
+                lines.extend(indent_lines(markdown::render_markdown(&pre_wrap_text(
+                    content, wrap_w,
+                ))));
                 render_images(&mut lines, images, &app.image_cache);
                 if let Some(meta) = metadata {
                     lines.push(Line::from(Span::styled(
@@ -397,8 +465,18 @@ fn draw_conversation(frame: &mut Frame, app: &mut App, area: Rect) {
                 lines.push(Line::from(""));
             }
             ConversationEntry::System { content, .. } => {
-                flush_thinking(&mut lines, &mut pending_thinking, app.show_thinking, content_width);
-                flush_tools(&mut lines, &mut pending_tools, app.show_tools, content_width);
+                flush_thinking(
+                    &mut lines,
+                    &mut pending_thinking,
+                    app.show_thinking,
+                    content_width,
+                );
+                flush_tools(
+                    &mut lines,
+                    &mut pending_tools,
+                    app.show_tools,
+                    content_width,
+                );
                 lines.push(Line::from(Span::styled(
                     "System",
                     Style::default()
@@ -425,8 +503,18 @@ fn draw_conversation(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 
     // Flush orphaned pending entries (e.g. tools mid-stream before response starts)
-    flush_thinking(&mut lines, &mut pending_thinking, app.show_thinking, content_width);
-    flush_tools(&mut lines, &mut pending_tools, app.show_tools, content_width);
+    flush_thinking(
+        &mut lines,
+        &mut pending_thinking,
+        app.show_thinking,
+        content_width,
+    );
+    flush_tools(
+        &mut lines,
+        &mut pending_tools,
+        app.show_tools,
+        content_width,
+    );
 
     // Append in-progress streaming text (or typing indicator)
     if app.stream.active {
@@ -567,9 +655,9 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
         frame.render_widget(paragraph, area);
 
         // Cursor after the ":" prefix + cmd_cursor
-        let cursor_x = 1 + unicode_width::UnicodeWidthStr::width(
-            &app.input.cmd_text[..app.input.cmd_cursor],
-        ) as u16;
+        let cursor_x =
+            1 + unicode_width::UnicodeWidthStr::width(&app.input.cmd_text[..app.input.cmd_cursor])
+                as u16;
         frame.set_cursor_position((area.x + cursor_x, area.y + 1));
         return;
     }
@@ -579,7 +667,9 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
     let line_starts = crate::app::word_wrap_offsets(&app.input.text, content_width);
 
     // Cursor visual position: find which visual line it lands on.
-    let cy_idx = line_starts.partition_point(|&s| s <= app.input.cursor).saturating_sub(1);
+    let cy_idx = line_starts
+        .partition_point(|&s| s <= app.input.cursor)
+        .saturating_sub(1);
     let cy: u16 = cy_idx as u16;
     let line_start = line_starts[cy_idx];
     let mut cx: usize = app.input.text[line_start..app.input.cursor]
@@ -646,8 +736,7 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
             format!(" {} images ", img_count)
         };
         block = block.title(
-            Line::from(Span::styled(label, Style::default().fg(Color::Magenta)))
-                .right_aligned()
+            Line::from(Span::styled(label, Style::default().fg(Color::Magenta))).right_aligned(),
         );
     }
     let paragraph = Paragraph::new(input_content)
@@ -658,10 +747,7 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
 
     // Show cursor in insert mode
     if app.input.mode == InputMode::Insert {
-        frame.set_cursor_position((
-            area.x + cx as u16,
-            area.y + 1 + cy - input_scroll,
-        ));
+        frame.set_cursor_position((area.x + cx as u16, area.y + 1 + cy - input_scroll));
     }
 }
 
@@ -669,42 +755,115 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
 fn draw_help(frame: &mut Frame, area: Rect) {
     let lines = vec![
         Line::from(""),
-        Line::from(vec![
-            Span::styled("  Navigation", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-        ]),
-        Line::from(Span::styled("    j / k           scroll down / up", Style::default().fg(Color::White))),
-        Line::from(Span::styled("    d / u           scroll down / up (10 lines)", Style::default().fg(Color::White))),
-        Line::from(Span::styled("    G               jump to bottom", Style::default().fg(Color::White))),
+        Line::from(vec![Span::styled(
+            "  Navigation",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )]),
+        Line::from(Span::styled(
+            "    j / k           scroll down / up",
+            Style::default().fg(Color::White),
+        )),
+        Line::from(Span::styled(
+            "    d / u           scroll down / up (10 lines)",
+            Style::default().fg(Color::White),
+        )),
+        Line::from(Span::styled(
+            "    G               jump to bottom",
+            Style::default().fg(Color::White),
+        )),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            "  Input",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )]),
+        Line::from(Span::styled(
+            "    i / a / I / A   enter insert mode",
+            Style::default().fg(Color::White),
+        )),
+        Line::from(Span::styled(
+            "    Enter           send message",
+            Style::default().fg(Color::White),
+        )),
+        Line::from(Span::styled(
+            "    Shift+Enter     newline",
+            Style::default().fg(Color::White),
+        )),
+        Line::from(Span::styled(
+            "    Ctrl+G          open input in $EDITOR",
+            Style::default().fg(Color::White),
+        )),
+        Line::from(Span::styled(
+            "    Esc             normal mode",
+            Style::default().fg(Color::White),
+        )),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            "  Toggles",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )]),
+        Line::from(Span::styled(
+            "    Tab             toggle live thinking panel",
+            Style::default().fg(Color::White),
+        )),
+        Line::from(Span::styled(
+            "    t               toggle thinking blocks",
+            Style::default().fg(Color::White),
+        )),
+        Line::from(Span::styled(
+            "    T               toggle tool-use blocks",
+            Style::default().fg(Color::White),
+        )),
         Line::from(""),
         Line::from(vec![
-            Span::styled("  Input", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-        ]),
-        Line::from(Span::styled("    i / a / I / A   enter insert mode", Style::default().fg(Color::White))),
-        Line::from(Span::styled("    Enter           send message", Style::default().fg(Color::White))),
-        Line::from(Span::styled("    Shift+Enter     newline", Style::default().fg(Color::White))),
-        Line::from(Span::styled("    Ctrl+G          open input in $EDITOR", Style::default().fg(Color::White))),
-        Line::from(Span::styled("    Esc             normal mode", Style::default().fg(Color::White))),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("  Toggles", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-        ]),
-        Line::from(Span::styled("    Tab             toggle live thinking panel", Style::default().fg(Color::White))),
-        Line::from(Span::styled("    t               toggle thinking blocks", Style::default().fg(Color::White))),
-        Line::from(Span::styled("    T               toggle tool-use blocks", Style::default().fg(Color::White))),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("  Commands  ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "  Commands  ",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled("(press : to open)", Style::default().fg(Color::DarkGray)),
         ]),
-        Line::from(Span::styled("    :help           this screen", Style::default().fg(Color::White))),
-        Line::from(Span::styled("    :character      switch character", Style::default().fg(Color::White))),
-        Line::from(Span::styled("    :model          switch model", Style::default().fg(Color::White))),
-        Line::from(Span::styled("    :image          attach image (picker)", Style::default().fg(Color::White))),
-        Line::from(Span::styled("    :edit <ref>     edit message (last, -1, -2)", Style::default().fg(Color::White))),
-        Line::from(Span::styled("    :quit           exit", Style::default().fg(Color::White))),
-        Line::from(Span::styled("    :memory  :compact  :regen  :status", Style::default().fg(Color::DarkGray))),
+        Line::from(Span::styled(
+            "    :help           this screen",
+            Style::default().fg(Color::White),
+        )),
+        Line::from(Span::styled(
+            "    :character      switch character",
+            Style::default().fg(Color::White),
+        )),
+        Line::from(Span::styled(
+            "    :model          switch model",
+            Style::default().fg(Color::White),
+        )),
+        Line::from(Span::styled(
+            "    :image          attach image (picker)",
+            Style::default().fg(Color::White),
+        )),
+        Line::from(Span::styled(
+            "    :edit <ref>     edit message (last, -1, -2)",
+            Style::default().fg(Color::White),
+        )),
+        Line::from(Span::styled(
+            "    :quit           exit",
+            Style::default().fg(Color::White),
+        )),
+        Line::from(Span::styled(
+            "    :memory  :compact  :regen  :status",
+            Style::default().fg(Color::DarkGray),
+        )),
         Line::from(""),
-        Line::from(Span::styled("  Press any key to close", Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC))),
+        Line::from(Span::styled(
+            "  Press any key to close",
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::ITALIC),
+        )),
         Line::from(""),
     ];
 
@@ -761,9 +920,7 @@ fn draw_completions(frame: &mut Frame, app: &App, input_area: Rect) {
             if selected {
                 Line::from(Span::styled(
                     format!(" {c} "),
-                    Style::default()
-                        .fg(Color::Black)
-                        .bg(Color::Yellow),
+                    Style::default().fg(Color::Black).bg(Color::Yellow),
                 ))
             } else {
                 Line::from(Span::styled(
@@ -931,7 +1088,6 @@ mod scenario_tests {
                 .collect::<Vec<_>>()
                 .join("\n")
         }
-
     }
 
     // ── Scenario: empty state ───────────────────────────────────────────────
@@ -977,7 +1133,8 @@ mod scenario_tests {
         let f = h.render("after send");
         // Input should be cleared
         assert!(
-            !h.rows(H as usize - 4, H as usize - 1).contains("Hello, world!"),
+            !h.rows(H as usize - 4, H as usize - 1)
+                .contains("Hello, world!"),
             "input area should be cleared after send"
         );
         // User message should appear in conversation
@@ -1057,7 +1214,10 @@ mod scenario_tests {
             f2.contains("Here's my answer"),
             "streaming text still visible after collapse"
         );
-        assert!(f2.contains("You"), "user message still visible after collapse");
+        assert!(
+            f2.contains("You"),
+            "user message still visible after collapse"
+        );
 
         // Toggle back
         h.press(KeyCode::Tab);
@@ -1098,7 +1258,10 @@ mod scenario_tests {
         // Escape to cancel
         h.press(KeyCode::Esc);
         let f = h.render("after escape");
-        assert!(!f.contains("COMMAND"), "command palette hidden after escape");
+        assert!(
+            !f.contains("COMMAND"),
+            "command palette hidden after escape"
+        );
     }
 
     // ── Scenario: scroll during stream ──────────────────────────────────────
@@ -1181,7 +1344,9 @@ mod scenario_tests {
         // The only changes should be the mode label and placeholder.
         let diffs = h.changed_lines();
         assert!(
-            diffs.iter().all(|(_, _, curr)| curr.contains("INSERT") || curr.contains("Type a message")),
+            diffs
+                .iter()
+                .all(|(_, _, curr)| curr.contains("INSERT") || curr.contains("Type a message")),
             "mode switch should only change the input area"
         );
     }
@@ -1221,7 +1386,10 @@ mod scenario_tests {
 
         let f = h.render("long message");
         // The message should be present (may be split across lines)
-        assert!(f.contains("This is a very long message"), "start of message visible");
+        assert!(
+            f.contains("This is a very long message"),
+            "start of message visible"
+        );
 
         // Type a long input — word wrap should keep words intact
         h.type_str("Another really long input message that should cause the input area to grow taller as the text wraps to accommodate");
@@ -1301,18 +1469,35 @@ mod scenario_tests {
 
         // Find line positions
         let lines: Vec<&str> = f.lines().collect();
-        let alice_line = lines.iter().position(|l| l.contains("Alice"))
+        let alice_line = lines
+            .iter()
+            .position(|l| l.contains("Alice"))
             .expect("Alice name must appear");
-        let tool_line = lines.iter().position(|l| l.contains("▶"))
+        let tool_line = lines
+            .iter()
+            .position(|l| l.contains("▶"))
             .expect("tool call arrow must appear");
-        let result_line = lines.iter().position(|l| l.contains("◀"))
+        let result_line = lines
+            .iter()
+            .position(|l| l.contains("◀"))
             .expect("tool result arrow must appear");
-        let content_line = lines.iter().position(|l| l.contains("I found foo"))
+        let content_line = lines
+            .iter()
+            .position(|l| l.contains("I found foo"))
             .expect("assistant content must appear");
 
-        assert!(tool_line > alice_line, "tool call must appear after assistant name");
-        assert!(result_line > tool_line, "tool result must appear after tool call");
-        assert!(content_line > result_line, "assistant text must appear after tool result");
+        assert!(
+            tool_line > alice_line,
+            "tool call must appear after assistant name"
+        );
+        assert!(
+            result_line > tool_line,
+            "tool result must appear after tool call"
+        );
+        assert!(
+            content_line > result_line,
+            "assistant text must appear after tool result"
+        );
     }
 
     // ── Scenario: narrow terminal ───────────────────────────────────────────
@@ -1399,7 +1584,10 @@ mod scenario_tests {
 
         // The typing indicator (···) should appear immediately after send,
         // before StreamStart arrives from the daemon.
-        assert!(f_sent.contains("···"), "typing indicator should appear immediately after send");
+        assert!(
+            f_sent.contains("···"),
+            "typing indicator should appear immediately after send"
+        );
 
         // Stream starts (but no text yet)
         h.stream_start();
@@ -1458,7 +1646,10 @@ mod scenario_tests {
 
         // The input area should be capped at 8 rows total
         // Conversation area must still have at least 3 rows (Min constraint)
-        assert!(f.contains("Press i"), "conversation still visible at max input height");
+        assert!(
+            f.contains("Press i"),
+            "conversation still visible at max input height"
+        );
     }
 
     // ── Scenario: empty state welcome ───────────────────────────────────────
@@ -1473,10 +1664,7 @@ mod scenario_tests {
             f.contains("Press i to start typing"),
             "welcome hint should appear when no messages"
         );
-        assert!(
-            f.contains("for commands"),
-            "command hint should appear"
-        );
+        assert!(f.contains("for commands"), "command hint should appear");
 
         // Hint should disappear once we have messages
         h.app.entries.push(ConversationEntry::User {
@@ -1515,12 +1703,18 @@ mod scenario_tests {
         // Scroll up — earlier messages visible
         h.app.scroll_up(5);
         let f = h.render("scrolled up");
-        assert!(!f.contains("Msg 19"), "latest message not visible when scrolled up");
+        assert!(
+            !f.contains("Msg 19"),
+            "latest message not visible when scrolled up"
+        );
 
         // Scroll back to bottom
         h.app.scroll_to_bottom();
         let f = h.render("back at bottom");
-        assert!(f.contains("Msg 19"), "latest message visible after scrolling back");
+        assert!(
+            f.contains("Msg 19"),
+            "latest message visible after scrolling back"
+        );
     }
 
     // ── Scenario: input placeholder ─────────────────────────────────────────
@@ -1602,7 +1796,10 @@ mod scenario_tests {
         h.stream_start();
         h.stream_chunk("Response text");
         let f = h.render("streaming in short terminal");
-        assert!(f.contains("Response"), "streamed content visible in short terminal");
+        assert!(
+            f.contains("Response"),
+            "streamed content visible in short terminal"
+        );
     }
 
     // ── Scenario: multiple tool calls ───────────────────────────────────────
@@ -1686,13 +1883,15 @@ mod scenario_tests {
         // With 30-wide terminal and no side borders, 34 chars wraps after col 30:
         //   line 1: "abcdefghijklmnopqrstuvwxyz1234" (30 chars)
         //   line 2: "5678" (4 chars)
-        let input_lines: Vec<&str> = f.lines()
+        let input_lines: Vec<&str> = f
+            .lines()
             .filter(|l| l.contains("abcdef") || l.contains("5678"))
             .collect();
         assert!(
             input_lines.len() >= 2,
             "long input should wrap to multiple visual lines, got {} lines: {:?}",
-            input_lines.len(), input_lines
+            input_lines.len(),
+            input_lines
         );
     }
 
@@ -1713,7 +1912,10 @@ mod scenario_tests {
         h.type_str("x");
         let f = h.render("one char past boundary");
         let has_wrapped_x = f.lines().any(|l| l.starts_with('x'));
-        assert!(has_wrapped_x, "character after boundary should appear on new wrapped line");
+        assert!(
+            has_wrapped_x,
+            "character after boundary should appear on new wrapped line"
+        );
     }
 
     // ── Scenario: optimistic user message echo ──────────────────────────────
@@ -1804,7 +2006,10 @@ mod scenario_tests {
         h.app.stream.active = true;
         h.app.stream.regen = true;
         // Remove last assistant entry (as StreamStart handler does)
-        if let Some(pos) = h.app.entries.iter()
+        if let Some(pos) = h
+            .app
+            .entries
+            .iter()
             .rposition(|e| matches!(e, ConversationEntry::Assistant { .. }))
         {
             h.app.entries.truncate(pos);
@@ -1825,10 +2030,7 @@ mod scenario_tests {
         // Complete regen
         h.stream_end("A better joke: Why do programmers prefer dark mode?");
         let f = h.render("regen complete");
-        assert!(
-            f.contains("dark mode"),
-            "regenerated response visible"
-        );
+        assert!(f.contains("dark mode"), "regenerated response visible");
         assert!(
             !f.contains("regenerating"),
             "regen indicator gone after completion"
@@ -1852,7 +2054,10 @@ mod scenario_tests {
         let f = h.render("code block");
         assert!(f.contains("fn main()"), "code content visible");
         assert!(f.contains("rust"), "language hint visible");
-        assert!(f.contains("That should work"), "text after code block visible");
+        assert!(
+            f.contains("That should work"),
+            "text after code block visible"
+        );
     }
 
     // ── Scenario: status messages appear as system entries ──────────────────────
@@ -1865,7 +2070,10 @@ mod scenario_tests {
         h.app.set_status("conversation loaded");
 
         let f = h.render("with status message");
-        assert!(f.contains("conversation loaded"), "status message visible as system entry");
+        assert!(
+            f.contains("conversation loaded"),
+            "status message visible as system entry"
+        );
 
         // Narrow terminal — should not panic
         let mut h2 = Harness::with_size(50, 20);
@@ -1894,7 +2102,10 @@ mod scenario_tests {
             metadata: None,
         });
         let f = h.render("with character");
-        assert!(f.contains("Luna"), "character name shown in assistant entry");
+        assert!(
+            f.contains("Luna"),
+            "character name shown in assistant entry"
+        );
     }
 
     // ── Scenario: system messages ───────────────────────────────────────────
@@ -1943,10 +2154,16 @@ mod scenario_tests {
         h.app.set_status("error: rate_limit - Too many requests");
 
         let f = h.render("after error");
-        assert!(!f.contains("[streaming...]"), "streaming indicator gone after error");
+        assert!(
+            !f.contains("[streaming...]"),
+            "streaming indicator gone after error"
+        );
         assert!(f.contains("rate_limit"), "error visible as system entry");
         // The partial response is lost — this is the current behavior
-        assert!(!f.contains("Starting to respond"), "partial stream text gone after reset");
+        assert!(
+            !f.contains("Starting to respond"),
+            "partial stream text gone after reset"
+        );
     }
 
     // ── Scenario: reconnection during streaming ─────────────────────────────
@@ -1972,11 +2189,20 @@ mod scenario_tests {
         h.app.set_status("reconnecting: connection lost");
 
         let f = h.render("disconnected while streaming");
-        assert!(f.contains("reconnecting"), "reconnection status visible as system entry");
+        assert!(
+            f.contains("reconnecting"),
+            "reconnection status visible as system entry"
+        );
         // Streaming indicator should be gone (stream was reset)
-        assert!(!f.contains("[streaming...]"), "streaming indicator cleared on disconnect");
+        assert!(
+            !f.contains("[streaming...]"),
+            "streaming indicator cleared on disconnect"
+        );
         // Partial stream text is lost on disconnect
-        assert!(!f.contains("Partial response"), "partial stream text cleared on disconnect");
+        assert!(
+            !f.contains("Partial response"),
+            "partial stream text cleared on disconnect"
+        );
     }
 
     // ── Scenario: rapid message exchange ────────────────────────────────────
@@ -2011,7 +2237,8 @@ mod scenario_tests {
         let _f2 = h.render("same state re-render");
         let diffs = h.changed_lines();
         assert_eq!(
-            diffs.len(), 0,
+            diffs.len(),
+            0,
             "re-rendering same state should produce identical frame"
         );
     }

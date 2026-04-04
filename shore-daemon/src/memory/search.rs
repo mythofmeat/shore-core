@@ -121,7 +121,11 @@ impl Bm25Index {
             })
             .collect();
 
-        results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         results.truncate(top_k);
         results
     }
@@ -171,7 +175,10 @@ mod tests {
     #[test]
     fn test_exact_match_scores_higher_than_partial() {
         let mut index = Bm25Index::new();
-        index.add_document("exact", "machine learning is a field of artificial intelligence");
+        index.add_document(
+            "exact",
+            "machine learning is a field of artificial intelligence",
+        );
         index.add_document("partial", "the machine was broken and needed repair");
 
         let results = index.search("machine learning", 10);

@@ -5,7 +5,9 @@ use serde::{Deserialize, Serialize};
 /// Generate a zero-argument function returning a constant, for `#[serde(default = "...")]`.
 macro_rules! serde_default {
     ($name:ident -> $ty:ty { $val:expr }) => {
-        fn $name() -> $ty { $val }
+        fn $name() -> $ty {
+            $val
+        }
     };
 }
 
@@ -298,21 +300,51 @@ impl ToolToggles {
         self.0.insert(tool.to_string(), enabled);
     }
 
-    pub fn memory(&self) -> bool { self.is_enabled("memory") }
-    pub fn send_image(&self) -> bool { self.is_enabled("send_image") }
-    pub fn list_images(&self) -> bool { self.is_enabled("list_images") }
-    pub fn recall_image(&self) -> bool { self.is_enabled("recall_image") }
-    pub fn generate_image(&self) -> bool { self.is_enabled("generate_image") }
-    pub fn remember_image(&self) -> bool { self.is_enabled("remember_image") }
-    pub fn web_search(&self) -> bool { self.is_enabled("web_search") }
-    pub fn fetch_url(&self) -> bool { self.is_enabled("fetch_url") }
-    pub fn check_time(&self) -> bool { self.is_enabled("check_time") }
-    pub fn roll_dice(&self) -> bool { self.is_enabled("roll_dice") }
-    pub fn activity_heatmap(&self) -> bool { self.is_enabled("activity_heatmap") }
-    pub fn scratchpad_list(&self) -> bool { self.is_enabled("scratchpad_list") }
-    pub fn scratchpad_read(&self) -> bool { self.is_enabled("scratchpad_read") }
-    pub fn scratchpad_write(&self) -> bool { self.is_enabled("scratchpad_write") }
-    pub fn scratchpad_delete(&self) -> bool { self.is_enabled("scratchpad_delete") }
+    pub fn memory(&self) -> bool {
+        self.is_enabled("memory")
+    }
+    pub fn send_image(&self) -> bool {
+        self.is_enabled("send_image")
+    }
+    pub fn list_images(&self) -> bool {
+        self.is_enabled("list_images")
+    }
+    pub fn recall_image(&self) -> bool {
+        self.is_enabled("recall_image")
+    }
+    pub fn generate_image(&self) -> bool {
+        self.is_enabled("generate_image")
+    }
+    pub fn remember_image(&self) -> bool {
+        self.is_enabled("remember_image")
+    }
+    pub fn web_search(&self) -> bool {
+        self.is_enabled("web_search")
+    }
+    pub fn fetch_url(&self) -> bool {
+        self.is_enabled("fetch_url")
+    }
+    pub fn check_time(&self) -> bool {
+        self.is_enabled("check_time")
+    }
+    pub fn roll_dice(&self) -> bool {
+        self.is_enabled("roll_dice")
+    }
+    pub fn activity_heatmap(&self) -> bool {
+        self.is_enabled("activity_heatmap")
+    }
+    pub fn scratchpad_list(&self) -> bool {
+        self.is_enabled("scratchpad_list")
+    }
+    pub fn scratchpad_read(&self) -> bool {
+        self.is_enabled("scratchpad_read")
+    }
+    pub fn scratchpad_write(&self) -> bool {
+        self.is_enabled("scratchpad_write")
+    }
+    pub fn scratchpad_delete(&self) -> bool {
+        self.is_enabled("scratchpad_delete")
+    }
 }
 
 // ── [behavior.tool_use.search] ───────────────────────────────────────────
@@ -771,7 +803,10 @@ web_search = false
     #[test]
     fn search_config_defaults() {
         let config = AppConfig::default();
-        assert_eq!(config.behavior.tool_use.search.api_key_env, "TAVILY_API_KEY");
+        assert_eq!(
+            config.behavior.tool_use.search.api_key_env,
+            "TAVILY_API_KEY"
+        );
         assert_eq!(config.behavior.tool_use.search.max_results, 5);
         assert_eq!(config.behavior.tool_use.search.search_depth, "basic");
         assert!(config.behavior.tool_use.search.include_answer);
@@ -824,14 +859,20 @@ key = "value"
         let result: Result<AppConfig, _> = toml::from_str(toml_str);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("unknown field"), "Error should mention unknown field: {err}");
+        assert!(
+            err.contains("unknown field"),
+            "Error should mention unknown field: {err}"
+        );
     }
 
     #[test]
     fn notifications_config_defaults() {
         let config = AppConfig::default();
         assert!(!config.notifications.enabled);
-        assert_eq!(config.notifications.backend, NotificationBackend::NotifySend);
+        assert_eq!(
+            config.notifications.backend,
+            NotificationBackend::NotifySend
+        );
         assert_eq!(config.notifications.ntfy.url, "https://ntfy.sh");
         assert!(config.notifications.ntfy.topic.is_empty());
         assert!(config.notifications.events.autonomous_message);
@@ -878,7 +919,10 @@ template = "echo '{title}: {body}'"
 "#;
         let config: AppConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.notifications.backend, NotificationBackend::Command);
-        assert_eq!(config.notifications.command.template, "echo '{title}: {body}'");
+        assert_eq!(
+            config.notifications.command.template,
+            "echo '{title}: {body}'"
+        );
     }
 
     #[test]

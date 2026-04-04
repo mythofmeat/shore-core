@@ -13,7 +13,12 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     if matches!(&cli.command, CliCommand::Config { path: true, .. }) {
         return print_config_path(&cli).await;
     }
-    if let CliCommand::Character { name: Some(name), new: true, .. } = &cli.command {
+    if let CliCommand::Character {
+        name: Some(name),
+        new: true,
+        ..
+    } = &cli.command
+    {
         return handle_create_character(name);
     }
     if let CliCommand::Matrix { subcommand } = &cli.command {
@@ -29,7 +34,14 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         SWPConnection::connect(&addr, "cli", "shore-cli", character.clone()).await?;
 
     match &cli.command {
-        CliCommand::Send { message, images, temperature, top_p, thinking, system } => {
+        CliCommand::Send {
+            message,
+            images,
+            temperature,
+            top_p,
+            thinking,
+            system,
+        } => {
             let text = if !message.is_empty() {
                 message.join(" ")
             } else if !io::stdin().is_terminal() {
@@ -41,7 +53,8 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 return Ok(());
             }
             if *system {
-                conn.send_command("inject_system", serde_json::json!({ "text": text })).await?;
+                conn.send_command("inject_system", serde_json::json!({ "text": text }))
+                    .await?;
                 let data = recv_command_data(&mut conn).await?;
                 output::format_command("inject_system", &data);
             } else {
@@ -54,7 +67,8 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 } else {
                     None
                 };
-                conn.send_message_full(&text, true, images.clone(), overrides).await?;
+                conn.send_message_full(&text, true, images.clone(), overrides)
+                    .await?;
                 recv_streaming_response(&mut conn).await?;
             }
         }
@@ -62,17 +76,25 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             conn.send_regen(true, guidance.clone()).await?;
             recv_streaming_response(&mut conn).await?;
         }
-        CliCommand::Character { name, info: false, new: false, .. } => {
-            match name {
-                Some(name) => handle_switch_character(&mut conn, name).await?,
-                None => handle_list_characters(&mut conn).await?,
-            }
-        }
-        CliCommand::Log { subcommand: Some(sub), json, .. } => {
+        CliCommand::Character {
+            name,
+            info: false,
+            new: false,
+            ..
+        } => match name {
+            Some(name) => handle_switch_character(&mut conn, name).await?,
+            None => handle_list_characters(&mut conn).await?,
+        },
+        CliCommand::Log {
+            subcommand: Some(sub),
+            json,
+            ..
+        } => {
             let (name, args) = match sub {
-                crate::cli::LogCommand::Edit { msg_ref, content } => {
-                    ("edit", serde_json::json!({ "ref": msg_ref, "content": content.join(" ") }))
-                }
+                crate::cli::LogCommand::Edit { msg_ref, content } => (
+                    "edit",
+                    serde_json::json!({ "ref": msg_ref, "content": content.join(" ") }),
+                ),
                 crate::cli::LogCommand::Delete { msg_ref } => {
                     ("delete", serde_json::json!({ "refs": msg_ref }))
                 }
@@ -85,8 +107,13 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 output::format_command(name, &data);
             }
         }
-        CliCommand::Log { msg_ref: Some(r), json, .. } => {
-            conn.send_command("get", serde_json::json!({ "ref": r })).await?;
+        CliCommand::Log {
+            msg_ref: Some(r),
+            json,
+            ..
+        } => {
+            conn.send_command("get", serde_json::json!({ "ref": r }))
+                .await?;
             let data = recv_command_data(&mut conn).await?;
             if *json {
                 println!("{}", serde_json::to_string_pretty(&data)?);
@@ -95,8 +122,14 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 output::print_single_message(&data, char_name);
             }
         }
-        CliCommand::Log { heartbeat: true, count, json, .. } => {
-            conn.send_command("heartbeat_log", serde_json::json!({ "count": count })).await?;
+        CliCommand::Log {
+            heartbeat: true,
+            count,
+            json,
+            ..
+        } => {
+            conn.send_command("heartbeat_log", serde_json::json!({ "count": count }))
+                .await?;
             let data = recv_command_data(&mut conn).await?;
             if *json {
                 println!("{}", serde_json::to_string_pretty(&data)?);
@@ -104,8 +137,15 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 output::print_heartbeat_log(&data);
             }
         }
-        CliCommand::Log { count, follow, json, content, .. } => {
-            conn.send_command("log", serde_json::json!({ "count": count })).await?;
+        CliCommand::Log {
+            count,
+            follow,
+            json,
+            content,
+            ..
+        } => {
+            conn.send_command("log", serde_json::json!({ "count": count }))
+                .await?;
             let data = recv_command_data(&mut conn).await?;
 
             if *json {
@@ -163,8 +203,14 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
-        CliCommand::Status { diagnostics: true, count, json, .. } => {
-            conn.send_command("diagnostics", serde_json::json!({ "count": count })).await?;
+        CliCommand::Status {
+            diagnostics: true,
+            count,
+            json,
+            ..
+        } => {
+            conn.send_command("diagnostics", serde_json::json!({ "count": count }))
+                .await?;
             let data = recv_command_data(&mut conn).await?;
             if *json {
                 println!("{}", serde_json::to_string_pretty(&data)?);
@@ -192,7 +238,10 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
-        CliCommand::Memory { subcommand: Some(crate::cli::MemoryCommand::Shell), .. } => {
+        CliCommand::Memory {
+            subcommand: Some(crate::cli::MemoryCommand::Shell),
+            ..
+        } => {
             run_memory_shell(&mut conn).await?;
         }
         other => {
@@ -224,16 +273,15 @@ async fn handle_switch_character(
     name: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Query the daemon for available characters.
-    conn.send_command("list_characters", serde_json::json!({})).await?;
+    conn.send_command("list_characters", serde_json::json!({}))
+        .await?;
     let data = recv_command_data(conn).await?;
 
     let characters = data["characters"]
         .as_array()
         .ok_or("invalid list_characters response")?;
 
-    let valid = characters
-        .iter()
-        .any(|c| c["name"].as_str() == Some(name));
+    let valid = characters.iter().any(|c| c["name"].as_str() == Some(name));
 
     if !valid {
         let available: Vec<&str> = characters
@@ -258,7 +306,8 @@ async fn handle_switch_character(
 async fn handle_list_characters(
     conn: &mut SWPConnection,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    conn.send_command("list_characters", serde_json::json!({})).await?;
+    conn.send_command("list_characters", serde_json::json!({}))
+        .await?;
     let data = recv_command_data(conn).await?;
 
     let active = state::read_active_character();
@@ -329,7 +378,12 @@ fn handle_create_character(name: &str) -> Result<(), Box<dyn std::error::Error>>
     let character_md = char_dir.join("character.md");
 
     if character_md.exists() {
-        return Err(format!("Character '{}' already exists at {}", name, char_dir.display()).into());
+        return Err(format!(
+            "Character '{}' already exists at {}",
+            name,
+            char_dir.display()
+        )
+        .into());
     }
 
     std::fs::create_dir_all(&char_dir)?;
@@ -342,9 +396,7 @@ fn handle_create_character(name: &str) -> Result<(), Box<dyn std::error::Error>>
 }
 
 /// Run an interactive memory shell session.
-async fn run_memory_shell(
-    conn: &mut SWPConnection,
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_memory_shell(conn: &mut SWPConnection) -> Result<(), Box<dyn std::error::Error>> {
     // Start the session.
     conn.send_command("memory_shell_start", serde_json::json!({}))
         .await?;
@@ -353,9 +405,7 @@ async fn run_memory_shell(
         .as_str()
         .ok_or("missing session_id in response")?
         .to_string();
-    let character = start_data["character"]
-        .as_str()
-        .unwrap_or("unknown");
+    let character = start_data["character"].as_str().unwrap_or("unknown");
 
     output::print_memory_shell_welcome(character);
 
@@ -465,9 +515,7 @@ fn edit_message_in_editor() -> Result<String, Box<dyn std::error::Error>> {
 
     let path = tmp.path().to_path_buf();
 
-    let status = std::process::Command::new(&editor)
-        .arg(&path)
-        .status()?;
+    let status = std::process::Command::new(&editor).arg(&path).status()?;
 
     if !status.success() {
         return Ok(String::new());
@@ -581,8 +629,7 @@ async fn recv_command_data(
                 );
                 return Err(err.message.clone().into());
             }
-            ServerMessage::Ping(_)
-            | ServerMessage::History(_) => {}
+            ServerMessage::Ping(_) | ServerMessage::History(_) => {}
             ServerMessage::SendImage(img) => {
                 output::print_send_image(img);
             }
@@ -593,7 +640,6 @@ async fn recv_command_data(
         }
     }
 }
-
 
 // ── Tests ────────────────────────────────────────────────────────────────
 
@@ -679,24 +725,29 @@ mod tests {
     }
 
     /// Execute a command against a mock server and return what the server received.
-    async fn execute_with_mock(
-        cli: Cli,
-        responses: Vec<ServerMessage>,
-    ) -> ClientMessage {
+    async fn execute_with_mock(cli: Cli, responses: Vec<ServerMessage>) -> ClientMessage {
         let (client_stream, server_stream) = duplex(16384);
 
         let server_handle = tokio::spawn(mock_server(server_stream, responses));
 
         // Connect using the raw stream and run the command logic
-        let (mut conn, _hello, _history) =
-            shore_client::SWPConnection::connect_raw(client_stream, "cli", "shore-cli", cli.character.clone())
-                .await
-                .unwrap();
+        let (mut conn, _hello, _history) = shore_client::SWPConnection::connect_raw(
+            client_stream,
+            "cli",
+            "shore-cli",
+            cli.character.clone(),
+        )
+        .await
+        .unwrap();
 
         match &cli.command {
-            CliCommand::Send { message, images, .. } => {
+            CliCommand::Send {
+                message, images, ..
+            } => {
                 let text = message.join(" ");
-                conn.send_message_with_images(&text, true, images.clone()).await.unwrap();
+                conn.send_message_with_images(&text, true, images.clone())
+                    .await
+                    .unwrap();
                 super::recv_streaming_response(&mut conn).await.unwrap();
             }
             CliCommand::Regen { guidance } => {
@@ -793,7 +844,12 @@ mod tests {
 
     #[tokio::test]
     async fn status_sends_swp_command() {
-        let cli = test_cli(CliCommand::Status { section: None, diagnostics: false, count: 10, json: false });
+        let cli = test_cli(CliCommand::Status {
+            section: None,
+            diagnostics: false,
+            count: 10,
+            json: false,
+        });
         let received = execute_with_mock(cli, command_response("status")).await;
 
         match received {
@@ -812,7 +868,8 @@ mod tests {
     async fn memory_compact_sends_command() {
         let cli = test_cli(CliCommand::Memory {
             subcommand: Some(crate::cli::MemoryCommand::Compact),
-            query: None, json: false,
+            query: None,
+            json: false,
         });
         let received = execute_with_mock(cli, command_response("compact")).await;
 
@@ -831,7 +888,8 @@ mod tests {
     async fn memory_sends_command_with_query() {
         let cli = test_cli(CliCommand::Memory {
             subcommand: None,
-            query: Some("recent topics".into()), json: false,
+            query: Some("recent topics".into()),
+            json: false,
         });
         let received = execute_with_mock(cli, command_response("memory")).await;
 
@@ -853,7 +911,12 @@ mod tests {
                 msg_ref: "m1".into(),
                 content: vec!["new".into(), "text".into()],
             }),
-            msg_ref: None, count: 20, follow: false, json: false, content: false, heartbeat: false,
+            msg_ref: None,
+            count: 20,
+            follow: false,
+            json: false,
+            content: false,
+            heartbeat: false,
         });
         let received = execute_with_mock(cli, command_response("edit")).await;
 
@@ -875,7 +938,12 @@ mod tests {
             subcommand: Some(crate::cli::LogCommand::Delete {
                 msg_ref: "m1".into(),
             }),
-            msg_ref: None, count: 20, follow: false, json: false, content: false, heartbeat: false,
+            msg_ref: None,
+            count: 20,
+            follow: false,
+            json: false,
+            content: false,
+            heartbeat: false,
         });
         let received = execute_with_mock(cli, command_response("delete")).await;
 

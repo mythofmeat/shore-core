@@ -1,17 +1,17 @@
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
+use shore_config::{load_config, LoadedConfig};
 use shore_daemon::autonomy::manager::AutonomyManager;
 use shore_daemon::characters::CharacterRegistry;
 use shore_daemon::commands::{CommandContext, SessionTokens};
-use shore_diagnostics::Diagnostics;
-use shore_config::{load_config, LoadedConfig};
 use shore_daemon::handler::MessageHandler;
-use shore_llm_client::LlmClient;
 use shore_daemon::notifications::NotificationService;
 use shore_daemon::server::registry::{InstanceInfo, Registry};
 use shore_daemon::server::{Server, ServerConfig};
+use shore_diagnostics::Diagnostics;
+use shore_llm_client::LlmClient;
 use shore_protocol::server_msg::ServerMessage;
 use tokio::sync::{broadcast, mpsc};
 use tracing::{error, info, warn};
@@ -49,26 +49,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .socket_path
         .as_ref()
         .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            loaded
-                .dirs
-                .runtime
-                .join(format!("{}.sock", instance_id))
-        });
+        .unwrap_or_else(|| loaded.dirs.runtime.join(format!("{}.sock", instance_id)));
 
     // Resolve TCP config: config file → SHORE_TCP_ADDR env var fallback.
     let tcp_config = match loaded.app.connections.tcp.clone() {
         Some(tcp) => Some(tcp),
-        None => std::env::var("SHORE_TCP_ADDR").ok().map(|addr| {
-            shore_config::app::TcpConfig {
+        None => std::env::var("SHORE_TCP_ADDR")
+            .ok()
+            .map(|addr| shore_config::app::TcpConfig {
                 enabled: true,
                 addr: Some(addr),
                 allowed_hosts: vec![],
-            }
-        }),
+            }),
     };
 
-    let tcp_addr = tcp_config.as_ref()
+    let tcp_addr = tcp_config
+        .as_ref()
         .filter(|t| t.enabled)
         .and_then(|t| t.addr.clone());
 
@@ -98,8 +94,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         #[cfg(unix)]
         {
             use tokio::signal::unix::{signal, SignalKind};
-            let mut sigterm = signal(SignalKind::terminate())
-                .expect("Failed to listen for SIGTERM");
+            let mut sigterm =
+                signal(SignalKind::terminate()).expect("Failed to listen for SIGTERM");
             tokio::select! {
                 _ = ctrl_c => info!("Received SIGINT"),
                 _ = sigterm.recv() => info!("Received SIGTERM"),
@@ -139,11 +135,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut llm_client = LlmClient::new();
     if loaded.app.advanced.api_payload_logging {
         llm_client.set_payload_log_dir(loaded.dirs.data.clone());
-        info!("API payload logging enabled → {}/api_payloads.jsonl", loaded.dirs.data.display());
+        info!(
+            "API payload logging enabled → {}/api_payloads.jsonl",
+            loaded.dirs.data.display()
+        );
     }
 
     // Provide the autonomy manager with resources for interiority/keepalive execution.
-    autonomy.set_resources(llm_client.clone(), push_tx.clone(), loaded.clone(), notifier.clone());
+    autonomy.set_resources(
+        llm_client.clone(),
+        push_tx.clone(),
+        loaded.clone(),
+        notifier.clone(),
+    );
 
     // In-memory diagnostic ring buffers (API calls, tool calls, errors).
     // Writer: generation tasks (handler.rs). Reader: `status`/`diagnostics` commands.
@@ -186,7 +190,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let compaction_flag = compaction_occurred.clone();
         let compaction_autonomy = autonomy.clone();
         tokio::spawn(async move {
-            compaction_task(compaction_rx, config, compaction_llm_client, data_dir, compaction_push_tx, compaction_notifier, compaction_flag, compaction_autonomy).await;
+            compaction_task(
+                compaction_rx,
+                config,
+                compaction_llm_client,
+                data_dir,
+                compaction_push_tx,
+                compaction_notifier,
+                compaction_flag,
+                compaction_autonomy,
+            )
+            .await;
         })
     };
 
@@ -255,7 +269,16 @@ async fn compaction_task(
     while let Some(character) = rx.recv().await {
         info!(character = %character, "Background compaction triggered");
 
-        match shore_daemon::memory::compaction::run_compaction(&character, &config, &llm_client, &data_dir, &push_tx, &notifier).await {
+        match shore_daemon::memory::compaction::run_compaction(
+            &character,
+            &config,
+            &llm_client,
+            &data_dir,
+            &push_tx,
+            &notifier,
+        )
+        .await
+        {
             Ok(retained_count) => {
                 compaction_occurred.store(true, std::sync::atomic::Ordering::Release);
                 autonomy.notify_compaction_complete(&character, retained_count);

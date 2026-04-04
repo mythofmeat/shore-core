@@ -13,9 +13,9 @@ pub mod types;
 
 use serde_json::{json, Value};
 
-use shore_config::models::ResolvedModel;
 use crate::memory::agent_llm::AgentLlm;
 use crate::memory::db::MemoryDB;
+use shore_config::models::ResolvedModel;
 
 pub use types::{
     AgentError, AgentIndexer, AgentMode, AgentRag, AgentSearchContext, CallerIdentity,
@@ -279,43 +279,37 @@ mod tests {
 
     #[test]
     fn test_pronoun_resolution_char_caller() {
-        let resolved =
-            resolve_pronouns("What do I like to eat?", CallerIdentity::Char, "Alice");
+        let resolved = resolve_pronouns("What do I like to eat?", CallerIdentity::Char, "Alice");
         assert_eq!(resolved, "What do Alice like to eat?");
     }
 
     #[test]
     fn test_pronoun_resolution_user_caller() {
-        let resolved =
-            resolve_pronouns("What do I like to eat?", CallerIdentity::User, "Bob");
+        let resolved = resolve_pronouns("What do I like to eat?", CallerIdentity::User, "Bob");
         assert_eq!(resolved, "What do Bob like to eat?");
     }
 
     #[test]
     fn test_pronoun_resolution_my() {
-        let resolved =
-            resolve_pronouns("my favorite color", CallerIdentity::Char, "Alice");
+        let resolved = resolve_pronouns("my favorite color", CallerIdentity::Char, "Alice");
         assert_eq!(resolved, "Alice's favorite color");
     }
 
     #[test]
     fn test_pronoun_resolution_me() {
-        let resolved =
-            resolve_pronouns("tell me about me.", CallerIdentity::User, "Bob");
+        let resolved = resolve_pronouns("tell me about me.", CallerIdentity::User, "Bob");
         assert_eq!(resolved, "tell Bob about Bob.");
     }
 
     #[test]
     fn test_pronoun_resolution_no_pronouns() {
-        let resolved =
-            resolve_pronouns("What does Alice like?", CallerIdentity::Char, "Alice");
+        let resolved = resolve_pronouns("What does Alice like?", CallerIdentity::Char, "Alice");
         assert_eq!(resolved, "What does Alice like?");
     }
 
     #[test]
     fn test_pronoun_resolution_myself() {
-        let resolved =
-            resolve_pronouns("things about myself", CallerIdentity::User, "Bob");
+        let resolved = resolve_pronouns("things about myself", CallerIdentity::User, "Bob");
         assert_eq!(resolved, "things about Bob");
     }
 
@@ -323,9 +317,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_ask_returns_text() {
+        use crate::memory::agent_llm::{AgentLlmResponse, MockAgentLlm};
         use shore_config::models::Sdk;
         use shore_llm_client::types::ContentBlock;
-        use crate::memory::agent_llm::{AgentLlmResponse, MockAgentLlm};
 
         let mock = MockAgentLlm::new(vec![AgentLlmResponse {
             text: "No relevant memories found.".into(),
@@ -366,7 +360,14 @@ mod tests {
 
         let agent = MemoryAgent::one_shot(CallerIdentity::Char, "Alice", "Bob");
         let result = agent
-            .ask("What do I know about chocolate?", &mock, &db, None, None, &model)
+            .ask(
+                "What do I know about chocolate?",
+                &mock,
+                &db,
+                None,
+                None,
+                &model,
+            )
             .await
             .unwrap();
 

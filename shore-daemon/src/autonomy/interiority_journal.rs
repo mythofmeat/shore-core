@@ -96,8 +96,8 @@ pub fn append_entries(path: &Path, entries: &[JournalEntry]) -> io::Result<()> {
         .open(path)?;
 
     for entry in entries {
-        let json = serde_json::to_string(entry)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        let json =
+            serde_json::to_string(entry).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
         writeln!(file, "{json}")?;
     }
     Ok(())
@@ -245,7 +245,10 @@ mod tests {
     fn render_journal_formatting() {
         let entries = vec![
             entry(JournalEntryType::Thought, "I should check my notes"),
-            entry(JournalEntryType::ToolCall, "scratchpad_read({\"file\":\"notes.md\"})"),
+            entry(
+                JournalEntryType::ToolCall,
+                "scratchpad_read({\"file\":\"notes.md\"})",
+            ),
             entry(JournalEntryType::ToolResult, "hello world"),
             entry(JournalEntryType::MessageSent, "Hey there!"),
         ];
@@ -299,7 +302,12 @@ mod tests {
 
         // Write many entries.
         let entries: Vec<_> = (0..100)
-            .map(|i| entry(JournalEntryType::Thought, &format!("entry {i} with some padding text to make it longer")))
+            .map(|i| {
+                entry(
+                    JournalEntryType::Thought,
+                    &format!("entry {i} with some padding text to make it longer"),
+                )
+            })
             .collect();
         append_entries(&path, &entries).unwrap();
 
@@ -312,7 +320,10 @@ mod tests {
         assert!(after.len() < entries.len());
         assert!(after.len() > 0);
         // Newest entries preserved.
-        assert_eq!(after.last().unwrap().content, entries.last().unwrap().content);
+        assert_eq!(
+            after.last().unwrap().content,
+            entries.last().unwrap().content
+        );
     }
 
     #[test]
@@ -323,7 +334,11 @@ mod tests {
         let mut file = fs::File::create(&path).unwrap();
         writeln!(file, r#"{{"ts":"t1","type":"thought","content":"good"}}"#).unwrap();
         writeln!(file, "this is not json").unwrap();
-        writeln!(file, r#"{{"ts":"t2","type":"tool_call","content":"also good"}}"#).unwrap();
+        writeln!(
+            file,
+            r#"{{"ts":"t2","type":"tool_call","content":"also good"}}"#
+        )
+        .unwrap();
 
         let entries = read_journal(&path);
         assert_eq!(entries.len(), 2);

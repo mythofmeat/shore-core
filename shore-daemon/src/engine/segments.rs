@@ -43,11 +43,10 @@ impl SegmentReader {
         let segments_dir = character_dir.join("segments");
 
         let manifest = if manifest_path.exists() {
-            let content =
-                std::fs::read_to_string(&manifest_path).map_err(|e| EngineError::Io {
-                    path: manifest_path.clone(),
-                    source: e,
-                })?;
+            let content = std::fs::read_to_string(&manifest_path).map_err(|e| EngineError::Io {
+                path: manifest_path.clone(),
+                source: e,
+            })?;
             serde_json::from_str(&content).map_err(|e| EngineError::JsonParse {
                 path: manifest_path,
                 source: e,

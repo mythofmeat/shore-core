@@ -114,10 +114,18 @@ struct EmbeddedFileConfig {
     binary: Option<String>,
 }
 
-fn default_true() -> bool { true }
-fn default_server_name() -> String { "localhost".into() }
-fn default_port() -> u16 { 6167 }
-fn default_admin_user() -> String { "shore-admin".into() }
+fn default_true() -> bool {
+    true
+}
+fn default_server_name() -> String {
+    "localhost".into()
+}
+fn default_port() -> u16 {
+    6167
+}
+fn default_admin_user() -> String {
+    "shore-admin".into()
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -231,8 +239,7 @@ async fn run_embedded(
 
     // 2. Load or initialize embedded state
     let homeserver_url = format!("http://127.0.0.1:{}", embedded.port);
-    let (mut embedded_state, first_run) =
-        load_or_init_state(&hs_paths, embedded, &homeserver_url)?;
+    let (mut embedded_state, first_run) = load_or_init_state(&hs_paths, embedded, &homeserver_url)?;
 
     // 3. Build HomeserverConfig
     let hs_config = HomeserverConfig {
@@ -253,7 +260,11 @@ async fn run_embedded(
              tuwunel: https://github.com/matrix-construct/tuwunel"
         )
     })?;
-    info!("started {} (port {})", hs_manager.binary_name(), embedded.port);
+    info!(
+        "started {} (port {})",
+        hs_manager.binary_name(),
+        embedded.port
+    );
 
     // 5. Wait for homeserver to be healthy
     let healthy = wait_for_healthy(&homeserver_url, Duration::from_secs(30)).await;
@@ -276,9 +287,8 @@ async fn run_embedded(
 
         embedded_state.admin_user_id = admin_reg.user_id;
         embedded_state.admin_access_token = admin_reg.access_token;
-        embedded_state.admin_device_id = admin_reg
-            .device_id
-            .unwrap_or_else(|| "SHORE_ADMIN".into());
+        embedded_state.admin_device_id =
+            admin_reg.device_id.unwrap_or_else(|| "SHORE_ADMIN".into());
         embedded_state
             .save(&hs_paths.state_file)
             .map_err(|e| format!("Failed to save embedded state: {e}"))?;
@@ -309,8 +319,7 @@ async fn run_embedded(
     }
 
     // 7. Connect to daemon to discover characters
-    let (daemon_tx, mut daemon_rx) =
-        spawn_connection(args.socket.clone(), args.config.clone());
+    let (daemon_tx, mut daemon_rx) = spawn_connection(args.socket.clone(), args.config.clone());
 
     info!("waiting for daemon connection to discover characters...");
     let characters = wait_for_characters(&mut daemon_rx).await?;
@@ -389,9 +398,7 @@ async fn run_embedded(
     }
 
     // 10. Start the Matrix bot as the first character
-    let primary = character_states
-        .first()
-        .ok_or("No characters to bridge")?;
+    let primary = character_states.first().ok_or("No characters to bridge")?;
 
     let bot_config = BotConfig {
         homeserver: homeserver_url.clone(),

@@ -30,7 +30,8 @@ pub fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "list_images",
-            description: "List image memories. Optionally pass a query for semantic search via RAG (top-32).",
+            description:
+                "List image memories. Optionally pass a query for semantic search via RAG (top-32).",
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -108,14 +109,20 @@ pub fn tool_defs() -> Vec<ToolDef> {
 /// If the input starts with `img_`, looks up the entry in the DB and uses its
 /// `image_path`. Otherwise treats the input as a relative path directly.
 /// Returns `(relative_path, full_path)`.
-fn resolve_image_path(input_path: &str, ctx: &dyn ToolContext) -> Result<(String, std::path::PathBuf), ToolError> {
+fn resolve_image_path(
+    input_path: &str,
+    ctx: &dyn ToolContext,
+) -> Result<(String, std::path::PathBuf), ToolError> {
     let relative_path = if input_path.starts_with("img_") {
-        let entry = ctx.memory_db()
+        let entry = ctx
+            .memory_db()
             .get_entry(input_path)
             .map_err(|e| ToolError::Io(format!("DB error: {e}")))?
             .ok_or_else(|| ToolError::Io(format!("no memory entry found: {input_path}")))?;
         if entry.image_path.is_empty() {
-            return Err(ToolError::Io(format!("entry {input_path} has no image_path")));
+            return Err(ToolError::Io(format!(
+                "entry {input_path} has no image_path"
+            )));
         }
         entry.image_path
     } else {
@@ -123,7 +130,10 @@ fn resolve_image_path(input_path: &str, ctx: &dyn ToolContext) -> Result<(String
     };
     let full_path = std::path::Path::new(ctx.image_dir()).join(&relative_path);
     if !full_path.exists() {
-        return Err(ToolError::Io(format!("image not found: {}", full_path.display())));
+        return Err(ToolError::Io(format!(
+            "image not found: {}",
+            full_path.display()
+        )));
     }
     Ok((relative_path, full_path))
 }
@@ -213,7 +223,10 @@ pub async fn handle_recall_image(input: Value, ctx: &dyn ToolContext) -> Result<
 }
 
 /// Handle `remember_image` — save a user-shared image to memory with context.
-pub async fn handle_remember_image(input: Value, ctx: &dyn ToolContext) -> Result<Value, ToolError> {
+pub async fn handle_remember_image(
+    input: Value,
+    ctx: &dyn ToolContext,
+) -> Result<Value, ToolError> {
     let path = input
         .get("path")
         .and_then(|v| v.as_str())
@@ -227,7 +240,10 @@ pub async fn handle_remember_image(input: Value, ctx: &dyn ToolContext) -> Resul
     // Verify the file exists relative to image_dir.
     let full_path = std::path::Path::new(ctx.image_dir()).join(path);
     if !full_path.exists() {
-        return Err(ToolError::Io(format!("image not found: {}", full_path.display())));
+        return Err(ToolError::Io(format!(
+            "image not found: {}",
+            full_path.display()
+        )));
     }
 
     let now = chrono::Utc::now().to_rfc3339();
@@ -269,7 +285,10 @@ pub async fn handle_remember_image(input: Value, ctx: &dyn ToolContext) -> Resul
 }
 
 /// Handle `generate_image` — calls shore-llm, downloads the result, and saves to disk.
-pub async fn handle_generate_image(input: Value, ctx: &dyn ToolContext) -> Result<Value, ToolError> {
+pub async fn handle_generate_image(
+    input: Value,
+    ctx: &dyn ToolContext,
+) -> Result<Value, ToolError> {
     let prompt = input
         .get("prompt")
         .and_then(|v| v.as_str())
@@ -431,13 +450,43 @@ mod tests {
         assert!(names.contains(&"generate_image"));
 
         // remember_image and generate_image are MemoryWrite (they produce side effects).
-        assert_eq!(defs.iter().find(|d| d.name == "remember_image").unwrap().category, ToolCategory::MemoryWrite);
-        assert_eq!(defs.iter().find(|d| d.name == "generate_image").unwrap().category, ToolCategory::MemoryWrite);
+        assert_eq!(
+            defs.iter()
+                .find(|d| d.name == "remember_image")
+                .unwrap()
+                .category,
+            ToolCategory::MemoryWrite
+        );
+        assert_eq!(
+            defs.iter()
+                .find(|d| d.name == "generate_image")
+                .unwrap()
+                .category,
+            ToolCategory::MemoryWrite
+        );
 
         // send_image, list_images, and recall_image are MemoryRead.
-        assert_eq!(defs.iter().find(|d| d.name == "send_image").unwrap().category, ToolCategory::MemoryRead);
-        assert_eq!(defs.iter().find(|d| d.name == "list_images").unwrap().category, ToolCategory::MemoryRead);
-        assert_eq!(defs.iter().find(|d| d.name == "recall_image").unwrap().category, ToolCategory::MemoryRead);
+        assert_eq!(
+            defs.iter()
+                .find(|d| d.name == "send_image")
+                .unwrap()
+                .category,
+            ToolCategory::MemoryRead
+        );
+        assert_eq!(
+            defs.iter()
+                .find(|d| d.name == "list_images")
+                .unwrap()
+                .category,
+            ToolCategory::MemoryRead
+        );
+        assert_eq!(
+            defs.iter()
+                .find(|d| d.name == "recall_image")
+                .unwrap()
+                .category,
+            ToolCategory::MemoryRead
+        );
     }
 
     #[tokio::test]
@@ -476,11 +525,8 @@ mod tests {
     #[tokio::test]
     async fn test_generate_image_no_config() {
         let ctx = TestToolContext::new().with_image_dir("/tmp");
-        let result = handle_generate_image(
-            json!({"prompt": "a cat", "size": "512x512"}),
-            &ctx,
-        )
-        .await;
+        let result =
+            handle_generate_image(json!({"prompt": "a cat", "size": "512x512"}), &ctx).await;
         // Without LLM client configured, should return an Io error.
         assert!(matches!(result, Err(ToolError::Io(_))));
     }
@@ -491,8 +537,7 @@ mod tests {
         let image_path = tmp.path().join("photo.png");
         std::fs::write(&image_path, b"fake image data").unwrap();
 
-        let ctx = TestToolContext::new()
-            .with_image_dir(tmp.path().to_str().unwrap());
+        let ctx = TestToolContext::new().with_image_dir(tmp.path().to_str().unwrap());
 
         let result = handle_send_image(
             json!({"path": "photo.png", "caption": "A test photo"}),
@@ -512,8 +557,7 @@ mod tests {
         let image_path = tmp.path().join("sunset.jpg");
         std::fs::write(&image_path, b"fake image data").unwrap();
 
-        let ctx = TestToolContext::new()
-            .with_image_dir(tmp.path().to_str().unwrap());
+        let ctx = TestToolContext::new().with_image_dir(tmp.path().to_str().unwrap());
 
         let result = handle_recall_image(json!({"path": "sunset.jpg"}), &ctx)
             .await
@@ -536,11 +580,10 @@ mod tests {
         ctx.db.create_entry(&entry2).unwrap();
 
         // Configure RAG to return one hit matching the sunset entry.
-        let ctx = TestToolContext::new()
-            .with_rag(vec![RagHit {
-                entry_id: "img_sunset".into(),
-                score: 0.9,
-            }]);
+        let ctx = TestToolContext::new().with_rag(vec![RagHit {
+            entry_id: "img_sunset".into(),
+            score: 0.9,
+        }]);
         // Re-insert entries into the new context's DB.
         let entry = make_image_entry("img_sunset", "A sunset photo", "sunset.png");
         ctx.db.create_entry(&entry).unwrap();
@@ -618,18 +661,14 @@ mod tests {
         let image_path = tmp.path().join("sunset.png");
         std::fs::write(&image_path, b"fake image data").unwrap();
 
-        let ctx = TestToolContext::new()
-            .with_image_dir(tmp.path().to_str().unwrap());
+        let ctx = TestToolContext::new().with_image_dir(tmp.path().to_str().unwrap());
 
         let entry = make_image_entry("img_sunset_001", "A sunset photo", "sunset.png");
         ctx.db.create_entry(&entry).unwrap();
 
-        let result = handle_send_image(
-            json!({"path": "img_sunset_001"}),
-            &ctx,
-        )
-        .await
-        .unwrap();
+        let result = handle_send_image(json!({"path": "img_sunset_001"}), &ctx)
+            .await
+            .unwrap();
 
         assert_eq!(result["sent"], true);
         assert!(result["path"].as_str().unwrap().contains("sunset.png"));
@@ -641,18 +680,14 @@ mod tests {
         let image_path = tmp.path().join("cat.jpg");
         std::fs::write(&image_path, b"fake image data").unwrap();
 
-        let ctx = TestToolContext::new()
-            .with_image_dir(tmp.path().to_str().unwrap());
+        let ctx = TestToolContext::new().with_image_dir(tmp.path().to_str().unwrap());
 
         let entry = make_image_entry("img_cat_001", "A cat photo", "cat.jpg");
         ctx.db.create_entry(&entry).unwrap();
 
-        let result = handle_recall_image(
-            json!({"path": "img_cat_001"}),
-            &ctx,
-        )
-        .await
-        .unwrap();
+        let result = handle_recall_image(json!({"path": "img_cat_001"}), &ctx)
+            .await
+            .unwrap();
 
         assert_eq!(result["exists"], true);
         assert!(result["path"].as_str().unwrap().contains("cat.jpg"));
@@ -661,11 +696,7 @@ mod tests {
     #[tokio::test]
     async fn test_send_image_entry_id_not_found() {
         let ctx = TestToolContext::new().with_image_dir("/tmp");
-        let result = handle_send_image(
-            json!({"path": "img_nonexistent"}),
-            &ctx,
-        )
-        .await;
+        let result = handle_send_image(json!({"path": "img_nonexistent"}), &ctx).await;
         assert!(matches!(result, Err(ToolError::Io(_))));
     }
 }

@@ -38,9 +38,9 @@ fn simple_embed(text: &str) -> Vec<f32> {
     let dim = 8;
     let mut vec = vec![0.0f32; dim];
     for word in text.to_lowercase().split_whitespace() {
-        let hash = word.bytes().fold(0u64, |acc, b| {
-            acc.wrapping_mul(31).wrapping_add(b as u64)
-        });
+        let hash = word
+            .bytes()
+            .fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
         let idx = (hash % dim as u64) as usize;
         vec[idx] += 1.0;
     }
@@ -210,8 +210,7 @@ async fn run_rag_pipeline(
     }
 
     // RAG fusion
-    let rag_results =
-        rag_pipeline.retrieve(&vector_results, &bm25_results, &metadata, is_private);
+    let rag_results = rag_pipeline.retrieve(&vector_results, &bm25_results, &metadata, is_private);
 
     rag_results
         .into_iter()
@@ -313,10 +312,30 @@ async fn test_full_memory_system_e2e() {
     // -----------------------------------------------------------------------
 
     let compaction_llm = MockCompactionLlm::with_entries(&[
-        ("episodic", "User recently traveled to Tokyo and visited Ichiran ramen in Shibuya", "travel,food,tokyo,ramen", 0.9),
-        ("semantic", "User prefers tonkotsu ramen broth over miso", "preference,food,ramen", 0.95),
-        ("episodic", "User had sushi at Tsukiji market and takoyaki in Osaka", "travel,food,sushi,osaka", 0.85),
-        ("semantic", "User works at ACME Corp on a Rust project", "work,rust,acme", 0.9),
+        (
+            "episodic",
+            "User recently traveled to Tokyo and visited Ichiran ramen in Shibuya",
+            "travel,food,tokyo,ramen",
+            0.9,
+        ),
+        (
+            "semantic",
+            "User prefers tonkotsu ramen broth over miso",
+            "preference,food,ramen",
+            0.95,
+        ),
+        (
+            "episodic",
+            "User had sushi at Tsukiji market and takoyaki in Osaka",
+            "travel,food,sushi,osaka",
+            0.85,
+        ),
+        (
+            "semantic",
+            "User works at ACME Corp on a Rust project",
+            "work,rust,acme",
+            0.9,
+        ),
     ]);
 
     let real_indexer = RealVectorIndexer {
@@ -333,9 +352,9 @@ async fn test_full_memory_system_e2e() {
             &messages,
             false,
             DEFAULT_COMPACT_PROMPT,
-            None,       // existing_recap
-            "Shore",    // char_name
-            "User",     // user_name
+            None,    // existing_recap
+            "Shore", // char_name
+            "User",  // user_name
             &compaction_llm,
             &db,
             &real_indexer,
@@ -515,9 +534,9 @@ async fn test_full_memory_system_e2e() {
             &collation_llm,
             DEFAULT_REFINE_PROMPT,
             &std::collections::HashMap::new(),
-            None,                    // indexer
-            Some(&vector_store),     // vector_store for re-indexing
-            None,                    // limit
+            None,                // indexer
+            Some(&vector_store), // vector_store for re-indexing
+            None,                // limit
         )
         .await
         .unwrap();
@@ -543,10 +562,7 @@ async fn test_full_memory_system_e2e() {
         "Decayed confidence {:.3} should be < 0.8",
         stale.confidence
     );
-    assert!(
-        stale.confidence >= 0.1,
-        "Confidence should respect floor"
-    );
+    assert!(stale.confidence >= 0.1, "Confidence should respect floor");
 
     // Verify collation changelog entries
     let all_logs = db.get_recent_changelog(50).unwrap();
@@ -564,9 +580,8 @@ async fn test_compaction_rejects_private_conversation() {
     let db = MemoryDB::open(&tmp.path().join("test.db")).unwrap();
     let vs = VectorStore::open(&tmp.path().join("vs"), 8).await.unwrap();
 
-    let llm = MockCompactionLlm::with_entries(&[
-        ("semantic", "Should not be created", "test", 0.9),
-    ]);
+    let llm =
+        MockCompactionLlm::with_entries(&[("semantic", "Should not be created", "test", 0.9)]);
     let indexer = RealVectorIndexer { store: &vs };
     let conv_mgr = MockConversationMgr {
         next_id: "new".to_string(),
@@ -594,7 +609,11 @@ async fn test_compaction_rejects_private_conversation() {
         matches!(result, Err(CompactionError::PrivateConversation)),
         "Should reject private conversation"
     );
-    assert_eq!(db.count_entries().unwrap(), 0, "No entries should be created");
+    assert_eq!(
+        db.count_entries().unwrap(),
+        0,
+        "No entries should be created"
+    );
 }
 
 // ===========================================================================

@@ -141,10 +141,7 @@ impl VectorStore {
 
     /// Rebuild the entire index from the given entries.
     /// Drops the existing table and creates a fresh one.
-    pub async fn reindex(
-        &self,
-        entries: &[(&str, &[f32])],
-    ) -> Result<(), VectorStoreError> {
+    pub async fn reindex(&self, entries: &[(&str, &[f32])]) -> Result<(), VectorStoreError> {
         let _ = self.db.drop_table(TABLE_NAME, &[]).await;
 
         if entries.is_empty() {
@@ -181,11 +178,7 @@ impl VectorStore {
         let id_list: Vec<String> = entry_ids.iter().map(|id| format!("'{id}'")).collect();
         let filter = format!("entry_id IN ({})", id_list.join(", "));
 
-        let mut stream: SendableRecordBatchStream = table
-            .query()
-            .only_if(filter)
-            .execute()
-            .await?;
+        let mut stream: SendableRecordBatchStream = table.query().only_if(filter).execute().await?;
 
         while let Some(rb) = stream.try_next().await? {
             let ids: &StringArray = rb
@@ -439,8 +432,14 @@ mod tests {
         let result = store.index_entry("e1", &[1.0, 0.0, 0.0]).await;
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("3 dimensions"), "error should mention actual dimensions: {err}");
-        assert!(err.contains("expected 4"), "error should mention expected dimensions: {err}");
+        assert!(
+            err.contains("3 dimensions"),
+            "error should mention actual dimensions: {err}"
+        );
+        assert!(
+            err.contains("expected 4"),
+            "error should mention expected dimensions: {err}"
+        );
     }
 
     #[tokio::test]
@@ -448,9 +447,18 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let store = open_temp_store(tmp.path(), 4).await;
 
-        store.index_entry("e1", &[1.0, 0.0, 0.0, 0.0]).await.unwrap();
-        store.index_entry("e2", &[0.0, 1.0, 0.0, 0.0]).await.unwrap();
-        store.index_entry("e3", &[0.0, 0.0, 1.0, 0.0]).await.unwrap();
+        store
+            .index_entry("e1", &[1.0, 0.0, 0.0, 0.0])
+            .await
+            .unwrap();
+        store
+            .index_entry("e2", &[0.0, 1.0, 0.0, 0.0])
+            .await
+            .unwrap();
+        store
+            .index_entry("e3", &[0.0, 0.0, 1.0, 0.0])
+            .await
+            .unwrap();
 
         // Retrieve a subset.
         let result = store.get_embeddings(&["e1", "e3"]).await.unwrap();
@@ -469,7 +477,10 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let store = open_temp_store(tmp.path(), 4).await;
 
-        store.index_entry("e1", &[1.0, 0.0, 0.0, 0.0]).await.unwrap();
+        store
+            .index_entry("e1", &[1.0, 0.0, 0.0, 0.0])
+            .await
+            .unwrap();
 
         // Request includes non-existent ID.
         let result = store.get_embeddings(&["e1", "nonexistent"]).await.unwrap();

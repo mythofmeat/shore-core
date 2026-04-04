@@ -18,14 +18,18 @@ use crate::types::{ContentBlock, Message, Role};
 /// assistant message's content_blocks.
 fn is_tool_loop_assistant(msg: &Message) -> bool {
     msg.role == Role::Assistant
-        && msg.content_blocks.iter().any(|b| matches!(b, ContentBlock::ToolUse { .. }))
+        && msg
+            .content_blocks
+            .iter()
+            .any(|b| matches!(b, ContentBlock::ToolUse { .. }))
 }
 
 /// A "tool result user" message has ONLY ToolResult blocks.
 fn is_tool_result_only(msg: &Message) -> bool {
     msg.role == Role::User
         && !msg.content_blocks.is_empty()
-        && msg.content_blocks
+        && msg
+            .content_blocks
             .iter()
             .all(|b| matches!(b, ContentBlock::ToolResult { .. }))
 }
@@ -43,11 +47,7 @@ fn derive_content_text_only(blocks: &[ContentBlock]) -> String {
 /// Preserves block ordering: text and thinking blocks are emitted in their
 /// original position, while each ToolUse is followed by its matching
 /// ToolResult (matched by `id` == `tool_use_id`).
-fn collect_round(
-    assistant: &Message,
-    results: Option<&Message>,
-    out: &mut Vec<ContentBlock>,
-) {
+fn collect_round(assistant: &Message, results: Option<&Message>, out: &mut Vec<ContentBlock>) {
     for block in &assistant.content_blocks {
         match block {
             ContentBlock::ToolUse { id, .. } => {
@@ -111,8 +111,7 @@ pub fn merge_tool_loop_messages(messages: &[Message]) -> Vec<Message> {
             let current = &messages[i];
 
             // Peek at next for tool results.
-            let next_is_result =
-                i + 1 < messages.len() && is_tool_result_only(&messages[i + 1]);
+            let next_is_result = i + 1 < messages.len() && is_tool_result_only(&messages[i + 1]);
 
             let results = if next_is_result {
                 Some(&messages[i + 1])
@@ -255,10 +254,7 @@ mod tests {
 
     #[test]
     fn no_tool_use() {
-        let msgs = vec![
-            user_msg("u1", "hello"),
-            assistant_text("a1", "hi there"),
-        ];
+        let msgs = vec![user_msg("u1", "hello"), assistant_text("a1", "hi there")];
         let merged = merge_tool_loop_messages(&msgs);
         assert_eq!(merged.len(), 2);
         assert_eq!(merged[0].msg_id, "u1");
@@ -276,13 +272,18 @@ mod tests {
         // Insert a whitespace-only Text block at the front (as the LLM does).
         asst.content_blocks.insert(
             0,
-            ContentBlock::Text { text: "\n\n".into() },
+            ContentBlock::Text {
+                text: "\n\n".into(),
+            },
         );
 
         let msgs = vec![
             user_msg("u1", "hello"),
             asst,
-            user_tool_results("u2", vec![("t1", "mem result", false), ("t2", "3:22 PM", false)]),
+            user_tool_results(
+                "u2",
+                vec![("t1", "mem result", false), ("t2", "3:22 PM", false)],
+            ),
             assistant_text("a2", "Hey there!"),
         ];
         let merged = merge_tool_loop_messages(&msgs);
@@ -307,13 +308,18 @@ mod tests {
         let mut asst = assistant_tool_use("a1", vec![("t1", "memory"), ("t2", "check_time")]);
         asst.content_blocks.insert(
             0,
-            ContentBlock::Text { text: "let me look that up!".into() },
+            ContentBlock::Text {
+                text: "let me look that up!".into(),
+            },
         );
 
         let msgs = vec![
             user_msg("u1", "what do you know about me?"),
             asst,
-            user_tool_results("u2", vec![("t1", "Trevor", false), ("t2", "3:22 PM", false)]),
+            user_tool_results(
+                "u2",
+                vec![("t1", "Trevor", false), ("t2", "3:22 PM", false)],
+            ),
             assistant_text("a2", "You're Trevor!"),
         ];
         let merged = merge_tool_loop_messages(&msgs);
@@ -323,7 +329,9 @@ mod tests {
         // Blocks: text("let me look..."), tu(memory), tr(memory), tu(check_time), tr(check_time), text("You're Trevor!")
         let blocks = &merged[1].content_blocks;
         assert_eq!(blocks.len(), 6);
-        assert!(matches!(&blocks[0], ContentBlock::Text { text } if text == "let me look that up!"));
+        assert!(
+            matches!(&blocks[0], ContentBlock::Text { text } if text == "let me look that up!")
+        );
         assert!(matches!(&blocks[1], ContentBlock::ToolUse { name, .. } if name == "memory"));
         assert!(matches!(&blocks[2], ContentBlock::ToolResult { .. }));
         assert!(matches!(&blocks[3], ContentBlock::ToolUse { name, .. } if name == "check_time"));
@@ -353,7 +361,9 @@ mod tests {
         let blocks = &merged[1].content_blocks;
         assert_eq!(blocks.len(), 3);
         assert!(matches!(&blocks[0], ContentBlock::ToolUse { name, .. } if name == "check_time"));
-        assert!(matches!(&blocks[1], ContentBlock::ToolResult { content, .. } if content == "3:22 PM"));
+        assert!(
+            matches!(&blocks[1], ContentBlock::ToolResult { content, .. } if content == "3:22 PM")
+        );
         assert!(matches!(&blocks[2], ContentBlock::Text { text } if text == "It's 3:22 PM!"));
     }
 
@@ -371,9 +381,13 @@ mod tests {
         let blocks = &merged[1].content_blocks;
         assert_eq!(blocks.len(), 5); // tu1, tr1, tu2, tr2, text
         assert!(matches!(&blocks[0], ContentBlock::ToolUse { id, .. } if id == "t1"));
-        assert!(matches!(&blocks[1], ContentBlock::ToolResult { tool_use_id, .. } if tool_use_id == "t1"));
+        assert!(
+            matches!(&blocks[1], ContentBlock::ToolResult { tool_use_id, .. } if tool_use_id == "t1")
+        );
         assert!(matches!(&blocks[2], ContentBlock::ToolUse { id, .. } if id == "t2"));
-        assert!(matches!(&blocks[3], ContentBlock::ToolResult { tool_use_id, .. } if tool_use_id == "t2"));
+        assert!(
+            matches!(&blocks[3], ContentBlock::ToolResult { tool_use_id, .. } if tool_use_id == "t2")
+        );
         assert!(matches!(&blocks[4], ContentBlock::Text { .. }));
     }
 
@@ -410,7 +424,9 @@ mod tests {
 
         let blocks = &merged[1].content_blocks;
         assert_eq!(blocks.len(), 4); // thinking, tool_use, tool_result, text
-        assert!(matches!(&blocks[0], ContentBlock::Thinking { thinking, .. } if thinking == "Let me check memory"));
+        assert!(
+            matches!(&blocks[0], ContentBlock::Thinking { thinking, .. } if thinking == "Let me check memory")
+        );
         assert!(matches!(&blocks[1], ContentBlock::ToolUse { .. }));
         assert!(matches!(&blocks[2], ContentBlock::ToolResult { .. }));
         assert!(matches!(&blocks[3], ContentBlock::Text { .. }));
@@ -418,13 +434,17 @@ mod tests {
 
     #[test]
     fn redacted_thinking_preserved() {
-        let mut msgs = vec![
-            user_msg("u1", "test"),
-        ];
+        let mut msgs = vec![user_msg("u1", "test")];
         // Assistant with redacted thinking + tool use.
         let blocks = vec![
-            ContentBlock::RedactedThinking { data: "opaque".into() },
-            ContentBlock::ToolUse { id: "t1".into(), name: "search".into(), input: json!({}) },
+            ContentBlock::RedactedThinking {
+                data: "opaque".into(),
+            },
+            ContentBlock::ToolUse {
+                id: "t1".into(),
+                name: "search".into(),
+                input: json!({}),
+            },
         ];
         msgs.push(make_msg("a1", Role::Assistant, "", blocks.clone()));
         msgs.push(user_tool_results("u2", vec![("t1", "found", false)]));
@@ -432,7 +452,10 @@ mod tests {
 
         let merged = merge_tool_loop_messages(&msgs);
         assert_eq!(merged.len(), 2);
-        assert!(matches!(&merged[1].content_blocks[0], ContentBlock::RedactedThinking { .. }));
+        assert!(matches!(
+            &merged[1].content_blocks[0],
+            ContentBlock::RedactedThinking { .. }
+        ));
     }
 
     // ── Incomplete loops ────────────────────────────────────────────
@@ -447,7 +470,10 @@ mod tests {
         assert_eq!(merged.len(), 2);
         assert_eq!(merged[1].msg_id, "a1");
         assert_eq!(merged[1].content_blocks.len(), 1);
-        assert!(matches!(&merged[1].content_blocks[0], ContentBlock::ToolUse { .. }));
+        assert!(matches!(
+            &merged[1].content_blocks[0],
+            ContentBlock::ToolUse { .. }
+        ));
     }
 
     #[test]
@@ -622,7 +648,9 @@ mod tests {
         assert!(matches!(&blocks[0], ContentBlock::ToolUse { id, .. } if id == "t1"));
         // No ToolResult for t1 in the merged output.
         assert!(
-            !blocks.iter().any(|b| matches!(b, ContentBlock::ToolResult { tool_use_id, .. } if tool_use_id == "t1")),
+            !blocks.iter().any(
+                |b| matches!(b, ContentBlock::ToolResult { tool_use_id, .. } if tool_use_id == "t1")
+            ),
             "should not have a tool result for t1"
         );
     }
@@ -640,12 +668,14 @@ mod tests {
         let blocks = &merged[1].content_blocks;
         // t1 should have its result paired, t2 should not.
         assert!(matches!(&blocks[0], ContentBlock::ToolUse { id, .. } if id == "t1"));
-        assert!(matches!(&blocks[1], ContentBlock::ToolResult { tool_use_id, .. } if tool_use_id == "t1"));
+        assert!(
+            matches!(&blocks[1], ContentBlock::ToolResult { tool_use_id, .. } if tool_use_id == "t1")
+        );
         assert!(matches!(&blocks[2], ContentBlock::ToolUse { id, .. } if id == "t2"));
         // No ToolResult for t2.
-        assert!(
-            !blocks.iter().any(|b| matches!(b, ContentBlock::ToolResult { tool_use_id, .. } if tool_use_id == "t2"))
-        );
+        assert!(!blocks.iter().any(
+            |b| matches!(b, ContentBlock::ToolResult { tool_use_id, .. } if tool_use_id == "t2")
+        ));
     }
 
     #[test]

@@ -159,7 +159,12 @@ impl MatrixBot {
     /// display name to the character name.
     pub async fn sync_avatar(&self, character: &str) {
         // Set display name to character name
-        if let Err(e) = self.client.account().set_display_name(Some(character)).await {
+        if let Err(e) = self
+            .client
+            .account()
+            .set_display_name(Some(character))
+            .await
+        {
             warn!("failed to set display name: {e}");
         } else {
             info!("display name set to {character}");

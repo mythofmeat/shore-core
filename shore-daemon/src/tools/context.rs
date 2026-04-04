@@ -63,10 +63,18 @@ pub(crate) struct SharedToolContext {
 }
 
 impl ToolContext for SharedToolContext {
-    fn memory_db(&self) -> &MemoryDB { &self.db }
-    fn memory_agent(&self) -> &MemoryAgent { &self.agent }
-    fn agent_llm(&self) -> &dyn AgentLlm { &self.agent_llm }
-    fn agent_model(&self) -> &ResolvedModel { &self.agent_model_val }
+    fn memory_db(&self) -> &MemoryDB {
+        &self.db
+    }
+    fn memory_agent(&self) -> &MemoryAgent {
+        &self.agent
+    }
+    fn agent_llm(&self) -> &dyn AgentLlm {
+        &self.agent_llm
+    }
+    fn agent_model(&self) -> &ResolvedModel {
+        &self.agent_model_val
+    }
     fn researcher_llm(&self) -> Option<&dyn AgentLlm> {
         self.researcher_llm_val.as_ref().map(|l| l as &dyn AgentLlm)
     }
@@ -76,13 +84,31 @@ impl ToolContext for SharedToolContext {
     fn memory_researcher(&self) -> Option<&MemoryResearcher> {
         self.researcher.as_ref()
     }
-    fn indexer(&self) -> Option<&dyn AgentIndexer> { None }
-    fn search_context(&self) -> Option<&AgentSearchContext> { self.search_ctx.as_ref() }
-    fn rag(&self) -> &dyn AgentRag { &self.rag }
-    fn image_dir(&self) -> &str { &self.image_dir_val }
-    fn llm_client(&self) -> Option<&LlmClient> { Some(&self.llm_client_val) }
-    fn image_gen_config(&self) -> Option<&ImageGenConfig> { self.image_gen_config_val.as_ref() }
-    fn search_config(&self) -> &SearchConfig { &self.search_config_val }
-    fn character_name(&self) -> &str { &self.character_name_val }
-    fn scratchpad_dir(&self) -> &str { &self.scratchpad_dir_val }
+    fn indexer(&self) -> Option<&dyn AgentIndexer> {
+        None
+    }
+    fn search_context(&self) -> Option<&AgentSearchContext> {
+        self.search_ctx.as_ref()
+    }
+    fn rag(&self) -> &dyn AgentRag {
+        &self.rag
+    }
+    fn image_dir(&self) -> &str {
+        &self.image_dir_val
+    }
+    fn llm_client(&self) -> Option<&LlmClient> {
+        Some(&self.llm_client_val)
+    }
+    fn image_gen_config(&self) -> Option<&ImageGenConfig> {
+        self.image_gen_config_val.as_ref()
+    }
+    fn search_config(&self) -> &SearchConfig {
+        &self.search_config_val
+    }
+    fn character_name(&self) -> &str {
+        &self.character_name_val
+    }
+    fn scratchpad_dir(&self) -> &str {
+        &self.scratchpad_dir_val
+    }
 }

@@ -100,16 +100,18 @@ pub(crate) async fn read_sse_events(
 
         for event in events {
             if let Some(ndjson_line) = callback(event) {
-                writer.write_all(ndjson_line.as_bytes()).await.map_err(|e| {
-                    crate::LlmError::Provider {
+                writer
+                    .write_all(ndjson_line.as_bytes())
+                    .await
+                    .map_err(|e| crate::LlmError::Provider {
                         message: format!("failed to write to stream: {e}"),
-                    }
-                })?;
-                writer.write_all(b"\n").await.map_err(|e| {
-                    crate::LlmError::Provider {
+                    })?;
+                writer
+                    .write_all(b"\n")
+                    .await
+                    .map_err(|e| crate::LlmError::Provider {
                         message: format!("failed to write to stream: {e}"),
-                    }
-                })?;
+                    })?;
             }
         }
     }

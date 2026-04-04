@@ -22,7 +22,6 @@ use super::activity::ActivityTracker;
 use super::interiority::{InteriorityAction, InteriorityClock, InteriorityState};
 use super::interiority_journal::{self, JournalEntry, JournalEntryType};
 use super::{AutonomyStatus, InteriorityEventKind, InteriorityLog};
-use shore_diagnostics::truncate_summary;
 use crate::memory::agent::{AgentSearchContext, CallerIdentity};
 use crate::memory::agent_llm::RealAgentLlm;
 use crate::memory::compaction_impls::{resolve_embed_config, resolve_image_gen_config};
@@ -34,6 +33,7 @@ use crate::tools as tool_system;
 use crate::tools::context::{NoopRag, SharedToolContext};
 use shore_config::app::{AutonomyConfig, CompactionConfig};
 use shore_config::LoadedConfig;
+use shore_diagnostics::truncate_summary;
 use shore_llm_client::types::LlmRequest;
 use shore_llm_client::LlmClient;
 
@@ -144,7 +144,10 @@ fn restore_interiority(persisted: &PersistedState) -> (InteriorityState, u32) {
         "Active" => InteriorityState::Active,
         "Dormant" => InteriorityState::Dormant,
         other => {
-            warn!(state = other, "Unknown interiority state, defaulting to Active");
+            warn!(
+                state = other,
+                "Unknown interiority state, defaulting to Active"
+            );
             InteriorityState::Active
         }
     };
@@ -429,7 +432,6 @@ impl AutonomyManager {
         .unwrap_or(false)
     }
 
-
     /// Explicitly set the paused state for a character. Returns the new state,
     /// or None if the character has no autonomy state.
     pub fn set_paused(&self, character: &str, paused: bool) -> Option<bool> {
@@ -470,7 +472,11 @@ impl AutonomyManager {
     /// Return recent interiority events for `shore log --heartbeat`.
     pub fn heartbeat_log(&self, character: &str, limit: usize) -> Vec<super::InteriorityEvent> {
         self.with_state(character, |s| {
-            s.interiority_log.recent(limit).into_iter().cloned().collect()
+            s.interiority_log
+                .recent(limit)
+                .into_iter()
+                .cloned()
+                .collect()
         })
         .unwrap_or_default()
     }
@@ -650,17 +656,23 @@ async fn tick_character(
         InteriorityAction::RunTick => {
             {
                 let mut s = lock_state(state);
-                s.interiority_log.push(
-                    InteriorityEventKind::TickFired,
-                    "Interiority tick fired",
-                );
+                s.interiority_log
+                    .push(InteriorityEventKind::TickFired, "Interiority tick fired");
             }
             match tokio::time::timeout(
                 INTERIORITY_TIMEOUT,
                 execute_unified_tick(
-                    character, state, data_dir, llm_client, push_tx, loaded_config, notifier,
+                    character,
+                    state,
+                    data_dir,
+                    llm_client,
+                    push_tx,
+                    loaded_config,
+                    notifier,
                 ),
-            ).await {
+            )
+            .await
+            {
                 Ok(()) => {}
                 Err(_) => {
                     error!(
@@ -740,7 +752,10 @@ async fn execute_unified_tick(
         match &s.last_request {
             Some(req) => (req.clone(), s.journal_path.clone()),
             None => {
-                info!(character, "Interiority: skipping tick (no prior conversation)");
+                info!(
+                    character,
+                    "Interiority: skipping tick (no prior conversation)"
+                );
                 return;
             }
         }
@@ -761,20 +776,29 @@ async fn execute_unified_tick(
         format!("{INTERIORITY_PROMPT}\n\nYour recent activity log:\n{journal_text}")
     };
 
-    request.messages.push(json!({"role": "system", "content": prompt_text}));
+    request
+        .messages
+        .push(json!({"role": "system", "content": prompt_text}));
 
     let Some(lc) = loaded_config else { return };
     let tool_ctx = match build_tool_context(character, data_dir, client, lc).await {
         Some(ctx) => ctx,
         None => {
-            warn!(character, "Interiority: failed to build tool context, skipping tick");
+            warn!(
+                character,
+                "Interiority: failed to build tool context, skipping tick"
+            );
             return;
         }
     };
     let active_path = data_dir.join(character).join("active.jsonl");
     let ts = chrono::Utc::now().to_rfc3339();
 
-    info!(character, journal_entries = truncated.len(), "Interiority: executing unified tick");
+    info!(
+        character,
+        journal_entries = truncated.len(),
+        "Interiority: executing unified tick"
+    );
 
     // -- ONE LLM call -----------------------------------------------------------
     let resp = match client.generate(&request, None).await {
@@ -829,17 +853,18 @@ async fn execute_unified_tick(
                 content: format!("{name}({input_str})"),
             });
 
-            let (output_str, is_error) = match tool_system::dispatch_tool(name, input.clone(), &tool_ctx).await {
-                Ok(value) => {
-                    let s = if let Some(s) = value.as_str() {
-                        s.to_string()
-                    } else {
-                        serde_json::to_string(&value).unwrap_or_default()
-                    };
-                    (s, false)
-                }
-                Err(e) => (e.to_string(), true),
-            };
+            let (output_str, is_error) =
+                match tool_system::dispatch_tool(name, input.clone(), &tool_ctx).await {
+                    Ok(value) => {
+                        let s = if let Some(s) = value.as_str() {
+                            s.to_string()
+                        } else {
+                            serde_json::to_string(&value).unwrap_or_default()
+                        };
+                        (s, false)
+                    }
+                    Err(e) => (e.to_string(), true),
+                };
 
             let result_summary = truncate_summary(&output_str, 500);
             info!(
@@ -881,7 +906,9 @@ async fn execute_unified_tick(
             content: user_msg.clone(),
         });
 
-        let content_blocks = vec![ContentBlock::Text { text: user_msg.clone() }];
+        let content_blocks = vec![ContentBlock::Text {
+            text: user_msg.clone(),
+        }];
         let content = derive_content_from_blocks(&content_blocks);
         let msg = Message {
             msg_id: format!("m_{}", uuid::Uuid::new_v4()),
@@ -906,7 +933,9 @@ async fn execute_unified_tick(
         }
 
         if let Some(tx) = push_tx {
-            let _ = tx.send(ServerMessage::NewMessage(NewMessage { message: msg.clone() }));
+            let _ = tx.send(ServerMessage::NewMessage(NewMessage {
+                message: msg.clone(),
+            }));
         }
         if let Some(n) = notifier {
             n.notify(
@@ -925,17 +954,29 @@ async fn execute_unified_tick(
         s.mark_dirty();
     } else {
         // Log thinking even when no message sent.
-        let thinking: Vec<&str> = resp.content_blocks.iter().filter_map(|b| {
-            if let ContentBlock::Text { text } = b { Some(text.as_str()) } else { None }
-        }).collect();
+        let thinking: Vec<&str> = resp
+            .content_blocks
+            .iter()
+            .filter_map(|b| {
+                if let ContentBlock::Text { text } = b {
+                    Some(text.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
         let summary = if thinking.is_empty() {
             "Tick completed — no message, no text output".to_string()
         } else {
-            format!("Tick completed silently: {}", truncate_summary(&thinking.join(" "), 150))
+            format!(
+                "Tick completed silently: {}",
+                truncate_summary(&thinking.join(" "), 150)
+            )
         };
         info!(character, summary = %summary, "Interiority: tick complete (silent)");
         let mut s = lock_state(state);
-        s.interiority_log.push(InteriorityEventKind::MessageSkipped, summary);
+        s.interiority_log
+            .push(InteriorityEventKind::MessageSkipped, summary);
     }
 
     // -- Append new entries to journal and compact if needed ---------------------
@@ -985,12 +1026,19 @@ async fn build_tool_context(
     };
 
     // Agent model (use memory_agent config if set, else default model).
-    let agent_model_name = config.app.defaults.memory_agent.as_deref()
-        .or(config.app.defaults.model.as_deref())?;
+    let agent_model_name = config.app.defaults.memory_agent.as_deref().or(config
+        .app
+        .defaults
+        .model
+        .as_deref())?;
     let agent_model = config.models.find_model(agent_model_name).ok()?;
 
     // Researcher model (optional).
-    let researcher_model = config.app.defaults.collation.as_deref()
+    let researcher_model = config
+        .app
+        .defaults
+        .collation
+        .as_deref()
         .and_then(|name| config.models.find_model(name).ok())
         .cloned();
 
@@ -1001,7 +1049,8 @@ async fn build_tool_context(
     ) {
         Ok(embed_config) => {
             let vs_path = char_dir.join("memory").join("vectorstore");
-            VectorStore::open(&vs_path, embed_config.dimensions).await
+            VectorStore::open(&vs_path, embed_config.dimensions)
+                .await
                 .ok()
                 .map(|vs| AgentSearchContext::new(vs, client.clone(), embed_config))
         }
@@ -1011,19 +1060,26 @@ async fn build_tool_context(
     let image_gen_config = resolve_image_gen_config(
         config.app.defaults.image_generation.as_deref(),
         &config.models.image_generation,
-    ).ok();
+    )
+    .ok();
 
     let display_name = config.app.defaults.resolve_display_name();
 
     Some(SharedToolContext {
         db,
         agent: crate::memory::agent::MemoryAgent::one_shot(
-            CallerIdentity::Char, character, &display_name,
+            CallerIdentity::Char,
+            character,
+            &display_name,
         ),
         agent_llm: RealAgentLlm::new(client.clone()),
         agent_model_val: agent_model.clone(),
-        researcher: researcher_model.as_ref().map(|_| MemoryResearcher::new(String::new(), String::new())),
-        researcher_llm_val: researcher_model.as_ref().map(|_| RealAgentLlm::new(client.clone())),
+        researcher: researcher_model
+            .as_ref()
+            .map(|_| MemoryResearcher::new(String::new(), String::new())),
+        researcher_llm_val: researcher_model
+            .as_ref()
+            .map(|_| RealAgentLlm::new(client.clone())),
         researcher_model_val: researcher_model,
         rag: NoopRag,
         search_ctx,
@@ -1119,7 +1175,12 @@ mod tests {
 
     fn test_manager(data_dir: &Path) -> AutonomyManager {
         let (_tx, rx) = tokio::sync::watch::channel(());
-        let (mgr, _compaction_rx) = AutonomyManager::new(test_config(), Default::default(), data_dir.to_path_buf(), rx);
+        let (mgr, _compaction_rx) = AutonomyManager::new(
+            test_config(),
+            Default::default(),
+            data_dir.to_path_buf(),
+            rx,
+        );
         mgr
     }
 
@@ -1162,7 +1223,12 @@ mod tests {
     fn notify_without_state_is_noop() {
         let tmp = tempfile::tempdir().unwrap();
         let (_tx, rx) = tokio::sync::watch::channel(());
-        let (mgr, _compaction_rx) = AutonomyManager::new(test_config(), Default::default(), tmp.path().to_path_buf(), rx);
+        let (mgr, _compaction_rx) = AutonomyManager::new(
+            test_config(),
+            Default::default(),
+            tmp.path().to_path_buf(),
+            rx,
+        );
         // Should not panic.
         mgr.notify_user_message("nobody", 0);
         mgr.notify_assistant_message("nobody", 0);
@@ -1174,7 +1240,12 @@ mod tests {
     fn status_returns_none_for_unknown() {
         let tmp = tempfile::tempdir().unwrap();
         let (_tx, rx) = tokio::sync::watch::channel(());
-        let (mgr, _compaction_rx) = AutonomyManager::new(test_config(), Default::default(), tmp.path().to_path_buf(), rx);
+        let (mgr, _compaction_rx) = AutonomyManager::new(
+            test_config(),
+            Default::default(),
+            tmp.path().to_path_buf(),
+            rx,
+        );
         assert!(mgr.status("nobody").is_none());
     }
 
@@ -1225,9 +1296,18 @@ mod tests {
             mgr.ensure_state("alice", None);
 
             let timestamps = vec![
-                chrono::NaiveDate::from_ymd_opt(2026, 3, 20).unwrap().and_hms_opt(10, 0, 0).unwrap(),
-                chrono::NaiveDate::from_ymd_opt(2026, 3, 21).unwrap().and_hms_opt(14, 0, 0).unwrap(),
-                chrono::NaiveDate::from_ymd_opt(2026, 3, 22).unwrap().and_hms_opt(9, 0, 0).unwrap(),
+                chrono::NaiveDate::from_ymd_opt(2026, 3, 20)
+                    .unwrap()
+                    .and_hms_opt(10, 0, 0)
+                    .unwrap(),
+                chrono::NaiveDate::from_ymd_opt(2026, 3, 21)
+                    .unwrap()
+                    .and_hms_opt(14, 0, 0)
+                    .unwrap(),
+                chrono::NaiveDate::from_ymd_opt(2026, 3, 22)
+                    .unwrap()
+                    .and_hms_opt(9, 0, 0)
+                    .unwrap(),
             ];
             mgr.backfill_activity("alice", timestamps);
 
@@ -1313,7 +1393,19 @@ mod tests {
             s.activity.record_message();
         }
 
-        tick_character("alice", &state, &config, &Default::default(), tmp.path(), &compaction_tx, None, None, None, None).await;
+        tick_character(
+            "alice",
+            &state,
+            &config,
+            &Default::default(),
+            tmp.path(),
+            &compaction_tx,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await;
     }
 
     #[test]
@@ -1323,10 +1415,7 @@ mod tests {
             Some("Hey there!".into())
         );
         assert_eq!(extract_send_message("no tags here"), None);
-        assert_eq!(
-            extract_send_message("<sendMessage></sendMessage>"),
-            None
-        );
+        assert_eq!(extract_send_message("<sendMessage></sendMessage>"), None);
     }
 
     // -- state resilience -----------------------------------------------------
@@ -1361,7 +1450,10 @@ mod tests {
         std::fs::write(state_path(data_dir, "alice"), future.to_string()).unwrap();
 
         let loaded = load_state(data_dir, "alice");
-        assert!(loaded.is_none(), "Future version should return None (migration path)");
+        assert!(
+            loaded.is_none(),
+            "Future version should return None (migration path)"
+        );
     }
 
     #[test]

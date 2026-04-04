@@ -73,10 +73,7 @@ pub fn character_info(
     let char_dir = ctx.config.dirs.config.join("characters").join(name);
 
     if !char_dir.exists() && name != engine.character_name() {
-        return Err((
-            ErrorCode::NotFound,
-            format!("Character not found: {name}"),
-        ));
+        return Err((ErrorCode::NotFound, format!("Character not found: {name}")));
     }
 
     let definition_path = char_dir.join("character.md");
@@ -133,15 +130,12 @@ pub fn switch_character(
     ctx: &mut CommandContext,
     args: &serde_json::Value,
 ) -> CommandResult {
-    let name = args
-        .get("name")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            (
-                ErrorCode::InvalidRequest,
-                "Missing required argument: name".into(),
-            )
-        })?;
+    let name = args.get("name").and_then(|v| v.as_str()).ok_or_else(|| {
+        (
+            ErrorCode::InvalidRequest,
+            "Missing required argument: name".into(),
+        )
+    })?;
 
     if name == engine.character_name() {
         return Ok(json!({ "character": name, "changed": false }));
@@ -150,10 +144,7 @@ pub fn switch_character(
     // Verify character directory exists.
     let char_dir = ctx.config.dirs.config.join("characters").join(name);
     if !char_dir.exists() {
-        return Err((
-            ErrorCode::NotFound,
-            format!("Character not found: {name}"),
-        ));
+        return Err((ErrorCode::NotFound, format!("Character not found: {name}")));
     }
 
     info!(character = name, "Character switch requested");
@@ -195,7 +186,12 @@ mod tests {
         );
 
         let (_tx, rx) = tokio::sync::watch::channel(());
-        let (autonomy, _compaction_rx) = crate::autonomy::manager::AutonomyManager::new(Default::default(), Default::default(), data_dir.clone(), rx);
+        let (autonomy, _compaction_rx) = crate::autonomy::manager::AutonomyManager::new(
+            Default::default(),
+            Default::default(),
+            data_dir.clone(),
+            rx,
+        );
 
         let ctx = CommandContext {
             config,
@@ -205,7 +201,9 @@ mod tests {
             session_tokens: std::sync::Arc::new(std::sync::Mutex::new(SessionTokens::default())),
             autonomy,
             llm_client: shore_llm_client::LlmClient::new(),
-            diagnostics: std::sync::Arc::new(std::sync::Mutex::new(shore_diagnostics::Diagnostics::default())),
+            diagnostics: std::sync::Arc::new(std::sync::Mutex::new(
+                shore_diagnostics::Diagnostics::default(),
+            )),
             memory_shell_sessions: std::collections::HashMap::new(),
         };
         (engine, ctx, push_rx)
@@ -292,7 +290,11 @@ mod tests {
         let (engine, ctx, _rx) = make_ctx(&tmp);
 
         // Create character definition.
-        let char_dir = tmp.path().join("config").join("characters").join("TestChar");
+        let char_dir = tmp
+            .path()
+            .join("config")
+            .join("characters")
+            .join("TestChar");
         std::fs::create_dir_all(&char_dir).unwrap();
         std::fs::write(char_dir.join("character.md"), "You are a test character.").unwrap();
         std::fs::write(char_dir.join("user.md"), "The user likes tests.").unwrap();
@@ -300,7 +302,10 @@ mod tests {
         let result = character_info(&engine, &ctx, &json!({})).unwrap();
         assert!(result["has_definition"].as_bool().unwrap());
         assert!(result["has_user_definition"].as_bool().unwrap());
-        assert!(result["definition_preview"].as_str().unwrap().contains("test character"));
+        assert!(result["definition_preview"]
+            .as_str()
+            .unwrap()
+            .contains("test character"));
     }
 
     #[test]
@@ -333,5 +338,4 @@ mod tests {
         assert_eq!(overrides.len(), 1);
         assert_eq!(overrides[0], "system.md");
     }
-
 }

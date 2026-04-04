@@ -183,7 +183,10 @@ pub fn build_capabilities_block(config: &CapabilitiesConfig) -> Option<String> {
          to the conversation. If a tool might help, use it.",
     );
 
-    Some(format!("<capabilities>\n{}\n</capabilities>", lines.join("\n")))
+    Some(format!(
+        "<capabilities>\n{}\n</capabilities>",
+        lines.join("\n")
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -251,12 +254,8 @@ pub fn assemble_prompt(params: &PromptParams<'_>) -> AssembledPrompt {
     vars.insert("time".into(), now.format("%H:%M").to_string());
 
     // ── 2. Resolve and render system template ─────────────────────────
-    let template = resolve_prompt_template(
-        params.config_dir,
-        params.character_name,
-        "system.md",
-    )
-    .unwrap_or_else(|| BUILTIN_SYSTEM_TEMPLATE.to_string());
+    let template = resolve_prompt_template(params.config_dir, params.character_name, "system.md")
+        .unwrap_or_else(|| BUILTIN_SYSTEM_TEMPLATE.to_string());
 
     let rendered_system = render_template(&template, &vars);
 
@@ -355,7 +354,9 @@ pub fn render_template(template: &str, vars: &HashMap<String, String>) -> String
         let Some(name_end) = result[if_start + 6..].find("}}") else {
             break;
         };
-        let name = result[if_start + 6..if_start + 6 + name_end].trim().to_string();
+        let name = result[if_start + 6..if_start + 6 + name_end]
+            .trim()
+            .to_string();
         let open_tag_end = if_start + 6 + name_end + 2;
 
         let close_tag = "{{/if}}";
@@ -552,12 +553,19 @@ fn is_tool_loop_msg_prompt(msg: &PromptMessage) -> bool {
         return false;
     }
     match msg.role {
-        Role::User => msg.content_blocks.iter().all(|b| {
-            matches!(b, ContentBlock::ToolResult { .. })
-        }),
+        Role::User => msg
+            .content_blocks
+            .iter()
+            .all(|b| matches!(b, ContentBlock::ToolResult { .. })),
         Role::Assistant => {
-            let has_text = msg.content_blocks.iter().any(|b| matches!(b, ContentBlock::Text { text } if !text.is_empty()));
-            let has_tool_use = msg.content_blocks.iter().any(|b| matches!(b, ContentBlock::ToolUse { .. }));
+            let has_text = msg
+                .content_blocks
+                .iter()
+                .any(|b| matches!(b, ContentBlock::Text { text } if !text.is_empty()));
+            let has_tool_use = msg
+                .content_blocks
+                .iter()
+                .any(|b| matches!(b, ContentBlock::ToolUse { .. }));
             !has_text && has_tool_use
         }
         _ => false,
@@ -845,9 +853,7 @@ mod tests {
         let tokens = estimate_message_tokens(&msg);
         // 40/4 + 80/4 + tool_name + tool_input + 0 (redacted)
         let tool_input_str = serde_json::json!({"tz": "UTC"}).to_string();
-        let expected = 10 + 20
-            + "check_time".len().div_ceil(4)
-            + tool_input_str.len().div_ceil(4);
+        let expected = 10 + 20 + "check_time".len().div_ceil(4) + tool_input_str.len().div_ceil(4);
         assert_eq!(tokens, expected);
     }
 
@@ -1082,11 +1088,18 @@ mod tests {
         let msgs = vec![
             make_msg_at(Role::User, "Hello", "2026-04-04T09:00:00-07:00"),
             // Large gap, but the next message is assistant — no marker.
-            make_msg_at(Role::Assistant, "Hey, you there?", "2026-04-04T15:00:00-07:00"),
+            make_msg_at(
+                Role::Assistant,
+                "Hey, you there?",
+                "2026-04-04T15:00:00-07:00",
+            ),
             make_msg_at(Role::User, "Yeah!", "2026-04-04T15:01:00-07:00"),
         ];
         let result = trim_messages(&msgs, 100_000);
-        assert!(!result[1].content.contains("later"), "assistant messages should not get gap markers");
+        assert!(
+            !result[1].content.contains("later"),
+            "assistant messages should not get gap markers"
+        );
         // But the gap from the assistant message to the next user message is only 1 min — no marker.
         assert_eq!(result[2].content, "Yeah!");
     }
@@ -1125,7 +1138,11 @@ mod tests {
         assert!(result.system[0].label == "system");
 
         // Character and user definitions in separate blocks.
-        let char_block = result.system.iter().find(|b| b.label == "character").unwrap();
+        let char_block = result
+            .system
+            .iter()
+            .find(|b| b.label == "character")
+            .unwrap();
         assert!(char_block.content.contains("A friendly test character."));
         assert!(char_block.content.contains("<testchar>"));
 
@@ -1178,7 +1195,11 @@ mod tests {
             .join("TestChar")
             .join("prompts");
         std::fs::create_dir_all(&char_prompts).unwrap();
-        std::fs::write(char_prompts.join("system.md"), "Character-specific template.").unwrap();
+        std::fs::write(
+            char_prompts.join("system.md"),
+            "Character-specific template.",
+        )
+        .unwrap();
 
         let params = make_params(&tmp, &data_dir, &[]);
         let result = assemble_prompt(&params);
@@ -1331,7 +1352,11 @@ mod tests {
         let messages: Vec<Message> = (0..100)
             .map(|i| {
                 make_msg(
-                    if i % 2 == 0 { Role::User } else { Role::Assistant },
+                    if i % 2 == 0 {
+                        Role::User
+                    } else {
+                        Role::Assistant
+                    },
                     &format!("Message number {i} with some padding text to use tokens."),
                 )
             })
@@ -1465,7 +1490,10 @@ mod tests {
         assert_eq!(result.last().unwrap().content, "Recent");
         for msg in &result {
             let is_tool_loop = is_tool_loop_msg_prompt(msg);
-            assert!(!is_tool_loop, "No tool-loop messages should remain at front");
+            assert!(
+                !is_tool_loop,
+                "No tool-loop messages should remain at front"
+            );
         }
     }
 }

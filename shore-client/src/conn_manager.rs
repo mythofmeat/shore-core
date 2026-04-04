@@ -167,9 +167,18 @@ mod tests {
     #[test]
     fn test_next_backoff_doubles() {
         let max = Duration::from_secs(15);
-        assert_eq!(next_backoff(Duration::from_millis(500), max), Duration::from_millis(1000));
-        assert_eq!(next_backoff(Duration::from_millis(1000), max), Duration::from_millis(2000));
-        assert_eq!(next_backoff(Duration::from_millis(2000), max), Duration::from_millis(4000));
+        assert_eq!(
+            next_backoff(Duration::from_millis(500), max),
+            Duration::from_millis(1000)
+        );
+        assert_eq!(
+            next_backoff(Duration::from_millis(1000), max),
+            Duration::from_millis(2000)
+        );
+        assert_eq!(
+            next_backoff(Duration::from_millis(2000), max),
+            Duration::from_millis(4000)
+        );
     }
 
     #[test]

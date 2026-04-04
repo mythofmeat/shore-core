@@ -51,10 +51,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
 // ---------------------------------------------------------------------------
 
 /// Handle `web_search` — search the web via Tavily API.
-pub async fn handle_web_search(
-    input: Value,
-    ctx: &dyn ToolContext,
-) -> Result<Value, ToolError> {
+pub async fn handle_web_search(input: Value, ctx: &dyn ToolContext) -> Result<Value, ToolError> {
     let query = input
         .get("query")
         .and_then(|v| v.as_str())
@@ -161,9 +158,7 @@ pub async fn handle_fetch_url(input: Value) -> Result<Value, ToolError> {
 
     let status = resp.status().as_u16();
     if !resp.status().is_success() {
-        return Err(ToolError::Http(format!(
-            "HTTP {status} for {url}"
-        )));
+        return Err(ToolError::Http(format!("HTTP {status} for {url}")));
     }
 
     let content_type = resp
@@ -179,11 +174,7 @@ pub async fn handle_fetch_url(input: Value) -> Result<Value, ToolError> {
         .map_err(|e| ToolError::Http(format!("failed to read body: {e}")))?;
 
     let is_html = content_type.contains("html");
-    let content = if is_html {
-        strip_html(&body)
-    } else {
-        body
-    };
+    let content = if is_html { strip_html(&body) } else { body };
 
     let truncated = content.len() > MAX_CONTENT_CHARS;
     let content = if truncated {
@@ -319,7 +310,10 @@ mod tests {
         let result = handle_web_search(json!({"query": "rust programming"}), &ctx).await;
         assert!(matches!(result, Err(ToolError::InvalidArgs(_))));
         if let Err(ToolError::InvalidArgs(msg)) = result {
-            assert!(msg.contains("TAVILY_API_KEY"), "error should name the env var: {msg}");
+            assert!(
+                msg.contains("TAVILY_API_KEY"),
+                "error should name the env var: {msg}"
+            );
         }
     }
 
@@ -336,7 +330,9 @@ mod tests {
         .expect("live search should succeed");
 
         assert_eq!(result["query"], "Rust programming language");
-        let results = result["results"].as_array().expect("results should be array");
+        let results = result["results"]
+            .as_array()
+            .expect("results should be array");
         assert!(!results.is_empty(), "should have at least one result");
         // Each result should have title, url, content.
         for r in results {

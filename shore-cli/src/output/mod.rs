@@ -1,12 +1,12 @@
-pub mod styling;
-pub mod spinner;
-pub mod transcript;
 pub mod commands;
+pub mod spinner;
+pub mod styling;
+pub mod transcript;
 
-pub use styling::*;
-pub use spinner::*;
-pub use transcript::*;
 pub use commands::*;
+pub use spinner::*;
+pub use styling::*;
+pub use transcript::*;
 
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -45,7 +45,9 @@ pub(crate) const MAX_TOOL_OUTPUT: usize = 500;
 
 /// Get terminal width, falling back to 80 columns.
 pub(crate) fn term_width() -> usize {
-    crossterm::terminal::size().map(|(w, _)| w as usize).unwrap_or(80)
+    crossterm::terminal::size()
+        .map(|(w, _)| w as usize)
+        .unwrap_or(80)
 }
 
 /// Parse an RFC 3339 timestamp to local time.
@@ -90,7 +92,11 @@ pub(crate) fn write_section_header(out: &mut impl Write, title: &str, suffix: &s
         format!("\u{2500}\u{2500} {} ({}) ", title, suffix)
     };
     let prefix_len = prefix.chars().count();
-    let trail = if width > prefix_len { width - prefix_len } else { 0 };
+    let trail = if width > prefix_len {
+        width - prefix_len
+    } else {
+        0
+    };
     let rule: String = "\u{2500}".repeat(trail);
 
     if use_color() {
@@ -108,7 +114,9 @@ pub(crate) fn write_row_with(out: &mut impl Write, label: &str, value: &str, col
     write_dim(out, &format!("  {label:<13}"));
     match color {
         Some(c) => write_fg(out, c, value),
-        None => { let _ = write!(out, "{value}"); }
+        None => {
+            let _ = write!(out, "{value}");
+        }
     }
     let _ = writeln!(out);
 }
@@ -129,8 +137,14 @@ mod tests {
 
     #[test]
     fn abbreviate_strips_date_suffix() {
-        assert_eq!(abbreviate_model("claude-haiku-4-5-20251001"), "claude-haiku-4-5");
-        assert_eq!(abbreviate_model("claude-sonnet-4-20250514"), "claude-sonnet-4");
+        assert_eq!(
+            abbreviate_model("claude-haiku-4-5-20251001"),
+            "claude-haiku-4-5"
+        );
+        assert_eq!(
+            abbreviate_model("claude-sonnet-4-20250514"),
+            "claude-sonnet-4"
+        );
     }
 
     #[test]

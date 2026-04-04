@@ -4,13 +4,15 @@
 
 use serde_json::{json, Value};
 
-use shore_config::models::ResolvedModel;
 use crate::memory::agent_llm::AgentLlm;
 use crate::memory::db::MemoryDB;
+use shore_config::models::ResolvedModel;
 
 use super::tool_handlers::execute_tool;
 use super::tool_schemas::{is_write_tool, tool_definitions};
-use super::types::{AgentError, AgentIndexer, AgentSearchContext, ConfirmCallback, ProposedOperation, ToolResult};
+use super::types::{
+    AgentError, AgentIndexer, AgentSearchContext, ConfirmCallback, ProposedOperation, ToolResult,
+};
 
 const MAX_ITERATIONS: usize = 40;
 
@@ -159,7 +161,10 @@ pub async fn run_agent_loop(
     }
 
     // Reached max iterations
-    Ok(("Agent loop reached maximum iterations.".to_string(), mutations))
+    Ok((
+        "Agent loop reached maximum iterations.".to_string(),
+        mutations,
+    ))
 }
 
 /// Generate a human-readable description of a proposed write operation.
@@ -192,7 +197,10 @@ fn describe_mutation(tool_name: &str, input: &Value) -> String {
             format!("Merge entity '{from}' → '{to}'")
         }
         "resolve_flag" => {
-            let fid = input["flag_id"].as_i64().map(|n| n.to_string()).unwrap_or("?".into());
+            let fid = input["flag_id"]
+                .as_i64()
+                .map(|n| n.to_string())
+                .unwrap_or("?".into());
             format!("Resolve flag #{fid}")
         }
         "create_flag" => {
@@ -369,7 +377,8 @@ mod tests {
             fn confirm(
                 &self,
                 operations: &[ProposedOperation],
-            ) -> Pin<Box<dyn std::future::Future<Output = HashSet<String>> + Send + '_>> {
+            ) -> Pin<Box<dyn std::future::Future<Output = HashSet<String>> + Send + '_>>
+            {
                 let denied: HashSet<String> =
                     operations.iter().map(|op| op.tool_use_id.clone()).collect();
                 Box::pin(async move { denied })

@@ -143,12 +143,7 @@ impl ConversationEngine {
     }
 
     /// Set swipe state on a message.
-    pub fn set_swipe(
-        &mut self,
-        msg_id: &str,
-        index: u32,
-        count: u32,
-    ) -> Result<(), EngineError> {
+    pub fn set_swipe(&mut self, msg_id: &str, index: u32, count: u32) -> Result<(), EngineError> {
         self.messages.set_swipe(msg_id, index, count)?;
         self.broadcast_history();
         Ok(())
@@ -202,12 +197,9 @@ mod tests {
 
     fn make_engine(tmp: &TempDir) -> (ConversationEngine, broadcast::Receiver<ServerMessage>) {
         let (push_tx, push_rx) = broadcast::channel(16);
-        let engine = ConversationEngine::new(
-            "TestChar".to_string(),
-            tmp.path().to_path_buf(),
-            push_tx,
-        )
-        .unwrap();
+        let engine =
+            ConversationEngine::new("TestChar".to_string(), tmp.path().to_path_buf(), push_tx)
+                .unwrap();
         (engine, push_rx)
     }
 
@@ -221,7 +213,9 @@ mod tests {
             content_blocks: if content.is_empty() {
                 vec![]
             } else {
-                vec![ContentBlock::Text { text: content.to_string() }]
+                vec![ContentBlock::Text {
+                    text: content.to_string(),
+                }]
             },
             alt_index: None,
             alt_count: None,
@@ -341,12 +335,9 @@ mod tests {
 
         // Second engine instance — should reload.
         let (push_tx, _) = broadcast::channel(16);
-        let engine = ConversationEngine::new(
-            "ReloadChar".to_string(),
-            tmp.path().to_path_buf(),
-            push_tx,
-        )
-        .unwrap();
+        let engine =
+            ConversationEngine::new("ReloadChar".to_string(), tmp.path().to_path_buf(), push_tx)
+                .unwrap();
 
         assert_eq!(engine.messages().len(), 1);
         assert_eq!(engine.messages()[0].content, "Persisted");

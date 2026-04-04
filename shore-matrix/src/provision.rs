@@ -233,8 +233,7 @@ pub async fn provision_character(
     paths.ensure_dirs().await?;
 
     let username = format!("shore-{}", character.to_lowercase().replace(' ', "-"));
-    let reg =
-        register_account(homeserver_url, registration_token, &username, password).await?;
+    let reg = register_account(homeserver_url, registration_token, &username, password).await?;
 
     let state = ProvisionState {
         character: character.to_string(),
@@ -257,7 +256,13 @@ pub async fn provision_admin(
     admin_user: &str,
     admin_password: &str,
 ) -> Result<RegisterResponse, ProvisionError> {
-    register_account(homeserver_url, registration_token, admin_user, admin_password).await
+    register_account(
+        homeserver_url,
+        registration_token,
+        admin_user,
+        admin_password,
+    )
+    .await
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

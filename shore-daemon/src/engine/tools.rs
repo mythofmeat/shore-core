@@ -5,11 +5,11 @@ use serde_json::{json, Value};
 use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
 
+use crate::tools::{self as tool_system, ToolContext};
 use shore_diagnostics::{self as diagnostics, Diagnostics};
 use shore_llm_client::stream::{CacheContext, StreamConsumer};
 use shore_llm_client::types::{LlmRequest, StreamResult};
 use shore_llm_client::{LlmClient, LlmError};
-use crate::tools::{self as tool_system, ToolContext};
 use shore_protocol::server_msg::{ServerMessage, ToolCall, ToolResult as SwpToolResult};
 use shore_protocol::types::{derive_content_from_blocks, ContentBlock, Message, Role};
 
@@ -57,7 +57,10 @@ pub async fn run_tool_loop(
 
     for iteration in 0..max_iterations {
         if result.finish_reason != "tool_use" || result.tool_uses.is_empty() {
-            return Ok(ToolLoopResult { result, intermediate_messages });
+            return Ok(ToolLoopResult {
+                result,
+                intermediate_messages,
+            });
         }
 
         info!(
@@ -73,7 +76,9 @@ pub async fn run_tool_loop(
         let assistant_blocks = if result.content_blocks.is_empty() {
             let mut blocks = Vec::new();
             if !result.content.is_empty() {
-                blocks.push(ContentBlock::Text { text: result.content.clone() });
+                blocks.push(ContentBlock::Text {
+                    text: result.content.clone(),
+                });
             }
             for tu in &result.tool_uses {
                 blocks.push(ContentBlock::ToolUse {
@@ -90,9 +95,15 @@ pub async fn run_tool_loop(
         // Build LLM payload from content blocks.
         // Z.AI thinking blocks have no signature — include them unconditionally.
         let assistant_content: Vec<Value> = if request.provider == "zai" {
-            assistant_blocks.iter().map(crate::content_util::content_block_to_json).collect()
+            assistant_blocks
+                .iter()
+                .map(crate::content_util::content_block_to_json)
+                .collect()
         } else {
-            assistant_blocks.iter().filter_map(crate::content_util::content_block_to_api_json).collect()
+            assistant_blocks
+                .iter()
+                .filter_map(crate::content_util::content_block_to_api_json)
+                .collect()
         };
 
         request.messages.push(json!({
@@ -227,7 +238,10 @@ pub async fn run_tool_loop(
         max_iterations,
         "Tool loop hit max iterations, returning last result"
     );
-    Ok(ToolLoopResult { result, intermediate_messages })
+    Ok(ToolLoopResult {
+        result,
+        intermediate_messages,
+    })
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────
@@ -235,8 +249,8 @@ pub async fn run_tool_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shore_llm_client::types::ToolUseEvent;
     use crate::test_support::TestToolContext;
+    use shore_llm_client::types::ToolUseEvent;
     use tokio::io::AsyncWriteExt;
     use tokio::net::TcpListener;
 

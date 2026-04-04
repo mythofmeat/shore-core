@@ -106,9 +106,7 @@ fn translate_messages(request: &LlmRequest) -> Vec<Value> {
                 "user" => {
                     let tool_results: Vec<&Value> = blocks
                         .iter()
-                        .filter(|b| {
-                            b.get("type").and_then(|t| t.as_str()) == Some("tool_result")
-                        })
+                        .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_result"))
                         .collect();
                     let other_blocks: Vec<&Value> = blocks
                         .iter()
@@ -120,15 +118,11 @@ fn translate_messages(request: &LlmRequest) -> Vec<Value> {
 
                     // Emit tool result messages first.
                     for tr in &tool_results {
-                        let tool_call_id = tr
-                            .get("tool_use_id")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
+                        let tool_call_id =
+                            tr.get("tool_use_id").and_then(|v| v.as_str()).unwrap_or("");
                         let content = match tr.get("content") {
                             Some(Value::String(s)) => s.clone(),
-                            Some(other) => {
-                                serde_json::to_string(other).unwrap_or_default()
-                            }
+                            Some(other) => serde_json::to_string(other).unwrap_or_default(),
                             None => String::new(),
                         };
                         out.push(json!({
@@ -231,10 +225,7 @@ fn reasoning_field(request: &LlmRequest) -> &'static str {
 
 /// Resolve base URL for an OpenAI-compatible request.
 fn resolve_base_url(request: &LlmRequest) -> &str {
-    request
-        .base_url
-        .as_deref()
-        .unwrap_or(OPENAI_BASE_URL)
+    request.base_url.as_deref().unwrap_or(OPENAI_BASE_URL)
 }
 
 /// Provider key, falling back to the `provider` field.
@@ -412,9 +403,8 @@ pub async fn stream(
 
                     // Reasoning / thinking content.
                     if let Some(delta) = delta {
-                        if let Some(reasoning) = delta
-                            .get(&reasoning_field_name)
-                            .and_then(|r| r.as_str())
+                        if let Some(reasoning) =
+                            delta.get(&reasoning_field_name).and_then(|r| r.as_str())
                         {
                             if !reasoning.is_empty() {
                                 timing.record_first_token();
@@ -447,10 +437,7 @@ pub async fn stream(
                         .and_then(|t| t.as_array())
                     {
                         for tc in tcs {
-                            let index = tc
-                                .get("index")
-                                .and_then(|i| i.as_u64())
-                                .unwrap_or(0);
+                            let index = tc.get("index").and_then(|i| i.as_u64()).unwrap_or(0);
                             let entry = tool_calls
                                 .entry(index)
                                 .or_insert_with(|| (String::new(), String::new(), Vec::new()));
@@ -479,9 +466,7 @@ pub async fn stream(
                     }
 
                     // Finish reason.
-                    if let Some(reason) =
-                        choice.get("finish_reason").and_then(|r| r.as_str())
-                    {
+                    if let Some(reason) = choice.get("finish_reason").and_then(|r| r.as_str()) {
                         finish_reason = normalize_finish_reason(Some(reason));
                     }
                 }
@@ -491,7 +476,11 @@ pub async fn stream(
                     usage = extract_openai_usage(u);
                 }
 
-                if lines_out.is_empty() { None } else { Some(lines_out.join("\n")) }
+                if lines_out.is_empty() {
+                    None
+                } else {
+                    Some(lines_out.join("\n"))
+                }
             },
             &mut writer,
         )
@@ -526,7 +515,13 @@ pub async fn stream(
         }
 
         // Done event.
-        let done = build_done_event(&text_content, finish_reason, &usage, timing.total_ms(), timing.ttft_ms());
+        let done = build_done_event(
+            &text_content,
+            finish_reason,
+            &usage,
+            timing.total_ms(),
+            timing.ttft_ms(),
+        );
         let _ = writer.write_all(done.as_bytes()).await;
         let _ = writer.write_all(b"\n").await;
 
@@ -562,14 +557,9 @@ pub async fn generate(
 
     let total_ms = start.elapsed().as_millis() as u32;
 
-    let resp_body: Value = response
-        .json()
-        .await
-        .map_err(LlmError::Request)?;
+    let resp_body: Value = response.json().await.map_err(LlmError::Request)?;
 
-    let choice = resp_body
-        .get("choices")
-        .and_then(|c| c.get(0));
+    let choice = resp_body.get("choices").and_then(|c| c.get(0));
     let message = choice.and_then(|c| c.get("message"));
 
     let field_name = reasoning_field(request);
@@ -611,7 +601,11 @@ pub async fn generate(
             if tc_type != "function" {
                 continue;
             }
-            let id = tc.get("id").and_then(|i| i.as_str()).unwrap_or("").to_string();
+            let id = tc
+                .get("id")
+                .and_then(|i| i.as_str())
+                .unwrap_or("")
+                .to_string();
             let func = tc.get("function");
             let name = func
                 .and_then(|f| f.get("name"))
@@ -622,8 +616,7 @@ pub async fn generate(
                 .and_then(|f| f.get("arguments"))
                 .and_then(|a| a.as_str())
                 .unwrap_or("{}");
-            let input: Value =
-                serde_json::from_str(args_str).unwrap_or(json!({}));
+            let input: Value = serde_json::from_str(args_str).unwrap_or(json!({}));
             typed_blocks.push(ContentBlock::ToolUse { id, name, input });
         }
     }
@@ -825,7 +818,10 @@ async fn openrouter_image_generate(
     .await
     {
         Ok(result) => return Ok(result),
-        Err(LlmError::HttpStatus { status: 404, ref body }) if body.contains("output modalities") => {
+        Err(LlmError::HttpStatus {
+            status: 404,
+            ref body,
+        }) if body.contains("output modalities") => {
             // Fall through to image-only mode.
         }
         Err(e) => return Err(e),
@@ -984,10 +980,8 @@ mod tests {
         assert_eq!(tool_calls[0]["id"], "call_1");
         assert_eq!(tool_calls[0]["function"]["name"], "search");
         // Arguments are serialized JSON string.
-        let args: Value = serde_json::from_str(
-            tool_calls[0]["function"]["arguments"].as_str().unwrap(),
-        )
-        .unwrap();
+        let args: Value =
+            serde_json::from_str(tool_calls[0]["function"]["arguments"].as_str().unwrap()).unwrap();
         assert_eq!(args["q"], "cats");
     }
 
@@ -1069,7 +1063,10 @@ mod tests {
         assert_eq!(normalize_finish_reason(Some("stop")), "end_turn");
         assert_eq!(normalize_finish_reason(Some("tool_calls")), "tool_use");
         assert_eq!(normalize_finish_reason(Some("length")), "max_tokens");
-        assert_eq!(normalize_finish_reason(Some("content_filter")), "content_filter");
+        assert_eq!(
+            normalize_finish_reason(Some("content_filter")),
+            "content_filter"
+        );
         assert_eq!(normalize_finish_reason(None), "end_turn");
         assert_eq!(normalize_finish_reason(Some("unknown")), "end_turn");
     }
@@ -1099,10 +1096,7 @@ mod tests {
 
     #[test]
     fn test_build_chat_body_basic() {
-        let request = make_request(
-            vec![json!({"role": "user", "content": "hi"})],
-            None,
-        );
+        let request = make_request(vec![json!({"role": "user", "content": "hi"})], None);
         let body = build_chat_body(&request, true);
 
         assert_eq!(body["model"], "gpt-4");
@@ -1118,10 +1112,7 @@ mod tests {
 
     #[test]
     fn test_build_chat_body_openrouter_provider() {
-        let mut request = make_request(
-            vec![json!({"role": "user", "content": "hi"})],
-            None,
-        );
+        let mut request = make_request(vec![json!({"role": "user", "content": "hi"})], None);
         request.provider = "openai".into();
         request.provider_key = Some("openrouter".into());
         request.provider_options = Some(json!({

@@ -73,10 +73,7 @@ mod tests {
         mgr.bind("!room1:example.com", "Alice");
 
         assert_eq!(mgr.character_for_room("!room1:example.com"), Some("Alice"));
-        assert_eq!(
-            mgr.room_for_character("Alice"),
-            Some("!room1:example.com")
-        );
+        assert_eq!(mgr.room_for_character("Alice"), Some("!room1:example.com"));
         assert!(mgr.is_bound("!room1:example.com"));
     }
 
@@ -88,10 +85,7 @@ mod tests {
 
         assert_eq!(mgr.character_for_room("!room2:example.com"), Some("Alice"));
         assert_eq!(mgr.character_for_room("!room1:example.com"), None);
-        assert_eq!(
-            mgr.room_for_character("Alice"),
-            Some("!room2:example.com")
-        );
+        assert_eq!(mgr.room_for_character("Alice"), Some("!room2:example.com"));
     }
 
     #[test]
@@ -131,10 +125,7 @@ mod tests {
 
         assert_eq!(mgr.character_for_room("!room1:example.com"), Some("Alice"));
         assert_eq!(mgr.character_for_room("!room2:example.com"), Some("Bob"));
-        assert_eq!(
-            mgr.room_for_character("Alice"),
-            Some("!room1:example.com")
-        );
+        assert_eq!(mgr.room_for_character("Alice"), Some("!room1:example.com"));
         assert_eq!(mgr.room_for_character("Bob"), Some("!room2:example.com"));
     }
 

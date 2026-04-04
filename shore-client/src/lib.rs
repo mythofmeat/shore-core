@@ -7,11 +7,11 @@ pub mod image_protocol;
 pub mod stream;
 
 pub use client_config::{load_client_config, ClientConfig};
-pub use conn_manager::{ConnCommand, ConnEvent, spawn_connection};
-pub use image_protocol::{ImageProtocol, detect_protocol};
+pub use conn_manager::{spawn_connection, ConnCommand, ConnEvent};
 pub use connection::{SWPConnection, ServerAddr};
 pub use discovery::{discover, discover_or_default};
 pub use error::{ClientError, Result};
+pub use image_protocol::{detect_protocol, ImageProtocol};
 pub use stream::{StreamCallbacks, StreamHandler};
 
 #[cfg(test)]
@@ -38,7 +38,10 @@ mod tests {
     }
 
     /// Helper: read one JSON line from a reader.
-    async fn read_json_line<R: tokio::io::AsyncBufReadExt + Unpin, T: serde::de::DeserializeOwned>(
+    async fn read_json_line<
+        R: tokio::io::AsyncBufReadExt + Unpin,
+        T: serde::de::DeserializeOwned,
+    >(
         r: &mut R,
     ) -> T {
         let mut line = String::new();
@@ -123,8 +126,7 @@ mod tests {
             write_json_line(&mut w, &bad_hello).await;
         });
 
-        let result =
-            SWPConnection::connect_raw(client_stream, "tui", "test", None).await;
+        let result = SWPConnection::connect_raw(client_stream, "tui", "test", None).await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
@@ -143,8 +145,7 @@ mod tests {
             write_json_line(&mut w, &ping).await;
         });
 
-        let result =
-            SWPConnection::connect_raw(client_stream, "tui", "test", None).await;
+        let result = SWPConnection::connect_raw(client_stream, "tui", "test", None).await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
@@ -459,10 +460,7 @@ mod tests {
         let orig = std::env::var("XDG_RUNTIME_DIR").ok();
         std::env::set_var("XDG_RUNTIME_DIR", "/tmp/test-xdg");
         let path = crate::discovery::instances_path();
-        assert_eq!(
-            path.to_str().unwrap(),
-            "/tmp/test-xdg/shore/instances.json"
-        );
+        assert_eq!(path.to_str().unwrap(), "/tmp/test-xdg/shore/instances.json");
         // Restore
         match orig {
             Some(v) => std::env::set_var("XDG_RUNTIME_DIR", v),
@@ -473,7 +471,9 @@ mod tests {
     #[test]
     fn is_unix_path_detection() {
         assert!(crate::connection::is_unix_path("/tmp/shore.sock"));
-        assert!(crate::connection::is_unix_path("/run/user/1000/shore/shore.sock"));
+        assert!(crate::connection::is_unix_path(
+            "/run/user/1000/shore/shore.sock"
+        ));
         assert!(crate::connection::is_unix_path("./shore.sock"));
         assert!(!crate::connection::is_unix_path("localhost:8080"));
         assert!(!crate::connection::is_unix_path("127.0.0.1:9090"));

@@ -258,8 +258,7 @@ fn handle_insert_mode(app: &mut App, key: KeyEvent) -> Action {
         }
 
         // Newline: Shift+Enter or Alt+Enter
-        (KeyModifiers::SHIFT, KeyCode::Enter)
-        | (KeyModifiers::ALT, KeyCode::Enter) => {
+        (KeyModifiers::SHIFT, KeyCode::Enter) | (KeyModifiers::ALT, KeyCode::Enter) => {
             app.input.insert_newline();
             Action::Redraw
         }
@@ -463,13 +462,11 @@ fn parse_command(app: &mut App, input: &str) -> Action {
             }
         }
 
-        "status" => {
-            Action::Send(ConnCommand::Send(ClientMessage::Command(Command {
-                rid: None,
-                name: "status".into(),
-                args: serde_json::json!({}),
-            })))
-        }
+        "status" => Action::Send(ConnCommand::Send(ClientMessage::Command(Command {
+            rid: None,
+            name: "status".into(),
+            args: serde_json::json!({}),
+        }))),
 
         "memory" => {
             if arg.is_empty() {
@@ -484,13 +481,11 @@ fn parse_command(app: &mut App, input: &str) -> Action {
             }
         }
 
-        "compact" => {
-            Action::Send(ConnCommand::Send(ClientMessage::Command(Command {
-                rid: None,
-                name: "compact".into(),
-                args: serde_json::json!({}),
-            })))
-        }
+        "compact" => Action::Send(ConnCommand::Send(ClientMessage::Command(Command {
+            rid: None,
+            name: "compact".into(),
+            args: serde_json::json!({}),
+        }))),
 
         "delete" => {
             if arg.is_empty() {
@@ -550,7 +545,11 @@ fn parse_command(app: &mut App, input: &str) -> Action {
             let msg = ClientMessage::Regen(Regen {
                 rid: None,
                 stream: true,
-                guidance: if arg.is_empty() { None } else { Some(arg.to_string()) },
+                guidance: if arg.is_empty() {
+                    None
+                } else {
+                    Some(arg.to_string())
+                },
             });
             Action::Send(ConnCommand::Send(msg))
         }
@@ -596,7 +595,6 @@ fn parse_command(app: &mut App, input: &str) -> Action {
             }
         }
 
-
         "sys" | "system" => {
             if arg.is_empty() {
                 app.set_status("usage: :sys <instruction>");
@@ -634,7 +632,10 @@ mod tests {
     #[test]
     fn ctrl_c_quits() {
         let mut app = App::default();
-        let action = handle_key(&mut app, make_key(KeyModifiers::CONTROL, KeyCode::Char('c')));
+        let action = handle_key(
+            &mut app,
+            make_key(KeyModifiers::CONTROL, KeyCode::Char('c')),
+        );
         assert!(matches!(action, Action::Quit));
     }
 

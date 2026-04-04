@@ -2,7 +2,7 @@ use std::fs;
 use std::io::{self, Write};
 
 use base64::Engine;
-pub use shore_client::image_protocol::{ImageProtocol, detect_protocol};
+pub use shore_client::image_protocol::{detect_protocol, ImageProtocol};
 
 /// Render an image inline using the detected protocol, or fall back to text.
 ///
@@ -187,7 +187,8 @@ mod tests {
 
     #[test]
     fn term_program_takes_priority_over_term() {
-        let proto = detect_protocol_from_env(None, Some("iTerm.app"), Some("xterm-kitty"), false, false);
+        let proto =
+            detect_protocol_from_env(None, Some("iTerm.app"), Some("xterm-kitty"), false, false);
         assert_eq!(proto, Some(ImageProtocol::Iterm2));
     }
 

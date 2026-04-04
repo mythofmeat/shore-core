@@ -4,14 +4,14 @@
 //! with a single `ask_memory_agent` tool to query the inner MemoryAgent,
 //! then synthesizes results for the character.
 
-use tracing::{info, warn};
 use serde_json::{json, Value};
+use tracing::{info, warn};
 
-use shore_config::models::ResolvedModel;
 use crate::memory::agent::types::{AgentError, AgentIndexer, AgentSearchContext};
 use crate::memory::agent::MemoryAgent;
 use crate::memory::agent_llm::AgentLlm;
 use crate::memory::db::MemoryDB;
+use shore_config::models::ResolvedModel;
 
 const MAX_RESEARCHER_ITERATIONS: usize = 15;
 
@@ -528,10 +528,8 @@ mod tests {
 
     #[test]
     fn test_context_prepended() {
-        let researcher = MemoryResearcher::new(
-            "Alice is a kind person".into(),
-            "Bob is the user".into(),
-        );
+        let researcher =
+            MemoryResearcher::new("Alice is a kind person".into(), "Bob is the user".into());
         assert!(!researcher.char_definition.is_empty());
         assert!(!researcher.user_description.is_empty());
     }

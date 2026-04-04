@@ -123,8 +123,8 @@ pub fn parse_compaction_response(
     for block in &entry_blocks {
         let summary_text = extract_xml_tag(block, "summary").unwrap_or_default();
         let topic_tags = extract_xml_tag(block, "topic_tags").unwrap_or_default();
-        let memory_type = extract_xml_tag(block, "memory_type")
-            .unwrap_or_else(|| "episodic".to_string());
+        let memory_type =
+            extract_xml_tag(block, "memory_type").unwrap_or_else(|| "episodic".to_string());
 
         // Derive topic_key from the first tag.
         let topic_key = topic_tags
@@ -184,7 +184,10 @@ They discussed daily activities and the user's beverage preferences.
     #[test]
     fn test_extract_xml_tag() {
         let text = "before <recap>hello world</recap> after";
-        assert_eq!(extract_xml_tag(text, "recap"), Some("hello world".to_string()));
+        assert_eq!(
+            extract_xml_tag(text, "recap"),
+            Some("hello world".to_string())
+        );
     }
 
     #[test]
@@ -200,7 +203,10 @@ They discussed daily activities and the user's beverage preferences.
     #[test]
     fn test_extract_xml_tag_with_whitespace() {
         let text = "<recap>\n  trimmed content  \n</recap>";
-        assert_eq!(extract_xml_tag(text, "recap"), Some("trimmed content".to_string()));
+        assert_eq!(
+            extract_xml_tag(text, "recap"),
+            Some("trimmed content".to_string())
+        );
     }
 
     #[test]
@@ -254,7 +260,10 @@ They discussed daily activities and the user's beverage preferences.
         let (_, entries) = parse_compaction_response(raw).unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].topic_tags, "");
-        assert_eq!(entries[0].topic_key, "", "empty topic_tags produces empty topic_key");
+        assert_eq!(
+            entries[0].topic_key, "",
+            "empty topic_tags produces empty topic_key"
+        );
     }
 
     #[test]
@@ -266,7 +275,10 @@ They discussed daily activities and the user's beverage preferences.
 </entry>"#;
         let (_, entries) = parse_compaction_response(raw).unwrap();
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].summary_text, "", "unclosed summary tag falls to empty default");
+        assert_eq!(
+            entries[0].summary_text, "",
+            "unclosed summary tag falls to empty default"
+        );
         assert_eq!(entries[0].topic_tags, "preferences");
     }
 
@@ -304,7 +316,10 @@ over dogs. They also mentioned enjoying tea in the afternoon."#;
 </entry>"#;
         let (_, entries) = parse_compaction_response(raw).unwrap();
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].memory_type, "episodic", "missing memory_type defaults to episodic");
+        assert_eq!(
+            entries[0].memory_type, "episodic",
+            "missing memory_type defaults to episodic"
+        );
         assert_eq!(entries[0].summary_text, "User likes cats");
         assert_eq!(entries[0].topic_key, "preferences");
     }

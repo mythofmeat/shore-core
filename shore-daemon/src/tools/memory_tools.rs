@@ -48,7 +48,9 @@ pub async fn handle_memory(input: Value, ctx: &dyn ToolContext) -> Result<Value,
     let search_ctx = ctx.search_context();
     // Build a real indexer from the search context when available; falls back to None.
     let real_indexer = search_ctx.map(RealAgentIndexer::new);
-    let indexer = real_indexer.as_ref().map(|i| i as &dyn crate::memory::agent::AgentIndexer);
+    let indexer = real_indexer
+        .as_ref()
+        .map(|i| i as &dyn crate::memory::agent::AgentIndexer);
 
     let result_text = if let Some(researcher) = ctx.memory_researcher() {
         // Tier 2: cheap model drives the inner agent
@@ -91,9 +93,9 @@ pub async fn handle_memory(input: Value, ctx: &dyn ToolContext) -> Result<Value,
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shore_llm_client::types::ContentBlock;
     use crate::memory::agent_llm::{AgentLlmResponse, MockAgentLlm};
     use crate::test_support::TestToolContext;
+    use shore_llm_client::types::ContentBlock;
 
     #[test]
     fn test_memory_tool_def() {

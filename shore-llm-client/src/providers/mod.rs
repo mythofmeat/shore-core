@@ -36,7 +36,9 @@ pub async fn stream(
 ) -> Result<DuplexStream, LlmError> {
     match request.provider.as_str() {
         "anthropic" => anthropic::stream(client, request).await,
-        "openai" | "deepseek" | "zhipuai" | "xai" | "nanogpt" => openai::stream(client, request).await,
+        "openai" | "deepseek" | "zhipuai" | "xai" | "nanogpt" => {
+            openai::stream(client, request).await
+        }
         "zai" => zai::stream(client, request).await,
         "gemini" => gemini::stream(client, request).await,
         other => Err(LlmError::Provider {
@@ -52,7 +54,9 @@ pub async fn generate(
 ) -> Result<GenerateResponse, LlmError> {
     match request.provider.as_str() {
         "anthropic" => anthropic::generate(client, request).await,
-        "openai" | "deepseek" | "zhipuai" | "xai" | "nanogpt" => openai::generate(client, request).await,
+        "openai" | "deepseek" | "zhipuai" | "xai" | "nanogpt" => {
+            openai::generate(client, request).await
+        }
         "zai" => zai::generate(client, request).await,
         "gemini" => gemini::generate(client, request).await,
         other => Err(LlmError::Provider {
@@ -88,8 +92,16 @@ pub async fn image_generate(
     image_size: Option<&str>,
 ) -> Result<ImageGenerateResponse, LlmError> {
     openai::image_generate(
-        client, provider, model, api_key, base_url, prompt, size, quality,
-        aspect_ratio, image_size,
+        client,
+        provider,
+        model,
+        api_key,
+        base_url,
+        prompt,
+        size,
+        quality,
+        aspect_ratio,
+        image_size,
     )
     .await
 }
@@ -147,7 +159,16 @@ mod tests {
         let client = reqwest::Client::new();
         // These should route to real provider impls and fail on HTTP, not on
         // the "unsupported provider" dispatch branch.
-        for provider in &["anthropic", "openai", "deepseek", "zhipuai", "xai", "zai", "nanogpt", "gemini"] {
+        for provider in &[
+            "anthropic",
+            "openai",
+            "deepseek",
+            "zhipuai",
+            "xai",
+            "zai",
+            "nanogpt",
+            "gemini",
+        ] {
             let request = make_request(provider);
             let result = stream(&client, &request).await;
             match &result {

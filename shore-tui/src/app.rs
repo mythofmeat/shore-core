@@ -1,6 +1,4 @@
-use shore_protocol::types::{
-    CharacterInfo, ImageRef, StreamMetadata, TokenCounts,
-};
+use shore_protocol::types::{CharacterInfo, ImageRef, StreamMetadata, TokenCounts};
 
 use crate::images::ImageCache;
 
@@ -453,7 +451,12 @@ impl App {
         let messages: Vec<&ConversationEntry> = self
             .entries
             .iter()
-            .filter(|e| matches!(e, ConversationEntry::User { .. } | ConversationEntry::Assistant { .. }))
+            .filter(|e| {
+                matches!(
+                    e,
+                    ConversationEntry::User { .. } | ConversationEntry::Assistant { .. }
+                )
+            })
             .collect();
 
         let entry = match raw_ref {
@@ -487,8 +490,18 @@ impl App {
 
     /// Static command names for completion.
     const COMMANDS: &'static [&'static str] = &[
-        "character", "compact", "delete", "edit",
-        "help", "image", "memory", "model", "quit", "regen", "status", "sys",
+        "character",
+        "compact",
+        "delete",
+        "edit",
+        "help",
+        "image",
+        "memory",
+        "model",
+        "quit",
+        "regen",
+        "status",
+        "sys",
     ];
 
     /// Update completion candidates based on current command input.
@@ -522,7 +535,9 @@ impl App {
                         .characters
                         .iter()
                         .map(|c| c.name.clone())
-                        .filter(|n| arg.is_empty() || n.to_lowercase().starts_with(&arg.to_lowercase()))
+                        .filter(|n| {
+                            arg.is_empty() || n.to_lowercase().starts_with(&arg.to_lowercase())
+                        })
                         .map(|n| format!("character {n}"))
                         .collect();
                 }
@@ -530,7 +545,9 @@ impl App {
                     let mut candidates: Vec<String> = self
                         .model_names
                         .iter()
-                        .filter(|n| arg.is_empty() || n.to_lowercase().starts_with(&arg.to_lowercase()))
+                        .filter(|n| {
+                            arg.is_empty() || n.to_lowercase().starts_with(&arg.to_lowercase())
+                        })
                         .map(|n| format!("model {n}"))
                         .collect();
                     if "reset".starts_with(&arg.to_lowercase()) {
@@ -571,7 +588,6 @@ impl App {
         });
         self.apply_completion();
     }
-
 }
 
 #[cfg(test)]
@@ -653,5 +669,4 @@ mod tests {
         assert_eq!(app.scroll_offset, 0);
         assert!(app.auto_scroll);
     }
-
 }

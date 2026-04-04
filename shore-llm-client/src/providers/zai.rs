@@ -100,8 +100,16 @@ fn translate_messages(request: &LlmRequest, clear_thinking: bool) -> Vec<Value> 
                     let tool_calls: Vec<Value> = tool_parts
                         .iter()
                         .map(|b| {
-                            let id = b.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                            let name = b.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                            let id = b
+                                .get("id")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let name = b
+                                .get("name")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
                             let input = b.get("input").cloned().unwrap_or(json!({}));
                             let arguments =
                                 serde_json::to_string(&input).unwrap_or_else(|_| "{}".into());
@@ -151,10 +159,8 @@ fn translate_messages(request: &LlmRequest, clear_thinking: bool) -> Vec<Value> 
 
                     // Emit tool result messages first.
                     for tr in &tool_results {
-                        let tool_call_id = tr
-                            .get("tool_use_id")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
+                        let tool_call_id =
+                            tr.get("tool_use_id").and_then(|v| v.as_str()).unwrap_or("");
                         let content = match tr.get("content") {
                             Some(Value::String(s)) => s.clone(),
                             Some(other) => serde_json::to_string(other).unwrap_or_default(),
@@ -350,9 +356,8 @@ pub async fn stream(
 
                     // Reasoning content (Z.AI uses `reasoning_content` field).
                     if let Some(delta) = delta {
-                        if let Some(reasoning) = delta
-                            .get("reasoning_content")
-                            .and_then(|r| r.as_str())
+                        if let Some(reasoning) =
+                            delta.get("reasoning_content").and_then(|r| r.as_str())
                         {
                             if !reasoning.is_empty() {
                                 timing.record_first_token();
@@ -424,7 +429,11 @@ pub async fn stream(
                     usage = extract_openai_usage(u);
                 }
 
-                if lines_out.is_empty() { None } else { Some(lines_out.join("\n")) }
+                if lines_out.is_empty() {
+                    None
+                } else {
+                    Some(lines_out.join("\n"))
+                }
             },
             &mut writer,
         )
@@ -459,7 +468,13 @@ pub async fn stream(
         }
 
         // Done event.
-        let done = build_done_event(&text_content, finish_reason, &usage, timing.total_ms(), timing.ttft_ms());
+        let done = build_done_event(
+            &text_content,
+            finish_reason,
+            &usage,
+            timing.total_ms(),
+            timing.ttft_ms(),
+        );
         let _ = writer.write_all(done.as_bytes()).await;
         let _ = writer.write_all(b"\n").await;
 
@@ -494,10 +509,7 @@ pub async fn generate(
 
     let total_ms = start.elapsed().as_millis() as u32;
 
-    let resp_body: Value = response
-        .json()
-        .await
-        .map_err(LlmError::Request)?;
+    let resp_body: Value = response.json().await.map_err(LlmError::Request)?;
 
     let choice = resp_body.get("choices").and_then(|c| c.get(0));
     let message = choice.and_then(|c| c.get("message"));
@@ -539,7 +551,11 @@ pub async fn generate(
             if tc_type != "function" {
                 continue;
             }
-            let id = tc.get("id").and_then(|i| i.as_str()).unwrap_or("").to_string();
+            let id = tc
+                .get("id")
+                .and_then(|i| i.as_str())
+                .unwrap_or("")
+                .to_string();
             let func = tc.get("function");
             let name = func
                 .and_then(|f| f.get("name"))
