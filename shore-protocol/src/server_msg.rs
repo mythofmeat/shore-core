@@ -110,6 +110,9 @@ pub struct SendImage {
     pub path: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub caption: Option<String>,
+    /// Base64-encoded image data for wire transfer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<String>,
 }
 
 /// Unexpected cache invalidation warning.

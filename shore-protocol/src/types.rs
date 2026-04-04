@@ -10,11 +10,20 @@ pub enum Role {
 }
 
 /// Reference to an image file.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ImageRef {
     pub path: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub caption: Option<String>,
+    /// Base64-encoded image data for wire transfer. Stripped on disk storage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<String>,
+}
+
+impl PartialEq for ImageRef {
+    fn eq(&self, other: &Self) -> bool {
+        self.path == other.path && self.caption == other.caption
+    }
 }
 
 /// A structured content block within a message.
@@ -85,7 +94,8 @@ impl Message {
         }
     }
 
-    /// Serialize for disk storage, omitting the redundant `content` field.
+    /// Serialize for disk storage, omitting the redundant `content` field
+    /// and stripping inline `data` from image refs.
     ///
     /// The wire protocol (History, log command) still includes `content` via
     /// normal serde serialization. This method is only for JSONL persistence.
@@ -93,6 +103,14 @@ impl Message {
         let mut val = serde_json::to_value(self)?;
         if let Some(obj) = val.as_object_mut() {
             obj.remove("content");
+            // Strip inline image data — storage uses paths, not embedded bytes.
+            if let Some(images) = obj.get_mut("images").and_then(|v| v.as_array_mut()) {
+                for img in images {
+                    if let Some(obj) = img.as_object_mut() {
+                        obj.remove("data");
+                    }
+                }
+            }
         }
         serde_json::to_string(&val)
     }

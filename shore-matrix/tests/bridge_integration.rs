@@ -198,6 +198,7 @@ fn text_message_becomes_swp_user_message() {
         text: "Hello, Alice!".to_string(),
         stream: true,
         images: vec![],
+        image_data: vec![],
         absence_seconds: None,
         overrides: None,
     });
@@ -233,6 +234,7 @@ fn image_message_becomes_swp_message_with_image_path() {
         text: "check this out".to_string(),
         stream: true,
         images: vec!["/tmp/photo.jpg".to_string()],
+        image_data: vec![],
         absence_seconds: None,
         overrides: None,
     });
@@ -306,10 +308,12 @@ fn stream_with_images_delivers_both() {
         ServerMessage::SendImage(SendImage {
             path: "/tmp/generated_art.png".into(),
             caption: Some("A sunset painting".into()),
+            data: None,
         }),
         ServerMessage::SendImage(SendImage {
             path: "/tmp/chart.svg".into(),
             caption: None,
+            data: None,
         }),
         ServerMessage::StreamEnd(StreamEnd {
             content: "Here are the images you requested.".into(),
@@ -436,6 +440,7 @@ fn cross_room_isolation_with_independent_collectors() {
         .push(ServerMessage::SendImage(SendImage {
             path: "/tmp/alice_img.png".into(),
             caption: None,
+            data: None,
         }));
 
     // Alice's room: stream ends
@@ -628,6 +633,7 @@ fn full_bridge_message_flow() {
         text: "Hello, Alice!".to_string(),
         stream: true,
         images: vec![],
+        image_data: vec![],
         absence_seconds: None,
         overrides: None,
     });
@@ -649,6 +655,7 @@ fn full_bridge_message_flow() {
         text: "Look at this!".to_string(),
         stream: true,
         images: vec!["/tmp/matrix_download_photo.jpg".to_string()],
+        image_data: vec![],
         absence_seconds: None,
         overrides: None,
     });

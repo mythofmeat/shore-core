@@ -328,3 +328,21 @@ A single holistic call lets the LLM see all candidates + nearby context and make
 **Why:** Users need to correct model behavior mid-conversation (e.g. "stop using roleplay actions", "respond in English only") without modifying the system prompt (which invalidates the prompt cache) or sending user-role messages (which pollute conversation context and are treated as dialogue).
 
 **Trade-off:** For Anthropic/Gemini, the system instruction becomes a synthetic user/assistant turn rather than a true system message, which uses slightly more tokens and may be less authoritative than a real system message. Accepted because: (a) these providers don't support mid-conversation system messages at all, (b) XML-tagged instructions are well-understood by the models, (c) the alternative (no injection) is worse.
+
+---
+
+### Base64 image data in wire protocol (2026-04-04)
+
+**Changes made:**
+- Added `ImageUpload { filename, data }` struct and `image_data: Vec<ImageUpload>` field to `ClientMessageBody` (client → server base64-encoded uploads)
+- Added `data: Option<String>` to `ImageRef` (server → client embedded image bytes)
+- Added `data: Option<String>` to `SendImage` (server → client image push)
+- Daemon's `ingest_images()` now handles both `image_data` (decode+write) and legacy `images` (fs::copy)
+- Daemon's `embed_image_data()` populates `data` on ImageRefs before sending over wire (NewMessage, log command)
+- `serialize_for_storage()` strips `data` from images to keep JSONL lean
+- TUI and CLI clients encode images as base64 before sending; TUI's `ensure_transmitted_from_b64()` displays from wire data
+- All changes backwards-compatible: old `images` (paths) field retained, `image_data` and `data` use `#[serde(default)]`
+
+**Why:** The protocol was path-based — both upload (`client → server`) and display (`server → client`) required shared filesystem access. Remote clients couldn't upload images (server couldn't read client's paths) and couldn't display them (TUI couldn't read server's attachment paths), falling back to `[image: filename.jpg]` text.
+
+**Trade-off:** Log responses now include base64-encoded image data, increasing bandwidth per `log` command. Accepted because: (a) SWP is a local socket protocol, not internet traffic, (b) conversations with dozens of images are uncommon, (c) the alternative (separate image transfer protocol, client-side caching) adds significant complexity for marginal gain.

@@ -194,6 +194,9 @@ impl SWPConnection {
     }
 
     /// Send a user message with image attachments and parameter overrides.
+    ///
+    /// Reads each image path, base64-encodes the data, and sends both
+    /// `images` (paths, for legacy daemons) and `image_data` (base64, preferred).
     pub async fn send_message_full(
         &mut self,
         text: impl Into<String>,
@@ -201,13 +204,29 @@ impl SWPConnection {
         images: Vec<String>,
         overrides: Option<shore_protocol::client_msg::MessageOverrides>,
     ) -> Result<Option<String>> {
-        use shore_protocol::client_msg::ClientMessageBody;
+        use base64::Engine;
+        use shore_protocol::client_msg::{ClientMessageBody, ImageUpload};
+
+        let image_data: Vec<ImageUpload> = images
+            .iter()
+            .filter_map(|path| {
+                let bytes = std::fs::read(path).ok()?;
+                let filename = std::path::Path::new(path)
+                    .file_name()
+                    .map(|f| f.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "image".to_string());
+                let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                Some(ImageUpload { filename, data })
+            })
+            .collect();
+
         let rid = Some(uuid_v4());
         let msg = ClientMessage::Message(ClientMessageBody {
             rid: rid.clone(),
             text: text.into(),
             stream,
             images,
+            image_data,
             absence_seconds: None,
             overrides,
         });

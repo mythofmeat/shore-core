@@ -48,6 +48,7 @@ pub fn input_to_swp(input: &MatrixInput) -> ClientMessage {
             text: text.clone(),
             stream: true,
             images: vec![],
+            image_data: vec![],
             absence_seconds: None,
             overrides: None,
         }),
@@ -61,6 +62,7 @@ pub fn input_to_swp(input: &MatrixInput) -> ClientMessage {
             text: caption.clone().unwrap_or_default(),
             stream: true,
             images: vec![path.clone()],
+            image_data: vec![],
             absence_seconds: None,
             overrides: None,
         }),
@@ -273,10 +275,12 @@ mod tests {
         c.feed(&ServerMessage::SendImage(SendImage {
             path: "/tmp/img.png".into(),
             caption: Some("test image".into()),
+            data: None,
         }));
         c.feed(&ServerMessage::SendImage(SendImage {
             path: "/tmp/img2.png".into(),
             caption: None,
+            data: None,
         }));
 
         let action = c.feed(&ServerMessage::StreamEnd(StreamEnd {
@@ -408,6 +412,7 @@ mod tests {
         c.feed(&ServerMessage::SendImage(SendImage {
             path: "/old.png".into(),
             caption: None,
+            data: None,
         }));
         c.feed(&ServerMessage::StreamEnd(StreamEnd {
             content: "first".into(),

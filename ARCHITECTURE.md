@@ -137,10 +137,13 @@ Three first-class message types plus a generic command envelope.
   "text": "...",
   "stream": true,
   "images": [],
+  "image_data": [{"filename": "photo.jpg", "data": "<base64>"}],
   "absence_seconds": null
 }
 ```
-All fields except `type` and `text` are optional.
+All fields except `type` and `text` are optional. `image_data` (base64-encoded)
+is preferred over `images` (filesystem paths); both are accepted for backwards
+compatibility.
 
 #### `regen` — Regenerate last response
 ```json
@@ -200,6 +203,7 @@ struct Message {
 struct ImageRef {
     path:    String,                  // filesystem path to image
     caption: Option<String>,
+    data:    Option<String>,          // base64-encoded bytes (wire only, stripped on disk)
 }
 ```
 
@@ -259,7 +263,7 @@ All fields are integers except `model` (string). Provider-specific token fields
 | `new_message` | Autonomous message arrived | full `Message` object |
 | `tool_call` | Tool invoked during generation | `tool_id`, `tool_name`, `input` (JSON object) |
 | `tool_result` | Tool completed | `tool_id`, `tool_name`, `output`, `is_error` |
-| `send_image` | Server-generated image ready | `path`, `caption?` |
+| `send_image` | Server-generated image ready | `path`, `caption?`, `data?` (base64) |
 | `cache_warning` | Unexpected cache invalidation | `expected_tokens`, `message` |
 
 `phase` values: `"thinking"`, `"text_generation"`, `"tool_use"`. Clients use

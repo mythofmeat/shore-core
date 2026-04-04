@@ -163,6 +163,7 @@ impl ShoreBridge {
             text: text.to_string(),
             stream: true,
             images: vec![],
+            image_data: vec![],
             absence_seconds: None,
             overrides: None,
         });

@@ -616,6 +616,7 @@ mod tests {
                 text: "Hello world".into(),
                 stream: true,
                 images: vec![],
+                image_data: vec![],
                 absence_seconds: None,
                 overrides: None,
             }),
@@ -728,6 +729,7 @@ mod tests {
             ServerMessage::SendImage(SendImage {
                 path: "/tmp/img.png".into(),
                 caption: None,
+                data: None,
             }),
             ServerMessage::CacheWarning(CacheWarning {
                 expected_tokens: 5000,
@@ -763,6 +765,7 @@ mod tests {
                 text: "oops".into(),
                 stream: false,
                 images: vec![],
+                image_data: vec![],
                 absence_seconds: None,
                 overrides: None,
             }),

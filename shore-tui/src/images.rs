@@ -116,6 +116,42 @@ impl ImageCache {
         self.cache.get(path)
     }
 
+    /// Transmit an image from base64 data if not already cached.
+    /// Uses `key` (typically the server path) as the cache key.
+    /// Avoids a round-trip decode→re-encode by passing the original b64 to kitty.
+    pub fn ensure_transmitted_from_b64(
+        &mut self,
+        key: &str,
+        b64_data: &str,
+        max_cols: u16,
+    ) -> Option<&TransmittedImage> {
+        if self.protocol != Some(ImageProtocol::Kitty) {
+            return None;
+        }
+        if self.cache.contains_key(key) {
+            return self.cache.get(key);
+        }
+
+        use base64::Engine;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(b64_data)
+            .ok()?;
+        let (pw, ph) = image_dimensions(&bytes)?;
+        let (cols, rows) = self.calculate_cells(pw, ph, max_cols);
+
+        let id = self.next_id;
+        self.next_id += 1;
+
+        let mut stdout = std::io::stdout();
+        transmit_kitty(&mut stdout, id, b64_data);
+        place_kitty(&mut stdout, id, cols, rows);
+        let _ = stdout.flush();
+
+        self.cache
+            .insert(key.to_string(), TransmittedImage { id, cols, rows });
+        self.cache.get(key)
+    }
+
     /// Look up a previously transmitted image.
     pub fn get(&self, path: &str) -> Option<&TransmittedImage> {
         self.cache.get(path)

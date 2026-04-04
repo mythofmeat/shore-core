@@ -55,6 +55,7 @@ mod tests {
             text: "Hello world".into(),
             stream: true,
             images: vec![],
+            image_data: vec![],
             absence_seconds: None,
             overrides: None,
         });
@@ -280,6 +281,7 @@ mod tests {
         let msg = ServerMessage::SendImage(SendImage {
             path: "/tmp/img.png".into(),
             caption: Some("generated chart".into()),
+            data: None,
         });
         let (json, _back) = round_trip(&msg);
         assert_eq!(json["type"], "send_image");
@@ -309,6 +311,7 @@ mod tests {
             images: vec![ImageRef {
                 path: "/img/a.png".into(),
                 caption: Some("photo".into()),
+                data: None,
             }],
             content_blocks: vec![],
             alt_index: Some(1),

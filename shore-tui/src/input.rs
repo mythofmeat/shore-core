@@ -209,13 +209,33 @@ fn handle_insert_mode(app: &mut App, key: KeyEvent) -> Action {
             }
 
             let images = std::mem::take(&mut app.pending_images);
-            let image_refs: Vec<shore_protocol::types::ImageRef> = images
-                .iter()
-                .map(|p| shore_protocol::types::ImageRef {
-                    path: p.clone(),
-                    caption: None,
-                })
-                .collect();
+            // Read and base64-encode images for wire transfer.
+            let mut image_uploads: Vec<shore_protocol::client_msg::ImageUpload> = Vec::new();
+            let mut image_refs: Vec<shore_protocol::types::ImageRef> = Vec::new();
+            for p in &images {
+                match std::fs::read(p) {
+                    Ok(bytes) => {
+                        use base64::Engine;
+                        let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                        let filename = std::path::Path::new(p)
+                            .file_name()
+                            .map(|f| f.to_string_lossy().to_string())
+                            .unwrap_or_else(|| "image".to_string());
+                        image_refs.push(shore_protocol::types::ImageRef {
+                            path: p.clone(),
+                            caption: None,
+                            data: Some(b64.clone()),
+                        });
+                        image_uploads.push(shore_protocol::client_msg::ImageUpload {
+                            filename,
+                            data: b64,
+                        });
+                    }
+                    Err(e) => {
+                        app.set_status(format!("failed to read image: {e}"));
+                    }
+                }
+            }
             // Optimistic: show user's message in conversation immediately
             app.entries.push(crate::app::ConversationEntry::User {
                 content: text.clone(),
@@ -230,6 +250,7 @@ fn handle_insert_mode(app: &mut App, key: KeyEvent) -> Action {
                 text,
                 stream: true,
                 images,
+                image_data: image_uploads,
                 absence_seconds: None,
                 overrides: None,
             });

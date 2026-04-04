@@ -515,7 +515,8 @@ fn image_max_cols() -> u16 {
         .unwrap_or(76)
 }
 
-/// Transmit images from a conversation entry to kitty.
+/// Transmit images from conversation entries to kitty.
+/// Prefers embedded base64 data; falls back to reading from path.
 fn transmit_entry_images(app: &mut App) {
     let max_cols = image_max_cols();
     for entry in &app.entries {
@@ -525,8 +526,21 @@ fn transmit_entry_images(app: &mut App) {
             _ => continue,
         };
         for img in imgs {
-            app.image_cache.ensure_transmitted(&img.path, max_cols);
+            transmit_image_ref(&mut app.image_cache, img, max_cols);
         }
+    }
+}
+
+/// Transmit a single ImageRef: prefer embedded data, fall back to path.
+fn transmit_image_ref(
+    cache: &mut images::ImageCache,
+    img: &shore_protocol::types::ImageRef,
+    max_cols: u16,
+) {
+    if let Some(b64) = &img.data {
+        cache.ensure_transmitted_from_b64(&img.path, b64, max_cols);
+    } else {
+        cache.ensure_transmitted(&img.path, max_cols);
     }
 }
 
@@ -638,7 +652,7 @@ fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<ConnCommand> 
 
                 let max_cols = image_max_cols();
                 for img in &new_msg.message.images {
-                    app.image_cache.ensure_transmitted(&img.path, max_cols);
+                    transmit_image_ref(&mut app.image_cache, img, max_cols);
                 }
                 let entry = match new_msg.message.role {
                     Role::User => ConversationEntry::User {
@@ -698,8 +712,13 @@ fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<ConnCommand> 
         }
 
         ServerMessage::SendImage(img) => {
-            app.image_cache
-                .ensure_transmitted(&img.path, image_max_cols());
+            let max_cols = image_max_cols();
+            if let Some(b64) = &img.data {
+                app.image_cache
+                    .ensure_transmitted_from_b64(&img.path, b64, max_cols);
+            } else {
+                app.image_cache.ensure_transmitted(&img.path, max_cols);
+            }
         }
 
         ServerMessage::CommandOutput(co) => {

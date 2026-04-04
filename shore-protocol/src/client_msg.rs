@@ -25,6 +25,14 @@ pub struct MessageOverrides {
     pub thinking_budget: Option<u32>,
 }
 
+/// A base64-encoded image uploaded by the client.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ImageUpload {
+    pub filename: String,
+    /// Base64-encoded image file bytes.
+    pub data: String,
+}
+
 /// Send a user message.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ClientMessageBody {
@@ -33,8 +41,12 @@ pub struct ClientMessageBody {
     pub text: String,
     #[serde(default)]
     pub stream: bool,
+    /// Legacy: file paths (only works when client and server share a filesystem).
     #[serde(default)]
     pub images: Vec<String>,
+    /// Preferred: base64-encoded image data (works across machines).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub image_data: Vec<ImageUpload>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub absence_seconds: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -132,6 +144,7 @@ mod tests {
             text: "hello".into(),
             stream: true,
             images: vec![],
+            image_data: vec![],
             absence_seconds: None,
             overrides: Some(MessageOverrides {
                 temperature: Some(0.7),
@@ -165,6 +178,7 @@ mod tests {
             text: "hi".into(),
             stream: false,
             images: vec![],
+            image_data: vec![],
             absence_seconds: None,
             overrides: None,
         };

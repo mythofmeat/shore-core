@@ -91,12 +91,16 @@ pub fn log(
 
     let count = args.get("count").and_then(|v| v.as_u64()).map(|c| c as usize);
 
-    let result: Vec<_> = match count {
-        Some(n) => merged.iter().rev().take(n).rev().collect(),
-        None => merged.iter().collect(),
+    // Embed image data so clients can display without filesystem access.
+    let mut with_data: Vec<Message> = match count {
+        Some(n) => merged.into_iter().rev().take(n).rev().collect(),
+        None => merged,
     };
+    for msg in &mut with_data {
+        crate::handler::embed_image_data(&mut msg.images);
+    }
 
-    Ok(json!({ "messages": result }))
+    Ok(json!({ "messages": with_data }))
 }
 
 /// Edit a message by ID.

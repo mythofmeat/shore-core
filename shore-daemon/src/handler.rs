@@ -243,6 +243,7 @@ impl MessageHandler {
                                 text: String::new(),
                                 stream: regen.stream,
                                 images: vec![],
+                                image_data: vec![],
                                 absence_seconds: None,
                                 overrides: None,
                             };
@@ -402,8 +403,8 @@ async fn handle_generation(
         let mut engine = engine_arc.lock().await;
         if regen {
             engine.truncate_after_last_user_turn()?;
-        } else if !body.text.is_empty() || !body.images.is_empty() {
-            let (images, mut content_blocks) = ingest_images(&data_dir, &char_name, &body.images);
+        } else if !body.text.is_empty() || !body.images.is_empty() || !body.image_data.is_empty() {
+            let (images, mut content_blocks) = ingest_images(&data_dir, &char_name, &body.images, &body.image_data);
 
             // User text comes after the image annotations.
             content_blocks.push(ContentBlock::Text { text: body.text.clone() });
@@ -419,8 +420,12 @@ async fn handle_generation(
                 timestamp: chrono::Utc::now().to_rfc3339(),
             };
             engine.append_message(user_msg.clone())?;
+            // Embed image data before broadcasting so clients can display
+            // without filesystem access to the server's paths.
+            let mut wire_msg = user_msg;
+            embed_image_data(&mut wire_msg.images);
             let _ = ctx.push_tx.send(ServerMessage::NewMessage(
-                shore_protocol::server_msg::NewMessage { message: user_msg },
+                shore_protocol::server_msg::NewMessage { message: wire_msg },
             ));
         }
     } // engine lock released
@@ -931,54 +936,116 @@ async fn persist_and_notify(
 // Image ingestion
 // ---------------------------------------------------------------------------
 
-/// Copy incoming image paths to durable attachments/ directory.
+/// Ingest incoming images to durable attachments/ directory.
+///
+/// Prefers `image_data` (base64-encoded uploads from new clients) over
+/// `image_paths` (legacy path-based, same-machine only).
 /// Returns (persisted ImageRefs, annotation ContentBlocks).
 fn ingest_images(
     data_dir: &std::path::Path,
     char_name: &str,
     image_paths: &[String],
+    image_data: &[shore_protocol::client_msg::ImageUpload],
 ) -> (Vec<ImageRef>, Vec<ContentBlock>) {
+    use base64::Engine;
+
     let character_data_dir = data_dir.join(char_name);
     let attachments_dir = character_data_dir.join("images").join("attachments");
-    let mut images: Vec<ImageRef> = Vec::with_capacity(image_paths.len());
+    let mut images: Vec<ImageRef> = Vec::with_capacity(image_data.len() + image_paths.len());
     let mut content_blocks: Vec<ContentBlock> = Vec::new();
 
-    for src_path_str in image_paths {
-        let src_path = std::path::Path::new(src_path_str);
-        if !src_path.exists() {
-            warn!(path = %src_path_str, "Skipping non-existent image");
-            continue;
-        }
+    // Preferred path: base64-encoded uploads (works across machines).
+    for upload in image_data {
         if let Err(e) = std::fs::create_dir_all(&attachments_dir) {
             warn!(error = %e, "Failed to create attachments directory");
             continue;
         }
-        let original_name = src_path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "image".to_string());
+        let bytes = match base64::engine::general_purpose::STANDARD.decode(&upload.data) {
+            Ok(b) => b,
+            Err(e) => {
+                warn!(filename = %upload.filename, error = %e, "Failed to decode base64 image data");
+                continue;
+            }
+        };
         let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
-        let dest_name = format!("{timestamp}_{original_name}");
+        let dest_name = format!("{timestamp}_{}", upload.filename);
         let dest_path = attachments_dir.join(&dest_name);
 
-        match std::fs::copy(src_path, &dest_path) {
-            Ok(_) => {
+        match std::fs::write(&dest_path, &bytes) {
+            Ok(()) => {
                 let abs_path = dest_path.to_string_lossy().to_string();
                 let rel_path = format!("attachments/{dest_name}");
-                images.push(ImageRef { path: abs_path, caption: None });
+                images.push(ImageRef { path: abs_path, caption: None, data: None });
                 content_blocks.push(ContentBlock::Text {
                     text: format!("[Attached image saved as: {rel_path}]"),
                 });
-                info!(src = %src_path_str, dest = %rel_path, "Copied incoming image to attachments");
+                info!(filename = %upload.filename, dest = %rel_path, "Saved uploaded image to attachments");
             }
             Err(e) => {
-                warn!(src = %src_path_str, error = %e, "Failed to copy image to attachments");
-                images.push(ImageRef { path: src_path_str.clone(), caption: None });
+                warn!(filename = %upload.filename, error = %e, "Failed to write image to attachments");
+            }
+        }
+    }
+
+    // Legacy fallback: copy from filesystem paths (same-machine only).
+    if image_data.is_empty() {
+        for src_path_str in image_paths {
+            let src_path = std::path::Path::new(src_path_str);
+            if !src_path.exists() {
+                warn!(path = %src_path_str, "Skipping non-existent image");
+                continue;
+            }
+            if let Err(e) = std::fs::create_dir_all(&attachments_dir) {
+                warn!(error = %e, "Failed to create attachments directory");
+                continue;
+            }
+            let original_name = src_path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "image".to_string());
+            let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+            let dest_name = format!("{timestamp}_{original_name}");
+            let dest_path = attachments_dir.join(&dest_name);
+
+            match std::fs::copy(src_path, &dest_path) {
+                Ok(_) => {
+                    let abs_path = dest_path.to_string_lossy().to_string();
+                    let rel_path = format!("attachments/{dest_name}");
+                    images.push(ImageRef { path: abs_path, caption: None, data: None });
+                    content_blocks.push(ContentBlock::Text {
+                        text: format!("[Attached image saved as: {rel_path}]"),
+                    });
+                    info!(src = %src_path_str, dest = %rel_path, "Copied incoming image to attachments");
+                }
+                Err(e) => {
+                    warn!(src = %src_path_str, error = %e, "Failed to copy image to attachments");
+                    images.push(ImageRef { path: src_path_str.clone(), caption: None, data: None });
+                }
             }
         }
     }
 
     (images, content_blocks)
+}
+
+/// Populate the `data` field on ImageRefs by reading and base64-encoding files.
+/// Called before sending Messages over the wire so clients can display images
+/// without needing filesystem access to the server's paths.
+pub fn embed_image_data(images: &mut [ImageRef]) {
+    use base64::Engine;
+    for img in images {
+        if img.data.is_some() {
+            continue;
+        }
+        match std::fs::read(&img.path) {
+            Ok(bytes) => {
+                img.data = Some(base64::engine::general_purpose::STANDARD.encode(&bytes));
+            }
+            Err(e) => {
+                warn!(path = %img.path, error = %e, "Failed to read image for wire embedding");
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1174,6 +1241,7 @@ mod tests {
                     text: String::new(),
                     stream: r.stream,
                     images: vec![],
+                    image_data: vec![],
                     absence_seconds: None,
                     overrides: None,
                 };
@@ -1229,6 +1297,7 @@ mod tests {
         let images = vec![ImageRef {
             path: img_path.to_str().unwrap().to_string(),
             caption: None,
+            data: None,
         }];
 
         let result = build_content("describe this", &images);
@@ -1254,11 +1323,13 @@ mod tests {
             ImageRef {
                 path: tmp.path().join("file.bmp").to_str().unwrap().to_string(),
                 caption: None,
+                data: None,
             },
             // Missing file → skipped.
             ImageRef {
                 path: tmp.path().join("ghost.png").to_str().unwrap().to_string(),
                 caption: None,
+                data: None,
             },
         ];
 
@@ -1456,6 +1527,7 @@ mod tests {
             text: "Hello, Alice!".into(),
             stream: true,
             images: vec![],
+            image_data: vec![],
             absence_seconds: None,
             overrides: None,
         };
