@@ -358,6 +358,17 @@ pub struct CompletionState {
     pub selected: Option<usize>,
 }
 
+/// An image in the conversation, with its position in the rendered line list.
+#[derive(Clone, Debug)]
+pub struct ImageEntry {
+    /// Cache key (image path).
+    pub path: String,
+    /// Display name for the status bar.
+    pub display_name: String,
+    /// Line index in the conversation lines vec where this image starts.
+    pub line: usize,
+}
+
 /// Main application state.
 pub struct App {
     pub entries: Vec<ConversationEntry>,
@@ -384,6 +395,10 @@ pub struct App {
     pub pending_images: Vec<String>,
     /// When editing a message, holds the ref (e.g. "last", "-1") being edited.
     pub editing_ref: Option<String>,
+    /// Index of all rendered images with their line positions, rebuilt each frame.
+    pub image_index: Vec<ImageEntry>,
+    /// When set, the fullscreen image viewer is active showing this image index.
+    pub fullscreen: Option<usize>,
 }
 
 impl Default for App {
@@ -416,6 +431,8 @@ impl Default for App {
             show_help: false,
             pending_images: Vec::new(),
             editing_ref: None,
+            image_index: Vec::new(),
+            fullscreen: None,
         }
     }
 }
