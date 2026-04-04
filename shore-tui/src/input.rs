@@ -176,9 +176,7 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) -> Action {
             // Find image closest to the center of the visible viewport.
             // scroll_offset is distance from bottom. We estimate which
             // lines are visible and pick the nearest image.
-            let term_height = crossterm::terminal::size()
-                .map(|(_, h)| h)
-                .unwrap_or(24);
+            let term_height = crossterm::terminal::size().map(|(_, h)| h).unwrap_or(24);
             // Approximate conversation area as ~80% of terminal height
             let visible_h = (term_height * 80 / 100).max(1) as usize;
             let last_line = app.image_index.last().map(|e| e.line).unwrap_or(0);

@@ -179,8 +179,16 @@ impl ImageCache {
         place_kitty(&mut tty, id, cols, rows);
         let _ = tty.flush();
 
-        self.cache
-            .insert(path.to_string(), TransmittedImage { id, cols, rows, pw, ph });
+        self.cache.insert(
+            path.to_string(),
+            TransmittedImage {
+                id,
+                cols,
+                rows,
+                pw,
+                ph,
+            },
+        );
         self.cache.get(path)
     }
 
@@ -217,8 +225,16 @@ impl ImageCache {
         place_kitty(&mut tty, id, cols, rows);
         let _ = tty.flush();
 
-        self.cache
-            .insert(key.to_string(), TransmittedImage { id, cols, rows, pw, ph });
+        self.cache.insert(
+            key.to_string(),
+            TransmittedImage {
+                id,
+                cols,
+                rows,
+                pw,
+                ph,
+            },
+        );
         self.cache.get(key)
     }
 

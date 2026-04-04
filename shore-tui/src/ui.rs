@@ -415,7 +415,13 @@ fn draw_conversation(frame: &mut Frame, app: &mut App, area: Rect) {
                 lines.extend(indent_lines(markdown::render_markdown(&pre_wrap_text(
                     content, wrap_w,
                 ))));
-                render_images(&mut lines, images, &app.image_cache, app.show_images, &mut image_index);
+                render_images(
+                    &mut lines,
+                    images,
+                    &app.image_cache,
+                    app.show_images,
+                    &mut image_index,
+                );
                 lines.push(Line::from(""));
             }
             ConversationEntry::Assistant {
@@ -453,7 +459,13 @@ fn draw_conversation(frame: &mut Frame, app: &mut App, area: Rect) {
                 lines.extend(indent_lines(markdown::render_markdown(&pre_wrap_text(
                     content, wrap_w,
                 ))));
-                render_images(&mut lines, images, &app.image_cache, app.show_images, &mut image_index);
+                render_images(
+                    &mut lines,
+                    images,
+                    &app.image_cache,
+                    app.show_images,
+                    &mut image_index,
+                );
                 if let Some(meta) = metadata {
                     lines.push(Line::from(Span::styled(
                         format!(
@@ -612,9 +624,12 @@ fn draw_fullscreen_image(frame: &mut Frame, app: &App, area: Rect) {
     let status_area = chunks[1];
 
     // Compute fullscreen cell dimensions preserving aspect ratio
-    let (fs_cols, fs_rows) =
-        app.image_cache
-            .calculate_cells(transmitted.pw, transmitted.ph, img_area.width, img_area.height);
+    let (fs_cols, fs_rows) = app.image_cache.calculate_cells(
+        transmitted.pw,
+        transmitted.ph,
+        img_area.width,
+        img_area.height,
+    );
 
     // Center the image vertically in the image area
     let v_pad = img_area.height.saturating_sub(fs_rows) / 2;
@@ -622,7 +637,11 @@ fn draw_fullscreen_image(frame: &mut Frame, app: &App, area: Rect) {
     for _ in 0..v_pad {
         img_lines.push(Line::from(""));
     }
-    img_lines.extend(images::placeholder_lines_at(transmitted.id, fs_cols, fs_rows));
+    img_lines.extend(images::placeholder_lines_at(
+        transmitted.id,
+        fs_cols,
+        fs_rows,
+    ));
 
     let paragraph = Paragraph::new(Text::from(img_lines));
     frame.render_widget(paragraph, img_area);
