@@ -92,11 +92,7 @@ pub(crate) fn write_section_header(out: &mut impl Write, title: &str, suffix: &s
         format!("\u{2500}\u{2500} {} ({}) ", title, suffix)
     };
     let prefix_len = prefix.chars().count();
-    let trail = if width > prefix_len {
-        width - prefix_len
-    } else {
-        0
-    };
+    let trail = width.saturating_sub(prefix_len);
     let rule: String = "\u{2500}".repeat(trail);
 
     if use_color() {

@@ -852,7 +852,7 @@ impl MemoryDB {
         if !trimmed
             .split_whitespace()
             .next()
-            .map_or(false, |w| w.eq_ignore_ascii_case("SELECT"))
+            .is_some_and(|w| w.eq_ignore_ascii_case("SELECT"))
         {
             return Err(rusqlite::Error::SqliteFailure(
                 rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_MISUSE),

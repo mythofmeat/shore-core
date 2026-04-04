@@ -97,7 +97,7 @@ pub fn append_entries(path: &Path, entries: &[JournalEntry]) -> io::Result<()> {
 
     for entry in entries {
         let json =
-            serde_json::to_string(entry).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            serde_json::to_string(entry).map_err(io::Error::other)?;
         writeln!(file, "{json}")?;
     }
     Ok(())
@@ -178,7 +178,7 @@ pub fn compact_file(path: &Path, max_chars: usize) -> io::Result<()> {
         let mut file = fs::File::create(&tmp_path)?;
         for entry in &kept {
             let json = serde_json::to_string(entry)
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                .map_err(io::Error::other)?;
             writeln!(file, "{json}")?;
         }
     }

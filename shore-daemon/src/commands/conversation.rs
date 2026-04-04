@@ -73,7 +73,7 @@ pub fn get(
         .find(|m| m.msg_id == msg_id)
         .ok_or_else(|| (ErrorCode::NotFound, format!("Message not found: {msg_id}")))?;
 
-    Ok(serde_json::to_value(msg).map_err(|e| (ErrorCode::InternalError, e.to_string()))?)
+    serde_json::to_value(msg).map_err(|e| (ErrorCode::InternalError, e.to_string()))
 }
 
 /// Show conversation history, optionally limited to the last N messages.

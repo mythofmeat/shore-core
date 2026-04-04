@@ -210,13 +210,12 @@ impl CollationManager {
                             }
                             found_any = true;
                         }
-                        if !ancestor.end_timestamp.is_empty() {
-                            if max_end.is_empty()
-                                || ancestor.end_timestamp.as_str() > max_end.as_str()
+                        if !ancestor.end_timestamp.is_empty()
+                            && (max_end.is_empty()
+                                || ancestor.end_timestamp.as_str() > max_end.as_str())
                             {
                                 max_end = ancestor.end_timestamp.clone();
                             }
-                        }
                         // If this ancestor also lacks timestamps, walk its sources
                         if ancestor.start_timestamp.is_empty()
                             && !ancestor.source_entry_ids.is_empty()
@@ -853,7 +852,7 @@ pub async fn run_collation(
         }
         Err(_) => None,
     };
-    let indexer = search_ctx.as_ref().map(|ctx| RealAgentIndexer::new(ctx));
+    let indexer = search_ctx.as_ref().map(RealAgentIndexer::new);
 
     let collation_display_name = config.app.defaults.resolve_display_name();
     let mut collation_vars = HashMap::new();

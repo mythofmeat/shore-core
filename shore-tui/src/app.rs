@@ -350,6 +350,7 @@ pub enum ConnectionStatus {
 }
 
 /// Completion state for the command palette.
+#[derive(Default)]
 pub struct CompletionState {
     /// Filtered candidates matching current input.
     pub candidates: Vec<String>,
@@ -357,14 +358,6 @@ pub struct CompletionState {
     pub selected: Option<usize>,
 }
 
-impl Default for CompletionState {
-    fn default() -> Self {
-        Self {
-            candidates: Vec::new(),
-            selected: None,
-        }
-    }
-}
 
 /// Main application state.
 pub struct App {
@@ -528,7 +521,7 @@ impl App {
                 .collect();
         } else {
             // Completing arguments
-            let arg = input.splitn(2, ' ').nth(1).unwrap_or("").trim();
+            let arg = input.split_once(' ').map(|x| x.1).unwrap_or("").trim();
             match cmd {
                 "character" => {
                     self.completion.candidates = self

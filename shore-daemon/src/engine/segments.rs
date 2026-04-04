@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use shore_protocol::types::Message;
@@ -38,7 +38,7 @@ impl SegmentReader {
     /// Load segment metadata from a character directory.
     ///
     /// Reads `compaction.json` if present; otherwise starts empty.
-    pub fn load(character_dir: &PathBuf) -> Result<Self, EngineError> {
+    pub fn load(character_dir: &Path) -> Result<Self, EngineError> {
         let manifest_path = character_dir.join("compaction.json");
         let segments_dir = character_dir.join("segments");
 

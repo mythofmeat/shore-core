@@ -74,13 +74,13 @@ pub async fn handle_memory(input: Value, ctx: &dyn ToolContext) -> Result<Value,
                 search_ctx,
             )
             .await
-            .map_err(|e| ToolError::Agent(e))?
+            .map_err(ToolError::Agent)?
     } else {
         // Direct agent query (no researcher)
         agent
             .ask(request, agent_llm, db, indexer, search_ctx, agent_model)
             .await
-            .map_err(|e| ToolError::Agent(e))?
+            .map_err(ToolError::Agent)?
     };
 
     Ok(json!(result_text))

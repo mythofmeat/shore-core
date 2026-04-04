@@ -644,7 +644,7 @@ async fn handle_generation(
     };
 
     // 9. Build LLM request.
-    let mut request = LlmClient::build_request(&resolved, llm_messages, system, tool_defs, None)?;
+    let mut request = LlmClient::build_request(resolved, llm_messages, system, tool_defs, None)?;
 
     // Apply per-message parameter overrides from the client.
     if let Some(ref ov) = body.overrides {
@@ -675,7 +675,7 @@ async fn handle_generation(
         &ctx,
         &request,
         &engine_arc,
-        &resolved,
+        resolved,
         &effective_config,
         regen,
         rid.as_deref(),
@@ -723,7 +723,7 @@ async fn handle_generation(
         &ctx,
         &engine_arc,
         &char_name,
-        &resolved,
+        resolved,
         &result,
         &request,
         tool_intermediate_messages,

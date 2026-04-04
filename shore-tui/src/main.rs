@@ -623,7 +623,7 @@ fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<ConnCommand> 
             // clears + rebuilds entries) AND the handler broadcasts NewMessage
             // for the same user message.  Skip if the last entry already
             // matches this timestamp (placed there by the preceding History).
-            let dominated = app.entries.last().map_or(false, |last| {
+            let dominated = app.entries.last().is_some_and(|last| {
                 let ts = match last {
                     ConversationEntry::User { timestamp, .. }
                     | ConversationEntry::Assistant { timestamp, .. }
@@ -639,7 +639,7 @@ fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<ConnCommand> 
                 // replace it with the server-authoritative version instead of
                 // pushing a duplicate.
                 let is_optimistic_echo = new_msg.message.role == Role::User
-                    && app.entries.last().map_or(false, |last| {
+                    && app.entries.last().is_some_and(|last| {
                         matches!(last, ConversationEntry::User { timestamp, content, .. }
                             if timestamp.is_empty() && *content == new_msg.message.content)
                     });

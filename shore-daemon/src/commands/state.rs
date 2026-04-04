@@ -170,7 +170,7 @@ pub fn model_info(ctx: &CommandContext, args: &serde_json::Value) -> CommandResu
         .find_model(name)
         .map_err(|e| (ErrorCode::NotFound, e.to_string()))?;
 
-    let data = serde_json::to_value(&resolved).map_err(|e| {
+    let data = serde_json::to_value(resolved).map_err(|e| {
         (
             ErrorCode::InternalError,
             format!("Failed to serialize model: {e}"),
@@ -599,7 +599,7 @@ pub async fn compact(
             dry_run,
         )
         .await
-        .map_err(|e| compaction_err(e))?;
+        .map_err(compaction_err)?;
 
     // Build response and handle post-compaction engine state.
     match outcome {
@@ -910,8 +910,8 @@ pub async fn memory_purge(
 /// Parse a duration string like "30d" into days.
 fn parse_duration_days(s: &str) -> Option<i64> {
     let s = s.trim();
-    if s.ends_with('d') {
-        s[..s.len() - 1].parse::<i64>().ok().filter(|&d| d > 0)
+    if let Some(stripped) = s.strip_suffix('d') {
+        stripped.parse::<i64>().ok().filter(|&d| d > 0)
     } else {
         // Try plain number as days.
         s.parse::<i64>().ok().filter(|&d| d > 0)

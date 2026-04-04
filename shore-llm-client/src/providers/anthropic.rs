@@ -60,7 +60,7 @@ fn messages_have_cache_control(messages: &[Value]) -> bool {
     messages.iter().any(|m| {
         m.get("content")
             .and_then(Value::as_array)
-            .map_or(false, |arr| {
+            .is_some_and(|arr| {
                 arr.iter().any(|b| b.get("cache_control").is_some())
             })
     })
@@ -200,7 +200,7 @@ fn build_thinking_config(opts: &Value) -> Option<Value> {
     let effort = opts.get("reasoning_effort").and_then(Value::as_str);
 
     // "adaptive" or named effort values → adaptive thinking mode.
-    if effort == Some("adaptive") || effort.map_or(false, is_effort_value) {
+    if effort == Some("adaptive") || effort.is_some_and(is_effort_value) {
         return Some(json!({ "type": "adaptive" }));
     }
 

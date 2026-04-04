@@ -61,6 +61,12 @@ pub struct InteriorityClock {
     cache_refresh_interval_secs: Option<u64>,
 }
 
+impl Default for InteriorityClock {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl InteriorityClock {
     pub fn new() -> Self {
         Self {

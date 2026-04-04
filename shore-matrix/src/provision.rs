@@ -296,6 +296,12 @@ pub struct HomeserverPaths {
     pub state_file: PathBuf,
 }
 
+impl Default for HomeserverPaths {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl HomeserverPaths {
     /// Compute paths using the resolved Shore data directory.
     pub fn new() -> Self {

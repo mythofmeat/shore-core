@@ -172,7 +172,7 @@ impl ImageCache {
         let cols = (natural_cols as u16).min(max_cols).max(1);
         let scale = (cols as f64 * self.cell_width as f64) / pw as f64;
         let rows = ((ph as f64 * scale) / self.cell_height as f64).ceil() as u16;
-        (cols, rows.max(1).min(255))
+        (cols, rows.clamp(1, 255))
     }
 }
 

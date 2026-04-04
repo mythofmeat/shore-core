@@ -554,7 +554,7 @@ pub fn handle_resolve_flag(db: &MemoryDB, input: &Value) -> Result<String, Strin
     // Boost confidence of the flagged entry to max(current, 0.8)
     if let Some(flag) = flag {
         if let Ok(Some(entry)) = db.get_entry(&flag.entry_id) {
-            let new_conf = entry.confidence.max(0.8_f64).min(1.0);
+            let new_conf = entry.confidence.clamp(0.8_f64, 1.0);
             let _ = db.set_confidence(&entry.id, new_conf);
         }
     }

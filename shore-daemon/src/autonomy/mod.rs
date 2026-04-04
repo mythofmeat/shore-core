@@ -83,6 +83,12 @@ pub struct InteriorityLog {
     events: VecDeque<InteriorityEvent>,
 }
 
+impl Default for InteriorityLog {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl InteriorityLog {
     pub fn new() -> Self {
         Self {

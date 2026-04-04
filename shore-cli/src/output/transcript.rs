@@ -56,11 +56,7 @@ pub(crate) fn write_header(
     // "-- Name . HH:MM " = 4 + name.len() + 3 + time.len() + 1
     let prefix = format!("\u{2500}\u{2500} {} \u{00b7} {} ", name, time_str);
     let prefix_len = prefix.chars().count();
-    let trail = if width > prefix_len {
-        width - prefix_len
-    } else {
-        0
-    };
+    let trail = width.saturating_sub(prefix_len);
     let rule: String = "\u{2500}".repeat(trail);
 
     if use_color() {
@@ -220,7 +216,7 @@ pub fn print_log(messages: &[serde_json::Value], character_name: &str) {
 
         // Detect tool-result-only "user" messages (from tool loop).
         let is_tool_result_msg = role_str == "user"
-            && content_blocks.map_or(false, |blocks| {
+            && content_blocks.is_some_and(|blocks| {
                 !blocks.is_empty()
                     && blocks
                         .iter()
@@ -238,11 +234,7 @@ pub fn print_log(messages: &[serde_json::Value], character_name: &str) {
                     }
                     let prefix = format!("\u{2500}\u{2500} system \u{00b7} {} ", time_str);
                     let prefix_len = prefix.chars().count();
-                    let trail = if width > prefix_len {
-                        width - prefix_len
-                    } else {
-                        0
-                    };
+                    let trail = width.saturating_sub(prefix_len);
                     let _ = write!(out, "{prefix}{}", "\u{2500}".repeat(trail));
                     let _ = writeln!(out);
                 }
@@ -318,7 +310,7 @@ pub fn print_follow_stream_start(character_name: &str) {
 
 /// Print a single message in the same transcript format as print_log.
 pub fn print_single_message(data: &serde_json::Value, character_name: &str) {
-    print_log(&[data.clone()], character_name);
+    print_log(std::slice::from_ref(data), character_name);
 }
 
 // ---------------------------------------------------------------------------

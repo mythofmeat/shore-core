@@ -123,6 +123,7 @@ pub struct BehaviorConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
+#[derive(Default)]
 pub struct AutonomyConfig {
     /// Master switch for autonomous behavior.
     #[serde(default)]
@@ -132,14 +133,6 @@ pub struct AutonomyConfig {
     pub interiority: InteriorityConfig,
 }
 
-impl Default for AutonomyConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            interiority: InteriorityConfig::default(),
-        }
-    }
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -585,6 +578,7 @@ impl Default for ServiceEntry {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
+#[derive(Default)]
 pub struct NotificationsConfig {
     /// Master switch for push notifications.
     #[serde(default)]
@@ -612,24 +606,14 @@ pub struct NotificationsConfig {
     pub events: NotificationEventsConfig,
 }
 
-impl Default for NotificationsConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            backend: NotificationBackend::default(),
-            ntfy: NtfyConfig::default(),
-            command: CommandNotifyConfig::default(),
-            generation_threshold_secs: 0,
-            events: NotificationEventsConfig::default(),
-        }
-    }
-}
 
 /// Notification delivery backend.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum NotificationBackend {
     /// Linux desktop notifications via notify-send.
+    #[default]
     NotifySend,
     /// Push notifications via ntfy server.
     Ntfy,
@@ -637,11 +621,6 @@ pub enum NotificationBackend {
     Command,
 }
 
-impl Default for NotificationBackend {
-    fn default() -> Self {
-        Self::NotifySend
-    }
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -673,19 +652,13 @@ impl Default for NtfyConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
+#[derive(Default)]
 pub struct CommandNotifyConfig {
     /// Shell command template. Use {title} and {body} as placeholders.
     #[serde(default)]
     pub template: String,
 }
 
-impl Default for CommandNotifyConfig {
-    fn default() -> Self {
-        Self {
-            template: String::new(),
-        }
-    }
-}
 
 /// Per-event notification toggles. All default to true (fire when enabled).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

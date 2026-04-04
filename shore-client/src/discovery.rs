@@ -39,7 +39,7 @@ pub fn read_instances() -> Result<Vec<InstanceEntry>> {
         .map_err(|e| ClientError::Discovery(format!("cannot read {}: {e}", path.display())))?;
     let entries: InstancesFile = serde_json::from_str(&data)
         .map_err(|e| ClientError::Discovery(format!("invalid JSON in {}: {e}", path.display())))?;
-    Ok(entries.into_iter().filter(|e| entry_alive(e)).collect())
+    Ok(entries.into_iter().filter(entry_alive).collect())
 }
 
 /// Check whether an instance entry's PID is still running.

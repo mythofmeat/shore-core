@@ -203,7 +203,7 @@ pub fn load_config(config_path: Option<&Path>) -> Result<LoadedConfig, ConfigErr
         info!(path = %config_file.display(), "Loading config.toml");
         content
             .parse::<toml::Table>()
-            .map_err(|e| ConfigError::ParseApp(e))?
+            .map_err(ConfigError::ParseApp)?
     } else {
         info!("No config.toml found, creating default config");
         create_default_config(&config_dir);
