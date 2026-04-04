@@ -410,7 +410,7 @@ fn draw_conversation(frame: &mut Frame, app: &mut App, area: Rect) {
                 lines.extend(indent_lines(markdown::render_markdown(&pre_wrap_text(
                     content, wrap_w,
                 ))));
-                render_images(&mut lines, images, &app.image_cache);
+                render_images(&mut lines, images, &app.image_cache, app.show_images);
                 lines.push(Line::from(""));
             }
             ConversationEntry::Assistant {
@@ -448,7 +448,7 @@ fn draw_conversation(frame: &mut Frame, app: &mut App, area: Rect) {
                 lines.extend(indent_lines(markdown::render_markdown(&pre_wrap_text(
                     content, wrap_w,
                 ))));
-                render_images(&mut lines, images, &app.image_cache);
+                render_images(&mut lines, images, &app.image_cache, app.show_images);
                 if let Some(meta) = metadata {
                     lines.push(Line::from(Span::styled(
                         format!(
@@ -585,7 +585,15 @@ fn render_images(
     lines: &mut Vec<Line<'static>>,
     img_refs: &[shore_protocol::types::ImageRef],
     cache: &images::ImageCache,
+    show_inline: bool,
 ) {
+    if img_refs.is_empty() {
+        return;
+    }
+
+    // Blank line before images for visual separation
+    lines.push(Line::from(""));
+
     for img in img_refs {
         // Extract display name: caption, filename, or full path
         let display = img.caption.as_deref().unwrap_or_else(|| {
@@ -595,18 +603,22 @@ fn render_images(
                 .unwrap_or(&img.path)
         });
 
-        if let Some(transmitted) = cache.get(&img.path) {
-            lines.push(Line::from(Span::styled(
-                format!("  [{display}]"),
-                Style::default().fg(Color::Magenta),
-            )));
-            lines.extend(images::placeholder_lines(transmitted));
-        } else {
-            lines.push(Line::from(Span::styled(
-                format!("  [image: {display}]"),
-                Style::default().fg(Color::Magenta),
-            )));
+        if show_inline {
+            if let Some(transmitted) = cache.get(&img.path) {
+                lines.push(Line::from(Span::styled(
+                    format!("  [{display}]"),
+                    Style::default().fg(Color::Magenta),
+                )));
+                lines.extend(images::placeholder_lines(transmitted));
+                continue;
+            }
         }
+
+        // Text fallback (no kitty, or inline images toggled off)
+        lines.push(Line::from(Span::styled(
+            format!("  [image: {display}]"),
+            Style::default().fg(Color::Magenta),
+        )));
     }
 }
 
