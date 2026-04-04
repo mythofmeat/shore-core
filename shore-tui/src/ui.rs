@@ -349,6 +349,7 @@ fn render_streaming_state(lines: &mut Vec<Line<'static>>, app: &App, content_wid
 /// Render the scrollable conversation log.
 fn draw_conversation(frame: &mut Frame, app: &mut App, area: Rect) {
     let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut image_index: Vec<crate::app::ImageEntry> = Vec::new();
     let content_width = area.width;
 
     // When streaming, skip trailing Thinking entries — they're already shown
@@ -410,7 +411,7 @@ fn draw_conversation(frame: &mut Frame, app: &mut App, area: Rect) {
                 lines.extend(indent_lines(markdown::render_markdown(&pre_wrap_text(
                     content, wrap_w,
                 ))));
-                render_images(&mut lines, images, &app.image_cache, app.show_images);
+                render_images(&mut lines, images, &app.image_cache, app.show_images, &mut image_index);
                 lines.push(Line::from(""));
             }
             ConversationEntry::Assistant {
@@ -448,7 +449,7 @@ fn draw_conversation(frame: &mut Frame, app: &mut App, area: Rect) {
                 lines.extend(indent_lines(markdown::render_markdown(&pre_wrap_text(
                     content, wrap_w,
                 ))));
-                render_images(&mut lines, images, &app.image_cache, app.show_images);
+                render_images(&mut lines, images, &app.image_cache, app.show_images, &mut image_index);
                 if let Some(meta) = metadata {
                     lines.push(Line::from(Span::styled(
                         format!(
@@ -537,6 +538,8 @@ fn draw_conversation(frame: &mut Frame, app: &mut App, area: Rect) {
     // Squeeze runs of blank lines (max 2 consecutive)
     squeeze_blank_lines(&mut lines);
 
+    app.image_index = image_index;
+
     let visible_height = area.height;
 
     // Use Paragraph::line_count for accurate visual line count that accounts
@@ -581,11 +584,13 @@ fn draw_conversation(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 /// Render image entries — kitty placeholders when available, text fallback otherwise.
+/// Populates `index` with the line position of each transmitted image.
 fn render_images(
     lines: &mut Vec<Line<'static>>,
     img_refs: &[shore_protocol::types::ImageRef],
     cache: &images::ImageCache,
     show_inline: bool,
+    index: &mut Vec<crate::app::ImageEntry>,
 ) {
     if img_refs.is_empty() {
         return;
@@ -609,7 +614,13 @@ fn render_images(
                     format!("  [{display}]"),
                     Style::default().fg(Color::Magenta),
                 )));
+                let img_start_line = lines.len();
                 lines.extend(images::placeholder_lines(transmitted));
+                index.push(crate::app::ImageEntry {
+                    path: img.path.clone(),
+                    display_name: display.to_string(),
+                    line: img_start_line,
+                });
                 continue;
             }
         }
