@@ -285,6 +285,7 @@ fn default_api_key_env(provider_key: &str) -> &str {
         "deepseek" => "DEEPSEEK_API_KEY",
         "xai" => "XAI_API_KEY",
         "zai" => "ZAI_API_KEY",
+        "nanogpt" => "NANOGPT_API_KEY",
         _ => "LLM_API_KEY",
     }
 }
@@ -402,6 +403,7 @@ mod tests {
         assert_eq!(default_api_key_env("deepseek"), "DEEPSEEK_API_KEY");
         assert_eq!(default_api_key_env("xai"), "XAI_API_KEY");
         assert_eq!(default_api_key_env("zai"), "ZAI_API_KEY");
+        assert_eq!(default_api_key_env("nanogpt"), "NANOGPT_API_KEY");
         assert_eq!(default_api_key_env("unknown"), "LLM_API_KEY");
     }
 

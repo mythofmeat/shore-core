@@ -523,6 +523,12 @@ fn hardcoded_defaults(provider_key: &str) -> ProviderConfig {
             zai_clear_thinking: Some(false),
             ..base_provider_defaults()
         },
+        "nanogpt" => ModelConfigFields {
+            sdk: Some(Sdk::Openai),
+            api_key_env: Some("NANOGPT_API_KEY".into()),
+            base_url: Some("https://nano-gpt.com/api/v1".into()),
+            ..base_provider_defaults()
+        },
         _ => ModelConfigFields::default(),
     };
     ProviderConfig { fields }

@@ -10,7 +10,7 @@
 3. **Rust core** — compiler-enforced correctness, no runtime dependencies for
    the daemon, CLI, and bridges.
 4. **Native LLM providers** — the `shore-llm-client` crate implements all
-   provider integrations (Anthropic, OpenAI-compat, Gemini, DeepSeek, ZhipuAI, Z.AI)
+   provider integrations (Anthropic, OpenAI-compat, Gemini, DeepSeek, ZhipuAI, Z.AI, NanoGPT)
    directly in Rust using `reqwest`. No separate process or TypeScript runtime.
 5. **Separate binaries** for daemon, CLI/TUI, and each bridge —
    independent development, deployment, and restart.
@@ -519,7 +519,7 @@ no TypeScript runtime.
 
 | What | Description |
 |------|-------------|
-| Provider implementations | Anthropic, OpenAI-compat, Gemini, DeepSeek, OpenRouter, ZhipuAI, Z.AI |
+| Provider implementations | Anthropic, OpenAI-compat, Gemini, DeepSeek, OpenRouter, ZhipuAI, Z.AI, NanoGPT |
 | Streaming | Async streaming via `reqwest` + SSE parsing |
 | Provider retries | 429 rate limits, 503 transient errors |
 | Response normalization | Every provider's response mapped to a common format |
