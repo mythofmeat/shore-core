@@ -871,8 +871,6 @@ async fn persist_and_notify(
             ctx.diagnostics.lock().unwrap().api_calls.push(entry);
         }
 
-        ctx.autonomy.notify_last_request(char_name, request.clone());
-
         info!(
             input_tokens = result.usage.input_tokens,
             output_tokens = result.usage.output_tokens,
@@ -888,6 +886,21 @@ async fn persist_and_notify(
             result.content_blocks.clone()
         };
         let content = derive_content_from_blocks(&content_blocks);
+
+        // Include the assistant response in last_request so the
+        // interiority system sees a complete conversation ending on an
+        // assistant turn — not the user turn that triggered this call.
+        {
+            let mut full_request = request.clone();
+            let assistant_api_content: Vec<serde_json::Value> = content_blocks.iter()
+                .filter_map(crate::content_util::content_block_to_api_json)
+                .collect();
+            full_request.messages.push(serde_json::json!({
+                "role": "assistant",
+                "content": assistant_api_content,
+            }));
+            ctx.autonomy.notify_last_request(char_name, full_request);
+        }
         let notify_content = content.clone();
         let assistant_msg = Message {
             msg_id: format!("m_{}", uuid::Uuid::new_v4()),
