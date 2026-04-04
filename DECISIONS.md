@@ -346,3 +346,19 @@ A single holistic call lets the LLM see all candidates + nearby context and make
 **Why:** The protocol was path-based — both upload (`client → server`) and display (`server → client`) required shared filesystem access. Remote clients couldn't upload images (server couldn't read client's paths) and couldn't display them (TUI couldn't read server's attachment paths), falling back to `[image: filename.jpg]` text.
 
 **Trade-off:** Log responses now include base64-encoded image data, increasing bandwidth per `log` command. Accepted because: (a) SWP is a local socket protocol, not internet traffic, (b) conversations with dozens of images are uncommon, (c) the alternative (separate image transfer protocol, client-side caching) adds significant complexity for marginal gain.
+
+### Z.AI Provider — Dedicated Module (2026-04-04)
+
+**Decision:** Z.AI (formerly Zhipu AI, international brand) gets its own provider module (`zai.rs`) rather than routing through the existing OpenAI handler. The existing `zhipuai` provider (China endpoint) is kept as-is.
+
+**Changes made:**
+- New `Sdk::Zai` variant, new `zai` dispatch arms in `providers/mod.rs`
+- New `providers/zai.rs` (~450 LOC) with `stream()` and `generate()` functions
+- Two new config fields: `zai_clear_thinking` (default `false`) and `zai_subscription` (default `false`)
+- `zai_clear_thinking: false` means reasoning is preserved across turns — the client sends `reasoning_content` back in assistant messages
+- `zai_subscription: true` switches from `api.z.ai/api/paas/v4` to `api.z.ai/api/coding/paas/v4` (subscription billing endpoint)
+- Handler's `build_llm_messages` gains `include_unsigned_thinking` flag — Z.AI thinking blocks have no signature, so unsigned blocks must pass through to the provider module
+
+**Why:** Z.AI's thinking parameter format (`{"type": "enabled"}` vs Anthropic's `{"budget_tokens": N}`) and reasoning field (`reasoning_content` as a separate field, not embedded in content) are different enough from standard OpenAI that routing through the OpenAI handler would require too many special cases. A dedicated module keeps provider-specific logic isolated.
+
+**Trade-off:** Some code duplication with `openai.rs` (message translation, tool translation, SSE streaming). Accepted because: (a) the duplicated parts are simple and stable, (b) a shared abstraction would need to accommodate three different thinking parameter formats (Anthropic, OpenAI, Z.AI), making it more complex than the duplication it eliminates.

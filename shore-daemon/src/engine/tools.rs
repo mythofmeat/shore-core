@@ -88,10 +88,12 @@ pub async fn run_tool_loop(
         };
 
         // Build LLM payload from content blocks.
-        let assistant_content: Vec<Value> = assistant_blocks
-            .iter()
-            .filter_map(crate::content_util::content_block_to_api_json)
-            .collect();
+        // Z.AI thinking blocks have no signature — include them unconditionally.
+        let assistant_content: Vec<Value> = if request.provider == "zai" {
+            assistant_blocks.iter().map(crate::content_util::content_block_to_json).collect()
+        } else {
+            assistant_blocks.iter().filter_map(crate::content_util::content_block_to_api_json).collect()
+        };
 
         request.messages.push(json!({
             "role": "assistant",

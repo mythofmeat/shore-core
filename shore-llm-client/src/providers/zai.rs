@@ -1,0 +1,785 @@
+use std::collections::HashMap;
+use std::time::Instant;
+
+use serde_json::{json, Value};
+use tokio::io::DuplexStream;
+
+use shore_protocol::types::ContentBlock;
+
+use crate::types::{GenerateResponse, LlmRequest, Timing, Usage};
+use crate::LlmError;
+
+use super::sse::{read_sse_events, SseEvent};
+use super::stream_helpers::{
+    apply_common_params, build_done_event, build_start_event, build_tool_use_event,
+    extract_openai_usage, extract_system_text, normalize_finish_reason,
+    translate_tool_declarations, StreamTiming,
+};
+
+// ── Constants ──────────────────────────────────────────────────────────
+
+const ZAI_BASE_URL: &str = "https://api.z.ai/api/paas/v4";
+const ZAI_CODING_BASE_URL: &str = "https://api.z.ai/api/coding/paas/v4";
+
+// ── Helpers ────────────────────────────────────────────────────────────
+
+/// Extract a bool from provider_options by key.
+fn opt_bool(request: &LlmRequest, key: &str) -> Option<bool> {
+    request
+        .provider_options
+        .as_ref()
+        .and_then(|opts| opts.get(key))
+        .and_then(|v| v.as_bool())
+}
+
+/// Resolve the base URL: explicit override → subscription toggle → default.
+fn resolve_base_url(request: &LlmRequest) -> &str {
+    if let Some(ref url) = request.base_url {
+        return url.as_str();
+    }
+    if opt_bool(request, "zai_subscription").unwrap_or(false) {
+        ZAI_CODING_BASE_URL
+    } else {
+        ZAI_BASE_URL
+    }
+}
+
+// ── Message translation ────────────────────────────────────────────────
+
+/// Translate Anthropic-format messages into Z.AI / OpenAI-compatible messages.
+///
+/// When `clear_thinking` is false, `type: "thinking"` blocks in assistant
+/// content arrays are extracted and emitted as `reasoning_content` on the
+/// assistant message so the model can see its prior reasoning.
+fn translate_messages(request: &LlmRequest, clear_thinking: bool) -> Vec<Value> {
+    let mut out = Vec::new();
+
+    // Inject system prompt if present.
+    if let Some(system) = &request.system {
+        let text = extract_system_text(system);
+        if !text.is_empty() {
+            out.push(json!({"role": "system", "content": text}));
+        }
+    }
+
+    for msg in &request.messages {
+        let role = msg.get("role").and_then(|r| r.as_str()).unwrap_or("");
+        let content = msg.get("content");
+
+        match content {
+            // String content — simple pass-through.
+            Some(Value::String(s)) => match role {
+                "system" => out.push(json!({"role": "system", "content": s})),
+                "user" => out.push(json!({"role": "user", "content": s})),
+                "assistant" => out.push(json!({"role": "assistant", "content": s})),
+                _ => {}
+            },
+
+            // Array content — needs block-level translation.
+            Some(Value::Array(blocks)) => match role {
+                "assistant" => {
+                    let text_parts: Vec<&Value> = blocks
+                        .iter()
+                        .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
+                        .collect();
+                    let tool_parts: Vec<&Value> = blocks
+                        .iter()
+                        .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_use"))
+                        .collect();
+
+                    let content_str: String = text_parts
+                        .iter()
+                        .map(|b| b.get("text").and_then(|t| t.as_str()).unwrap_or(""))
+                        .collect();
+                    let content_val = if content_str.is_empty() {
+                        Value::Null
+                    } else {
+                        Value::String(content_str)
+                    };
+
+                    let tool_calls: Vec<Value> = tool_parts
+                        .iter()
+                        .map(|b| {
+                            let id = b.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                            let name = b.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                            let input = b.get("input").cloned().unwrap_or(json!({}));
+                            let arguments =
+                                serde_json::to_string(&input).unwrap_or_else(|_| "{}".into());
+                            json!({
+                                "id": id,
+                                "type": "function",
+                                "function": {
+                                    "name": name,
+                                    "arguments": arguments,
+                                }
+                            })
+                        })
+                        .collect();
+
+                    let mut msg_obj = json!({"role": "assistant", "content": content_val});
+                    if !tool_calls.is_empty() {
+                        msg_obj["tool_calls"] = Value::Array(tool_calls);
+                    }
+
+                    // Preserve reasoning across turns when clear_thinking is false.
+                    if !clear_thinking {
+                        let reasoning: String = blocks
+                            .iter()
+                            .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("thinking"))
+                            .map(|b| b.get("thinking").and_then(|t| t.as_str()).unwrap_or(""))
+                            .collect();
+                        if !reasoning.is_empty() {
+                            msg_obj["reasoning_content"] = Value::String(reasoning);
+                        }
+                    }
+
+                    out.push(msg_obj);
+                }
+
+                "user" => {
+                    let tool_results: Vec<&Value> = blocks
+                        .iter()
+                        .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_result"))
+                        .collect();
+                    let other_blocks: Vec<&Value> = blocks
+                        .iter()
+                        .filter(|b| {
+                            let ty = b.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                            ty != "tool_result"
+                        })
+                        .collect();
+
+                    // Emit tool result messages first.
+                    for tr in &tool_results {
+                        let tool_call_id = tr
+                            .get("tool_use_id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        let content = match tr.get("content") {
+                            Some(Value::String(s)) => s.clone(),
+                            Some(other) => serde_json::to_string(other).unwrap_or_default(),
+                            None => String::new(),
+                        };
+                        out.push(json!({
+                            "role": "tool",
+                            "tool_call_id": tool_call_id,
+                            "content": content,
+                        }));
+                    }
+
+                    // Emit remaining blocks as a user message.
+                    if !other_blocks.is_empty() {
+                        let parts: Vec<Value> = other_blocks
+                            .iter()
+                            .filter_map(|b| {
+                                let ty = b.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                                match ty {
+                                    "text" => {
+                                        let text = b.get("text").and_then(|t| t.as_str()).unwrap_or("");
+                                        Some(json!({"type": "text", "text": text}))
+                                    }
+                                    "image" => {
+                                        let source = b.get("source")?;
+                                        let source_type = source.get("type").and_then(|t| t.as_str())?;
+                                        if source_type == "base64" {
+                                            let media_type = source
+                                                .get("media_type")
+                                                .and_then(|m| m.as_str())
+                                                .unwrap_or("image/png");
+                                            let data = source.get("data").and_then(|d| d.as_str())?;
+                                            Some(json!({
+                                                "type": "image_url",
+                                                "image_url": {
+                                                    "url": format!("data:{media_type};base64,{data}")
+                                                }
+                                            }))
+                                        } else {
+                                            None
+                                        }
+                                    }
+                                    _ => None,
+                                }
+                            })
+                            .collect();
+                        if !parts.is_empty() {
+                            out.push(json!({"role": "user", "content": parts}));
+                        }
+                    }
+                }
+
+                "system" => {
+                    let text = extract_system_text(&Value::Array(blocks.clone()));
+                    if !text.is_empty() {
+                        out.push(json!({"role": "system", "content": text}));
+                    }
+                }
+
+                _ => {}
+            },
+
+            _ => {}
+        }
+    }
+
+    out
+}
+
+/// Translate Anthropic-format tool definitions to OpenAI function-calling format.
+fn translate_tools(tools: &Option<Vec<Value>>) -> Option<Vec<Value>> {
+    translate_tool_declarations(tools).map(|decls| {
+        decls
+            .into_iter()
+            .map(|d| json!({"type": "function", "function": d}))
+            .collect()
+    })
+}
+
+// ── Request body builder ────────────────────────────────────────────────
+
+/// Build common request headers.
+fn build_headers(request: &LlmRequest) -> reqwest::header::HeaderMap {
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert(
+        reqwest::header::AUTHORIZATION,
+        format!("Bearer {}", request.api_key)
+            .parse()
+            .expect("valid header value"),
+    );
+    headers.insert(
+        reqwest::header::CONTENT_TYPE,
+        "application/json".parse().unwrap(),
+    );
+    headers
+}
+
+/// Build the JSON body for Z.AI chat completions.
+fn build_chat_body(request: &LlmRequest, streaming: bool) -> Value {
+    let clear_thinking = opt_bool(request, "zai_clear_thinking").unwrap_or(false);
+    let messages = translate_messages(request, clear_thinking);
+    let tools = translate_tools(&request.tools);
+
+    let mut body = json!({
+        "model": request.model,
+        "messages": messages,
+        "max_tokens": request.max_tokens,
+        "stream": streaming,
+        "thinking": {"type": "enabled"},
+        "clear_thinking": clear_thinking,
+    });
+
+    if streaming {
+        body["stream_options"] = json!({"include_usage": true});
+    }
+
+    if let Some(tools) = tools {
+        body["tools"] = Value::Array(tools);
+    }
+    apply_common_params(&mut body, request);
+
+    body
+}
+
+// ── Streaming ──────────────────────────────────────────────────────────
+
+/// Send a streaming chat completion request to the Z.AI API.
+///
+/// Returns a `DuplexStream` that yields NDJSON `StreamEvent` lines. A background
+/// tokio task reads SSE from the upstream API and writes translated events.
+pub async fn stream(
+    client: &reqwest::Client,
+    request: &LlmRequest,
+) -> Result<DuplexStream, LlmError> {
+    let base_url = resolve_base_url(request);
+    let url = format!("{base_url}/chat/completions");
+    let headers = build_headers(request);
+    let body = build_chat_body(request, true);
+
+    let response = client
+        .post(&url)
+        .headers(headers)
+        .json(&body)
+        .send()
+        .await?;
+
+    let response = super::check_response(response).await?;
+
+    let (mut writer, reader) = tokio::io::duplex(64 * 1024);
+    let model_fallback = request.model.clone();
+
+    tokio::spawn(async move {
+        use tokio::io::AsyncWriteExt;
+
+        let mut timing = StreamTiming::new();
+        let mut text_content = String::new();
+        let mut finish_reason: &str = "end_turn";
+        let mut usage = Usage::default();
+        let mut model = model_fallback;
+        let mut start_sent = false;
+
+        // Tool call accumulation: index → (id, name, argument_chunks).
+        let mut tool_calls: HashMap<u64, (String, String, Vec<String>)> = HashMap::new();
+
+        let result = read_sse_events(
+            response,
+            |event: SseEvent| {
+                let data = event.data.trim();
+
+                if data == "[DONE]" {
+                    return None;
+                }
+
+                let chunk: Value = match serde_json::from_str(data) {
+                    Ok(v) => v,
+                    Err(_) => return None,
+                };
+
+                // Emit start event on first chunk.
+                if !start_sent {
+                    if let Some(m) = chunk.get("model").and_then(|m| m.as_str()) {
+                        model = m.to_string();
+                    }
+                    start_sent = true;
+                    return Some(build_start_event(&model));
+                }
+
+                let choice = chunk.get("choices").and_then(|c| c.get(0));
+                let mut lines_out: Vec<String> = Vec::new();
+
+                if let Some(choice) = choice {
+                    let delta = choice.get("delta");
+
+                    // Reasoning content (Z.AI uses `reasoning_content` field).
+                    if let Some(delta) = delta {
+                        if let Some(reasoning) = delta
+                            .get("reasoning_content")
+                            .and_then(|r| r.as_str())
+                        {
+                            if !reasoning.is_empty() {
+                                timing.record_first_token();
+                                let ev = json!({"type": "thinking", "text": reasoning});
+                                if let Ok(line) = serde_json::to_string(&ev) {
+                                    lines_out.push(line);
+                                }
+                            }
+                        }
+                    }
+
+                    // Text content.
+                    if let Some(content) = delta
+                        .and_then(|d| d.get("content"))
+                        .and_then(|c| c.as_str())
+                    {
+                        if !content.is_empty() {
+                            timing.record_first_token();
+                            text_content.push_str(content);
+                            let ev = json!({"type": "text", "text": content});
+                            if let Ok(line) = serde_json::to_string(&ev) {
+                                lines_out.push(line);
+                            }
+                        }
+                    }
+
+                    // Tool calls (streamed in fragments).
+                    if let Some(tcs) = delta
+                        .and_then(|d| d.get("tool_calls"))
+                        .and_then(|t| t.as_array())
+                    {
+                        for tc in tcs {
+                            let index = tc.get("index").and_then(|i| i.as_u64()).unwrap_or(0);
+                            let entry = tool_calls
+                                .entry(index)
+                                .or_insert_with(|| (String::new(), String::new(), Vec::new()));
+                            if let Some(id) = tc.get("id").and_then(|i| i.as_str()) {
+                                if !id.is_empty() {
+                                    entry.0 = id.to_string();
+                                }
+                            }
+                            if let Some(name) = tc
+                                .get("function")
+                                .and_then(|f| f.get("name"))
+                                .and_then(|n| n.as_str())
+                            {
+                                if !name.is_empty() {
+                                    entry.1 = name.to_string();
+                                }
+                            }
+                            if let Some(args) = tc
+                                .get("function")
+                                .and_then(|f| f.get("arguments"))
+                                .and_then(|a| a.as_str())
+                            {
+                                entry.2.push(args.to_string());
+                            }
+                        }
+                    }
+
+                    // Finish reason.
+                    if let Some(reason) = choice.get("finish_reason").and_then(|r| r.as_str()) {
+                        finish_reason = normalize_finish_reason(Some(reason));
+                    }
+                }
+
+                // Usage (final chunk with stream_options.include_usage).
+                if let Some(u) = chunk.get("usage") {
+                    usage = extract_openai_usage(u);
+                }
+
+                if lines_out.is_empty() { None } else { Some(lines_out.join("\n")) }
+            },
+            &mut writer,
+        )
+        .await;
+
+        if let Err(e) = result {
+            tracing::warn!(error = %e, "Z.AI SSE stream read error");
+        }
+
+        // Ensure start was emitted (empty stream edge case).
+        if !start_sent {
+            let line = build_start_event(&model);
+            let _ = writer.write_all(line.as_bytes()).await;
+            let _ = writer.write_all(b"\n").await;
+        }
+
+        // Emit accumulated tool calls.
+        let mut indices: Vec<u64> = tool_calls.keys().copied().collect();
+        indices.sort();
+        for idx in indices {
+            if let Some((id, name, arg_chunks)) = tool_calls.remove(&idx) {
+                let raw = arg_chunks.join("");
+                let input: Value = if raw.is_empty() {
+                    json!({})
+                } else {
+                    serde_json::from_str(&raw).unwrap_or(json!({}))
+                };
+                let line = build_tool_use_event(&id, &name, &input);
+                let _ = writer.write_all(line.as_bytes()).await;
+                let _ = writer.write_all(b"\n").await;
+            }
+        }
+
+        // Done event.
+        let done = build_done_event(&text_content, finish_reason, &usage, timing.total_ms(), timing.ttft_ms());
+        let _ = writer.write_all(done.as_bytes()).await;
+        let _ = writer.write_all(b"\n").await;
+
+        drop(writer);
+    });
+
+    Ok(reader)
+}
+
+// ── Non-streaming generate ─────────────────────────────────────────────
+
+/// Send a non-streaming chat completion request to the Z.AI API.
+pub async fn generate(
+    client: &reqwest::Client,
+    request: &LlmRequest,
+) -> Result<GenerateResponse, LlmError> {
+    let base_url = resolve_base_url(request);
+    let url = format!("{base_url}/chat/completions");
+    let headers = build_headers(request);
+    let body = build_chat_body(request, false);
+
+    let start = Instant::now();
+
+    let response = client
+        .post(&url)
+        .headers(headers)
+        .json(&body)
+        .send()
+        .await?;
+
+    let response = super::check_response(response).await?;
+
+    let total_ms = start.elapsed().as_millis() as u32;
+
+    let resp_body: Value = response
+        .json()
+        .await
+        .map_err(LlmError::Request)?;
+
+    let choice = resp_body.get("choices").and_then(|c| c.get(0));
+    let message = choice.and_then(|c| c.get("message"));
+
+    // Build content blocks.
+    let mut typed_blocks: Vec<ContentBlock> = Vec::new();
+
+    // Reasoning / thinking (Z.AI uses `reasoning_content`).
+    if let Some(reasoning) = message
+        .and_then(|m| m.get("reasoning_content"))
+        .and_then(|r| r.as_str())
+    {
+        if !reasoning.is_empty() {
+            typed_blocks.push(ContentBlock::Thinking {
+                thinking: reasoning.to_string(),
+                signature: None,
+            });
+        }
+    }
+
+    // Text content.
+    let text_content = message
+        .and_then(|m| m.get("content"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("");
+    if !text_content.is_empty() {
+        typed_blocks.push(ContentBlock::Text {
+            text: text_content.to_string(),
+        });
+    }
+
+    // Tool calls.
+    if let Some(tcs) = message
+        .and_then(|m| m.get("tool_calls"))
+        .and_then(|t| t.as_array())
+    {
+        for tc in tcs {
+            let tc_type = tc.get("type").and_then(|t| t.as_str()).unwrap_or("");
+            if tc_type != "function" {
+                continue;
+            }
+            let id = tc.get("id").and_then(|i| i.as_str()).unwrap_or("").to_string();
+            let func = tc.get("function");
+            let name = func
+                .and_then(|f| f.get("name"))
+                .and_then(|n| n.as_str())
+                .unwrap_or("")
+                .to_string();
+            let args_str = func
+                .and_then(|f| f.get("arguments"))
+                .and_then(|a| a.as_str())
+                .unwrap_or("{}");
+            let input: Value = serde_json::from_str(args_str).unwrap_or(json!({}));
+            typed_blocks.push(ContentBlock::ToolUse { id, name, input });
+        }
+    }
+
+    let finish_reason_raw = choice
+        .and_then(|c| c.get("finish_reason"))
+        .and_then(|r| r.as_str());
+
+    let usage = resp_body
+        .get("usage")
+        .map(extract_openai_usage)
+        .unwrap_or_default();
+
+    let resp_model = resp_body
+        .get("model")
+        .and_then(|m| m.as_str())
+        .unwrap_or(&request.model);
+
+    Ok(GenerateResponse {
+        content: text_content.to_string(),
+        content_blocks: typed_blocks,
+        finish_reason: normalize_finish_reason(finish_reason_raw).to_string(),
+        usage,
+        timing: Timing {
+            total_ms,
+            time_to_first_token_ms: total_ms,
+        },
+        model: resp_model.to_string(),
+    })
+}
+
+// ── Tests ──────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn test_request() -> LlmRequest {
+        LlmRequest {
+            provider: "zai".into(),
+            model: "glm-5".into(),
+            api_key: "test-key".into(),
+            base_url: None,
+            messages: vec![],
+            system: None,
+            tools: None,
+            max_tokens: 4096,
+            temperature: Some(0.7),
+            top_p: None,
+            provider_options: None,
+            provider_key: Some("zai".into()),
+        }
+    }
+
+    // ── resolve_base_url ──────────────────────────────────────────
+
+    #[test]
+    fn resolve_base_url_default() {
+        let req = test_request();
+        assert_eq!(resolve_base_url(&req), ZAI_BASE_URL);
+    }
+
+    #[test]
+    fn resolve_base_url_subscription() {
+        let mut req = test_request();
+        req.provider_options = Some(json!({"zai_subscription": true}));
+        assert_eq!(resolve_base_url(&req), ZAI_CODING_BASE_URL);
+    }
+
+    #[test]
+    fn resolve_base_url_explicit_override() {
+        let mut req = test_request();
+        req.base_url = Some("https://custom.example.com/v4".into());
+        req.provider_options = Some(json!({"zai_subscription": true}));
+        // Explicit base_url wins over subscription toggle.
+        assert_eq!(resolve_base_url(&req), "https://custom.example.com/v4");
+    }
+
+    // ── translate_messages ────────────────────────────────────────
+
+    #[test]
+    fn translate_messages_basic() {
+        let mut req = test_request();
+        req.system = Some(json!("You are helpful."));
+        req.messages = vec![
+            json!({"role": "user", "content": "Hello"}),
+            json!({"role": "assistant", "content": "Hi there!"}),
+        ];
+        let msgs = translate_messages(&req, false);
+        assert_eq!(msgs.len(), 3);
+        assert_eq!(msgs[0]["role"], "system");
+        assert_eq!(msgs[0]["content"], "You are helpful.");
+        assert_eq!(msgs[1]["role"], "user");
+        assert_eq!(msgs[2]["role"], "assistant");
+        assert_eq!(msgs[2]["content"], "Hi there!");
+    }
+
+    #[test]
+    fn translate_messages_assistant_thinking_clear_true() {
+        let mut req = test_request();
+        req.messages = vec![json!({
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "let me reason..."},
+                {"type": "text", "text": "The answer is 42."},
+            ]
+        })];
+
+        let msgs = translate_messages(&req, true);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0]["content"], "The answer is 42.");
+        // reasoning_content should NOT be present when clear_thinking is true.
+        assert!(msgs[0].get("reasoning_content").is_none());
+    }
+
+    #[test]
+    fn translate_messages_assistant_thinking_clear_false() {
+        let mut req = test_request();
+        req.messages = vec![json!({
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "let me reason..."},
+                {"type": "text", "text": "The answer is 42."},
+            ]
+        })];
+
+        let msgs = translate_messages(&req, false);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0]["content"], "The answer is 42.");
+        assert_eq!(msgs[0]["reasoning_content"], "let me reason...");
+    }
+
+    #[test]
+    fn translate_messages_assistant_with_tool_use() {
+        let mut req = test_request();
+        req.messages = vec![json!({
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "Let me check."},
+                {
+                    "type": "tool_use",
+                    "id": "call_1",
+                    "name": "get_weather",
+                    "input": {"city": "Tokyo"},
+                },
+            ]
+        })];
+
+        let msgs = translate_messages(&req, false);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0]["content"], "Let me check.");
+        let tc = &msgs[0]["tool_calls"][0];
+        assert_eq!(tc["id"], "call_1");
+        assert_eq!(tc["type"], "function");
+        assert_eq!(tc["function"]["name"], "get_weather");
+    }
+
+    #[test]
+    fn translate_messages_user_with_tool_result() {
+        let mut req = test_request();
+        req.messages = vec![json!({
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "call_1",
+                    "content": "Sunny, 25°C",
+                },
+                {"type": "text", "text": "What about tomorrow?"},
+            ]
+        })];
+
+        let msgs = translate_messages(&req, false);
+        assert_eq!(msgs.len(), 2);
+        // Tool result first.
+        assert_eq!(msgs[0]["role"], "tool");
+        assert_eq!(msgs[0]["tool_call_id"], "call_1");
+        assert_eq!(msgs[0]["content"], "Sunny, 25°C");
+        // Remaining user text.
+        assert_eq!(msgs[1]["role"], "user");
+    }
+
+    // ── translate_tools ──────────────────────────────────────────
+
+    #[test]
+    fn translate_tools_wraps_in_function_envelope() {
+        let tools = Some(vec![json!({
+            "name": "get_time",
+            "description": "Get current time",
+            "input_schema": {"type": "object", "properties": {}},
+        })]);
+        let result = translate_tools(&tools).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0]["type"], "function");
+        assert_eq!(result[0]["function"]["name"], "get_time");
+        assert_eq!(result[0]["function"]["description"], "Get current time");
+    }
+
+    #[test]
+    fn translate_tools_none_input() {
+        assert!(translate_tools(&None).is_none());
+    }
+
+    // ── build_chat_body ──────────────────────────────────────────
+
+    #[test]
+    fn build_chat_body_includes_thinking_params() {
+        let req = test_request();
+        let body = build_chat_body(&req, false);
+        assert_eq!(body["thinking"]["type"], "enabled");
+        assert_eq!(body["clear_thinking"], false);
+        assert_eq!(body["model"], "glm-5");
+        assert_eq!(body["stream"], false);
+    }
+
+    #[test]
+    fn build_chat_body_streaming_includes_usage_option() {
+        let req = test_request();
+        let body = build_chat_body(&req, true);
+        assert_eq!(body["stream"], true);
+        assert_eq!(body["stream_options"]["include_usage"], true);
+    }
+
+    #[test]
+    fn build_chat_body_clear_thinking_from_options() {
+        let mut req = test_request();
+        req.provider_options = Some(json!({"zai_clear_thinking": true}));
+        let body = build_chat_body(&req, false);
+        assert_eq!(body["clear_thinking"], true);
+    }
+}

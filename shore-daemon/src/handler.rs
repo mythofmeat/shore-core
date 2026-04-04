@@ -40,6 +40,7 @@ use shore_llm_client::stream::{CacheContext, StreamConsumer};
 use shore_llm_client::LlmClient;
 use crate::notifications::{NotificationEvent, NotificationService};
 use shore_config::app::SearchConfig;
+use shore_config::models::Sdk;
 use shore_config::LoadedConfig;
 use crate::memory::compaction_impls::ImageGenConfig;
 use crate::server::RoutedMessage;
@@ -550,7 +551,10 @@ async fn handle_generation(
     });
 
     // 7. Build LLM messages from assembled prompt.
-    let (llm_messages, system) = build_llm_messages(&prompt_result);
+    // Z.AI thinking blocks have no signature, so we include unsigned
+    // thinking blocks for providers that handle them natively.
+    let include_unsigned_thinking = matches!(resolved.sdk, Sdk::Zai);
+    let (llm_messages, system) = build_llm_messages(&prompt_result, include_unsigned_thinking);
 
     // 8. Build tool definitions from unified tool system.
     let tool_defs = if effective_config.app.behavior.tool_use.enabled {
@@ -647,6 +651,7 @@ async fn handle_generation(
 /// a plain string for a single block, or an array of `{type, text}` objects.
 fn build_llm_messages(
     prompt_result: &prompt::AssembledPrompt,
+    include_unsigned_thinking: bool,
 ) -> (Vec<Value>, Option<Value>) {
     let llm_messages: Vec<Value> = prompt_result
         .messages
@@ -682,8 +687,13 @@ fn build_llm_messages(
                     }
                 }
 
-                blocks.extend(m.content_blocks.iter()
-                    .filter_map(crate::content_util::content_block_to_api_json));
+                if include_unsigned_thinking {
+                    blocks.extend(m.content_blocks.iter()
+                        .map(crate::content_util::content_block_to_json));
+                } else {
+                    blocks.extend(m.content_blocks.iter()
+                        .filter_map(crate::content_util::content_block_to_api_json));
+                }
                 json!(blocks)
             } else {
                 build_content(&m.content, &m.images)
@@ -1461,6 +1471,8 @@ mod tests {
             vertex_location: None,
             gemini_generation: None,
             gemini_web_search: None,
+            zai_clear_thinking: None,
+            zai_subscription: None,
         };
 
         let mut chat = BTreeMap::new();

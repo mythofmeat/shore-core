@@ -126,6 +126,12 @@ impl LlmClient {
             if let Some(ws) = model.gemini_web_search {
                 map.insert("gemini_web_search".into(), serde_json::json!(ws));
             }
+            if let Some(ct) = model.zai_clear_thinking {
+                map.insert("zai_clear_thinking".into(), serde_json::json!(ct));
+            }
+            if let Some(sub) = model.zai_subscription {
+                map.insert("zai_subscription".into(), serde_json::json!(sub));
+            }
             if map.is_empty() {
                 serde_json::Value::Null
             } else {
@@ -278,6 +284,7 @@ fn default_api_key_env(provider_key: &str) -> &str {
         "zhipuai" => "ZHIPUAI_API_KEY",
         "deepseek" => "DEEPSEEK_API_KEY",
         "xai" => "XAI_API_KEY",
+        "zai" => "ZAI_API_KEY",
         _ => "LLM_API_KEY",
     }
 }
@@ -313,6 +320,8 @@ mod tests {
             vertex_location: None,
             gemini_generation: None,
             gemini_web_search: None,
+            zai_clear_thinking: None,
+            zai_subscription: None,
         }
     }
 
@@ -392,6 +401,7 @@ mod tests {
         assert_eq!(default_api_key_env("zhipuai"), "ZHIPUAI_API_KEY");
         assert_eq!(default_api_key_env("deepseek"), "DEEPSEEK_API_KEY");
         assert_eq!(default_api_key_env("xai"), "XAI_API_KEY");
+        assert_eq!(default_api_key_env("zai"), "ZAI_API_KEY");
         assert_eq!(default_api_key_env("unknown"), "LLM_API_KEY");
     }
 

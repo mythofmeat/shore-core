@@ -10,7 +10,7 @@
 3. **Rust core** — compiler-enforced correctness, no runtime dependencies for
    the daemon, CLI, and bridges.
 4. **Native LLM providers** — the `shore-llm-client` crate implements all
-   provider integrations (Anthropic, OpenAI-compat, Gemini, DeepSeek, ZhipuAI)
+   provider integrations (Anthropic, OpenAI-compat, Gemini, DeepSeek, ZhipuAI, Z.AI)
    directly in Rust using `reqwest`. No separate process or TypeScript runtime.
 5. **Separate binaries** for daemon, CLI/TUI, and each bridge —
    independent development, deployment, and restart.
@@ -369,7 +369,7 @@ binary in the workspace.
 |-----------|-------------|------------|
 | **Server** | Accept connections (Unix/TCP), route requests, broadcast push messages | `tokio`, `serde_json` |
 | **Engine** | Per-character conversation state machine: prompt assembly, tool loop, message persistence | — |
-| **LLM Client** | Native provider integrations via `shore-llm-client` crate (Anthropic, OpenAI-compat, Gemini, DeepSeek, ZhipuAI) | `reqwest` |
+| **LLM Client** | Native provider integrations via `shore-llm-client` crate (Anthropic, OpenAI-compat, Gemini, DeepSeek, ZhipuAI, Z.AI) | `reqwest` |
 | **Memory** | SQLite database (entries, entities, flags, changelog), CRUD operations | `rusqlite` |
 | **RAG** | Vector search (LanceDB) + BM25 keyword retrieval + embedding via HTTP | `lancedb`, custom BM25 |
 | **Compaction** | Conversation → memory entries (via LLM). Proactive idle timer fires at `idle_trigger_minutes` after last activity — no waiting for next user message. | — |
@@ -519,7 +519,7 @@ no TypeScript runtime.
 
 | What | Description |
 |------|-------------|
-| Provider implementations | Anthropic, OpenAI-compat, Gemini, DeepSeek, OpenRouter, ZhipuAI |
+| Provider implementations | Anthropic, OpenAI-compat, Gemini, DeepSeek, OpenRouter, ZhipuAI, Z.AI |
 | Streaming | Async streaming via `reqwest` + SSE parsing |
 | Provider retries | 429 rate limits, 503 transient errors |
 | Response normalization | Every provider's response mapped to a common format |

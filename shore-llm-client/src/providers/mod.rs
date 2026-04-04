@@ -3,6 +3,7 @@ pub(crate) mod gemini;
 pub(crate) mod openai;
 pub(crate) mod sse;
 pub(crate) mod stream_helpers;
+pub(crate) mod zai;
 
 use crate::types::{GenerateResponse, ImageGenerateResponse, LlmRequest};
 use crate::LlmError;
@@ -36,6 +37,7 @@ pub async fn stream(
     match request.provider.as_str() {
         "anthropic" => anthropic::stream(client, request).await,
         "openai" | "deepseek" | "zhipuai" | "xai" => openai::stream(client, request).await,
+        "zai" => zai::stream(client, request).await,
         "gemini" => gemini::stream(client, request).await,
         other => Err(LlmError::Provider {
             message: format!("unsupported provider: {other}"),
@@ -51,6 +53,7 @@ pub async fn generate(
     match request.provider.as_str() {
         "anthropic" => anthropic::generate(client, request).await,
         "openai" | "deepseek" | "zhipuai" | "xai" => openai::generate(client, request).await,
+        "zai" => zai::generate(client, request).await,
         "gemini" => gemini::generate(client, request).await,
         other => Err(LlmError::Provider {
             message: format!("unsupported provider: {other}"),
@@ -144,7 +147,7 @@ mod tests {
         let client = reqwest::Client::new();
         // These should route to real provider impls and fail on HTTP, not on
         // the "unsupported provider" dispatch branch.
-        for provider in &["anthropic", "openai", "deepseek", "zhipuai", "xai", "gemini"] {
+        for provider in &["anthropic", "openai", "deepseek", "zhipuai", "xai", "zai", "gemini"] {
             let request = make_request(provider);
             let result = stream(&client, &request).await;
             match &result {

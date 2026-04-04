@@ -207,6 +207,10 @@ pub(crate) fn normalize_finish_reason(reason: Option<&str>) -> &'static str {
         Some("SAFETY") => "safety",
         Some("RECITATION") => "recitation",
         Some("MALFORMED_FUNCTION_CALL") => "tool_use",
+        // Z.AI
+        Some("sensitive") => "content_filter",
+        Some("model_context_window_exceeded") => "max_tokens",
+        Some("network_error") => "end_turn",
         // Already canonical (Anthropic passthrough)
         Some("end_turn") => "end_turn",
         Some("max_tokens") => "max_tokens",

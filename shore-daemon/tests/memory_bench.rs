@@ -171,6 +171,8 @@ fn openrouter_tool_model(name: &str, model_id: &str) -> ResolvedModel {
         vertex_location: None,
         gemini_generation: None,
         gemini_web_search: None,
+        zai_clear_thinking: None,
+        zai_subscription: None,
     }
 }
 

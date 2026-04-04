@@ -360,6 +360,8 @@ mod tests {
             vertex_location: None,
             gemini_generation: None,
             gemini_web_search: None,
+            zai_clear_thinking: None,
+            zai_subscription: None,
         };
 
         let agent = MemoryAgent::one_shot(CallerIdentity::Char, "Alice", "Bob");

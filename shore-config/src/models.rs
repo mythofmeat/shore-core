@@ -25,6 +25,7 @@ pub enum Sdk {
     Gemini,
     Zhipuai,
     Deepseek,
+    Zai,
 }
 
 impl Sdk {
@@ -36,13 +37,14 @@ impl Sdk {
             Sdk::Gemini => "gemini",
             Sdk::Zhipuai => "zhipuai",
             Sdk::Deepseek => "deepseek",
+            Sdk::Zai => "zai",
         }
     }
 }
 
 // ── Shared model config fields ──────────────────────────────────────────
 
-/// The 18 configuration fields shared by provider configs, model entries,
+/// The 20 configuration fields shared by provider configs, model entries,
 /// and resolved models.  All fields are `Option<T>` — `None` means "inherit
 /// from the next level up" (model → provider → hardcoded defaults).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -66,6 +68,8 @@ pub struct ModelConfigFields {
     pub vertex_location: Option<String>,
     pub gemini_generation: Option<u32>,
     pub gemini_web_search: Option<bool>,
+    pub zai_clear_thinking: Option<bool>,
+    pub zai_subscription: Option<bool>,
 }
 
 impl ModelConfigFields {
@@ -96,6 +100,8 @@ impl ModelConfigFields {
         merge_opt!(vertex_location);
         merge_opt!(gemini_generation);
         merge_opt!(gemini_web_search);
+        merge_opt!(zai_clear_thinking);
+        merge_opt!(zai_subscription);
     }
 
     /// Produce a new `ModelConfigFields` where each field is taken from `self`
@@ -125,6 +131,8 @@ impl ModelConfigFields {
             vertex_location: or_opt!(vertex_location),
             gemini_generation: or_opt!(gemini_generation),
             gemini_web_search: or_opt!(gemini_web_search),
+            zai_clear_thinking: or_opt!(zai_clear_thinking),
+            zai_subscription: or_opt!(zai_subscription),
         }
     }
 }
@@ -189,6 +197,8 @@ pub struct ResolvedModel {
     pub vertex_location: Option<String>,
     pub gemini_generation: Option<u32>,
     pub gemini_web_search: Option<bool>,
+    pub zai_clear_thinking: Option<bool>,
+    pub zai_subscription: Option<bool>,
 }
 
 impl ResolvedModel {
@@ -228,6 +238,8 @@ impl ResolvedModel {
             vertex_location: fields.vertex_location,
             gemini_generation: fields.gemini_generation,
             gemini_web_search: fields.gemini_web_search,
+            zai_clear_thinking: fields.zai_clear_thinking,
+            zai_subscription: fields.zai_subscription,
         }
     }
 }
@@ -504,6 +516,13 @@ fn hardcoded_defaults(provider_key: &str) -> ProviderConfig {
             base_url: Some("https://open.bigmodel.cn/api/paas/v4".into()),
             ..base_provider_defaults()
         },
+        "zai" => ModelConfigFields {
+            sdk: Some(Sdk::Zai),
+            api_key_env: Some("ZAI_API_KEY".into()),
+            base_url: Some("https://api.z.ai/api/paas/v4".into()),
+            zai_clear_thinking: Some(false),
+            ..base_provider_defaults()
+        },
         _ => ModelConfigFields::default(),
     };
     ProviderConfig { fields }
@@ -516,6 +535,7 @@ fn default_sdk(provider_key: &str) -> Sdk {
         "gemini" => Sdk::Gemini,
         "zhipuai" => Sdk::Zhipuai,
         "deepseek" => Sdk::Deepseek,
+        "zai" => Sdk::Zai,
         // Everything else (openrouter, xai, custom) defaults to OpenAI-compatible.
         _ => Sdk::Openai,
     }
@@ -926,5 +946,6 @@ model_id = "kimi-k2"
         assert_eq!(Sdk::Gemini.as_provider_str(), "gemini");
         assert_eq!(Sdk::Zhipuai.as_provider_str(), "zhipuai");
         assert_eq!(Sdk::Deepseek.as_provider_str(), "deepseek");
+        assert_eq!(Sdk::Zai.as_provider_str(), "zai");
     }
 }
