@@ -112,6 +112,32 @@ impl ActivityTracker {
         self.cached_stats = None;
     }
 
+    /// Backfill the tracker with historical wall-clock timestamps.
+    ///
+    /// Used on first creation to seed from existing chat history.
+    /// No-op if the tracker already has data (safety guard).
+    pub fn backfill(&mut self, wall_clocks: Vec<NaiveDateTime>) {
+        if !self.timestamps.is_empty() || wall_clocks.is_empty() {
+            return;
+        }
+
+        let monotonic_base = Instant::now();
+        for (i, wall_clock) in wall_clocks.iter().enumerate() {
+            let weekday = wall_clock.weekday();
+            self.timestamps.push(MessageTimestamp {
+                monotonic: monotonic_base + std::time::Duration::from_nanos(i as u64),
+                wall_clock: *wall_clock,
+                weekday,
+            });
+        }
+
+        // Ensure chronological order regardless of input order.
+        self.timestamps.sort_by_key(|ts| ts.wall_clock);
+
+        // Invalidate cache.
+        self.cached_stats = None;
+    }
+
     /// Number of recorded messages.
     pub fn message_count(&self) -> usize {
         self.timestamps.len()
@@ -725,5 +751,72 @@ mod tests {
         let tracker = build_tracker_with_timestamps(&times);
         let sessions = tracker.detect_sessions();
         assert!(sessions.len() <= SESSION_MEDIANS_WINDOW);
+    }
+
+    // -- backfill -------------------------------------------------------------
+
+    #[test]
+    fn test_backfill_populates_and_invalidates_cache() {
+        let mut tracker = ActivityTracker::new();
+        let times = vec![
+            dt(2026, 3, 20, 10, 0, 0),
+            dt(2026, 3, 21, 14, 0, 0),
+            dt(2026, 3, 22, 9, 0, 0),
+        ];
+        tracker.backfill(times);
+        assert_eq!(tracker.message_count(), 3);
+        assert!(tracker.cached_stats.is_none());
+
+        // Verify chronological order.
+        for pair in tracker.timestamps.windows(2) {
+            assert!(pair[0].wall_clock <= pair[1].wall_clock);
+        }
+    }
+
+    #[test]
+    fn test_backfill_noop_when_data_exists() {
+        let mut tracker = ActivityTracker::new();
+        tracker.record_message();
+        assert_eq!(tracker.message_count(), 1);
+
+        tracker.backfill(vec![
+            dt(2026, 3, 20, 10, 0, 0),
+            dt(2026, 3, 21, 14, 0, 0),
+        ]);
+        assert_eq!(tracker.message_count(), 1);
+    }
+
+    #[test]
+    fn test_backfill_empty_vec_is_noop() {
+        let mut tracker = ActivityTracker::new();
+        tracker.backfill(vec![]);
+        assert_eq!(tracker.message_count(), 0);
+    }
+
+    #[test]
+    fn test_backfill_then_record_message() {
+        let mut tracker = ActivityTracker::new();
+        tracker.backfill(vec![
+            dt(2026, 3, 20, 10, 0, 0),
+            dt(2026, 3, 21, 14, 0, 0),
+        ]);
+        assert_eq!(tracker.message_count(), 2);
+
+        tracker.record_message();
+        assert_eq!(tracker.message_count(), 3);
+    }
+
+    #[test]
+    fn test_backfill_sorts_unordered_input() {
+        let mut tracker = ActivityTracker::new();
+        tracker.backfill(vec![
+            dt(2026, 3, 22, 9, 0, 0),
+            dt(2026, 3, 20, 10, 0, 0),
+            dt(2026, 3, 21, 14, 0, 0),
+        ]);
+        assert_eq!(tracker.message_count(), 3);
+        assert_eq!(tracker.timestamps[0].wall_clock, dt(2026, 3, 20, 10, 0, 0));
+        assert_eq!(tracker.timestamps[1].wall_clock, dt(2026, 3, 21, 14, 0, 0));
+        assert_eq!(tracker.timestamps[2].wall_clock, dt(2026, 3, 22, 9, 0, 0));
     }
 }

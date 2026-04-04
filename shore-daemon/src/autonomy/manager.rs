@@ -236,8 +236,8 @@ impl AutonomyManager {
     /// Ensure autonomy state exists for a character. On first call for a
     /// character, creates the state (restoring from disk if available) and
     /// spawns a per-character tick task.
-    pub fn ensure_state(&self, character: &str, cache_ttl_secs: Option<u64>) {
-        self.ensure_state_with_config(character, cache_ttl_secs, None);
+    pub fn ensure_state(&self, character: &str, cache_ttl_secs: Option<u64>) -> bool {
+        self.ensure_state_with_config(character, cache_ttl_secs, None)
     }
 
     /// Like `ensure_state`, but accepts an optional per-character effective config
@@ -247,9 +247,9 @@ impl AutonomyManager {
         character: &str,
         cache_ttl_secs: Option<u64>,
         effective_config: Option<&LoadedConfig>,
-    ) {
+    ) -> bool {
         if self.states.contains_key(character) {
-            return;
+            return false;
         }
 
         // Use per-character autonomy config if available, otherwise global.
@@ -319,6 +319,8 @@ impl AutonomyManager {
         });
 
         self.handles.lock().unwrap().push(handle);
+
+        true
     }
 
     // -- state access helper ---------------------------------------------------
@@ -366,6 +368,16 @@ impl AutonomyManager {
             s.last_compaction_activity = now;
             s.active_turn_count = message_count;
             s.mark_dirty();
+        });
+    }
+
+    /// Backfill the activity tracker with historical message timestamps.
+    ///
+    /// Called once after `ensure_state` returns `true` (newly created state)
+    /// to seed the tracker from existing chat history.
+    pub fn backfill_activity(&self, character: &str, timestamps: Vec<chrono::NaiveDateTime>) {
+        self.with_state(character, |s| {
+            s.activity.backfill(timestamps);
         });
     }
 
@@ -1180,6 +1192,47 @@ mod tests {
             let status = mgr.status("alice").unwrap();
             assert_eq!(status.interiority_state, "Active");
             assert_eq!(status.ticks_without_user, 0);
+        });
+    }
+
+    // -- backfill -------------------------------------------------------------
+
+    #[test]
+    fn ensure_state_returns_true_then_false() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let mgr = rt.block_on(async { test_manager(tmp.path()) });
+
+        rt.block_on(async {
+            assert!(mgr.ensure_state("alice", None));
+            assert!(!mgr.ensure_state("alice", None));
+        });
+    }
+
+    #[test]
+    fn backfill_activity_updates_message_count() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let mgr = rt.block_on(async { test_manager(tmp.path()) });
+
+        rt.block_on(async {
+            mgr.ensure_state("alice", None);
+
+            let timestamps = vec![
+                chrono::NaiveDate::from_ymd_opt(2026, 3, 20).unwrap().and_hms_opt(10, 0, 0).unwrap(),
+                chrono::NaiveDate::from_ymd_opt(2026, 3, 21).unwrap().and_hms_opt(14, 0, 0).unwrap(),
+                chrono::NaiveDate::from_ymd_opt(2026, 3, 22).unwrap().and_hms_opt(9, 0, 0).unwrap(),
+            ];
+            mgr.backfill_activity("alice", timestamps);
+
+            let (_stats, count) = mgr.activity_stats("alice").unwrap();
+            assert_eq!(count, 3);
         });
     }
 

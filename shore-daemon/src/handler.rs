@@ -451,7 +451,51 @@ async fn handle_generation(
     // 5. Ensure autonomy state with cache TTL for unified interiority timer.
     // Must happen before notify_user_message so session_start is set on first message.
     let cache_ttl_secs = resolved.cache_ttl.as_deref().and_then(parse_cache_ttl_secs);
-    ctx.autonomy.ensure_state_with_config(&char_name, cache_ttl_secs, Some(&effective_config));
+    let is_new_autonomy_state = ctx.autonomy.ensure_state_with_config(&char_name, cache_ttl_secs, Some(&effective_config));
+
+    // Backfill activity tracker from existing chat history on first creation.
+    // Only include the last 90 days — older data would pollute availability signals.
+    if is_new_autonomy_state {
+        let engine = engine_arc.lock().await;
+        let cutoff = chrono::Utc::now().naive_utc() - chrono::Duration::days(90);
+        let mut timestamps: Vec<chrono::NaiveDateTime> = Vec::new();
+
+        // Active window messages.
+        for msg in engine.messages() {
+            if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&msg.timestamp) {
+                let naive = dt.naive_utc();
+                if naive >= cutoff {
+                    timestamps.push(naive);
+                }
+            }
+        }
+
+        // Archived segments.
+        let segments = engine.segments();
+        for i in 0..segments.segment_count() {
+            if let Ok(segment_msgs) = segments.read_segment(i) {
+                for msg in &segment_msgs {
+                    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&msg.timestamp) {
+                        let naive = dt.naive_utc();
+                        if naive >= cutoff {
+                            timestamps.push(naive);
+                        }
+                    }
+                }
+            }
+        }
+
+        drop(engine);
+
+        if !timestamps.is_empty() {
+            info!(
+                character = %char_name,
+                count = timestamps.len(),
+                "Backfilling activity tracker from chat history"
+            );
+            ctx.autonomy.backfill_activity(&char_name, timestamps);
+        }
+    }
 
     if !regen && (!body.text.is_empty() || !body.images.is_empty()) {
         let mut engine = engine_arc.lock().await;
