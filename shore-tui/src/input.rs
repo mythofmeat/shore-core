@@ -43,6 +43,11 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
         return Action::Redraw;
     }
 
+    // Fullscreen image viewer handles its own keys
+    if app.fullscreen.is_some() {
+        return handle_fullscreen(app, key);
+    }
+
     // Global shortcuts (work in any mode)
     match (key.modifiers, key.code) {
         (KeyModifiers::CONTROL, KeyCode::Char('c')) => {
@@ -163,6 +168,40 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) -> Action {
             Action::Send(ConnCommand::Send(msg))
         }
 
+        // Fullscreen image viewer
+        (KeyModifiers::NONE, KeyCode::Char('o')) => {
+            if app.image_index.is_empty() {
+                return Action::None;
+            }
+            // Find image closest to the center of the visible viewport.
+            // scroll_offset is distance from bottom. We estimate which
+            // lines are visible and pick the nearest image.
+            let term_height = crossterm::terminal::size()
+                .map(|(_, h)| h)
+                .unwrap_or(24);
+            // Approximate conversation area as ~80% of terminal height
+            let visible_h = (term_height * 80 / 100).max(1) as usize;
+            let last_line = app.image_index.last().map(|e| e.line).unwrap_or(0);
+            let total_approx = last_line + visible_h;
+            let center = if app.auto_scroll {
+                total_approx.saturating_sub(visible_h / 2)
+            } else {
+                total_approx
+                    .saturating_sub(app.scroll_offset as usize)
+                    .saturating_sub(visible_h / 2)
+            };
+            // Find the image with line position closest to center
+            let best = app
+                .image_index
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, e)| (e.line as isize - center as isize).unsigned_abs())
+                .map(|(i, _)| i)
+                .unwrap_or(0);
+            app.fullscreen = Some(best);
+            Action::Redraw
+        }
+
         // Command palette
         (KeyModifiers::SHIFT, KeyCode::Char(':')) | (KeyModifiers::NONE, KeyCode::Char(':')) => {
             app.input.enter_command_mode();
@@ -170,6 +209,37 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) -> Action {
             Action::Redraw
         }
 
+        _ => Action::None,
+    }
+}
+
+fn handle_fullscreen(app: &mut App, key: KeyEvent) -> Action {
+    match (key.modifiers, key.code) {
+        // Exit fullscreen
+        (KeyModifiers::NONE, KeyCode::Esc) | (KeyModifiers::NONE, KeyCode::Char('o')) => {
+            app.fullscreen = None;
+            Action::Redraw
+        }
+        // Next image
+        (KeyModifiers::NONE, KeyCode::Char('j') | KeyCode::Down) => {
+            if let Some(ref mut idx) = app.fullscreen {
+                let total = app.image_index.len();
+                if total > 0 {
+                    *idx = (*idx + 1) % total;
+                }
+            }
+            Action::Redraw
+        }
+        // Previous image
+        (KeyModifiers::NONE, KeyCode::Char('k') | KeyCode::Up) => {
+            if let Some(ref mut idx) = app.fullscreen {
+                let total = app.image_index.len();
+                if total > 0 {
+                    *idx = (*idx + total - 1) % total;
+                }
+            }
+            Action::Redraw
+        }
         _ => Action::None,
     }
 }

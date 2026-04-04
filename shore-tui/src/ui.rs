@@ -906,6 +906,10 @@ fn draw_help(frame: &mut Frame, area: Rect) {
             "    p               toggle inline images",
             Style::default().fg(Color::White),
         )),
+        Line::from(Span::styled(
+            "    o               fullscreen image viewer",
+            Style::default().fg(Color::White),
+        )),
         Line::from(""),
         Line::from(vec![
             Span::styled(
