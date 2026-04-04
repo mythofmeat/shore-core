@@ -26,9 +26,61 @@ pub struct ImageCache {
     cell_height: u16,
 }
 
+/// Open `/dev/tty` for writing.
+///
+/// Kitty graphics APC sequences must bypass stdout to avoid interleaving
+/// with ratatui/crossterm output. Writing to `/dev/tty` sends escape
+/// sequences directly to the terminal, matching how `probe_kitty_graphics`
+/// communicates.
+fn open_tty_write() -> Option<std::fs::File> {
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/tty")
+        .ok()
+}
+
+/// Query the terminal for cell pixel dimensions via TIOCGWINSZ.
+/// Returns (cell_width, cell_height) or None if unavailable.
+#[cfg(unix)]
+fn query_cell_size() -> Option<(u16, u16)> {
+    use std::os::unix::io::AsRawFd;
+    let tty = std::fs::File::open("/dev/tty").ok()?;
+    let fd = tty.as_raw_fd();
+
+    // winsize struct: rows, cols, xpixel, ypixel (all u16)
+    let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
+    let ret = unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut ws) };
+    if ret != 0 || ws.ws_xpixel == 0 || ws.ws_ypixel == 0 || ws.ws_col == 0 || ws.ws_row == 0 {
+        return None;
+    }
+    let cw = ws.ws_xpixel / ws.ws_col;
+    let ch = ws.ws_ypixel / ws.ws_row;
+    if cw == 0 || ch == 0 {
+        return None;
+    }
+    Some((cw, ch))
+}
+
+#[cfg(not(unix))]
+fn query_cell_size() -> Option<(u16, u16)> {
+    None
+}
+
 fn base64_encode(data: &[u8]) -> String {
     use base64::Engine;
     base64::engine::general_purpose::STANDARD.encode(data)
+}
+
+/// Ensure image data is PNG-encoded for kitty `f=100` transmission.
+/// Returns the data unchanged if already PNG, otherwise decodes and re-encodes as PNG.
+fn ensure_png(data: &[u8]) -> Option<Vec<u8>> {
+    if data.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return Some(data.to_vec());
+    }
+    let img = image::load_from_memory(data).ok()?;
+    let mut png_buf = std::io::Cursor::new(Vec::new());
+    img.write_to(&mut png_buf, image::ImageFormat::Png).ok()?;
+    Some(png_buf.into_inner())
 }
 
 // Kitty Unicode placeholder diacritics table (values 0-255).
@@ -72,19 +124,25 @@ const DIACRITICS: [u32; 256] = [
 
 impl ImageCache {
     pub fn new() -> Self {
+        let (cw, ch) = query_cell_size().unwrap_or((8, 16));
         Self {
             next_id: 1,
             cache: HashMap::new(),
             protocol: detect_protocol_from_env(),
-            cell_width: 8,
-            cell_height: 16,
+            cell_width: cw,
+            cell_height: ch,
         }
     }
 
     /// Re-detect protocol using terminal probe (requires raw mode).
+    /// Also refreshes cell pixel dimensions.
     pub fn probe_protocol(&mut self) {
         if self.protocol.is_none() {
             self.protocol = detect_protocol_probe();
+        }
+        if let Some((cw, ch)) = query_cell_size() {
+            self.cell_width = cw;
+            self.cell_height = ch;
         }
     }
 
@@ -105,11 +163,12 @@ impl ImageCache {
         let id = self.next_id;
         self.next_id += 1;
 
-        let encoded = base64_encode(&data);
-        let mut stdout = std::io::stdout();
-        transmit_kitty(&mut stdout, id, &encoded);
-        place_kitty(&mut stdout, id, cols, rows);
-        let _ = stdout.flush();
+        let png_data = ensure_png(&data)?;
+        let encoded = base64_encode(&png_data);
+        let mut tty = open_tty_write()?;
+        transmit_kitty_data(&mut tty, id, &encoded);
+        place_kitty(&mut tty, id, cols, rows);
+        let _ = tty.flush();
 
         self.cache
             .insert(path.to_string(), TransmittedImage { id, cols, rows });
@@ -118,7 +177,6 @@ impl ImageCache {
 
     /// Transmit an image from base64 data if not already cached.
     /// Uses `key` (typically the server path) as the cache key.
-    /// Avoids a round-trip decode→re-encode by passing the original b64 to kitty.
     pub fn ensure_transmitted_from_b64(
         &mut self,
         key: &str,
@@ -142,10 +200,12 @@ impl ImageCache {
         let id = self.next_id;
         self.next_id += 1;
 
-        let mut stdout = std::io::stdout();
-        transmit_kitty(&mut stdout, id, b64_data);
-        place_kitty(&mut stdout, id, cols, rows);
-        let _ = stdout.flush();
+        let png_data = ensure_png(&bytes)?;
+        let encoded = base64_encode(&png_data);
+        let mut tty = open_tty_write()?;
+        transmit_kitty_data(&mut tty, id, &encoded);
+        place_kitty(&mut tty, id, cols, rows);
+        let _ = tty.flush();
 
         self.cache
             .insert(key.to_string(), TransmittedImage { id, cols, rows });
@@ -160,9 +220,10 @@ impl ImageCache {
     /// Delete all transmitted images and clear the cache.
     pub fn clear(&mut self) {
         if self.protocol == Some(ImageProtocol::Kitty) && !self.cache.is_empty() {
-            let mut stdout = std::io::stdout();
-            let _ = write!(stdout, "\x1b_Ga=d,q=2\x1b\\");
-            let _ = stdout.flush();
+            if let Some(mut tty) = open_tty_write() {
+                let _ = write!(tty, "\x1b_Ga=d,q=2\x1b\\");
+                let _ = tty.flush();
+            }
         }
         self.cache.clear();
     }
@@ -176,21 +237,47 @@ impl ImageCache {
     }
 }
 
-/// Generate ratatui Lines containing kitty Unicode placeholder characters.
-/// Image ID is encoded via foreground color; row/col via combining diacritics.
+/// Generate ratatui Lines containing kitty Unicode placeholder stand-ins.
+///
+/// Uses U+2800 (Braille Blank, width 1) instead of U+10EEEE (width 2 per
+/// `unicode-width`) so that ratatui allocates exactly one cell per placeholder.
+/// After rendering, call [`fixup_placeholder_cells`] to swap U+2800 → U+10EEEE
+/// before the frame is flushed.
 pub fn placeholder_lines(img: &TransmittedImage) -> Vec<Line<'static>> {
     let style = id_to_style(img.id);
     let mut lines = Vec::with_capacity(img.rows as usize);
     for row in 0..img.rows {
         let mut text = String::with_capacity(img.cols as usize * 12);
         for col in 0..img.cols {
-            text.push('\u{10EEEE}');
+            // U+2800 is a width-1 stand-in for U+10EEEE (width-2 per unicode-width).
+            // Row/col diacritics are kept as-is — they combine with the base char.
+            text.push('\u{2800}');
             text.push(diacritic(row as u8));
             text.push(diacritic(col as u8));
         }
         lines.push(Line::from(Span::styled(text, style)));
     }
     lines
+}
+
+/// Replace U+2800 stand-in characters with U+10EEEE kitty placeholders in a
+/// rendered buffer. Must be called after Paragraph renders but before the
+/// frame is flushed to the terminal.
+pub fn fixup_placeholder_cells(buf: &mut ratatui::buffer::Buffer, area: ratatui::layout::Rect) {
+    for y in area.y..(area.y + area.height) {
+        for x in area.x..(area.x + area.width) {
+            let cell = &buf[(x, y)];
+            let sym = cell.symbol();
+            if let Some(rest) = sym.strip_prefix('\u{2800}') {
+                if !rest.is_empty() {
+                    let mut new_sym = String::with_capacity(4 + rest.len());
+                    new_sym.push('\u{10EEEE}');
+                    new_sym.push_str(rest);
+                    buf[(x, y)].set_symbol(&new_sym);
+                }
+            }
+        }
+    }
 }
 
 fn diacritic(value: u8) -> char {
@@ -210,7 +297,8 @@ fn id_to_style(id: u32) -> Style {
 }
 
 /// Transmit image data to kitty (a=t: transmit only, no display).
-fn transmit_kitty<W: Write>(w: &mut W, id: u32, encoded: &str) {
+/// Uses chunked base64 transfer with `f=100` (PNG). Only valid for PNG data.
+fn transmit_kitty_data<W: Write>(w: &mut W, id: u32, encoded: &str) {
     const CHUNK_SIZE: usize = 4096;
     let chunks: Vec<&str> = encoded
         .as_bytes()
@@ -349,9 +437,9 @@ mod tests {
     }
 
     #[test]
-    fn kitty_transmit_format() {
+    fn kitty_transmit_data_format() {
         let mut buf = Vec::new();
-        transmit_kitty(&mut buf, 42, "AAAA");
+        transmit_kitty_data(&mut buf, 42, "AAAA");
         let out = String::from_utf8(buf).unwrap();
         assert!(out.contains("\x1b_Ga=t,f=100,q=2,i=42,m=0;AAAA\x1b\\"));
     }
@@ -389,14 +477,40 @@ mod tests {
         };
         let lines = placeholder_lines(&img);
         let text = &lines[0].spans[0].content;
-        // First cell: U+10EEEE + diacritic(0) + diacritic(0)
+        // First cell: U+2800 stand-in + diacritic(0) + diacritic(0)
         let chars: Vec<char> = text.chars().collect();
-        assert_eq!(chars[0], '\u{10EEEE}');
+        assert_eq!(chars[0], '\u{2800}'); // stand-in (fixup replaces with U+10EEEE)
         assert_eq!(chars[1], diacritic(0)); // row 0
         assert_eq!(chars[2], diacritic(0)); // col 0
-        assert_eq!(chars[3], '\u{10EEEE}');
+        assert_eq!(chars[3], '\u{2800}');
         assert_eq!(chars[4], diacritic(0)); // row 0
         assert_eq!(chars[5], diacritic(1)); // col 1
+    }
+
+    #[test]
+    fn fixup_replaces_standin() {
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+
+        let img = TransmittedImage {
+            id: 5,
+            cols: 2,
+            rows: 1,
+        };
+        let lines = placeholder_lines(&img);
+        let area = Rect::new(0, 0, 10, 1);
+        let mut buf = Buffer::empty(area);
+        let para = ratatui::widgets::Paragraph::new(ratatui::text::Text::from(lines));
+        ratatui::widgets::Widget::render(para, area, &mut buf);
+
+        // Before fixup: cells contain U+2800
+        assert!(buf[(0, 0)].symbol().starts_with('\u{2800}'));
+
+        fixup_placeholder_cells(&mut buf, area);
+
+        // After fixup: cells contain U+10EEEE
+        assert!(buf[(0, 0)].symbol().starts_with('\u{10EEEE}'));
+        assert!(buf[(1, 0)].symbol().starts_with('\u{10EEEE}'));
     }
 
     #[test]

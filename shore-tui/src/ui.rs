@@ -575,6 +575,9 @@ fn draw_conversation(frame: &mut Frame, app: &mut App, area: Rect) {
         .scroll((scroll, 0));
 
     frame.render_widget(paragraph, area);
+
+    // Swap U+2800 stand-in → U+10EEEE kitty placeholder in rendered cells.
+    images::fixup_placeholder_cells(frame.buffer_mut(), area);
 }
 
 /// Render image entries — kitty placeholders when available, text fallback otherwise.
