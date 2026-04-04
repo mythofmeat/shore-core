@@ -506,17 +506,18 @@ fn expand_msg(msg: Message, entries: &mut Vec<ConversationEntry>) {
     }
 }
 
-/// Max display columns for images (terminal width minus borders/indent).
-fn image_max_cols() -> u16 {
-    crossterm::terminal::size()
-        .map(|(w, _)| w.saturating_sub(4))
-        .unwrap_or(76)
+/// Max display cells for images: 80% terminal width (minus indent), 50% terminal height.
+fn image_max_cells() -> (u16, u16) {
+    let (w, h) = crossterm::terminal::size().unwrap_or((80, 24));
+    let max_cols = (w * 80 / 100).saturating_sub(4).max(1);
+    let max_rows = (h * 50 / 100).max(1);
+    (max_cols, max_rows)
 }
 
 /// Transmit images from conversation entries to kitty.
 /// Prefers embedded base64 data; falls back to reading from path.
 fn transmit_entry_images(app: &mut App) {
-    let max_cols = image_max_cols();
+    let (max_cols, max_rows) = image_max_cells();
     for entry in &app.entries {
         let imgs = match entry {
             ConversationEntry::User { images, .. }
@@ -524,7 +525,7 @@ fn transmit_entry_images(app: &mut App) {
             _ => continue,
         };
         for img in imgs {
-            transmit_image_ref(&mut app.image_cache, img, max_cols);
+            transmit_image_ref(&mut app.image_cache, img, max_cols, max_rows);
         }
     }
 }
@@ -534,11 +535,12 @@ fn transmit_image_ref(
     cache: &mut images::ImageCache,
     img: &shore_protocol::types::ImageRef,
     max_cols: u16,
+    max_rows: u16,
 ) {
     if let Some(b64) = &img.data {
-        cache.ensure_transmitted_from_b64(&img.path, b64, max_cols);
+        cache.ensure_transmitted_from_b64(&img.path, b64, max_cols, max_rows);
     } else {
-        cache.ensure_transmitted(&img.path, max_cols);
+        cache.ensure_transmitted(&img.path, max_cols, max_rows);
     }
 }
 
@@ -648,9 +650,9 @@ fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<ConnCommand> 
                             if timestamp.is_empty() && *content == new_msg.message.content)
                     });
 
-                let max_cols = image_max_cols();
+                let (max_cols, max_rows) = image_max_cells();
                 for img in &new_msg.message.images {
-                    transmit_image_ref(&mut app.image_cache, img, max_cols);
+                    transmit_image_ref(&mut app.image_cache, img, max_cols, max_rows);
                 }
                 let entry = match new_msg.message.role {
                     Role::User => ConversationEntry::User {
@@ -710,12 +712,12 @@ fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<ConnCommand> 
         }
 
         ServerMessage::SendImage(img) => {
-            let max_cols = image_max_cols();
+            let (max_cols, max_rows) = image_max_cells();
             if let Some(b64) = &img.data {
                 app.image_cache
-                    .ensure_transmitted_from_b64(&img.path, b64, max_cols);
+                    .ensure_transmitted_from_b64(&img.path, b64, max_cols, max_rows);
             } else {
-                app.image_cache.ensure_transmitted(&img.path, max_cols);
+                app.image_cache.ensure_transmitted(&img.path, max_cols, max_rows);
             }
         }
 

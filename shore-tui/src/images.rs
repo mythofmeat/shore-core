@@ -148,7 +148,7 @@ impl ImageCache {
 
     /// Transmit an image to kitty if not already cached.
     /// Returns a reference to the cached image on success.
-    pub fn ensure_transmitted(&mut self, path: &str, max_cols: u16) -> Option<&TransmittedImage> {
+    pub fn ensure_transmitted(&mut self, path: &str, max_cols: u16, max_rows: u16) -> Option<&TransmittedImage> {
         if self.protocol != Some(ImageProtocol::Kitty) {
             return None;
         }
@@ -158,7 +158,7 @@ impl ImageCache {
 
         let data = std::fs::read(path).ok()?;
         let (pw, ph) = image_dimensions(&data)?;
-        let (cols, rows) = self.calculate_cells(pw, ph, max_cols);
+        let (cols, rows) = self.calculate_cells(pw, ph, max_cols, max_rows);
 
         let id = self.next_id;
         self.next_id += 1;
@@ -182,6 +182,7 @@ impl ImageCache {
         key: &str,
         b64_data: &str,
         max_cols: u16,
+        max_rows: u16,
     ) -> Option<&TransmittedImage> {
         if self.protocol != Some(ImageProtocol::Kitty) {
             return None;
@@ -195,7 +196,7 @@ impl ImageCache {
             .decode(b64_data)
             .ok()?;
         let (pw, ph) = image_dimensions(&bytes)?;
-        let (cols, rows) = self.calculate_cells(pw, ph, max_cols);
+        let (cols, rows) = self.calculate_cells(pw, ph, max_cols, max_rows);
 
         let id = self.next_id;
         self.next_id += 1;
@@ -228,12 +229,26 @@ impl ImageCache {
         self.cache.clear();
     }
 
-    fn calculate_cells(&self, pw: u32, ph: u32, max_cols: u16) -> (u16, u16) {
-        let natural_cols = pw / self.cell_width as u32;
-        let cols = (natural_cols as u16).min(max_cols).max(1);
-        let scale = (cols as f64 * self.cell_width as f64) / pw as f64;
-        let rows = ((ph as f64 * scale) / self.cell_height as f64).ceil() as u16;
-        (cols, rows.clamp(1, 255))
+    fn calculate_cells(&self, pw: u32, ph: u32, max_cols: u16, max_rows: u16) -> (u16, u16) {
+        let cw = self.cell_width as f64;
+        let ch = self.cell_height as f64;
+
+        // Scale to fit width
+        let natural_cols = pw as f64 / cw;
+        let cols_f = natural_cols.min(max_cols as f64).max(1.0);
+        let scale_w = (cols_f * cw) / pw as f64;
+        let rows_from_w = (ph as f64 * scale_w / ch).ceil();
+
+        // If height exceeds cap, scale to fit height instead
+        let (cols, rows) = if rows_from_w > max_rows as f64 {
+            let scale_h = (max_rows as f64 * ch) / ph as f64;
+            let cols_from_h = (pw as f64 * scale_h / cw).floor().max(1.0);
+            (cols_from_h as u16, max_rows)
+        } else {
+            (cols_f as u16, rows_from_w as u16)
+        };
+
+        (cols.max(1), rows.clamp(1, 255))
     }
 }
 
@@ -553,7 +568,7 @@ mod tests {
             cell_height: 16,
         };
         // 160x80 image at 8x16 cell size = 20 cols x 5 rows
-        let (cols, rows) = cache.calculate_cells(160, 80, 60);
+        let (cols, rows) = cache.calculate_cells(160, 80, 60, 30);
         assert_eq!(cols, 20);
         assert_eq!(rows, 5);
     }
@@ -568,7 +583,7 @@ mod tests {
             cell_height: 16,
         };
         // 800x400 image, max 40 cols: scaled to 40 cols
-        let (cols, rows) = cache.calculate_cells(800, 400, 40);
+        let (cols, rows) = cache.calculate_cells(800, 400, 40, 30);
         assert_eq!(cols, 40);
         // scale = 40*8/800 = 0.4, rows = ceil(400*0.4/16) = ceil(10) = 10
         assert_eq!(rows, 10);
