@@ -148,7 +148,12 @@ impl ImageCache {
 
     /// Transmit an image to kitty if not already cached.
     /// Returns a reference to the cached image on success.
-    pub fn ensure_transmitted(&mut self, path: &str, max_cols: u16, max_rows: u16) -> Option<&TransmittedImage> {
+    pub fn ensure_transmitted(
+        &mut self,
+        path: &str,
+        max_cols: u16,
+        max_rows: u16,
+    ) -> Option<&TransmittedImage> {
         if self.protocol != Some(ImageProtocol::Kitty) {
             return None;
         }
@@ -587,5 +592,24 @@ mod tests {
         assert_eq!(cols, 40);
         // scale = 40*8/800 = 0.4, rows = ceil(400*0.4/16) = ceil(10) = 10
         assert_eq!(rows, 10);
+    }
+
+    #[test]
+    fn calculate_cells_height_clamped() {
+        let cache = ImageCache {
+            next_id: 1,
+            cache: HashMap::new(),
+            protocol: Some(ImageProtocol::Kitty),
+            cell_width: 8,
+            cell_height: 16,
+        };
+        // 800x3200 image, max 60 cols, max 10 rows
+        // Width-first: natural = 100 cols, clamped to 60, scale = 60*8/800 = 0.6
+        //   rows_from_w = ceil(3200*0.6/16) = ceil(120) = 120 → exceeds max_rows=10
+        // Height-first: scale_h = 10*16/3200 = 0.05
+        //   cols_from_h = floor(800*0.05/8) = floor(5.0) = 5
+        let (cols, rows) = cache.calculate_cells(800, 3200, 60, 10);
+        assert_eq!(rows, 10);
+        assert_eq!(cols, 5);
     }
 }
