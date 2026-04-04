@@ -472,7 +472,10 @@ fn format_time_gap(gap_secs: f64, current_ts: &DateTime<FixedOffset>) -> Option<
         format!("{days} days later")
     };
 
-    let time_str = current_ts.with_timezone(&Local).format("%-I:%M %p").to_string();
+    let time_str = current_ts
+        .with_timezone(&Local)
+        .format("%-I:%M %p")
+        .to_string();
     Some(format!("[{relative} · {time_str}]"))
 }
 

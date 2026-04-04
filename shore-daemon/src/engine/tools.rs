@@ -454,7 +454,11 @@ mod tests {
                 assert_eq!(res.tool_id, "t1");
                 assert_eq!(res.tool_name, "check_time");
                 assert!(!res.is_error);
-                assert!(res.output.contains(" at "), "expected friendly format: {}", res.output);
+                assert!(
+                    res.output.contains(" at "),
+                    "expected friendly format: {}",
+                    res.output
+                );
             }
             other => panic!("Expected ToolResult, got {:?}", other),
         }

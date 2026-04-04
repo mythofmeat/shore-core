@@ -749,8 +749,7 @@ impl CollationManager {
             }
 
             // Calculate days since last update.
-            let updated_at = chrono::DateTime::parse_from_rfc3339(&entry.updated_at)
-                .unwrap_or_else(|_| now);
+            let updated_at = chrono::DateTime::parse_from_rfc3339(&entry.updated_at).unwrap_or(now);
             let days_since = (now - updated_at).num_seconds() as f64 / 86400.0;
 
             if days_since <= 0.0 {

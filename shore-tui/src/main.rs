@@ -717,7 +717,8 @@ fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<ConnCommand> 
                 app.image_cache
                     .ensure_transmitted_from_b64(&img.path, b64, max_cols, max_rows);
             } else {
-                app.image_cache.ensure_transmitted(&img.path, max_cols, max_rows);
+                app.image_cache
+                    .ensure_transmitted(&img.path, max_cols, max_rows);
             }
         }
 

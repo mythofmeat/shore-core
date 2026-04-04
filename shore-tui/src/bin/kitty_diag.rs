@@ -181,7 +181,10 @@ fn main() {
         // Transmit AFTER entering alt screen
         transmit_and_place(203, &b64_2, 5, 2);
         let mut out = io::stdout();
-        let _ = write!(out, "\x1b[1;1H=== [8] Raw placeholders on alt screen ===\r\n");
+        let _ = write!(
+            out,
+            "\x1b[1;1H=== [8] Raw placeholders on alt screen ===\r\n"
+        );
         let _ = write!(out, "Image should appear below:\r\n");
         let _ = write!(out, "\x1b[38;5;203m");
         for row in 0u8..2 {
@@ -222,8 +225,7 @@ fn main() {
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                let para = Paragraph::new(Text::from(lines.clone()))
-                    .wrap(Wrap { trim: false });
+                let para = Paragraph::new(Text::from(lines.clone())).wrap(Wrap { trim: false });
                 frame.render_widget(para, area);
                 fixup_placeholder_cells(frame.buffer_mut(), area);
             })
@@ -264,7 +266,9 @@ fn wait_enter() {
 /// Get approximate current cursor row for manual cell dumping.
 fn cursor_row() -> u16 {
     // Use crossterm to query cursor position
-    crossterm::cursor::position().map(|(_, y)| y + 1).unwrap_or(1)
+    crossterm::cursor::position()
+        .map(|(_, y)| y + 1)
+        .unwrap_or(1)
 }
 
 fn transmit_and_place(id: u32, b64: &str, cols: u16, rows: u16) {
@@ -274,12 +278,7 @@ fn transmit_and_place(id: u32, b64: &str, cols: u16, rows: u16) {
     let _ = tty.flush();
 }
 
-fn make_placeholder_lines(
-    _id: u32,
-    cols: u16,
-    rows: u16,
-    style: Style,
-) -> Vec<Line<'static>> {
+fn make_placeholder_lines(_id: u32, cols: u16, rows: u16, style: Style) -> Vec<Line<'static>> {
     let mut lines = Vec::with_capacity(rows as usize);
     for row in 0..rows {
         let mut text = String::with_capacity(cols as usize * 12);
