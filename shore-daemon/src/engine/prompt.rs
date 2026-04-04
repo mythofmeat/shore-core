@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use chrono::Local;
+use chrono::{DateTime, FixedOffset, Local};
 use shore_protocol::types::{ContentBlock, ImageRef, Message, Role};
 
 use shore_config::resolve_prompt_template;
@@ -14,6 +14,9 @@ const DEFAULT_MAX_OUTPUT_TOKENS: usize = 4096;
 
 /// Rough characters-per-token ratio for budget estimation.
 const CHARS_PER_TOKEN: usize = 4;
+
+/// Minimum gap (in seconds) before a time marker is injected.
+const TIME_GAP_THRESHOLD_SECS: f64 = 1800.0; // 30 minutes
 
 /// Built-in system prompt template used when no override is found on disk.
 ///
@@ -444,6 +447,34 @@ fn estimate_message_tokens(msg: &Message) -> usize {
         .sum()
 }
 
+/// Format a time gap as a human-readable marker with both relative and
+/// absolute time, e.g. `[6 hours later · 9:14 PM]`.
+///
+/// Returns `None` for gaps shorter than 30 minutes.
+fn format_time_gap(gap_secs: f64, current_ts: &DateTime<FixedOffset>) -> Option<String> {
+    if gap_secs < TIME_GAP_THRESHOLD_SECS {
+        return None;
+    }
+
+    let relative = if gap_secs < 5400.0 {
+        // < 1.5 hours
+        "about an hour later".to_string()
+    } else if gap_secs < 64800.0 {
+        // < 18 hours
+        let hours = (gap_secs / 3600.0).round() as u32;
+        format!("{hours} hours later")
+    } else if gap_secs < 129600.0 {
+        // < 36 hours
+        "about a day later".to_string()
+    } else {
+        let days = (gap_secs / 86400.0).round() as u32;
+        format!("{days} days later")
+    };
+
+    let time_str = current_ts.format("%-I:%M %p").to_string();
+    Some(format!("[{relative} · {time_str}]"))
+}
+
 /// Trim messages from the beginning to fit within the token budget.
 ///
 /// Keeps the most recent messages, discarding older ones first. After
@@ -452,33 +483,64 @@ fn estimate_message_tokens(msg: &Message) -> usize {
 /// without their preceding context.
 fn trim_messages(messages: &[Message], token_budget: usize) -> Vec<PromptMessage> {
     // Build from the end (most recent first), accumulating token cost.
-    let mut result: Vec<PromptMessage> = Vec::new();
+    let mut selected: Vec<(PromptMessage, &str)> = Vec::new();
     let mut used_tokens = 0;
 
     for msg in messages.iter().rev() {
         let msg_tokens = estimate_message_tokens(msg);
-        if used_tokens + msg_tokens > token_budget && !result.is_empty() {
+        if used_tokens + msg_tokens > token_budget && !selected.is_empty() {
             // Budget exhausted — stop adding older messages.
             break;
         }
         used_tokens += msg_tokens;
-        result.push(PromptMessage {
-            role: msg.role.clone(),
-            content: msg.content.clone(),
-            images: msg.images.clone(),
-            content_blocks: msg.content_blocks.clone(),
-        });
+        selected.push((
+            PromptMessage {
+                role: msg.role.clone(),
+                content: msg.content.clone(),
+                images: msg.images.clone(),
+                content_blocks: msg.content_blocks.clone(),
+            },
+            &msg.timestamp,
+        ));
     }
 
     // Reverse to restore chronological order.
-    result.reverse();
+    selected.reverse();
 
     // Drop leading tool-loop messages that would be orphaned.
-    // A tool_result without its preceding tool_use (or a tool_use-only
-    // assistant message without its preceding user message) causes API
-    // errors.  Keep dropping from the front until we hit a real message.
-    while !result.is_empty() && is_tool_loop_msg_prompt(&result[0]) {
-        result.remove(0);
+    while !selected.is_empty() && is_tool_loop_msg_prompt(&selected[0].0) {
+        selected.remove(0);
+    }
+
+    // ── Inject time-gap markers on user messages ─────────────────────
+    // Walk forward, tracking the previous timestamp. When the gap between
+    // consecutive messages exceeds the threshold, prepend a marker like
+    // `[6 hours later · 9:14 PM]` to the next user message's content.
+    let mut prev_ts: Option<DateTime<FixedOffset>> = None;
+    let mut result: Vec<PromptMessage> = Vec::with_capacity(selected.len());
+
+    for (mut pm, ts_str) in selected {
+        let current_ts = DateTime::parse_from_rfc3339(ts_str).ok();
+
+        if pm.role == Role::User {
+            if let (Some(prev), Some(cur)) = (prev_ts, current_ts) {
+                let gap_secs = (cur - prev).num_seconds() as f64;
+                if let Some(marker) = format_time_gap(gap_secs, &cur) {
+                    pm.content = format!("{marker}\n\n{}", pm.content);
+                    // Also update the leading Text block in content_blocks
+                    // so the marker is visible to the LLM regardless of
+                    // which representation the provider consumes.
+                    if let Some(ContentBlock::Text { text }) = pm.content_blocks.first_mut() {
+                        *text = format!("{marker}\n\n{text}");
+                    }
+                }
+            }
+        }
+
+        if current_ts.is_some() {
+            prev_ts = current_ts;
+        }
+        result.push(pm);
     }
 
     result
@@ -925,6 +987,108 @@ mod tests {
         assert_eq!(result[0].content, "First");
         assert_eq!(result[1].content, "Second");
         assert_eq!(result[2].content, "Third");
+    }
+
+    // ── Time-gap markers ───────────────────────────────────────────────
+
+    fn make_msg_at(role: Role, content: &str, timestamp: &str) -> Message {
+        Message {
+            msg_id: uuid::Uuid::new_v4().to_string(),
+            role,
+            content: content.to_string(),
+            images: vec![],
+            content_blocks: vec![ContentBlock::Text {
+                text: content.to_string(),
+            }],
+            alt_index: None,
+            alt_count: None,
+            timestamp: timestamp.to_string(),
+        }
+    }
+
+    #[test]
+    fn format_time_gap_under_threshold_returns_none() {
+        let ts = DateTime::parse_from_rfc3339("2026-04-04T09:30:00-07:00").unwrap();
+        assert!(format_time_gap(1799.0, &ts).is_none());
+        assert!(format_time_gap(0.0, &ts).is_none());
+    }
+
+    #[test]
+    fn format_time_gap_about_an_hour() {
+        let ts = DateTime::parse_from_rfc3339("2026-04-04T10:30:00-07:00").unwrap();
+        let result = format_time_gap(3600.0, &ts).unwrap();
+        assert!(result.contains("about an hour later"));
+        assert!(result.contains("10:30 AM"));
+    }
+
+    #[test]
+    fn format_time_gap_multiple_hours() {
+        let ts = DateTime::parse_from_rfc3339("2026-04-04T21:14:00-07:00").unwrap();
+        let result = format_time_gap(6.0 * 3600.0, &ts).unwrap();
+        assert!(result.contains("6 hours later"));
+        assert!(result.contains("9:14 PM"));
+    }
+
+    #[test]
+    fn format_time_gap_about_a_day() {
+        let ts = DateTime::parse_from_rfc3339("2026-04-05T09:00:00-07:00").unwrap();
+        let result = format_time_gap(24.0 * 3600.0, &ts).unwrap();
+        assert!(result.contains("about a day later"));
+    }
+
+    #[test]
+    fn format_time_gap_multiple_days() {
+        let ts = DateTime::parse_from_rfc3339("2026-04-07T09:00:00-07:00").unwrap();
+        let result = format_time_gap(3.0 * 86400.0, &ts).unwrap();
+        assert!(result.contains("3 days later"));
+    }
+
+    #[test]
+    fn trim_messages_injects_time_gap_on_user_message() {
+        let msgs = vec![
+            make_msg_at(Role::User, "Good morning", "2026-04-04T09:00:00-07:00"),
+            make_msg_at(Role::Assistant, "Morning!", "2026-04-04T09:01:00-07:00"),
+            make_msg_at(Role::User, "I'm back", "2026-04-04T15:30:00-07:00"),
+        ];
+        let result = trim_messages(&msgs, 100_000);
+        assert_eq!(result.len(), 3);
+        // First user message: no gap marker.
+        assert!(!result[0].content.contains("later"));
+        // Third message (user, 6.5h gap): should have marker.
+        assert!(result[2].content.contains("hours later"));
+        assert!(result[2].content.contains("3:30 PM"));
+        assert!(result[2].content.contains("I'm back"));
+        // content_blocks should also be updated.
+        if let Some(ContentBlock::Text { text }) = result[2].content_blocks.first() {
+            assert!(text.contains("hours later"));
+        } else {
+            panic!("Expected Text content block");
+        }
+    }
+
+    #[test]
+    fn trim_messages_no_gap_marker_for_short_gaps() {
+        let msgs = vec![
+            make_msg_at(Role::User, "Hello", "2026-04-04T09:00:00-07:00"),
+            make_msg_at(Role::Assistant, "Hi", "2026-04-04T09:01:00-07:00"),
+            make_msg_at(Role::User, "Quick follow-up", "2026-04-04T09:10:00-07:00"),
+        ];
+        let result = trim_messages(&msgs, 100_000);
+        assert_eq!(result[2].content, "Quick follow-up");
+    }
+
+    #[test]
+    fn trim_messages_no_gap_marker_on_assistant_messages() {
+        let msgs = vec![
+            make_msg_at(Role::User, "Hello", "2026-04-04T09:00:00-07:00"),
+            // Large gap, but the next message is assistant — no marker.
+            make_msg_at(Role::Assistant, "Hey, you there?", "2026-04-04T15:00:00-07:00"),
+            make_msg_at(Role::User, "Yeah!", "2026-04-04T15:01:00-07:00"),
+        ];
+        let result = trim_messages(&msgs, 100_000);
+        assert!(!result[1].content.contains("later"), "assistant messages should not get gap markers");
+        // But the gap from the assistant message to the next user message is only 1 min — no marker.
+        assert_eq!(result[2].content, "Yeah!");
     }
 
     // ── Full assembly ─────────────────────────────────────────────────
