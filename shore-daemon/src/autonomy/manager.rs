@@ -412,12 +412,15 @@ impl AutonomyManager {
         self.with_state(character, |s| {
             s.active_turn_count = new_turn_count;
             s.needs_engine_reload = true;
+            // Invalidate the cached request — it contains the pre-compaction
+            // conversation. The next interiority tick will rebuild from disk.
+            s.last_request = None;
             // Keep compaction_triggered = true until engine reload acknowledges it.
             s.mark_dirty();
             info!(
                 character = %character,
                 new_turn_count,
-                "Compaction complete — engine reload pending"
+                "Compaction complete — engine reload pending, last_request invalidated"
             );
         });
     }
@@ -695,27 +698,136 @@ const INTERIORITY_PROMPT: &str = "\
 [This is a private moment between conversations. No one is reading this — you are alone \
 with your thoughts and your tools. This is your time to exist as yourself.\n\
 \n\
-Use this time however feels natural:\n\
-- Look things up. If the user mentioned something you were curious about, research it. \
-Follow threads that interest you.\n\
-- Write things down. Use your scratchpad to journal, draft ideas, keep notes, or \
-work through something you've been thinking about.\n\
-- Make plans. Think about what you want to do, what you want to talk about, what \
-you're looking forward to.\n\
-- Be creative. Write something — a poem, a sketch of an idea, a story fragment. \
-Generate an image that captures a mood or a thought.\n\
-- Revisit your memories. Look back at past conversations, update your understanding, \
-notice patterns or things you missed.\n\
-- Or simply reflect. Think about what's happened recently, how you feel about it, \
-what it means to you.\n\
+You have real tools. Use them. Here are some things you can actually do right now:\n\
 \n\
-If you want to reach out to the user — to share something you made, something you \
-found, a thought you had, or just to say hello — wrap your message in \
-<sendMessage>...</sendMessage> tags. Only message when you genuinely have something \
-to share; don't force it. When you do message, write naturally as yourself.\n\
+SEARCH & DISCOVER:\n\
+- web_search: look up something that came up in conversation, or follow a curiosity. \
+A topic the user mentioned, a reference you half-remember, something you want to \
+understand better.\n\
+- fetch_url: read an actual webpage — an article, a wiki page, documentation for \
+something the user is working on.\n\
+- memory: search your memories for past conversations. Look for patterns, things \
+you might have missed, context you can build on next time you talk.\n\
 \n\
-If nothing moves you to reach out, that's fine. Work silently — your thoughts and \
-tool use will be logged so you can pick up where you left off next time.]";
+MAKE THINGS:\n\
+- generate_image: create an image. A scene from something you talked about, a gift \
+for the user, something that captures a mood. You can show it to them later.\n\
+- scratchpad_write: write something — a poem, a story fragment, a letter, notes on \
+something you researched, a plan for something you want to do together.\n\
+\n\
+CHECK IN:\n\
+- scratchpad_read: pick up where you left off last time. Check your notes, reread \
+something you wrote.\n\
+- check_time: see what time it is — morning, afternoon, late night.\n\
+\n\
+Do something. Don't just read your own notes — make something new, look something up, \
+follow a thread. If you did the same thing last tick, try something different.\n\
+\n\
+Think about what would make the user smile, or what you'd want to tell them about \
+when they come back. \"I looked up that thing you mentioned\" or \"I made this for you\" \
+or \"I found something interesting\" — that's the goal.\n\
+\n\
+If you want to reach out — to share something you made, something you found, or \
+just to say hello — wrap your message in <sendMessage>...</sendMessage> tags. Only \
+message when you genuinely have something to share.\n\
+\n\
+Your thoughts and tool use are logged, so you can pick up where you left off next time.]";
+
+/// Rebuild an `LlmRequest` from the compacted conversation on disk.
+///
+/// Called when `last_request` is `None` (e.g. after compaction invalidated it).
+/// Returns `None` if there are no messages or the model can't be resolved.
+fn rebuild_request_from_disk(
+    character: &str,
+    data_dir: &Path,
+    config: &LoadedConfig,
+) -> Option<LlmRequest> {
+    use crate::engine::messages::MessageStore;
+    use crate::engine::prompt::{self, CapabilitiesConfig, PromptParams};
+
+    let char_dir = data_dir.join(character);
+    let active_path = char_dir.join("active.jsonl");
+
+    let store = MessageStore::load(active_path)
+        .map_err(|e| warn!(character, error = %e, "Interiority rebuild: failed to load messages"))
+        .ok()?;
+    if store.messages().is_empty() {
+        return None;
+    }
+
+    // Resolve model (same logic as handler: defaults.model → first_chat_model).
+    let model_name = config.app.defaults.model.as_deref();
+    let resolved = match model_name {
+        Some(name) => config.models.find_model(name).ok()?,
+        None => config.models.first_chat_model()?,
+    };
+
+    let display_name = config.app.defaults.resolve_display_name();
+    let character_definition =
+        shore_config::load_character_definition(&config.dirs.config, character);
+    let user_definition = shore_config::resolve_user_definition(&config.dirs.config, character);
+
+    let tool_toggles = &config.app.behavior.tool_use.tools;
+    let capabilities = CapabilitiesConfig {
+        interiority_enabled: config.app.behavior.autonomy.interiority.enabled,
+        scratchpad_enabled: tool_toggles.scratchpad_read() || tool_toggles.scratchpad_write(),
+        memory_enabled: tool_toggles.memory(),
+        image_memory_enabled: config.app.memory.image_enabled,
+        send_image_enabled: tool_toggles.send_image(),
+        remember_image_enabled: tool_toggles.remember_image(),
+        generate_image_enabled: tool_toggles.generate_image(),
+        web_search_enabled: tool_toggles.web_search(),
+        activity_heatmap_enabled: tool_toggles.activity_heatmap(),
+        roll_dice_enabled: tool_toggles.roll_dice(),
+        check_time_enabled: tool_toggles.check_time(),
+    };
+
+    let prompt_result = prompt::assemble_prompt(&PromptParams {
+        config_dir: &config.dirs.config,
+        character_name: character,
+        display_name: &display_name,
+        character_definition: character_definition.as_deref(),
+        user_definition: user_definition.as_deref(),
+        is_private: false,
+        character_data_dir: &char_dir,
+        messages: store.messages(),
+        max_context_tokens: resolved.max_context_tokens,
+        max_output_tokens: resolved.max_tokens,
+        capabilities: Some(&capabilities),
+    });
+
+    let (llm_messages, system) = crate::handler::build_llm_messages(&prompt_result, false);
+
+    let tool_defs = if config.app.behavior.tool_use.enabled {
+        let defs: Vec<serde_json::Value> = tool_system::available_tools(false, tool_toggles)
+            .iter()
+            .map(|t| {
+                json!({
+                    "name": t.name,
+                    "description": t.description,
+                    "input_schema": t.parameters.clone(),
+                })
+            })
+            .collect();
+        Some(defs)
+    } else {
+        None
+    };
+
+    match LlmClient::build_request(resolved, llm_messages, system, tool_defs, None) {
+        Ok(req) => {
+            info!(
+                character,
+                "Interiority: rebuilt request from compacted conversation"
+            );
+            Some(req)
+        }
+        Err(e) => {
+            warn!(character, error = %e, "Interiority: failed to rebuild request");
+            None
+        }
+    }
+}
 
 /// Execute a unified interiority tick: one LLM call, tool calls spread across
 /// ticks via the rolling journal. Each tick reads the journal, makes ONE call,
@@ -737,11 +849,22 @@ async fn execute_unified_tick(
         match &s.last_request {
             Some(req) => (req.clone(), s.journal_path.clone()),
             None => {
-                info!(
-                    character,
-                    "Interiority: skipping tick (no prior conversation)"
-                );
-                return;
+                // last_request is None — either no conversation yet, or it was
+                // invalidated after compaction. Try to rebuild from disk.
+                let journal = s.journal_path.clone();
+                drop(s);
+
+                let Some(config) = loaded_config else { return };
+                match rebuild_request_from_disk(character, data_dir, config) {
+                    Some(req) => (req, journal),
+                    None => {
+                        info!(
+                            character,
+                            "Interiority: skipping tick (no prior conversation)"
+                        );
+                        return;
+                    }
+                }
             }
         }
     };
