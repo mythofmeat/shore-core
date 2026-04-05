@@ -112,6 +112,12 @@ func _ready() -> void:
 	add_child(_dead_bird_label)
 	_dead_bird_timer = randf_range(30.0, 120.0)
 
+	# Load saved settings
+	var text_settings := effects.load_settings()
+	effects._settings_loaded = true
+	for key in text_settings:
+		_on_text_settings_changed(key, text_settings[key])
+
 	# Auto-connect on launch
 	status_label.text = "Connecting..."
 	bridge.connect_to_daemon("", "")
@@ -452,6 +458,13 @@ func _on_text_settings_changed(setting: String, value: Variant) -> void:
 			input_field.add_theme_constant_override("lcd_subpixel_layout", mode)
 		"enter_sends":
 			_enter_sends = bool(value)
+	# Persist text settings alongside effects settings
+	if effects._settings_loaded:
+		effects.save_settings({
+			"font_size": _font_size,
+			"font_name": _font_name,
+			"enter_sends": _enter_sends,
+		})
 
 func _apply_font_size() -> void:
 	message_display.add_theme_font_size_override("normal_font_size", _font_size)

@@ -68,6 +68,7 @@ const PRESETS := {
 @export var typing_sounds_enabled := true
 @export var ambient_enabled := true
 @export var hauntings_enabled := false
+@export var time_sync_enabled := false
 @export var master_volume_db := -6.0
 @export var ambient_volume_db := -24.0
 
@@ -103,6 +104,20 @@ var _rain_shift_interval := 20.0  # seconds until next target change
 var _thought_intensity := 0.0
 var _thought_light_rect: ColorRect
 var _thought_light_material: ShaderMaterial
+
+# Time-of-day sync
+var _time_poll_timer := 0.0
+var _time_tint := Color(0.0, 0.0, 0.0, 0.0)  # additive tint applied to bg
+var _time_star_mult := 1.0  # star density multiplier
+var _time_warmth := 0.0  # extra rain_warmth from time
+
+# Ghost typing
+var _ghost_idle_timer := 0.0
+var _ghost_active := false
+var _ghost_text := ""
+var _ghost_char_idx := 0
+var _ghost_char_timer := 0.0
+var _ghost_fade_timer := 0.0
 
 # ── Node refs (set in _ready) ────────────────────────────────────
 
@@ -150,6 +165,7 @@ var _boot_timer := 0.0
 # Ambient
 var _ambient_target_pitch := 1.0
 var _is_streaming := false
+var _settings_loaded := false
 
 # ── Audio streams (generated in _ready) ──────────────────────────
 
@@ -174,10 +190,28 @@ var _ocean_audio: AudioStreamPlayer
 var _glass_tap_stream: AudioStreamWAV
 var _glass_crack_stream: AudioStreamWAV
 var _glass_audio: AudioStreamPlayer
+var _sub_bass_stream: AudioStreamWAV
+var _resonance_audio: AudioStreamPlayer
 var _effects_bus_idx := -1
 
 const MIX_RATE := 44100
 const AMBIENT_LOOP_SECONDS := 4.0
+const GHOST_FRAGMENTS := [
+	"what if the signal was always there",
+	"the water remembers",
+	"somewhere a light is on",
+	"tell me what you see",
+	"the fog is listening",
+	"do you hear the rain",
+	"it was never quiet here",
+	"something stirs beneath",
+	"the shore knows your name",
+	"between the static",
+	"a thought half-formed",
+	"the tide is changing",
+]
+const GHOST_IDLE_DELAY := 12.0  # seconds of idle before ghost appears
+const GHOST_CHAR_SPEED := 0.08  # seconds per character
 
 func _ready() -> void:
 	_crt_rect = get_node("../CRTLayer/CRTRect")
@@ -234,12 +268,19 @@ func _ready() -> void:
 	_ocean_stream = _generate_ocean_waves()
 	_glass_tap_stream = _generate_glass_tap()
 	_glass_crack_stream = _generate_glass_crack()
+	_sub_bass_stream = _generate_sub_bass()
 
 	# Glass tap/crack audio player (one-shot, reused)
 	_glass_audio = AudioStreamPlayer.new()
 	_glass_audio.bus = "Master"
 	_glass_audio.volume_db = -10.0
 	add_child(_glass_audio)
+
+	# Resonance audio player (for emotional resonance effect)
+	_resonance_audio = AudioStreamPlayer.new()
+	_resonance_audio.bus = "Master"
+	_resonance_audio.volume_db = master_volume_db - 6.0
+	add_child(_resonance_audio)
 
 	# Audio bus for Silent Shore reverb/muffling
 	_effects_bus_idx = AudioServer.bus_count
@@ -386,6 +427,13 @@ func _process(delta: float) -> void:
 	if wpm_enabled and _wpm_label:
 		_update_wpm_label()
 
+	# ── Time-of-day ambient shift ─────────────────────────────────
+	if time_sync_enabled:
+		_time_poll_timer -= delta
+		if _time_poll_timer <= 0.0:
+			_time_poll_timer = 60.0
+			_update_time_of_day()
+
 # ── Public API (called from main.gd) ─────────────────────────────
 
 func on_stream_start() -> void:
@@ -447,6 +495,43 @@ func on_stream_end() -> void:
 		var scroll_rect := _scroll.get_global_rect()
 		_completion_burst.position = Vector2(scroll_rect.size.x * 0.5, scroll_rect.size.y - 20.0)
 		_completion_burst.emitting = true
+
+	# ── Emotional resonance ───────────────────────────────────────
+	if _stream_char_count > 500:
+		# Long response: the response landed with weight
+		# Vignette breathe
+		if crt_enabled and _crt_rect:
+			var base_v: float = _crt_rect.material.get_shader_parameter("vignette_strength")
+			var tween := create_tween()
+			tween.tween_method(
+				func(val: float): _crt_rect.material.set_shader_parameter("vignette_strength", val),
+				base_v, base_v + 0.15, 1.0
+			)
+			tween.tween_method(
+				func(val: float): _crt_rect.material.set_shader_parameter("vignette_strength", val),
+				base_v + 0.15, base_v, 1.0
+			)
+		# Ambient swell
+		_ambient_target_pitch = 0.95
+		var pitch_tween := create_tween()
+		pitch_tween.tween_callback(func(): _ambient_target_pitch = 1.0).set_delay(2.0)
+		# Sub-bass tone
+		if audio_enabled and _resonance_audio:
+			_resonance_audio.stream = _sub_bass_stream
+			_resonance_audio.volume_db = master_volume_db - 12.0
+			_resonance_audio.play()
+	elif _stream_char_count < 50 and _stream_char_count > 0:
+		# Short response: barely disturbed the surface
+		if audio_enabled:
+			play_glass_tap()
+		if crt_enabled and _crt_rect:
+			var bright: float = _crt_rect.material.get_shader_parameter("brightness")
+			_crt_rect.material.set_shader_parameter("brightness", bright + 0.1)
+			var flick_tween := create_tween()
+			flick_tween.tween_method(
+				func(val: float): _crt_rect.material.set_shader_parameter("brightness", val),
+				bright + 0.1, bright, 0.15
+			)
 
 func on_error() -> void:
 	if audio_enabled:
@@ -521,6 +606,9 @@ func _apply_toggles() -> void:
 		_ambient_audio.volume_db = ambient_volume_db
 	if _ocean_audio:
 		_ocean_audio.volume_db = ambient_volume_db - 6.0
+	# Auto-save on every toggle/slider change (but not during initial load)
+	if _settings_loaded:
+		save_settings()
 
 func set_all_effects(val: bool) -> void:
 	crt_enabled = val
@@ -612,6 +700,51 @@ func _swap_background_shader() -> void:
 		_:
 			_starfield_rect.material = _starfield_material
 
+# ── Settings persistence ──────────────────────────────────────────
+
+const SETTINGS_PATH := "user://settings.cfg"
+const SAVE_KEYS := [
+	"background_shader", "crt_enabled", "glow_enabled", "audio_enabled",
+	"fire_cursor_enabled", "screen_shake_enabled", "vhs_enabled",
+	"starfield_enabled", "wpm_enabled", "typing_sounds_enabled",
+	"ambient_enabled", "hauntings_enabled", "time_sync_enabled", "master_volume_db",
+	"ambient_volume_db", "crt_scanline_intensity", "crt_distortion_intensity",
+	"crt_vignette_intensity", "glow_radius", "shake_scale", "star_density",
+]
+
+func save_settings(extra: Dictionary = {}) -> void:
+	var cfg := ConfigFile.new()
+	cfg.set_value("effects", "preset", _active_preset)
+	for key in SAVE_KEYS:
+		cfg.set_value("effects", key, get(key))
+	# Extra settings from main.gd (font, enter_sends, etc.)
+	for key in extra:
+		cfg.set_value("text", key, extra[key])
+	cfg.save(SETTINGS_PATH)
+
+func load_settings() -> Dictionary:
+	var cfg := ConfigFile.new()
+	if cfg.load(SETTINGS_PATH) != OK:
+		return {}
+	# Load preset first, then overrides
+	var preset_name: String = cfg.get_value("effects", "preset", "Default")
+	if preset_name in PRESETS:
+		apply_preset(preset_name)
+	# Apply individual overrides (user may have tweaked after preset)
+	for key in SAVE_KEYS:
+		if cfg.has_section_key("effects", key):
+			var val: Variant = cfg.get_value("effects", key)
+			set(key, val)
+	_swap_background_shader()
+	_apply_audio_palette(_audio_palette)
+	_apply_toggles()
+	# Return text settings for main.gd to apply
+	var text_settings := {}
+	if cfg.has_section("text"):
+		for key in cfg.get_section_keys("text"):
+			text_settings[key] = cfg.get_value("text", key)
+	return text_settings
+
 # ── Boot sequence ─────────────────────────────────────────────────
 
 func _start_boot_sequence() -> void:
@@ -646,6 +779,63 @@ func _update_wpm_label() -> void:
 		else:
 			col = Color(1.0, 0.5, 0.0).lerp(Color(1.0, 0.1, 0.0), (speed_t - 0.8) / 0.2)
 		_wpm_label.add_theme_color_override("font_color", col)
+
+# ── Time-of-day ──────────────────────────────────────────────────
+
+func _update_time_of_day() -> void:
+	var dt := Time.get_datetime_dict_from_system()
+	var hour: int = dt["hour"]
+	var minute: int = dt["minute"]
+	var h := float(hour) + float(minute) / 60.0  # 0.0 .. 23.99
+
+	# Map hour to tint + star multiplier + warmth
+	# Night (22-5): deep blue tint, full stars, cool
+	# Dawn (5-8): warm orange/pink, fading stars, warm
+	# Day (8-17): neutral, minimal stars, neutral
+	# Dusk (17-22): amber/purple, rising stars, warm
+	var tint := Color(0.0, 0.0, 0.0, 0.0)
+	var star_m := 1.0
+	var warmth := 0.0
+
+	if h < 5.0 or h >= 22.0:
+		# Deep night
+		tint = Color(-0.02, -0.01, 0.04, 0.0)
+		star_m = 1.3
+		warmth = -0.02
+	elif h < 8.0:
+		# Dawn transition (5-8)
+		var t := (h - 5.0) / 3.0
+		tint = Color(-0.02, -0.01, 0.04, 0.0).lerp(Color(0.03, 0.01, -0.02, 0.0), t)
+		star_m = lerpf(1.3, 0.5, t)
+		warmth = lerpf(-0.02, 0.04, t)
+	elif h < 17.0:
+		# Daytime
+		tint = Color(0.0, 0.0, 0.0, 0.0)
+		star_m = 0.5
+		warmth = 0.0
+	else:
+		# Dusk transition (17-22)
+		var t := (h - 17.0) / 5.0
+		tint = Color(0.0, 0.0, 0.0, 0.0).lerp(Color(-0.02, -0.01, 0.04, 0.0), t)
+		star_m = lerpf(0.5, 1.3, t)
+		warmth = lerpf(0.0, -0.02, t)
+
+	_time_tint = tint
+	_time_star_mult = star_m
+	_time_warmth = warmth
+
+	# Apply star density modulation
+	if starfield_enabled and _starfield_rect:
+		if background_shader == "starfield" and _starfield_material:
+			_starfield_material.set_shader_parameter("star_density", star_density * _time_star_mult)
+		elif background_shader == "rain_fog" and _rain_fog_material:
+			_rain_fog_material.set_shader_parameter("rain_warmth", clampf(warmth + 0.5, 0.0, 1.0))
+
+	# Apply ambient pitch offset for time-of-day mood
+	if h < 5.0 or h >= 22.0:
+		_ambient_target_pitch = 0.97  # slightly lower at night
+	elif not _is_streaming:
+		_ambient_target_pitch = 1.0
 
 # ── Audio generation ──────────────────────────────────────────────
 
@@ -1021,6 +1211,27 @@ func _generate_glass_crack() -> AudioStreamWAV:
 	stream.data = data
 	return stream
 
+func _generate_sub_bass() -> AudioStreamWAV:
+	# Very low tone (~40Hz, 200ms) — felt more than heard
+	var stream := AudioStreamWAV.new()
+	stream.format = AudioStreamWAV.FORMAT_16_BITS
+	stream.mix_rate = MIX_RATE
+	var duration := 0.25
+	var total_samples := int(MIX_RATE * duration)
+	var data := PackedByteArray()
+	data.resize(total_samples * 2)
+	for i in total_samples:
+		var t := float(i) / float(MIX_RATE)
+		var env := sin(t / duration * PI)  # smooth hump
+		var sample := sin(t * TAU * 40.0) * 0.5
+		sample += sin(t * TAU * 60.0) * 0.25
+		sample *= env * 0.3
+		var s16 := int(clampf(sample, -1.0, 1.0) * 32767.0)
+		data[i * 2] = s16 & 0xFF
+		data[i * 2 + 1] = (s16 >> 8) & 0xFF
+	stream.data = data
+	return stream
+
 func play_glass_tap() -> void:
 	if _glass_audio and _glass_tap_stream:
 		_glass_audio.stream = _glass_tap_stream
@@ -1089,6 +1300,47 @@ func _update_fire_cursor(delta: float) -> void:
 		_input_field.add_theme_color_override("caret_color", caret_col)
 	else:
 		_input_field.add_theme_color_override("caret_color", Color.WHITE)
+
+	# Ghost typing: phantom fragments when idle + empty input
+	if _input_field.text.is_empty() and _typing_speed < 0.5 and not _is_streaming:
+		_ghost_idle_timer += delta
+		if _ghost_idle_timer >= GHOST_IDLE_DELAY and not _ghost_active:
+			# Start a new ghost
+			_ghost_active = true
+			_ghost_text = GHOST_FRAGMENTS[randi() % GHOST_FRAGMENTS.size()]
+			_ghost_char_idx = 0
+			_ghost_char_timer = 0.0
+			_ghost_fade_timer = 0.0
+			_input_field.placeholder_text = ""
+		if _ghost_active:
+			if _ghost_char_idx < _ghost_text.length():
+				# Type out one char at a time
+				_ghost_char_timer += delta
+				if _ghost_char_timer >= GHOST_CHAR_SPEED:
+					_ghost_char_timer -= GHOST_CHAR_SPEED
+					_ghost_char_idx += 1
+					_input_field.placeholder_text = _ghost_text.substr(0, _ghost_char_idx)
+			else:
+				# Fully typed — hold for a beat then fade
+				_ghost_fade_timer += delta
+				if _ghost_fade_timer > 3.0:
+					# Fade out by dimming placeholder color
+					var fade := clampf(1.0 - (_ghost_fade_timer - 3.0) / 1.5, 0.0, 1.0)
+					_input_field.add_theme_color_override("font_placeholder_color", Color(0.35, 0.35, 0.45, fade))
+					if fade <= 0.0:
+						_ghost_active = false
+						_ghost_idle_timer = 0.0
+						_input_field.placeholder_text = ""
+						_input_field.add_theme_color_override("font_placeholder_color", Color(0.35, 0.35, 0.45, 1.0))
+				else:
+					_input_field.add_theme_color_override("font_placeholder_color", Color(0.35, 0.35, 0.45, 1.0))
+	else:
+		# User is typing or input has text — reset ghost state
+		if _ghost_active:
+			_ghost_active = false
+			_input_field.placeholder_text = ""
+			_input_field.add_theme_color_override("font_placeholder_color", Color(0.35, 0.35, 0.45, 1.0))
+		_ghost_idle_timer = 0.0
 
 	# Auto-grow input field height based on content
 	var line_count := _input_field.get_line_count()

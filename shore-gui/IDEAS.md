@@ -140,6 +140,19 @@ Real-time FFT visualization of the audio output in the header. Waveform or bar s
 - **Cursor Breath**: Caret alpha pulses slowly (3s period) when idle and focused
 - **Warm rain tint**: rain_warmth uniform now actually affects shader output (was declared but unused)
 
+### Phase 2 — UX Polish
+- **Streaming indicator**: Animated dots ("generating...") during AI response, Send→Stop button swap
+- **Enter-sends toggle**: Configurable enter-to-send with Shift+Enter for newlines
+- **Config panel slide transition**: Panel slides in from right edge (0.2s ease-out), slides out on close
+- **Slider value labels**: Dynamic labels next to each slider showing current value (% for volume, decimal for others)
+- **Custom preset detection**: Toggling any setting away from preset auto-switches to "Custom"
+
+### Phase 3 — Persistence & Atmosphere
+- **Settings persistence**: All toggles, sliders, preset, and text settings save to `user://settings.cfg` via ConfigFile. Auto-saves on every toggle/slider change. Loads on startup before boot sequence.
+- **Emotional resonance**: Long responses (>500 chars) trigger vignette breathe + ambient pitch drop + sub-bass tone. Short responses (<50 chars) get a glass tap + brightness flicker.
+- **Time-of-day ambient shift (The Clock)**: Polls system time every 60s. Night: blue tint, 1.3x stars, lower ambient pitch. Dawn: warm transition. Day: neutral. Dusk: amber fade. Toggle in config panel.
+- **Ghost Typing**: After 12s idle with empty input, phantom text fragments type out character-by-character in the placeholder. Pool of atmospheric phrases. Fades out after 3s hold. Instantly cleared on any input.
+
 ---
 
 ## Design Principles

@@ -39,6 +39,7 @@ func _refresh_all() -> void:
 	_set_toggle("Audio", _effects.audio_enabled)
 	_set_toggle("TypingSounds", _effects.typing_sounds_enabled)
 	_set_toggle("Ambient", _effects.ambient_enabled)
+	_set_toggle("TimeSync", _effects.time_sync_enabled)
 	# Volume sliders
 	_set_slider("MasterVolume", _effects.master_volume_db, -30.0, 0.0)
 	_set_slider("AmbientVolume", _effects.ambient_volume_db, -40.0, -10.0)

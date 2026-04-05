@@ -260,13 +260,17 @@ When the user is actively scrolling (scroll velocity > 0), the rain streaks temp
 
 **Tidal Pull** (#3): The parallax/color-shift parts are easy but the asymmetric scroll friction fights usability. Deferred pending a UX-safe approach (parallax yes, resistance no).
 
-**Ghost Typing** (#4): Small and self-contained, but deprioritized in favor of fixes and hauntings. Good candidate for next session.
-
 **Drowned UI** (#6): Many pieces (shader, particles, audio bus, transition). Saved for a feature branch.
 
-**The Clock** (#7): Self-contained and high-value. Deferred only due to session scope. Should be next.
+### Phase 3 Implementation (2026-04-05)
 
-**Emotional Resonance** (#8): Easy to implement (response-length-gated VFX in `on_stream_end`). Deferred for testing with real conversations.
+**Settings Persistence**: All effect toggles, intensity sliders, preset name, and text settings (font, size, LCD filter, enter-sends) saved to `user://settings.cfg` via Godot's ConfigFile API. Auto-saves on every toggle/slider change after initial load. Loaded in main.gd before boot sequence.
+
+**Emotional Resonance** (#8): Implemented in `on_stream_end()`. Long responses (>500 chars) trigger a 2s vignette breathe (base + 0.15 → base), ambient pitch drop to 0.95 for 2s, and a sub-bass tone at master_volume - 12dB. Short responses (<50 chars) get a glass tap + 100ms brightness flicker. The thresholds feel right — 500 chars is roughly a full paragraph.
+
+**The Clock** (#7): Implemented. Polls `Time.get_datetime_dict_from_system()` every 60s. Maps hour to four zones: deep night (22-5: blue tint, 1.3x stars, pitch 0.97), dawn (5-8: warm transition), day (8-17: neutral, 0.5x stars), dusk (17-22: blue fade). Modulates star_density multiplier, rain_warmth, and ambient pitch. Toggle in config panel, persisted in settings.
+
+**Ghost Typing** (#4): Implemented. After 12s of idle with empty input (not during streaming), a random phrase from a pool of 12 atmospheric fragments types out character-by-character (80ms/char) into the input field's placeholder text. Holds for 3s, then fades over 1.5s. Instantly cleared on any typing. The fragments are evocative but never pretend to be completions — "the water remembers", "between the static", etc.
 
 ### What changed from the proposals
 

@@ -204,6 +204,10 @@ layout_mode = 2
 button_pressed = true
 text = "Ambient Drone"
 
+[node name="TimeSyncToggle" type="CheckButton" parent="ScrollContainer/Margin/VBox"]
+layout_mode = 2
+text = "Time-of-Day Sync"
+
 [node name="MasterVolumeLabel" type="Label" parent="ScrollContainer/Margin/VBox"]
 layout_mode = 2
 text = "Master Volume"
@@ -297,6 +301,7 @@ text = "Enter sends message"
 [connection signal="toggled" from="ScrollContainer/Margin/VBox/AudioToggle" to="." method="_on_toggle" binds= ["audio_enabled"]]
 [connection signal="toggled" from="ScrollContainer/Margin/VBox/TypingSoundsToggle" to="." method="_on_toggle" binds= ["typing_sounds_enabled"]]
 [connection signal="toggled" from="ScrollContainer/Margin/VBox/AmbientToggle" to="." method="_on_toggle" binds= ["ambient_enabled"]]
+[connection signal="toggled" from="ScrollContainer/Margin/VBox/TimeSyncToggle" to="." method="_on_toggle" binds= ["time_sync_enabled"]]
 [connection signal="value_changed" from="ScrollContainer/Margin/VBox/ScanlineSlider" to="." method="_on_slider" binds= ["crt_scanline_intensity"]]
 [connection signal="value_changed" from="ScrollContainer/Margin/VBox/DistortionSlider" to="." method="_on_slider" binds= ["crt_distortion_intensity"]]
 [connection signal="value_changed" from="ScrollContainer/Margin/VBox/VignetteSlider" to="." method="_on_slider" binds= ["crt_vignette_intensity"]]
