@@ -25,7 +25,7 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         return handle_matrix_command(subcommand, &cli).await;
     }
     if let CliCommand::Usage { .. } = &cli.command {
-        return handle_usage_command(&cli.command).await;
+        return handle_usage_command(&cli).await;
     }
 
     let addr = resolve_addr(&cli);
@@ -469,7 +469,7 @@ async fn run_memory_shell(conn: &mut SWPConnection) -> Result<(), Box<dyn std::e
 
 // ── Usage command (local, no daemon) ────────────────────────────────────────
 
-async fn handle_usage_command(cmd: &CliCommand) -> Result<(), Box<dyn std::error::Error>> {
+async fn handle_usage_command(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
     let CliCommand::Usage {
         last,
         character,
@@ -481,13 +481,16 @@ async fn handle_usage_command(cmd: &CliCommand) -> Result<(), Box<dyn std::error
         export_tsv,
         refresh_pricing,
         recalculate,
-    } = cmd
+    } = &cli.command
     else {
         unreachable!()
     };
 
-    let data_dir = shore_config::data_dir();
-    let db_path = data_dir.join("ledger.db");
+    // Load config (incl. .env and --config override) so we resolve the same
+    // data directory the daemon uses.
+    let config_path = cli.config.as_deref().map(std::path::Path::new);
+    let loaded = shore_config::load_config(config_path)?;
+    let db_path = loaded.dirs.data.join("ledger.db");
 
     if !db_path.exists() {
         eprintln!(
