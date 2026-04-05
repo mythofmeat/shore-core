@@ -4848,6 +4848,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "shore-ledger"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "shore-config",
+ "shore-llm-client",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "shore-llm-client"
 version = "0.1.0"
 dependencies = [
