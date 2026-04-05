@@ -309,7 +309,7 @@ async fn memory_query(
 
     let display_name = ctx.config.app.defaults.resolve_display_name();
     let agent = MemoryAgent::one_shot(CallerIdentity::User, &display_name, char_name);
-    let agent_llm = RealAgentLlm::new(ctx.llm_client.clone());
+    let agent_llm = RealAgentLlm::new(ctx.llm_client.clone(), char_name.to_string());
 
     let search_ctx = setup_search_context(ctx, char_name).await;
     let real_indexer = search_ctx.as_ref().map(RealAgentIndexer::new);
@@ -399,7 +399,7 @@ pub async fn memory_shell_query(
         .clone();
 
     let db = open_memory_db(ctx, &char_name)?;
-    let agent_llm = RealAgentLlm::new(ctx.llm_client.clone());
+    let agent_llm = RealAgentLlm::new(ctx.llm_client.clone(), char_name.clone());
     let search_ctx = setup_search_context(ctx, &char_name).await;
     let real_indexer = search_ctx.as_ref().map(RealAgentIndexer::new);
     let indexer = real_indexer
@@ -464,7 +464,7 @@ async fn run_post_compaction_collation(
 
     let cmodel = collation_model?;
 
-    let collation_llm = RealCollationLlm::new(ctx.llm_client.clone(), cmodel);
+    let collation_llm = RealCollationLlm::new(ctx.llm_client.clone(), cmodel, char_name.to_string());
     let refine_template = resolve_prompt_template(&ctx.config.dirs.config, char_name, "refine.md")
         .unwrap_or_else(|| DEFAULT_REFINE_PROMPT.to_string());
 
@@ -570,8 +570,8 @@ pub async fn compact(
     let (store, embed_config) = super::open_embed_and_vectorstore(ctx, &char_name).await?;
 
     // Create trait implementations.
-    let llm = RealCompactionLlm::new(ctx.llm_client.clone(), model);
-    let indexer = RealVectorIndexer::new(store, ctx.llm_client.clone(), embed_config);
+    let llm = RealCompactionLlm::new(ctx.llm_client.clone(), model, char_name.clone());
+    let indexer = RealVectorIndexer::new(store, ctx.llm_client.inner().clone(), embed_config);
     let conv_mgr = RealConversationManager::new(engine.character_dir());
 
     // Create compaction manager with config.
@@ -734,7 +734,7 @@ pub async fn collate(
     let model = resolve_collation_model(&ctx.config)
         .ok_or_else(|| (ErrorCode::InternalError, "No model configured".to_string()))?;
 
-    let llm = RealCollationLlm::new(ctx.llm_client.clone(), model);
+    let llm = RealCollationLlm::new(ctx.llm_client.clone(), model, char_name.clone());
 
     // Resolve prompt template.
     let refine_template = resolve_prompt_template(&ctx.config.dirs.config, &char_name, "refine.md")
@@ -1071,6 +1071,7 @@ pub async fn memory_reindex(engine: &ConversationEngine, ctx: &CommandContext) -
         let texts: Vec<&str> = chunk.iter().map(|e| e.summary_text.as_str()).collect();
         let batch = ctx
             .llm_client
+            .inner()
             .embed(
                 &embed_config.provider,
                 &embed_config.model_id,
@@ -1237,7 +1238,7 @@ mod tests {
                 crate::commands::SessionTokens::default(),
             )),
             autonomy,
-            llm_client: shore_llm_client::LlmClient::new(),
+            llm_client: shore_ledger::LedgerClient::new(shore_llm_client::LlmClient::new(), &data_dir.join("ledger.db")).unwrap(),
             diagnostics: std::sync::Arc::new(std::sync::Mutex::new(
                 shore_diagnostics::Diagnostics::default(),
             )),

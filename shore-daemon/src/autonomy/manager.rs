@@ -34,8 +34,8 @@ use crate::tools::context::{NoopRag, SharedToolContext};
 use shore_config::app::{AutonomyConfig, CompactionConfig};
 use shore_config::LoadedConfig;
 use shore_diagnostics::truncate_summary;
+use shore_ledger::{CallType, LedgerClient};
 use shore_llm_client::types::LlmRequest;
-use shore_llm_client::LlmClient;
 
 // ---------------------------------------------------------------------------
 // Tick context — shared state for the per-character autonomy loop
@@ -48,7 +48,7 @@ struct TickContext {
     compaction: Arc<CompactionConfig>,
     data_dir: PathBuf,
     compaction_tx: mpsc::Sender<String>,
-    llm_client: Option<LlmClient>,
+    llm_client: Option<LedgerClient>,
     push_tx: Option<broadcast::Sender<ServerMessage>>,
     loaded_config: Option<Arc<LoadedConfig>>,
     notifier: Option<NotificationService>,
@@ -190,7 +190,7 @@ pub struct AutonomyManager {
     /// Channel for sending compaction trigger signals (character name).
     compaction_tx: mpsc::Sender<String>,
     /// LLM client for interiority ticks and cache keepalive pings.
-    llm_client: Option<LlmClient>,
+    llm_client: Option<LedgerClient>,
     /// Broadcast sender for pushing autonomous messages to SWP clients.
     push_tx: Option<broadcast::Sender<ServerMessage>>,
     /// Full config for model resolution in autonomous actions.
@@ -242,7 +242,7 @@ impl AutonomyManager {
     /// Called once after creation, before any characters are ensured.
     pub fn set_resources(
         &mut self,
-        llm_client: LlmClient,
+        llm_client: LedgerClient,
         push_tx: broadcast::Sender<ServerMessage>,
         loaded_config: LoadedConfig,
         notifier: NotificationService,
@@ -814,7 +814,7 @@ fn rebuild_request_from_disk(
         None
     };
 
-    match LlmClient::build_request(resolved, llm_messages, system, tool_defs, None) {
+    match LedgerClient::build_request(resolved, llm_messages, system, tool_defs, None) {
         Ok(req) => {
             info!(
                 character,
@@ -836,7 +836,7 @@ async fn execute_unified_tick(
     character: &str,
     state: &Arc<Mutex<AutonomyState>>,
     data_dir: &Path,
-    llm_client: Option<&LlmClient>,
+    llm_client: Option<&LedgerClient>,
     push_tx: Option<&broadcast::Sender<ServerMessage>>,
     loaded_config: Option<&LoadedConfig>,
     notifier: Option<&NotificationService>,
@@ -909,7 +909,7 @@ async fn execute_unified_tick(
     );
 
     // -- ONE LLM call -----------------------------------------------------------
-    let resp = match client.generate(&request, None).await {
+    let resp = match client.generate(&request, CallType::Interiority, character, false).await {
         Ok(r) => r,
         Err(e) => {
             error!(character, error = %e, "Interiority: LLM call failed");
@@ -1118,7 +1118,7 @@ async fn execute_unified_tick(
 async fn build_tool_context(
     character: &str,
     data_dir: &Path,
-    client: &LlmClient,
+    client: &LedgerClient,
     config: &LoadedConfig,
 ) -> Option<SharedToolContext> {
     let char_dir = data_dir.join(character);
@@ -1160,7 +1160,7 @@ async fn build_tool_context(
             VectorStore::open(&vs_path, embed_config.dimensions)
                 .await
                 .ok()
-                .map(|vs| AgentSearchContext::new(vs, client.clone(), embed_config))
+                .map(|vs| AgentSearchContext::new(vs, client.inner().clone(), embed_config))
         }
         Err(_) => None,
     };
@@ -1180,19 +1180,19 @@ async fn build_tool_context(
             character,
             &display_name,
         ),
-        agent_llm: RealAgentLlm::new(client.clone()),
+        agent_llm: RealAgentLlm::new(client.clone(), character.to_string()),
         agent_model_val: agent_model.clone(),
         researcher: researcher_model
             .as_ref()
             .map(|_| MemoryResearcher::new(String::new(), String::new())),
         researcher_llm_val: researcher_model
             .as_ref()
-            .map(|_| RealAgentLlm::new(client.clone())),
+            .map(|_| RealAgentLlm::new(client.clone(), character.to_string())),
         researcher_model_val: researcher_model,
         rag: NoopRag,
         search_ctx,
         image_dir_val: char_dir.join("images").to_string_lossy().into_owned(),
-        llm_client_val: client.clone(),
+        llm_client_val: client.inner().clone(),
         image_gen_config_val: image_gen_config,
         search_config_val: config.app.behavior.tool_use.search.clone(),
         character_name_val: character.to_string(),
@@ -1226,7 +1226,7 @@ fn extract_send_message(content: &str) -> Option<String> {
 async fn execute_dormant_ping(
     character: &str,
     state: &Arc<Mutex<AutonomyState>>,
-    llm_client: Option<&LlmClient>,
+    llm_client: Option<&LedgerClient>,
 ) {
     let Some(client) = llm_client else { return };
 
@@ -1245,7 +1245,7 @@ async fn execute_dormant_ping(
         }
     };
 
-    match client.generate(&request, None).await {
+    match client.generate(&request, CallType::Keepalive, character, false).await {
         Ok(resp) => {
             info!(
                 character,

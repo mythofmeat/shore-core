@@ -26,6 +26,7 @@ use shore_daemon::characters::CharacterRegistry;
 use shore_daemon::commands::{CommandContext, SessionTokens};
 use shore_daemon::handler::MessageHandler;
 use shore_daemon::server::{Server, ServerConfig};
+use shore_ledger::LedgerClient;
 use shore_llm_client::LlmClient;
 use shore_protocol::server_msg::ServerMessage;
 use tokio::time::timeout;
@@ -209,7 +210,7 @@ async fn e2e_conversation_milestone() {
         shutdown_rx.clone(),
     );
 
-    let llm_client = LlmClient::new();
+    let llm_client = LedgerClient::new(LlmClient::new(), &loaded.dirs.data.join("ledger.db")).unwrap();
 
     let cmd_ctx = CommandContext {
         config: loaded.clone(),
@@ -688,7 +689,7 @@ impl E2EHarness {
             shutdown_rx.clone(),
         );
 
-        let llm_client = LlmClient::new();
+        let llm_client = LedgerClient::new(LlmClient::new(), &loaded.dirs.data.join("ledger.db")).unwrap();
 
         let cmd_ctx = CommandContext {
             config: loaded.clone(),

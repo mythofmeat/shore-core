@@ -41,9 +41,9 @@ use crate::tools::{self as tool_system, ToolContext};
 use shore_config::app::SearchConfig;
 use shore_config::models::Sdk;
 use shore_config::LoadedConfig;
+use shore_ledger::{CallType, LedgerClient};
 use shore_llm_client::retry::{self, RetryDecision, RetryPolicy};
 use shore_llm_client::stream::{CacheContext, StreamConsumer};
-use shore_llm_client::LlmClient;
 
 // ── Per-request tool context (wraps SharedToolContext + autonomy) ────
 
@@ -86,7 +86,7 @@ impl ToolContext for HandlerToolContext {
     fn image_dir(&self) -> &str {
         self.inner.image_dir()
     }
-    fn llm_client(&self) -> Option<&LlmClient> {
+    fn llm_client(&self) -> Option<&shore_llm_client::LlmClient> {
         self.inner.llm_client()
     }
     fn image_gen_config(&self) -> Option<&ImageGenConfig> {
@@ -112,7 +112,7 @@ impl ToolContext for HandlerToolContext {
 #[derive(Clone)]
 struct GenContext {
     registry: Arc<Mutex<CharacterRegistry>>,
-    llm_client: LlmClient,
+    llm_client: LedgerClient,
     push_tx: broadcast::Sender<ServerMessage>,
     autonomy: AutonomyManager,
     /// Set to false after the first successful generation since daemon start.
@@ -149,7 +149,7 @@ struct GenerationParams {
 pub struct MessageHandler {
     pub registry: Arc<Mutex<CharacterRegistry>>,
     pub cmd_ctx: CommandContext,
-    pub llm_client: LlmClient,
+    pub llm_client: LedgerClient,
     pub push_tx: broadcast::Sender<ServerMessage>,
     pub is_first_after_restart: Arc<AtomicBool>,
     pub has_seen_cache_read: Arc<AtomicBool>,
@@ -430,7 +430,7 @@ async fn handle_generation(
         body,
         regen,
         char_name,
-        rid,
+        rid: _,
         effective_config,
         data_dir,
         active_model,
@@ -654,7 +654,7 @@ async fn handle_generation(
     };
 
     // 9. Build LLM request.
-    let mut request = LlmClient::build_request(resolved, llm_messages, system, tool_defs, None)?;
+    let mut request = LedgerClient::build_request(resolved, llm_messages, system, tool_defs, None)?;
 
     // Apply per-message parameter overrides from the client.
     if let Some(ref ov) = body.overrides {
@@ -680,6 +680,14 @@ async fn handle_generation(
         "Sending streaming request to LLM"
     );
 
+    // Determine if thinking is enabled for this request.
+    let thinking_enabled = request
+        .provider_options
+        .as_ref()
+        .and_then(|opts| opts.get("budget_tokens"))
+        .and_then(|v| v.as_u64())
+        .map_or(false, |b| b > 0);
+
     // 10. Stream response from shore-llm (with retry on transient errors).
     let mut result = stream_with_retry(
         &ctx,
@@ -688,7 +696,8 @@ async fn handle_generation(
         resolved,
         &effective_config,
         regen,
-        rid.as_deref(),
+        &char_name,
+        thinking_enabled,
     )
     .await?;
 
@@ -819,6 +828,7 @@ pub(crate) fn build_llm_messages(
 }
 
 /// Phase 10: Stream the LLM response with exponential backoff retry.
+#[allow(clippy::too_many_arguments)]
 async fn stream_with_retry(
     ctx: &GenContext,
     request: &shore_llm_client::types::LlmRequest,
@@ -826,7 +836,8 @@ async fn stream_with_retry(
     resolved: &shore_config::models::ResolvedModel,
     effective_config: &LoadedConfig,
     regen: bool,
-    rid: Option<&str>,
+    char_name: &str,
+    thinking_enabled: bool,
 ) -> Result<shore_llm_client::types::StreamResult, Box<dyn std::error::Error + Send + Sync>> {
     let retry_policy = RetryPolicy {
         max_retries: effective_config
@@ -842,7 +853,10 @@ async fn stream_with_retry(
         let consumer = StreamConsumer::new(ctx.push_tx.clone());
 
         let stream_result = async {
-            let mut reader = ctx.llm_client.stream_raw(request, rid).await?;
+            let mut ledger_stream = ctx
+                .llm_client
+                .stream_raw(request, CallType::Message, char_name, thinking_enabled)
+                .await?;
 
             let turn_count = engine_arc.lock().await.messages().len();
             let cache_warnings = resolved.provider_key == "anthropic"
@@ -856,7 +870,11 @@ async fn stream_with_retry(
                 has_seen_cache_read: ctx.has_seen_cache_read.load(Ordering::Acquire),
             };
 
-            consumer.consume(&mut reader, regen, &cache_ctx).await
+            let result = consumer
+                .consume(ledger_stream.reader_mut(), regen, &cache_ctx)
+                .await?;
+            ledger_stream.finalize(&result);
+            Ok(result)
         }
         .await;
 
@@ -931,7 +949,7 @@ async fn run_tool_phase(
             match VectorStore::open(&vs_path, embed_config.dimensions).await {
                 Ok(vs) => Some(AgentSearchContext::new(
                     vs,
-                    ctx.llm_client.clone(),
+                    ctx.llm_client.inner().clone(),
                     embed_config,
                 )),
                 Err(e) => {
@@ -951,14 +969,14 @@ async fn run_tool_phase(
                 char_name,
                 &effective_config.app.defaults.resolve_display_name(),
             ),
-            agent_llm: RealAgentLlm::new(ctx.llm_client.clone()),
+            agent_llm: RealAgentLlm::new(ctx.llm_client.clone(), char_name.to_owned()),
             agent_model_val: agent_model.clone(),
             researcher: researcher_model
                 .as_ref()
                 .map(|_| MemoryResearcher::new(char_def, user_def)),
             researcher_llm_val: researcher_model
                 .as_ref()
-                .map(|_| RealAgentLlm::new(ctx.llm_client.clone())),
+                .map(|_| RealAgentLlm::new(ctx.llm_client.clone(), char_name.to_owned())),
             researcher_model_val: researcher_model.clone(),
             rag: NoopRag,
             search_ctx,
@@ -967,7 +985,7 @@ async fn run_tool_phase(
                 .join("images")
                 .to_string_lossy()
                 .into_owned(),
-            llm_client_val: ctx.llm_client.clone(),
+            llm_client_val: ctx.llm_client.inner().clone(),
             image_gen_config_val: image_gen_config,
             search_config_val: effective_config.app.behavior.tool_use.search.clone(),
             character_name_val: char_name.to_owned(),
@@ -980,6 +998,13 @@ async fn run_tool_phase(
         autonomy_val: ctx.autonomy.clone(),
     };
 
+    let thinking_enabled = request
+        .provider_options
+        .as_ref()
+        .and_then(|opts| opts.get("budget_tokens"))
+        .and_then(|v| v.as_u64())
+        .map_or(false, |b| b > 0);
+
     let tool_loop_result = tools::run_tool_loop(
         &ctx.llm_client,
         &ctx.push_tx,
@@ -989,6 +1014,8 @@ async fn run_tool_phase(
         effective_config.app.behavior.tool_use.max_iterations,
         cache_ctx,
         &ctx.diagnostics,
+        char_name,
+        thinking_enabled,
     )
     .await?;
 
@@ -1287,6 +1314,12 @@ mod tests {
             loaded_config.clone(),
         );
 
+        let ledger_client = shore_ledger::LedgerClient::new(
+            shore_llm_client::LlmClient::new(),
+            &data_dir.join("ledger.db"),
+        )
+        .unwrap();
+
         let cmd_ctx = CommandContext {
             config: loaded_config.clone(),
             push_tx: push_tx.clone(),
@@ -1294,7 +1327,7 @@ mod tests {
             active_model: None,
             session_tokens: Arc::new(std::sync::Mutex::new(SessionTokens::default())),
             autonomy: autonomy.clone(),
-            llm_client: LlmClient::new(),
+            llm_client: ledger_client.clone(),
             diagnostics: Arc::new(std::sync::Mutex::new(
                 shore_diagnostics::Diagnostics::default(),
             )),
@@ -1304,7 +1337,7 @@ mod tests {
         let handler = MessageHandler {
             registry: Arc::new(Mutex::new(registry)),
             cmd_ctx,
-            llm_client: LlmClient::new(),
+            llm_client: ledger_client,
             push_tx: push_tx.clone(),
             is_first_after_restart: Arc::new(AtomicBool::new(false)),
             has_seen_cache_read: Arc::new(AtomicBool::new(false)),
@@ -1679,6 +1712,12 @@ mod tests {
             loaded_config.clone(),
         );
 
+        let ledger_client = shore_ledger::LedgerClient::new(
+            shore_llm_client::LlmClient::new(),
+            &data_dir.join("ledger.db"),
+        )
+        .unwrap();
+
         let cmd_ctx = CommandContext {
             config: loaded_config.clone(),
             push_tx: push_tx.clone(),
@@ -1686,7 +1725,7 @@ mod tests {
             active_model: None,
             session_tokens: Arc::new(std::sync::Mutex::new(SessionTokens::default())),
             autonomy: autonomy.clone(),
-            llm_client: LlmClient::new(),
+            llm_client: ledger_client.clone(),
             diagnostics: Arc::new(std::sync::Mutex::new(
                 shore_diagnostics::Diagnostics::default(),
             )),
@@ -1696,7 +1735,7 @@ mod tests {
         let handler = MessageHandler {
             registry: Arc::new(Mutex::new(registry)),
             cmd_ctx,
-            llm_client: LlmClient::new(),
+            llm_client: ledger_client,
             push_tx: push_tx.clone(),
             is_first_after_restart: Arc::new(AtomicBool::new(false)),
             has_seen_cache_read: Arc::new(AtomicBool::new(false)),

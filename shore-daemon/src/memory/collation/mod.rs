@@ -806,7 +806,7 @@ impl CollationManager {
 pub async fn run_collation(
     character: &str,
     config: &shore_config::LoadedConfig,
-    llm_client: &shore_llm_client::LlmClient,
+    llm_client: &shore_ledger::LedgerClient,
     data_dir: &Path,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use crate::commands::state::resolve_collation_model;
@@ -826,7 +826,7 @@ pub async fn run_collation(
 
     let model = resolve_collation_model(config).ok_or("No model configured")?;
 
-    let llm = RealCollationLlm::new(llm_client.clone(), model);
+    let llm = RealCollationLlm::new(llm_client.clone(), model, character.to_string());
 
     // Resolve prompt template.
     let refine_template = resolve_prompt_template(&config.dirs.config, character, "refine.md")
@@ -845,7 +845,7 @@ pub async fn run_collation(
             match VectorStore::open(&vs_path, embed_config.dimensions).await {
                 Ok(vs) => Some(AgentSearchContext::new(
                     vs,
-                    llm_client.clone(),
+                    llm_client.inner().clone(),
                     embed_config,
                 )),
                 Err(e) => {

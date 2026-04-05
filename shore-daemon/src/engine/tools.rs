@@ -8,8 +8,9 @@ use tracing::{debug, info, warn};
 use crate::tools::{self as tool_system, ToolContext};
 use shore_diagnostics::{self as diagnostics, Diagnostics};
 use shore_llm_client::stream::{CacheContext, StreamConsumer};
+use shore_ledger::{CallType, LedgerClient};
 use shore_llm_client::types::{LlmRequest, StreamResult};
-use shore_llm_client::{LlmClient, LlmError};
+use shore_llm_client::LlmError;
 use shore_protocol::server_msg::{ServerMessage, ToolCall, ToolResult as SwpToolResult};
 use shore_protocol::types::{derive_content_from_blocks, ContentBlock, Message, Role};
 
@@ -44,7 +45,7 @@ pub struct ToolLoopResult {
 /// Returns both the final result and any intermediate messages for persistence.
 #[allow(clippy::too_many_arguments)]
 pub async fn run_tool_loop(
-    client: &LlmClient,
+    client: &LedgerClient,
     push_tx: &broadcast::Sender<ServerMessage>,
     request: &mut LlmRequest,
     mut result: StreamResult,
@@ -52,6 +53,8 @@ pub async fn run_tool_loop(
     max_iterations: u32,
     cache_ctx: &CacheContext,
     diag: &Arc<Mutex<Diagnostics>>,
+    character: &str,
+    thinking_enabled: bool,
 ) -> Result<ToolLoopResult, ToolLoopError> {
     let consumer = StreamConsumer::new(push_tx.clone());
     let mut intermediate_messages: Vec<Message> = Vec::new();
@@ -231,8 +234,13 @@ pub async fn run_tool_loop(
         // Call LLM again with the extended conversation.
         // Cache markers placed on the first call of the turn are preserved —
         // the provider detects existing markers and skips re-placement.
-        let mut reader = client.stream_raw(request, None).await?;
-        result = consumer.consume(&mut reader, false, cache_ctx).await?;
+        let mut ledger_stream = client
+            .stream_raw(request, CallType::ToolLoop, character, thinking_enabled)
+            .await?;
+        result = consumer
+            .consume(ledger_stream.reader_mut(), false, cache_ctx)
+            .await?;
+        ledger_stream.finalize(&result);
     }
 
     warn!(
@@ -252,8 +260,13 @@ mod tests {
     use super::*;
     use crate::test_support::TestToolContext;
     use shore_llm_client::types::ToolUseEvent;
+    use shore_llm_client::LlmClient;
     use tokio::io::AsyncWriteExt;
     use tokio::net::TcpListener;
+
+    fn test_ledger_client(tmp: &tempfile::TempDir) -> LedgerClient {
+        LedgerClient::new(LlmClient::new(), &tmp.path().join("ledger.db")).unwrap()
+    }
 
     fn test_diag() -> Arc<Mutex<Diagnostics>> {
         Arc::new(Mutex::new(Diagnostics::default()))
@@ -352,7 +365,8 @@ mod tests {
     fn tool_loop_returns_immediately_on_end_turn() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let client = LlmClient::new();
+            let tmp = tempfile::tempdir().unwrap();
+            let client = test_ledger_client(&tmp);
             let (push_tx, _rx) = broadcast::channel(16);
             let ctx = TestToolContext::new();
             let cache_ctx = CacheContext::default();
@@ -378,6 +392,8 @@ mod tests {
                 10,
                 &cache_ctx,
                 &test_diag(),
+                "test",
+                false,
             )
             .await
             .unwrap();
@@ -392,7 +408,8 @@ mod tests {
         let sse = sse_text_end_turn("The current time is shown above.");
         let (base_url, server) = mock_sse_server(sse, 1).await;
 
-        let client = LlmClient::new();
+        let tmp = tempfile::tempdir().unwrap();
+        let client = test_ledger_client(&tmp);
         let (push_tx, mut push_rx) = broadcast::channel(64);
         let ctx = TestToolContext::new();
         let cache_ctx = CacheContext::default();
@@ -425,6 +442,8 @@ mod tests {
             10,
             &cache_ctx,
             &test_diag(),
+            "test",
+            false,
         )
         .await
         .unwrap();
@@ -482,7 +501,8 @@ mod tests {
         let sse = sse_tool_use("t1", "check_time");
         let (base_url, server) = mock_sse_server(sse, 3).await;
 
-        let client = LlmClient::new();
+        let tmp = tempfile::tempdir().unwrap();
+        let client = test_ledger_client(&tmp);
         let (push_tx, _rx) = broadcast::channel(64);
         let ctx = TestToolContext::new();
         let cache_ctx = CacheContext::default();
@@ -512,6 +532,8 @@ mod tests {
             3,
             &cache_ctx,
             &test_diag(),
+            "test",
+            false,
         )
         .await
         .unwrap();
@@ -526,7 +548,8 @@ mod tests {
         let sse = sse_text_end_turn("Image generation is not available.");
         let (base_url, server) = mock_sse_server(sse, 1).await;
 
-        let client = LlmClient::new();
+        let tmp = tempfile::tempdir().unwrap();
+        let client = test_ledger_client(&tmp);
         let (push_tx, mut push_rx) = broadcast::channel(64);
         let ctx = TestToolContext::new();
         let cache_ctx = CacheContext::default();
@@ -556,6 +579,8 @@ mod tests {
             10,
             &cache_ctx,
             &test_diag(),
+            "test",
+            false,
         )
         .await
         .unwrap();
@@ -590,7 +615,8 @@ mod tests {
         // appear in the assistant message.
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let client = LlmClient::new();
+            let tmp = tempfile::tempdir().unwrap();
+            let client = test_ledger_client(&tmp);
             let (push_tx, _rx) = broadcast::channel(16);
             let ctx = TestToolContext::new();
             let cache_ctx = CacheContext::default();
@@ -618,6 +644,8 @@ mod tests {
                 10,
                 &cache_ctx,
                 &test_diag(),
+                "test",
+                false,
             )
             .await
             .unwrap();
@@ -631,7 +659,8 @@ mod tests {
         let sse = sse_text_end_turn("Done.");
         let (base_url, server) = mock_sse_server(sse, 1).await;
 
-        let client = LlmClient::new();
+        let tmp = tempfile::tempdir().unwrap();
+        let client = test_ledger_client(&tmp);
         let (push_tx, mut push_rx) = broadcast::channel(64);
         let ctx = TestToolContext::new();
         let cache_ctx = CacheContext::default();
@@ -669,6 +698,8 @@ mod tests {
             10,
             &cache_ctx,
             &test_diag(),
+            "test",
+            false,
         )
         .await
         .unwrap();

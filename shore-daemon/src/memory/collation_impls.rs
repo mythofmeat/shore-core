@@ -10,7 +10,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use shore_config::models::ResolvedModel;
-use shore_llm_client::LlmClient;
+use shore_ledger::{CallType, LedgerClient};
 
 use super::collation::{CollationError, CollationLlm, RefineAction};
 
@@ -57,29 +57,30 @@ fn truncate_raw(s: &str, max: usize) -> &str {
 // RealCollationLlm
 // ---------------------------------------------------------------------------
 
-/// Production `CollationLlm` backed by `LlmClient` (Unix socket to shore-llm).
+/// Production `CollationLlm` backed by `LedgerClient` (ledger-tracked LLM calls).
 ///
 /// Sends prompts, receives raw text, parses JSON into typed collation structs.
 pub struct RealCollationLlm {
-    client: LlmClient,
+    client: LedgerClient,
     model: ResolvedModel,
+    character: String,
 }
 
 impl RealCollationLlm {
-    pub fn new(client: LlmClient, model: ResolvedModel) -> Self {
-        Self { client, model }
+    pub fn new(client: LedgerClient, model: ResolvedModel, character: String) -> Self {
+        Self { client, model, character }
     }
 
     /// Send a prompt to the LLM and return the raw text response.
     async fn generate(&self, prompt: &str) -> Result<String, CollationError> {
         let messages = vec![json!({"role": "user", "content": prompt})];
 
-        let request = LlmClient::build_request(&self.model, messages, None, None, None)
+        let request = LedgerClient::build_request(&self.model, messages, None, None, None)
             .map_err(|e| CollationError::Llm(e.to_string()))?;
 
         let resp = self
             .client
-            .generate(&request, None)
+            .generate(&request, CallType::MemoryAgent, &self.character, false)
             .await
             .map_err(|e| CollationError::Llm(e.to_string()))?;
 

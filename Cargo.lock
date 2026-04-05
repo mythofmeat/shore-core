@@ -4828,6 +4828,7 @@ dependencies = [
  "shore-client",
  "shore-config",
  "shore-diagnostics",
+ "shore-ledger",
  "shore-llm-client",
  "shore-protocol",
  "tempfile",

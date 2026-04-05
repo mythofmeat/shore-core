@@ -20,7 +20,7 @@ use crate::memory::vectorstore::VectorStore;
 use shore_config::models::ResolvedModel;
 use shore_config::{load_character_definition, resolve_user_definition, LoadedConfig};
 use shore_diagnostics::Diagnostics;
-use shore_llm_client::LlmClient;
+use shore_ledger::LedgerClient;
 
 /// Cumulative token usage tracked across the daemon session.
 #[derive(Debug, Default)]
@@ -54,7 +54,7 @@ pub struct CommandContext {
     /// Shared autonomy manager for scheduler state.
     pub autonomy: AutonomyManager,
     /// LLM client for commands that need model access (e.g. memory query).
-    pub llm_client: LlmClient,
+    pub llm_client: LedgerClient,
     /// In-memory diagnostics ring buffers.
     pub diagnostics: Arc<Mutex<Diagnostics>>,
     /// Active memory shell sessions, keyed by session ID.
@@ -106,7 +106,7 @@ pub async fn setup_search_context(
         .ok()?;
     Some(AgentSearchContext::new(
         vs,
-        ctx.llm_client.clone(),
+        ctx.llm_client.inner().clone(),
         embed_config,
     ))
 }
@@ -274,7 +274,7 @@ mod tests {
             active_model: None,
             session_tokens: Arc::new(Mutex::new(SessionTokens::default())),
             autonomy,
-            llm_client: LlmClient::new(),
+            llm_client: LedgerClient::new(shore_llm_client::LlmClient::new(), &data_dir.join("ledger.db")).unwrap(),
             diagnostics: Arc::new(Mutex::new(Diagnostics::default())),
             memory_shell_sessions: HashMap::new(),
         };
