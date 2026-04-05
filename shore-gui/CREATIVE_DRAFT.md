@@ -272,6 +272,16 @@ When the user is actively scrolling (scroll velocity > 0), the rain streaks temp
 
 **Ghost Typing** (#4): Implemented. After 12s of idle with empty input (not during streaming), a random phrase from a pool of 12 atmospheric fragments types out character-by-character (80ms/char) into the input field's placeholder text. Holds for 3s, then fades over 1.5s. Instantly cleared on any typing. The fragments are evocative but never pretend to be completions — "the water remembers", "between the static", etc.
 
+### Phase 4 Implementation (2026-04-05)
+
+**Typing Combo Escalation** (IDEAS.md approved): Unified `_combo_intensity` float (0-1) mapped from typing speed. At 150+ WPM everything is vibrating: fire cursor grows (amount_ratio 0.5→1.0, scale 2→5), screen shake gets micro-tremors, CRT distortion creeps up by 0.08, glow swells, ambient pitch climbs 15%, starfield rotation accelerates 4x. Settles back over ~2s when you stop. All levers were already there — this is just the multiplier.
+
+**Context-Sensitive Reverb** (UX doc approved): The existing Effects audio bus (reverb + LPF) now modulates based on app state. Streaming/typing: reverb wet 0.05 (dry, immediate). Idle >5s: wet ramps to 0.35 (sounds drift away, empty room). Error: spike to 0.6 (impact reverberates) with 0.8s decay back to baseline. All transitions via smooth lerp.
+
+**Config Section Collapsibility** (UX doc): Section labels replaced with flat buttons showing `▾`/`▸`. Clicking toggles all children between that section and the next. No .tscn restructuring — done entirely in GDScript by iterating VBox children.
+
+**Boot Sequence Fix** (UX doc): Eliminated the lerp→hard-set discontinuity. At warmth=1.0, the lerp already produces the target values, so the redundant hard-set was removed.
+
 ### What changed from the proposals
 
 - **rain_warmth** was a declared-but-unused shader uniform. Added actual tint logic in the shader fragment.

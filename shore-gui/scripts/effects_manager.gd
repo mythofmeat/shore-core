@@ -111,6 +111,14 @@ var _time_tint := Color(0.0, 0.0, 0.0, 0.0)  # additive tint applied to bg
 var _time_star_mult := 1.0  # star density multiplier
 var _time_warmth := 0.0  # extra rain_warmth from time
 
+# Typing combo escalation
+var _combo_intensity := 0.0  # 0.0 = idle, 1.0 = 150+ WPM
+
+# Context-sensitive reverb
+var _reverb_wet_target := 0.0
+var _reverb_wet_current := 0.0
+var _idle_timer := 0.0  # seconds since last activity
+
 # Ghost typing
 var _ghost_idle_timer := 0.0
 var _ghost_active := false
@@ -339,11 +347,7 @@ func _process(delta: float) -> void:
 			_crt_rect.material.set_shader_parameter("scanline_opacity", lerpf(0.6, 0.15, warmth))
 			_crt_rect.material.set_shader_parameter("barrel_distortion", lerpf(0.3, 0.1, warmth))
 		if _boot_timer >= 1.5:
-			_boot_phase = 2
-			if _crt_rect:
-				_crt_rect.material.set_shader_parameter("brightness", 1.0)
-				_crt_rect.material.set_shader_parameter("scanline_opacity", 0.15)
-				_crt_rect.material.set_shader_parameter("barrel_distortion", 0.1)
+			_boot_phase = 0  # done — lerp already reached targets at warmth=1.0
 
 	# ── Glow decay ────────────────────────────────────────────────
 	if glow_enabled and _glow_rect:
@@ -407,9 +411,66 @@ func _process(delta: float) -> void:
 	elif _ocean_audio and _ocean_audio.playing:
 		_ocean_audio.stop()
 
+	# ── Context-sensitive reverb ──────────────────────────────────
+	if audio_enabled and _effects_bus_idx >= 0:
+		if _is_streaming or _typing_speed > 1.0:
+			_idle_timer = 0.0
+			_reverb_wet_target = 0.05  # dry, close, present
+		else:
+			_idle_timer += delta
+			if _idle_timer > 5.0:
+				_reverb_wet_target = 0.35  # idle: sounds drift away
+			else:
+				_reverb_wet_target = lerpf(0.05, 0.35, _idle_timer / 5.0)
+		_reverb_wet_current = lerpf(_reverb_wet_current, _reverb_wet_target, delta * 1.5)
+		var reverb_fx := AudioServer.get_bus_effect(_effects_bus_idx, 1) as AudioEffectReverb
+		if reverb_fx:
+			reverb_fx.wet = _reverb_wet_current
+			AudioServer.set_bus_effect_enabled(_effects_bus_idx, 1, _reverb_wet_current > 0.01)
+
 	# ── Fire cursor + typing speed + typing sounds ────────────────
 	if _fire_cursor and _input_field:
 		_update_fire_cursor(delta)
+
+	# ── Typing combo escalation ───────────────────────────────────
+	var combo_target := clampf(_typing_speed / 25.0, 0.0, 1.0)  # 25 cps ≈ 150 WPM
+	if combo_target > _combo_intensity:
+		_combo_intensity = lerpf(_combo_intensity, combo_target, delta * 4.0)
+	else:
+		_combo_intensity = lerpf(_combo_intensity, 0.0, delta * 1.0)  # 2s settle
+
+	if _combo_intensity > 0.01:
+		# Screen shake: micro-tremors from typing fury
+		if screen_shake_enabled and _shake_intensity < _combo_intensity * 1.5:
+			_shake_intensity = _combo_intensity * 1.5 * shake_scale
+		# CRT distortion creep
+		if crt_enabled and _crt_rect:
+			var combo_distort := crt_distortion_intensity + _combo_intensity * 0.08
+			_crt_rect.material.set_shader_parameter("barrel_distortion", combo_distort)
+		# Glow swell
+		if glow_enabled:
+			_glow_target = maxf(_glow_target, _combo_intensity * 0.4)
+		# Ambient pitch climb
+		if ambient_enabled and not _is_streaming:
+			_ambient_target_pitch = 1.0 + _combo_intensity * 0.15
+		# Starfield rotation boost
+		if starfield_enabled and _starfield_rect and background_shader == "starfield":
+			_starfield_material.set_shader_parameter("rotation_speed",
+				0.01 + _combo_intensity * 0.09)
+		# Fire cursor scale
+		if fire_cursor_enabled and _fire_cursor:
+			_fire_cursor.amount_ratio = lerpf(0.5, 1.0, _combo_intensity)
+			_fire_cursor.process_material.scale_min = lerpf(2.0, 5.0, _combo_intensity)
+	elif _combo_intensity <= 0.01 and _combo_intensity > 0.0:
+		# Settle: reset boosted values
+		_combo_intensity = 0.0
+		if crt_enabled and _crt_rect:
+			_crt_rect.material.set_shader_parameter("barrel_distortion", crt_distortion_intensity)
+		if starfield_enabled and _starfield_rect and background_shader == "starfield":
+			_starfield_material.set_shader_parameter("rotation_speed", 0.01)
+		if fire_cursor_enabled and _fire_cursor:
+			_fire_cursor.amount_ratio = 0.5
+			_fire_cursor.process_material.scale_min = 2.0
 
 	# ── Thought-lights (typing glow in background) ────────────────
 	if _thought_light_material:
@@ -549,6 +610,12 @@ func on_error() -> void:
 		var scroll_rect := _scroll.get_rect()
 		_error_crumble.position = Vector2(scroll_rect.size.x * 0.5, scroll_rect.size.y - 30.0)
 		_error_crumble.emitting = true
+
+	# Reverb spike: sound bounces off walls
+	if _effects_bus_idx >= 0:
+		_reverb_wet_current = 0.6
+		var spike_tween := create_tween()
+		spike_tween.tween_callback(func(): _reverb_wet_target = 0.05).set_delay(0.8)
 
 func on_message_sent() -> void:
 	if audio_enabled:

@@ -5,6 +5,9 @@ signal text_changed(setting: String, value: Variant)
 
 var _effects: Node
 var _value_labels: Dictionary = {}  # slider_name -> Label
+var _sections: Dictionary = {}  # section_name -> { "button": Button, "children": Array[Node] }
+
+const SECTION_LABELS := ["ShadersLabel", "EffectsLabel", "AudioLabel", "TextLabel"]
 
 func _ready() -> void:
 	var style := StyleBoxFlat.new()
@@ -13,6 +16,58 @@ func _ready() -> void:
 	style.set_border_width_all(1)
 	style.set_corner_radius_all(4)
 	add_theme_stylebox_override("panel", style)
+	_setup_collapsible_sections()
+
+func _setup_collapsible_sections() -> void:
+	var vbox := find_child("VBox", true, false) as VBoxContainer
+	if not vbox:
+		return
+	var children := vbox.get_children()
+	for i in range(children.size()):
+		var child := children[i]
+		if child.name not in SECTION_LABELS:
+			continue
+		var label := child as Label
+		if not label:
+			continue
+		# Replace label with a clickable button
+		var btn := Button.new()
+		btn.name = label.name
+		btn.text = label.text.replace("──", "▾")
+		btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		btn.flat = true
+		btn.add_theme_color_override("font_color", Color(0.7, 0.7, 0.8))
+		btn.add_theme_color_override("font_hover_color", Color(0.9, 0.9, 1.0))
+		btn.add_theme_font_size_override("font_size", 14)
+		var idx := label.get_index()
+		vbox.add_child(btn)
+		vbox.move_child(btn, idx)
+		label.queue_free()
+		# Collect children between this section and the next separator/section
+		var section_children: Array[Node] = []
+		for j in range(i + 1, children.size()):
+			var next := children[j]
+			if next.name in SECTION_LABELS or next is HSeparator:
+				break
+			section_children.append(next)
+		var section_name: String = label.name
+		_sections[section_name] = { "button": btn, "children": section_children, "collapsed": false, "label": label.text }
+		btn.pressed.connect(_on_section_toggle.bind(section_name))
+
+func _on_section_toggle(section_name: String) -> void:
+	if section_name not in _sections:
+		return
+	var section: Dictionary = _sections[section_name]
+	var collapsed: bool = not section["collapsed"]
+	section["collapsed"] = collapsed
+	var label_text: String = section["label"]
+	if collapsed:
+		section["button"].text = label_text.replace("──", "▸")
+	else:
+		section["button"].text = label_text.replace("──", "▾")
+	for child: Node in section["children"]:
+		if is_instance_valid(child):
+			child.visible = not collapsed
 
 func setup(effects: Node) -> void:
 	_effects = effects

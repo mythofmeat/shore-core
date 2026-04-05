@@ -153,6 +153,12 @@ Real-time FFT visualization of the audio output in the header. Waveform or bar s
 - **Time-of-day ambient shift (The Clock)**: Polls system time every 60s. Night: blue tint, 1.3x stars, lower ambient pitch. Dawn: warm transition. Day: neutral. Dusk: amber fade. Toggle in config panel.
 - **Ghost Typing**: After 12s idle with empty input, phantom text fragments type out character-by-character in the placeholder. Pool of atmospheric phrases. Fades out after 3s hold. Instantly cleared on any input.
 
+### Phase 4 — Interactivity & Audio Polish
+- **Typing Combo Escalation**: Unified `_combo_intensity` (0.0-1.0) derived from typing speed (25 cps = 1.0). Scales: fire cursor size/amount, screen shake micro-tremors, CRT distortion creep (+0.08), glow swell, ambient pitch climb (+0.15), starfield rotation boost. Settles back over ~2s.
+- **Context-sensitive reverb**: Effects bus reverb wet modulates based on state. Streaming/typing: 0.05 (dry, close). Idle >5s: 0.35 (drifting, room tone). Error: spike to 0.6 with 0.8s decay. Smooth crossfade via lerp.
+- **Config section collapsibility**: Section labels (Shaders, Effects, Audio, Text) replaced with clickable buttons that toggle child visibility. Collapsed sections show `▸`, expanded show `▾`.
+- **Boot sequence snap fix**: Eliminated lerp→hard-set discontinuity by letting lerp naturally reach targets.
+
 ---
 
 ## Design Principles
