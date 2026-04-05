@@ -425,7 +425,6 @@ shore-daemon/
 │   ├── autonomy/
 │   │   ├── mod.rs              # Master autonomy controller
 │   │   ├── interiority.rs      # Interiority clock (dual-deadline timer + dormancy)
-│   │   ├── interiority_journal.rs # Rolling JSONL journal for tick continuity
 │   │   └── activity.rs         # Activity tracker (tempo, histograms)
 │   │
 │   ├── config/
@@ -955,17 +954,17 @@ pronouns in character queries.
 
 The V1 heartbeat (5-state probability machine) is replaced by the unified
 interiority system. Characters get periodic "turns to self" — full agentic
-turns with the same tool set as normal conversation, backed by a rolling JSONL
-journal for continuity across ticks. Cache refresh is unified into the same
-timer — no separate keepalive system.
+turns with the same tool set as normal conversation, running a real multi-turn
+tool loop within each tick. Cache refresh is unified into the same timer — no
+separate keepalive system.
 
 #### Design
 
 ```
             ┌─────────┐  tick()   ┌──────────────┐
-            │  Active  │─────────▶│  RunTick      │──▶ ONE LLM call
-            └────┬────┘          └──────────────┘     reads journal
-                 │                 ┌──────────────┐   writes journal
+            │  Active  │─────────▶│  RunTick      │──▶ tool loop
+            └────┬────┘          └──────────────┘   (up to 6 iterations)
+                 │                 ┌──────────────┐
                  │  (cache only)──▶│RunDormantPing │──▶ max_tokens=1
                  │                 └──────────────┘   cache refresh
           ticks_without_user
@@ -1001,31 +1000,30 @@ A cache ping only resets the cache deadline.
 | `Active` | Both timers run. Full interiority ticks fire at `interval_secs ± jitter_factor`. Between ticks, bare cache pings fire if the cache deadline passes. |
 | `Dormant` | `ticks_without_user >= max_idle_ticks`. Only cache pings fire (keeps cache warm). Wakes on next user message. |
 
-#### Rolling Journal (`interiority_journal.rs`)
+#### Tool Loop (`execute_unified_tick`)
 
-Each interiority tick reads the journal, renders it into the prompt, makes ONE
-LLM call, and appends new entries. Entry types:
+Each interiority tick clones the last conversation request, appends the
+interiority prompt as a user message, then runs a real multi-turn tool loop:
+`generate()` → extract tool_use → dispatch tools → feed results back →
+`generate()` again, up to `min(max_iterations, 6)` iterations.
 
-| Type | Content |
-|------|---------|
-| `Thought` | Text blocks from LLM response |
-| `ToolCall` | Tool use blocks (name + args) |
-| `ToolResult` | Tool execution results |
-| `MessageSent` | `<sendMessage>` content delivered to user |
+Tool loop messages are **ephemeral** — they do not persist to `active.jsonl`
+or mutate the cached `last_request`. Only `<sendMessage>` content (if the
+character chooses to message the user) gets persisted to the conversation log.
+All tool activity is logged to the interiority ring buffer, visible via
+`shore log --heartbeat`.
 
-File: `{data_dir}/{character}/interiority_journal.jsonl`. Budget-capped at
-~16K chars (~4096 tokens). Oldest entries fall off. Compacted atomically
-(write-to-tmp + rename) when file exceeds 2× budget.
+The first `generate()` call uses `CallType::Interiority`; subsequent calls
+in the same tick use `CallType::ToolLoop` for cost tracking.
 
 #### Key Properties
 
-- **One call per tick**: Each tick makes exactly one LLM call. Tool calls from
-  the response are executed, but results are journaled for the next tick rather
-  than fed back in a loop. ~3.5× cheaper than the old multi-round approach.
+- **Real tool loop**: The character sees tool results within the same tick,
+  enabling genuine exploration (web search → read results → compose message).
 - **Identical tool set**: Preserves Anthropic prompt cache — system prompt and
   tool definitions are identical to normal conversation.
-- **Journal continuity**: The character sees its recent thoughts, tool calls,
-  and results rendered as text in the prompt. No context loss between ticks.
+- **Ephemeral loop messages**: Tool loop messages don't pollute the conversation
+  log. The conversation only sees autonomous messages the character sends.
 - **Unified cache refresh**: Every LLM call (tick or ping) refreshes the prompt
   cache. No separate keepalive system needed.
 

@@ -390,3 +390,22 @@ A single holistic call lets the LLM see all candidates + nearby context and make
 **Decision:** Hardcode a 4x multiplier for Anthropic's 1-hour cache TTL write pricing.
 
 **Why:** OpenRouter reports 5-minute cache TTL prices. Shore uses 1-hour cache TTL for Anthropic. The 1h write price is 4x the 5m price. This is a stable relationship defined by Anthropic's pricing structure.
+
+## Interiority: Real Tool Loop Replaces Journal System (2026-04-05)
+
+**Decision:** Replaced the 1-call-per-tick interiority architecture (with JSONL journal for cross-tick continuity) with a real multi-turn tool loop within each tick.
+
+**Problem:** The journal-based approach caused the model to fixate on scratchpad journaling. The full conversation context plus rendered journal steered the model toward processing/introspection rather than using diverse tools (web_search, generate_image, memory, etc.). The model never saw tool results within the same tick, so it had no feedback loop.
+
+**What changed:**
+- Deleted `interiority_journal.rs` module (JSONL read/write/render/compact)
+- Removed `journal_path` field from `AutonomyState`
+- Rewrote `execute_unified_tick` to run a real `generate()` → dispatch → feed back loop, up to `min(max_iterations, 6)` iterations per tick
+- First call uses `CallType::Interiority`, subsequent calls use `CallType::ToolLoop`
+- Tool loop messages are ephemeral — only `<sendMessage>` content persists to `active.jsonl`
+- All tool activity logged to the interiority ring buffer for `shore log --heartbeat`
+
+**Trade-offs:**
+- Cost increase: ~$23/month extra (multiple generate() calls per tick instead of one)
+- Lost: Cross-tick continuity (the model no longer "remembers" what it did on previous ticks via journal)
+- Gained: The model can actually use tools and see results, enabling genuine exploration and discovery

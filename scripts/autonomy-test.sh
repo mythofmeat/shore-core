@@ -392,18 +392,11 @@ run_check "daemon log: cache refresh ping" \
     "$([[ "$has_cache_refresh" -gt 0 ]] && echo true || echo false)" \
     "${has_cache_refresh}x"
 
-# Check journal file was created (search data dir in case of path variations).
-journal_file=$(find "$DATA_DIR" -name "interiority_journal.jsonl" 2>/dev/null | head -1)
-run_check "interiority journal file created" \
-    "$([[ -n "$journal_file" && -f "$journal_file" ]] && echo true || echo false)" \
-    "${journal_file:-not found}"
-
-if [[ -n "$journal_file" && -f "$journal_file" ]]; then
-    journal_lines=$(wc -l < "$journal_file")
-    run_check "journal has entries" \
-        "$([[ "$journal_lines" -gt 0 ]] && echo true || echo false)" \
-        "${journal_lines} lines"
-fi
+# Check interiority tick ran (tool loop, not journal).
+has_tool_loop=$(grep -c "Interiority: executing tool loop tick" "$CLEAN_LOG" || true)
+run_check "interiority tool loop tick ran" \
+    "$([[ "$has_tool_loop" -gt 0 ]] && echo true || echo false)" \
+    "${has_tool_loop}x"
 
 # Check that no keepalive-related log lines appear.
 has_old_keepalive=$(grep -c "Cache keepalive:" "$CLEAN_LOG" || true)
