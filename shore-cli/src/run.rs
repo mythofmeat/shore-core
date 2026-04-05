@@ -24,6 +24,9 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     if let CliCommand::Matrix { subcommand } = &cli.command {
         return handle_matrix_command(subcommand, &cli).await;
     }
+    if let CliCommand::Usage { .. } = &cli.command {
+        return handle_usage_command(&cli.command);
+    }
 
     let addr = resolve_addr(&cli);
 
@@ -462,6 +465,196 @@ async fn run_memory_shell(conn: &mut SWPConnection) -> Result<(), Box<dyn std::e
     let _ = recv_command_data(conn).await;
 
     Ok(())
+}
+
+// ── Usage command (local, no daemon) ────────────────────────────────────────
+
+fn handle_usage_command(cmd: &CliCommand) -> Result<(), Box<dyn std::error::Error>> {
+    let CliCommand::Usage {
+        last,
+        character,
+        provider,
+        model,
+        call_type,
+        anomalies,
+        export_csv,
+        export_tsv,
+        refresh_pricing,
+        recalculate: _,
+    } = cmd
+    else {
+        unreachable!()
+    };
+
+    let data_dir = shore_config::data_dir();
+    let db_path = data_dir.join("ledger.db");
+
+    if !db_path.exists() {
+        eprintln!(
+            "No ledger found at {}. Start the daemon to begin recording.",
+            db_path.display()
+        );
+        std::process::exit(1);
+    }
+
+    let ledger = shore_ledger::Ledger::open(&db_path)?;
+
+    let since = parse_last_period(last);
+    let filter = shore_ledger::query::QueryFilter {
+        since,
+        character: character.clone(),
+        provider: provider.clone(),
+        model: model.clone(),
+        call_type: call_type.clone(),
+        ..Default::default()
+    };
+
+    if *export_tsv {
+        let output = shore_ledger::query::export_tsv(&ledger, &filter)?;
+        print!("{}", output);
+        return Ok(());
+    }
+
+    if *export_csv {
+        let output = shore_ledger::query::export_tsv(&ledger, &filter)?;
+        print!("{}", output.replace('\t', ","));
+        return Ok(());
+    }
+
+    if *anomalies {
+        let rows = shore_ledger::query::query_anomalies(&ledger, &filter)?;
+        if rows.is_empty() {
+            println!("No cache anomalies found.");
+        } else {
+            println!("Cache Anomalies:\n");
+            for r in &rows {
+                println!(
+                    "  {} {} {} {} — {} (read: {}, write: {})",
+                    r.ts,
+                    r.character,
+                    r.model,
+                    r.call_type,
+                    r.cache_anomaly.as_deref().unwrap_or("?"),
+                    r.cache_read_tokens,
+                    r.cache_write_tokens,
+                );
+            }
+            println!("\nTotal: {} anomalies", rows.len());
+        }
+        return Ok(());
+    }
+
+    if *refresh_pricing {
+        let ledger_arc = std::sync::Arc::new(ledger);
+        let pricing = shore_ledger::pricing::PricingEngine::new(ledger_arc);
+        pricing.clear_cache()?;
+        println!("Pricing cache cleared. Prices will be re-fetched on next daemon use.");
+        return Ok(());
+    }
+
+    // Default: usage summary + cache health
+    let summary = shore_ledger::query::usage_summary(&ledger, &filter)?;
+    print_usage_summary(&summary, last);
+
+    // Cache health
+    let characters =
+        shore_ledger::query::active_anthropic_characters(&ledger, &filter)?;
+    if !characters.is_empty() {
+        println!("\nCache Health (anthropic):");
+        for (char_name, last_row) in &characters {
+            let tracker = shore_ledger::cache_tracker::CacheTracker::reconstruct(
+                &last_row.ts,
+                &last_row.model,
+                last_row.thinking_enabled,
+                last_row.cache_read_tokens,
+                3600,
+            );
+            let state_str = match tracker.state() {
+                shore_ledger::cache_tracker::CacheState::Warm => {
+                    let streak =
+                        shore_ledger::query::warm_streak(&ledger, char_name).unwrap_or(0);
+                    format!("Warm (streak: {} calls)", streak)
+                }
+                shore_ledger::cache_tracker::CacheState::Cold => "Cold".into(),
+            };
+            println!("  {char_name:<8} — {state_str}");
+        }
+    }
+
+    // Anomaly count
+    let anomaly_rows = shore_ledger::query::query_anomalies(
+        &ledger,
+        &shore_ledger::query::QueryFilter {
+            since: parse_last_period("7d"),
+            ..Default::default()
+        },
+    )?;
+    println!("\nAnomalies (last 7d): {}", anomaly_rows.len());
+
+    Ok(())
+}
+
+fn parse_last_period(period: &str) -> Option<String> {
+    let now = chrono::Utc::now();
+    match period {
+        "today" => {
+            let start = now.date_naive().and_hms_opt(0, 0, 0)?;
+            Some(start.and_utc().to_rfc3339())
+        }
+        "all" => None,
+        s if s.ends_with('d') => {
+            let days: i64 = s.trim_end_matches('d').parse().ok()?;
+            Some((now - chrono::Duration::days(days)).to_rfc3339())
+        }
+        _ => None,
+    }
+}
+
+fn print_usage_summary(summary: &[shore_ledger::query::UsageSummary], period: &str) {
+    let today = chrono::Utc::now().format("%Y-%m-%d");
+    println!("Shore Usage — {today} (period: {period})\n");
+    println!(
+        "{:<12} {:<24} {:>5}  {:>9}  {:>9}  {:>9}  {:>9}  {:>8}",
+        "Provider", "Model", "Calls", "Input", "Output", "Cache R", "Cache W", "Cost"
+    );
+    println!("{}", "-".repeat(90));
+
+    let mut grand_total = 0.0f64;
+    for s in summary {
+        let cost_str = s
+            .total_cost
+            .map(|c| {
+                grand_total += c;
+                format!("${c:.2}")
+            })
+            .unwrap_or_else(|| "—".into());
+        println!(
+            "{:<12} {:<24} {:>5}  {:>8}K  {:>8}K  {:>8}K  {:>8}K  {:>8}",
+            s.provider,
+            s.model,
+            s.call_count,
+            format_k(s.total_input),
+            format_k(s.total_output),
+            format_k(s.total_cache_read),
+            format_k(s.total_cache_write),
+            cost_str,
+        );
+    }
+    if !summary.is_empty() {
+        println!("{:>82} ${grand_total:.2}", "Total:");
+    } else {
+        println!("  No usage data for this period.");
+    }
+}
+
+fn format_k(tokens: u64) -> String {
+    if tokens == 0 {
+        "—".into()
+    } else if tokens < 1000 {
+        tokens.to_string()
+    } else {
+        format!("{:.1}", tokens as f64 / 1000.0)
+    }
 }
 
 /// Resolve the Shore config directory.

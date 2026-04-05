@@ -189,6 +189,49 @@ pub enum CliCommand {
         json: bool,
     },
 
+    /// Show token usage statistics and costs
+    Usage {
+        /// Time period: "today", "7d", "30d", "all" (default: today)
+        #[arg(long, default_value = "today")]
+        last: String,
+
+        /// Filter by character name
+        #[arg(long)]
+        character: Option<String>,
+
+        /// Filter by provider
+        #[arg(long)]
+        provider: Option<String>,
+
+        /// Filter by model
+        #[arg(long)]
+        model: Option<String>,
+
+        /// Filter by call type
+        #[arg(long)]
+        call_type: Option<String>,
+
+        /// Show only cache anomalies
+        #[arg(long)]
+        anomalies: bool,
+
+        /// Export full ledger as CSV to stdout
+        #[arg(long)]
+        export_csv: bool,
+
+        /// Export full ledger as TSV to stdout
+        #[arg(long)]
+        export_tsv: bool,
+
+        /// Clear cached pricing data
+        #[arg(long)]
+        refresh_pricing: bool,
+
+        /// Recalculate costs using current pricing
+        #[arg(long)]
+        recalculate: bool,
+    },
+
     /// Matrix bridge setup and management
     Matrix {
         #[command(subcommand)]
@@ -293,6 +336,7 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
         | CliCommand::Regen { .. }
         | CliCommand::Completions { .. }
         | CliCommand::Matrix { .. }
+        | CliCommand::Usage { .. }
         | CliCommand::Config {
             path: true,
             check: false,

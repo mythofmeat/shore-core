@@ -4773,6 +4773,7 @@ dependencies = [
  "serde_json",
  "shore-client",
  "shore-config",
+ "shore-ledger",
  "shore-protocol",
  "tempfile",
  "tokio",
