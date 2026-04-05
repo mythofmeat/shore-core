@@ -3,6 +3,7 @@
 use crate::cache_tracker::{Anomaly, CacheState, CacheTracker, Observation};
 use crate::ledger::{CallRow, Ledger};
 use crate::pricing::PricingEngine;
+use crate::stream::LedgerStream;
 use chrono::Utc;
 use shore_config::models::ResolvedModel;
 use shore_llm_client::types::{GenerateResponse, LlmRequest, Timing, Usage};
@@ -229,6 +230,41 @@ impl LedgerClient {
         );
 
         Ok(resp)
+    }
+
+    /// Send a streaming request, returning a LedgerStream that must be finalized.
+    ///
+    /// Calls `pricing.get_or_fetch()` first for lazy pricing resolution.
+    /// The caller MUST call `finalize()` on the returned stream after consumption,
+    /// otherwise the API call will not be recorded (and a tracing::error is emitted on drop).
+    pub async fn stream_raw(
+        &self,
+        request: &LlmRequest,
+        call_type: CallType,
+        character: &str,
+        thinking_enabled: bool,
+    ) -> Result<LedgerStream, LlmError> {
+        let provider_key = request
+            .provider_key
+            .as_deref()
+            .unwrap_or(&request.provider);
+        self.pricing
+            .get_or_fetch(provider_key, &request.model)
+            .await;
+
+        let reader = self.inner.stream_raw(request, None).await?;
+
+        Ok(LedgerStream::new(
+            reader,
+            provider_key.to_string(),
+            request.model.clone(),
+            call_type,
+            character.to_string(),
+            thinking_enabled,
+            self.ledger.clone(),
+            self.pricing.clone(),
+            self.cache_trackers.clone(),
+        ))
     }
 
     /// Access the inner LlmClient (for embed/image_generate passthrough).

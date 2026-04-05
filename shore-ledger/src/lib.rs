@@ -7,3 +7,4 @@ pub mod stream;
 
 pub use client::{CallType, LedgerClient};
 pub use ledger::Ledger;
+pub use stream::LedgerStream;
