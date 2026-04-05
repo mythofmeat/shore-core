@@ -83,6 +83,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         socket_path: socket_path.display().to_string(),
         tcp_addr,
         started_at: epoch_timestamp(),
+        data_dir: Some(loaded.dirs.data.display().to_string()),
     };
     registry.register(instance_info)?;
     info!(instance_id = %instance_id, "Registered daemon instance");

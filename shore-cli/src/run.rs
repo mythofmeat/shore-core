@@ -486,11 +486,15 @@ async fn handle_usage_command(cli: &Cli) -> Result<(), Box<dyn std::error::Error
         unreachable!()
     };
 
-    // Load config (incl. .env and --config override) so we resolve the same
-    // data directory the daemon uses.
-    let config_path = cli.config.as_deref().map(std::path::Path::new);
-    let loaded = shore_config::load_config(config_path)?;
-    let db_path = loaded.dirs.data.join("ledger.db");
+    // Discover the data directory from the running daemon's registry entry,
+    // falling back to local config resolution.
+    let data_dir = shore_client::discover_data_dir().unwrap_or_else(|| {
+        let config_path = cli.config.as_deref().map(std::path::Path::new);
+        shore_config::load_config(config_path)
+            .map(|c| c.dirs.data)
+            .unwrap_or_else(|_| shore_config::data_dir())
+    });
+    let db_path = data_dir.join("ledger.db");
 
     if !db_path.exists() {
         eprintln!(

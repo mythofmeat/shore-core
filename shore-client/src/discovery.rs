@@ -19,6 +19,9 @@ pub struct InstanceEntry {
     /// Optional TCP address.
     #[serde(default)]
     pub tcp_addr: Option<String>,
+    /// Resolved data directory (written by daemon at registration).
+    #[serde(default)]
+    pub data_dir: Option<String>,
 }
 
 /// The instances file is a JSON array of `InstanceEntry`.
@@ -80,6 +83,17 @@ fn addr_from_socket(socket: &str) -> ServerAddr {
     }
 }
 
+/// Discover the data directory from the first live daemon instance.
+///
+/// Returns `None` if no instance is registered or the entry lacks `data_dir`.
+pub fn discover_data_dir() -> Option<PathBuf> {
+    read_instances()
+        .ok()?
+        .first()
+        .and_then(|e| e.data_dir.as_deref())
+        .map(PathBuf::from)
+}
+
 /// Return the default socket path used when no instances file is present.
 pub fn default_socket_path() -> PathBuf {
     shore_config::runtime_dir().join("shore.sock")
@@ -119,6 +133,7 @@ mod tests {
             socket_path: "/tmp/shore.sock".into(),
             pid: None,
             tcp_addr: None,
+            data_dir: None,
         };
         assert!(entry_alive(&entry));
     }
@@ -130,6 +145,7 @@ mod tests {
             socket_path: "/tmp/shore.sock".into(),
             pid: Some(std::process::id()),
             tcp_addr: None,
+            data_dir: None,
         };
         assert!(entry_alive(&entry));
     }
@@ -141,6 +157,7 @@ mod tests {
             socket_path: "/tmp/shore.sock".into(),
             pid: Some(u32::MAX - 1),
             tcp_addr: None,
+            data_dir: None,
         };
         assert!(!entry_alive(&entry));
     }
@@ -179,7 +196,8 @@ mod tests {
             "id": "default",
             "socket_path": "/run/user/1000/shore/shore.sock",
             "pid": 12345,
-            "tcp_addr": "127.0.0.1:7320"
+            "tcp_addr": "127.0.0.1:7320",
+            "data_dir": "/home/user/data"
         }]"#;
         let entries: Vec<InstanceEntry> = serde_json::from_str(json).unwrap();
         assert_eq!(entries.len(), 1);
@@ -187,6 +205,7 @@ mod tests {
         assert_eq!(entries[0].socket_path, "/run/user/1000/shore/shore.sock");
         assert_eq!(entries[0].pid, Some(12345));
         assert_eq!(entries[0].tcp_addr.as_deref(), Some("127.0.0.1:7320"));
+        assert_eq!(entries[0].data_dir.as_deref(), Some("/home/user/data"));
     }
 
     #[test]
