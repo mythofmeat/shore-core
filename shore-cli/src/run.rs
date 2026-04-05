@@ -1121,6 +1121,7 @@ mod tests {
         let cli = test_cli(CliCommand::Memory {
             subcommand: Some(crate::cli::MemoryCommand::Compact),
             query: None,
+            direct: false,
             json: false,
         });
         let received = execute_with_mock(cli, command_response("compact")).await;
@@ -1141,6 +1142,7 @@ mod tests {
         let cli = test_cli(CliCommand::Memory {
             subcommand: None,
             query: Some("recent topics".into()),
+            direct: false,
             json: false,
         });
         let received = execute_with_mock(cli, command_response("memory")).await;

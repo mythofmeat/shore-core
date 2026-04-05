@@ -5,6 +5,7 @@ use shore_protocol::types::{ContentBlock, Role};
 use crate::engine::ConversationEngine;
 use crate::memory::agent::{CallerIdentity, MemoryAgent, RealAgentIndexer};
 use crate::memory::agent_llm::RealAgentLlm;
+use crate::memory::researcher::MemoryResearcher;
 use shore_ledger::CallType;
 use crate::memory::collation::{
     CollationError, CollationManager, CollationOutcome, DecayConfig, DEFAULT_REFINE_PROMPT,
@@ -257,10 +258,14 @@ pub async fn memory(
         .get("query")
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty());
+    let direct = args
+        .get("direct")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     match query {
         None => memory_status(engine, ctx),
-        Some(q) => memory_query(engine, ctx, q).await,
+        Some(q) => memory_query(engine, ctx, q, direct).await,
     }
 }
 
@@ -298,11 +303,14 @@ fn memory_status(engine: &ConversationEngine, ctx: &CommandContext) -> CommandRe
     }))
 }
 
-/// Run a one-shot memory agent query and return the synthesis.
+/// Run a memory query through the researcher→agent pipeline (matching tool-use path).
+///
+/// When `direct` is true, skips the researcher and queries the agent directly.
 async fn memory_query(
     engine: &ConversationEngine,
     ctx: &CommandContext,
     query: &str,
+    direct: bool,
 ) -> CommandResult {
     let char_name = engine.character_name();
     let db = open_memory_db(ctx, char_name)?;
@@ -318,22 +326,70 @@ async fn memory_query(
         .as_ref()
         .map(|i| i as &dyn crate::memory::agent::AgentIndexer);
 
-    let result = agent
-        .ask(
-            query,
-            &agent_llm,
-            &db,
-            indexer,
-            search_ctx.as_ref(),
-            &agent_model,
-        )
-        .await
-        .map_err(|e| {
-            (
-                ErrorCode::InternalError,
-                format!("Memory query failed: {e}"),
+    // Resolve the researcher model from defaults.tool_model (same as the handler path).
+    let researcher_model = if direct {
+        None
+    } else {
+        ctx.config
+            .app
+            .defaults
+            .tool_model
+            .as_deref()
+            .and_then(|name| ctx.config.models.find_model(name).ok())
+            .cloned()
+    };
+
+    let result = if let Some(ref r_model) = researcher_model {
+        // Full researcher→agent pipeline (matches tool-use path).
+        let char_def = shore_config::load_character_definition(&ctx.config.dirs.config, char_name)
+            .unwrap_or_default();
+        let user_def = shore_config::resolve_user_definition(&ctx.config.dirs.config, char_name)
+            .unwrap_or_default();
+        let researcher = MemoryResearcher::new(char_def, user_def);
+        let researcher_llm = RealAgentLlm::new(
+            ctx.llm_client.clone(),
+            char_name.to_string(),
+            CallType::Researcher,
+        );
+
+        researcher
+            .research(
+                query,
+                &researcher_llm,
+                r_model,
+                &agent,
+                &agent_llm,
+                &agent_model,
+                &db,
+                indexer,
+                search_ctx.as_ref(),
             )
-        })?;
+            .await
+            .map_err(|e| {
+                (
+                    ErrorCode::InternalError,
+                    format!("Memory query failed: {e}"),
+                )
+            })?
+    } else {
+        // Direct agent query (no researcher configured, or --direct flag).
+        agent
+            .ask(
+                query,
+                &agent_llm,
+                &db,
+                indexer,
+                search_ctx.as_ref(),
+                &agent_model,
+            )
+            .await
+            .map_err(|e| {
+                (
+                    ErrorCode::InternalError,
+                    format!("Memory query failed: {e}"),
+                )
+            })?
+    };
 
     Ok(json!({
         "character": char_name,

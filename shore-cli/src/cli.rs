@@ -159,6 +159,10 @@ pub enum CliCommand {
         /// Query to search memory
         query: Option<String>,
 
+        /// Skip the researcher and query the memory agent directly
+        #[arg(long)]
+        direct: bool,
+
         /// Output raw JSON
         #[arg(long)]
         json: bool,
@@ -438,7 +442,9 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
             subcommand: Some(MemoryCommand::Shell),
             ..
         } => None,
-        CliCommand::Memory { query, .. } => Some(("memory", json!({ "query": query }))),
+        CliCommand::Memory {
+            query, direct, ..
+        } => Some(("memory", json!({ "query": query, "direct": direct }))),
 
         CliCommand::Config { reset: true, .. } => Some(("config_reset", json!({}))),
         CliCommand::Config { check: true, .. } => Some(("config_check", json!({}))),
@@ -1140,6 +1146,7 @@ mod tests {
         let cmd = CliCommand::Memory {
             subcommand: Some(MemoryCommand::Compact),
             query: None,
+            direct: false,
             json: false,
         };
         let (name, args) = to_swp_command(&cmd).unwrap();
@@ -1152,6 +1159,7 @@ mod tests {
         let cmd = CliCommand::Memory {
             subcommand: Some(MemoryCommand::Changelog { limit: 20 }),
             query: None,
+            direct: false,
             json: false,
         };
         let (name, args) = to_swp_command(&cmd).unwrap();
@@ -1164,6 +1172,7 @@ mod tests {
         let cmd = CliCommand::Memory {
             subcommand: Some(MemoryCommand::Reindex),
             query: None,
+            direct: false,
             json: false,
         };
         let (name, _) = to_swp_command(&cmd).unwrap();
@@ -1260,21 +1269,25 @@ mod tests {
             CliCommand::Memory {
                 subcommand: None,
                 query: None,
+                direct: false,
                 json: false,
             },
             CliCommand::Memory {
                 subcommand: Some(MemoryCommand::Compact),
                 query: None,
+                direct: false,
                 json: false,
             },
             CliCommand::Memory {
                 subcommand: Some(MemoryCommand::Changelog { limit: 20 }),
                 query: None,
+                direct: false,
                 json: false,
             },
             CliCommand::Memory {
                 subcommand: Some(MemoryCommand::Reindex),
                 query: None,
+                direct: false,
                 json: false,
             },
             CliCommand::Config {
