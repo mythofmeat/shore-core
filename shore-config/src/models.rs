@@ -508,7 +508,6 @@ fn hardcoded_defaults(provider_key: &str) -> ProviderConfig {
         "zai" => ModelConfigFields {
             sdk: Some(Sdk::Zai),
             api_key_env: Some("ZAI_API_KEY".into()),
-            base_url: Some("https://api.z.ai/api/paas/v4".into()),
             zai_clear_thinking: Some(false),
             ..base_provider_defaults()
         },
