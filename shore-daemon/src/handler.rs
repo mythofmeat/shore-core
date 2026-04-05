@@ -969,14 +969,14 @@ async fn run_tool_phase(
                 char_name,
                 &effective_config.app.defaults.resolve_display_name(),
             ),
-            agent_llm: RealAgentLlm::new(ctx.llm_client.clone(), char_name.to_owned()),
+            agent_llm: RealAgentLlm::new(ctx.llm_client.clone(), char_name.to_owned(), CallType::MemoryAgent),
             agent_model_val: agent_model.clone(),
             researcher: researcher_model
                 .as_ref()
                 .map(|_| MemoryResearcher::new(char_def, user_def)),
             researcher_llm_val: researcher_model
                 .as_ref()
-                .map(|_| RealAgentLlm::new(ctx.llm_client.clone(), char_name.to_owned())),
+                .map(|_| RealAgentLlm::new(ctx.llm_client.clone(), char_name.to_owned(), CallType::Researcher)),
             researcher_model_val: researcher_model.clone(),
             rag: NoopRag,
             search_ctx,

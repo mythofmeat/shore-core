@@ -143,6 +143,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let llm_client = LedgerClient::new(raw_llm_client, &loaded.dirs.data.join("ledger.db"))?;
 
+    // Reconstruct cache tracker state from the ledger for each known character.
+    // This prevents false-positive anomalies when the cache is still warm from
+    // before the restart.
+    for character in shore_config::discover_characters(&loaded.dirs.config) {
+        llm_client.reconstruct_cache_state(&character, 3600);
+    }
+
     // Provide the autonomy manager with resources for interiority/keepalive execution.
     autonomy.set_resources(
         llm_client.clone(),

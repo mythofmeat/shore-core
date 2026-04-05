@@ -244,17 +244,16 @@ pub fn active_anthropic_characters(
 // ── Warm streak ──────────────────────────────────────────────────────────────
 
 /// Counts consecutive warm calls from most recent backwards for `character`.
+/// Bounded to prevent loading unbounded rows for high-volume characters.
 pub fn warm_streak(ledger: &Ledger, character: &str) -> Result<u32, rusqlite::Error> {
     let conn = ledger.conn();
     let mut stmt = conn.prepare(
-        "SELECT cache_state FROM calls WHERE character = ?1 ORDER BY id DESC",
+        "SELECT cache_state FROM calls WHERE character = ?1 ORDER BY id DESC LIMIT 10000",
     )?;
-    let states = stmt
-        .query_map([character], |row| row.get::<_, Option<String>>(0))?
-        .collect::<Result<Vec<_>, _>>()?;
+    let mut rows = stmt.query_map([character], |row| row.get::<_, Option<String>>(0))?;
 
     let mut count = 0u32;
-    for state in &states {
+    while let Some(Ok(state)) = rows.next() {
         if state.as_deref() == Some("warm") {
             count += 1;
         } else {
@@ -262,6 +261,55 @@ pub fn warm_streak(ledger: &Ledger, character: &str) -> Result<u32, rusqlite::Er
         }
     }
     Ok(count)
+}
+
+// ── Recalculate ─────────────────────────────────────────────────────────────
+
+/// Row with NULL costs that needs recalculation.
+pub struct NullCostRow {
+    pub id: i64,
+    pub provider: String,
+    pub model: String,
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+    pub cache_read_tokens: u32,
+    pub cache_write_tokens: u32,
+}
+
+/// Find all rows with NULL total_cost.
+pub fn null_cost_rows(ledger: &Ledger) -> Result<Vec<NullCostRow>, rusqlite::Error> {
+    let conn = ledger.conn();
+    let mut stmt = conn.prepare(
+        "SELECT id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens FROM calls WHERE total_cost IS NULL",
+    )?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(NullCostRow {
+                id: row.get(0)?,
+                provider: row.get(1)?,
+                model: row.get(2)?,
+                input_tokens: row.get(3)?,
+                output_tokens: row.get(4)?,
+                cache_read_tokens: row.get(5)?,
+                cache_write_tokens: row.get(6)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// Update costs for a single row by id.
+pub fn update_costs(
+    ledger: &Ledger,
+    id: i64,
+    cost: &crate::pricing::CostBreakdown,
+) -> Result<(), rusqlite::Error> {
+    let conn = ledger.conn();
+    conn.execute(
+        "UPDATE calls SET input_cost=?1, output_cost=?2, cache_read_cost=?3, cache_write_cost=?4, total_cost=?5 WHERE id=?6",
+        rusqlite::params![cost.input, cost.output, cost.cache_read, cost.cache_write, cost.total, id],
+    )?;
+    Ok(())
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────

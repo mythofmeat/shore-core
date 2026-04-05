@@ -1180,14 +1180,14 @@ async fn build_tool_context(
             character,
             &display_name,
         ),
-        agent_llm: RealAgentLlm::new(client.clone(), character.to_string()),
+        agent_llm: RealAgentLlm::new(client.clone(), character.to_string(), CallType::MemoryAgent),
         agent_model_val: agent_model.clone(),
         researcher: researcher_model
             .as_ref()
             .map(|_| MemoryResearcher::new(String::new(), String::new())),
         researcher_llm_val: researcher_model
             .as_ref()
-            .map(|_| RealAgentLlm::new(client.clone(), character.to_string())),
+            .map(|_| RealAgentLlm::new(client.clone(), character.to_string(), CallType::Researcher)),
         researcher_model_val: researcher_model,
         rag: NoopRag,
         search_ctx,

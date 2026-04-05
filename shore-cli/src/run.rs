@@ -25,7 +25,7 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         return handle_matrix_command(subcommand, &cli).await;
     }
     if let CliCommand::Usage { .. } = &cli.command {
-        return handle_usage_command(&cli.command);
+        return handle_usage_command(&cli.command).await;
     }
 
     let addr = resolve_addr(&cli);
@@ -469,7 +469,7 @@ async fn run_memory_shell(conn: &mut SWPConnection) -> Result<(), Box<dyn std::e
 
 // ── Usage command (local, no daemon) ────────────────────────────────────────
 
-fn handle_usage_command(cmd: &CliCommand) -> Result<(), Box<dyn std::error::Error>> {
+async fn handle_usage_command(cmd: &CliCommand) -> Result<(), Box<dyn std::error::Error>> {
     let CliCommand::Usage {
         last,
         character,
@@ -480,7 +480,7 @@ fn handle_usage_command(cmd: &CliCommand) -> Result<(), Box<dyn std::error::Erro
         export_csv,
         export_tsv,
         refresh_pricing,
-        recalculate: _,
+        recalculate,
     } = cmd
     else {
         unreachable!()
@@ -516,8 +516,22 @@ fn handle_usage_command(cmd: &CliCommand) -> Result<(), Box<dyn std::error::Erro
     }
 
     if *export_csv {
-        let output = shore_ledger::query::export_tsv(&ledger, &filter)?;
-        print!("{}", output.replace('\t', ","));
+        let tsv = shore_ledger::query::export_tsv(&ledger, &filter)?;
+        // Convert TSV to RFC 4180 CSV: quote fields that contain commas, quotes, or newlines.
+        for line in tsv.lines() {
+            let fields: Vec<&str> = line.split('\t').collect();
+            let csv_fields: Vec<String> = fields
+                .iter()
+                .map(|f| {
+                    if f.contains(',') || f.contains('"') || f.contains('\n') {
+                        format!("\"{}\"", f.replace('"', "\"\""))
+                    } else {
+                        f.to_string()
+                    }
+                })
+                .collect();
+            println!("{}", csv_fields.join(","));
+        }
         return Ok(());
     }
 
@@ -549,6 +563,51 @@ fn handle_usage_command(cmd: &CliCommand) -> Result<(), Box<dyn std::error::Erro
         let pricing = shore_ledger::pricing::PricingEngine::new(ledger_arc);
         pricing.clear_cache()?;
         println!("Pricing cache cleared. Prices will be re-fetched on next daemon use.");
+        return Ok(());
+    }
+
+    if *recalculate {
+        let ledger_arc = std::sync::Arc::new(ledger);
+        let pricing = shore_ledger::pricing::PricingEngine::new(ledger_arc.clone());
+
+        let null_rows = shore_ledger::query::null_cost_rows(&ledger_arc)?;
+        if null_rows.is_empty() {
+            println!("All rows already have costs calculated.");
+            return Ok(());
+        }
+
+        println!("Recalculating costs for {} rows...", null_rows.len());
+
+        // Fetch pricing for each unique (provider, model) pair
+        let mut models_fetched = std::collections::HashSet::new();
+        for row in &null_rows {
+            let key = format!("{}/{}", row.provider, row.model);
+            if models_fetched.insert(key) {
+                let _ = pricing.get_or_fetch(&row.provider, &row.model).await;
+            }
+        }
+
+        let mut updated = 0u32;
+        for row in &null_rows {
+            if let Ok(Some(cost)) = pricing.calculate_cost(
+                &row.provider,
+                &row.model,
+                row.input_tokens,
+                row.output_tokens,
+                row.cache_read_tokens,
+                row.cache_write_tokens,
+            ) {
+                if shore_ledger::query::update_costs(&ledger_arc, row.id, &cost).is_ok() {
+                    updated += 1;
+                }
+            }
+        }
+
+        println!(
+            "Updated {updated}/{} rows. {} still missing pricing data.",
+            null_rows.len(),
+            null_rows.len() as u32 - updated
+        );
         return Ok(());
     }
 

@@ -5,6 +5,7 @@ use shore_protocol::types::{ContentBlock, Role};
 use crate::engine::ConversationEngine;
 use crate::memory::agent::{CallerIdentity, MemoryAgent, RealAgentIndexer};
 use crate::memory::agent_llm::RealAgentLlm;
+use shore_ledger::CallType;
 use crate::memory::collation::{
     CollationError, CollationManager, CollationOutcome, DecayConfig, DEFAULT_REFINE_PROMPT,
 };
@@ -309,7 +310,7 @@ async fn memory_query(
 
     let display_name = ctx.config.app.defaults.resolve_display_name();
     let agent = MemoryAgent::one_shot(CallerIdentity::User, &display_name, char_name);
-    let agent_llm = RealAgentLlm::new(ctx.llm_client.clone(), char_name.to_string());
+    let agent_llm = RealAgentLlm::new(ctx.llm_client.clone(), char_name.to_string(), CallType::MemoryAgent);
 
     let search_ctx = setup_search_context(ctx, char_name).await;
     let real_indexer = search_ctx.as_ref().map(RealAgentIndexer::new);
@@ -399,7 +400,7 @@ pub async fn memory_shell_query(
         .clone();
 
     let db = open_memory_db(ctx, &char_name)?;
-    let agent_llm = RealAgentLlm::new(ctx.llm_client.clone(), char_name.clone());
+    let agent_llm = RealAgentLlm::new(ctx.llm_client.clone(), char_name.clone(), CallType::MemoryAgent);
     let search_ctx = setup_search_context(ctx, &char_name).await;
     let real_indexer = search_ctx.as_ref().map(RealAgentIndexer::new);
     let indexer = real_indexer

@@ -71,11 +71,12 @@ use shore_ledger::{CallType, LedgerClient};
 pub struct RealAgentLlm {
     client: LedgerClient,
     character: String,
+    call_type: CallType,
 }
 
 impl RealAgentLlm {
-    pub fn new(client: LedgerClient, character: String) -> Self {
-        Self { client, character }
+    pub fn new(client: LedgerClient, character: String, call_type: CallType) -> Self {
+        Self { client, character, call_type }
     }
 }
 
@@ -93,7 +94,7 @@ impl AgentLlm for RealAgentLlm {
 
             let resp = self
                 .client
-                .generate(&request, CallType::MemoryAgent, &self.character, false)
+                .generate(&request, self.call_type, &self.character, false)
                 .await
                 .map_err(|e| AgentLlmError::Transport(e.to_string()))?;
 
