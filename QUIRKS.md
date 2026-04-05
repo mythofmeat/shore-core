@@ -26,4 +26,8 @@ Unexpected behavior, kludges, and idiosyncrasies that aren't obvious from readin
 
 ## Image Handling
 
+- **Anthropic 1h cache TTL pricing differs from OpenRouter's reported 5m prices.** OpenRouter's `/api/v1/models` endpoint reports cache_write prices for the 5-minute TTL. Shore uses the 1-hour TTL (configured via `cache_ttl = "1h"`), where cache_write costs are 4x the 5-minute price. The PricingEngine hardcodes this multiplier (`ANTHROPIC_1H_CACHE_WRITE_MULTIPLIER = 4.0`). If Anthropic changes the relationship between TTL tiers, this multiplier needs updating.
+
+## Image Handling
+
 - **User messages always have `content_blocks` populated.** This means the `build_content(text, images)` fallback in the LLM message builder is dead code for user messages — it only fires when `content_blocks` is empty. Prior to the fix, `m.images` was silently dropped for all user messages because the `content_blocks` branch didn't encode them. Image encoding must happen in both branches.

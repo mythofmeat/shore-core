@@ -372,3 +372,21 @@ A single holistic call lets the LLM see all candidates + nearby context and make
 **Backward compatibility:** Old `+00:00` data in SQLite coexists safely with new local-offset data. chrono's `DateTime<FixedOffset>` arithmetic is offset-aware, so age calculations (`now - stored_timestamp`) produce correct durations regardless of offset. Lexicographic `ORDER BY` may mis-sort entries from the transition day; this affects only display ordering, not correctness. No data migration needed.
 
 **Trade-off:** Timestamps in the database are no longer uniformly UTC. Any future tool that needs absolute ordering across timezones would need to parse rather than string-sort. Accepted because: all current consumers already parse timestamps for arithmetic, and the string-sort sites only affect best-effort display ordering.
+
+## Token Usage Ledger (shore-ledger)
+
+**Decision:** Use SQLite (not TSV/CSV) for the token usage ledger from day one.
+
+**Why:** The primary use case is aggregation queries (cost per model per day, cache anomaly filtering, warm streak counting). These are fundamentally GROUP BY / SUM operations that SQLite handles natively. A TSV would require building a query engine in Rust. rusqlite was already a workspace dependency (used by shore-daemon for memory databases), so this adds zero new weight.
+
+**Decision:** Compiler-enforced recording via LedgerClient wrapper that consumes LlmClient.
+
+**Why:** Convention-based logging ("remember to call ledger.record() after every API call") is fragile and guaranteed to be missed somewhere. By consuming the LlmClient into a LedgerClient and making the daemon hold only the wrapper, it is structurally impossible to make an unlogged LLM call. The type system enforces the invariant.
+
+**Decision:** Use OpenRouter's public /api/v1/models endpoint for per-model pricing.
+
+**Why:** OpenRouter indexes pricing for nearly every model across all providers, with prices matching the official endpoints exactly (confirmed empirically). This gives us a single API call to get accurate pricing for any model, avoiding hardcoded pricing tables that go stale. Prices are cached lazily per-model in the SQLite DB with manual refresh via `shore usage --refresh-pricing`.
+
+**Decision:** Hardcode a 4x multiplier for Anthropic's 1-hour cache TTL write pricing.
+
+**Why:** OpenRouter reports 5-minute cache TTL prices. Shore uses 1-hour cache TTL for Anthropic. The 1h write price is 4x the 5m price. This is a stable relationship defined by Anthropic's pricing structure.

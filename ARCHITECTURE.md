@@ -1444,3 +1444,37 @@ To prevent deadlocks:
 - Per-character serialization of mutations (append/delete/edit) is enforced by the
   engine's tokio Mutex — generating and editing the same character's history at the
   same time will serialize, not corrupt.
+
+---
+
+## 10. Token Usage Ledger (`shore-ledger`)
+
+A dedicated crate for persistent LLM usage tracking, cost calculation, and cache health monitoring.
+
+### Architecture
+
+```
+shore-daemon ──▶ shore-ledger ──▶ shore-llm-client
+shore-cli    ──▶ shore-ledger (query only)
+```
+
+### Components
+
+- **LedgerClient** — wraps `LlmClient`, consumes it so the raw client is inaccessible.
+  Every `generate()` and `stream_raw()` call automatically records to the ledger.
+- **LedgerStream** — wraps the streaming reader. Must be `finalize()`d after consumption;
+  Drop impl warns if finalization was skipped.
+- **Ledger** — SQLite database at `$XDG_DATA_HOME/shore/ledger.db` with `calls` and `pricing` tables.
+- **CacheTracker** — per-character state machine (Cold/Warm) for Anthropic prompt cache.
+  Detects anomalies: unexpected reads (cold but got cache hit) and unexpected writes
+  (warm but cache_read decreased). Anomalies fire `tracing::error!` and notifications.
+- **PricingEngine** — fetches per-model pricing from OpenRouter's API, caches in DB.
+  Applies 4x multiplier for Anthropic 1h cache TTL writes.
+- **Query module** — aggregation, filtering, and TSV/CSV export for the CLI.
+
+### Data Flow
+
+1. Daemon constructs `LedgerClient::new(llm_client, db_path)` at startup
+2. Every LLM call goes through `LedgerClient` with `CallType` + character name
+3. On response: usage recorded to SQLite, cache tracker updated, cost calculated
+4. CLI queries the DB directly via `shore usage` (no daemon connection needed)
