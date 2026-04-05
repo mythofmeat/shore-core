@@ -165,7 +165,7 @@ pub struct MessageHandler {
 // ---------------------------------------------------------------------------
 
 /// Detect MIME type from file extension.
-fn media_type_for_path(path: &str) -> Option<&'static str> {
+pub(crate) fn media_type_for_path(path: &str) -> Option<&'static str> {
     let ext = path.rsplit('.').next()?.to_ascii_lowercase();
     match ext.as_str() {
         "jpg" | "jpeg" => Some("image/jpeg"),
@@ -180,7 +180,7 @@ fn media_type_for_path(path: &str) -> Option<&'static str> {
 ///
 /// If `images` is non-empty, returns a JSON array containing image blocks
 /// (base64-encoded) followed by a text block. Otherwise returns a plain string.
-fn build_content(text: &str, images: &[ImageRef]) -> Value {
+pub(crate) fn build_content(text: &str, images: &[ImageRef]) -> Value {
     if images.is_empty() {
         return json!(text);
     }
@@ -750,7 +750,7 @@ async fn handle_generation(
 ///
 /// Returns `(messages, system)` — the system parameter is `None` if empty,
 /// a plain string for a single block, or an array of `{type, text}` objects.
-fn build_llm_messages(
+pub(crate) fn build_llm_messages(
     prompt_result: &prompt::AssembledPrompt,
     include_unsigned_thinking: bool,
 ) -> (Vec<Value>, Option<Value>) {

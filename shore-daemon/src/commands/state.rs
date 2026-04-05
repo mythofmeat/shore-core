@@ -581,12 +581,23 @@ pub async fn compact(
     let recap_path = memory_dir(ctx, &char_name).join("recap.md");
     let existing_recap = std::fs::read_to_string(&recap_path).ok();
 
+    // Read the active.jsonl content while the engine lock is held, so
+    // archive_and_retain uses the same snapshot the messages were parsed from.
+    let active_content = std::fs::read_to_string(engine.character_dir().join("active.jsonl"))
+        .map_err(|e| {
+            (
+                ErrorCode::InternalError,
+                format!("failed to read active.jsonl: {e}"),
+            )
+        })?;
+
     // Run compaction.
     let display_name = ctx.config.app.defaults.resolve_display_name();
     let outcome = mgr
         .compact(
             &char_name,
             &messages,
+            &active_content,
             false, // is_private: V2 has no per-conversation privacy flag yet
             &prompt_template,
             existing_recap.as_deref(),

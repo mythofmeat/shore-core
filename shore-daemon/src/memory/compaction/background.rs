@@ -106,6 +106,7 @@ pub async fn run_compaction(
         .compact(
             character,
             &messages,
+            &content,
             false,
             &prompt_template,
             existing_recap.as_deref(),

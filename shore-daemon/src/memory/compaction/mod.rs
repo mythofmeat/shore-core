@@ -153,6 +153,7 @@ impl CompactionManager {
         &self,
         conversation_id: &str,
         messages: &[ConversationMessage],
+        active_content: &str,
         is_private: bool,
         prompt_template: &str,
         existing_recap: Option<&str>,
@@ -276,6 +277,7 @@ impl CompactionManager {
             RetentionParams {
                 keep_last_n: retained,
                 recap: recap.clone(),
+                active_content: active_content.to_string(),
             },
         )?;
 
@@ -653,6 +655,7 @@ They discussed daily activities and the user's beverage preferences.
             .compact(
                 "conv-1",
                 &messages,
+                "",
                 false,
                 DEFAULT_COMPACT_PROMPT,
                 None,
@@ -701,6 +704,7 @@ They discussed daily activities and the user's beverage preferences.
         mgr.compact(
             "conv-1",
             &make_messages(10),
+            "",
             false,
             DEFAULT_COMPACT_PROMPT,
             None,
@@ -734,6 +738,7 @@ They discussed daily activities and the user's beverage preferences.
         mgr.compact(
             "conv-1",
             &make_messages(10),
+            "",
             false,
             DEFAULT_COMPACT_PROMPT,
             None,
@@ -768,6 +773,7 @@ They discussed daily activities and the user's beverage preferences.
             .compact(
                 "old-conv",
                 &make_messages(10),
+                "",
                 false,
                 DEFAULT_COMPACT_PROMPT,
                 None,
@@ -810,6 +816,7 @@ They discussed daily activities and the user's beverage preferences.
             .compact(
                 "private-conv",
                 &make_messages(10),
+                "",
                 true,
                 DEFAULT_COMPACT_PROMPT,
                 None,
@@ -844,6 +851,7 @@ They discussed daily activities and the user's beverage preferences.
             .compact(
                 "conv-1",
                 &make_messages(10),
+                "",
                 false,
                 DEFAULT_COMPACT_PROMPT,
                 None,
@@ -888,6 +896,7 @@ They discussed daily activities and the user's beverage preferences.
             .compact(
                 "conv-1",
                 &[],
+                "",
                 false,
                 DEFAULT_COMPACT_PROMPT,
                 None,
@@ -918,6 +927,7 @@ They discussed daily activities and the user's beverage preferences.
             .compact(
                 "conv-1",
                 &make_messages(5),
+                "",
                 false,
                 DEFAULT_COMPACT_PROMPT,
                 None,

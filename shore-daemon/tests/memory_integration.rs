@@ -350,6 +350,7 @@ async fn test_full_memory_system_e2e() {
         .compact(
             "conv-1",
             &messages,
+            "",
             false,
             DEFAULT_COMPACT_PROMPT,
             None,    // existing_recap
@@ -592,6 +593,7 @@ async fn test_compaction_rejects_private_conversation() {
         .compact(
             "private-conv",
             &make_conversation(),
+            "",
             true, // private
             DEFAULT_COMPACT_PROMPT,
             None,

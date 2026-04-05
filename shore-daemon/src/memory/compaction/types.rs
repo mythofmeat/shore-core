@@ -69,6 +69,10 @@ pub struct RetentionParams {
     pub keep_last_n: usize,
     /// Recap text to write to memory/recap.md (None = leave untouched).
     pub recap: Option<String>,
+    /// Pre-read content of active.jsonl at the time messages were parsed.
+    /// Eliminates the TOCTOU race where the file could change between
+    /// message analysis and the archive-and-retain write.
+    pub active_content: String,
 }
 
 // ---------------------------------------------------------------------------

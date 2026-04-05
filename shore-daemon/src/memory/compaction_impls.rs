@@ -354,12 +354,14 @@ impl ConversationManager for RealConversationManager {
         params: RetentionParams,
     ) -> Result<String, CompactionError> {
         let active_path = self.character_dir.join("active.jsonl");
-        let content = std::fs::read_to_string(&active_path).map_err(|e| {
-            CompactionError::ConversationManager(format!("failed to read active.jsonl: {e}"))
-        })?;
 
-        // Split lines into archive vs retain portions.
-        let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
+        // Use pre-read content from params to avoid TOCTOU race — the file
+        // may have changed since compact() parsed the messages.
+        let lines: Vec<&str> = params
+            .active_content
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .collect();
 
         let keep = params.keep_last_n.min(lines.len());
         let split_at = lines.len() - keep;
@@ -462,11 +464,8 @@ mod tests {
         let msg2 =
             r#"{"msg_id":"m2","role":"Assistant","content":"hi","images":[],"timestamp":"t2"}"#;
         let msg3 = r#"{"msg_id":"m3","role":"User","content":"bye","images":[],"timestamp":"t3"}"#;
-        std::fs::write(
-            dir.join("active.jsonl"),
-            format!("{msg1}\n{msg2}\n{msg3}\n"),
-        )
-        .unwrap();
+        let content = format!("{msg1}\n{msg2}\n{msg3}\n");
+        std::fs::write(dir.join("active.jsonl"), &content).unwrap();
 
         let mgr = RealConversationManager::new(dir);
         let new_id = mgr
@@ -475,6 +474,7 @@ mod tests {
                 RetentionParams {
                     keep_last_n: 1,
                     recap: None,
+                    active_content: content,
                 },
             )
             .unwrap();
@@ -508,7 +508,8 @@ mod tests {
         let dir = tmp.path();
 
         let msg = r#"{"msg_id":"m1","role":"User","content":"hello","images":[],"timestamp":"t1"}"#;
-        std::fs::write(dir.join("active.jsonl"), format!("{msg}\n")).unwrap();
+        let content = format!("{msg}\n");
+        std::fs::write(dir.join("active.jsonl"), &content).unwrap();
 
         let mgr = RealConversationManager::new(dir);
         mgr.archive_and_retain(
@@ -516,6 +517,7 @@ mod tests {
             RetentionParams {
                 keep_last_n: 0,
                 recap: Some("A recap of events.".to_string()),
+                active_content: content,
             },
         )
         .unwrap();
@@ -534,7 +536,8 @@ mod tests {
         std::fs::write(dir.join("memory/recap.md"), "old recap").unwrap();
 
         let msg = r#"{"msg_id":"m1","role":"User","content":"hello","images":[],"timestamp":"t1"}"#;
-        std::fs::write(dir.join("active.jsonl"), format!("{msg}\n")).unwrap();
+        let content = format!("{msg}\n");
+        std::fs::write(dir.join("active.jsonl"), &content).unwrap();
 
         let mgr = RealConversationManager::new(dir);
         mgr.archive_and_retain(
@@ -542,6 +545,7 @@ mod tests {
             RetentionParams {
                 keep_last_n: 0,
                 recap: None,
+                active_content: content,
             },
         )
         .unwrap();
@@ -559,7 +563,8 @@ mod tests {
             r#"{"msg_id":"m1","role":"User","content":"hello","images":[],"timestamp":"t1"}"#;
         let msg2 =
             r#"{"msg_id":"m2","role":"User","content":"world","images":[],"timestamp":"t2"}"#;
-        std::fs::write(dir.join("active.jsonl"), format!("{msg1}\n{msg2}\n")).unwrap();
+        let content = format!("{msg1}\n{msg2}\n");
+        std::fs::write(dir.join("active.jsonl"), &content).unwrap();
 
         let mgr = RealConversationManager::new(dir);
         mgr.archive_and_retain(
@@ -567,6 +572,7 @@ mod tests {
             RetentionParams {
                 keep_last_n: 5, // more than available
                 recap: None,
+                active_content: content,
             },
         )
         .unwrap();
@@ -600,7 +606,8 @@ mod tests {
         std::fs::create_dir_all(dir.join("segments")).unwrap();
 
         let msg = r#"{"msg_id":"m3","role":"User","content":"test","images":[],"timestamp":"t"}"#;
-        std::fs::write(dir.join("active.jsonl"), format!("{msg}\n")).unwrap();
+        let content = format!("{msg}\n");
+        std::fs::write(dir.join("active.jsonl"), &content).unwrap();
 
         let mgr = RealConversationManager::new(dir);
         mgr.archive_and_retain(
@@ -608,6 +615,7 @@ mod tests {
             RetentionParams {
                 keep_last_n: 0,
                 recap: None,
+                active_content: content,
             },
         )
         .unwrap();
@@ -632,11 +640,8 @@ mod tests {
         let garbage = r#"corrupted{{{not valid json at all"#;
         let valid2 =
             r#"{"msg_id":"m2","role":"User","content":"bye","images":[],"timestamp":"t2"}"#;
-        std::fs::write(
-            dir.join("active.jsonl"),
-            format!("{valid1}\n{garbage}\n{valid2}\n"),
-        )
-        .unwrap();
+        let content = format!("{valid1}\n{garbage}\n{valid2}\n");
+        std::fs::write(dir.join("active.jsonl"), &content).unwrap();
 
         let mgr = RealConversationManager::new(dir);
         let new_id = mgr
@@ -645,6 +650,7 @@ mod tests {
                 RetentionParams {
                     keep_last_n: 1,
                     recap: None,
+                    active_content: content,
                 },
             )
             .unwrap();
@@ -679,7 +685,8 @@ mod tests {
             r#"{"msg_id":"m1","role":"User","content":"hello","images":[],"timestamp":"t1"}"#;
         let msg2 =
             r#"{"msg_id":"m2","role":"User","content":"world","images":[],"timestamp":"t2"}"#;
-        std::fs::write(dir.join("active.jsonl"), format!("{msg1}\n{msg2}\n")).unwrap();
+        let content = format!("{msg1}\n{msg2}\n");
+        std::fs::write(dir.join("active.jsonl"), &content).unwrap();
 
         // Pre-create the segments dir as read-only so the write fails.
         let segments_dir = dir.join("segments");
@@ -692,6 +699,7 @@ mod tests {
             RetentionParams {
                 keep_last_n: 1,
                 recap: None,
+                active_content: content,
             },
         );
 
@@ -715,7 +723,8 @@ mod tests {
             r#"{"msg_id":"m1","role":"User","content":"hello","images":[],"timestamp":"t1"}"#;
         let msg2 =
             r#"{"msg_id":"m2","role":"User","content":"world","images":[],"timestamp":"t2"}"#;
-        std::fs::write(dir.join("active.jsonl"), format!("{msg1}\n{msg2}\n")).unwrap();
+        let content = format!("{msg1}\n{msg2}\n");
+        std::fs::write(dir.join("active.jsonl"), &content).unwrap();
 
         // Segments dir is writable (so segment write succeeds), but make the
         // parent dir read-only AFTER writing active.jsonl so manifest write fails.
@@ -732,6 +741,7 @@ mod tests {
             RetentionParams {
                 keep_last_n: 1,
                 recap: None,
+                active_content: content,
             },
         );
 
@@ -744,25 +754,23 @@ mod tests {
     }
 
     #[test]
-    fn archive_missing_active_jsonl() {
+    fn archive_empty_content_is_noop() {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
-        // No active.jsonl written.
 
+        // Empty active_content means nothing to archive or retain.
         let mgr = RealConversationManager::new(dir);
         let result = mgr.archive_and_retain(
             "conv",
             RetentionParams {
                 keep_last_n: 1,
                 recap: None,
+                active_content: String::new(),
             },
         );
 
-        assert!(result.is_err());
-        let err_msg = format!("{}", result.unwrap_err());
-        assert!(
-            err_msg.contains("failed to read"),
-            "Expected 'failed to read' error, got: {err_msg}"
-        );
+        // Should succeed — no segments created, empty active.jsonl written.
+        assert!(result.is_ok());
+        assert!(!dir.join("segments").exists());
     }
 }
