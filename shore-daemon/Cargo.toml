@@ -19,7 +19,7 @@ fs2 = "0.4"
 uuid = { version = "1", features = ["v4"] }
 chrono = "0.4"
 rand = "0.8"
-rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite = { workspace = true }
 lancedb = "0.27"
 arrow-array = "57"
 arrow-schema = "57"
