@@ -486,6 +486,13 @@ async fn handle_usage_command(cli: &Cli) -> Result<(), Box<dyn std::error::Error
         unreachable!()
     };
 
+    // Bail early if the target daemon is remote — the ledger isn't locally accessible.
+    let addr = resolve_addr(cli);
+    if matches!(addr, ServerAddr::Tcp(_)) {
+        eprintln!("shore usage requires local access to the ledger and is not available over TCP.");
+        std::process::exit(1);
+    }
+
     // Discover the data directory from the running daemon's registry entry,
     // falling back to local config resolution.
     let data_dir = shore_client::discover_data_dir().unwrap_or_else(|| {
