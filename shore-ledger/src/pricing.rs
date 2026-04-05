@@ -232,18 +232,15 @@ impl PricingEngine {
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 /// Map our (provider, model) pair to OpenRouter's model ID format.
-/// Usually just `"{provider}/{model}"`. A static override table handles divergences.
+/// For most providers: `"{provider}/{model}"`.
+/// For openrouter: the model_id is already in OpenRouter format (e.g. `google/gemini-3.1-flash-lite-preview`).
 pub fn to_openrouter_id(provider: &str, model: &str) -> String {
-    static_overrides()
-        .get(&(provider, model))
-        .cloned()
-        .unwrap_or_else(|| format!("{provider}/{model}"))
-}
-
-fn static_overrides() -> HashMap<(&'static str, &'static str), String> {
-    // No overrides needed yet — add entries here when provider/model
-    // names diverge from OpenRouter's naming scheme.
-    HashMap::new()
+    if provider == "openrouter" {
+        // OpenRouter model IDs already include the provider prefix
+        model.to_string()
+    } else {
+        format!("{provider}/{model}")
+    }
 }
 
 /// Parse a price value from OpenRouter JSON. Prices can be string or number.
@@ -312,6 +309,11 @@ mod tests {
             "anthropic/claude-opus-4-6"
         );
         assert_eq!(to_openrouter_id("openai", "gpt-4o"), "openai/gpt-4o");
+        // OpenRouter model IDs already have provider prefix — don't double-prefix
+        assert_eq!(
+            to_openrouter_id("openrouter", "google/gemini-3.1-flash-lite-preview"),
+            "google/gemini-3.1-flash-lite-preview"
+        );
     }
 
     #[test]

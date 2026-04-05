@@ -629,7 +629,7 @@ fn print_usage_summary(summary: &[shore_ledger::query::UsageSummary], period: &s
             })
             .unwrap_or_else(|| "—".into());
         println!(
-            "{:<12} {:<24} {:>5}  {:>8}K  {:>8}K  {:>8}K  {:>8}K  {:>8}",
+            "{:<12} {:<24} {:>5}  {:>9}  {:>9}  {:>9}  {:>9}  {:>8}",
             s.provider,
             s.model,
             s.call_count,
@@ -653,7 +653,7 @@ fn format_k(tokens: u64) -> String {
     } else if tokens < 1000 {
         tokens.to_string()
     } else {
-        format!("{:.1}", tokens as f64 / 1000.0)
+        format!("{:.1}K", tokens as f64 / 1000.0)
     }
 }
 
