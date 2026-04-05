@@ -126,10 +126,11 @@ void fragment() {
 	vec3 col = bg_color.rgb + deep_color + mid_color + near_color;
 
 	// ── Rain layers (two depths for parallax) ────────────────────
-	// rain_intensity modulates density threshold, speed, and brightness
+	// rain_intensity modulates density and brightness only — NOT speed
+	// (speed changes cause the pattern to jump/reverse since position = t * speed)
 	float ri = rain_intensity;
-	float rain_near = rain_layer(uv + vec2(0.0, parallax * 0.6), 40.0, 1.2 * (0.6 + ri * 0.4), rain_density * 0.5 * ri, t);
-	float rain_far = rain_layer(uv + vec2(0.0, parallax * 0.3), 25.0, 0.7 * (0.6 + ri * 0.4), rain_density * 0.7 * ri, t);
+	float rain_near = rain_layer(uv + vec2(0.0, parallax * 0.6), 40.0, 1.2, rain_density * 0.5 * ri, t);
+	float rain_far = rain_layer(uv + vec2(0.0, parallax * 0.3), 25.0, 0.7, rain_density * 0.7 * ri, t);
 
 	// Rain color: bright cool streaks against dark background
 	vec3 rain_col = vec3(0.4, 0.45, 0.55);

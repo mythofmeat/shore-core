@@ -1,6 +1,7 @@
 extends Node
 
 # Manages condensation buildup on idle and glass cracks on click.
+# Tapping makes a sound; it takes 3 taps near the same spot to crack.
 
 var _effects: Node
 var _condensation_rect: ColorRect
@@ -24,6 +25,13 @@ var _cracks: Array[Dictionary] = []  # {pos: Vector2, age: float}
 const MAX_CRACKS := 8
 const CRACK_HEAL_RATE := 0.02  # age increase per second (heals in ~50s)
 
+# Tap stress — tracks repeated taps near the same spot
+# Each entry: {pos: Vector2, taps: int, decay_timer: float}
+var _stress_points: Array[Dictionary] = []
+const TAPS_TO_CRACK := 3
+const STRESS_RADIUS := 0.06  # UV-space radius for "same spot"
+const STRESS_DECAY_TIME := 4.0  # seconds before tap count resets
+
 func setup(effects: Node, condensation: ColorRect, cracks: ColorRect) -> void:
 	_effects = effects
 	_condensation_rect = condensation
@@ -41,19 +49,39 @@ func _input(event: InputEvent) -> void:
 	if event is InputEventKey or event is InputEventMouseMotion:
 		_idle_time = 0.0
 
-	# Mouse click — wipe condensation OR create crack
+	# Mouse click — wipe condensation OR tap glass
 	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
 		var viewport_size := get_viewport().get_visible_rect().size
-		var uv := event.position / viewport_size
+		var uv: Vector2 = event.position / viewport_size
 
 		if _fog_buildup > 0.1:
 			# Wipe the condensation
 			_wipe_pos = uv
 			_wipe_age = 0.0
 			_fog_buildup = maxf(_fog_buildup - 0.15, 0.0)
+			_effects.play_glass_tap()
 		else:
-			# Tap on glass — create crack
-			_add_crack(uv)
+			# Tap on glass — accumulate stress toward crack
+			_handle_tap(uv)
+
+func _handle_tap(uv: Vector2) -> void:
+	# Find existing stress point near this tap
+	for sp in _stress_points:
+		if (sp["pos"] as Vector2).distance_to(uv) < STRESS_RADIUS:
+			sp["taps"] = (sp["taps"] as int) + 1
+			sp["decay_timer"] = STRESS_DECAY_TIME
+			sp["pos"] = ((sp["pos"] as Vector2) + uv) * 0.5  # drift toward average
+			if (sp["taps"] as int) >= TAPS_TO_CRACK:
+				_add_crack(sp["pos"] as Vector2)
+				_stress_points.erase(sp)
+				_effects.play_glass_crack()
+			else:
+				_effects.play_glass_tap()
+			return
+
+	# No nearby stress point — start a new one
+	_stress_points.append({"pos": uv, "taps": 1, "decay_timer": STRESS_DECAY_TIME})
+	_effects.play_glass_tap()
 
 func _process(delta: float) -> void:
 	if not _effects or not _effects.hauntings_enabled:
@@ -64,7 +92,7 @@ func _process(delta: float) -> void:
 			_cracks_rect.visible = false
 		return
 
-	var in_rain := _effects.background_shader == "rain_fog"
+	var in_rain: bool = _effects.background_shader == "rain_fog"
 	if _condensation_rect:
 		_condensation_rect.visible = in_rain
 	if _cracks_rect:
@@ -86,6 +114,12 @@ func _process(delta: float) -> void:
 		_condensation_mat.set_shader_parameter("fog_buildup", _fog_buildup)
 		_condensation_mat.set_shader_parameter("wipe_pos", _wipe_pos)
 		_condensation_mat.set_shader_parameter("wipe_age", _wipe_age)
+
+	# ── Stress point decay ────────────────────────────────────────
+	for i in range(_stress_points.size() - 1, -1, -1):
+		_stress_points[i]["decay_timer"] = (_stress_points[i]["decay_timer"] as float) - delta
+		if (_stress_points[i]["decay_timer"] as float) <= 0.0:
+			_stress_points.remove_at(i)
 
 	# ── Glass cracks ──────────────────────────────────────────────
 	for i in range(_cracks.size() - 1, -1, -1):

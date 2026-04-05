@@ -25,35 +25,60 @@ float hash(vec2 p) {
 	return fract((p3.x + p3.y) * p3.z);
 }
 
-// Radial crack pattern from a point
+// Radial crack pattern — more realistic impact fracture
 float crack_pattern(vec2 uv, vec2 center, float seed) {
 	vec2 d = uv - center;
+	// Correct for aspect ratio (assume ~3:2 window)
+	d.x *= 1.5;
 	float dist = length(d);
 
 	// No crack beyond radius
-	if (dist > 0.08) return 0.0;
+	float max_radius = 0.12;
+	if (dist > max_radius) return 0.0;
 
-	// Radial lines (cracks radiating outward)
 	float angle = atan(d.y, d.x);
-	float num_cracks = 5.0 + hash(vec2(seed, 0.0)) * 4.0;
-	float ray = abs(sin(angle * num_cracks + seed * 3.0));
-	ray = smoothstep(0.92, 1.0, ray);
 
-	// Concentric ring (impact circle)
-	float ring = abs(dist - 0.02);
-	ring = smoothstep(0.003, 0.001, ring);
+	// ── Radial rays (main fracture lines) ────────────────────────
+	float num_rays = floor(6.0 + hash(vec2(seed, 0.0)) * 5.0); // 6-10 rays
+	// Each ray has a slightly irregular angle offset
+	float ray_angle = angle * num_rays + seed * 5.0;
+	float ray_wobble = sin(dist * 60.0 + seed * 3.0) * 0.3; // rays aren't perfectly straight
+	float ray = abs(sin(ray_angle + ray_wobble));
+	// Thinner lines: sharper step
+	float ray_width = smoothstep(0.96, 1.0, ray);
+	// Rays get thinner farther from center
+	ray_width *= smoothstep(max_radius, max_radius * 0.15, dist);
+	// Rays don't start right at center
+	ray_width *= smoothstep(0.005, 0.015, dist);
 
-	// Inner web
-	float inner_ring = abs(dist - 0.04);
-	inner_ring = smoothstep(0.002, 0.0005, inner_ring) * 0.5;
+	// ── Concentric impact rings ──────────────────────────────────
+	// Inner impact circle
+	float ring1 = abs(dist - 0.015);
+	ring1 = smoothstep(0.002, 0.0005, ring1);
 
-	// Combine: rays fade with distance, rings are sharp
-	float crack = ray * smoothstep(0.08, 0.01, dist) * 0.8;
-	crack += ring;
-	crack += inner_ring;
+	// Second ring — slightly irregular
+	float ring2_r = 0.04 + sin(angle * 3.0 + seed) * 0.005;
+	float ring2 = abs(dist - ring2_r);
+	ring2 = smoothstep(0.0025, 0.0005, ring2) * 0.7;
 
-	// Ray width narrows at center
-	crack *= smoothstep(0.003, 0.01, dist);
+	// Outer ring — more irregular, connects ray endpoints
+	float ring3_r = 0.075 + sin(angle * 5.0 + seed * 2.0) * 0.01;
+	float ring3 = abs(dist - ring3_r);
+	ring3 = smoothstep(0.003, 0.0005, ring3) * 0.4;
+
+	// ── Inner web (small secondary fractures between rings) ──────
+	float web_angle = angle * (num_rays * 2.0) + seed * 7.0;
+	float web = abs(sin(web_angle));
+	web = smoothstep(0.97, 1.0, web);
+	// Only between inner rings
+	web *= smoothstep(0.01, 0.02, dist) * smoothstep(0.06, 0.03, dist) * 0.4;
+
+	// ── Combine ──────────────────────────────────────────────────
+	float crack = ray_width * 0.9 + ring1 + ring2 + ring3 + web;
+
+	// Slight refraction highlight along crack edges
+	float highlight = smoothstep(0.003, 0.0, abs(dist - 0.016)) * 0.15;
+	crack += highlight;
 
 	return clamp(crack, 0.0, 1.0);
 }
@@ -76,7 +101,7 @@ void fragment() {
 
 	total = clamp(total, 0.0, 1.0);
 
-	// Crack color: bright white-ish lines on transparent bg
-	vec3 crack_color = vec3(0.8, 0.85, 0.9);
-	COLOR = vec4(crack_color, total * 0.5);
+	// Crack color: bright white-ish lines with slight refraction tint
+	vec3 crack_color = mix(vec3(0.75, 0.8, 0.88), vec3(0.9, 0.92, 0.95), total);
+	COLOR = vec4(crack_color, total * 0.6);
 }

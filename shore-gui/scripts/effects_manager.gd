@@ -168,9 +168,12 @@ var _low_rumble_stream: AudioStreamWAV
 var _crt_boot_stream: AudioStreamWAV
 var _soft_whoosh_stream: AudioStreamWAV
 var _muffled_keypress_stream: AudioStreamWAV
-var _rain_ambient_stream: AudioStreamWAV
+var _rain_ambient_stream: AudioStream
 var _ocean_stream: AudioStreamWAV
 var _ocean_audio: AudioStreamPlayer
+var _glass_tap_stream: AudioStreamWAV
+var _glass_crack_stream: AudioStreamWAV
+var _glass_audio: AudioStreamPlayer
 var _effects_bus_idx := -1
 
 const MIX_RATE := 44100
@@ -225,8 +228,18 @@ func _ready() -> void:
 	_crt_boot_stream = _generate_crt_boot()
 	_soft_whoosh_stream = _generate_soft_whoosh()
 	_muffled_keypress_stream = _generate_muffled_keypress()
-	_rain_ambient_stream = _generate_rain_ambient()
+	_rain_ambient_stream = load("res://audio/rain_ambient.ogg")
+	if _rain_ambient_stream is AudioStreamOggVorbis:
+		(_rain_ambient_stream as AudioStreamOggVorbis).loop = true
 	_ocean_stream = _generate_ocean_waves()
+	_glass_tap_stream = _generate_glass_tap()
+	_glass_crack_stream = _generate_glass_crack()
+
+	# Glass tap/crack audio player (one-shot, reused)
+	_glass_audio = AudioStreamPlayer.new()
+	_glass_audio.bus = "Master"
+	_glass_audio.volume_db = -10.0
+	add_child(_glass_audio)
 
 	# Audio bus for Silent Shore reverb/muffling
 	_effects_bus_idx = AudioServer.bus_count
@@ -898,53 +911,6 @@ func _generate_soft_whoosh() -> AudioStreamWAV:
 	stream.data = data
 	return stream
 
-func _generate_rain_ambient() -> AudioStreamWAV:
-	# Rain on a window — filtered noise with patter texture
-	var stream := AudioStreamWAV.new()
-	stream.format = AudioStreamWAV.FORMAT_16_BITS
-	stream.mix_rate = MIX_RATE
-	stream.loop_mode = AudioStreamWAV.LOOP_FORWARD
-	var total_samples := int(MIX_RATE * AMBIENT_LOOP_SECONDS)
-	stream.loop_end = total_samples
-	var data := PackedByteArray()
-	var prev_sample := 0.0
-	var prev2 := 0.0
-	# Simple seeded RNG state for deterministic noise
-	var rng_state := 12345
-	for i in total_samples:
-		var t := float(i) / float(MIX_RATE)
-		# White noise (deterministic via xorshift-like)
-		rng_state = (rng_state * 1103515245 + 12345) & 0x7FFFFFFF
-		var white := float(rng_state) / float(0x7FFFFFFF) * 2.0 - 1.0
-		# Simple IIR low-pass filter (cutoff ~2kHz feel)
-		var filtered := prev_sample * 0.7 + white * 0.3
-		prev_sample = filtered
-		# Second pass for smoother rain texture
-		filtered = prev2 * 0.5 + filtered * 0.5
-		prev2 = filtered
-		# Amplitude patter — modulate to create rain drop texture
-		var patter := (sin(t * TAU * 7.3) * 0.3 + 0.7) * (sin(t * TAU * 3.1) * 0.2 + 0.8)
-		filtered *= patter * 0.35
-		# Occasional distant thunder (~30% of loops, around t=2.0)
-		var thunder_t := t - 2.0
-		if thunder_t > 0.0 and thunder_t < 1.5:
-			var thunder_env := sin(thunder_t / 1.5 * PI) * 0.12
-			filtered += sin(thunder_t * TAU * 35.0) * thunder_env
-			filtered += sin(thunder_t * TAU * 50.0) * thunder_env * 0.5
-		# Crossfade for seamless loop (last 200ms)
-		var loop_t := float(i) / float(total_samples)
-		var fade := 1.0
-		if loop_t > 0.95:
-			fade = (1.0 - loop_t) / 0.05
-		elif loop_t < 0.05:
-			fade = loop_t / 0.05
-		filtered *= fade
-		var s16 := int(clampf(filtered, -1.0, 1.0) * 32767.0)
-		data.append(s16 & 0xFF)
-		data.append((s16 >> 8) & 0xFF)
-	stream.data = data
-	return stream
-
 func _generate_ocean_waves() -> AudioStreamWAV:
 	# Distant ocean — slow filtered noise surges, very low frequency
 	var stream := AudioStreamWAV.new()
@@ -988,6 +954,71 @@ func _generate_ocean_waves() -> AudioStreamWAV:
 		data.append((s16 >> 8) & 0xFF)
 	stream.data = data
 	return stream
+
+func _generate_glass_tap() -> AudioStreamWAV:
+	# Short bright tap — like fingernail on window glass
+	var stream := AudioStreamWAV.new()
+	stream.format = AudioStreamWAV.FORMAT_16_BITS
+	stream.mix_rate = MIX_RATE
+	var duration := 0.06  # very short
+	var total_samples := int(MIX_RATE * duration)
+	var data := PackedByteArray()
+	for i in total_samples:
+		var t := float(i) / float(MIX_RATE)
+		# Sharp attack, fast decay envelope
+		var env := exp(-t * 80.0)
+		# High-frequency ping (glass resonance around 2-4kHz)
+		var sample := sin(t * TAU * 2800.0) * 0.5
+		sample += sin(t * TAU * 3900.0) * 0.3
+		sample += sin(t * TAU * 5200.0) * 0.15
+		sample *= env * 0.4
+		var s16 := int(clampf(sample, -1.0, 1.0) * 32767.0)
+		data.append(s16 & 0xFF)
+		data.append((s16 >> 8) & 0xFF)
+	stream.data = data
+	return stream
+
+func _generate_glass_crack() -> AudioStreamWAV:
+	# Crack — sharp transient with noise burst
+	var stream := AudioStreamWAV.new()
+	stream.format = AudioStreamWAV.FORMAT_16_BITS
+	stream.mix_rate = MIX_RATE
+	var duration := 0.15
+	var total_samples := int(MIX_RATE * duration)
+	var data := PackedByteArray()
+	var rng_state := 55555
+	var prev := 0.0
+	for i in total_samples:
+		var t := float(i) / float(MIX_RATE)
+		rng_state = (rng_state * 1103515245 + 12345) & 0x7FFFFFFF
+		var white := float(rng_state) / float(0x7FFFFFFF) * 2.0 - 1.0
+		# Bright noise burst (minimal filtering)
+		prev = prev * 0.3 + white * 0.7
+		# Sharp crack envelope — instant attack, two-phase decay
+		var env := exp(-t * 35.0) * 0.7 + exp(-t * 120.0) * 0.3
+		# Add a snap transient in the first 2ms
+		if t < 0.002:
+			prev += sin(t * TAU * 1500.0) * 2.0
+		var sample := prev * env * 0.5
+		var s16 := int(clampf(sample, -1.0, 1.0) * 32767.0)
+		data.append(s16 & 0xFF)
+		data.append((s16 >> 8) & 0xFF)
+	stream.data = data
+	return stream
+
+func play_glass_tap() -> void:
+	if _glass_audio and _glass_tap_stream:
+		_glass_audio.stream = _glass_tap_stream
+		_glass_audio.pitch_scale = randf_range(0.9, 1.15)
+		_glass_audio.volume_db = -10.0
+		_glass_audio.play()
+
+func play_glass_crack() -> void:
+	if _glass_audio and _glass_crack_stream:
+		_glass_audio.stream = _glass_crack_stream
+		_glass_audio.pitch_scale = randf_range(0.85, 1.1)
+		_glass_audio.volume_db = -6.0
+		_glass_audio.play()
 
 func _play_token_click(text: String) -> void:
 	var ch := text[-1]
