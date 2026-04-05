@@ -58,6 +58,7 @@ var _dead_bird_label: Label
 var _dead_bird_timer := 0.0
 var _dead_bird_visible := false
 var _needs_scroll := false
+var _enter_sends := false
 var _tilted := false
 
 func _ready() -> void:
@@ -118,9 +119,12 @@ func _ready() -> void:
 func _input(event: InputEvent) -> void:
 	if not (event is InputEventKey and event.pressed):
 		return
-	# Ctrl+Enter to send
-	if event.keycode == KEY_ENTER and event.ctrl_pressed:
-		if input_field.has_focus():
+	# Send message: Ctrl+Enter always, bare Enter when _enter_sends is on
+	if event.keycode == KEY_ENTER and input_field.has_focus():
+		if event.ctrl_pressed:
+			_on_send_pressed()
+			get_viewport().set_input_as_handled()
+		elif _enter_sends and not event.shift_pressed:
 			_on_send_pressed()
 			get_viewport().set_input_as_handled()
 	# F2 to toggle config panel
@@ -141,6 +145,11 @@ func _process(delta: float) -> void:
 	if _needs_scroll:
 		scroll.scroll_vertical = scroll.get_v_scroll_bar().max_value as int
 		_needs_scroll = false
+
+	# ── Streaming indicator (animated dots in status label) ───────
+	if _streaming:
+		var dots := ".".repeat((int(Time.get_ticks_msec() / 500) % 3) + 1)
+		status_label.text = "%s — generating%s" % [_character_name, dots]
 
 	# ── Dead bird appearances ─────────────────────────────────────
 	if effects.background_shader == "rain_fog":
@@ -164,6 +173,9 @@ func _process(delta: float) -> void:
 		effects._rain_fog_material.set_shader_parameter("rain_warmth", lerpf(current_warmth, warmth_target, delta * 2.0))
 
 func _on_send_pressed() -> void:
+	if _streaming:
+		bridge.cancel_generation()
+		return
 	var text := input_field.text.strip_edges()
 	if text.is_empty() or not bridge.is_connected():
 		return
@@ -191,6 +203,7 @@ func _on_connected(server_name: String, characters: Array, _history_json: String
 
 func _on_disconnected(reason: String) -> void:
 	status_label.text = "Disconnected: %s" % reason
+	send_button.text = "Send"
 	_close_stream_fx()
 	_streaming = false
 
@@ -223,6 +236,7 @@ func _on_stream_start(is_regen: bool) -> void:
 		prefix = "[fadein][phosphor][wobble]"
 		_stream_fx_open = true
 	message_display.append_text("\n%s[color=%s][b]%s:[/b][/color] " % [prefix, _colors["assistant"], _character_name])
+	send_button.text = "Stop"
 	effects.on_new_message()
 	effects.on_stream_start()
 
@@ -237,6 +251,8 @@ func _on_stream_chunk(text: String, content_type: String) -> void:
 
 func _on_stream_end(_content: String, metadata_json: String) -> void:
 	_streaming = false
+	send_button.text = "Send"
+	status_label.text = "%s — connected" % _character_name
 	_close_stream_fx()
 
 	# ── THE CURSED TILT (0.1% chance per message, permanent) ─────
@@ -401,11 +417,22 @@ func _scroll_to_bottom() -> void:
 
 func _toggle_config_panel() -> void:
 	if _config_panel and is_instance_valid(_config_panel):
-		_config_panel._on_close()
+		# Slide out to the right, then free
+		var tween := create_tween()
+		tween.tween_property(_config_panel, "offset_left", 0.0, 0.15).set_ease(Tween.EASE_IN)
+		var panel_ref := _config_panel
+		tween.tween_callback(func():
+			if is_instance_valid(panel_ref):
+				panel_ref._on_close()
+		)
 		_config_panel = null
 	else:
 		_config_panel = _config_scene.instantiate()
 		add_child(_config_panel)
+		# Start offscreen (offset_left = 0 means right edge), slide in
+		_config_panel.offset_left = 0.0
+		var tween := create_tween()
+		tween.tween_property(_config_panel, "offset_left", -360.0, 0.2).set_ease(Tween.EASE_OUT)
 		_config_panel.setup(effects)
 		_config_panel.text_changed.connect(_on_text_settings_changed)
 		_config_panel.closed.connect(func(): _config_panel = null)
@@ -423,6 +450,8 @@ func _on_text_settings_changed(setting: String, value: Variant) -> void:
 			# 0=disabled, 1=light, 2=normal
 			message_display.add_theme_constant_override("lcd_subpixel_layout", mode)
 			input_field.add_theme_constant_override("lcd_subpixel_layout", mode)
+		"enter_sends":
+			_enter_sends = bool(value)
 
 func _apply_font_size() -> void:
 	message_display.add_theme_font_size_override("normal_font_size", _font_size)

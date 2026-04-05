@@ -4,6 +4,7 @@ signal closed
 signal text_changed(setting: String, value: Variant)
 
 var _effects: Node
+var _value_labels: Dictionary = {}  # slider_name -> Label
 
 func _ready() -> void:
 	var style := StyleBoxFlat.new()
@@ -61,6 +62,41 @@ func _set_slider(slider_name: String, value: float, min_val: float, max_val: flo
 		slider.max_value = max_val
 		slider.step = (max_val - min_val) / 100.0
 		slider.value = value
+		_ensure_value_label(slider_name, slider, min_val, max_val)
+
+func _ensure_value_label(slider_name: String, slider: HSlider, min_val: float, max_val: float) -> void:
+	if slider_name in _value_labels:
+		_update_value_label(slider_name, slider.value, min_val, max_val)
+		return
+	# Create a small label after the slider
+	var label := Label.new()
+	label.name = slider_name + "Value"
+	label.add_theme_font_size_override("font_size", 12)
+	label.add_theme_color_override("font_color", Color(0.5, 0.5, 0.6))
+	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	# Insert after the slider in its parent
+	var parent := slider.get_parent()
+	var idx := slider.get_index() + 1
+	parent.add_child(label)
+	parent.move_child(label, idx)
+	_value_labels[slider_name] = label
+	_update_value_label(slider_name, slider.value, min_val, max_val)
+	# Connect value_changed for live updates
+	var sname := slider_name
+	var mn := min_val
+	var mx := max_val
+	slider.value_changed.connect(func(v: float): _update_value_label(sname, v, mn, mx))
+
+func _update_value_label(slider_name: String, value: float, min_val: float, max_val: float) -> void:
+	if slider_name not in _value_labels:
+		return
+	var label: Label = _value_labels[slider_name]
+	# Volume sliders: show as percentage
+	if slider_name in ["MasterVolume", "AmbientVolume"]:
+		var pct := int((value - min_val) / (max_val - min_val) * 100.0)
+		label.text = "%d%%" % pct
+	else:
+		label.text = "%.2f" % value
 
 # ── Handlers ──────────────────────────────────────────────────────
 
@@ -68,11 +104,42 @@ func _on_toggle(value: bool, property: String) -> void:
 	if _effects:
 		_effects.set(property, value)
 		_effects._apply_toggles()
+		_check_custom_preset()
 
 func _on_slider(value: float, property: String) -> void:
 	if _effects:
 		_effects.set(property, value)
 		_effects._apply_toggles()
+		_check_custom_preset()
+
+func _check_custom_preset() -> void:
+	if not _effects or _effects._active_preset == "Custom":
+		return
+	# Check if current values diverge from active preset
+	var preset_name: String = _effects._active_preset
+	if preset_name not in _effects.PRESETS:
+		return
+	var preset: Dictionary = _effects.PRESETS[preset_name]
+	for key in preset:
+		if key.begins_with("_"):
+			continue
+		var current: Variant = _effects.get(key)
+		var expected: Variant = preset[key]
+		if current != expected:
+			_effects._active_preset = "Custom"
+			var preset_option := find_child("PresetOption", true, false) as OptionButton
+			if preset_option:
+				# Add "Custom" if not present, then select it
+				var custom_idx := -1
+				for i in preset_option.item_count:
+					if preset_option.get_item_text(i) == "Custom":
+						custom_idx = i
+						break
+				if custom_idx < 0:
+					preset_option.add_item("Custom")
+					custom_idx = preset_option.item_count - 1
+				preset_option.select(custom_idx)
+			return
 
 func _on_preset_selected(index: int) -> void:
 	var preset_option := find_child("PresetOption", true, false) as OptionButton
@@ -102,3 +169,6 @@ func _on_font_size_changed(value: float) -> void:
 
 func _on_lcd_filter_selected(index: int) -> void:
 	text_changed.emit("lcd_filter", index)
+
+func _on_enter_sends_toggled(pressed: bool) -> void:
+	text_changed.emit("enter_sends", pressed)

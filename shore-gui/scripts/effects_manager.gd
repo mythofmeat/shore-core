@@ -1089,3 +1089,11 @@ func _update_fire_cursor(delta: float) -> void:
 		_input_field.add_theme_color_override("caret_color", caret_col)
 	else:
 		_input_field.add_theme_color_override("caret_color", Color.WHITE)
+
+	# Auto-grow input field height based on content
+	var line_count := _input_field.get_line_count()
+	var line_height := _input_field.get_line_height()
+	var content_height := float(line_count * line_height) + 20.0  # padding
+	var target_h := clampf(content_height, 60.0, 200.0)
+	if absf(_input_field.custom_minimum_size.y - target_h) > 1.0:
+		_input_field.custom_minimum_size.y = target_h
