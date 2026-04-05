@@ -506,6 +506,21 @@ func _apply_toggles() -> void:
 			_rain_fog_material.set_shader_parameter("fog_depth", 0.6)
 		elif _starfield_material:
 			_starfield_material.set_shader_parameter("star_density", star_density)
+	# ── Volume propagation ────────────────────────────────────────
+	if _token_audio:
+		_token_audio.volume_db = master_volume_db
+	if _complete_audio:
+		_complete_audio.volume_db = master_volume_db
+	if _error_audio:
+		_error_audio.volume_db = master_volume_db
+	if _boot_audio:
+		_boot_audio.volume_db = master_volume_db + 3.0
+	if _type_audio:
+		_type_audio.volume_db = master_volume_db - 3.0
+	if _ambient_audio:
+		_ambient_audio.volume_db = ambient_volume_db
+	if _ocean_audio:
+		_ocean_audio.volume_db = ambient_volume_db - 6.0
 
 func set_all_effects(val: bool) -> void:
 	crt_enabled = val
@@ -1042,7 +1057,7 @@ func _play_token_click(text: String) -> void:
 
 func _update_fire_cursor(delta: float) -> void:
 	var current_len := _input_field.text.length()
-	var chars_this_frame := absf(float(current_len - _prev_text_length))
+	var chars_this_frame := maxf(float(current_len - _prev_text_length), 0.0)
 	_prev_text_length = current_len
 
 	var instant_cps := chars_this_frame / maxf(delta, 0.001)
@@ -1066,3 +1081,11 @@ func _update_fire_cursor(delta: float) -> void:
 	var col := _input_field.get_caret_column()
 	var rect := _input_field.get_rect_at_line_column(line, col)
 	_fire_cursor.position = Vector2(rect.position.x + rect.size.x, rect.position.y)
+
+	# Cursor breath: slow brightness pulse when idle (not typing)
+	if _typing_speed < 0.5 and _input_field.has_focus():
+		var breath := sin(Time.get_ticks_msec() * 0.001 * TAU / 3.0) * 0.2 + 0.8
+		var caret_col := Color(1.0, 1.0, 1.0, breath)
+		_input_field.add_theme_color_override("caret_color", caret_col)
+	else:
+		_input_field.add_theme_color_override("caret_color", Color.WHITE)

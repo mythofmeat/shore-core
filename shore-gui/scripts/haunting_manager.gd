@@ -20,6 +20,8 @@ var _target_rain_angle := 0.15
 var _mystery_stream: AudioStreamWAV
 var _foghorn_stream: AudioStreamWAV
 var _car_engine_stream: AudioStreamWAV
+var _thunder_stream: AudioStreamWAV
+var _radio_fragment_stream: AudioStreamWAV
 
 const MIN_INTERVAL := 15.0
 const MAX_INTERVAL := 45.0
@@ -34,6 +36,9 @@ const HAUNTING_WEIGHTS := {
 	"phosphor_linger": 3,
 	"foghorn": 2,
 	"car_engine": 1,
+	"lighthouse": 2,
+	"distant_thunder": 1,
+	"radio_fragment": 1,
 }
 
 func setup(effects: Node, phosphor_effect: PhosphorEffect) -> void:
@@ -45,6 +50,8 @@ func setup(effects: Node, phosphor_effect: PhosphorEffect) -> void:
 	_mystery_stream = _generate_mystery_sound()
 	_foghorn_stream = _generate_foghorn()
 	_car_engine_stream = _generate_car_engine()
+	_thunder_stream = _generate_distant_thunder()
+	_radio_fragment_stream = _generate_radio_fragment()
 	_mystery_audio.stream = _mystery_stream
 	_mystery_audio.volume_db = -24.0
 
@@ -112,6 +119,20 @@ func _start_haunting(haunting_type: String) -> void:
 			_mystery_audio.pitch_scale = randf_range(0.9, 1.05)
 			_mystery_audio.volume_db = -26.0  # very distant
 			_mystery_audio.play()
+		"lighthouse":
+			_haunting_duration = 4.0
+		"distant_thunder":
+			_haunting_duration = 3.0
+			_mystery_audio.stream = _thunder_stream
+			_mystery_audio.pitch_scale = randf_range(0.85, 1.1)
+			_mystery_audio.volume_db = -18.0
+			_mystery_audio.play()
+		"radio_fragment":
+			_haunting_duration = 1.0
+			_mystery_audio.stream = _radio_fragment_stream
+			_mystery_audio.pitch_scale = randf_range(0.8, 1.2)
+			_mystery_audio.volume_db = -30.0
+			_mystery_audio.play()
 
 func _process_active_haunting(_delta: float) -> void:
 	var t := _haunting_timer
@@ -146,6 +167,22 @@ func _process_active_haunting(_delta: float) -> void:
 				else:
 					angle = lerpf(_target_rain_angle, _original_rain_angle, (t - 3.0) / 2.0)
 				mat.set_shader_parameter("rain_angle", angle)
+		"lighthouse":
+			var mat := _starfield_rect.material as ShaderMaterial
+			if mat:
+				# Sweep from left to right over 4s
+				var sweep := clampf(t / _haunting_duration, 0.0, 1.0)
+				mat.set_shader_parameter("lighthouse_angle", sweep)
+		"distant_thunder":
+			# Brief screen flash 0.5-2s after the rumble starts
+			var flash_delay := 0.8
+			if t > flash_delay and t < flash_delay + 0.1 and _crt_rect:
+				var flash_t := (t - flash_delay) / 0.1
+				var flash_brightness := 1.0 + 0.3 * (1.0 - flash_t)
+				_crt_rect.material.set_shader_parameter("brightness", flash_brightness)
+			elif t > flash_delay + 0.1 and t < flash_delay + 0.4 and _crt_rect:
+				var decay_t := (t - flash_delay - 0.1) / 0.3
+				_crt_rect.material.set_shader_parameter("brightness", lerpf(1.3, 1.0, decay_t))
 
 	# Check if haunting is done
 	if _haunting_timer >= _haunting_duration:
@@ -168,10 +205,20 @@ func _end_haunting() -> void:
 		"phosphor_linger":
 			if _phosphor_effect:
 				_phosphor_effect.linger_active = false
-		"foghorn", "car_engine":
+		"distant_thunder":
+			# Restore brightness and mystery stream
+			if _crt_rect:
+				_crt_rect.material.set_shader_parameter("brightness", 1.0)
+			_mystery_audio.stream = _mystery_stream
+			_mystery_audio.volume_db = -24.0
+		"foghorn", "car_engine", "radio_fragment":
 			# Restore mystery stream for next mystery_sound haunting
 			_mystery_audio.stream = _mystery_stream
 			_mystery_audio.volume_db = -24.0
+		"lighthouse":
+			var mat := _starfield_rect.material as ShaderMaterial
+			if mat:
+				mat.set_shader_parameter("lighthouse_angle", -1.0)
 	_active_haunting = ""
 
 func _generate_mystery_sound() -> AudioStreamWAV:
@@ -264,6 +311,79 @@ func _generate_car_engine() -> AudioStreamWAV:
 		var pulse := maxf(sin(t * TAU * fundamental * 0.5), 0.0)
 		sample += noise * pulse * 0.1
 		sample *= env * 0.08  # very quiet
+		var s16 := int(clampf(sample, -1.0, 1.0) * 32767.0)
+		data.append(s16 & 0xFF)
+		data.append((s16 >> 8) & 0xFF)
+	stream.data = data
+	return stream
+
+func _generate_distant_thunder() -> AudioStreamWAV:
+	# Very low rumble (25-35Hz) with slow attack/sustain/decay
+	var stream := AudioStreamWAV.new()
+	stream.format = AudioStreamWAV.FORMAT_16_BITS
+	stream.mix_rate = MIX_RATE
+	var data := PackedByteArray()
+	var duration := 2.5
+	var total := int(MIX_RATE * duration)
+	var rng_state := 99887
+	var prev := 0.0
+	for i in total:
+		var t := float(i) / float(MIX_RATE)
+		# Envelope: 0.5s attack, 0.8s sustain, 1.2s decay
+		var env: float
+		if t < 0.5:
+			env = t / 0.5
+		elif t < 1.3:
+			env = 1.0
+		else:
+			env = clampf((duration - t) / 1.2, 0.0, 1.0)
+		env *= env  # soften
+		# Low rumble: layered sub-bass frequencies
+		var freq := 30.0
+		var sample := sin(t * TAU * freq) * 0.4
+		sample += sin(t * TAU * freq * 1.5) * 0.25
+		sample += sin(t * TAU * freq * 2.3) * 0.15
+		# Noise texture for crackle
+		rng_state = (rng_state * 1103515245 + 12345) & 0x7FFFFFFF
+		var noise := float(rng_state) / float(0x7FFFFFFF) * 2.0 - 1.0
+		prev = prev * 0.85 + noise * 0.15
+		sample += prev * 0.2
+		sample *= env * 0.2
+		var s16 := int(clampf(sample, -1.0, 1.0) * 32767.0)
+		data.append(s16 & 0xFF)
+		data.append((s16 >> 8) & 0xFF)
+	stream.data = data
+	return stream
+
+func _generate_radio_fragment() -> AudioStreamWAV:
+	# Burst of what sounds like a distant radio — AM modulated mid-frequency
+	var stream := AudioStreamWAV.new()
+	stream.format = AudioStreamWAV.FORMAT_16_BITS
+	stream.mix_rate = MIX_RATE
+	var data := PackedByteArray()
+	var duration := 0.7
+	var total := int(MIX_RATE * duration)
+	var rng_state := 44321
+	for i in total:
+		var t := float(i) / float(MIX_RATE)
+		# Sharp attack, fast decay envelope
+		var env: float
+		if t < 0.05:
+			env = t / 0.05
+		elif t < duration - 0.1:
+			env = 1.0
+		else:
+			env = clampf((duration - t) / 0.1, 0.0, 1.0)
+		# Carrier frequency with slight drift
+		var carrier_freq := 600.0 + sin(t * 3.0) * 80.0
+		var carrier := sin(t * TAU * carrier_freq)
+		# Aggressive AM modulation (15-25Hz)
+		var am_freq := 18.0 + sin(t * 7.0) * 5.0
+		var am := sin(t * TAU * am_freq) * 0.5 + 0.5
+		# Add static/noise
+		rng_state = (rng_state * 1103515245 + 12345) & 0x7FFFFFFF
+		var noise := float(rng_state) / float(0x7FFFFFFF) * 2.0 - 1.0
+		var sample := (carrier * am * 0.6 + noise * 0.3) * env * 0.1
 		var s16 := int(clampf(sample, -1.0, 1.0) * 32767.0)
 		data.append(s16 & 0xFF)
 		data.append((s16 >> 8) & 0xFF)

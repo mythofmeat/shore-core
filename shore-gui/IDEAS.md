@@ -116,6 +116,32 @@ Real-time FFT visualization of the audio output in the header. Waveform or bar s
 
 ---
 
+## Implemented (Session 2026-04-05)
+
+### Bug Fixes
+- **Unclosed BBCode on abnormal stream end**: `_stream_fx_open` flag, tags closed in `_on_disconnected()`, `_on_error()`
+- **Volume slider propagation**: `_apply_toggles()` now updates all audio player volumes
+- **Backspace inflating WPM**: `absf()` → `maxf(..., 0.0)` — only count forward typing
+- **rain_warmth snap**: Binary toggle replaced with smooth lerp using delta
+- **Scroll jitter during streaming**: Debounced to one scroll-to-bottom per frame via flag
+
+### UX Improvements
+- **Escape keybind**: Closes config panel first, cancels generation second
+- **Auto-focus input on connect**: `input_field.grab_focus()` after connection
+- **Wobble settle mechanic**: Text effect amplitude decays to 0 over 8-12s (performance + atmosphere)
+
+### Atmospheric Additions
+- **Shooting stars** in starfield shader: Rare bright streaks (3 independent cycles: 30s, 55s, 80s)
+- **CRT phosphor grid**: Subtle RGB dot pattern visible only at barrel_distortion > 0.05
+- **Lighthouse sweep haunting**: Warm light beam sweeps across rain_fog background over 4s
+- **Distant Thunder haunting**: Low rumble + brief screen flash after 0.8s delay
+- **Radio Fragment haunting**: AM-modulated mid-frequency burst, 0.7s, very quiet
+- **VHS tracking bar variety**: Speed now noise-modulated with occasional sticking
+- **Cursor Breath**: Caret alpha pulses slowly (3s period) when idle and focused
+- **Warm rain tint**: rain_warmth uniform now actually affects shader output (was declared but unused)
+
+---
+
 ## Design Principles
 - Every effect must be independently toggleable
 - Every intensity must be sliderable

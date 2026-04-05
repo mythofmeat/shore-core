@@ -9,6 +9,7 @@ uniform float wind_offset : hint_range(-1.0, 1.0) = 0.0;
 uniform float time_scale : hint_range(0.1, 3.0) = 1.0;
 uniform float rain_intensity : hint_range(0.0, 2.0) = 1.0;
 uniform float rain_warmth : hint_range(0.0, 1.0) = 0.0;
+uniform float lighthouse_angle : hint_range(0.0, 1.0) = -1.0;
 
 // Pseudo-random hash
 float hash(vec2 p) {
@@ -144,6 +145,19 @@ void fragment() {
 	// ── Subtle color variation (sea-glass tint) ──────────────────
 	float tint_val = sin(uv.x * 2.0 + t * 0.03) * sin(uv.y * 1.5 - t * 0.02) * 0.5 + 0.5;
 	col += mix(vec3(0.01, 0.02, 0.015), vec3(0.015, 0.01, 0.02), tint_val) * 0.1;
+
+	// ── Lighthouse sweep ─────────────────────────────────────────
+	if (lighthouse_angle >= 0.0) {
+		// Soft beam of warm light sweeping across the screen
+		float beam_x = lighthouse_angle;
+		float dist_to_beam = abs(uv.x - beam_x);
+		float beam = smoothstep(0.15, 0.0, dist_to_beam);
+		// Beam brightens existing color by ~15%, warm tint
+		col += col * beam * 0.15 + vec3(0.04, 0.03, 0.01) * beam;
+	}
+
+	// ── Warm rain tint ───────────────────────────────────────────
+	col = mix(col, col + vec3(0.04, 0.02, 0.0), rain_warmth);
 
 	COLOR = vec4(col, 1.0);
 }

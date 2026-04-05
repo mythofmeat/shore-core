@@ -42,6 +42,7 @@ const COLOR_PALETTES := {
 }
 
 var _streaming := false
+var _stream_fx_open := false
 var _character_name := "Assistant"
 var _show_thinking := true
 var _show_tools := true
@@ -56,6 +57,7 @@ var _droplet_overlay: Control
 var _dead_bird_label: Label
 var _dead_bird_timer := 0.0
 var _dead_bird_visible := false
+var _needs_scroll := false
 var _tilted := false
 
 func _ready() -> void:
@@ -125,8 +127,21 @@ func _input(event: InputEvent) -> void:
 	if event.keycode == KEY_F2:
 		_toggle_config_panel()
 		get_viewport().set_input_as_handled()
+	# Escape: close config panel first, cancel generation second
+	if event.keycode == KEY_ESCAPE:
+		if _config_panel and is_instance_valid(_config_panel):
+			_toggle_config_panel()
+			get_viewport().set_input_as_handled()
+		elif _streaming:
+			bridge.cancel_generation()
+			get_viewport().set_input_as_handled()
 
 func _process(delta: float) -> void:
+	# ── Debounced scroll-to-bottom ────────────────────────────────
+	if _needs_scroll:
+		scroll.scroll_vertical = scroll.get_v_scroll_bar().max_value as int
+		_needs_scroll = false
+
 	# ── Dead bird appearances ─────────────────────────────────────
 	if effects.background_shader == "rain_fog":
 		_dead_bird_timer -= delta
@@ -144,8 +159,9 @@ func _process(delta: float) -> void:
 	# ── Warm rain (check input for character name) ────────────────
 	if effects.background_shader == "rain_fog" and effects._rain_fog_material:
 		var text := input_field.text.to_lower()
-		var warmth := 1.0 if _character_name.to_lower() in text else 0.0
-		effects._rain_fog_material.set_shader_parameter("rain_warmth", warmth)
+		var warmth_target := 1.0 if _character_name.to_lower() in text else 0.0
+		var current_warmth: float = effects._rain_fog_material.get_shader_parameter("rain_warmth")
+		effects._rain_fog_material.set_shader_parameter("rain_warmth", lerpf(current_warmth, warmth_target, delta * 2.0))
 
 func _on_send_pressed() -> void:
 	var text := input_field.text.strip_edges()
@@ -171,9 +187,11 @@ func _on_connected(server_name: String, characters: Array, _history_json: String
 	# Request full history and status from daemon
 	bridge.send_command("log", "{}")
 	bridge.send_command("status", "{}")
+	input_field.grab_focus()
 
 func _on_disconnected(reason: String) -> void:
 	status_label.text = "Disconnected: %s" % reason
+	_close_stream_fx()
 	_streaming = false
 
 func _on_command_output(name: String, data_json: String) -> void:
@@ -200,7 +218,10 @@ func _on_stream_start(is_regen: bool) -> void:
 	var use_fx := _color_palette_name == "silent_shore"
 	if is_regen:
 		message_display.append_text("\n[color=%s][b]Regenerating...[/b][/color]\n" % _colors["regen"])
-	var prefix := "[fadein][phosphor][wobble]" if use_fx else ""
+	var prefix := ""
+	if use_fx:
+		prefix = "[fadein][phosphor][wobble]"
+		_stream_fx_open = true
 	message_display.append_text("\n%s[color=%s][b]%s:[/b][/color] " % [prefix, _colors["assistant"], _character_name])
 	effects.on_new_message()
 	effects.on_stream_start()
@@ -216,8 +237,7 @@ func _on_stream_chunk(text: String, content_type: String) -> void:
 
 func _on_stream_end(_content: String, metadata_json: String) -> void:
 	_streaming = false
-	if _color_palette_name == "silent_shore":
-		message_display.append_text("[/wobble][/phosphor][/fadein]")
+	_close_stream_fx()
 
 	# ── THE CURSED TILT (0.1% chance per message, permanent) ─────
 	if not _tilted and randf() < 0.001:
@@ -238,6 +258,7 @@ func _on_stream_end(_content: String, metadata_json: String) -> void:
 	_scroll_to_bottom()
 
 func _on_error(message: String) -> void:
+	_close_stream_fx()
 	message_display.append_text("\n[color=%s][b]Error:[/b] %s[/color]\n" % [_colors["error"], _escape_bbcode(message)])
 	effects.on_error()
 	_scroll_to_bottom()
@@ -370,9 +391,13 @@ func _apply_color_palette(palette_name: String) -> void:
 		_colors = COLOR_PALETTES[palette_name]
 		_color_palette_name = palette_name
 
+func _close_stream_fx() -> void:
+	if _stream_fx_open:
+		message_display.append_text("[/wobble][/phosphor][/fadein]")
+		_stream_fx_open = false
+
 func _scroll_to_bottom() -> void:
-	await get_tree().process_frame
-	scroll.scroll_vertical = scroll.get_v_scroll_bar().max_value as int
+	_needs_scroll = true
 
 func _toggle_config_panel() -> void:
 	if _config_panel and is_instance_valid(_config_panel):

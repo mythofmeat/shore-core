@@ -36,6 +36,19 @@ void fragment() {
 	float v = length(uv - 0.5) * 2.0;
 	col *= 1.0 - smoothstep(0.5, 1.0, v) * vignette_strength * effect_enabled;
 
+	// Phosphor grid micro-pattern: visible only with barrel distortion
+	float phosphor_vis = smoothstep(0.03, 0.08, barrel_distortion) * effect_enabled * 0.03;
+	if (phosphor_vis > 0.001) {
+		vec2 pixel = uv / SCREEN_PIXEL_SIZE;
+		int px = int(mod(pixel.x, 3.0));
+		vec3 phosphor_mask = vec3(
+			px == 0 ? 1.0 : 0.2,
+			px == 1 ? 1.0 : 0.2,
+			px == 2 ? 1.0 : 0.2
+		);
+		col = mix(col, col * phosphor_mask, phosphor_vis);
+	}
+
 	// Brightness
 	col *= mix(1.0, brightness, effect_enabled);
 

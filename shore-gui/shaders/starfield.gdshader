@@ -12,6 +12,48 @@ float hash(vec2 p) {
 	return fract((p3.x + p3.y) * p3.z);
 }
 
+// Shooting star: rare bright streak across the field
+float shooting_star(vec2 uv, float t) {
+	// Each shooting star has an ~60s cycle, offset by a seed
+	float total = 0.0;
+	for (int i = 0; i < 3; i++) {
+		float fi = float(i);
+		float seed = fi * 37.73;
+		float cycle = 30.0 + fi * 25.0; // 30s, 55s, 80s cycles
+		float phase = mod(t + seed, cycle);
+		float streak_duration = 0.5;
+		if (phase > streak_duration) continue;
+
+		float progress = phase / streak_duration;
+		// Start and end positions (seeded per cycle instance)
+		float cycle_id = floor((t + seed) / cycle);
+		float sx = hash(vec2(cycle_id, seed));
+		float sy = hash(vec2(cycle_id, seed + 1.0)) * 0.6; // upper 60%
+		// Direction: roughly diagonal
+		float dx = 0.3 + hash(vec2(cycle_id, seed + 2.0)) * 0.2;
+		float dy = 0.15 + hash(vec2(cycle_id, seed + 3.0)) * 0.1;
+
+		vec2 head = vec2(sx + dx * progress, sy + dy * progress);
+		vec2 tail = vec2(sx + dx * max(progress - 0.3, 0.0), sy + dy * max(progress - 0.3, 0.0));
+
+		// Distance from point to line segment (head to tail)
+		vec2 pa = uv - tail;
+		vec2 ba = head - tail;
+		float seg_len = length(ba);
+		if (seg_len < 0.001) continue;
+		float h_param = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+		float dist = length(pa - ba * h_param);
+
+		// Brightness: sharp line with glow
+		float streak = smoothstep(0.004, 0.0, dist);
+		float glow = smoothstep(0.02, 0.0, dist) * 0.3;
+		// Fade along the tail
+		float fade = h_param;
+		total += (streak + glow) * fade * (1.0 - progress * 0.5);
+	}
+	return clamp(total, 0.0, 1.0);
+}
+
 // Star layer: returns brightness for a given UV at a given scale
 float star_layer(vec2 uv, float scale, float threshold) {
 	vec2 grid = floor(uv * scale);
@@ -58,6 +100,9 @@ void fragment() {
 	stars += star_layer(uv + vec2(0.0, parallax * 0.6), 40.0, star_density * 0.5) * 0.7;
 	stars += star_layer(uv + vec2(0.0, parallax * 1.0), 20.0, star_density * 0.7) * 1.0;
 
+	// Shooting stars
+	float shoot = shooting_star(uv, TIME);
+
 	// Faint nebula-like color wash
 	float nebula = sin(uv.x * 3.0 + TIME * 0.05) * sin(uv.y * 2.0 - TIME * 0.03) * 0.5 + 0.5;
 	vec3 nebula_color = mix(vec3(0.05, 0.0, 0.1), vec3(0.0, 0.05, 0.1), nebula) * 0.3;
@@ -66,5 +111,7 @@ void fragment() {
 	vec3 star_color = mix(vec3(0.8, 0.9, 1.0), vec3(1.0, 0.9, 0.7), hash(uv * 100.0));
 
 	vec3 col = bg_color.rgb + nebula_color + star_color * stars;
+	// Shooting star: bright white-blue streak
+	col += vec3(0.9, 0.95, 1.0) * shoot;
 	COLOR = vec4(col, 1.0);
 }

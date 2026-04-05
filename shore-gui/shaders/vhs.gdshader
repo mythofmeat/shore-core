@@ -23,10 +23,14 @@ void fragment() {
 	float noise = fract(sin(dot(SCREEN_UV * TIME, vec2(12.9898, 78.233))) * 43758.5453);
 	col = mix(col, vec3(noise), intensity * 0.15);
 
-	// Tracking bar — a bright horizontal band that scrolls
-	float bar_pos = fract(TIME * 0.3);
+	// Tracking bar — a bright horizontal band that scrolls with drift
+	float bar_speed = 0.3 + sin(TIME * 0.7) * 0.1 + sin(TIME * 1.3) * 0.05;
+	float bar_pos = fract(TIME * bar_speed);
 	float bar_dist = abs(SCREEN_UV.y - bar_pos);
-	float bar = smoothstep(0.03, 0.0, bar_dist) * intensity * 0.3;
+	// Occasional sticking: bar slows dramatically near certain positions
+	float stick = smoothstep(0.02, 0.0, abs(sin(TIME * 0.13) - 0.5)) * 0.8;
+	float bar_width = 0.03 + stick * 0.02;
+	float bar = smoothstep(bar_width, 0.0, bar_dist) * intensity * (0.3 + stick * 0.15);
 	col += vec3(bar);
 
 	COLOR = vec4(mix(original.rgb, col, intensity), original.a);
