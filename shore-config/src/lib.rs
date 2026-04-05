@@ -194,7 +194,7 @@ pub fn load_config(config_path: Option<&Path>) -> Result<LoadedConfig, ConfigErr
     // ── Load .env from config directory ───────────────────────────────
     let env_path = config_dir.join(".env");
     if env_path.exists() {
-        match dotenvy::from_path(&env_path) {
+        match dotenvy::from_path_override(&env_path) {
             Ok(()) => info!(path = %env_path.display(), "Loaded .env file"),
             Err(e) => warn!(path = %env_path.display(), error = %e, "Failed to load .env file"),
         }
