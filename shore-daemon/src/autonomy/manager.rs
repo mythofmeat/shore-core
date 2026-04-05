@@ -20,7 +20,6 @@ use tracing::{debug, error, info, warn};
 
 use super::activity::ActivityTracker;
 use super::interiority::{InteriorityAction, InteriorityClock, InteriorityState};
-use super::interiority_journal::{self, JournalEntry, JournalEntryType};
 use super::{AutonomyStatus, InteriorityEventKind, InteriorityLog};
 use crate::memory::agent::{AgentSearchContext, CallerIdentity};
 use crate::memory::agent_llm::RealAgentLlm;
@@ -64,8 +63,6 @@ pub struct AutonomyState {
     pub activity: ActivityTracker,
     /// Ring buffer of interiority events for `shore log --heartbeat`.
     pub interiority_log: InteriorityLog,
-    /// Path to the interiority journal JSONL file.
-    pub journal_path: PathBuf,
     /// Whether state has changed since last save.
     dirty: bool,
     /// Last message activity timestamp for compaction idle trigger.
@@ -290,13 +287,10 @@ impl AutonomyManager {
             info!(character, "Autonomy state created (no prior state)");
         }
 
-        let journal_path = interiority_journal::journal_path(&self.data_dir, character);
-
         let state = Arc::new(Mutex::new(AutonomyState {
             interiority,
             activity: ActivityTracker::new(),
             interiority_log: InteriorityLog::new(),
-            journal_path,
             dirty: false,
             last_compaction_activity: Instant::now(),
             compaction_triggered: false,
@@ -829,9 +823,10 @@ fn rebuild_request_from_disk(
     }
 }
 
-/// Execute a unified interiority tick: one LLM call, tool calls spread across
-/// ticks via the rolling journal. Each tick reads the journal, makes ONE call,
-/// executes any tool use from the response, and appends everything back.
+/// Execute a unified interiority tick: a real tool loop using non-streaming
+/// generate() calls. Tool loop messages are ephemeral — only <sendMessage>
+/// output persists to active.jsonl. All activity is logged to the ring buffer
+/// for `shore log --heartbeat`.
 async fn execute_unified_tick(
     character: &str,
     state: &Arc<Mutex<AutonomyState>>,
@@ -843,20 +838,16 @@ async fn execute_unified_tick(
 ) {
     let Some(client) = llm_client else { return };
 
-    // Clone last_request and journal_path under the lock, then release.
-    let (mut request, journal_path) = {
+    // Clone last_request under the lock, then release.
+    let mut request = {
         let s = lock_state(state);
         match &s.last_request {
-            Some(req) => (req.clone(), s.journal_path.clone()),
+            Some(req) => req.clone(),
             None => {
-                // last_request is None — either no conversation yet, or it was
-                // invalidated after compaction. Try to rebuild from disk.
-                let journal = s.journal_path.clone();
                 drop(s);
-
                 let Some(config) = loaded_config else { return };
                 match rebuild_request_from_disk(character, data_dir, config) {
-                    Some(req) => (req, journal),
+                    Some(req) => req,
                     None => {
                         info!(
                             character,
@@ -869,24 +860,10 @@ async fn execute_unified_tick(
         }
     };
 
-    // Read and render the rolling journal for prompt context.
-    let journal_entries = interiority_journal::read_journal(&journal_path);
-    let truncated = interiority_journal::truncate_to_budget(
-        &journal_entries,
-        interiority_journal::DEFAULT_BUDGET_CHARS,
-    );
-    let journal_text = interiority_journal::render_journal(&truncated);
-
-    // Build the interiority prompt with journal context.
-    let prompt_text = if journal_text.is_empty() {
-        INTERIORITY_PROMPT.to_string()
-    } else {
-        format!("{INTERIORITY_PROMPT}\n\nYour recent activity log:\n{journal_text}")
-    };
-
+    // Append the interiority prompt as a user message.
     request
         .messages
-        .push(json!({"role": "system", "content": prompt_text}));
+        .push(json!({"role": "user", "content": INTERIORITY_PROMPT}));
 
     let Some(lc) = loaded_config else { return };
     let tool_ctx = match build_tool_context(character, data_dir, client, lc).await {
@@ -900,66 +877,92 @@ async fn execute_unified_tick(
         }
     };
     let active_path = data_dir.join(character).join("active.jsonl");
-    let ts = chrono::Local::now().to_rfc3339();
+    let max_iterations = std::cmp::min(lc.app.behavior.tool_use.max_iterations, 6);
 
     info!(
         character,
-        journal_entries = truncated.len(),
-        "Interiority: executing unified tick"
+        max_iterations,
+        "Interiority: executing tool loop tick"
     );
 
-    // -- ONE LLM call -----------------------------------------------------------
-    let resp = match client.generate(&request, CallType::Interiority, character, false).await {
-        Ok(r) => r,
-        Err(e) => {
-            error!(character, error = %e, "Interiority: LLM call failed");
-            return;
-        }
-    };
+    // Collect all <sendMessage> content across iterations.
+    let mut send_message_text: Option<String> = None;
 
-    info!(
-        character,
-        finish_reason = %resp.finish_reason,
-        input_tokens = resp.usage.input_tokens,
-        output_tokens = resp.usage.output_tokens,
-        cache_read = resp.usage.cache_read_tokens,
-        "Interiority: LLM response"
-    );
+    for iteration in 0..max_iterations {
+        let call_type = if iteration == 0 {
+            CallType::Interiority
+        } else {
+            CallType::ToolLoop
+        };
 
-    // -- Parse response into journal entries ------------------------------------
-    let mut new_entries: Vec<JournalEntry> = Vec::new();
+        let resp = match client.generate(&request, call_type, character, false).await {
+            Ok(r) => r,
+            Err(e) => {
+                error!(character, error = %e, iteration, "Interiority: LLM call failed");
+                break;
+            }
+        };
 
-    // Text blocks → Thought entries
-    for block in &resp.content_blocks {
-        if let ContentBlock::Text { text } = block {
-            if !text.trim().is_empty() {
-                let preview: String = text.chars().take(200).collect();
-                info!(character, content = %preview, "Interiority: thought");
-                new_entries.push(JournalEntry {
-                    ts: ts.clone(),
-                    entry_type: JournalEntryType::Thought,
-                    content: text.clone(),
-                });
+        info!(
+            character,
+            iteration,
+            finish_reason = %resp.finish_reason,
+            input_tokens = resp.usage.input_tokens,
+            output_tokens = resp.usage.output_tokens,
+            cache_read = resp.usage.cache_read_tokens,
+            "Interiority: LLM response"
+        );
+
+        // Log text blocks.
+        for block in &resp.content_blocks {
+            if let ContentBlock::Text { text } = block {
+                if !text.trim().is_empty() {
+                    let preview: String = text.chars().take(200).collect();
+                    info!(character, iteration, content = %preview, "Interiority: thought");
+                }
             }
         }
-    }
 
-    // Tool use blocks → execute, create ToolCall + ToolResult entries
-    for block in &resp.content_blocks {
-        if let ContentBlock::ToolUse { id, name, input } = block {
+        // Check for <sendMessage> in this response (last-wins: the final
+        // response after tool results is the most informed message).
+        if let Some(msg) = extract_send_message(&resp.extract_text()) {
+            send_message_text = Some(msg);
+        }
+
+        // Extract tool uses.
+        let tool_uses = crate::content_util::extract_tool_uses(&resp.content_blocks);
+
+        // If no tool use or finish_reason != "tool_use", we're done.
+        if tool_uses.is_empty() || resp.finish_reason != "tool_use" {
+            break;
+        }
+
+        // Build assistant message from content blocks (filter unsigned thinking).
+        // Note: uses content_block_to_api_json (Anthropic path) — interiority
+        // always uses Anthropic models. ZAI would need content_block_to_json.
+        let assistant_content: Vec<serde_json::Value> = resp
+            .content_blocks
+            .iter()
+            .filter_map(crate::content_util::content_block_to_api_json)
+            .collect();
+
+        request.messages.push(json!({
+            "role": "assistant",
+            "content": assistant_content,
+        }));
+
+        // Dispatch each tool, collect results.
+        let mut tool_results: Vec<serde_json::Value> = Vec::new();
+
+        for (id, name, input) in &tool_uses {
             let input_str = serde_json::to_string(input).unwrap_or_default();
             info!(
                 character,
+                iteration,
                 tool = %name, tool_id = %id,
                 input = %truncate_summary(&input_str, 200),
                 "Interiority: executing tool"
             );
-
-            new_entries.push(JournalEntry {
-                ts: ts.clone(),
-                entry_type: JournalEntryType::ToolCall,
-                content: format!("{name}({input_str})"),
-            });
 
             let (output_str, is_error) =
                 match tool_system::dispatch_tool(name, input.clone(), &tool_ctx).await {
@@ -974,24 +977,25 @@ async fn execute_unified_tick(
                     Err(e) => (e.to_string(), true),
                 };
 
-            let result_summary = truncate_summary(&output_str, 500);
             info!(
                 character,
+                iteration,
                 tool = %name, is_error,
                 output = %truncate_summary(&output_str, 200),
                 "Interiority: tool result"
             );
 
-            new_entries.push(JournalEntry {
-                ts: ts.clone(),
-                entry_type: JournalEntryType::ToolResult,
-                content: if is_error {
-                    format!("ERROR: {result_summary}")
-                } else {
-                    result_summary.to_string()
-                },
+            let mut result = json!({
+                "type": "tool_result",
+                "tool_use_id": id,
+                "content": output_str,
             });
+            if is_error {
+                result["is_error"] = json!(true);
+            }
+            tool_results.push(result);
 
+            // Log to ring buffer.
             {
                 let mut s = lock_state(state);
                 s.interiority_log.push(
@@ -1000,19 +1004,17 @@ async fn execute_unified_tick(
                 );
             }
         }
+
+        // Append tool results as user message.
+        request.messages.push(json!({
+            "role": "user",
+            "content": tool_results,
+        }));
     }
 
-    // -- Check for <sendMessage> ------------------------------------------------
-    let send_message = extract_send_message(&resp.content);
-
-    if let Some(user_msg) = send_message {
+    // -- Persist <sendMessage> if present --------------------------------------
+    if let Some(user_msg) = send_message_text {
         info!(character, msg = %truncate_summary(&user_msg, 200), "Interiority: sending message to user");
-
-        new_entries.push(JournalEntry {
-            ts: ts.clone(),
-            entry_type: JournalEntryType::MessageSent,
-            content: user_msg.clone(),
-        });
 
         let content_blocks = vec![ContentBlock::Text {
             text: user_msg.clone(),
@@ -1061,47 +1063,11 @@ async fn execute_unified_tick(
         );
         s.mark_dirty();
     } else {
-        // Log thinking even when no message sent.
-        let thinking: Vec<&str> = resp
-            .content_blocks
-            .iter()
-            .filter_map(|b| {
-                if let ContentBlock::Text { text } = b {
-                    Some(text.as_str())
-                } else {
-                    None
-                }
-            })
-            .collect();
-        let summary = if thinking.is_empty() {
-            "Tick completed — no message, no text output".to_string()
-        } else {
-            format!(
-                "Tick completed silently: {}",
-                truncate_summary(&thinking.join(" "), 150)
-            )
-        };
-        info!(character, summary = %summary, "Interiority: tick complete (silent)");
         let mut s = lock_state(state);
-        s.interiority_log
-            .push(InteriorityEventKind::MessageSkipped, summary);
-    }
-
-    // -- Append new entries to journal and compact if needed ---------------------
-    if let Err(e) = interiority_journal::append_entries(&journal_path, &new_entries) {
-        warn!(character, error = %e, "Failed to append interiority journal entries");
-    }
-
-    // Compact if file is getting large (2x budget).
-    if let Ok(meta) = std::fs::metadata(&journal_path) {
-        if meta.len() as usize > interiority_journal::DEFAULT_BUDGET_CHARS * 2 {
-            if let Err(e) = interiority_journal::compact_file(
-                &journal_path,
-                interiority_journal::DEFAULT_BUDGET_CHARS,
-            ) {
-                warn!(character, error = %e, "Failed to compact interiority journal");
-            }
-        }
+        s.interiority_log.push(
+            InteriorityEventKind::MessageSkipped,
+            "Tick completed — no message sent".to_string(),
+        );
     }
 }
 
@@ -1437,7 +1403,6 @@ mod tests {
             interiority: InteriorityClock::new(),
             activity: ActivityTracker::new(),
             interiority_log: InteriorityLog::new(),
-            journal_path: data_dir.join("alice").join("interiority_journal.jsonl"),
             dirty: true,
             last_compaction_activity: Instant::now(),
             compaction_triggered: false,
@@ -1486,7 +1451,6 @@ mod tests {
             interiority: InteriorityClock::new(),
             activity: ActivityTracker::new(),
             interiority_log: InteriorityLog::new(),
-            journal_path: tmp.path().join("alice").join("interiority_journal.jsonl"),
             dirty: false,
             last_compaction_activity: Instant::now(),
             compaction_triggered: false,

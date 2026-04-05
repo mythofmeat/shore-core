@@ -1,6 +1,5 @@
 pub mod activity;
 pub mod interiority;
-pub mod interiority_journal;
 pub mod manager;
 
 use std::collections::VecDeque;
