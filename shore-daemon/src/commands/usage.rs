@@ -116,9 +116,15 @@ pub async fn usage(ctx: &CommandContext, args: &serde_json::Value) -> CommandRes
     }
 
     if args.get("recalculate").and_then(|v| v.as_bool()) == Some(true) {
-        let null_rows = shore_ledger::query::null_cost_rows(ledger)
-            .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
-        if null_rows.is_empty() {
+        let force = args.get("force").and_then(|v| v.as_bool()) == Some(true);
+        let rows = if force {
+            shore_ledger::query::all_cost_rows(ledger)
+                .map_err(|e| (ErrorCode::InternalError, e.to_string()))?
+        } else {
+            shore_ledger::query::null_cost_rows(ledger)
+                .map_err(|e| (ErrorCode::InternalError, e.to_string()))?
+        };
+        if rows.is_empty() {
             return Ok(json!({ "mode": "recalculate", "updated": 0, "total": 0, "failures": [] }));
         }
 
@@ -127,7 +133,7 @@ pub async fn usage(ctx: &CommandContext, args: &serde_json::Value) -> CommandRes
         let mut fetch_results: std::collections::HashMap<String, Option<String>> =
             std::collections::HashMap::new();
 
-        for row in &null_rows {
+        for row in &rows {
             let key = format!("{}/{}", row.provider, row.model);
             if models_fetched.insert(key.clone()) {
                 let model_id =
@@ -151,7 +157,7 @@ pub async fn usage(ctx: &CommandContext, args: &serde_json::Value) -> CommandRes
         }
 
         let mut updated = 0u32;
-        for row in &null_rows {
+        for row in &rows {
             if let Ok(Some(cost)) = pricing.calculate_cost(
                 &row.provider,
                 &row.model,
@@ -159,6 +165,7 @@ pub async fn usage(ctx: &CommandContext, args: &serde_json::Value) -> CommandRes
                 row.output_tokens,
                 row.cache_read_tokens,
                 row.cache_write_tokens,
+                row.cache_ttl.as_deref(),
             ) {
                 if shore_ledger::query::update_costs(ledger, row.id, &cost).is_ok() {
                     updated += 1;
@@ -178,7 +185,7 @@ pub async fn usage(ctx: &CommandContext, args: &serde_json::Value) -> CommandRes
         return Ok(json!({
             "mode": "recalculate",
             "updated": updated,
-            "total": null_rows.len(),
+            "total": rows.len(),
             "failures": failures,
         }));
     }

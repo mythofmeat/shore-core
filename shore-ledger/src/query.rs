@@ -263,7 +263,7 @@ pub fn warm_streak(ledger: &Ledger, character: &str) -> Result<u32, rusqlite::Er
 // ── Recalculate ─────────────────────────────────────────────────────────────
 
 /// Row with NULL costs that needs recalculation.
-pub struct NullCostRow {
+pub struct CostRow {
     pub id: i64,
     pub provider: String,
     pub model: String,
@@ -271,17 +271,18 @@ pub struct NullCostRow {
     pub output_tokens: u32,
     pub cache_read_tokens: u32,
     pub cache_write_tokens: u32,
+    pub cache_ttl: Option<String>,
 }
 
 /// Find all rows with NULL total_cost.
-pub fn null_cost_rows(ledger: &Ledger) -> Result<Vec<NullCostRow>, rusqlite::Error> {
+pub fn null_cost_rows(ledger: &Ledger) -> Result<Vec<CostRow>, rusqlite::Error> {
     let conn = ledger.conn();
     let mut stmt = conn.prepare(
-        "SELECT id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens FROM calls WHERE total_cost IS NULL",
+        "SELECT id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cache_ttl FROM calls WHERE total_cost IS NULL",
     )?;
     let rows = stmt
         .query_map([], |row| {
-            Ok(NullCostRow {
+            Ok(CostRow {
                 id: row.get(0)?,
                 provider: row.get(1)?,
                 model: row.get(2)?,
@@ -289,6 +290,30 @@ pub fn null_cost_rows(ledger: &Ledger) -> Result<Vec<NullCostRow>, rusqlite::Err
                 output_tokens: row.get(4)?,
                 cache_read_tokens: row.get(5)?,
                 cache_write_tokens: row.get(6)?,
+                cache_ttl: row.get(7)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// Find all rows (for force recalculation).
+pub fn all_cost_rows(ledger: &Ledger) -> Result<Vec<CostRow>, rusqlite::Error> {
+    let conn = ledger.conn();
+    let mut stmt = conn.prepare(
+        "SELECT id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cache_ttl FROM calls",
+    )?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(CostRow {
+                id: row.get(0)?,
+                provider: row.get(1)?,
+                model: row.get(2)?,
+                input_tokens: row.get(3)?,
+                output_tokens: row.get(4)?,
+                cache_read_tokens: row.get(5)?,
+                cache_write_tokens: row.get(6)?,
+                cache_ttl: row.get(7)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -328,6 +353,7 @@ mod tests {
             output_tokens: 50,
             cache_read_tokens: 80,
             cache_write_tokens: 20,
+            cache_ttl: None,
             total_ms: 1500,
             ttft_ms: 200,
             finish_reason: "end_turn".into(),
@@ -396,6 +422,7 @@ mod tests {
             output_tokens: 50,
             cache_read_tokens: 0,
             cache_write_tokens: 500,
+            cache_ttl: None,
             total_ms: 1500,
             ttft_ms: 200,
             finish_reason: "end_turn".into(),
@@ -437,6 +464,7 @@ mod tests {
             output_tokens: 50,
             cache_read_tokens: 80,
             cache_write_tokens: 20,
+            cache_ttl: None,
             total_ms: 1000,
             ttft_ms: 100,
             finish_reason: "end_turn".into(),

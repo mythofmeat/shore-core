@@ -26,7 +26,7 @@ Unexpected behavior, kludges, and idiosyncrasies that aren't obvious from readin
 
 ## Image Handling
 
-- **Anthropic 1h cache TTL pricing differs from OpenRouter's reported 5m prices.** OpenRouter's `/api/v1/models` endpoint reports cache_write prices for the 5-minute TTL. Shore uses the 1-hour TTL (configured via `cache_ttl = "1h"`), where cache_write costs are 4x the 5-minute price. The PricingEngine hardcodes this multiplier (`ANTHROPIC_1H_CACHE_WRITE_MULTIPLIER = 4.0`). If Anthropic changes the relationship between TTL tiers, this multiplier needs updating.
+- **Anthropic 1h cache TTL pricing differs from OpenRouter's reported 5m prices.** OpenRouter's `/api/v1/models` endpoint reports cache_write prices for the 5-minute TTL. Shore uses the 1-hour TTL (configured via `cache_ttl = "1h"`), where cache_write costs are 2x input price (5-minute price is 1.25x input). The PricingEngine hardcodes this multiplier (`ANTHROPIC_1H_CACHE_WRITE_MULTIPLIER = 1.6`). If Anthropic changes the relationship between TTL tiers, this multiplier needs updating.
 
 ## OpenRouter Pricing
 
@@ -34,7 +34,7 @@ Unexpected behavior, kludges, and idiosyncrasies that aren't obvious from readin
 
 - **Anthropic model IDs use dots for minor versions on OpenRouter.** Shore stores model names as `claude-opus-4-6` (from Anthropic's API) but OpenRouter's catalog uses `claude-opus-4.6`. The `normalize_anthropic_model()` function converts the last `digit-digit` hyphen to a dot. This is fragile — if Anthropic releases a model with a hyphenated suffix that isn't a version number, it could be incorrectly normalized.
 
-- **Anthropic 1h cache TTL pricing differs from OpenRouter's reported 5m prices.** OpenRouter reports cache_write prices for the 5-minute TTL. Shore uses 1-hour TTL, where cache_write costs are 4x. Hardcoded as `ANTHROPIC_1H_CACHE_WRITE_MULTIPLIER = 4.0`.
+- **Anthropic 1h cache TTL pricing differs from OpenRouter's reported 5m prices.** OpenRouter reports cache_write prices for the 5-minute TTL. Shore uses 1-hour TTL, where cache_write costs are 2x input price (5-minute price is 1.25x input). Hardcoded as `ANTHROPIC_1H_CACHE_WRITE_MULTIPLIER = 1.6`.
 
 ## Image Handling
 

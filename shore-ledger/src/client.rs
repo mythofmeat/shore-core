@@ -54,6 +54,7 @@ pub(crate) fn record_call(
     timing: &Timing,
     finish_reason: &str,
     thinking_enabled: bool,
+    cache_ttl: Option<String>,
 ) {
     let ts = Utc::now().to_rfc3339();
 
@@ -112,6 +113,7 @@ pub(crate) fn record_call(
             usage.output_tokens,
             usage.cache_read_tokens,
             usage.cache_creation_tokens,
+            cache_ttl.as_deref(),
         )
         .ok()
         .flatten();
@@ -126,6 +128,7 @@ pub(crate) fn record_call(
         output_tokens: usage.output_tokens,
         cache_read_tokens: usage.cache_read_tokens,
         cache_write_tokens: usage.cache_creation_tokens,
+        cache_ttl,
         total_ms: timing.total_ms,
         ttft_ms: timing.time_to_first_token_ms,
         finish_reason: finish_reason.to_string(),
@@ -215,6 +218,13 @@ impl LedgerClient {
 
         let resp = self.inner.generate(request, None).await?;
 
+        let cache_ttl = request
+            .provider_options
+            .as_ref()
+            .and_then(|opts| opts.get("cache_ttl"))
+            .and_then(|v| v.as_str())
+            .map(String::from);
+
         record_call(
             &self.ledger,
             &self.pricing,
@@ -227,6 +237,7 @@ impl LedgerClient {
             &resp.timing,
             &resp.finish_reason,
             thinking_enabled,
+            cache_ttl,
         );
 
         Ok(resp)
@@ -254,6 +265,13 @@ impl LedgerClient {
 
         let reader = self.inner.stream_raw(request, None).await?;
 
+        let cache_ttl = request
+            .provider_options
+            .as_ref()
+            .and_then(|opts| opts.get("cache_ttl"))
+            .and_then(|v| v.as_str())
+            .map(String::from);
+
         Ok(LedgerStream::new(
             reader,
             provider_key.to_string(),
@@ -261,6 +279,7 @@ impl LedgerClient {
             call_type,
             character.to_string(),
             thinking_enabled,
+            cache_ttl,
             self.ledger.clone(),
             self.pricing.clone(),
             self.cache_trackers.clone(),
@@ -354,6 +373,7 @@ mod tests {
             },
             "end_turn",
             false,
+            None,
         );
         let rows = ledger.recent(1).unwrap();
         assert_eq!(rows.len(), 1);
@@ -384,6 +404,7 @@ mod tests {
             },
             "end_turn",
             true,
+            None,
         );
         let map = trackers.lock().unwrap();
         let tracker = map.get("aria").unwrap();
@@ -413,6 +434,7 @@ mod tests {
             },
             "stop",
             false,
+            None,
         );
         let rows = ledger.recent(1).unwrap();
         assert!(rows[0].cache_state.is_none());
@@ -453,9 +475,40 @@ mod tests {
             },
             "end_turn",
             true,
+            None,
         );
         let rows = ledger.recent(1).unwrap();
         assert_eq!(rows[0].cache_write_tokens, 200);
         assert_eq!(rows[0].cache_read_tokens, 80);
+    }
+
+    #[test]
+    fn record_stores_cache_ttl() {
+        let (ledger, pricing, trackers) = test_parts();
+        record_call(
+            &ledger,
+            &pricing,
+            &trackers,
+            "anthropic",
+            "claude-opus-4-6",
+            CallType::Message,
+            "aria",
+            &Usage {
+                input_tokens: 100,
+                output_tokens: 50,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
+            },
+            &Timing {
+                total_ms: 1500,
+                time_to_first_token_ms: 0,
+            },
+            "end_turn",
+            false,
+            Some("5m".to_string()),
+        );
+        let rows = ledger.recent(1).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].cache_ttl, Some("5m".to_string()));
     }
 }
