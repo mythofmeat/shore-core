@@ -368,6 +368,22 @@ fn build_http_request(
     };
     let body = build_body(request, streaming);
 
+    // Log the post-transformation payload shape (no message content).
+    {
+        let model = body["model"].as_str().unwrap_or("?");
+        let max_tokens = body["max_tokens"].as_u64().unwrap_or(0);
+        let thinking = body.get("thinking").map(|v| v.to_string()).unwrap_or_else(|| "none".into());
+        let output_cfg = body.get("output_config").map(|v| v.to_string()).unwrap_or_else(|| "none".into());
+        let sys_blocks = body["system"].as_array().map(|a| a.len()).unwrap_or(0);
+        let msg_count = body["messages"].as_array().map(|a| a.len()).unwrap_or(0);
+        let tool_count = body.get("tools").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
+        tracing::info!(
+            model, max_tokens, %thinking, output_config = %output_cfg,
+            sys_blocks, msg_count, tool_count,
+            "Anthropic: transformed request body"
+        );
+    }
+
     let builder = client
         .post(&url)
         .header("anthropic-version", ANTHROPIC_VERSION)
