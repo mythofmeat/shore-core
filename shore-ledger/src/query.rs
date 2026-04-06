@@ -1,6 +1,6 @@
 //! Aggregation and filter queries for the CLI.
 
-use crate::ledger::{CallRow, Ledger, row_from_sqlite};
+use crate::ledger::{row_from_sqlite, CallRow, Ledger};
 use rusqlite::params_from_iter;
 
 // ── Filter ───────────────────────────────────────────────────────────────────
@@ -81,7 +81,7 @@ pub fn usage_summary(
                   SUM(output_tokens) as total_output,
                   SUM(cache_read_tokens) as total_cache_read,
                   SUM(cache_write_tokens) as total_cache_write,
-                  SUM(total_cost) as total_cost
+                  TOTAL(total_cost) as total_cost
              FROM calls
              {where_clause}
             GROUP BY provider, model
@@ -93,14 +93,14 @@ pub fn usage_summary(
     let rows = stmt
         .query_map(params_from_iter(values.iter()), |row| {
             Ok(UsageSummary {
-                provider:         row.get(0)?,
-                model:            row.get(1)?,
-                call_count:       row.get::<_, i64>(2)? as u32,
-                total_input:      row.get::<_, i64>(3)? as u64,
-                total_output:     row.get::<_, i64>(4)? as u64,
+                provider: row.get(0)?,
+                model: row.get(1)?,
+                call_count: row.get::<_, i64>(2)? as u32,
+                total_input: row.get::<_, i64>(3)? as u64,
+                total_output: row.get::<_, i64>(4)? as u64,
                 total_cache_read: row.get::<_, i64>(5)? as u64,
-                total_cache_write:row.get::<_, i64>(6)? as u64,
-                total_cost:       row.get(7)?,
+                total_cache_write: row.get::<_, i64>(6)? as u64,
+                total_cost: row.get(7)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -179,10 +179,7 @@ fn row_to_tsv(r: &CallRow) -> String {
 }
 
 /// Tab-separated header + all matching rows (all 20 CallRow columns).
-pub fn export_tsv(
-    ledger: &Ledger,
-    filter: &QueryFilter,
-) -> Result<String, rusqlite::Error> {
+pub fn export_tsv(ledger: &Ledger, filter: &QueryFilter) -> Result<String, rusqlite::Error> {
     let (where_clause, values) = build_where(filter);
     let sql = format!("SELECT * FROM calls{where_clause} ORDER BY id ASC");
 

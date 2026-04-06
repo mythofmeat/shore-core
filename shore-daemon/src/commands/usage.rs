@@ -80,7 +80,15 @@ pub async fn usage(ctx: &CommandContext, args: &serde_json::Value) -> CommandRes
     }
 
     if args.get("anomalies").and_then(|v| v.as_bool()) == Some(true) {
-        let rows = shore_ledger::query::query_anomalies(ledger, &filter)
+        let anomaly_filter = if last == "today" {
+            QueryFilter {
+                since: parse_last_period("7d"),
+                ..filter.clone()
+            }
+        } else {
+            filter
+        };
+        let rows = shore_ledger::query::query_anomalies(ledger, &anomaly_filter)
             .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
         let anomalies: Vec<serde_json::Value> = rows
             .iter()
@@ -111,15 +119,34 @@ pub async fn usage(ctx: &CommandContext, args: &serde_json::Value) -> CommandRes
         let null_rows = shore_ledger::query::null_cost_rows(ledger)
             .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
         if null_rows.is_empty() {
-            return Ok(json!({ "mode": "recalculate", "updated": 0, "total": 0 }));
+            return Ok(json!({ "mode": "recalculate", "updated": 0, "total": 0, "failures": [] }));
         }
 
         let pricing = ctx.llm_client.pricing();
         let mut models_fetched = std::collections::HashSet::new();
+        let mut fetch_results: std::collections::HashMap<String, Option<String>> =
+            std::collections::HashMap::new();
+
         for row in &null_rows {
             let key = format!("{}/{}", row.provider, row.model);
-            if models_fetched.insert(key) {
-                let _ = pricing.get_or_fetch(&row.provider, &row.model).await;
+            if models_fetched.insert(key.clone()) {
+                let model_id =
+                    shore_ledger::pricing::to_openrouter_id(&row.provider, &row.model);
+                match pricing.get_or_fetch(&row.provider, &row.model).await {
+                    Some(_) => {
+                        fetch_results.insert(key, None);
+                    }
+                    None => {
+                        tracing::warn!(
+                            model_id,
+                            "Pricing fetch returned no data for model"
+                        );
+                        fetch_results.insert(
+                            key,
+                            Some(format!("no pricing data for {model_id}")),
+                        );
+                    }
+                }
             }
         }
 
@@ -139,10 +166,20 @@ pub async fn usage(ctx: &CommandContext, args: &serde_json::Value) -> CommandRes
             }
         }
 
+        let failures: Vec<serde_json::Value> = fetch_results
+            .iter()
+            .filter_map(|(key, reason)| {
+                reason.as_ref().map(|r| {
+                    json!({ "model": key, "reason": r })
+                })
+            })
+            .collect();
+
         return Ok(json!({
             "mode": "recalculate",
             "updated": updated,
             "total": null_rows.len(),
+            "failures": failures,
         }));
     }
 

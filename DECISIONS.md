@@ -407,5 +407,27 @@ A single holistic call lets the LLM see all candidates + nearby context and make
 
 **Trade-offs:**
 - Cost increase: ~$23/month extra (multiple generate() calls per tick instead of one)
+
+## `shore usage` Pricing & Anomaly Fixes
+
+**Date:** 2026-04-06
+
+**Problem:** `shore usage` showed no pricing data (all costs `—`) and `--anomalies` showed "No cache anomalies found" despite the summary reporting 7 anomalies.
+
+**Root causes found and fixed:**
+
+1. **OpenRouter single-model API endpoint dead:** `/api/v1/models/{id}` returns 404 for all models. Rewrote `PricingEngine::fetch_pricing` to fetch the full `/api/v1/models` catalog and scan for the target model. Also bulk-caches all discovered pricing in one pass.
+
+2. **Anthropic model ID mismatch:** Shore stores `claude-opus-4-6` but OpenRouter expects `claude-opus-4.6`. Added `normalize_anthropic_model()` to convert the last digit-hyphen-digit to a dot.
+
+3. **SQL NULL propagation:** `SUM(total_cost)` returns NULL if any row has NULL cost. Changed to `TOTAL()` which returns 0.0 instead.
+
+4. **Anomaly time window mismatch:** Summary counted anomalies over 7d unfiltered; `--anomalies` defaulted to today. Fixed `--anomalies` to default to 7d when `--last` is today (the default).
+
+5. **`--recalculate` silent failures:** Added failure reporting with model ID and reason when pricing can't be fetched.
+
+**Trade-offs:**
+- Catalog fetch is larger (full model list ~1MB JSON) but happens once and caches everything
+- Anomaly `--anomalies` defaults to 7d only when `--last` is "today"; explicit `--last today` still uses today
 - Lost: Cross-tick continuity (the model no longer "remembers" what it did on previous ticks via journal)
 - Gained: The model can actually use tools and see results, enabling genuine exploration and discovery

@@ -1046,6 +1046,18 @@ pub fn print_usage(data: &serde_json::Value) {
                     "Updated {updated}/{total} rows. {} still missing pricing data.",
                     total - updated
                 );
+                if let Some(failures) = data["failures"].as_array() {
+                    if !failures.is_empty() {
+                        println!("\nFailed models:");
+                        for f in failures {
+                            println!(
+                                "  {} — {}",
+                                f["model"].as_str().unwrap_or("?"),
+                                f["reason"].as_str().unwrap_or("unknown")
+                            );
+                        }
+                    }
+                }
             }
         }
         _ => {
