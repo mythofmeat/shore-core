@@ -33,12 +33,13 @@ CREATE TABLE IF NOT EXISTS calls (
 );
 
 CREATE TABLE IF NOT EXISTS pricing (
-    model_id            TEXT PRIMARY KEY,
-    input_per_token     REAL NOT NULL,
-    output_per_token    REAL NOT NULL,
-    cache_read_per_token  REAL NOT NULL,
-    cache_write_per_token REAL NOT NULL,
-    fetched_at          TEXT NOT NULL
+    model_id                TEXT PRIMARY KEY,
+    input_per_token         REAL NOT NULL,
+    output_per_token        REAL NOT NULL,
+    cache_read_per_token    REAL NOT NULL,
+    cache_write_per_token   REAL NOT NULL,
+    cache_write_1h_per_token REAL NOT NULL,
+    fetched_at              TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_calls_ts        ON calls (ts);

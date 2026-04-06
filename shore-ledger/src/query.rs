@@ -64,7 +64,7 @@ pub struct UsageSummary {
     pub total_output: u64,
     pub total_cache_read: u64,
     pub total_cache_write: u64,
-    pub total_cost: Option<f64>,
+    pub total_cost: f64,
 }
 
 /// Groups calls by provider + model, sums token counts and cost.
@@ -100,7 +100,7 @@ pub fn usage_summary(
                 total_output: row.get::<_, i64>(4)? as u64,
                 total_cache_read: row.get::<_, i64>(5)? as u64,
                 total_cache_write: row.get::<_, i64>(6)? as u64,
-                total_cost: row.get(7)?,
+                total_cost: row.get::<_, f64>(7)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -136,7 +136,7 @@ pub fn query_anomalies(
 // ── TSV export ───────────────────────────────────────────────────────────────
 
 const TSV_HEADER: &str = "ts\tcharacter\tprovider\tmodel\tcall_type\t\
-    input_tokens\toutput_tokens\tcache_read_tokens\tcache_write_tokens\t\
+    input_tokens\toutput_tokens\tcache_read_tokens\tcache_write_tokens\tcache_ttl\t\
     total_ms\tttft_ms\tfinish_reason\tthinking_enabled\t\
     cache_state\tcache_anomaly\t\
     input_cost\toutput_cost\tcache_read_cost\tcache_write_cost\ttotal_cost";
@@ -154,7 +154,7 @@ fn opt_f64(v: Option<f64>) -> String {
 
 fn row_to_tsv(r: &CallRow) -> String {
     format!(
-        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
         r.ts,
         r.character,
         r.provider,
@@ -164,6 +164,7 @@ fn row_to_tsv(r: &CallRow) -> String {
         r.output_tokens,
         r.cache_read_tokens,
         r.cache_write_tokens,
+        opt_str(&r.cache_ttl),
         r.total_ms,
         r.ttft_ms,
         r.finish_reason,
@@ -178,7 +179,7 @@ fn row_to_tsv(r: &CallRow) -> String {
     )
 }
 
-/// Tab-separated header + all matching rows (all 20 CallRow columns).
+/// Tab-separated header + all matching rows (all 21 CallRow columns).
 pub fn export_tsv(ledger: &Ledger, filter: &QueryFilter) -> Result<String, rusqlite::Error> {
     let (where_clause, values) = build_where(filter);
     let sql = format!("SELECT * FROM calls{where_clause} ORDER BY id ASC");

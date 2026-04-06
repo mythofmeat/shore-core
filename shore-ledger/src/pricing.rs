@@ -9,7 +9,7 @@ use std::error::Error;
 use std::sync::{Arc, Mutex};
 use tracing::warn;
 
-/// Anthropic 1h cache TTL write price is 2x input price (5min price is 1.25x input).
+/// Anthropic 1h cache TTL write price is 2× input price (5min price is 1.25× input).
 /// Multiplier from 5min price to 1h price: 2.0 / 1.25 = 1.6.
 const ANTHROPIC_1H_CACHE_WRITE_MULTIPLIER: f64 = 1.6;
 
@@ -20,7 +20,11 @@ pub struct ModelPricing {
     pub input_per_token: f64,
     pub output_per_token: f64,
     pub cache_read_per_token: f64,
+    /// Base (5-minute TTL) cache write price from OpenRouter.
     pub cache_write_per_token: f64,
+    /// Pre-computed 1h TTL cache write price.
+    /// For Anthropic: `cache_write_per_token * 1.6`. For all others: same as `cache_write_per_token`.
+    pub cache_write_1h_per_token: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -57,14 +61,16 @@ impl PricingEngine {
         conn.execute(
             r#"INSERT OR REPLACE INTO pricing
                 (model_id, input_per_token, output_per_token,
-                 cache_read_per_token, cache_write_per_token, fetched_at)
-               VALUES (?1, ?2, ?3, ?4, ?5, ?6)"#,
+                 cache_read_per_token, cache_write_per_token,
+                 cache_write_1h_per_token, fetched_at)
+               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"#,
             params![
                 model_id,
                 pricing.input_per_token,
                 pricing.output_per_token,
                 pricing.cache_read_per_token,
                 pricing.cache_write_per_token,
+                pricing.cache_write_1h_per_token,
                 Utc::now().to_rfc3339(),
             ],
         )?;
@@ -94,7 +100,8 @@ impl PricingEngine {
         let conn = self.ledger.conn();
         let mut stmt = conn.prepare(
             r#"SELECT input_per_token, output_per_token,
-                      cache_read_per_token, cache_write_per_token
+                      cache_read_per_token, cache_write_per_token,
+                      cache_write_1h_per_token
                FROM pricing WHERE model_id = ?1"#,
         )?;
         let result = stmt
@@ -104,6 +111,7 @@ impl PricingEngine {
                     output_per_token: row.get(1)?,
                     cache_read_per_token: row.get(2)?,
                     cache_write_per_token: row.get(3)?,
+                    cache_write_1h_per_token: row.get(4)?,
                 })
             })
             .optional()?;
@@ -122,7 +130,7 @@ impl PricingEngine {
     }
 
     /// HTTP GET to OpenRouter API to fetch per-token pricing.
-    /// OpenRouter reports 5-minute TTL prices; the 1-hour multiplier is applied in calculate_cost.
+    /// The 1-hour cache write multiplier for Anthropic is pre-computed at fetch time.
     pub async fn fetch_pricing(
         &self,
         provider: &str,
@@ -184,14 +192,18 @@ impl PricingEngine {
                     .or_else(|| pricing_obj.get("cache_write")),
             );
 
-            let _is_anthropic = id.starts_with("anthropic/");
-            let final_cache_write = cache_write;
+            let cache_write_1h = if id.starts_with("anthropic/") {
+                cache_write * ANTHROPIC_1H_CACHE_WRITE_MULTIPLIER
+            } else {
+                cache_write
+            };
 
             let pricing = ModelPricing {
                 input_per_token: input,
                 output_per_token: output,
                 cache_read_per_token: cache_read,
-                cache_write_per_token: final_cache_write,
+                cache_write_per_token: cache_write,
+                cache_write_1h_per_token: cache_write_1h,
             };
 
             if id == target_model_id {
@@ -232,7 +244,8 @@ impl PricingEngine {
     }
 
     /// Multiply tokens by per-token prices. Returns None if pricing unavailable.
-    /// `cache_ttl`: "5m" or "1h" (default "1h" if None). Anthropic 1h cache writes are 1.6× the 5m price.
+    /// `cache_ttl`: "5m" or "1h" (default "1h" if None). Selects the pre-computed
+    /// cache write price for the appropriate TTL tier.
     pub fn calculate_cost(
         &self,
         provider: &str,
@@ -252,15 +265,12 @@ impl PricingEngine {
         let input = pricing.input_per_token * input_tokens as f64;
         let output = pricing.output_per_token * output_tokens as f64;
         let cache_read = pricing.cache_read_per_token * cache_read_tokens as f64;
-        let mut cache_write = pricing.cache_write_per_token * cache_write_tokens as f64;
 
-        // Apply 1h multiplier for Anthropic models when TTL is "1h"
-        if provider == "anthropic" {
-            let ttl = cache_ttl.unwrap_or("1h");
-            if ttl == "1h" {
-                cache_write *= ANTHROPIC_1H_CACHE_WRITE_MULTIPLIER;
-            }
-        }
+        let cache_write_price = match cache_ttl.unwrap_or("1h") {
+            "1h" => pricing.cache_write_1h_per_token,
+            _ => pricing.cache_write_per_token,
+        };
+        let cache_write = cache_write_price * cache_write_tokens as f64;
 
         Ok(Some(CostBreakdown {
             input,
@@ -337,19 +347,22 @@ mod tests {
         PricingEngine::new(ledger)
     }
 
+    fn anthropic_pricing() -> ModelPricing {
+        ModelPricing {
+            input_per_token: 0.000015,
+            output_per_token: 0.000075,
+            cache_read_per_token: 0.0000015,
+            cache_write_per_token: 0.00001875,
+            // Pre-computed: 0.00001875 * 1.6 = 0.00003
+            cache_write_1h_per_token: 0.00001875 * ANTHROPIC_1H_CACHE_WRITE_MULTIPLIER,
+        }
+    }
+
     #[test]
     fn calculate_cost_with_known_pricing() {
         let engine = test_engine();
         engine
-            .store_pricing(
-                "anthropic/claude-opus-4.6",
-                &ModelPricing {
-                    input_per_token: 0.000015,
-                    output_per_token: 0.000075,
-                    cache_read_per_token: 0.0000015,
-                    cache_write_per_token: 0.00001875,
-                },
-            )
+            .store_pricing("anthropic/claude-opus-4.6", &anthropic_pricing())
             .unwrap();
         let cost = engine
             .calculate_cost("anthropic", "claude-opus-4-6", 100, 50, 80, 20, Some("5m"))
@@ -366,15 +379,7 @@ mod tests {
     fn calculate_cost_with_1h_cache_ttl() {
         let engine = test_engine();
         engine
-            .store_pricing(
-                "anthropic/claude-opus-4.6",
-                &ModelPricing {
-                    input_per_token: 0.000015,
-                    output_per_token: 0.000075,
-                    cache_read_per_token: 0.0000015,
-                    cache_write_per_token: 0.00001875,
-                },
-            )
+            .store_pricing("anthropic/claude-opus-4.6", &anthropic_pricing())
             .unwrap();
         let cost = engine
             .calculate_cost("anthropic", "claude-opus-4-6", 100, 50, 80, 20, Some("1h"))
@@ -384,7 +389,7 @@ mod tests {
         assert!((c.input - 0.0015).abs() < 1e-10);
         assert!((c.output - 0.00375).abs() < 1e-10);
         assert!((c.cache_read - 0.00012).abs() < 1e-10);
-        // 0.000375 * 1.6 = 0.0006
+        // 20 tokens * 0.00003 (1h price) = 0.0006
         assert!((c.cache_write - 0.0006).abs() < 1e-10);
         assert!((c.total - (0.0015 + 0.00375 + 0.00012 + 0.0006)).abs() < 1e-10);
     }
@@ -393,22 +398,14 @@ mod tests {
     fn calculate_cost_with_none_cache_ttl_defaults_to_1h() {
         let engine = test_engine();
         engine
-            .store_pricing(
-                "anthropic/claude-opus-4.6",
-                &ModelPricing {
-                    input_per_token: 0.000015,
-                    output_per_token: 0.000075,
-                    cache_read_per_token: 0.0000015,
-                    cache_write_per_token: 0.00001875,
-                },
-            )
+            .store_pricing("anthropic/claude-opus-4.6", &anthropic_pricing())
             .unwrap();
         let cost = engine
             .calculate_cost("anthropic", "claude-opus-4-6", 100, 50, 80, 20, None)
             .unwrap();
         assert!(cost.is_some());
         let c = cost.unwrap();
-        // Should apply 1h multiplier because default is "1h"
+        // Should use 1h price because default TTL is "1h"
         assert!((c.cache_write - 0.0006).abs() < 1e-10);
     }
 
@@ -442,21 +439,15 @@ mod tests {
     fn store_and_retrieve_pricing() {
         let engine = test_engine();
         engine
-            .store_pricing(
-                "anthropic/claude-opus-4.6",
-                &ModelPricing {
-                    input_per_token: 0.000015,
-                    output_per_token: 0.000075,
-                    cache_read_per_token: 0.0000015,
-                    cache_write_per_token: 0.00001875,
-                },
-            )
+            .store_pricing("anthropic/claude-opus-4.6", &anthropic_pricing())
             .unwrap();
         let pricing = engine
             .get_cached_pricing("anthropic/claude-opus-4.6")
             .unwrap();
         assert!(pricing.is_some());
-        assert!((pricing.unwrap().input_per_token - 0.000015).abs() < 1e-10);
+        let p = pricing.unwrap();
+        assert!((p.input_per_token - 0.000015).abs() < 1e-10);
+        assert!((p.cache_write_1h_per_token - 0.00003).abs() < 1e-10);
     }
 
     #[test]
@@ -470,6 +461,7 @@ mod tests {
                     output_per_token: 0.002,
                     cache_read_per_token: 0.0,
                     cache_write_per_token: 0.0,
+                    cache_write_1h_per_token: 0.0,
                 },
             )
             .unwrap();
@@ -500,6 +492,7 @@ mod tests {
             output_per_token: 0.000075,
             cache_read_per_token: 0.0000015,
             cache_write_per_token: 0.00001875,
+            cache_write_1h_per_token: 0.00003,
         };
         engine.store_pricing("test/model", &pricing).unwrap();
 

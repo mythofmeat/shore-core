@@ -377,7 +377,7 @@ fn build_http_request(
         let sys_blocks = body["system"].as_array().map(|a| a.len()).unwrap_or(0);
         let msg_count = body["messages"].as_array().map(|a| a.len()).unwrap_or(0);
         let tool_count = body.get("tools").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
-        tracing::info!(
+        tracing::debug!(
             model, max_tokens, %thinking, output_config = %output_cfg,
             sys_blocks, msg_count, tool_count,
             "Anthropic: transformed request body"
