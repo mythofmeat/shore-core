@@ -260,6 +260,7 @@ pub fn format_command(name: &str, data: &serde_json::Value) {
         "delete" => print_delete_confirmation(data),
         "inject_system" => println!("System instruction injected."),
         "diagnostics" => print_diagnostics(data),
+        "usage" => print_usage(data),
         _ => print_command_output_fallback(name, data),
     }
 }
@@ -990,6 +991,124 @@ fn print_diagnostics_section<W: Write>(
         }
     }
     let _ = writeln!(out);
+}
+
+fn format_k(tokens: u64) -> String {
+    if tokens == 0 {
+        "\u{2014}".into()
+    } else if tokens < 1000 {
+        tokens.to_string()
+    } else {
+        format!("{:.1}K", tokens as f64 / 1000.0)
+    }
+}
+
+pub fn print_usage(data: &serde_json::Value) {
+    let mode = data["mode"].as_str().unwrap_or("summary");
+
+    match mode {
+        "tsv" | "csv" => {
+            if let Some(d) = data["data"].as_str() {
+                print!("{d}");
+            }
+        }
+        "anomalies" => {
+            let anomalies = data["anomalies"].as_array();
+            if anomalies.is_none() || anomalies.unwrap().is_empty() {
+                println!("No cache anomalies found.");
+            } else if let Some(rows) = anomalies {
+                println!("Cache Anomalies:\n");
+                for r in rows {
+                    println!(
+                        "  {} {} {} {} \u{2014} {} (read: {}, write: {})",
+                        r["ts"].as_str().unwrap_or("?"),
+                        r["character"].as_str().unwrap_or("?"),
+                        r["model"].as_str().unwrap_or("?"),
+                        r["call_type"].as_str().unwrap_or("?"),
+                        r["anomaly"].as_str().unwrap_or("?"),
+                        r["cache_read_tokens"].as_u64().unwrap_or(0),
+                        r["cache_write_tokens"].as_u64().unwrap_or(0),
+                    );
+                }
+                println!("\nTotal: {} anomalies", rows.len());
+            }
+        }
+        "refresh_pricing" => {
+            println!("Pricing cache cleared. Prices will be re-fetched on next daemon use.");
+        }
+        "recalculate" => {
+            let updated = data["updated"].as_u64().unwrap_or(0);
+            let total = data["total"].as_u64().unwrap_or(0);
+            if total == 0 {
+                println!("All rows already have costs calculated.");
+            } else {
+                println!(
+                    "Updated {updated}/{total} rows. {} still missing pricing data.",
+                    total - updated
+                );
+            }
+        }
+        _ => {
+            let period = data["period"].as_str().unwrap_or("today");
+            let today = chrono::Utc::now().format("%Y-%m-%d");
+            println!("Shore Usage \u{2014} {today} (period: {period})\n");
+            println!(
+                "{:<12} {:<24} {:>5}  {:>9}  {:>9}  {:>9}  {:>9}  {:>8}",
+                "Provider", "Model", "Calls", "Input", "Output", "Cache R", "Cache W", "Cost"
+            );
+            println!("{}", "-".repeat(90));
+
+            let summary = data["summary"].as_array();
+            let mut grand_total = 0.0f64;
+            if let Some(rows) = summary {
+                for s in rows {
+                    let cost_str = s["total_cost"]
+                        .as_f64()
+                        .map(|c| {
+                            grand_total += c;
+                            format!("${c:.2}")
+                        })
+                        .unwrap_or_else(|| "\u{2014}".into());
+                    println!(
+                        "{:<12} {:<24} {:>5}  {:>9}  {:>9}  {:>9}  {:>9}  {:>8}",
+                        s["provider"].as_str().unwrap_or(""),
+                        s["model"].as_str().unwrap_or(""),
+                        s["call_count"].as_u64().unwrap_or(0),
+                        format_k(s["total_input"].as_u64().unwrap_or(0)),
+                        format_k(s["total_output"].as_u64().unwrap_or(0)),
+                        format_k(s["total_cache_read"].as_u64().unwrap_or(0)),
+                        format_k(s["total_cache_write"].as_u64().unwrap_or(0)),
+                        cost_str,
+                    );
+                }
+                if !rows.is_empty() {
+                    println!("{:>82} ${grand_total:.2}", "Total:");
+                } else {
+                    println!("  No usage data for this period.");
+                }
+            }
+
+            if let Some(health) = data["cache_health"].as_array() {
+                if !health.is_empty() {
+                    println!("\nCache Health (anthropic):");
+                    for entry in health {
+                        let char_name = entry["character"].as_str().unwrap_or("?");
+                        let state = entry["state"].as_str().unwrap_or("cold");
+                        let streak = entry["streak"].as_u64().unwrap_or(0);
+                        let state_str = if state == "warm" {
+                            format!("Warm (streak: {streak} calls)")
+                        } else {
+                            "Cold".into()
+                        };
+                        println!("  {char_name:<8} \u{2014} {state_str}");
+                    }
+                }
+            }
+
+            let anomaly_count = data["anomaly_count_7d"].as_u64().unwrap_or(0);
+            println!("\nAnomalies (last 7d): {anomaly_count}");
+        }
+    }
 }
 
 #[cfg(test)]

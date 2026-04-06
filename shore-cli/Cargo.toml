@@ -11,7 +11,6 @@ path = "src/main.rs"
 shore-protocol = { path = "../shore-protocol" }
 shore-config = { path = "../shore-config" }
 shore-client = { path = "../shore-client" }
-shore-ledger = { path = "../shore-ledger" }
 clap = { version = "4", features = ["derive", "env"] }
 clap_complete = "4"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }

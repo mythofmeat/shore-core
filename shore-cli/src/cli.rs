@@ -340,7 +340,6 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
         | CliCommand::Regen { .. }
         | CliCommand::Completions { .. }
         | CliCommand::Matrix { .. }
-        | CliCommand::Usage { .. }
         | CliCommand::Config {
             path: true,
             check: false,
@@ -442,15 +441,42 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
             subcommand: Some(MemoryCommand::Shell),
             ..
         } => None,
-        CliCommand::Memory {
-            query, direct, ..
-        } => Some(("memory", json!({ "query": query, "direct": direct }))),
+        CliCommand::Memory { query, direct, .. } => {
+            Some(("memory", json!({ "query": query, "direct": direct })))
+        }
 
         CliCommand::Config { reset: true, .. } => Some(("config_reset", json!({}))),
         CliCommand::Config { check: true, .. } => Some(("config_check", json!({}))),
         CliCommand::Config { key, value, .. } => {
             Some(("config", json!({ "key": key, "value": value })))
         }
+
+        CliCommand::Usage {
+            last,
+            character,
+            provider,
+            model,
+            call_type,
+            anomalies,
+            export_csv,
+            export_tsv,
+            refresh_pricing,
+            recalculate,
+        } => Some((
+            "usage",
+            json!({
+                "last": last,
+                "character": character,
+                "provider": provider,
+                "model": model,
+                "call_type": call_type,
+                "anomalies": anomalies,
+                "export_csv": export_csv,
+                "export_tsv": export_tsv,
+                "refresh_pricing": refresh_pricing,
+                "recalculate": recalculate,
+            }),
+        )),
     }
 }
 
