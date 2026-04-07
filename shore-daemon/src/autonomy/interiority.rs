@@ -196,9 +196,13 @@ impl InteriorityClock {
 
         if self.state == InteriorityState::Dormant {
             self.state = InteriorityState::Active;
-            self.schedule_next_tick(now);
-            self.schedule_next_cache_ping(now);
         }
+
+        // Always reschedule the tick from now — the user is actively present,
+        // so the next tick should fire a full interval after the last message,
+        // not at whatever deadline was set before the conversation started.
+        self.schedule_next_tick(now);
+        self.schedule_next_cache_ping(now);
     }
 
     /// Call when an assistant message is generated (optional tracking).
@@ -367,6 +371,27 @@ mod tests {
         now += Duration::from_secs(10);
         clock.on_user_message(now);
         assert_eq!(clock.ticks_without_user, 0);
+    }
+
+    #[test]
+    fn user_message_reschedules_tick_while_active() {
+        // Regression: tick must NOT fire mid-conversation. A user message
+        // arriving before the deadline should push the deadline forward.
+        let mut clock = clock_with_interval(60, 3);
+        let mut now = Instant::now();
+        clock.tick(now); // schedule first tick at t+60
+
+        // At t+50 user sends a message — reschedules tick to t+110.
+        now += Duration::from_secs(50);
+        clock.on_user_message(now);
+
+        // At t+65 (past the *original* deadline) no tick should fire.
+        now += Duration::from_secs(15);
+        assert_eq!(clock.tick(now), InteriorityAction::None);
+
+        // At t+111 (past the *rescheduled* deadline) the tick fires.
+        now += Duration::from_secs(46);
+        assert_eq!(clock.tick(now), InteriorityAction::RunTick);
     }
 
     // -- effective interval tests ----------------------------------------
