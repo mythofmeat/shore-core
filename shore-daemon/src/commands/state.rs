@@ -1,6 +1,7 @@
 use serde_json::json;
 use shore_protocol::error::ErrorCode;
 use shore_protocol::types::{ContentBlock, Role};
+use tracing::{debug, info};
 
 use crate::engine::ConversationEngine;
 use crate::memory::agent::{CallerIdentity, MemoryAgent, RealAgentIndexer};
@@ -196,6 +197,7 @@ pub fn switch_model(ctx: &mut CommandContext, args: &serde_json::Value) -> Comma
                 ));
             }
             ctx.active_model = Some(name.to_string());
+            info!(model = name, "Model switched");
             Ok(json!({ "active": name, "changed": true }))
         }
     }
@@ -245,6 +247,7 @@ pub fn memory_changelog(
         })
         .collect();
 
+    debug!(character = char_name, count = entries.len(), "Memory changelog queried");
     Ok(json!({ "changelog": entries, "character": char_name }))
 }
 
@@ -265,7 +268,10 @@ pub async fn memory(
 
     match query {
         None => memory_status(engine, ctx),
-        Some(q) => memory_query(engine, ctx, q, direct).await,
+        Some(q) => {
+            debug!(character = engine.character_name(), query_len = q.len(), direct, "Memory query requested");
+            memory_query(engine, ctx, q, direct).await
+        }
     }
 }
 
@@ -295,6 +301,7 @@ fn memory_status(engine: &ConversationEngine, ctx: &CommandContext) -> CommandRe
         .count_entries_by_status("active")
         .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
 
+    debug!(character = char_name, entries, entities, active, "Memory status queried");
     Ok(json!({
         "character": char_name,
         "entries": entries,
@@ -425,6 +432,7 @@ pub async fn memory_shell_start(
         },
     );
 
+    info!(character = %char_name, session_id = %session_id, "Memory shell session started");
     Ok(json!({
         "session_id": session_id,
         "character": char_name,
@@ -492,6 +500,7 @@ pub async fn memory_shell_query(
         .unwrap_or("")
         .to_string();
 
+    debug!(session_id, mutations, response_len = response.len(), "Memory shell query complete");
     Ok(json!({
         "response": response,
         "mutations": mutations,
@@ -507,6 +516,7 @@ pub fn memory_shell_end(ctx: &mut CommandContext, args: &serde_json::Value) -> C
 
     ctx.memory_shell_sessions.remove(session_id);
 
+    info!(session_id, "Memory shell session ended");
     Ok(json!({ "ok": true }))
 }
 
@@ -612,6 +622,8 @@ pub async fn compact(
         ));
     }
 
+    info!(character = %char_name, message_count = messages.len(), dry_run, "Compaction started");
+
     // Open the memory database.
     let db = open_memory_db(ctx, &char_name)?;
 
@@ -672,6 +684,13 @@ pub async fn compact(
     // Build response and handle post-compaction engine state.
     match outcome {
         CompactionOutcome::Compacted(result) => {
+            info!(
+                character = %char_name,
+                entries_created = result.entries_created.len(),
+                message_count = result.message_count,
+                retained_count = result.retained_count,
+                "Compaction complete"
+            );
             // Reload retained messages from disk (active.jsonl now has only kept messages).
             engine
                 .reload()
@@ -813,6 +832,8 @@ pub async fn collate(
     let display_name = ctx.config.app.defaults.resolve_display_name();
     let collation_vars = build_collation_vars(ctx, &char_name, &display_name);
 
+    info!(character = %char_name, full_mode, limit, "Collation started");
+
     const MAX_PASSES: usize = 10;
     let mut total = CollationOutcome::default();
     let mut passes: usize = 0;
@@ -853,6 +874,15 @@ pub async fn collate(
         }
     }
 
+    info!(
+        character = %char_name,
+        passes,
+        merges = total.refine_merges,
+        splits = total.refine_splits,
+        updates = total.refine_updates,
+        decayed = total.entries_decayed,
+        "Collation complete"
+    );
     Ok(json!({
         "status": "collated",
         "character": char_name,
@@ -965,6 +995,14 @@ pub async fn memory_purge(
             .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
     }
 
+    info!(
+        character = %char_name,
+        deleted,
+        skipped_image,
+        skipped_no_replacement,
+        older_than = older_than_str,
+        "Memory purge complete"
+    );
     Ok(json!({
         "status": "purged",
         "character": char_name,
@@ -1108,6 +1146,8 @@ pub async fn memory_reindex(engine: &ConversationEngine, ctx: &CommandContext) -
         return Ok(json!({ "reindexed": 0, "message": "No active entries to reindex" }));
     }
 
+    info!(character = %char_name, entries = entries.len(), "Memory reindex started");
+
     // Rebuild FTS index.
     db.rebuild_fts().map_err(|e| {
         (
@@ -1154,6 +1194,7 @@ pub async fn memory_reindex(engine: &ConversationEngine, ctx: &CommandContext) -
         )
     })?;
 
+    info!(character = %char_name, reindexed = entries.len(), "Memory reindex complete");
     Ok(json!({
         "reindexed": entries.len(),
         "message": format!("Reindexed {} entries (FTS + vector)", entries.len()),
@@ -1224,6 +1265,7 @@ pub fn config_reset(ctx: &mut CommandContext) -> CommandResult {
         Ok(fresh) => {
             ctx.active_model = None;
             ctx.config = fresh;
+            info!("Configuration reloaded from disk");
             Ok(json!({ "reset": true, "message": "Configuration reloaded from disk" }))
         }
         Err(e) => Err((

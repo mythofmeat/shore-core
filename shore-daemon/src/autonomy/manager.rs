@@ -358,6 +358,7 @@ impl AutonomyManager {
             let now = Instant::now();
             s.interiority.on_user_message(now);
             if was_dormant {
+                info!(character, "User returned — waking from dormant");
                 s.interiority_log.push(
                     InteriorityEventKind::Wake,
                     "User returned — woke from dormant",
@@ -366,6 +367,7 @@ impl AutonomyManager {
             s.activity.record_message();
             s.last_compaction_activity = now;
             s.active_turn_count = message_count;
+            debug!(character, message_count, "User message notified");
 
             s.mark_dirty();
         });
@@ -379,6 +381,7 @@ impl AutonomyManager {
             s.activity.record_message();
             s.last_compaction_activity = now;
             s.active_turn_count = message_count;
+            debug!(character, message_count, "Assistant message notified");
             s.mark_dirty();
         });
     }
@@ -388,9 +391,11 @@ impl AutonomyManager {
     /// Called once after `ensure_state` returns `true` (newly created state)
     /// to seed the tracker from existing chat history.
     pub fn backfill_activity(&self, character: &str, timestamps: Vec<chrono::NaiveDateTime>) {
+        let count = timestamps.len();
         self.with_state(character, |s| {
             s.activity.backfill(timestamps);
         });
+        debug!(character, count, "Activity backfilled from history");
     }
 
     /// Cache the last LLM request for interiority tick reuse.
@@ -398,6 +403,7 @@ impl AutonomyManager {
         self.with_state(character, |s| {
             s.last_request = Some(request);
         });
+        debug!(character, "Cached last LLM request for interiority reuse");
     }
 
     /// Call after compaction completes successfully. Updates the turn count
@@ -421,6 +427,7 @@ impl AutonomyManager {
 
     /// Call after compaction fails. Resets the trigger so it can retry.
     pub fn notify_compaction_failed(&self, character: &str) {
+        warn!(character, "Compaction failed — resetting trigger for retry");
         self.with_state(character, |s| {
             s.compaction_triggered = false;
             s.last_compaction_activity = Instant::now();
@@ -437,6 +444,7 @@ impl AutonomyManager {
                 // Compaction cycle complete — allow future compaction triggers.
                 s.compaction_triggered = false;
                 s.last_compaction_activity = Instant::now();
+                info!(character, "Engine reload taken after compaction");
                 return true;
             }
             false
@@ -447,6 +455,7 @@ impl AutonomyManager {
     /// Explicitly set the paused state for a character. Returns the new state,
     /// or None if the character has no autonomy state.
     pub fn set_paused(&self, character: &str, paused: bool) -> Option<bool> {
+        info!(character, paused, "Autonomy pause state changed");
         self.with_state(character, |s| {
             s.interiority.set_paused(paused);
             s.mark_dirty();
@@ -501,9 +510,12 @@ impl AutonomyManager {
             let mut h = self.handles.lock().unwrap();
             h.drain(..).collect()
         };
+        let count = handles.len();
+        info!(task_count = count, "Autonomy manager shutting down");
         for handle in handles {
             let _ = handle.await;
         }
+        info!("Autonomy manager shutdown complete");
     }
 }
 
@@ -568,6 +580,14 @@ async fn tick_character(character: &str, ctx: &TickContext) {
     // Collect actions under the lock, then release before any async work.
     let (int_action, compaction_needed) = {
         let mut s = lock_state(&ctx.state);
+        debug!(
+            character,
+            state = %s.interiority.state(),
+            ticks_without_user = s.interiority.ticks_without_user(),
+            turn_count = s.active_turn_count,
+            paused = s.interiority.is_paused(),
+            "tick"
+        );
 
         // -- interiority ------------------------------------------------------
         let int_action = if ctx.config.enabled && ctx.config.interiority.enabled {
@@ -629,7 +649,9 @@ async fn tick_character(character: &str, ctx: &TickContext) {
     };
 
     if compaction_needed {
-        let _ = ctx.compaction_tx.try_send(character.to_string());
+        if ctx.compaction_tx.try_send(character.to_string()).is_err() {
+            warn!(character, "Compaction channel full, trigger dropped");
+        }
     }
 
     // -- execute interiority action with timeout (async, outside lock) ----
@@ -1138,6 +1160,14 @@ async fn build_tool_context(
     .ok();
 
     let display_name = config.app.defaults.resolve_display_name();
+
+    debug!(
+        character,
+        has_search = search_ctx.is_some(),
+        has_image_gen = image_gen_config.is_some(),
+        has_researcher = researcher_model.is_some(),
+        "Interiority: tool context built"
+    );
 
     Some(SharedToolContext {
         db,

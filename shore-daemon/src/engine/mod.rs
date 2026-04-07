@@ -10,6 +10,7 @@ use segments::SegmentReader;
 use shore_protocol::server_msg::{History, ServerMessage};
 use shore_protocol::types::Message;
 use tokio::sync::broadcast;
+use tracing::{debug, info};
 
 /// Errors originating from the conversation engine.
 #[derive(Debug, thiserror::Error)]
@@ -65,8 +66,20 @@ impl ConversationEngine {
         push_tx: broadcast::Sender<ServerMessage>,
     ) -> Result<Self, EngineError> {
         let character_dir = data_dir.join(&character_name);
+        info!(
+            character = %character_name,
+            dir = %character_dir.display(),
+            "initializing conversation engine"
+        );
         let messages = MessageStore::load(character_dir.join("active.jsonl"))?;
         let segments = SegmentReader::load(&character_dir)?;
+        info!(
+            character = %character_name,
+            active_messages = messages.message_count(),
+            segments = segments.segment_count(),
+            total_compacted = segments.total_message_count(),
+            "engine loaded"
+        );
 
         Ok(Self {
             character_name,
@@ -114,6 +127,7 @@ impl ConversationEngine {
     /// Append a message to the active conversation and broadcast a `History`
     /// snapshot so all connected clients stay in sync.
     pub fn append_message(&mut self, msg: Message) -> Result<(), EngineError> {
+        debug!(character = %self.character_name, msg_id = %msg.msg_id, role = ?msg.role, "appending message");
         self.messages.append(msg)?;
         self.broadcast_history();
         Ok(())
@@ -121,6 +135,7 @@ impl ConversationEngine {
 
     /// Edit a message in the active conversation.
     pub fn edit_message(&mut self, msg_id: &str, new_content: &str) -> Result<(), EngineError> {
+        debug!(character = %self.character_name, msg_id, "editing message");
         self.messages.edit(msg_id, new_content)?;
         self.broadcast_history();
         Ok(())
@@ -128,6 +143,7 @@ impl ConversationEngine {
 
     /// Delete a message from the active conversation.
     pub fn delete_message(&mut self, msg_id: &str) -> Result<(), EngineError> {
+        debug!(character = %self.character_name, msg_id, "deleting message");
         self.messages.delete(msg_id)?;
         self.broadcast_history();
         Ok(())
@@ -137,6 +153,7 @@ impl ConversationEngine {
     pub fn truncate_after_last_user_turn(&mut self) -> Result<usize, EngineError> {
         let removed = self.messages.truncate_after_last_user_turn()?;
         if removed > 0 {
+            debug!(character = %self.character_name, removed, "truncated after last user turn");
             self.broadcast_history();
         }
         Ok(removed)
@@ -158,6 +175,7 @@ impl ConversationEngine {
 
     /// Clear all messages from the active conversation and broadcast.
     pub fn reset(&mut self) -> Result<(), EngineError> {
+        info!(character = %self.character_name, "resetting conversation");
         self.messages.clear()?;
         self.broadcast_history();
         Ok(())
@@ -165,8 +183,15 @@ impl ConversationEngine {
 
     /// Reload messages and segments from disk (e.g. after compaction with retention).
     pub fn reload(&mut self) -> Result<(), EngineError> {
+        info!(character = %self.character_name, "reloading engine from disk");
         self.messages = MessageStore::load(self.character_dir.join("active.jsonl"))?;
         self.segments = SegmentReader::load(&self.character_dir)?;
+        info!(
+            character = %self.character_name,
+            active_messages = self.messages.message_count(),
+            segments = self.segments.segment_count(),
+            "engine reloaded"
+        );
         self.broadcast_history();
         Ok(())
     }

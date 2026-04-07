@@ -3,6 +3,7 @@
 //! Ported from V1 `memory_agent.py::_run_agent_loop()` (lines 386-547).
 
 use serde_json::{json, Value};
+use tracing::{debug, info, instrument, warn};
 
 use crate::memory::agent_llm::AgentLlm;
 use crate::memory::db::MemoryDB;
@@ -30,6 +31,7 @@ const DENIED_MESSAGE: &str =
 ///
 /// Returns `(response_text, mutations)` where mutations is a list of
 /// human-readable descriptions of successful write operations.
+#[instrument(skip(llm, db, indexer, search_ctx, system_prompt, initial_messages, confirm_callback), fields(model = %model.qualified_name))]
 #[allow(clippy::too_many_arguments)]
 pub async fn run_agent_loop(
     llm: &dyn AgentLlm,
@@ -45,7 +47,9 @@ pub async fn run_agent_loop(
     let mut mutations: Vec<String> = Vec::new();
     let tools = tool_definitions();
 
-    for _iteration in 0..MAX_ITERATIONS {
+    info!(model = %model.qualified_name, tool_count = tools.len(), "Agent loop started");
+
+    for iteration in 0..MAX_ITERATIONS {
         // --- LLM call ---
         let response = llm
             .generate(
@@ -62,6 +66,7 @@ pub async fn run_agent_loop(
 
         // --- No tool calls → final response ---
         if tool_uses.is_empty() {
+            info!(iterations = iteration + 1, mutations = mutations.len(), "Agent loop complete");
             return Ok((response.text, mutations));
         }
 
@@ -76,11 +81,14 @@ pub async fn run_agent_loop(
             }
         }
 
+        debug!(iteration, reads = read_ops.len(), writes = write_ops.len(), "Agent iteration");
+
         let mut tool_results: Vec<ToolResult> = Vec::new();
 
         // --- Execute read ops immediately ---
         for (id, name, input) in &read_ops {
             let result = execute_tool(name, db, indexer, search_ctx, input).await;
+            debug!(tool = %name, "Read tool executed");
             tool_results.push(ToolResult {
                 tool_use_id: id.clone(),
                 content: result,
@@ -110,6 +118,7 @@ pub async fn run_agent_loop(
         // --- Execute or deny write ops ---
         for (id, name, input) in &write_ops {
             if denied_ids.contains(id.as_str()) {
+                warn!(tool = %name, "Write tool denied by user");
                 tool_results.push(ToolResult {
                     tool_use_id: id.clone(),
                     content: DENIED_MESSAGE.to_string(),
@@ -121,6 +130,7 @@ pub async fn run_agent_loop(
             let result = execute_tool(name, db, indexer, search_ctx, input).await;
             // Track successful mutations
             if !result.starts_with("Error") {
+                debug!(tool = %name, "Write tool executed");
                 mutations.push(result.clone());
             }
             tool_results.push(ToolResult {
@@ -162,6 +172,7 @@ pub async fn run_agent_loop(
     }
 
     // Reached max iterations
+    warn!(max = MAX_ITERATIONS, mutations = mutations.len(), "Agent loop hit max iterations");
     Ok((
         "Agent loop reached maximum iterations.".to_string(),
         mutations,

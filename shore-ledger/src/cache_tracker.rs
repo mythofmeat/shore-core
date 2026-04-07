@@ -1,6 +1,7 @@
 //! Per-character Anthropic cache warm/cold state machine.
 
 use chrono::{DateTime, Utc};
+use tracing::debug;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CacheState {
@@ -169,6 +170,15 @@ impl CacheTracker {
         // 6. Update internal state
         self.last_cache_read = obs.cache_read_tokens;
         self.update_metadata(obs_ts, &obs.model, obs.thinking_enabled);
+
+        debug!(
+            call_type = obs.call_type,
+            state = ?self.state,
+            anomaly = ?anomaly,
+            cache_read_tokens = obs.cache_read_tokens,
+            cache_write_tokens = obs.cache_write_tokens,
+            "Cache state observed"
+        );
 
         ObservationResult {
             state: self.state,

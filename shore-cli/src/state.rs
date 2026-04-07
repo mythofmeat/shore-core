@@ -7,6 +7,8 @@
 
 use std::path::PathBuf;
 
+use tracing::debug;
+
 /// Return the directory used for Shore runtime state.
 fn runtime_dir() -> PathBuf {
     shore_config::runtime_dir()
@@ -24,8 +26,10 @@ pub fn read_active_character() -> Option<String> {
     let content = std::fs::read_to_string(state_file_path()).ok()?;
     let trimmed = content.trim();
     if trimmed.is_empty() {
+        debug!("No active character in state file");
         None
     } else {
+        debug!(character = trimmed, "Read active character from state file");
         Some(trimmed.to_string())
     }
 }
@@ -38,6 +42,7 @@ pub fn write_active_character(name: &str) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
+    debug!(character = name, "Writing active character to state file");
     std::fs::write(&path, name)
 }
 

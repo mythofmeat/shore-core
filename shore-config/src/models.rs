@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
-use tracing::warn;
+use tracing::{debug, info, warn};
 
 // ── SDK enum ────────────────────────────────────────────────────────────
 
@@ -336,12 +336,18 @@ impl ModelCatalog {
             None => BTreeMap::new(),
         };
 
-        Ok(Self {
+        let catalog = Self {
             chat: chat_models,
             tools: tool_models,
             embedding: embedding_profiles,
             image_generation: image_gen_profiles,
-        })
+        };
+        info!(
+            chat_models = catalog.chat.len(),
+            tool_models = catalog.tools.len(),
+            "Model catalog initialized"
+        );
+        Ok(catalog)
     }
 
     /// Look up a model by short name or qualified name.
@@ -350,9 +356,12 @@ impl ModelCatalog {
     /// Short names (`"opus"`) search across all categories and error
     /// on ambiguity.
     pub fn find_model(&self, name: &str) -> Result<&ResolvedModel, CatalogError> {
+        debug!(name, "Looking up model in catalog");
+
         // 1. Try qualified name match.
         for model in self.chat.values().chain(self.tools.values()) {
             if model.qualified_name == name {
+                debug!(name, qualified_name = name, "Model resolved by qualified name");
                 return Ok(model);
             }
         }
@@ -366,13 +375,34 @@ impl ModelCatalog {
         }
 
         match matches.len() {
-            0 => Err(CatalogError::NotFound {
-                name: name.to_string(),
-            }),
-            1 => Ok(matches[0]),
+            0 => {
+                let available: Vec<&str> = self
+                    .chat
+                    .values()
+                    .chain(self.tools.values())
+                    .map(|m| m.qualified_name.as_str())
+                    .collect();
+                warn!(
+                    name,
+                    available = available.join(", "),
+                    "Model not found in catalog"
+                );
+                Err(CatalogError::NotFound {
+                    name: name.to_string(),
+                })
+            }
+            1 => {
+                debug!(name, qualified_name = matches[0].qualified_name, "Model resolved by short name");
+                Ok(matches[0])
+            }
             _ => {
                 let locations: Vec<&str> =
                     matches.iter().map(|m| m.qualified_name.as_str()).collect();
+                warn!(
+                    name,
+                    locations = locations.join(", "),
+                    "Ambiguous model name — found in multiple providers"
+                );
                 Err(CatalogError::AmbiguousName {
                     name: name.to_string(),
                     locations: locations.join(", "),
@@ -404,6 +434,7 @@ fn parse_category(
     section: &toml::Table,
 ) -> Result<BTreeMap<String, ResolvedModel>, CatalogError> {
     let mut models = BTreeMap::new();
+    debug!(category, providers = section.len(), "Parsing model category");
 
     for (provider_key, provider_value) in section {
         let provider_table = match provider_value.as_table() {
@@ -472,10 +503,12 @@ fn parse_category(
             );
 
             let qualified = format!("{category}.{provider_key}.{model_name}");
+            debug!(category, provider = provider_key, model = model_name, qualified, "Resolved model entry");
             models.insert(qualified, resolved);
         }
     }
 
+    debug!(category, models = models.len(), "Category parsing complete");
     Ok(models)
 }
 

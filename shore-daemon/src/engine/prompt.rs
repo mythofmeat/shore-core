@@ -3,6 +3,7 @@ use std::path::Path;
 
 use chrono::{DateTime, FixedOffset, Local};
 use shore_protocol::types::{ContentBlock, ImageRef, Message, Role};
+use tracing::{debug, warn};
 
 use shore_config::resolve_prompt_template;
 
@@ -254,8 +255,15 @@ pub fn assemble_prompt(params: &PromptParams<'_>) -> AssembledPrompt {
     vars.insert("time".into(), now.format("%H:%M").to_string());
 
     // ── 2. Resolve and render system template ─────────────────────────
-    let template = resolve_prompt_template(params.config_dir, params.character_name, "system.md")
-        .unwrap_or_else(|| BUILTIN_SYSTEM_TEMPLATE.to_string());
+    let custom_template =
+        resolve_prompt_template(params.config_dir, params.character_name, "system.md");
+    let using_builtin = custom_template.is_none();
+    let template = custom_template.unwrap_or_else(|| BUILTIN_SYSTEM_TEMPLATE.to_string());
+    debug!(
+        character = %params.character_name,
+        builtin_template = using_builtin,
+        "assembling prompt"
+    );
 
     let rendered_system = render_template(&template, &vars);
 
@@ -313,6 +321,15 @@ pub fn assemble_prompt(params: &PromptParams<'_>) -> AssembledPrompt {
         }
     }
 
+    debug!(
+        system_blocks = system.len(),
+        has_capabilities = params.capabilities.is_some(),
+        has_char_def = params.character_definition.filter(|s| !s.is_empty()).is_some(),
+        has_user_def = params.user_definition.filter(|s| !s.is_empty()).is_some(),
+        has_recap = !params.is_private,
+        "system blocks assembled"
+    );
+
     // ── 4. Calculate token budget for messages ────────────────────────
     let system_tokens = estimate_tokens(
         &system
@@ -325,8 +342,33 @@ pub fn assemble_prompt(params: &PromptParams<'_>) -> AssembledPrompt {
         .saturating_sub(max_output)
         .saturating_sub(system_tokens);
 
+    debug!(
+        max_context,
+        max_output,
+        system_tokens,
+        available_for_messages,
+        input_messages = params.messages.len(),
+        "token budget calculated"
+    );
+
+    if available_for_messages == 0 {
+        warn!(
+            max_context,
+            max_output,
+            system_tokens,
+            "zero tokens available for messages — system prompt may exceed context window"
+        );
+    }
+
     // ── 5. Trim conversation history to fit budget ────────────────────
     let messages = trim_messages(params.messages, available_for_messages);
+
+    debug!(
+        input_messages = params.messages.len(),
+        output_messages = messages.len(),
+        trimmed = params.messages.len().saturating_sub(messages.len()),
+        "prompt assembly complete"
+    );
 
     AssembledPrompt { system, messages }
 }

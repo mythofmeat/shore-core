@@ -19,6 +19,8 @@ use ratatui::Terminal;
 use shore_protocol::client_msg::{ClientMessage, Command};
 use shore_protocol::server_msg::ServerMessage;
 use shore_protocol::types::{ContentBlock, Message, Role};
+use tracing::{info, instrument};
+use tracing_subscriber::EnvFilter;
 
 use app::{App, ConnectionStatus, ConversationEntry, InputState};
 use connection::{ConnCommand, ConnEvent};
@@ -41,6 +43,24 @@ struct Cli {
 }
 
 fn main() -> io::Result<()> {
+    // TUI owns the terminal, so log to a file instead of stdout/stderr.
+    let runtime_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into());
+    let log_dir = std::path::Path::new(&runtime_dir).join("shore");
+    let _ = std::fs::create_dir_all(&log_dir);
+    let log_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_dir.join("tui.log"))
+        .expect("failed to open tui.log");
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
+        .with_target(true)
+        .with_ansi(false)
+        .with_writer(std::sync::Mutex::new(log_file))
+        .init();
+
     let cli = Cli::parse();
 
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -246,6 +266,7 @@ fn which_exists(cmd: &str) -> bool {
         .unwrap_or(false)
 }
 
+#[instrument(skip(cli))]
 async fn run_tui(cli: Cli) -> io::Result<()> {
     // Set up terminal
     enable_raw_mode()?;
@@ -255,6 +276,7 @@ async fn run_tui(cli: Cli) -> io::Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     let character = resolve_character(cli.character);
+    info!(character = ?character, "TUI starting");
 
     let mut app = App {
         connection_status: ConnectionStatus::Connecting,
@@ -340,6 +362,7 @@ async fn run_tui(cli: Cli) -> io::Result<()> {
         }
     };
 
+    info!("TUI exiting");
     // Save preferences and shutdown
     save_prefs(&app);
     let _ = cmd_tx.send(ConnCommand::Shutdown).await;

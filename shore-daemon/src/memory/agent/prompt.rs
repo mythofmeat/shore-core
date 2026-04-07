@@ -4,6 +4,7 @@
 //! character/user/date substitution.
 
 use chrono::Local;
+use tracing::debug;
 
 /// Built-in memory agent system prompt template.
 ///
@@ -165,6 +166,7 @@ pub fn render_system_prompt(char_name: &str, user_name: &str) -> String {
     let date = now.format("%Y-%m-%d").to_string();
     let time = now.format("%H:%M").to_string();
 
+    debug!(char_name, user_name, "Rendered memory agent system prompt");
     BUILTIN_MEMORY_AGENT_PROMPT
         .replace("{{char}}", char_name)
         .replace("{{user}}", user_name)
