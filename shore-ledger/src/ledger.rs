@@ -96,9 +96,35 @@ impl Ledger {
 
     fn init(conn: Connection) -> Result<Self, rusqlite::Error> {
         conn.execute_batch(SCHEMA)?;
+        Self::migrate(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
+    }
+
+    /// Best-effort migrations for columns added after the initial schema.
+    /// SQLite's ADD COLUMN is a no-op if the column already exists (we catch
+    /// the "duplicate column" error and ignore it).
+    fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
+        let add_if_missing = |sql: &str| -> Result<(), rusqlite::Error> {
+            match conn.execute_batch(sql) {
+                Ok(()) => Ok(()),
+                Err(e) if e.to_string().contains("duplicate column") => Ok(()),
+                Err(e) => Err(e),
+            }
+        };
+
+        // v2: cache_ttl on calls
+        add_if_missing(
+            "ALTER TABLE calls ADD COLUMN cache_ttl TEXT DEFAULT '1h'",
+        )?;
+
+        // v3: cache_write_1h_per_token on pricing
+        add_if_missing(
+            "ALTER TABLE pricing ADD COLUMN cache_write_1h_per_token REAL NOT NULL DEFAULT 0.0",
+        )?;
+
+        Ok(())
     }
 
     /// Insert a call row, returning its autoincrement ID.
