@@ -5,7 +5,7 @@ use lancedb::arrow::SendableRecordBatchStream;
 use lancedb::query::{ExecutableQuery, QueryBase};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tracing::{debug, error, instrument, warn};
+use tracing::{debug, instrument, warn};
 
 const TABLE_NAME: &str = "vectors";
 
@@ -290,61 +290,6 @@ impl VectorStore {
 
         RecordBatch::try_new(schema, vec![id_array, vector_array]).map_err(Into::into)
     }
-}
-
-// ---------------------------------------------------------------------------
-// Embedding helper — calls shore-llm POST /v1/embed
-// ---------------------------------------------------------------------------
-
-/// Call the shore-llm `/v1/embed` endpoint to generate embeddings.
-pub async fn embed_text(
-    base_url: &str,
-    provider: &str,
-    model: &str,
-    api_key: &str,
-    input: &[&str],
-) -> Result<Vec<Vec<f32>>, VectorStoreError> {
-    debug!(provider, model, input_count = input.len(), "requesting embeddings");
-    let client = reqwest::Client::new();
-    let body = serde_json::json!({
-        "provider": provider,
-        "model": model,
-        "api_key": api_key,
-        "input": input,
-    });
-
-    let resp = client
-        .post(format!("{base_url}/v1/embed"))
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| VectorStoreError::Embed(e.to_string()))?;
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        error!(status = %status, provider, model, "embed endpoint returned error");
-        return Err(VectorStoreError::Embed(format!(
-            "embed endpoint returned {}",
-            status
-        )));
-    }
-
-    #[derive(serde::Deserialize)]
-    struct EmbedResponse {
-        embeddings: Vec<Vec<f32>>,
-    }
-
-    let data: EmbedResponse = resp
-        .json()
-        .await
-        .map_err(|e| VectorStoreError::Embed(e.to_string()))?;
-
-    debug!(
-        embedding_count = data.embeddings.len(),
-        dims = data.embeddings.first().map(|e| e.len()).unwrap_or(0),
-        "embeddings received"
-    );
-    Ok(data.embeddings)
 }
 
 // ---------------------------------------------------------------------------
