@@ -4,6 +4,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::net::TcpStream;
 #[cfg(unix)]
 use tokio::net::UnixStream;
+use tracing::{debug, error, trace, warn};
 
 use shore_protocol::client_msg::{ClientHello, ClientMessage};
 use shore_protocol::server_msg::{History, ServerHello, ServerMessage};
@@ -45,10 +46,13 @@ impl SWPConnection {
         match addr {
             #[cfg(unix)]
             ServerAddr::Unix(path) => {
-                let stream = UnixStream::connect(path)
-                    .await
-                    .map_err(|e| ClientError::Connect(format!("unix:{path}: {e}")))?;
+                debug!(path = %path, "connecting via unix socket");
+                let stream = UnixStream::connect(path).await.map_err(|e| {
+                    error!(path = %path, error = %e, "unix socket connect failed");
+                    ClientError::Connect(format!("unix:{path}: {e}"))
+                })?;
                 let (r, w) = stream.into_split();
+                debug!(path = %path, "unix socket connected");
                 Ok(Self {
                     reader: BufReader::new(Box::new(tokio::io::join(r, tokio::io::sink()))),
                     writer: BufWriter::new(Box::new(tokio::io::join(tokio::io::empty(), w))),
@@ -59,10 +63,13 @@ impl SWPConnection {
                 "Unix sockets are not supported on this platform".into(),
             )),
             ServerAddr::Tcp(addr) => {
-                let stream = TcpStream::connect(addr)
-                    .await
-                    .map_err(|e| ClientError::Connect(format!("tcp:{addr}: {e}")))?;
+                debug!(addr = %addr, "connecting via tcp");
+                let stream = TcpStream::connect(addr).await.map_err(|e| {
+                    error!(addr = %addr, error = %e, "tcp connect failed");
+                    ClientError::Connect(format!("tcp:{addr}: {e}"))
+                })?;
                 let (r, w) = stream.into_split();
+                debug!(addr = %addr, "tcp connected");
                 Ok(Self {
                     reader: BufReader::new(Box::new(tokio::io::join(r, tokio::io::sink()))),
                     writer: BufWriter::new(Box::new(tokio::io::join(tokio::io::empty(), w))),
@@ -99,19 +106,28 @@ impl SWPConnection {
         client_name: String,
         character: Option<String>,
     ) -> Result<(ServerHello, History)> {
+        debug!(client_type = %client_type, client_name = %client_name, character = ?character, "starting SWP handshake");
+
         // Step 1: receive server hello
         let first_msg = self.recv().await?;
         let server_hello = match first_msg {
             ServerMessage::Hello(h) => {
                 if h.v != SWP_V1 {
+                    error!(server_version = h.v, expected = SWP_V1, "protocol version mismatch");
                     return Err(ClientError::Protocol(format!(
                         "unsupported protocol version: {} (expected {})",
                         h.v, SWP_V1
                     )));
                 }
+                debug!(
+                    server_name = %h.server_name,
+                    characters = h.characters.len(),
+                    "received server hello"
+                );
                 h
             }
             other => {
+                error!("expected server hello, got unexpected message");
                 return Err(ClientError::Protocol(format!(
                     "expected server hello, got: {other:?}"
                 )));
@@ -126,24 +142,34 @@ impl SWPConnection {
             character,
         });
         self.send(&hello).await?;
+        debug!("sent client hello");
 
         // Step 3: receive history
         let history_msg = self.recv().await?;
         let history = match history_msg {
-            ServerMessage::History(h) => h,
+            ServerMessage::History(h) => {
+                debug!(message_count = h.messages.len(), "received history");
+                h
+            }
             other => {
+                error!("expected history, got unexpected message");
                 return Err(ClientError::Protocol(format!(
                     "expected history, got: {other:?}"
                 )));
             }
         };
 
+        debug!("SWP handshake complete");
         Ok((server_hello, history))
     }
 
     /// Send a client message as a JSON line.
     pub async fn send(&mut self, msg: &ClientMessage) -> Result<()> {
-        let line = serde_json::to_string(msg).map_err(ClientError::Serialize)?;
+        let line = serde_json::to_string(msg).map_err(|e| {
+            error!(error = %e, "failed to serialize client message");
+            ClientError::Serialize(e)
+        })?;
+        trace!(bytes = line.len(), "sending message");
         self.writer
             .write_all(line.as_bytes())
             .await
@@ -167,10 +193,14 @@ impl SWPConnection {
             .await
             .map_err(ClientError::Io)?;
         if n == 0 {
+            debug!("EOF on connection — disconnected");
             return Err(ClientError::Disconnected);
         }
-        let msg: ServerMessage =
-            serde_json::from_str(line.trim()).map_err(ClientError::Deserialize)?;
+        let msg: ServerMessage = serde_json::from_str(line.trim()).map_err(|e| {
+            warn!(error = %e, raw_len = line.len(), "failed to deserialize server message");
+            ClientError::Deserialize(e)
+        })?;
+        trace!(bytes = n, "received message");
         Ok(msg)
     }
 

@@ -2,12 +2,14 @@ use std::io::{self, IsTerminal, Read as _, Write as _};
 
 use shore_client::{SWPConnection, ServerAddr};
 use shore_protocol::server_msg::ServerMessage;
+use tracing::{debug, info, instrument};
 
 use crate::cli::{Cli, CliCommand};
 use crate::output;
 use crate::state;
 
 /// Execute the CLI command by connecting to the daemon and dispatching.
+#[instrument(skip(cli))]
 pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     // config --path: query the daemon for its actual config dir, fall back to local.
     if matches!(&cli.command, CliCommand::Config { path: true, .. }) {
@@ -29,6 +31,8 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 
     // Character resolution: --character flag > SHORE_CHARACTER env > state file > None (daemon auto-selects).
     let character = cli.character.clone().or_else(state::read_active_character);
+
+    info!(character = ?character, "CLI executing command");
 
     let (mut conn, _server_hello, _history) =
         SWPConnection::connect(&addr, "cli", "shore-cli", character.clone()).await?;
@@ -296,6 +300,7 @@ async fn handle_switch_character(
         .into());
     }
 
+    info!(character = name, "Switching active character");
     state::write_active_character(name)?;
     println!("Switched to character: {name}");
     println!("To override per-terminal: export SHORE_CHARACTER={name}");
@@ -313,6 +318,7 @@ async fn handle_list_characters(
     let active = state::read_active_character();
 
     if let Some(chars) = data["characters"].as_array() {
+        debug!(count = chars.len(), "Listed characters from daemon");
         for ch in chars {
             if let Some(name) = ch["name"].as_str() {
                 if active.as_deref() == Some(name) {
@@ -407,6 +413,7 @@ async fn run_memory_shell(conn: &mut SWPConnection) -> Result<(), Box<dyn std::e
         .to_string();
     let character = start_data["character"].as_str().unwrap_or("unknown");
 
+    info!(session_id, character, "Memory shell session started");
     output::print_memory_shell_welcome(character);
 
     let stdin = io::stdin();
@@ -454,6 +461,7 @@ async fn run_memory_shell(conn: &mut SWPConnection) -> Result<(), Box<dyn std::e
     }
 
     // End the session.
+    info!(session_id, "Memory shell session ended");
     conn.send_command(
         "memory_shell_end",
         serde_json::json!({ "session_id": session_id }),
@@ -561,6 +569,7 @@ async fn recv_streaming_response(
             }
             ServerMessage::StreamEnd(end) => {
                 spinner.stop().await;
+                debug!(finish_reason = end.finish_reason, "Stream complete");
                 if end.finish_reason == "tool_use" {
                     // Tool loop: more messages will follow.
                     // Restart spinner for the next LLM round.

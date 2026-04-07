@@ -7,6 +7,7 @@ pub(crate) mod stream_helpers;
 pub(crate) mod zai;
 
 use shore_config::models::Sdk;
+use tracing::{debug, error, warn};
 
 use crate::types::{GenerateResponse, ImageGenerateParams, ImageGenerateResponse, LlmRequest};
 use crate::LlmError;
@@ -23,6 +24,12 @@ pub(crate) async fn check_response(
     }
     let status_code = status.as_u16();
     let body = response.text().await.unwrap_or_default();
+    error!(
+        status = status_code,
+        body_len = body.len(),
+        body_preview = %if body.len() > 200 { &body[..200] } else { &body },
+        "LLM API returned error status"
+    );
     Err(LlmError::HttpStatus {
         status: status_code,
         body,
@@ -37,13 +44,25 @@ pub async fn stream(
     client: &reqwest::Client,
     request: &LlmRequest,
 ) -> Result<DuplexStream, LlmError> {
+    debug!(
+        sdk = ?request.sdk,
+        model = %request.model,
+        max_tokens = request.max_tokens,
+        message_count = request.messages.len(),
+        has_tools = request.tools.is_some(),
+        "dispatching streaming LLM request"
+    );
     let ctx = context::build_provider_context(request);
-    match request.sdk {
+    let result = match request.sdk {
         Sdk::Anthropic => anthropic::stream(client, request).await,
         Sdk::Openai => openai::stream(client, request, &ctx).await,
         Sdk::Zai => zai::stream(client, request).await,
         Sdk::Gemini => gemini::stream(client, request).await,
+    };
+    if let Err(e) = &result {
+        warn!(sdk = ?request.sdk, model = %request.model, error = %e, "streaming request failed");
     }
+    result
 }
 
 /// Dispatch a non-streaming generate request to the correct SDK.
@@ -51,13 +70,32 @@ pub async fn generate(
     client: &reqwest::Client,
     request: &LlmRequest,
 ) -> Result<GenerateResponse, LlmError> {
+    debug!(
+        sdk = ?request.sdk,
+        model = %request.model,
+        max_tokens = request.max_tokens,
+        message_count = request.messages.len(),
+        "dispatching non-streaming LLM request"
+    );
     let ctx = context::build_provider_context(request);
-    match request.sdk {
+    let result = match request.sdk {
         Sdk::Anthropic => anthropic::generate(client, request).await,
         Sdk::Openai => openai::generate(client, request, &ctx).await,
         Sdk::Zai => zai::generate(client, request).await,
         Sdk::Gemini => gemini::generate(client, request).await,
+    };
+    match &result {
+        Ok(resp) => debug!(
+            model = %resp.model,
+            finish_reason = %resp.finish_reason,
+            input_tokens = resp.usage.input_tokens,
+            output_tokens = resp.usage.output_tokens,
+            total_ms = resp.timing.total_ms,
+            "non-streaming request completed"
+        ),
+        Err(e) => warn!(sdk = ?request.sdk, model = %request.model, error = %e, "non-streaming request failed"),
     }
+    result
 }
 
 /// Dispatch an embedding request.
@@ -69,7 +107,7 @@ pub async fn embed(
     base_url: Option<&str>,
     input: &[&str],
 ) -> Result<Vec<Vec<f32>>, LlmError> {
-    // Embeddings are currently only supported via OpenAI-compatible API.
+    debug!(provider = %provider, model = %model, input_count = input.len(), "dispatching embedding request");
     openai::embed(client, provider, model, api_key, base_url, input).await
 }
 
@@ -78,6 +116,7 @@ pub async fn image_generate(
     client: &reqwest::Client,
     params: &ImageGenerateParams<'_>,
 ) -> Result<ImageGenerateResponse, LlmError> {
+    debug!(model = %params.model, "dispatching image generation request");
     openai::image_generate(client, params).await
 }
 

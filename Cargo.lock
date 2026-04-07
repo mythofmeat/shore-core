@@ -4776,6 +4776,8 @@ dependencies = [
  "shore-protocol",
  "tempfile",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -4791,6 +4793,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "toml",
+ "tracing",
 ]
 
 [[package]]
@@ -4846,6 +4849,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "tracing",
 ]
 
 [[package]]
@@ -4886,6 +4890,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "tracing",
 ]
 
 [[package]]
@@ -4902,6 +4907,8 @@ dependencies = [
  "shore-client",
  "shore-protocol",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
  "unicode-width 0.2.0",
 ]
 

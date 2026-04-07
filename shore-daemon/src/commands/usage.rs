@@ -1,6 +1,7 @@
 use serde_json::json;
 use shore_ledger::query::QueryFilter;
 use shore_protocol::error::ErrorCode;
+use tracing::debug;
 
 use super::{CommandContext, CommandResult};
 
@@ -51,6 +52,7 @@ pub async fn usage(ctx: &CommandContext, args: &serde_json::Value) -> CommandRes
     let ledger = ctx.llm_client.ledger();
 
     let (filter, last) = build_filter(args);
+    debug!(period = %last, "Usage query started");
 
     if args.get("export_tsv").and_then(|v| v.as_bool()) == Some(true) {
         let output = shore_ledger::query::export_tsv(ledger, &filter)
@@ -182,6 +184,7 @@ pub async fn usage(ctx: &CommandContext, args: &serde_json::Value) -> CommandRes
             })
             .collect();
 
+        debug!(updated, total = rows.len(), failures = failures.len(), "Recalculation complete");
         return Ok(json!({
             "mode": "recalculate",
             "updated": updated,
@@ -243,6 +246,13 @@ pub async fn usage(ctx: &CommandContext, args: &serde_json::Value) -> CommandRes
         .map(|r| r.len())
         .unwrap_or(0);
 
+    debug!(
+        period = %last,
+        models = summary_rows.len(),
+        characters = cache_health.len(),
+        anomaly_count_7d = anomaly_count,
+        "Usage summary complete"
+    );
     Ok(json!({
         "mode": "summary",
         "period": last,

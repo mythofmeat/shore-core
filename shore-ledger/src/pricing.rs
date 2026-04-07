@@ -7,7 +7,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::error::Error;
 use std::sync::{Arc, Mutex};
-use tracing::warn;
+use tracing::{debug, info, instrument, warn};
 
 /// Anthropic 1h cache TTL write price is 2× input price (5min price is 1.25× input).
 /// Multiplier from 5min price to 1h price: 2.0 / 1.25 = 1.6.
@@ -131,12 +131,14 @@ impl PricingEngine {
 
     /// HTTP GET to OpenRouter API to fetch per-token pricing.
     /// The 1-hour cache write multiplier for Anthropic is pre-computed at fetch time.
+    #[instrument(skip(self))]
     pub async fn fetch_pricing(
         &self,
         provider: &str,
         model: &str,
     ) -> Result<Option<ModelPricing>, Box<dyn Error + Send + Sync>> {
         let model_id = to_openrouter_id(provider, model);
+        info!(model_id, "Fetching pricing from OpenRouter");
 
         if let Some(p) = self.fetch_and_cache_catalog(&model_id).await? {
             return Ok(Some(p));
@@ -215,10 +217,12 @@ impl PricingEngine {
             }
         }
 
+        info!(model_count = models.len(), found = result.is_some(), "OpenRouter catalog cached");
         Ok(result)
     }
 
     /// Try cached pricing, then fetch from OpenRouter. Returns None if unavailable.
+    #[instrument(skip(self))]
     pub async fn get_or_fetch(
         &self,
         provider: &str,
@@ -227,11 +231,16 @@ impl PricingEngine {
         let model_id = to_openrouter_id(provider, model);
 
         match self.get_cached_pricing(&model_id) {
-            Ok(Some(p)) => return Some(p),
+            Ok(Some(p)) => {
+                debug!(model_id, "pricing cache hit");
+                return Some(p);
+            }
             Err(e) => {
                 warn!(error = %e, "pricing DB read failed");
             }
-            Ok(None) => {}
+            Ok(None) => {
+                debug!(model_id, "pricing cache miss, fetching from OpenRouter");
+            }
         }
 
         match self.fetch_pricing(provider, model).await {
