@@ -320,6 +320,10 @@ impl MessageHandler {
                         active_model: self.cmd_ctx.active_model.clone(),
                     };
 
+                    if let Some(prev) = self.generation_handle.take() {
+                        info!("Aborting previous generation (superseded by new request)");
+                        prev.abort();
+                    }
                     self.generation_handle = Some(tokio::spawn(async move {
                         let notify_name = params.char_name.clone();
                         if let Err(e) = handle_generation(gen, params).await {
