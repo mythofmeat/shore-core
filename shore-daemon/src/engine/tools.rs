@@ -238,10 +238,19 @@ pub async fn run_tool_loop(
         let mut ledger_stream = client
             .stream_raw(request, CallType::ToolLoop, character, thinking_enabled)
             .await?;
-        result = consumer
+        match consumer
             .consume(ledger_stream.reader_mut(), false, cache_ctx)
-            .await?;
-        ledger_stream.finalize(&result);
+            .await
+        {
+            Ok(r) => {
+                ledger_stream.finalize(&r);
+                result = r;
+            }
+            Err(e) => {
+                ledger_stream.finalize_error();
+                return Err(e.into());
+            }
+        }
     }
 
     warn!(

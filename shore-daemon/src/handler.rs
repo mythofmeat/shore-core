@@ -906,11 +906,19 @@ async fn stream_with_retry(
                 has_seen_cache_read: ctx.has_seen_cache_read.load(Ordering::Acquire),
             };
 
-            let result = consumer
+            match consumer
                 .consume(ledger_stream.reader_mut(), regen, &cache_ctx)
-                .await?;
-            ledger_stream.finalize(&result);
-            Ok(result)
+                .await
+            {
+                Ok(result) => {
+                    ledger_stream.finalize(&result);
+                    Ok(result)
+                }
+                Err(e) => {
+                    ledger_stream.finalize_error();
+                    Err(e)
+                }
+            }
         }
         .await;
 
