@@ -21,6 +21,7 @@ use tracing::{debug, error, info, warn};
 use super::activity::ActivityTracker;
 use super::interiority::{InteriorityAction, InteriorityClock, InteriorityState};
 use super::{AutonomyStatus, InteriorityEventKind, InteriorityLog};
+use crate::engine::ConversationEngine;
 use crate::memory::agent::{AgentSearchContext, CallerIdentity};
 use crate::memory::agent_llm::RealAgentLlm;
 use crate::memory::compaction_impls::{resolve_embed_config, resolve_image_gen_config};
@@ -51,6 +52,9 @@ struct TickContext {
     push_tx: Option<broadcast::Sender<ServerMessage>>,
     loaded_config: Option<Arc<LoadedConfig>>,
     notifier: Option<NotificationService>,
+    /// Engine for routing autonomous messages through the locked message store,
+    /// preventing races with handler.rs persist() full-file rewrites.
+    engine: Option<Arc<tokio::sync::Mutex<ConversationEngine>>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -254,16 +258,19 @@ impl AutonomyManager {
     /// character, creates the state (restoring from disk if available) and
     /// spawns a per-character tick task.
     pub fn ensure_state(&self, character: &str, cache_ttl_secs: Option<u64>) -> bool {
-        self.ensure_state_with_config(character, cache_ttl_secs, None)
+        self.ensure_state_with_config(character, cache_ttl_secs, None, None)
     }
 
     /// Like `ensure_state`, but accepts an optional per-character effective config
     /// that overrides the global config for model resolution and autonomy settings.
+    /// `engine` must be provided for autonomous messages to be persisted safely
+    /// through the engine lock rather than via raw file appends.
     pub fn ensure_state_with_config(
         &self,
         character: &str,
         cache_ttl_secs: Option<u64>,
         effective_config: Option<&LoadedConfig>,
+        engine: Option<Arc<tokio::sync::Mutex<ConversationEngine>>>,
     ) -> bool {
         if self.states.contains_key(character) {
             return false;
@@ -325,6 +332,7 @@ impl AutonomyManager {
             push_tx,
             loaded_config,
             notifier,
+            engine,
         };
         let handle = tokio::spawn(async move {
             character_tick_loop(name, tick_ctx, shutdown_rx).await;
@@ -673,6 +681,7 @@ async fn tick_character(character: &str, ctx: &TickContext) {
                     ctx.push_tx.as_ref(),
                     ctx.loaded_config.as_deref(),
                     ctx.notifier.as_ref(),
+                    ctx.engine.as_ref(),
                 ),
             )
             .await
@@ -857,6 +866,7 @@ async fn execute_unified_tick(
     push_tx: Option<&broadcast::Sender<ServerMessage>>,
     loaded_config: Option<&LoadedConfig>,
     notifier: Option<&NotificationService>,
+    engine: Option<&Arc<tokio::sync::Mutex<ConversationEngine>>>,
 ) {
     let Some(client) = llm_client else { return };
 
@@ -1053,14 +1063,22 @@ async fn execute_unified_tick(
             timestamp: chrono::Local::now().to_rfc3339(),
         };
 
-        if let Ok(line) = msg.serialize_for_storage() {
-            use std::io::Write;
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&active_path)
-            {
-                let _ = writeln!(f, "{line}");
+        if let Some(engine_arc) = engine {
+            let mut eng = engine_arc.lock().await;
+            if let Err(e) = eng.append_message(msg.clone()) {
+                error!(error = %e, "Failed to persist autonomous message through engine");
+            }
+        } else {
+            // Fallback for contexts where no engine is available (e.g. tests).
+            if let Ok(line) = msg.serialize_for_storage() {
+                use std::io::Write;
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&active_path)
+                {
+                    let _ = writeln!(f, "{line}");
+                }
             }
         }
 
@@ -1505,6 +1523,7 @@ mod tests {
             push_tx: None,
             loaded_config: None,
             notifier: None,
+            engine: None,
         };
         tick_character("alice", &tick_ctx).await;
     }

@@ -548,9 +548,12 @@ async fn handle_generation(
     // 5. Ensure autonomy state with cache TTL for unified interiority timer.
     // Must happen before notify_user_message so session_start is set on first message.
     let cache_ttl_secs = resolved.cache_ttl.as_deref().and_then(parse_cache_ttl_secs);
-    let is_new_autonomy_state =
-        ctx.autonomy
-            .ensure_state_with_config(&char_name, cache_ttl_secs, Some(&effective_config));
+    let is_new_autonomy_state = ctx.autonomy.ensure_state_with_config(
+        &char_name,
+        cache_ttl_secs,
+        Some(&effective_config),
+        Some(engine_arc.clone()),
+    );
 
     // Backfill activity tracker from existing chat history on first creation.
     // Only include the last 90 days — older data would pollute availability signals.
