@@ -11,7 +11,7 @@ use crate::memory::vectorstore::VectorStore;
 use chrono::Local;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 // ---------------------------------------------------------------------------
 // CollationManager
@@ -541,7 +541,9 @@ impl CollationManager {
             .map_err(|e| CollationError::Db(e.to_string()))?;
 
         if let Some(idx) = indexer {
-            let _ = idx.index_entry(&new_id, &result.summary_text).await;
+            if let Err(e) = idx.index_entry(&new_id, &result.summary_text).await {
+                warn!(entry_id = %new_id, error = %e, "Failed to index merged entry");
+            }
         }
 
         candidates_processed.insert(new_id.clone());
@@ -644,7 +646,9 @@ impl CollationManager {
             new_ids.push(new_id.clone());
 
             if let Some(idx) = indexer {
-                let _ = idx.index_entry(&new_id, &replacement.summary_text).await;
+                if let Err(e) = idx.index_entry(&new_id, &replacement.summary_text).await {
+                    warn!(entry_id = %new_id, error = %e, "Failed to index split entry");
+                }
             }
         }
 
@@ -722,7 +726,9 @@ impl CollationManager {
             .map_err(|e| CollationError::Db(e.to_string()))?;
 
         if let Some(idx) = indexer {
-            let _ = idx.index_entry(entry_id, &result.summary_text).await;
+            if let Err(e) = idx.index_entry(entry_id, &result.summary_text).await {
+                warn!(entry_id = %entry_id, error = %e, "Failed to index updated entry");
+            }
         }
 
         let _ = db.append_changelog(
