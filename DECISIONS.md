@@ -289,7 +289,9 @@ A single holistic call lets the LLM see all candidates + nearby context and make
 
 **Why:** User-sent images were completely invisible to the LLM — the most basic image feature was broken. The ingestion pipeline ensures images survive beyond the conversation (durable copy) and become searchable memories (via `remember_image` → memory DB → FTS5/RAG).
 
-**Trade-off:** No image compression on ingestion — large images inflate LLM context. No vector indexing at `remember_image` time (matches `generate_image` pattern; backfill via `shore memory reindex`). `send_image` still doesn't emit a `ServerMessage::SendImage` event to the client — display-side concern, separate fix.
+**Trade-off:** No image compression on ingestion — large images inflate LLM context. No vector indexing at `remember_image` time (matches `generate_image` pattern; backfill via `shore memory reindex`).
+
+**Follow-up (2026-04-07):** `send_image` now surfaces the image to clients. After a successful `send_image` dispatch in the tool loop (`shore-daemon/src/engine/tools.rs`), the resolved path is attached to the issuing assistant message's `images` vec (so log replay renders it inline in the TUI) and a `ServerMessage::SendImage` is broadcast for live consumers (TUI image cache, matrix bridge collector).
 
 ---
 

@@ -11,8 +11,8 @@ use shore_llm_client::stream::{CacheContext, StreamConsumer};
 use shore_ledger::{CallType, LedgerClient};
 use shore_llm_client::types::{LlmRequest, StreamResult};
 use shore_llm_client::LlmError;
-use shore_protocol::server_msg::{ServerMessage, ToolCall, ToolResult as SwpToolResult};
-use shore_protocol::types::{derive_content_from_blocks, ContentBlock, Message, Role};
+use shore_protocol::server_msg::{SendImage, ServerMessage, ToolCall, ToolResult as SwpToolResult};
+use shore_protocol::types::{derive_content_from_blocks, ContentBlock, ImageRef, Message, Role};
 
 // ── Errors ──────────────────────────────────────────────────────────────
 
@@ -151,7 +151,7 @@ pub async fn run_tool_loop(
                 tool_system::dispatch_tool(&tool_use.name, tool_use.input.clone(), ctx).await;
             let dispatch_ms = dispatch_start.elapsed().as_millis() as u64;
 
-            let (output_str, is_error) = match dispatch_result {
+            let (output_str, is_error, ok_value) = match dispatch_result {
                 Ok(value) => {
                     // Convert Value to string for the tool result
                     let s = if let Some(s) = value.as_str() {
@@ -159,10 +159,39 @@ pub async fn run_tool_loop(
                     } else {
                         serde_json::to_string(&value).unwrap_or_default()
                     };
-                    (s, false)
+                    (s, false, Some(value))
                 }
-                Err(e) => (e.to_string(), true),
+                Err(e) => (e.to_string(), true, None),
             };
+
+            // `send_image` produces a structured result whose `path` should
+            // surface as an actual image attachment, not just a tool-result
+            // string. Attach it to the assistant message that issued the call
+            // (so log replay renders it inline) and broadcast a SendImage event
+            // for live clients (TUI image cache, matrix bridge collector).
+            if !is_error && tool_use.name == "send_image" {
+                if let Some(value) = &ok_value {
+                    if let Some(path) = value.get("path").and_then(|v| v.as_str()) {
+                        let caption = value
+                            .get("caption")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
+                        let image_ref = ImageRef {
+                            path: path.to_string(),
+                            caption: caption.clone(),
+                            data: None,
+                        };
+                        if let Some(last) = intermediate_messages.last_mut() {
+                            last.images.push(image_ref);
+                        }
+                        let _ = push_tx.send(ServerMessage::SendImage(SendImage {
+                            path: path.to_string(),
+                            caption,
+                            data: None,
+                        }));
+                    }
+                }
+            }
 
             // Record tool call in diagnostics ring buffer.
             {
