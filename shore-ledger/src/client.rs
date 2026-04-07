@@ -11,7 +11,7 @@ use shore_llm_client::{LlmClient, LlmError};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use tracing::error;
+use tracing::{debug, error, info, instrument};
 
 // ── CallType ────────────────────────────────────────────────────────────────
 
@@ -42,6 +42,7 @@ impl CallType {
 
 // ── record_call ─────────────────────────────────────────────────────────────
 
+#[instrument(skip(ledger, pricing, cache_trackers, usage, timing, call_type), fields(call_type = call_type.as_str()))]
 pub(crate) fn record_call(
     ledger: &Ledger,
     pricing: &PricingEngine,
@@ -142,6 +143,16 @@ pub(crate) fn record_call(
         total_cost: cost.as_ref().map(|c| c.total),
     };
 
+    info!(
+        provider,
+        model,
+        character,
+        call_type = call_type.as_str(),
+        input_tokens = usage.input_tokens,
+        output_tokens = usage.output_tokens,
+        total_cost = cost.as_ref().map(|c| c.total),
+        "LLM call recorded"
+    );
     if let Err(e) = ledger.insert(&row) {
         error!(error = %e, "Failed to insert call row into ledger");
     }
@@ -200,6 +211,7 @@ impl LedgerClient {
     /// Send a non-streaming request, then record the call to the ledger.
     ///
     /// Calls `pricing.get_or_fetch()` first for lazy pricing resolution.
+    #[instrument(skip(self, request, call_type), fields(model = %request.model, call_type = call_type.as_str()))]
     pub async fn generate(
         &self,
         request: &LlmRequest,
@@ -212,11 +224,23 @@ impl LedgerClient {
             .provider_key
             .as_deref()
             .unwrap_or(request.sdk.as_str());
+        debug!(
+            model = request.model,
+            call_type = call_type.as_str(),
+            character,
+            "generate: sending request"
+        );
         self.pricing
             .get_or_fetch(provider_key, &request.model)
             .await;
 
         let resp = self.inner.generate(request, None).await?;
+        debug!(
+            model = request.model,
+            call_type = call_type.as_str(),
+            finish_reason = resp.finish_reason,
+            "generate: response received"
+        );
 
         let cache_ttl = request
             .provider_options
@@ -248,6 +272,7 @@ impl LedgerClient {
     /// Calls `pricing.get_or_fetch()` first for lazy pricing resolution.
     /// The caller MUST call `finalize()` on the returned stream after consumption,
     /// otherwise the API call will not be recorded (and a tracing::error is emitted on drop).
+    #[instrument(skip(self, request, call_type), fields(model = %request.model, call_type = call_type.as_str()))]
     pub async fn stream_raw(
         &self,
         request: &LlmRequest,
@@ -259,6 +284,12 @@ impl LedgerClient {
             .provider_key
             .as_deref()
             .unwrap_or(request.sdk.as_str());
+        debug!(
+            model = request.model,
+            call_type = call_type.as_str(),
+            character,
+            "stream_raw: opening stream"
+        );
         self.pricing
             .get_or_fetch(provider_key, &request.model)
             .await;

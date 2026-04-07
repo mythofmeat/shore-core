@@ -1,4 +1,5 @@
 use shore_protocol::server_msg::{ServerMessage, StreamChunk, StreamEnd, StreamStart};
+use tracing::{debug, trace, warn};
 
 use crate::error::{ClientError, Result};
 
@@ -92,6 +93,7 @@ impl StreamHandler {
         match msg {
             ServerMessage::StreamStart(start) => {
                 if self.active {
+                    warn!("received stream_start while already streaming");
                     return Err(ClientError::Protocol(
                         "received stream_start while already streaming".into(),
                     ));
@@ -99,6 +101,7 @@ impl StreamHandler {
                 self.reset();
                 self.active = true;
                 self.regen = start.regen;
+                debug!(regen = start.regen, "stream started");
                 if let Some(cb) = callbacks {
                     cb.on_start(start);
                 }
@@ -106,10 +109,12 @@ impl StreamHandler {
             }
             ServerMessage::StreamChunk(chunk) => {
                 if !self.active {
+                    warn!("received stream_chunk outside of a stream");
                     return Err(ClientError::Protocol(
                         "received stream_chunk outside of a stream".into(),
                     ));
                 }
+                trace!(bytes = chunk.text.len(), content_type = %chunk.content_type, "stream chunk");
                 self.chunks.push(chunk.text.clone());
                 if let Some(cb) = callbacks {
                     cb.on_chunk(chunk);
@@ -118,6 +123,7 @@ impl StreamHandler {
             }
             ServerMessage::StreamEnd(end) => {
                 if !self.active {
+                    warn!("received stream_end outside of a stream");
                     return Err(ClientError::Protocol(
                         "received stream_end outside of a stream".into(),
                     ));
@@ -125,6 +131,14 @@ impl StreamHandler {
                 self.active = false;
                 self.final_content = Some(end.content.clone());
                 self.metadata = Some(end.metadata.clone());
+                debug!(
+                    finish_reason = %end.finish_reason,
+                    model = %end.metadata.model,
+                    input_tokens = end.metadata.tokens.input,
+                    output_tokens = end.metadata.tokens.output,
+                    total_ms = end.metadata.timing.total_ms,
+                    "stream ended"
+                );
                 if let Some(cb) = callbacks {
                     cb.on_end(end);
                 }

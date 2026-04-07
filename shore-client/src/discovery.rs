@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
+use tracing::{debug, warn};
 
 use crate::connection::ServerAddr;
 use crate::error::{ClientError, Result};
@@ -38,11 +39,15 @@ pub fn instances_path() -> PathBuf {
 /// Read the instances file and return all live entries (dead PIDs are skipped).
 pub fn read_instances() -> Result<Vec<InstanceEntry>> {
     let path = instances_path();
+    debug!(path = %path.display(), "reading instances file");
     let data = std::fs::read_to_string(&path)
         .map_err(|e| ClientError::Discovery(format!("cannot read {}: {e}", path.display())))?;
     let entries: InstancesFile = serde_json::from_str(&data)
         .map_err(|e| ClientError::Discovery(format!("invalid JSON in {}: {e}", path.display())))?;
-    Ok(entries.into_iter().filter(entry_alive).collect())
+    let total = entries.len();
+    let live: Vec<_> = entries.into_iter().filter(entry_alive).collect();
+    debug!(total, live = live.len(), "discovered daemon instances");
+    Ok(live)
 }
 
 /// Check whether an instance entry's PID is still running.
@@ -105,16 +110,21 @@ pub fn discover_or_default(config_path: Option<&str>) -> ServerAddr {
     // 1. Check client.toml for a default_address.
     if let Some(cfg) = crate::client_config::load_client_config() {
         if let Some(addr) = &cfg.default_address {
+            debug!(addr = %addr, "using address from client.toml");
             return addr_from_socket(addr);
         }
     }
 
     // 2. Instance discovery (optionally filtered by --config ID).
     match discover(config_path) {
-        Ok(addr) => addr,
-        Err(_) => {
+        Ok(addr) => {
+            debug!(addr = ?addr, "resolved daemon via instance discovery");
+            addr
+        }
+        Err(e) => {
             // 3. Fall back to default Unix socket.
             let sock = default_socket_path();
+            warn!(error = %e, fallback = %sock.display(), "instance discovery failed, using default socket");
             ServerAddr::Unix(sock.to_string_lossy().into_owned())
         }
     }

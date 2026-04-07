@@ -1,4 +1,5 @@
 use super::types::{CompactedEntry, CompactionError};
+use tracing::{debug, warn};
 
 // ---------------------------------------------------------------------------
 // Default prompt template
@@ -110,10 +111,12 @@ pub(super) fn extract_all_xml_tags(text: &str, tag: &str) -> Vec<String> {
 pub fn parse_compaction_response(
     raw: &str,
 ) -> Result<(Option<String>, Vec<CompactedEntry>), CompactionError> {
+    debug!(response_len = raw.len(), "Parsing compaction LLM response");
     let recap = extract_xml_tag(raw, "recap");
 
     let entry_blocks = extract_all_xml_tags(raw, "entry");
     if entry_blocks.is_empty() {
+        warn!(response_len = raw.len(), "No <entry> blocks found in LLM compaction response");
         return Err(CompactionError::Parse(
             "no <entry> blocks found in LLM response".to_string(),
         ));
@@ -144,6 +147,7 @@ pub fn parse_compaction_response(
         });
     }
 
+    debug!(entries = entries.len(), has_recap = recap.is_some(), "Compaction response parsed");
     Ok((recap, entries))
 }
 

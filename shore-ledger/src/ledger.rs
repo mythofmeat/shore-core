@@ -3,6 +3,7 @@
 use rusqlite::{params, Connection, Result as SqlResult};
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
+use tracing::{debug, info};
 
 // ── Schema ────────────────────────────────────────────────────────────────────
 
@@ -97,6 +98,7 @@ impl Ledger {
     fn init(conn: Connection) -> Result<Self, rusqlite::Error> {
         conn.execute_batch(SCHEMA)?;
         Self::migrate(&conn)?;
+        info!("Ledger schema initialized");
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -170,6 +172,13 @@ impl Ledger {
                 row.total_cost,
             ],
         )?;
+        debug!(
+            character = row.character,
+            call_type = row.call_type,
+            input_tokens = row.input_tokens,
+            output_tokens = row.output_tokens,
+            "Ledger row inserted"
+        );
         Ok(conn.last_insert_rowid())
     }
 
@@ -180,6 +189,7 @@ impl Ledger {
         let rows = stmt
             .query_map(params![limit], row_from_sqlite)?
             .collect::<SqlResult<Vec<_>>>()?;
+        debug!(count = rows.len(), limit, "Ledger recent query");
         Ok(rows)
     }
 

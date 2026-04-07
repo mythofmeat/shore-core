@@ -9,6 +9,7 @@ use shore_protocol::client_msg::ClientMessage;
 use shore_protocol::server_msg::ServerMessage;
 use tokio::sync::mpsc;
 use tokio::time::{sleep, Duration};
+use tracing::{debug, error, info, warn};
 
 /// Events sent from the connection task to the application loop.
 #[derive(Debug)]
@@ -89,9 +90,16 @@ async fn connection_loop(
 
     loop {
         let addr = resolve_addr(&socket, &config);
+        info!(addr = ?addr, client = %app_name, "attempting connection");
 
         match SWPConnection::connect(&addr, &client_id, &app_name, character.clone()).await {
             Ok((mut conn, hello, history)) => {
+                info!(
+                    server = %hello.server_name,
+                    characters = hello.characters.len(),
+                    history_len = history.messages.len(),
+                    "connected to daemon"
+                );
                 backoff = Duration::from_millis(500);
 
                 let _ = event_tx
@@ -110,19 +118,28 @@ async fn connection_loop(
                         cmd = cmd_rx.recv() => {
                             match cmd {
                                 Some(ConnCommand::Send(msg)) => {
-                                    if conn.send(&msg).await.is_err() {
+                                    if let Err(e) = conn.send(&msg).await {
+                                        error!(error = %e, "send failed, disconnecting");
                                         let _ = event_tx.send(ConnEvent::Disconnected(
                                             "send failed".into()
                                         )).await;
                                         break;
                                     }
                                 }
-                                Some(ConnCommand::Shutdown) | None => return,
+                                Some(ConnCommand::Shutdown) => {
+                                    info!("shutdown requested, closing connection");
+                                    return;
+                                }
+                                None => {
+                                    info!("command channel closed, exiting connection loop");
+                                    return;
+                                }
                             }
                         }
                         msg = conn.recv() => {
                             match msg {
                                 Ok(ServerMessage::Shutdown(_)) => {
+                                    info!("server sent shutdown");
                                     let _ = event_tx.send(ConnEvent::Disconnected(
                                         "server shutdown".into()
                                     )).await;
@@ -133,10 +150,12 @@ async fn connection_loop(
                                 }
                                 Ok(msg) => {
                                     if event_tx.send(ConnEvent::Message(msg)).await.is_err() {
-                                        return; // Application dropped receiver
+                                        debug!("event receiver dropped, exiting connection loop");
+                                        return;
                                     }
                                 }
-                                Err(_) => {
+                                Err(e) => {
+                                    warn!(error = %e, "connection lost");
                                     let _ = event_tx.send(ConnEvent::Disconnected(
                                         "connection lost".into()
                                     )).await;
@@ -148,6 +167,7 @@ async fn connection_loop(
                 }
             }
             Err(e) => {
+                warn!(error = %e, "connect failed");
                 let _ = event_tx
                     .send(ConnEvent::Disconnected(format!("connect failed: {e}")))
                     .await;
@@ -155,6 +175,7 @@ async fn connection_loop(
         }
 
         // Exponential backoff before reconnect
+        info!(backoff_ms = backoff.as_millis(), "reconnecting after backoff");
         sleep(backoff).await;
         backoff = next_backoff(backoff, max_backoff);
     }

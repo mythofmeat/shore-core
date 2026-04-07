@@ -9,6 +9,7 @@
 use chrono::Local;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
+use tracing::{debug, info, warn};
 
 use crate::memory::db::{Entry, MemoryDB};
 use crate::memory::rag::{EntryMeta, RagPipeline, SourceResult};
@@ -86,8 +87,10 @@ pub fn handle_search_entries(db: &MemoryDB, input: &Value) -> Result<String, Str
         return Err("Error: query produced no searchable terms".into());
     }
 
+    debug!(query = %query, fts_query = %fts_query, "FTS search started");
     match db.search_entries_fts(&fts_query, status, 20) {
         Ok(hits) => {
+            debug!(results = hits.len(), "FTS search complete");
             if hits.is_empty() {
                 Ok("No results.".into())
             } else {
@@ -121,7 +124,10 @@ pub fn handle_search_entries(db: &MemoryDB, input: &Value) -> Result<String, Str
                 serde_json::to_string_pretty(&results).map_err(|e| format!("JSON error: {e}"))
             }
         }
-        Err(e) => Err(format!("Search error: {e}")),
+        Err(e) => {
+            warn!(error = %e, "FTS search error");
+            Err(format!("Search error: {e}"))
+        }
     }
 }
 
@@ -144,6 +150,7 @@ pub async fn handle_semantic_search(
         return Err("Error: empty search query".into());
     }
     let top_k = input["top_k"].as_u64().unwrap_or(20).min(50) as usize;
+    debug!(query, top_k, "Semantic search started");
 
     // 1. Lazy-populate BM25 index.
     ctx.populate_bm25_if_needed(db)
@@ -163,6 +170,7 @@ pub async fn handle_semantic_search(
         .await
         .map_err(|e| format!("Vector search error: {e}"))?;
 
+    debug!(vector_hits = vector_hits.len(), "Vector search complete");
     let vector_source: Vec<SourceResult> = vector_hits
         .iter()
         .map(|r| SourceResult {
@@ -173,6 +181,7 @@ pub async fn handle_semantic_search(
 
     // 4. BM25 search.
     let bm25_hits = ctx.bm25.lock().unwrap().search(query, fetch_k);
+    debug!(bm25_hits = bm25_hits.len(), "BM25 search complete");
     let bm25_source: Vec<SourceResult> = bm25_hits
         .iter()
         .map(|r| SourceResult {
@@ -247,6 +256,7 @@ pub async fn handle_semantic_search(
         return Ok("No results.".into());
     }
 
+    debug!(results = results.len(), "Semantic search complete");
     serde_json::to_string_pretty(&results).map_err(|e| format!("JSON error: {e}"))
 }
 
@@ -260,15 +270,20 @@ pub fn handle_query_db(db: &MemoryDB, input: &Value) -> Result<String, String> {
         return Err("Error: empty SQL query".into());
     }
 
+    debug!(sql = %sql, "DB query started");
     match db.query_db_readonly(&sql, 50) {
         Ok(rows) => {
+            debug!(rows = rows.len(), "DB query complete");
             if rows.is_empty() {
                 Ok("No results.".into())
             } else {
                 serde_json::to_string_pretty(&rows).map_err(|e| format!("JSON error: {e}"))
             }
         }
-        Err(e) => Err(format!("SQL error: {e}")),
+        Err(e) => {
+            warn!(error = %e, "DB query error");
+            Err(format!("SQL error: {e}"))
+        }
     }
 }
 
@@ -292,6 +307,7 @@ pub async fn handle_create_entry(
 
     let tags_str = input["topic_tags"].as_str().unwrap_or("").to_string();
     let topic_key = infer_topic_key(&tags_str, &summary_text);
+    debug!(summary_len = summary_text.len(), topic_key = %topic_key, "Creating memory entry");
 
     let now = Local::now();
     let entry_id = format!("{}_{}", now.format("%Y%m%d_%H%M%S"), 0);
@@ -343,6 +359,7 @@ pub async fn handle_create_entry(
         let _ = idx.index_entry(&entry_id, &summary_text).await;
     }
 
+    info!(entry_id = %entry_id, "Created memory entry");
     Ok(format!("Created entry {entry_id}"))
 }
 
@@ -360,6 +377,7 @@ pub async fn handle_update_entry(
         return Err("Error: entry_id required".into());
     }
     let reason = input["reason"].as_str().unwrap_or("").to_string();
+    debug!(entry_id = %entry_id, "Updating memory entry");
 
     // Fetch current entry
     let mut entry = db
@@ -409,6 +427,7 @@ pub async fn handle_update_entry(
         let _ = idx.index_entry(&entry_id, &entry.summary_text).await;
     }
 
+    info!(entry_id = %entry_id, "Updated memory entry");
     Ok(format!("Updated {entry_id}"))
 }
 
@@ -427,6 +446,7 @@ pub async fn handle_supersede_entry(
     }
     let reason = input["reason"].as_str().unwrap_or("").to_string();
     let superseded_by = input["superseded_by"].as_str().unwrap_or("").to_string();
+    debug!(entry_id = %entry_id, superseded_by = %superseded_by, "Superseding memory entry");
 
     let rows = db
         .supersede_entry(&entry_id, &superseded_by)
@@ -445,6 +465,7 @@ pub async fn handle_supersede_entry(
         let _ = idx.index_entry(&entry_id, "").await;
     }
 
+    info!(entry_id = %entry_id, superseded_by = %superseded_by, "Superseded memory entry");
     Ok(format!("Superseded {entry_id}"))
 }
 
@@ -460,6 +481,7 @@ pub fn handle_update_entity(db: &MemoryDB, input: &Value) -> Result<String, Stri
 
     let entity_type = input["type"].as_str().unwrap_or("").to_string();
     let description = input["description"].as_str().unwrap_or("").to_string();
+    debug!(name = %name, entity_type = %entity_type, "Updating entity");
 
     let eid = db
         .upsert_entity(&name, &entity_type, &description)
@@ -475,6 +497,7 @@ pub fn handle_update_entity(db: &MemoryDB, input: &Value) -> Result<String, Stri
     // Link changelog to entity
     let _ = db.link_changelog_entity(cl_id, eid);
 
+    info!(name = %name, entity_id = eid, "Updated entity");
     Ok(format!("Updated entity '{name}' (id={eid})"))
 }
 
@@ -505,6 +528,7 @@ pub fn handle_merge_entity(db: &MemoryDB, input: &Value) -> Result<String, Strin
         ));
     }
 
+    debug!(from = %from_name, to = %to_name, "Merging entities");
     let count = db
         .merge_entity(from_entity.entity_id, to_entity.entity_id)
         .map_err(|e| format!("DB error: {e}"))?;
@@ -522,6 +546,7 @@ pub fn handle_merge_entity(db: &MemoryDB, input: &Value) -> Result<String, Strin
     // Link changelog to target entity
     let _ = db.link_changelog_entity(cl_id, to_entity.entity_id);
 
+    info!(from = %from_name, to = %to_name, relinked = count, "Merged entities");
     Ok(format!(
         "Merged '{from_name}' into '{to_name}': {count} entries re-linked"
     ))
@@ -536,6 +561,7 @@ pub fn handle_resolve_flag(db: &MemoryDB, input: &Value) -> Result<String, Strin
         .as_i64()
         .ok_or_else(|| "Error: flag_id required".to_string())?;
     let resolution = input["resolution"].as_str().unwrap_or("").to_string();
+    debug!(flag_id, "Resolving flag");
 
     // Get the flag first so we can boost confidence
     let flag = db.get_flag(flag_id).map_err(|e| format!("DB error: {e}"))?;
@@ -559,6 +585,7 @@ pub fn handle_resolve_flag(db: &MemoryDB, input: &Value) -> Result<String, Strin
         }
     }
 
+    info!(flag_id, "Resolved flag");
     Ok(format!("Resolved flag {flag_id}"))
 }
 
@@ -575,10 +602,12 @@ pub fn handle_create_flag(db: &MemoryDB, input: &Value) -> Result<String, String
         return Err("Error: entry_id and flag_type required".into());
     }
 
+    debug!(entry_id = %entry_id, flag_type = %flag_type, "Creating flag");
     let fid = db
         .create_flag(&entry_id, &flag_type, &reason)
         .map_err(|e| format!("DB error: {e}"))?;
 
+    info!(flag_id = fid, entry_id = %entry_id, flag_type = %flag_type, "Created flag");
     Ok(format!("Created flag {fid} ({flag_type}) on {entry_id}"))
 }
 

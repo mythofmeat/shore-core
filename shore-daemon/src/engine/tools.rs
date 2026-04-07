@@ -3,7 +3,7 @@ use std::time::Instant;
 
 use serde_json::{json, Value};
 use tokio::sync::broadcast;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, instrument, warn};
 
 use crate::tools::{self as tool_system, ToolContext};
 use shore_diagnostics::{self as diagnostics, Diagnostics};
@@ -43,6 +43,7 @@ pub struct ToolLoopResult {
 /// `finish_reason != "tool_use"` or `max_iterations` is reached.
 ///
 /// Returns both the final result and any intermediate messages for persistence.
+#[instrument(skip(client, push_tx, request, result, ctx, cache_ctx, diag), fields(char = character, max_iterations))]
 #[allow(clippy::too_many_arguments)]
 pub async fn run_tool_loop(
     client: &LedgerClient,

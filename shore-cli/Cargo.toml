@@ -14,6 +14,8 @@ shore-client = { path = "../shore-client" }
 clap = { version = "4", features = ["derive", "env"] }
 clap_complete = "4"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 serde_json = "1"
 chrono = "0.4"
 crossterm = "0.28"
