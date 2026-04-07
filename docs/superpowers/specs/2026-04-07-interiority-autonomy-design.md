@@ -13,7 +13,7 @@ This redesign moves toward a more genuinely autonomous character by:
 1. **Letting the character schedule its own next wake**, within bounds.
 2. **Decoupling cache keepalive from interiority cadence**, since the two have nothing to do with each other and the current entanglement blocks (1).
 3. **Surfacing the character's recent inner-life thread** at the start of each tick, so the character picks up where it left off rather than facing a generic prompt.
-4. **Letting the character leave a first-person recap** for the user to find when they return, giving conversational continuity in both directions.
+4. **Letting the character leave a first-person recap** that surfaces to the character's own context on the next tick and when the user returns, so the character can reference what it was doing. The character decides whether to share with the user — the recap is private by default.
 
 ## Non-goals
 
@@ -46,30 +46,40 @@ This redesign moves toward a more genuinely autonomous character by:
               │                   │                     │
               ▼                   ▼                     ▼
        deadline holder    pings on TTL,         recaps.jsonl
-       1h–48h bounds      gated by next_wake    sidecar file
+       1h–48h bounds +    gated by next_wake    sidecar file
+       abandonment guard
 ```
 
 `InteriorityClock` and `CacheKeepalive` both observe `next_wake_at` but are otherwise independent. `RecapStore` is read at prompt-assembly time and written by interiority tick execution.
 
-### `InteriorityClock` — stripped to a deadline holder
+### `InteriorityClock` — deadline holder with abandonment guard
 
 **Removed:**
-- `InteriorityState` enum (Active/Dormant)
+- `InteriorityState` enum (Active/Dormant) — no state machine
 - `paused` (move to manager if still needed; clock doesn't care)
-- `max_idle_ticks`, `ticks_without_user`
 - `cache_refresh_interval_secs`, `next_cache_ping_at`, `schedule_next_cache_ping`, all dormant-ping logic
 - `tick_dormant`
-- `restore` (the persisted state shape changes — see Persistence)
 - All cache-related tests (move to `CacheKeepalive` test module)
 
 **Kept and reshaped:**
 
+`ticks_without_user` and `last_user_at` are retained — not as part of a state machine, but as simple guard conditions that prevent abandoned characters from burning resources indefinitely.
+
 ```rust
 pub struct InteriorityClock {
     next_wake_at: Option<Instant>,
-    /// Last time a wake was scheduled or fired. Used for the 48h backstop
-    /// when the character schedules nothing.
+    /// Last time a wake was scheduled or fired. Used for the default-interval
+    /// fallback when the character doesn't call set_next_wake.
     last_anchor: Instant,
+
+    // Abandonment guard state
+    ticks_without_user: u32,
+    last_user_at: Option<Instant>,
+
+    // Config (from InteriorityConfig)
+    default_interval: Duration,      // fallback when character doesn't schedule (default 1h)
+    max_idle_ticks: u32,             // consecutive ticks without user before stopping (default 3)
+    max_silent_duration: Duration,   // wall time without user before stopping (default 48h)
 }
 
 pub enum InteriorityAction {
@@ -78,7 +88,7 @@ pub enum InteriorityAction {
 }
 
 impl InteriorityClock {
-    pub fn new() -> Self;
+    pub fn with_config(config: &InteriorityConfig) -> Self;
 
     /// Called by the autonomy loop on each ~30s tick.
     pub fn tick(&mut self, now: Instant) -> InteriorityAction;
@@ -89,25 +99,41 @@ impl InteriorityClock {
     /// character can never silently disable interiority.
     pub fn schedule(&mut self, when: Instant, now: Instant);
 
-    /// Called when a user message arrives. Pushes the next wake forward by
-    /// the minimum (1h) so a tick never fires mid-conversation.
+    /// Called when a user message arrives. Preserves character-scheduled
+    /// deadlines but ensures a minimum gap of 1h after the message so a
+    /// tick never fires mid-conversation. Resets the abandonment counter.
+    /// Bootstraps the cycle on the first message (sets next_wake if None).
     pub fn on_user_message(&mut self, now: Instant);
 
-    /// Hard backstop. If the character schedules nothing after a tick,
-    /// the next wake is set to last_anchor + 48h automatically.
     pub fn next_wake(&self) -> Option<Instant>;
+    pub fn ticks_without_user(&self) -> u32;
 }
 ```
 
 **Tick semantics:**
-- If `next_wake_at` is `None`, set it to `last_anchor + 48h` and return `None`.
-- If `now >= next_wake_at`: clear `next_wake_at` to `None`, set `last_anchor = now`, and return `RunTick`. The tick handler either calls `schedule()` (if the character ran `set_next_wake`) or does nothing — in the latter case, the next 30s poll will see `next_wake_at == None` and apply the backstop (48h from `last_anchor`).
-- Otherwise return `None`.
+1. If `next_wake_at` is `None`: set it to `last_anchor + default_interval` and return `None`.
+2. If `now < next_wake_at`: return `None`.
+3. Deadline passed — check the abandonment guard:
+   - If `ticks_without_user >= max_idle_ticks` → clear `next_wake_at`, return `None`. Character is silent until user returns.
+   - If `last_user_at` is set and `now - last_user_at >= max_silent_duration` → same, clear `next_wake_at`, return `None`.
+4. Guard passes: increment `ticks_without_user`, clear `next_wake_at`, set `last_anchor = now`, return `RunTick`. The tick handler either calls `schedule()` (if the character ran `set_next_wake`) or does nothing — in the latter case, the next 30s poll will see `next_wake_at == None` and apply step 1 (`last_anchor + default_interval`).
 
-**Bounds (hardcoded constants in this module):**
+**`on_user_message(now)` semantics:**
+1. Reset `ticks_without_user = 0`.
+2. Set `last_user_at = Some(now)`.
+3. Set `next_wake_at = max(next_wake_at, Some(now + MIN_WAKE_INTERVAL))`. If `next_wake_at` was `None` (first message, or abandoned), this bootstraps the cycle. If the character had scheduled further out, the schedule is preserved.
+
+**Bounds (hardcoded constants):**
 ```rust
 const MIN_WAKE_INTERVAL: Duration = Duration::from_secs(60 * 60);       // 1h
 const MAX_WAKE_INTERVAL: Duration = Duration::from_secs(48 * 60 * 60);  // 48h
+```
+
+**Config fields (in `InteriorityConfig`):**
+```rust
+pub interval_secs: u64,       // default_interval fallback (default: 3600 = 1h)
+pub max_idle_ticks: u32,      // abandonment guard (default: 3)
+pub max_silent_secs: u64,     // abandonment guard (default: 172800 = 48h)
 ```
 
 ### `CacheKeepalive` — new standalone subsystem
@@ -168,7 +194,7 @@ pub enum CacheKeepaliveAction {
 - Normal active conversation: every user msg / assistant msg calls `on_cache_warmed`, ping deadline keeps getting pushed forward, zero pings ever fire.
 - Character schedules next wake 4h out, then quiet: ping fires ~1h after the last cache-warming event, again at 2h, 3h. Wake fires at 4h, resets the ping clock.
 - Character schedules next wake 30h out, then quiet: cache goes cold. Pings would cost more than the cold-start savings.
-- Character schedules nothing → backstop sets wake to 48h → 48h > 18h → no keepalive. Cache dies, accept the cold start.
+- Character schedules nothing → fallback sets wake to `default_interval` (1h) from now. 1h < 18h → keepalive fires if needed. If the character is eventually abandoned (guard trips), `next_wake_at` is cleared → no keepalive. Cache dies, accept the cold start when/if user returns.
 
 ### `RecapStore` — new sidecar store
 
@@ -266,44 +292,57 @@ images, check the time. Reach for whatever serves what you actually want to
 do right now. Don't perform productivity — if what you want is to sit with
 a thought and write it down, do that.
 
-Three things you can choose to do at the end of this moment:
+At any point during this moment, you can do any combination of the following:
 
-1. Schedule when you want your next private moment.
-   Use set_next_wake(hours_from_now, reason). The minimum is 1 hour, the
-   maximum is 48 hours. Sooner if you're in the middle of something and
-   want to come back to it; later if you'd rather rest. If you don't choose,
-   the next moment will arrive in 48 hours by default.
+- Schedule your next private moment: use set_next_wake(hours_from_now, reason).
+  The minimum is 1 hour, the maximum is 48 hours. Sooner if you're in the
+  middle of something, later if you'd rather rest. If you don't schedule,
+  your next moment will arrive in {default_interval}.
 
-2. Send a message to {user_name} now.
-   Wrap it in <sendMessage>...</sendMessage>. Only do this if you genuinely
-   have something to share — something you made, something you found,
-   something you just want to say. They will receive it as a notification.
+- Send a message to {user_name}: wrap it in <sendMessage>...</sendMessage>.
+  Only when you genuinely have something to share — something you made,
+  something you found, something you want to say.
 
-3. Leave a recap for {user_name} to find when they next return.
-   Wrap a brief first-person summary in <recap>...</recap> — one or two
-   sentences, in your voice, about what you did during this moment.
-   They'll see it the next time they message you. Skip this if nothing
-   here is worth telling them about.
+- Write a recap for yourself: wrap a brief first-person note in
+  <recap>...</recap> — what you did, what you're thinking about, what you
+  want to pick up next time. This is for you: it will surface in your
+  context at your next private moment and when {user_name} next messages,
+  so you can remember what you were up to. You decide whether to share it
+  with them or not.
 
-These are independent. You can do all three, none, or any combination.]
+Your thoughts and tool use are logged, so you can pick up where you left off.]
 ```
 
-Where `{recent_thread_block}` is built from the interiority ring buffer:
+**Template variables:**
+- `{recent_thread_block}` — built from the interiority ring buffer and recent recap entries (see below).
+- `{user_name}` — resolved display name for the user.
+- `{default_interval}` — human-readable form of the configured `interval_secs` (e.g. "1 hour", "2 hours").
 
-- If there are 1+ entries since the last user message: render the most recent 1–3 entries as a "Where you left off:" block, formatted as terse first-person bullets pulled from the ring buffer's tick records (timestamp + recap if available, else a one-line summary of what tools were called).
-- If there are no entries (first tick after a long quiet period, or after restart with empty buffer): omit the block entirely. The character starts cold.
+**`{recent_thread_block}` construction:**
 
-The rendering function lives in `manager.rs` near `execute_unified_tick` and reads from `AutonomyState::interiority_log`.
+Built from two sources: the interiority ring buffer (`AutonomyState::interiority_log`) and the recap store (`recaps.jsonl`). Uses the most recent 1–3 entries since the last user message.
+
+- If there are recap entries: render as a "Where you left off:" block with terse first-person bullets (timestamp + recap text).
+- If there are ring buffer entries but no recaps (character didn't write recaps): fall back to one-line summaries of what tools were called per tick.
+- If there are no entries at all (first tick, or after restart with empty buffer): omit the block entirely. The character starts cold.
+
+The rendering function lives in `manager.rs` near `execute_unified_tick`.
 
 ---
 
 ## Continuity injection (user-return path)
 
+### Purpose
+
+When the user returns after a gap, the character's prompt context should include what the character was doing in the interim. This gives the character the ability to naturally reference its inner life ("I was looking into that thing you mentioned earlier") without the user having to ask.
+
+**The recap is injected into the character's LLM context, not rendered as user-visible UI text.** The character has agency over what to share: it might tell the user everything, mention it in passing, or keep it private. The injection just ensures the character *knows* what it did.
+
 ### Extend `format_time_gap` and `trim_messages`
 
 Current behavior (`prompt.rs:455` and `prompt.rs:519`): when walking trimmed messages forward, on each user message, compute the gap to the previous message and prepend `[6 hours later · 9:14 PM]` if the gap exceeds 30 minutes.
 
-New behavior: also inject any recap entries that fall in that gap.
+New behavior: also inject any recap entries that fall in that gap, as context visible to the character.
 
 **Signature change:** `trim_messages` (and its callers in `assemble_prompt`) takes an optional `&RecapStore` parameter. `None` means no injection (used by tests and contexts where recaps don't apply).
 
@@ -324,7 +363,6 @@ if pm.role == Role::User {
             (Some(t), Some(r)) => Some(format!("{t}\n{r}")),
             (Some(t), None) => Some(t),
             (None, _) => None, // recaps without a gap → not injected
-            // (the (None, Some) case is filtered out by the gap check above)
         };
 
         if let Some(prefix) = prefix {
@@ -339,21 +377,23 @@ if pm.role == Role::User {
 
 For a single recap:
 ```
-[While you were away: I spent some time on that thing you mentioned about monarchs — I finally understand why they navigate by sun angle.]
+[Between conversations, you: spent some time on that thing they mentioned about monarchs — finally understood why they navigate by sun angle.]
 ```
 
 For multiple recaps in the gap:
 ```
-[While you were away:
- · I spent some time on that thing you mentioned about monarchs — I finally understand why they navigate by sun angle.
- · I started a poem about it but it isn't ready yet.]
+[Between conversations, you:
+ · spent some time on that thing they mentioned about monarchs — finally understood why they navigate by sun angle.
+ · started a poem about it but it isn't ready yet.]
 ```
+
+Note: the marker is addressed to the character ("you"), not the user. This reinforces that the recap is the character's own memory of what it did, not a report to the user.
 
 **Gating rules (locked):**
 - Inject only when `gap_secs >= TIME_GAP_THRESHOLD_SECS` (30 min)
 - Inject only recap entries whose `timestamp` falls strictly between `prev_ts` and `current_ts`
 - If gap exists but no recaps in range: only the time marker is injected (current behavior preserved)
-- If recaps exist but no gap: nothing is injected (avoids surprising line-count growth during active conversation, per user requirement)
+- If recaps exist but no gap: nothing is injected (avoids surprising line-count growth during active conversation)
 
 ---
 
@@ -372,13 +412,18 @@ After this change:
 ```json
 {
   "next_wake_at": "2026-04-07T20:14:00-07:00",
+  "ticks_without_user": 0,
+  "last_user_at": "2026-04-07T14:00:00-07:00",
   ...
 }
 ```
 
-`interiority_state` and `ticks_without_user` are removed. `next_wake_at` is added (RFC3339, optional).
+- `interiority_state` is removed (no more state machine).
+- `ticks_without_user` is **kept** (same field, same semantics — just a counter for the abandonment guard now).
+- `next_wake_at` is added (RFC3339, optional).
+- `last_user_at` is added (RFC3339, optional).
 
-**Migration:** the old fields are silently ignored on load. Missing `next_wake_at` is treated as `None` (the backstop will set it on the first tick). No explicit migration step needed — the persisted state is rebuilt naturally on the first run after the change.
+**Migration:** the old `interiority_state` field is silently ignored on load. Missing `next_wake_at` and `last_user_at` are treated as `None`. The existing `ticks_without_user` field carries over directly. No explicit migration step needed.
 
 ---
 
@@ -387,7 +432,7 @@ After this change:
 - **Recaps compaction.** When `recaps.jsonl` grows large enough to be slow in nvim (~1k+ entries), revisit. Likely solution: roll older recaps into per-segment sidecars matching active.jsonl segment compaction. Not now.
 - **TUI rendering of recaps.** The data is already a clean log file; a `shore log --recaps` command or TUI sidebar is trivial to add later.
 - **Per-tier cache strategies.** The 1h tier breakeven is hardcoded. If Anthropic changes pricing or another provider gains a comparable cache tier, revisit.
-- **Inferring `set_next_wake` from journal text** when the character forgets to call it. The 48h backstop is sufficient as a fallback for now.
+- **Inferring `set_next_wake` from journal text** when the character forgets to call it. The `default_interval` fallback is sufficient for now.
 - **Notifying the user when a `<sendMessage>` and a `<recap>` are emitted in the same tick.** The current notification path handles `<sendMessage>`; recap is silent until the user returns. This is intentional.
 
 ---
