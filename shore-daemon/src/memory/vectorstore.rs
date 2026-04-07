@@ -5,7 +5,7 @@ use lancedb::arrow::SendableRecordBatchStream;
 use lancedb::query::{ExecutableQuery, QueryBase};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tracing::{debug, error, instrument};
+use tracing::{debug, error, instrument, warn};
 
 const TABLE_NAME: &str = "vectors";
 
@@ -83,7 +83,12 @@ impl VectorStore {
         match self.db.open_table(TABLE_NAME).execute().await {
             Ok(table) => {
                 // Remove stale vector for this entry, then insert new one.
-                let _ = table.delete(&format!("entry_id = '{entry_id}'")).await;
+                // Validate entry_id to prevent SQL injection in LanceDB predicate.
+                if entry_id.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+                    let _ = table.delete(&format!("entry_id = '{entry_id}'")).await;
+                } else {
+                    warn!(entry_id, "Refusing to delete stale entry with unsafe ID characters");
+                }
                 table.add(vec![batch]).execute().await?;
             }
             Err(_) => {
@@ -149,6 +154,21 @@ impl VectorStore {
 
         debug!(result_count = results.len(), "vector search complete");
         Ok(results)
+    }
+
+    /// Remove a single entry from the vector store by ID.
+    /// If the entry does not exist or the table does not exist, this is a no-op.
+    pub async fn delete_entry(&self, entry_id: &str) -> Result<(), VectorStoreError> {
+        debug!(entry_id, "removing entry from vector store");
+        if let Ok(table) = self.db.open_table(TABLE_NAME).execute().await {
+            // Validate entry_id to prevent SQL injection in LanceDB predicate.
+            if entry_id.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+                let _ = table.delete(&format!("entry_id = '{entry_id}'")).await;
+            } else {
+                warn!(entry_id, "Refusing to delete entry with unsafe ID characters");
+            }
+        }
+        Ok(())
     }
 
     /// Rebuild the entire index from the given entries.

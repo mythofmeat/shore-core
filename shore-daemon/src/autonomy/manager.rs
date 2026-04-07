@@ -908,7 +908,6 @@ async fn execute_unified_tick(
             return;
         }
     };
-    let active_path = data_dir.join(character).join("active.jsonl");
     let max_iterations = std::cmp::min(lc.app.behavior.tool_use.max_iterations, 6);
 
     info!(
@@ -1069,17 +1068,11 @@ async fn execute_unified_tick(
                 error!(error = %e, "Failed to persist autonomous message through engine");
             }
         } else {
-            // Fallback for contexts where no engine is available (e.g. tests).
-            if let Ok(line) = msg.serialize_for_storage() {
-                use std::io::Write;
-                if let Ok(mut f) = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&active_path)
-                {
-                    let _ = writeln!(f, "{line}");
-                }
-            }
+            warn!(
+                character = %character,
+                msg_id = %msg.msg_id,
+                "No engine available — autonomous message will not be persisted"
+            );
         }
 
         if let Some(tx) = push_tx {

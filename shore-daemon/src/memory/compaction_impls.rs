@@ -329,6 +329,18 @@ impl VectorIndexer for RealVectorIndexer {
             Ok(())
         })
     }
+
+    fn remove_entry(
+        &self,
+        entry_id: &str,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        let entry_id = entry_id.to_string();
+        Box::pin(async move {
+            if let Err(e) = self.store.delete_entry(&entry_id).await {
+                tracing::warn!(entry_id = %entry_id, error = %e, "compaction rollback: failed to remove vector index entry");
+            }
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------

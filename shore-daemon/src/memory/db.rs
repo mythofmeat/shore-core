@@ -695,6 +695,23 @@ impl MemoryDB {
         Ok(())
     }
 
+    /// Delete a changelog record and its entry/entity links by ID.
+    pub fn delete_changelog(&self, changelog_id: i64) -> SqlResult<()> {
+        self.conn.execute(
+            "DELETE FROM changelog_entries WHERE changelog_id = ?1",
+            params![changelog_id],
+        )?;
+        self.conn.execute(
+            "DELETE FROM changelog_entities WHERE changelog_id = ?1",
+            params![changelog_id],
+        )?;
+        self.conn.execute(
+            "DELETE FROM changelog WHERE changelog_id = ?1",
+            params![changelog_id],
+        )?;
+        Ok(())
+    }
+
     /// Query recent changelog records (most recent first).
     pub fn get_recent_changelog(&self, limit: i64) -> SqlResult<Vec<ChangelogRecord>> {
         let mut stmt = self.conn.prepare(
