@@ -438,9 +438,12 @@ impl ConversationManager for RealConversationManager {
         } else {
             retained_lines.join("\n") + "\n"
         };
-        std::fs::write(&active_path, &retained_content).map_err(|e| {
-            CompactionError::ConversationManager(format!("failed to write retained messages: {e}"))
-        })?;
+        crate::engine::atomic::atomic_write(&active_path, retained_content.as_bytes())
+            .map_err(|e| {
+                CompactionError::ConversationManager(format!(
+                    "failed to write retained messages: {e}"
+                ))
+            })?;
 
         // Write recap if provided.
         if let Some(recap) = &params.recap {

@@ -2,6 +2,7 @@ pub mod messages;
 pub mod prompt;
 pub mod segments;
 pub mod tools;
+pub(crate) mod atomic;
 
 use std::path::PathBuf;
 
