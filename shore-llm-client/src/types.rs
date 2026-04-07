@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use shore_config::models::Sdk;
 pub use shore_protocol::types::ContentBlock;
 
 /// Request body for shore-llm's POST /v1/stream and POST /v1/generate endpoints.
@@ -7,8 +8,8 @@ pub use shore_protocol::types::ContentBlock;
 /// zero-config — it has no model database or API key storage.
 #[derive(Debug, Clone, Serialize)]
 pub struct LlmRequest {
-    /// Provider identifier: "anthropic", "openai", "gemini", "openrouter", "zhipuai".
-    pub provider: String,
+    /// SDK/wire protocol to use for this request.
+    pub sdk: Sdk,
 
     /// Provider's model identifier (e.g. "claude-sonnet-4-20250514").
     pub model: String,
@@ -151,7 +152,7 @@ pub struct StreamResult {
 /// Parameters for an image generation request.
 #[derive(Debug, Clone)]
 pub struct ImageGenerateParams<'a> {
-    pub provider: &'a str,
+    pub provider_key: &'a str,
     pub model: &'a str,
     pub api_key: &'a str,
     pub base_url: Option<&'a str>,
@@ -216,7 +217,7 @@ mod tests {
     #[test]
     fn serialize_request_omits_none_fields() {
         let req = LlmRequest {
-            provider: "anthropic".into(),
+            sdk: Sdk::Anthropic,
             model: "claude-sonnet-4-20250514".into(),
             api_key: "sk-test".into(),
             base_url: None,

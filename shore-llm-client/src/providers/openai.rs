@@ -208,34 +208,13 @@ fn translate_tools(tools: &Option<Vec<Value>>) -> Option<Vec<Value>> {
 
 // ── Reasoning field selection ───────────────────────────────────────
 
-/// Return the JSON field name used for reasoning/thinking content.
-///
-/// DeepSeek uses `reasoning_content`; all other OpenAI-compatible providers
-/// (including OpenAI itself, OpenRouter, xAI) use `reasoning`.
-fn reasoning_field(request: &LlmRequest) -> &'static str {
-    let pk = request
-        .provider_key
-        .as_deref()
-        .unwrap_or(request.provider.as_str());
-    match pk {
-        "deepseek" => "reasoning_content",
-        _ => "reasoning",
-    }
-}
-
 // ── Request body builder ────────────────────────────────────────────
+
+use super::context::ProviderContext;
 
 /// Resolve base URL for an OpenAI-compatible request.
 fn resolve_base_url(request: &LlmRequest) -> &str {
     request.base_url.as_deref().unwrap_or(OPENAI_BASE_URL)
-}
-
-/// Provider key, falling back to the `provider` field.
-fn provider_key(request: &LlmRequest) -> &str {
-    request
-        .provider_key
-        .as_deref()
-        .unwrap_or(request.provider.as_str())
 }
 
 /// Helper to extract a string value from provider_options.
@@ -248,7 +227,7 @@ fn provider_opt_str<'a>(request: &'a LlmRequest, key: &str) -> Option<&'a str> {
 }
 
 /// Build common request headers.
-fn build_headers(request: &LlmRequest) -> reqwest::header::HeaderMap {
+fn build_headers(request: &LlmRequest, ctx: &ProviderContext) -> reqwest::header::HeaderMap {
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert(
         reqwest::header::AUTHORIZATION,
@@ -261,17 +240,12 @@ fn build_headers(request: &LlmRequest) -> reqwest::header::HeaderMap {
         "application/json".parse().unwrap(),
     );
 
-    // OpenRouter-specific headers.
-    if provider_key(request) == "openrouter" {
-        if let Some(referer) = provider_opt_str(request, "http_referer") {
-            if let Ok(val) = referer.parse() {
-                headers.insert("HTTP-Referer", val);
-            }
-        }
-        if let Some(title) = provider_opt_str(request, "x_title") {
-            if let Ok(val) = title.parse() {
-                headers.insert("X-Title", val);
-            }
+    for (name, value) in &ctx.extra_headers {
+        if let (Ok(hn), Ok(hv)) = (
+            name.parse::<reqwest::header::HeaderName>(),
+            value.parse::<reqwest::header::HeaderValue>(),
+        ) {
+            headers.insert(hn, hv);
         }
     }
 
@@ -279,7 +253,7 @@ fn build_headers(request: &LlmRequest) -> reqwest::header::HeaderMap {
 }
 
 /// Build the JSON body for chat completions (shared by stream and generate).
-fn build_chat_body(request: &LlmRequest, streaming: bool) -> Value {
+fn build_chat_body(request: &LlmRequest, ctx: &ProviderContext, streaming: bool) -> Value {
     let messages = translate_messages(request);
     let tools = translate_tools(&request.tools);
 
@@ -299,34 +273,14 @@ fn build_chat_body(request: &LlmRequest, streaming: bool) -> Value {
     }
     apply_common_params(&mut body, request);
 
-    // reasoning_effort for providers that support it.
-    let pk = provider_key(request);
-    if matches!(pk, "deepseek" | "openrouter" | "xai" | "openai") {
+    if ctx.supports_reasoning_effort {
         if let Some(effort) = provider_opt_str(request, "reasoning_effort") {
             body["reasoning_effort"] = json!(effort);
         }
     }
 
-    // OpenRouter provider routing body param.
-    // The value is a TOML table (e.g. {order = ["anthropic"]}), serialized as a
-    // JSON object — use it directly rather than reading as a string.
-    if pk == "openrouter" {
-        if let Some(or_provider) = request
-            .provider_options
-            .as_ref()
-            .and_then(|opts| opts.get("openrouter_provider"))
-        {
-            let mut provider = or_provider.clone();
-            // When order is specified, default allow_fallbacks to false so
-            // OpenRouter actually respects the preferred provider list.
-            if let Some(obj) = provider.as_object_mut() {
-                if obj.contains_key("order") {
-                    obj.entry("allow_fallbacks".to_string())
-                        .or_insert(json!(false));
-                }
-            }
-            body["provider"] = provider;
-        }
+    if let Some(routing) = &ctx.routing_config {
+        body["provider"] = routing.clone();
     }
 
     body
@@ -341,11 +295,12 @@ fn build_chat_body(request: &LlmRequest, streaming: bool) -> Value {
 pub async fn stream(
     client: &reqwest::Client,
     request: &LlmRequest,
+    ctx: &ProviderContext,
 ) -> Result<DuplexStream, LlmError> {
     let base_url = resolve_base_url(request);
     let url = format!("{base_url}/chat/completions");
-    let headers = build_headers(request);
-    let body = build_chat_body(request, true);
+    let headers = build_headers(request, ctx);
+    let body = build_chat_body(request, ctx, true);
 
     let response = client
         .post(&url)
@@ -357,7 +312,7 @@ pub async fn stream(
     let response = super::check_response(response).await?;
 
     let (mut writer, reader) = tokio::io::duplex(64 * 1024);
-    let reasoning_field_name = reasoning_field(request).to_string();
+    let reasoning_field_name = ctx.reasoning_field.to_string();
     let model_fallback = request.model.clone();
 
     tokio::spawn(async move {
@@ -540,11 +495,12 @@ pub async fn stream(
 pub async fn generate(
     client: &reqwest::Client,
     request: &LlmRequest,
+    ctx: &ProviderContext,
 ) -> Result<GenerateResponse, LlmError> {
     let base_url = resolve_base_url(request);
     let url = format!("{base_url}/chat/completions");
-    let headers = build_headers(request);
-    let body = build_chat_body(request, false);
+    let headers = build_headers(request, ctx);
+    let body = build_chat_body(request, ctx, false);
 
     let start = Instant::now();
 
@@ -564,7 +520,7 @@ pub async fn generate(
     let choice = resp_body.get("choices").and_then(|c| c.get(0));
     let message = choice.and_then(|c| c.get("message"));
 
-    let field_name = reasoning_field(request);
+    let field_name = ctx.reasoning_field;
 
     // Build content blocks.
     let mut typed_blocks: Vec<ContentBlock> = Vec::new();
@@ -715,7 +671,7 @@ pub async fn image_generate(
 ) -> Result<ImageGenerateResponse, LlmError> {
     let start = Instant::now();
 
-    if params.provider == "openrouter" {
+    if params.provider_key == "openrouter" {
         let base = params.base_url.unwrap_or("https://openrouter.ai/api/v1");
         let result = openrouter_image_generate(
             client,
@@ -912,11 +868,13 @@ async fn try_openrouter_image(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::providers::context::build_provider_context;
     use serde_json::json;
+    use shore_config::models::Sdk;
 
     fn make_request(messages: Vec<Value>, system: Option<Value>) -> LlmRequest {
         LlmRequest {
-            provider: "openai".into(),
+            sdk: Sdk::Openai,
             model: "gpt-4".into(),
             api_key: "sk-test".into(),
             base_url: None,
@@ -1095,7 +1053,8 @@ mod tests {
     #[test]
     fn test_build_chat_body_basic() {
         let request = make_request(vec![json!({"role": "user", "content": "hi"})], None);
-        let body = build_chat_body(&request, true);
+        let ctx = build_provider_context(&request);
+        let body = build_chat_body(&request, &ctx, true);
 
         assert_eq!(body["model"], "gpt-4");
         assert_eq!(body["stream"], true);
@@ -1103,7 +1062,7 @@ mod tests {
         assert!(body["messages"].is_array());
 
         // Non-streaming should not have stream_options.
-        let body_ns = build_chat_body(&request, false);
+        let body_ns = build_chat_body(&request, &ctx, false);
         assert_eq!(body_ns["stream"], false);
         assert!(body_ns.get("stream_options").is_none());
     }
@@ -1111,7 +1070,7 @@ mod tests {
     #[test]
     fn test_build_chat_body_openrouter_provider() {
         let mut request = make_request(vec![json!({"role": "user", "content": "hi"})], None);
-        request.provider = "openai".into();
+        request.sdk = Sdk::Openai;
         request.provider_key = Some("openrouter".into());
         request.provider_options = Some(json!({
             "openrouter_provider": {
@@ -1119,7 +1078,8 @@ mod tests {
             }
         }));
 
-        let body = build_chat_body(&request, false);
+        let ctx = build_provider_context(&request);
+        let body = build_chat_body(&request, &ctx, false);
         let provider = &body["provider"];
         assert_eq!(provider["order"], json!(["anthropic"]));
         // allow_fallbacks defaults to false when order is specified.
@@ -1135,7 +1095,8 @@ mod tests {
             "x_title": "Shore"
         }));
 
-        let headers = build_headers(&request);
+        let ctx = build_provider_context(&request);
+        let headers = build_headers(&request, &ctx);
         assert_eq!(headers.get("HTTP-Referer").unwrap(), "https://shore.ai");
         assert_eq!(headers.get("X-Title").unwrap(), "Shore");
     }

@@ -345,26 +345,23 @@ fn build_body(request: &LlmRequest, streaming: bool) -> Value {
 
 /// Build the reqwest request with Anthropic-specific headers.
 ///
-/// Always targets the native Anthropic API. Proxying Anthropic requests
-/// through OpenRouter is not supported — use the OpenAI-compatible SDK
-/// for OpenRouter models instead.
+/// Accepts any `base_url`, enabling the Anthropic wire protocol through
+/// third-party gateways (e.g. OpenRouter, Bedrock proxies).
 fn build_http_request(
     client: &reqwest::Client,
     request: &LlmRequest,
     streaming: bool,
 ) -> Result<reqwest::RequestBuilder, LlmError> {
-    let url = match &request.base_url {
-        Some(url) if url.starts_with("http://127.0.0.1") || url.starts_with("http://localhost") => {
-            format!("{url}/v1/messages")
-        }
-        Some(_) => {
-            return Err(LlmError::Provider {
-                message: "Anthropic SDK does not support custom base_url. \
-                          Use the openrouter SDK for OpenRouter models."
-                    .into(),
-            });
-        }
-        None => format!("{DEFAULT_BASE_URL}/v1/messages"),
+    let base = request
+        .base_url
+        .as_deref()
+        .unwrap_or(DEFAULT_BASE_URL);
+    // If the base_url already includes a version path (e.g. OpenRouter's
+    // default "https://openrouter.ai/api/v1"), just append /messages.
+    let url = if base.ends_with("/v1") {
+        format!("{base}/messages")
+    } else {
+        format!("{base}/v1/messages")
     };
     let body = build_body(request, streaming);
 
@@ -377,7 +374,7 @@ fn build_http_request(
         let sys_blocks = body["system"].as_array().map(|a| a.len()).unwrap_or(0);
         let msg_count = body["messages"].as_array().map(|a| a.len()).unwrap_or(0);
         let tool_count = body.get("tools").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
-        tracing::info!(
+        tracing::debug!(
             model, max_tokens, %thinking, output_config = %output_cfg,
             sys_blocks, msg_count, tool_count,
             "Anthropic: transformed request body"
@@ -815,10 +812,11 @@ pub async fn generate(
 mod tests {
     use super::*;
     use serde_json::json;
+    use shore_config::models::Sdk;
 
     fn make_request(messages: Vec<Value>, system: Option<Value>) -> LlmRequest {
         LlmRequest {
-            provider: "anthropic".into(),
+            sdk: Sdk::Anthropic,
             model: "claude-test".into(),
             api_key: "sk-test".into(),
             base_url: None,
@@ -1468,5 +1466,85 @@ mod tests {
         ];
         // No real user messages → None.
         assert_eq!(find_turn_boundary(&msgs, 1), None);
+    }
+
+    // ── base_url acceptance ───────────────────────────────────────────
+
+    #[test]
+    fn build_http_request_accepts_custom_base_url() {
+        let client = reqwest::Client::new();
+        let mut request = make_request(
+            vec![json!({"role": "user", "content": "hi"})],
+            None,
+        );
+        request.base_url = Some("https://openrouter.ai/api".into());
+
+        // Should NOT return an error — custom base_url is now accepted.
+        let result = build_http_request(&client, &request, false);
+        assert!(result.is_ok(), "custom base_url should be accepted");
+
+        let builder = result.unwrap();
+        let built = builder.build().unwrap();
+        assert_eq!(
+            built.url().as_str(),
+            "https://openrouter.ai/api/v1/messages"
+        );
+    }
+
+    #[test]
+    fn build_http_request_uses_default_base_url() {
+        let client = reqwest::Client::new();
+        let request = make_request(
+            vec![json!({"role": "user", "content": "hi"})],
+            None,
+        );
+
+        let result = build_http_request(&client, &request, false);
+        assert!(result.is_ok());
+
+        let built = result.unwrap().build().unwrap();
+        assert_eq!(
+            built.url().as_str(),
+            "https://api.anthropic.com/v1/messages"
+        );
+    }
+
+    #[test]
+    fn build_http_request_base_url_with_v1_suffix() {
+        let client = reqwest::Client::new();
+        let mut request = make_request(
+            vec![json!({"role": "user", "content": "hi"})],
+            None,
+        );
+        // OpenRouter's default base_url ends with /v1 — should not double it.
+        request.base_url = Some("https://openrouter.ai/api/v1".into());
+
+        let result = build_http_request(&client, &request, false);
+        assert!(result.is_ok());
+
+        let built = result.unwrap().build().unwrap();
+        assert_eq!(
+            built.url().as_str(),
+            "https://openrouter.ai/api/v1/messages"
+        );
+    }
+
+    #[test]
+    fn build_http_request_localhost_still_works() {
+        let client = reqwest::Client::new();
+        let mut request = make_request(
+            vec![json!({"role": "user", "content": "hi"})],
+            None,
+        );
+        request.base_url = Some("http://127.0.0.1:8080".into());
+
+        let result = build_http_request(&client, &request, false);
+        assert!(result.is_ok());
+
+        let built = result.unwrap().build().unwrap();
+        assert_eq!(
+            built.url().as_str(),
+            "http://127.0.0.1:8080/v1/messages"
+        );
     }
 }

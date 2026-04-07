@@ -7,10 +7,11 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::error::Error;
 use std::sync::{Arc, Mutex};
-use tracing::warn;
+use tracing::{debug, info, instrument, warn};
 
-/// Anthropic 1h cache TTL write price is 4x the 5min price reported by OpenRouter.
-const ANTHROPIC_1H_CACHE_WRITE_MULTIPLIER: f64 = 4.0;
+/// Anthropic 1h cache TTL write price is 2× input price (5min price is 1.25× input).
+/// Multiplier from 5min price to 1h price: 2.0 / 1.25 = 1.6.
+const ANTHROPIC_1H_CACHE_WRITE_MULTIPLIER: f64 = 1.6;
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -121,50 +122,92 @@ impl PricingEngine {
     }
 
     /// HTTP GET to OpenRouter API to fetch per-token pricing.
-    /// Applies Anthropic 1h cache write multiplier (4x the 5min price).
+    /// The 1-hour cache write multiplier for Anthropic is pre-computed at fetch time.
+    #[instrument(skip(self))]
     pub async fn fetch_pricing(
         &self,
         provider: &str,
         model: &str,
     ) -> Result<Option<ModelPricing>, Box<dyn Error + Send + Sync>> {
         let model_id = to_openrouter_id(provider, model);
-        let url = format!("https://openrouter.ai/api/v1/models/{model_id}");
+        info!(model_id, "Fetching pricing from OpenRouter");
 
-        let resp = reqwest::get(&url).await?;
+        if let Some(p) = self.fetch_and_cache_catalog(&model_id).await? {
+            return Ok(Some(p));
+        }
+
+        warn!(model_id, "Model not found in OpenRouter catalog");
+        Ok(None)
+    }
+
+    async fn fetch_and_cache_catalog(
+        &self,
+        target_model_id: &str,
+    ) -> Result<Option<ModelPricing>, Box<dyn Error + Send + Sync>> {
+        let url = "https://openrouter.ai/api/v1/models";
+        let resp = reqwest::get(url).await?;
         if !resp.status().is_success() {
-            warn!(
-                model_id,
-                status = %resp.status(),
-                "OpenRouter pricing fetch failed"
-            );
+            warn!(status = %resp.status(), "OpenRouter catalog fetch failed");
             return Ok(None);
         }
 
         let body: Value = resp.json().await?;
-        let pricing_obj = &body["data"]["pricing"];
-
-        let input = parse_price(pricing_obj.get("prompt"));
-        let output = parse_price(pricing_obj.get("completion"));
-        let cache_read = parse_price(pricing_obj.get("cache_read"));
-        let mut cache_write = parse_price(pricing_obj.get("cache_write"));
-
-        // Anthropic 1h cache write is 4x the 5min price OpenRouter reports
-        if provider == "anthropic" {
-            cache_write *= ANTHROPIC_1H_CACHE_WRITE_MULTIPLIER;
-        }
-
-        let pricing = ModelPricing {
-            input_per_token: input,
-            output_per_token: output,
-            cache_read_per_token: cache_read,
-            cache_write_per_token: cache_write,
+        let models = match body.get("data").and_then(|d| d.as_array()) {
+            Some(arr) => arr,
+            None => {
+                warn!("OpenRouter catalog response missing data array");
+                return Ok(None);
+            }
         };
 
-        self.store_pricing(&model_id, &pricing)?;
-        Ok(Some(pricing))
+        let mut result: Option<ModelPricing> = None;
+
+        for m in models {
+            let id = match m.get("id").and_then(|v| v.as_str()) {
+                Some(id) => id,
+                None => continue,
+            };
+
+            let pricing_obj = match m.get("pricing") {
+                Some(p) => p,
+                None => continue,
+            };
+
+            let input = parse_price(pricing_obj.get("prompt"));
+            let output = parse_price(pricing_obj.get("completion"));
+            let cache_read = parse_price(
+                pricing_obj
+                    .get("input_cache_read")
+                    .or_else(|| pricing_obj.get("cache_read")),
+            );
+            let cache_write = parse_price(
+                pricing_obj
+                    .get("input_cache_write")
+                    .or_else(|| pricing_obj.get("cache_write")),
+            );
+
+            let pricing = ModelPricing {
+                input_per_token: input,
+                output_per_token: output,
+                cache_read_per_token: cache_read,
+                cache_write_per_token: cache_write,
+            };
+
+            if id == target_model_id {
+                result = Some(pricing.clone());
+            }
+
+            if let Err(e) = self.store_pricing(id, &pricing) {
+                warn!(model_id = id, error = %e, "Failed to cache pricing for model");
+            }
+        }
+
+        info!(model_count = models.len(), found = result.is_some(), "OpenRouter catalog cached");
+        Ok(result)
     }
 
     /// Try cached pricing, then fetch from OpenRouter. Returns None if unavailable.
+    #[instrument(skip(self))]
     pub async fn get_or_fetch(
         &self,
         provider: &str,
@@ -173,11 +216,16 @@ impl PricingEngine {
         let model_id = to_openrouter_id(provider, model);
 
         match self.get_cached_pricing(&model_id) {
-            Ok(Some(p)) => return Some(p),
+            Ok(Some(p)) => {
+                debug!(model_id, "pricing cache hit");
+                return Some(p);
+            }
             Err(e) => {
                 warn!(error = %e, "pricing DB read failed");
             }
-            Ok(None) => {}
+            Ok(None) => {
+                debug!(model_id, "pricing cache miss, fetching from OpenRouter");
+            }
         }
 
         match self.fetch_pricing(provider, model).await {
@@ -190,6 +238,8 @@ impl PricingEngine {
     }
 
     /// Multiply tokens by per-token prices. Returns None if pricing unavailable.
+    /// `cache_ttl`: "5m" or "1h" (default "1h" if None). Selects the pre-computed
+    /// cache write price for the appropriate TTL tier.
     pub fn calculate_cost(
         &self,
         provider: &str,
@@ -198,6 +248,7 @@ impl PricingEngine {
         output_tokens: u32,
         cache_read_tokens: u32,
         cache_write_tokens: u32,
+        cache_ttl: Option<&str>,
     ) -> Result<Option<CostBreakdown>, rusqlite::Error> {
         let model_id = to_openrouter_id(provider, model);
         let pricing = match self.get_cached_pricing(&model_id)? {
@@ -208,7 +259,12 @@ impl PricingEngine {
         let input = pricing.input_per_token * input_tokens as f64;
         let output = pricing.output_per_token * output_tokens as f64;
         let cache_read = pricing.cache_read_per_token * cache_read_tokens as f64;
-        let cache_write = pricing.cache_write_per_token * cache_write_tokens as f64;
+
+        let mut cache_write = pricing.cache_write_per_token * cache_write_tokens as f64;
+        // Anthropic 1h cache writes cost 1.6× the 5-minute price
+        if provider == "anthropic" && cache_ttl.unwrap_or("1h") == "1h" {
+            cache_write *= ANTHROPIC_1H_CACHE_WRITE_MULTIPLIER;
+        }
 
         Ok(Some(CostBreakdown {
             input,
@@ -234,13 +290,30 @@ impl PricingEngine {
 /// Map our (provider, model) pair to OpenRouter's model ID format.
 /// For most providers: `"{provider}/{model}"`.
 /// For openrouter: the model_id is already in OpenRouter format (e.g. `google/gemini-3.1-flash-lite-preview`).
+/// For anthropic: OpenRouter uses a dot for minor versions (e.g. `claude-opus-4.6` not `claude-opus-4-6`).
 pub fn to_openrouter_id(provider: &str, model: &str) -> String {
     if provider == "openrouter" {
-        // OpenRouter model IDs already include the provider prefix
         model.to_string()
+    } else if provider == "anthropic" {
+        format!("anthropic/{}", normalize_anthropic_model(model))
     } else {
         format!("{provider}/{model}")
     }
+}
+
+fn normalize_anthropic_model(model: &str) -> String {
+    let mut chars: Vec<char> = model.chars().collect();
+    for i in (1..chars.len()).rev() {
+        if chars[i] == '-'
+            && i + 1 < chars.len()
+            && chars[i - 1].is_ascii_digit()
+            && chars[i + 1].is_ascii_digit()
+        {
+            chars[i] = '.';
+            break;
+        }
+    }
+    chars.into_iter().collect()
 }
 
 /// Parse a price value from OpenRouter JSON. Prices can be string or number.
@@ -268,22 +341,23 @@ mod tests {
         PricingEngine::new(ledger)
     }
 
+    fn anthropic_pricing() -> ModelPricing {
+        ModelPricing {
+            input_per_token: 0.000015,
+            output_per_token: 0.000075,
+            cache_read_per_token: 0.0000015,
+            cache_write_per_token: 0.00001875,
+        }
+    }
+
     #[test]
     fn calculate_cost_with_known_pricing() {
         let engine = test_engine();
         engine
-            .store_pricing(
-                "anthropic/claude-opus-4-6",
-                &ModelPricing {
-                    input_per_token: 0.000015,
-                    output_per_token: 0.000075,
-                    cache_read_per_token: 0.0000015,
-                    cache_write_per_token: 0.00001875,
-                },
-            )
+            .store_pricing("anthropic/claude-opus-4.6", &anthropic_pricing())
             .unwrap();
         let cost = engine
-            .calculate_cost("anthropic", "claude-opus-4-6", 100, 50, 80, 20)
+            .calculate_cost("anthropic", "claude-opus-4-6", 100, 50, 80, 20, Some("5m"))
             .unwrap();
         assert!(cost.is_some());
         let c = cost.unwrap();
@@ -294,10 +368,44 @@ mod tests {
     }
 
     #[test]
+    fn calculate_cost_with_1h_cache_ttl() {
+        let engine = test_engine();
+        engine
+            .store_pricing("anthropic/claude-opus-4.6", &anthropic_pricing())
+            .unwrap();
+        let cost = engine
+            .calculate_cost("anthropic", "claude-opus-4-6", 100, 50, 80, 20, Some("1h"))
+            .unwrap();
+        assert!(cost.is_some());
+        let c = cost.unwrap();
+        assert!((c.input - 0.0015).abs() < 1e-10);
+        assert!((c.output - 0.00375).abs() < 1e-10);
+        assert!((c.cache_read - 0.00012).abs() < 1e-10);
+        // 20 tokens * 0.00001875 * 1.6 = 0.0006
+        assert!((c.cache_write - 0.0006).abs() < 1e-10);
+        assert!((c.total - (0.0015 + 0.00375 + 0.00012 + 0.0006)).abs() < 1e-10);
+    }
+
+    #[test]
+    fn calculate_cost_with_none_cache_ttl_defaults_to_1h() {
+        let engine = test_engine();
+        engine
+            .store_pricing("anthropic/claude-opus-4.6", &anthropic_pricing())
+            .unwrap();
+        let cost = engine
+            .calculate_cost("anthropic", "claude-opus-4-6", 100, 50, 80, 20, None)
+            .unwrap();
+        assert!(cost.is_some());
+        let c = cost.unwrap();
+        // Should use 1h price because default TTL is "1h"
+        assert!((c.cache_write - 0.0006).abs() < 1e-10);
+    }
+
+    #[test]
     fn returns_none_for_unknown_model() {
         let engine = test_engine();
         let cost = engine
-            .calculate_cost("unknown", "model", 100, 50, 0, 0)
+            .calculate_cost("unknown", "model", 100, 50, 0, 0, None)
             .unwrap();
         assert!(cost.is_none());
     }
@@ -306,10 +414,13 @@ mod tests {
     fn model_id_mapping() {
         assert_eq!(
             to_openrouter_id("anthropic", "claude-opus-4-6"),
-            "anthropic/claude-opus-4-6"
+            "anthropic/claude-opus-4.6"
+        );
+        assert_eq!(
+            to_openrouter_id("anthropic", "claude-sonnet-4"),
+            "anthropic/claude-sonnet-4"
         );
         assert_eq!(to_openrouter_id("openai", "gpt-4o"), "openai/gpt-4o");
-        // OpenRouter model IDs already have provider prefix — don't double-prefix
         assert_eq!(
             to_openrouter_id("openrouter", "google/gemini-3.1-flash-lite-preview"),
             "google/gemini-3.1-flash-lite-preview"
@@ -320,21 +431,15 @@ mod tests {
     fn store_and_retrieve_pricing() {
         let engine = test_engine();
         engine
-            .store_pricing(
-                "anthropic/claude-opus-4-6",
-                &ModelPricing {
-                    input_per_token: 0.000015,
-                    output_per_token: 0.000075,
-                    cache_read_per_token: 0.0000015,
-                    cache_write_per_token: 0.00001875,
-                },
-            )
+            .store_pricing("anthropic/claude-opus-4.6", &anthropic_pricing())
             .unwrap();
         let pricing = engine
-            .get_cached_pricing("anthropic/claude-opus-4-6")
+            .get_cached_pricing("anthropic/claude-opus-4.6")
             .unwrap();
         assert!(pricing.is_some());
-        assert!((pricing.unwrap().input_per_token - 0.000015).abs() < 1e-10);
+        let p = pricing.unwrap();
+        assert!((p.input_per_token - 0.000015).abs() < 1e-10);
+        assert!((p.cache_write_per_token - 0.00001875).abs() < 1e-10);
     }
 
     #[test]

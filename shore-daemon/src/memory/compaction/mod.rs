@@ -11,6 +11,7 @@ use chrono::Local;
 use std::sync::Arc;
 use tokio::sync::Notify;
 use tokio::time::Duration;
+use tracing::{debug, info, instrument};
 
 // ---------------------------------------------------------------------------
 // CompactionManager
@@ -148,6 +149,7 @@ impl CompactionManager {
     /// and memory entries from the compacted messages.
     ///
     /// If `dry_run` is true, returns what would be created without side effects.
+    #[instrument(skip(self, messages, active_content, prompt_template, existing_recap, llm, db, indexer, conversation_mgr), fields(char = char_name, user = user_name, msg_count = messages.len(), dry_run))]
     #[allow(clippy::too_many_arguments)]
     pub async fn compact(
         &self,
@@ -165,6 +167,15 @@ impl CompactionManager {
         conversation_mgr: &dyn ConversationManager,
         dry_run: bool,
     ) -> Result<CompactionOutcome, CompactionError> {
+        info!(
+            conversation_id,
+            messages = messages.len(),
+            char_name,
+            user_name,
+            dry_run,
+            "Compaction started"
+        );
+
         // Skip private conversations entirely.
         if is_private {
             return Err(CompactionError::PrivateConversation);
@@ -180,6 +191,11 @@ impl CompactionManager {
             return Err(CompactionError::InsufficientMessages);
         }
         let compacted_part = &messages[..split_at];
+        debug!(
+            compacted = split_at,
+            retained = messages.len() - split_at,
+            "Conversation split for compaction"
+        );
 
         // Build and send prompt to LLM (only compacted messages, not retained).
         let prompt = Self::build_prompt(
@@ -193,6 +209,11 @@ impl CompactionManager {
 
         // Parse recap + entries from LLM response.
         let (recap, compacted) = parse_compaction_response(&raw_response)?;
+        debug!(
+            entries = compacted.len(),
+            has_recap = recap.is_some(),
+            "LLM compaction response parsed"
+        );
 
         let retained_turns = self.config.keep_recent_turns;
 
@@ -281,6 +302,12 @@ impl CompactionManager {
             },
         )?;
 
+        info!(
+            entries_created = entry_ids.len(),
+            conversation_id,
+            retained,
+            "Compaction complete"
+        );
         Ok(CompactionOutcome::Compacted(CompactionResult {
             entries_created: entry_ids,
             conversation_id: conversation_id.to_string(),
@@ -319,10 +346,12 @@ impl IdleTimer {
         loop {
             tokio::select! {
                 () = tokio::time::sleep(self.idle_duration) => {
+                    debug!("Idle period elapsed, compaction ready");
                     return;
                 }
                 () = self.activity_notify.notified() => {
                     // Activity detected — reset timer by restarting loop.
+                    debug!("Idle timer reset by activity");
                     continue;
                 }
             }

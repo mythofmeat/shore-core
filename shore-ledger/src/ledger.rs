@@ -1,8 +1,9 @@
 //! SQLite-backed append-only ledger for LLM call recording.
 
-use rusqlite::{Connection, Result as SqlResult, params};
+use rusqlite::{params, Connection, Result as SqlResult};
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
+use tracing::{debug, info};
 
 // ── Schema ────────────────────────────────────────────────────────────────────
 
@@ -18,6 +19,7 @@ CREATE TABLE IF NOT EXISTS calls (
     output_tokens       INTEGER NOT NULL,
     cache_read_tokens   INTEGER NOT NULL,
     cache_write_tokens  INTEGER NOT NULL,
+    cache_ttl           TEXT    DEFAULT '1h',
     total_ms            INTEGER NOT NULL,
     ttft_ms             INTEGER NOT NULL,
     finish_reason       TEXT    NOT NULL,
@@ -32,12 +34,12 @@ CREATE TABLE IF NOT EXISTS calls (
 );
 
 CREATE TABLE IF NOT EXISTS pricing (
-    model_id            TEXT PRIMARY KEY,
-    input_per_token     REAL NOT NULL,
-    output_per_token    REAL NOT NULL,
+    model_id              TEXT PRIMARY KEY,
+    input_per_token       REAL NOT NULL,
+    output_per_token      REAL NOT NULL,
     cache_read_per_token  REAL NOT NULL,
     cache_write_per_token REAL NOT NULL,
-    fetched_at          TEXT NOT NULL
+    fetched_at            TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_calls_ts        ON calls (ts);
@@ -50,26 +52,27 @@ CREATE INDEX IF NOT EXISTS idx_calls_anomaly   ON calls (cache_anomaly) WHERE ca
 
 #[derive(Debug, Clone)]
 pub struct CallRow {
-    pub ts:                  String,
-    pub character:           String,
-    pub provider:            String,
-    pub model:               String,
-    pub call_type:           String,
-    pub input_tokens:        u32,
-    pub output_tokens:       u32,
-    pub cache_read_tokens:   u32,
-    pub cache_write_tokens:  u32,
-    pub total_ms:            u32,
-    pub ttft_ms:             u32,
-    pub finish_reason:       String,
-    pub thinking_enabled:    bool,
-    pub cache_state:         Option<String>,
-    pub cache_anomaly:       Option<String>,
-    pub input_cost:          Option<f64>,
-    pub output_cost:         Option<f64>,
-    pub cache_read_cost:     Option<f64>,
-    pub cache_write_cost:    Option<f64>,
-    pub total_cost:          Option<f64>,
+    pub ts: String,
+    pub character: String,
+    pub provider: String,
+    pub model: String,
+    pub call_type: String,
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+    pub cache_read_tokens: u32,
+    pub cache_write_tokens: u32,
+    pub cache_ttl: Option<String>,
+    pub total_ms: u32,
+    pub ttft_ms: u32,
+    pub finish_reason: String,
+    pub thinking_enabled: bool,
+    pub cache_state: Option<String>,
+    pub cache_anomaly: Option<String>,
+    pub input_cost: Option<f64>,
+    pub output_cost: Option<f64>,
+    pub cache_read_cost: Option<f64>,
+    pub cache_write_cost: Option<f64>,
+    pub total_cost: Option<f64>,
 }
 
 // ── Ledger ────────────────────────────────────────────────────────────────────
@@ -93,7 +96,31 @@ impl Ledger {
 
     fn init(conn: Connection) -> Result<Self, rusqlite::Error> {
         conn.execute_batch(SCHEMA)?;
-        Ok(Self { conn: Mutex::new(conn) })
+        Self::migrate(&conn)?;
+        info!("Ledger schema initialized");
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
+    }
+
+    /// Best-effort migrations for columns added after the initial schema.
+    /// SQLite's ADD COLUMN is a no-op if the column already exists (we catch
+    /// the "duplicate column" error and ignore it).
+    fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
+        let add_if_missing = |sql: &str| -> Result<(), rusqlite::Error> {
+            match conn.execute_batch(sql) {
+                Ok(()) => Ok(()),
+                Err(e) if e.to_string().contains("duplicate column") => Ok(()),
+                Err(e) => Err(e),
+            }
+        };
+
+        // v2: cache_ttl on calls
+        add_if_missing(
+            "ALTER TABLE calls ADD COLUMN cache_ttl TEXT DEFAULT '1h'",
+        )?;
+
+        Ok(())
     }
 
     /// Insert a call row, returning its autoincrement ID.
@@ -103,15 +130,17 @@ impl Ledger {
             r#"INSERT INTO calls (
                 ts, character, provider, model, call_type,
                 input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+                cache_ttl,
                 total_ms, ttft_ms, finish_reason, thinking_enabled,
                 cache_state, cache_anomaly,
                 input_cost, output_cost, cache_read_cost, cache_write_cost, total_cost
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5,
                 ?6, ?7, ?8, ?9,
-                ?10, ?11, ?12, ?13,
-                ?14, ?15,
-                ?16, ?17, ?18, ?19, ?20
+                ?10,
+                ?11, ?12, ?13, ?14,
+                ?15, ?16,
+                ?17, ?18, ?19, ?20, ?21
             )"#,
             params![
                 row.ts,
@@ -123,6 +152,7 @@ impl Ledger {
                 row.output_tokens,
                 row.cache_read_tokens,
                 row.cache_write_tokens,
+                row.cache_ttl,
                 row.total_ms,
                 row.ttft_ms,
                 row.finish_reason,
@@ -136,25 +166,29 @@ impl Ledger {
                 row.total_cost,
             ],
         )?;
+        debug!(
+            character = row.character,
+            call_type = row.call_type,
+            input_tokens = row.input_tokens,
+            output_tokens = row.output_tokens,
+            "Ledger row inserted"
+        );
         Ok(conn.last_insert_rowid())
     }
 
     /// Return the `limit` most recent rows, newest first.
     pub fn recent(&self, limit: u32) -> Result<Vec<CallRow>, rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT * FROM calls ORDER BY id DESC LIMIT ?1",
-        )?;
-        let rows = stmt.query_map(params![limit], row_from_sqlite)?
+        let mut stmt = conn.prepare("SELECT * FROM calls ORDER BY id DESC LIMIT ?1")?;
+        let rows = stmt
+            .query_map(params![limit], row_from_sqlite)?
             .collect::<SqlResult<Vec<_>>>()?;
+        debug!(count = rows.len(), limit, "Ledger recent query");
         Ok(rows)
     }
 
     /// Return the most recent non-compaction Anthropic call for `character`.
-    pub fn last_anthropic_call(
-        &self,
-        character: &str,
-    ) -> Result<Option<CallRow>, rusqlite::Error> {
+    pub fn last_anthropic_call(&self, character: &str) -> Result<Option<CallRow>, rusqlite::Error> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             r#"SELECT * FROM calls
@@ -179,26 +213,27 @@ impl Ledger {
 pub(crate) fn row_from_sqlite(row: &rusqlite::Row) -> SqlResult<CallRow> {
     Ok(CallRow {
         // column 0 is the autoincrement id — skip it
-        ts:                 row.get(1)?,
-        character:          row.get(2)?,
-        provider:           row.get(3)?,
-        model:              row.get(4)?,
-        call_type:          row.get(5)?,
-        input_tokens:       row.get::<_, i64>(6)? as u32,
-        output_tokens:      row.get::<_, i64>(7)? as u32,
-        cache_read_tokens:  row.get::<_, i64>(8)? as u32,
+        ts: row.get(1)?,
+        character: row.get(2)?,
+        provider: row.get(3)?,
+        model: row.get(4)?,
+        call_type: row.get(5)?,
+        input_tokens: row.get::<_, i64>(6)? as u32,
+        output_tokens: row.get::<_, i64>(7)? as u32,
+        cache_read_tokens: row.get::<_, i64>(8)? as u32,
         cache_write_tokens: row.get::<_, i64>(9)? as u32,
-        total_ms:           row.get::<_, i64>(10)? as u32,
-        ttft_ms:            row.get::<_, i64>(11)? as u32,
-        finish_reason:      row.get(12)?,
-        thinking_enabled:   row.get::<_, i64>(13)? != 0,
-        cache_state:        row.get(14)?,
-        cache_anomaly:      row.get(15)?,
-        input_cost:         row.get(16)?,
-        output_cost:        row.get(17)?,
-        cache_read_cost:    row.get(18)?,
-        cache_write_cost:   row.get(19)?,
-        total_cost:         row.get(20)?,
+        cache_ttl: row.get(10)?,
+        total_ms: row.get::<_, i64>(11)? as u32,
+        ttft_ms: row.get::<_, i64>(12)? as u32,
+        finish_reason: row.get(13)?,
+        thinking_enabled: row.get::<_, i64>(14)? != 0,
+        cache_state: row.get(15)?,
+        cache_anomaly: row.get(16)?,
+        input_cost: row.get(17)?,
+        output_cost: row.get(18)?,
+        cache_read_cost: row.get(19)?,
+        cache_write_cost: row.get(20)?,
+        total_cost: row.get(21)?,
     })
 }
 
@@ -214,26 +249,27 @@ mod tests {
 
     fn sample_row() -> CallRow {
         CallRow {
-            ts:                 "2026-04-05T12:00:00Z".into(),
-            character:          "aria".into(),
-            provider:           "anthropic".into(),
-            model:              "claude-opus-4-6".into(),
-            call_type:          "message".into(),
-            input_tokens:       100,
-            output_tokens:      50,
-            cache_read_tokens:  80,
+            ts: "2026-04-05T12:00:00Z".into(),
+            character: "aria".into(),
+            provider: "anthropic".into(),
+            model: "claude-opus-4-6".into(),
+            call_type: "message".into(),
+            input_tokens: 100,
+            output_tokens: 50,
+            cache_read_tokens: 80,
             cache_write_tokens: 20,
-            total_ms:           1500,
-            ttft_ms:            200,
-            finish_reason:      "end_turn".into(),
-            thinking_enabled:   true,
-            cache_state:        Some("warm".into()),
-            cache_anomaly:      None,
-            input_cost:         Some(0.0015),
-            output_cost:        Some(0.00075),
-            cache_read_cost:    Some(0.0004),
-            cache_write_cost:   Some(0.0005),
-            total_cost:         Some(0.00315),
+            cache_ttl: None,
+            total_ms: 1500,
+            ttft_ms: 200,
+            finish_reason: "end_turn".into(),
+            thinking_enabled: true,
+            cache_state: Some("warm".into()),
+            cache_anomaly: None,
+            input_cost: Some(0.0015),
+            output_cost: Some(0.00075),
+            cache_read_cost: Some(0.0004),
+            cache_write_cost: Some(0.0005),
+            total_cost: Some(0.00315),
         }
     }
 

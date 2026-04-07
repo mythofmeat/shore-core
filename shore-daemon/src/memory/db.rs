@@ -2,6 +2,7 @@ use chrono::Local;
 use rusqlite::{params, Connection, Result as SqlResult};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use tracing::{debug, info, warn};
 
 // ---------------------------------------------------------------------------
 // Schema
@@ -224,6 +225,7 @@ unsafe impl Sync for MemoryDB {}
 impl MemoryDB {
     /// Open (or create) the database at the given path and run auto-migration.
     pub fn open(path: &Path) -> SqlResult<Self> {
+        info!(path = %path.display(), "opening memory database");
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| {
                 rusqlite::Error::SqliteFailure(
@@ -238,8 +240,12 @@ impl MemoryDB {
         Self::run_migrations(&conn);
         // FTS5 is best-effort — don't fail if the extension isn't available.
         if conn.execute_batch(FTS_SCHEMA_SQL).is_ok() {
+            debug!("FTS5 index initialized");
             Self::populate_fts_if_empty(&conn);
+        } else {
+            warn!("FTS5 not available — full-text search disabled");
         }
+        info!(path = %path.display(), "memory database ready");
         Ok(Self { conn })
     }
 
@@ -255,6 +261,7 @@ impl MemoryDB {
 
     /// Open an existing V1 database without running migration (schema-compatible).
     pub fn open_v1(path: &Path) -> SqlResult<Self> {
+        info!(path = %path.display(), "opening V1 memory database");
         let conn = Connection::open(path)?;
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
         // V1 schema is identical — no migration needed.
@@ -292,6 +299,7 @@ impl MemoryDB {
             .unwrap_or(false);
 
         if needs_fts_rebuild {
+            info!("rebuilding FTS index (old 5-column schema detected)");
             let _ = conn.execute_batch(
                 "DROP TRIGGER IF EXISTS entries_fts_insert;
                  DROP TRIGGER IF EXISTS entries_fts_update;
@@ -331,6 +339,12 @@ impl MemoryDB {
     // ------------------------------------------------------------------
 
     pub fn create_entry(&self, entry: &Entry) -> SqlResult<()> {
+        debug!(
+            id = %entry.id,
+            memory_type = %entry.memory_type,
+            status = %entry.status,
+            "creating memory entry"
+        );
         self.conn.execute(
             "INSERT INTO entries (
                 id, memory_type, source, reason, status, confidence,
@@ -466,6 +480,7 @@ impl MemoryDB {
 
     /// Mark an entry as superseded and point it at the replacement entry.
     pub fn supersede_entry(&self, old_id: &str, new_id: &str) -> SqlResult<usize> {
+        debug!(old_id, new_id, "superseding memory entry");
         let now = Local::now().to_rfc3339();
         self.conn.execute(
             "UPDATE entries SET status = 'superseded', superseded_by = ?2, updated_at = ?3
@@ -476,6 +491,7 @@ impl MemoryDB {
 
     /// Permanently delete an entry by ID.
     pub fn delete_entry(&self, id: &str) -> SqlResult<usize> {
+        debug!(id, "deleting memory entry");
         // Clean up FK references before deleting.
         self.conn.execute(
             "DELETE FROM entry_entities WHERE entry_id = ?1",
@@ -493,6 +509,7 @@ impl MemoryDB {
 
     /// Run VACUUM to reclaim disk space after bulk deletes.
     pub fn vacuum(&self) -> SqlResult<()> {
+        info!("vacuuming memory database");
         self.conn.execute_batch("VACUUM")?;
         Ok(())
     }

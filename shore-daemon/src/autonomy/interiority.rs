@@ -7,6 +7,7 @@
 use std::time::{Duration, Instant};
 
 use rand::Rng;
+use tracing::{debug, info};
 
 use shore_config::app::InteriorityConfig;
 
@@ -115,6 +116,7 @@ impl InteriorityClock {
     }
 
     pub fn set_paused(&mut self, paused: bool) {
+        debug!(paused, "Interiority clock pause state changed");
         self.paused = paused;
         if !paused && self.next_tick_at.is_none() {
             let now = Instant::now();
@@ -127,6 +129,7 @@ impl InteriorityClock {
     /// interiority ticks. Pass `None` for non-Anthropic providers.
     pub fn set_cache_refresh_interval(&mut self, cache_ttl_secs: Option<u64>) {
         self.cache_refresh_interval_secs = cache_ttl_secs.map(|ttl| ttl.saturating_sub(60).max(60));
+        debug!(interval_secs = ?self.cache_refresh_interval_secs, "Cache refresh interval configured");
     }
 
     /// The effective interiority tick interval (user-configured).
@@ -164,6 +167,11 @@ impl InteriorityClock {
             self.ticks_without_user += 1;
 
             if self.ticks_without_user > self.max_idle_ticks {
+                info!(
+                    ticks_without_user = self.ticks_without_user,
+                    max_idle_ticks = self.max_idle_ticks,
+                    "Interiority clock entering dormant state"
+                );
                 self.state = InteriorityState::Dormant;
                 self.next_tick_at = None;
                 // Schedule the dormant cache ping timer.
@@ -173,6 +181,7 @@ impl InteriorityClock {
 
             // Full tick fires — also resets the cache ping timer since
             // the full LLM call refreshes the cache.
+            debug!(ticks_without_user = self.ticks_without_user, "Interiority tick firing");
             self.schedule_next_tick(now);
             self.schedule_next_cache_ping(now);
             return InteriorityAction::RunTick;
@@ -181,6 +190,7 @@ impl InteriorityClock {
         // Interiority not due yet — check cache refresh deadline.
         if let Some(next_ping) = self.next_cache_ping_at {
             if now >= next_ping {
+                debug!("Cache refresh ping firing (active)");
                 self.schedule_next_cache_ping(now);
                 return InteriorityAction::RunDormantPing;
             }
@@ -195,10 +205,16 @@ impl InteriorityClock {
         self.last_user_ts = Some(now);
 
         if self.state == InteriorityState::Dormant {
+            info!("Interiority clock waking from dormant state");
             self.state = InteriorityState::Active;
-            self.schedule_next_tick(now);
-            self.schedule_next_cache_ping(now);
         }
+
+        debug!("User message received, rescheduling interiority tick");
+        // Always reschedule the tick from now — the user is actively present,
+        // so the next tick should fire a full interval after the last message,
+        // not at whatever deadline was set before the conversation started.
+        self.schedule_next_tick(now);
+        self.schedule_next_cache_ping(now);
     }
 
     /// Call when an assistant message is generated (optional tracking).
@@ -208,6 +224,7 @@ impl InteriorityClock {
 
     /// Restore state from persistence.
     pub fn restore(&mut self, state: InteriorityState, ticks_without_user: u32) {
+        debug!(%state, ticks_without_user, "Interiority state restored from persistence");
         self.state = state;
         self.ticks_without_user = ticks_without_user;
     }
@@ -230,6 +247,7 @@ impl InteriorityClock {
             return InteriorityAction::None;
         }
 
+        debug!("Cache refresh ping firing (dormant)");
         self.schedule_next_cache_ping(now);
         InteriorityAction::RunDormantPing
     }
@@ -367,6 +385,27 @@ mod tests {
         now += Duration::from_secs(10);
         clock.on_user_message(now);
         assert_eq!(clock.ticks_without_user, 0);
+    }
+
+    #[test]
+    fn user_message_reschedules_tick_while_active() {
+        // Regression: tick must NOT fire mid-conversation. A user message
+        // arriving before the deadline should push the deadline forward.
+        let mut clock = clock_with_interval(60, 3);
+        let mut now = Instant::now();
+        clock.tick(now); // schedule first tick at t+60
+
+        // At t+50 user sends a message — reschedules tick to t+110.
+        now += Duration::from_secs(50);
+        clock.on_user_message(now);
+
+        // At t+65 (past the *original* deadline) no tick should fire.
+        now += Duration::from_secs(15);
+        assert_eq!(clock.tick(now), InteriorityAction::None);
+
+        // At t+111 (past the *rescheduled* deadline) the tick fires.
+        now += Duration::from_secs(46);
+        assert_eq!(clock.tick(now), InteriorityAction::RunTick);
     }
 
     // -- effective interval tests ----------------------------------------

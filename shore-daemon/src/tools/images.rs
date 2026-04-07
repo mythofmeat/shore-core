@@ -309,7 +309,7 @@ pub async fn handle_generate_image(
 
     // 1. Call shore-llm to generate the image.
     let params = ImageGenerateParams {
-        provider: &config.provider,
+        provider_key: &config.provider,
         model: &config.model_id,
         api_key: &config.api_key,
         base_url: config.base_url.as_deref(),

@@ -1,6 +1,6 @@
 //! Aggregation and filter queries for the CLI.
 
-use crate::ledger::{CallRow, Ledger, row_from_sqlite};
+use crate::ledger::{row_from_sqlite, CallRow, Ledger};
 use rusqlite::params_from_iter;
 
 // ── Filter ───────────────────────────────────────────────────────────────────
@@ -64,7 +64,7 @@ pub struct UsageSummary {
     pub total_output: u64,
     pub total_cache_read: u64,
     pub total_cache_write: u64,
-    pub total_cost: Option<f64>,
+    pub total_cost: f64,
 }
 
 /// Groups calls by provider + model, sums token counts and cost.
@@ -81,7 +81,7 @@ pub fn usage_summary(
                   SUM(output_tokens) as total_output,
                   SUM(cache_read_tokens) as total_cache_read,
                   SUM(cache_write_tokens) as total_cache_write,
-                  SUM(total_cost) as total_cost
+                  TOTAL(total_cost) as total_cost
              FROM calls
              {where_clause}
             GROUP BY provider, model
@@ -93,14 +93,14 @@ pub fn usage_summary(
     let rows = stmt
         .query_map(params_from_iter(values.iter()), |row| {
             Ok(UsageSummary {
-                provider:         row.get(0)?,
-                model:            row.get(1)?,
-                call_count:       row.get::<_, i64>(2)? as u32,
-                total_input:      row.get::<_, i64>(3)? as u64,
-                total_output:     row.get::<_, i64>(4)? as u64,
+                provider: row.get(0)?,
+                model: row.get(1)?,
+                call_count: row.get::<_, i64>(2)? as u32,
+                total_input: row.get::<_, i64>(3)? as u64,
+                total_output: row.get::<_, i64>(4)? as u64,
                 total_cache_read: row.get::<_, i64>(5)? as u64,
-                total_cache_write:row.get::<_, i64>(6)? as u64,
-                total_cost:       row.get(7)?,
+                total_cache_write: row.get::<_, i64>(6)? as u64,
+                total_cost: row.get::<_, f64>(7)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -136,7 +136,7 @@ pub fn query_anomalies(
 // ── TSV export ───────────────────────────────────────────────────────────────
 
 const TSV_HEADER: &str = "ts\tcharacter\tprovider\tmodel\tcall_type\t\
-    input_tokens\toutput_tokens\tcache_read_tokens\tcache_write_tokens\t\
+    input_tokens\toutput_tokens\tcache_read_tokens\tcache_write_tokens\tcache_ttl\t\
     total_ms\tttft_ms\tfinish_reason\tthinking_enabled\t\
     cache_state\tcache_anomaly\t\
     input_cost\toutput_cost\tcache_read_cost\tcache_write_cost\ttotal_cost";
@@ -154,7 +154,7 @@ fn opt_f64(v: Option<f64>) -> String {
 
 fn row_to_tsv(r: &CallRow) -> String {
     format!(
-        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+        "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
         r.ts,
         r.character,
         r.provider,
@@ -164,6 +164,7 @@ fn row_to_tsv(r: &CallRow) -> String {
         r.output_tokens,
         r.cache_read_tokens,
         r.cache_write_tokens,
+        opt_str(&r.cache_ttl),
         r.total_ms,
         r.ttft_ms,
         r.finish_reason,
@@ -178,11 +179,8 @@ fn row_to_tsv(r: &CallRow) -> String {
     )
 }
 
-/// Tab-separated header + all matching rows (all 20 CallRow columns).
-pub fn export_tsv(
-    ledger: &Ledger,
-    filter: &QueryFilter,
-) -> Result<String, rusqlite::Error> {
+/// Tab-separated header + all matching rows (all 21 CallRow columns).
+pub fn export_tsv(ledger: &Ledger, filter: &QueryFilter) -> Result<String, rusqlite::Error> {
     let (where_clause, values) = build_where(filter);
     let sql = format!("SELECT * FROM calls{where_clause} ORDER BY id ASC");
 
@@ -266,7 +264,7 @@ pub fn warm_streak(ledger: &Ledger, character: &str) -> Result<u32, rusqlite::Er
 // ── Recalculate ─────────────────────────────────────────────────────────────
 
 /// Row with NULL costs that needs recalculation.
-pub struct NullCostRow {
+pub struct CostRow {
     pub id: i64,
     pub provider: String,
     pub model: String,
@@ -274,17 +272,18 @@ pub struct NullCostRow {
     pub output_tokens: u32,
     pub cache_read_tokens: u32,
     pub cache_write_tokens: u32,
+    pub cache_ttl: Option<String>,
 }
 
 /// Find all rows with NULL total_cost.
-pub fn null_cost_rows(ledger: &Ledger) -> Result<Vec<NullCostRow>, rusqlite::Error> {
+pub fn null_cost_rows(ledger: &Ledger) -> Result<Vec<CostRow>, rusqlite::Error> {
     let conn = ledger.conn();
     let mut stmt = conn.prepare(
-        "SELECT id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens FROM calls WHERE total_cost IS NULL",
+        "SELECT id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cache_ttl FROM calls WHERE total_cost IS NULL",
     )?;
     let rows = stmt
         .query_map([], |row| {
-            Ok(NullCostRow {
+            Ok(CostRow {
                 id: row.get(0)?,
                 provider: row.get(1)?,
                 model: row.get(2)?,
@@ -292,6 +291,30 @@ pub fn null_cost_rows(ledger: &Ledger) -> Result<Vec<NullCostRow>, rusqlite::Err
                 output_tokens: row.get(4)?,
                 cache_read_tokens: row.get(5)?,
                 cache_write_tokens: row.get(6)?,
+                cache_ttl: row.get(7)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// Find all rows (for force recalculation).
+pub fn all_cost_rows(ledger: &Ledger) -> Result<Vec<CostRow>, rusqlite::Error> {
+    let conn = ledger.conn();
+    let mut stmt = conn.prepare(
+        "SELECT id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cache_ttl FROM calls",
+    )?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(CostRow {
+                id: row.get(0)?,
+                provider: row.get(1)?,
+                model: row.get(2)?,
+                input_tokens: row.get(3)?,
+                output_tokens: row.get(4)?,
+                cache_read_tokens: row.get(5)?,
+                cache_write_tokens: row.get(6)?,
+                cache_ttl: row.get(7)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -331,6 +354,7 @@ mod tests {
             output_tokens: 50,
             cache_read_tokens: 80,
             cache_write_tokens: 20,
+            cache_ttl: None,
             total_ms: 1500,
             ttft_ms: 200,
             finish_reason: "end_turn".into(),
@@ -399,6 +423,7 @@ mod tests {
             output_tokens: 50,
             cache_read_tokens: 0,
             cache_write_tokens: 500,
+            cache_ttl: None,
             total_ms: 1500,
             ttft_ms: 200,
             finish_reason: "end_turn".into(),
@@ -440,6 +465,7 @@ mod tests {
             output_tokens: 50,
             cache_read_tokens: 80,
             cache_write_tokens: 20,
+            cache_ttl: None,
             total_ms: 1000,
             ttft_ms: 100,
             finish_reason: "end_turn".into(),

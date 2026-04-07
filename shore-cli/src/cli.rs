@@ -234,6 +234,10 @@ pub enum CliCommand {
         /// Recalculate costs using current pricing
         #[arg(long)]
         recalculate: bool,
+
+        /// Force recalculation of ALL rows (use with --recalculate)
+        #[arg(long)]
+        force: bool,
     },
 
     /// Matrix bridge setup and management
@@ -462,6 +466,7 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
             export_tsv,
             refresh_pricing,
             recalculate,
+            force,
         } => Some((
             "usage",
             json!({
@@ -475,6 +480,7 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
                 "export_tsv": export_tsv,
                 "refresh_pricing": refresh_pricing,
                 "recalculate": recalculate,
+                "force": force,
             }),
         )),
     }

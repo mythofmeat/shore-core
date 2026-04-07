@@ -25,7 +25,7 @@ use shore_daemon::memory::agent::{CallerIdentity, MemoryAgent};
 use shore_daemon::memory::agent_llm::{AgentLlm, AgentLlmError, AgentLlmResponse};
 use shore_daemon::memory::db::MemoryDB;
 use shore_daemon::memory::researcher::MemoryResearcher;
-use shore_ledger::LedgerClient;
+use shore_ledger::{LedgerClient, CallType};
 use shore_llm_client::LlmClient;
 
 // ---------------------------------------------------------------------------
@@ -48,9 +48,9 @@ struct CallRecord {
 }
 
 impl InstrumentedLlm {
-    fn new(client: LedgerClient, label: &str) -> Self {
+    fn new(client: LedgerClient, label: &str, call_type: CallType) -> Self {
         Self {
-            inner: shore_daemon::memory::agent_llm::RealAgentLlm::new(client, "bench".to_string()),
+            inner: shore_daemon::memory::agent_llm::RealAgentLlm::new(client, "bench".to_string(), call_type),
             call_count: AtomicUsize::new(0),
             label: label.to_string(),
             calls: Mutex::new(Vec::new()),
@@ -325,8 +325,8 @@ async fn run_benchmark_mixed(
     let _sock = socket_path();
     let tmp = tempfile::tempdir().unwrap();
     let ledger_client = LedgerClient::new(LlmClient::new(), &tmp.path().join("ledger.db")).unwrap();
-    let researcher_llm = InstrumentedLlm::new(ledger_client.clone(), "researcher");
-    let agent_llm = InstrumentedLlm::new(ledger_client, "agent");
+    let researcher_llm = InstrumentedLlm::new(ledger_client.clone(), "researcher", CallType::Researcher);
+    let agent_llm = InstrumentedLlm::new(ledger_client, "agent", CallType::MemoryAgent);
 
     let researcher = MemoryResearcher::new(char_def.to_string(), String::new());
     let agent = MemoryAgent::one_shot(CallerIdentity::Char, "qifei", "ren");

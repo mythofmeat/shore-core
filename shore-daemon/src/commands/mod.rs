@@ -11,7 +11,7 @@ use shore_protocol::client_msg::Command;
 use shore_protocol::error::ErrorCode;
 use shore_protocol::server_msg::{CommandOutput, Error, ServerMessage};
 use tokio::sync::broadcast;
-use tracing::info;
+use tracing::{debug, info, warn};
 
 use crate::autonomy::manager::AutonomyManager;
 use crate::engine::{ConversationEngine, EngineError};
@@ -212,12 +212,16 @@ pub async fn dispatch(
             name: cmd.name.clone(),
             data,
         }),
-        Err((code, message)) => ServerMessage::Error(Error { code, message }),
+        Err((code, message)) => {
+            warn!(command = %cmd.name, ?code, %message, "Command failed");
+            ServerMessage::Error(Error { code, message })
+        }
     }
 }
 
 /// Dispatch commands that don't require a character/engine (e.g. list_characters).
 pub fn dispatch_characterless(ctx: &CommandContext, cmd: &Command) -> CommandResult {
+    debug!(command = %cmd.name, "Dispatching characterless command");
     match cmd.name.as_str() {
         "list_characters" => navigation::list_characters_standalone(ctx),
         _ => Err((

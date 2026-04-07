@@ -1,6 +1,7 @@
 use serde_json::json;
 use shore_ledger::query::QueryFilter;
 use shore_protocol::error::ErrorCode;
+use tracing::debug;
 
 use super::{CommandContext, CommandResult};
 
@@ -51,6 +52,7 @@ pub async fn usage(ctx: &CommandContext, args: &serde_json::Value) -> CommandRes
     let ledger = ctx.llm_client.ledger();
 
     let (filter, last) = build_filter(args);
+    debug!(period = %last, "Usage query started");
 
     if args.get("export_tsv").and_then(|v| v.as_bool()) == Some(true) {
         let output = shore_ledger::query::export_tsv(ledger, &filter)
@@ -80,7 +82,15 @@ pub async fn usage(ctx: &CommandContext, args: &serde_json::Value) -> CommandRes
     }
 
     if args.get("anomalies").and_then(|v| v.as_bool()) == Some(true) {
-        let rows = shore_ledger::query::query_anomalies(ledger, &filter)
+        let anomaly_filter = if last == "today" {
+            QueryFilter {
+                since: parse_last_period("7d"),
+                ..filter.clone()
+            }
+        } else {
+            filter
+        };
+        let rows = shore_ledger::query::query_anomalies(ledger, &anomaly_filter)
             .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
         let anomalies: Vec<serde_json::Value> = rows
             .iter()
@@ -108,23 +118,48 @@ pub async fn usage(ctx: &CommandContext, args: &serde_json::Value) -> CommandRes
     }
 
     if args.get("recalculate").and_then(|v| v.as_bool()) == Some(true) {
-        let null_rows = shore_ledger::query::null_cost_rows(ledger)
-            .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
-        if null_rows.is_empty() {
-            return Ok(json!({ "mode": "recalculate", "updated": 0, "total": 0 }));
+        let force = args.get("force").and_then(|v| v.as_bool()) == Some(true);
+        let rows = if force {
+            shore_ledger::query::all_cost_rows(ledger)
+                .map_err(|e| (ErrorCode::InternalError, e.to_string()))?
+        } else {
+            shore_ledger::query::null_cost_rows(ledger)
+                .map_err(|e| (ErrorCode::InternalError, e.to_string()))?
+        };
+        if rows.is_empty() {
+            return Ok(json!({ "mode": "recalculate", "updated": 0, "total": 0, "failures": [] }));
         }
 
         let pricing = ctx.llm_client.pricing();
         let mut models_fetched = std::collections::HashSet::new();
-        for row in &null_rows {
+        let mut fetch_results: std::collections::HashMap<String, Option<String>> =
+            std::collections::HashMap::new();
+
+        for row in &rows {
             let key = format!("{}/{}", row.provider, row.model);
-            if models_fetched.insert(key) {
-                let _ = pricing.get_or_fetch(&row.provider, &row.model).await;
+            if models_fetched.insert(key.clone()) {
+                let model_id =
+                    shore_ledger::pricing::to_openrouter_id(&row.provider, &row.model);
+                match pricing.get_or_fetch(&row.provider, &row.model).await {
+                    Some(_) => {
+                        fetch_results.insert(key, None);
+                    }
+                    None => {
+                        tracing::warn!(
+                            model_id,
+                            "Pricing fetch returned no data for model"
+                        );
+                        fetch_results.insert(
+                            key,
+                            Some(format!("no pricing data for {model_id}")),
+                        );
+                    }
+                }
             }
         }
 
         let mut updated = 0u32;
-        for row in &null_rows {
+        for row in &rows {
             if let Ok(Some(cost)) = pricing.calculate_cost(
                 &row.provider,
                 &row.model,
@@ -132,6 +167,7 @@ pub async fn usage(ctx: &CommandContext, args: &serde_json::Value) -> CommandRes
                 row.output_tokens,
                 row.cache_read_tokens,
                 row.cache_write_tokens,
+                row.cache_ttl.as_deref(),
             ) {
                 if shore_ledger::query::update_costs(ledger, row.id, &cost).is_ok() {
                     updated += 1;
@@ -139,10 +175,21 @@ pub async fn usage(ctx: &CommandContext, args: &serde_json::Value) -> CommandRes
             }
         }
 
+        let failures: Vec<serde_json::Value> = fetch_results
+            .iter()
+            .filter_map(|(key, reason)| {
+                reason.as_ref().map(|r| {
+                    json!({ "model": key, "reason": r })
+                })
+            })
+            .collect();
+
+        debug!(updated, total = rows.len(), failures = failures.len(), "Recalculation complete");
         return Ok(json!({
             "mode": "recalculate",
             "updated": updated,
-            "total": null_rows.len(),
+            "total": rows.len(),
+            "failures": failures,
         }));
     }
 
@@ -199,6 +246,13 @@ pub async fn usage(ctx: &CommandContext, args: &serde_json::Value) -> CommandRes
         .map(|r| r.len())
         .unwrap_or(0);
 
+    debug!(
+        period = %last,
+        models = summary_rows.len(),
+        characters = cache_health.len(),
+        anomaly_count_7d = anomaly_count,
+        "Usage summary complete"
+    );
     Ok(json!({
         "mode": "summary",
         "period": last,

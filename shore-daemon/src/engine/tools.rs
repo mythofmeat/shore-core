@@ -3,7 +3,7 @@ use std::time::Instant;
 
 use serde_json::{json, Value};
 use tokio::sync::broadcast;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, instrument, warn};
 
 use crate::tools::{self as tool_system, ToolContext};
 use shore_diagnostics::{self as diagnostics, Diagnostics};
@@ -43,6 +43,7 @@ pub struct ToolLoopResult {
 /// `finish_reason != "tool_use"` or `max_iterations` is reached.
 ///
 /// Returns both the final result and any intermediate messages for persistence.
+#[instrument(skip(client, push_tx, request, result, ctx, cache_ctx, diag), fields(char = character, max_iterations))]
 #[allow(clippy::too_many_arguments)]
 pub async fn run_tool_loop(
     client: &LedgerClient,
@@ -98,7 +99,7 @@ pub async fn run_tool_loop(
 
         // Build LLM payload from content blocks.
         // Z.AI thinking blocks have no signature — include them unconditionally.
-        let assistant_content: Vec<Value> = if request.provider == "zai" {
+        let assistant_content: Vec<Value> = if request.sdk == shore_config::models::Sdk::Zai {
             assistant_blocks
                 .iter()
                 .map(crate::content_util::content_block_to_json)
@@ -344,7 +345,7 @@ mod tests {
     /// Build a test LlmRequest pointing at a mock server.
     fn test_request(base_url: &str, messages: Vec<Value>) -> LlmRequest {
         LlmRequest {
-            provider: "anthropic".into(),
+            sdk: shore_config::models::Sdk::Anthropic,
             model: "test".into(),
             api_key: "sk-test".into(),
             base_url: Some(base_url.to_string()),

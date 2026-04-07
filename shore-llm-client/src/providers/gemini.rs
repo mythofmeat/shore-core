@@ -615,10 +615,11 @@ pub async fn generate(
 mod tests {
     use super::*;
     use serde_json::json;
+    use shore_config::models::Sdk;
 
     fn make_request(messages: Vec<Value>, system: Option<Value>) -> LlmRequest {
         LlmRequest {
-            provider: "gemini".into(),
+            sdk: Sdk::Gemini,
             model: "gemini-2.0-flash".into(),
             api_key: "test-key".into(),
             base_url: None,

@@ -11,7 +11,7 @@ use shore_llm_client::{LlmClient, LlmError};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use tracing::error;
+use tracing::{debug, error, info, instrument};
 
 // ── CallType ────────────────────────────────────────────────────────────────
 
@@ -42,6 +42,7 @@ impl CallType {
 
 // ── record_call ─────────────────────────────────────────────────────────────
 
+#[instrument(skip(ledger, pricing, cache_trackers, usage, timing, call_type), fields(call_type = call_type.as_str()))]
 pub(crate) fn record_call(
     ledger: &Ledger,
     pricing: &PricingEngine,
@@ -54,6 +55,7 @@ pub(crate) fn record_call(
     timing: &Timing,
     finish_reason: &str,
     thinking_enabled: bool,
+    cache_ttl: Option<String>,
 ) {
     let ts = Utc::now().to_rfc3339();
 
@@ -112,6 +114,7 @@ pub(crate) fn record_call(
             usage.output_tokens,
             usage.cache_read_tokens,
             usage.cache_creation_tokens,
+            cache_ttl.as_deref(),
         )
         .ok()
         .flatten();
@@ -126,6 +129,7 @@ pub(crate) fn record_call(
         output_tokens: usage.output_tokens,
         cache_read_tokens: usage.cache_read_tokens,
         cache_write_tokens: usage.cache_creation_tokens,
+        cache_ttl,
         total_ms: timing.total_ms,
         ttft_ms: timing.time_to_first_token_ms,
         finish_reason: finish_reason.to_string(),
@@ -139,6 +143,16 @@ pub(crate) fn record_call(
         total_cost: cost.as_ref().map(|c| c.total),
     };
 
+    info!(
+        provider,
+        model,
+        character,
+        call_type = call_type.as_str(),
+        input_tokens = usage.input_tokens,
+        output_tokens = usage.output_tokens,
+        total_cost = cost.as_ref().map(|c| c.total),
+        "LLM call recorded"
+    );
     if let Err(e) = ledger.insert(&row) {
         error!(error = %e, "Failed to insert call row into ledger");
     }
@@ -197,6 +211,7 @@ impl LedgerClient {
     /// Send a non-streaming request, then record the call to the ledger.
     ///
     /// Calls `pricing.get_or_fetch()` first for lazy pricing resolution.
+    #[instrument(skip(self, request, call_type), fields(model = %request.model, call_type = call_type.as_str()))]
     pub async fn generate(
         &self,
         request: &LlmRequest,
@@ -208,12 +223,31 @@ impl LedgerClient {
         let provider_key = request
             .provider_key
             .as_deref()
-            .unwrap_or(&request.provider);
+            .unwrap_or(request.sdk.as_str());
+        debug!(
+            model = request.model,
+            call_type = call_type.as_str(),
+            character,
+            "generate: sending request"
+        );
         self.pricing
             .get_or_fetch(provider_key, &request.model)
             .await;
 
         let resp = self.inner.generate(request, None).await?;
+        debug!(
+            model = request.model,
+            call_type = call_type.as_str(),
+            finish_reason = resp.finish_reason,
+            "generate: response received"
+        );
+
+        let cache_ttl = request
+            .provider_options
+            .as_ref()
+            .and_then(|opts| opts.get("cache_ttl"))
+            .and_then(|v| v.as_str())
+            .map(String::from);
 
         record_call(
             &self.ledger,
@@ -227,6 +261,7 @@ impl LedgerClient {
             &resp.timing,
             &resp.finish_reason,
             thinking_enabled,
+            cache_ttl,
         );
 
         Ok(resp)
@@ -237,6 +272,7 @@ impl LedgerClient {
     /// Calls `pricing.get_or_fetch()` first for lazy pricing resolution.
     /// The caller MUST call `finalize()` on the returned stream after consumption,
     /// otherwise the API call will not be recorded (and a tracing::error is emitted on drop).
+    #[instrument(skip(self, request, call_type), fields(model = %request.model, call_type = call_type.as_str()))]
     pub async fn stream_raw(
         &self,
         request: &LlmRequest,
@@ -247,12 +283,25 @@ impl LedgerClient {
         let provider_key = request
             .provider_key
             .as_deref()
-            .unwrap_or(&request.provider);
+            .unwrap_or(request.sdk.as_str());
+        debug!(
+            model = request.model,
+            call_type = call_type.as_str(),
+            character,
+            "stream_raw: opening stream"
+        );
         self.pricing
             .get_or_fetch(provider_key, &request.model)
             .await;
 
         let reader = self.inner.stream_raw(request, None).await?;
+
+        let cache_ttl = request
+            .provider_options
+            .as_ref()
+            .and_then(|opts| opts.get("cache_ttl"))
+            .and_then(|v| v.as_str())
+            .map(String::from);
 
         Ok(LedgerStream::new(
             reader,
@@ -261,6 +310,7 @@ impl LedgerClient {
             call_type,
             character.to_string(),
             thinking_enabled,
+            cache_ttl,
             self.ledger.clone(),
             self.pricing.clone(),
             self.cache_trackers.clone(),
@@ -354,6 +404,7 @@ mod tests {
             },
             "end_turn",
             false,
+            None,
         );
         let rows = ledger.recent(1).unwrap();
         assert_eq!(rows.len(), 1);
@@ -384,6 +435,7 @@ mod tests {
             },
             "end_turn",
             true,
+            None,
         );
         let map = trackers.lock().unwrap();
         let tracker = map.get("aria").unwrap();
@@ -413,6 +465,7 @@ mod tests {
             },
             "stop",
             false,
+            None,
         );
         let rows = ledger.recent(1).unwrap();
         assert!(rows[0].cache_state.is_none());
@@ -453,9 +506,40 @@ mod tests {
             },
             "end_turn",
             true,
+            None,
         );
         let rows = ledger.recent(1).unwrap();
         assert_eq!(rows[0].cache_write_tokens, 200);
         assert_eq!(rows[0].cache_read_tokens, 80);
+    }
+
+    #[test]
+    fn record_stores_cache_ttl() {
+        let (ledger, pricing, trackers) = test_parts();
+        record_call(
+            &ledger,
+            &pricing,
+            &trackers,
+            "anthropic",
+            "claude-opus-4-6",
+            CallType::Message,
+            "aria",
+            &Usage {
+                input_tokens: 100,
+                output_tokens: 50,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
+            },
+            &Timing {
+                total_ms: 1500,
+                time_to_first_token_ms: 0,
+            },
+            "end_turn",
+            false,
+            Some("5m".to_string()),
+        );
+        let rows = ledger.recent(1).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].cache_ttl, Some("5m".to_string()));
     }
 }

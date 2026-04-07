@@ -17,6 +17,7 @@ pub struct LedgerStream {
     call_type: CallType,
     character: String,
     thinking_enabled: bool,
+    cache_ttl: Option<String>,
     ledger: Arc<Ledger>,
     pricing: Arc<PricingEngine>,
     cache_trackers: Arc<Mutex<HashMap<String, CacheTracker>>>,
@@ -32,6 +33,7 @@ impl LedgerStream {
         call_type: CallType,
         character: String,
         thinking_enabled: bool,
+        cache_ttl: Option<String>,
         ledger: Arc<Ledger>,
         pricing: Arc<PricingEngine>,
         cache_trackers: Arc<Mutex<HashMap<String, CacheTracker>>>,
@@ -43,6 +45,7 @@ impl LedgerStream {
             call_type,
             character,
             thinking_enabled,
+            cache_ttl,
             ledger,
             pricing,
             cache_trackers,
@@ -58,6 +61,7 @@ impl LedgerStream {
         call_type: CallType,
         character: String,
         thinking_enabled: bool,
+        cache_ttl: Option<String>,
         ledger: Arc<Ledger>,
         pricing: Arc<PricingEngine>,
         cache_trackers: Arc<Mutex<HashMap<String, CacheTracker>>>,
@@ -70,6 +74,7 @@ impl LedgerStream {
             call_type,
             character,
             thinking_enabled,
+            cache_ttl,
             ledger,
             pricing,
             cache_trackers,
@@ -93,6 +98,7 @@ impl LedgerStream {
             &result.timing,
             &result.finish_reason,
             self.thinking_enabled,
+            self.cache_ttl.clone(),
         );
         self.finalized = true;
     }
@@ -130,7 +136,7 @@ mod tests {
     fn finalize_records_to_ledger() {
         let ledger = Arc::new(Ledger::open_in_memory().unwrap());
         let pricing = Arc::new(PricingEngine::new(ledger.clone()));
-        let trackers = Arc::new(Mutex::new(HashMap::new()));
+        let trackers = Arc::new(Mutex::new(HashMap::<String, CacheTracker>::new()));
 
         let mut stream = LedgerStream::new_test(
             "anthropic".into(),
@@ -138,6 +144,7 @@ mod tests {
             CallType::Message,
             "aria".into(),
             true,
+            None,
             ledger.clone(),
             pricing,
             trackers,
@@ -175,7 +182,7 @@ mod tests {
     fn finalize_updates_cache_tracker() {
         let ledger = Arc::new(Ledger::open_in_memory().unwrap());
         let pricing = Arc::new(PricingEngine::new(ledger.clone()));
-        let trackers = Arc::new(Mutex::new(HashMap::new()));
+        let trackers = Arc::new(Mutex::new(HashMap::<String, CacheTracker>::new()));
 
         let mut stream = LedgerStream::new_test(
             "anthropic".into(),
@@ -183,6 +190,7 @@ mod tests {
             CallType::Message,
             "aria".into(),
             true,
+            None,
             ledger.clone(),
             pricing,
             trackers.clone(),

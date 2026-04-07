@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
-use tracing::warn;
+use tracing::{debug, info, warn};
 
 // ── SDK enum ────────────────────────────────────────────────────────────
 
@@ -16,27 +16,49 @@ use tracing::warn;
 ///
 /// For example, `Anthropic` with a custom `base_url` pointing at OpenRouter
 /// means "use the Anthropic message format, but send requests to OpenRouter."
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum Sdk {
     #[default]
     Anthropic,
     Openai,
     Gemini,
-    Zhipuai,
-    Deepseek,
     Zai,
+}
+
+impl<'de> Deserialize<'de> for Sdk {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        match s.as_str() {
+            "anthropic" => Ok(Sdk::Anthropic),
+            "openai" => Ok(Sdk::Openai),
+            "gemini" => Ok(Sdk::Gemini),
+            "zai" => Ok(Sdk::Zai),
+            "deepseek" | "zhipuai" => {
+                warn!(
+                    "sdk = \"{s}\" is deprecated and now maps to \"openai\". \
+                     Update your config to use sdk = \"openai\" instead."
+                );
+                Ok(Sdk::Openai)
+            }
+            other => Err(serde::de::Error::unknown_variant(
+                other,
+                &["anthropic", "openai", "gemini", "zai"],
+            )),
+        }
+    }
 }
 
 impl Sdk {
     /// Wire protocol string sent to shore-llm.
-    pub fn as_provider_str(&self) -> &'static str {
+    pub fn as_str(&self) -> &'static str {
         match self {
             Sdk::Anthropic => "anthropic",
             Sdk::Openai => "openai",
             Sdk::Gemini => "gemini",
-            Sdk::Zhipuai => "zhipuai",
-            Sdk::Deepseek => "deepseek",
             Sdk::Zai => "zai",
         }
     }
@@ -314,12 +336,18 @@ impl ModelCatalog {
             None => BTreeMap::new(),
         };
 
-        Ok(Self {
+        let catalog = Self {
             chat: chat_models,
             tools: tool_models,
             embedding: embedding_profiles,
             image_generation: image_gen_profiles,
-        })
+        };
+        info!(
+            chat_models = catalog.chat.len(),
+            tool_models = catalog.tools.len(),
+            "Model catalog initialized"
+        );
+        Ok(catalog)
     }
 
     /// Look up a model by short name or qualified name.
@@ -328,9 +356,12 @@ impl ModelCatalog {
     /// Short names (`"opus"`) search across all categories and error
     /// on ambiguity.
     pub fn find_model(&self, name: &str) -> Result<&ResolvedModel, CatalogError> {
+        debug!(name, "Looking up model in catalog");
+
         // 1. Try qualified name match.
         for model in self.chat.values().chain(self.tools.values()) {
             if model.qualified_name == name {
+                debug!(name, qualified_name = name, "Model resolved by qualified name");
                 return Ok(model);
             }
         }
@@ -344,13 +375,34 @@ impl ModelCatalog {
         }
 
         match matches.len() {
-            0 => Err(CatalogError::NotFound {
-                name: name.to_string(),
-            }),
-            1 => Ok(matches[0]),
+            0 => {
+                let available: Vec<&str> = self
+                    .chat
+                    .values()
+                    .chain(self.tools.values())
+                    .map(|m| m.qualified_name.as_str())
+                    .collect();
+                warn!(
+                    name,
+                    available = available.join(", "),
+                    "Model not found in catalog"
+                );
+                Err(CatalogError::NotFound {
+                    name: name.to_string(),
+                })
+            }
+            1 => {
+                debug!(name, qualified_name = matches[0].qualified_name, "Model resolved by short name");
+                Ok(matches[0])
+            }
             _ => {
                 let locations: Vec<&str> =
                     matches.iter().map(|m| m.qualified_name.as_str()).collect();
+                warn!(
+                    name,
+                    locations = locations.join(", "),
+                    "Ambiguous model name — found in multiple providers"
+                );
                 Err(CatalogError::AmbiguousName {
                     name: name.to_string(),
                     locations: locations.join(", "),
@@ -364,7 +416,7 @@ impl ModelCatalog {
         self.chat.values().next()
     }
 
-    /// Iterate all chat model names (short names).
+    /// Iterate all chat model qualified names (e.g. `"chat.anthropic.opus"`).
     pub fn chat_model_names(&self) -> impl Iterator<Item = &str> {
         self.chat.keys().map(|s| s.as_str())
     }
@@ -382,6 +434,7 @@ fn parse_category(
     section: &toml::Table,
 ) -> Result<BTreeMap<String, ResolvedModel>, CatalogError> {
     let mut models = BTreeMap::new();
+    debug!(category, providers = section.len(), "Parsing model category");
 
     for (provider_key, provider_value) in section {
         let provider_table = match provider_value.as_table() {
@@ -449,10 +502,13 @@ fn parse_category(
                 merged,
             );
 
-            models.insert(model_name.clone(), resolved);
+            let qualified = format!("{category}.{provider_key}.{model_name}");
+            debug!(category, provider = provider_key, model = model_name, qualified, "Resolved model entry");
+            models.insert(qualified, resolved);
         }
     }
 
+    debug!(category, models = models.len(), "Category parsing complete");
     Ok(models)
 }
 
@@ -483,7 +539,7 @@ fn hardcoded_defaults(provider_key: &str) -> ProviderConfig {
             ..base_provider_defaults()
         },
         "deepseek" => ModelConfigFields {
-            sdk: Some(Sdk::Deepseek),
+            sdk: Some(Sdk::Openai),
             api_key_env: Some("DEEPSEEK_API_KEY".into()),
             base_url: Some("https://api.deepseek.com/v1".into()),
             ..base_provider_defaults()
@@ -500,7 +556,7 @@ fn hardcoded_defaults(provider_key: &str) -> ProviderConfig {
             ..base_provider_defaults()
         },
         "zhipuai" => ModelConfigFields {
-            sdk: Some(Sdk::Zhipuai),
+            sdk: Some(Sdk::Openai),
             api_key_env: Some("ZAI_API_KEY".into()),
             base_url: Some("https://open.bigmodel.cn/api/paas/v4".into()),
             ..base_provider_defaults()
@@ -527,10 +583,9 @@ fn default_sdk(provider_key: &str) -> Sdk {
     match provider_key {
         "anthropic" => Sdk::Anthropic,
         "gemini" => Sdk::Gemini,
-        "zhipuai" => Sdk::Zhipuai,
-        "deepseek" => Sdk::Deepseek,
         "zai" => Sdk::Zai,
-        // Everything else (openrouter, xai, custom) defaults to OpenAI-compatible.
+        // Everything else (openrouter, xai, deepseek, zhipuai, custom)
+        // defaults to OpenAI-compatible.
         _ => Sdk::Openai,
     }
 }
@@ -563,7 +618,7 @@ model_id = "claude-opus-4-6"
         let models = parse_category("chat", &table).unwrap();
         assert_eq!(models.len(), 1);
 
-        let opus = &models["opus"];
+        let opus = &models["chat.anthropic.opus"];
         assert_eq!(opus.name, "opus");
         assert_eq!(opus.qualified_name, "chat.anthropic.opus");
         assert_eq!(opus.category, "chat");
@@ -593,13 +648,13 @@ cache_ttl = "5m"
         let models = parse_category("chat", &table).unwrap();
 
         // opus inherits provider defaults
-        let opus = &models["opus"];
+        let opus = &models["chat.anthropic.opus"];
         assert_eq!(opus.api_key_env.as_deref(), Some("SHARED_KEY"));
         assert_eq!(opus.max_context_tokens, Some(65536));
         assert_eq!(opus.cache_ttl.as_deref(), Some("1h"));
 
         // sonnet overrides cache_ttl
-        let sonnet = &models["sonnet"];
+        let sonnet = &models["chat.anthropic.sonnet"];
         assert_eq!(sonnet.api_key_env.as_deref(), Some("SHARED_KEY"));
         assert_eq!(sonnet.cache_ttl.as_deref(), Some("5m"));
     }
@@ -613,7 +668,7 @@ model_id = "claude-opus-4-6"
 "#,
         );
         let models = parse_category("chat", &table).unwrap();
-        let opus = &models["opus"];
+        let opus = &models["chat.anthropic.opus"];
 
         // Should get hardcoded anthropic defaults.
         assert_eq!(opus.sdk, Sdk::Anthropic);
@@ -636,7 +691,7 @@ model_id = "claude-opus-4-6"
 "#,
         );
         let models = parse_category("chat", &table).unwrap();
-        let opus = &models["opus"];
+        let opus = &models["chat.anthropic.opus"];
 
         assert_eq!(opus.api_key_env.as_deref(), Some("CUSTOM_KEY"));
         assert_eq!(opus.temperature, Some(0.5));
@@ -659,10 +714,10 @@ model_id = "claude-opus-4-6"
 
         // Should only have "opus", not "openrouter_provider".
         assert_eq!(models.len(), 1);
-        assert!(models.contains_key("opus"));
+        assert!(models.contains_key("chat.anthropic.opus"));
 
         // And the provider-level openrouter_provider should cascade.
-        let opus = &models["opus"];
+        let opus = &models["chat.anthropic.opus"];
         assert!(opus.openrouter_provider.is_some());
     }
 
@@ -691,8 +746,8 @@ model_id = "google/gemini-3.1-pro-preview"
         );
         let models = parse_category("chat", &table).unwrap();
         assert_eq!(models.len(), 2);
-        assert_eq!(models["opus"].sdk, Sdk::Anthropic);
-        assert_eq!(models["gemini-pro"].sdk, Sdk::Openai); // openrouter default
+        assert_eq!(models["chat.anthropic.opus"].sdk, Sdk::Anthropic);
+        assert_eq!(models["chat.openrouter.gemini-pro"].sdk, Sdk::Openai); // openrouter default
     }
 
     // ── ModelCatalog ────────────────────────────────────────────────
@@ -809,7 +864,8 @@ model_id = "claude-opus-4-6"
     fn sdk_serialization() {
         assert_eq!(serde_json::to_value(Sdk::Anthropic).unwrap(), "anthropic");
         assert_eq!(serde_json::to_value(Sdk::Openai).unwrap(), "openai");
-        assert_eq!(serde_json::to_value(Sdk::Deepseek).unwrap(), "deepseek");
+        assert_eq!(serde_json::to_value(Sdk::Gemini).unwrap(), "gemini");
+        assert_eq!(serde_json::to_value(Sdk::Zai).unwrap(), "zai");
     }
 
     #[test]
@@ -901,7 +957,7 @@ model_id = "claude-opus-4-6"
     // ── chat_model_names ───────────────────────────────────────────
 
     #[test]
-    fn chat_model_names_returns_short_names() {
+    fn chat_model_names_returns_qualified_names() {
         let table = parse_table(
             r#"
 [anthropic.sonnet]
@@ -918,7 +974,14 @@ model_id = "kimi-k2"
 
         let mut names: Vec<&str> = catalog.chat_model_names().collect();
         names.sort();
-        assert_eq!(names, vec!["kimi", "opus", "sonnet"]);
+        assert_eq!(
+            names,
+            vec![
+                "chat.anthropic.opus",
+                "chat.anthropic.sonnet",
+                "chat.openrouter.kimi"
+            ]
+        );
     }
 
     #[test]
@@ -928,12 +991,102 @@ model_id = "kimi-k2"
     }
 
     #[test]
-    fn sdk_as_provider_str() {
-        assert_eq!(Sdk::Anthropic.as_provider_str(), "anthropic");
-        assert_eq!(Sdk::Openai.as_provider_str(), "openai");
-        assert_eq!(Sdk::Gemini.as_provider_str(), "gemini");
-        assert_eq!(Sdk::Zhipuai.as_provider_str(), "zhipuai");
-        assert_eq!(Sdk::Deepseek.as_provider_str(), "deepseek");
-        assert_eq!(Sdk::Zai.as_provider_str(), "zai");
+    fn same_short_name_across_providers_both_findable() {
+        let chat = parse_table(
+            r#"
+[anthropic.opus]
+model_id = "claude-opus-4-6"
+
+[openrouter.opus]
+model_id = "anthropic/claude-opus-4.6"
+"#,
+        );
+        let catalog = ModelCatalog::from_sections(Some(&chat), None, None, None).unwrap();
+
+        // Both findable by qualified name.
+        let a = catalog.find_model("chat.anthropic.opus").unwrap();
+        assert_eq!(a.model_id, "claude-opus-4-6");
+        let b = catalog.find_model("chat.openrouter.opus").unwrap();
+        assert_eq!(b.model_id, "anthropic/claude-opus-4.6");
+
+        // Short name is ambiguous.
+        let err = catalog.find_model("opus").unwrap_err();
+        assert!(matches!(err, CatalogError::AmbiguousName { .. }));
+    }
+
+    #[test]
+    fn sdk_as_str() {
+        assert_eq!(Sdk::Anthropic.as_str(), "anthropic");
+        assert_eq!(Sdk::Openai.as_str(), "openai");
+        assert_eq!(Sdk::Gemini.as_str(), "gemini");
+        assert_eq!(Sdk::Zai.as_str(), "zai");
+    }
+
+    #[test]
+    fn sdk_deserialize_legacy_variants() {
+        // "deepseek" and "zhipuai" should deserialize to Openai with a deprecation warning.
+        let sdk: Sdk = toml::from_str::<ModelConfigFields>("sdk = \"deepseek\"")
+            .unwrap()
+            .sdk
+            .unwrap();
+        assert_eq!(sdk, Sdk::Openai);
+
+        let sdk: Sdk = toml::from_str::<ModelConfigFields>("sdk = \"zhipuai\"")
+            .unwrap()
+            .sdk
+            .unwrap();
+        assert_eq!(sdk, Sdk::Openai);
+    }
+
+    #[test]
+    fn openrouter_model_with_anthropic_sdk_override() {
+        // The key use case: OpenRouter provider with sdk = "anthropic"
+        // for Claude models.
+        let table = parse_table(
+            r#"
+[openrouter]
+
+[openrouter.claude-opus]
+model_id = "anthropic/claude-opus-4.6"
+sdk = "anthropic"
+"#,
+        );
+        let models = parse_category("chat", &table).unwrap();
+        let opus = &models["chat.openrouter.claude-opus"];
+
+        // SDK should be overridden to Anthropic
+        assert_eq!(opus.sdk, Sdk::Anthropic);
+        // Provider key should still be "openrouter"
+        assert_eq!(opus.provider_key, "openrouter");
+        // Should inherit OpenRouter's base_url
+        assert_eq!(
+            opus.base_url.as_deref(),
+            Some("https://openrouter.ai/api/v1")
+        );
+        // Should inherit OpenRouter's API key env
+        assert_eq!(opus.api_key_env.as_deref(), Some("OPENROUTER_API_KEY"));
+    }
+
+    #[test]
+    fn anthropic_model_with_openrouter_base_url_override() {
+        // Alternative config style: anthropic provider with manual overrides.
+        let table = parse_table(
+            r#"
+[anthropic.opus-via-or]
+model_id = "anthropic/claude-opus-4.6"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+"#,
+        );
+        let models = parse_category("chat", &table).unwrap();
+        let opus = &models["chat.anthropic.opus-via-or"];
+
+        assert_eq!(opus.sdk, Sdk::Anthropic);
+        assert_eq!(opus.provider_key, "anthropic");
+        assert_eq!(
+            opus.base_url.as_deref(),
+            Some("https://openrouter.ai/api/v1")
+        );
+        assert_eq!(opus.api_key_env.as_deref(), Some("OPENROUTER_API_KEY"));
     }
 }

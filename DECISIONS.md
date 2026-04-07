@@ -407,5 +407,46 @@ A single holistic call lets the LLM see all candidates + nearby context and make
 
 **Trade-offs:**
 - Cost increase: ~$23/month extra (multiple generate() calls per tick instead of one)
+
+## `shore usage` Pricing & Anomaly Fixes
+
+**Date:** 2026-04-06
+
+**Problem:** `shore usage` showed no pricing data (all costs `—`) and `--anomalies` showed "No cache anomalies found" despite the summary reporting 7 anomalies.
+
+**Root causes found and fixed:**
+
+1. **OpenRouter single-model API endpoint dead:** `/api/v1/models/{id}` returns 404 for all models. Rewrote `PricingEngine::fetch_pricing` to fetch the full `/api/v1/models` catalog and scan for the target model. Also bulk-caches all discovered pricing in one pass.
+
+2. **Anthropic model ID mismatch:** Shore stores `claude-opus-4-6` but OpenRouter expects `claude-opus-4.6`. Added `normalize_anthropic_model()` to convert the last digit-hyphen-digit to a dot.
+
+3. **SQL NULL propagation:** `SUM(total_cost)` returns NULL if any row has NULL cost. Changed to `TOTAL()` which returns 0.0 instead.
+
+4. **Anomaly time window mismatch:** Summary counted anomalies over 7d unfiltered; `--anomalies` defaulted to today. Fixed `--anomalies` to default to 7d when `--last` is today (the default).
+
+5. **`--recalculate` silent failures:** Added failure reporting with model ID and reason when pricing can't be fetched.
+
+**Trade-offs:**
+- Catalog fetch is larger (full model list ~1MB JSON) but happens once and caches everything
+- Anomaly `--anomalies` defaults to 7d only when `--last` is "today"; explicit `--last today` still uses today
 - Lost: Cross-tick continuity (the model no longer "remembers" what it did on previous ticks via journal)
 - Gained: The model can actually use tools and see results, enabling genuine exploration and discovery
+
+## SDK/Provider Split (2026-04-07)
+
+Decoupled wire protocol (SDK) from endpoint identity (provider) in `shore-llm-client`.
+
+**What changed:**
+- `Sdk` enum shrunk from 6 to 4 variants: `Anthropic`, `Openai`, `Gemini`, `Zai`. Deepseek and Zhipuai were just OpenAI dialects, not distinct wire protocols.
+- Provider-specific logic (OpenRouter headers, Deepseek reasoning field, etc.) extracted from SDK modules into a centralized `ProviderContext` struct (`providers/context.rs`).
+- `LlmRequest.provider: String` renamed to `LlmRequest.sdk: Sdk` (the enum, not a string).
+- Anthropic SDK now accepts any `base_url`, re-enabling Anthropic wire protocol through OpenRouter and other gateways.
+- Legacy `sdk = "deepseek"` / `sdk = "zhipuai"` in TOML configs maps to `Sdk::Openai` with a deprecation warning.
+
+**Why:**
+- The old design tangled "how to format the request" (SDK) with "where to send it" (provider), making it impossible to use the Anthropic protocol through OpenRouter without hacks.
+- OpenRouter support for Claude models was hastily removed due to cache debugging issues. The real problem was the tight coupling, not the feature itself.
+
+**Config impact:**
+- Users can now override SDK per model: `[chat.openrouter."anthropic/claude-opus"] sdk = "anthropic"`
+- Both approaches work: override sdk on an openrouter model, or override base_url/api_key on an anthropic model
