@@ -141,7 +141,7 @@ impl LlmClient {
         let provider_options = if opts.is_null() { None } else { Some(opts) };
 
         Ok(LlmRequest {
-            provider: model.sdk.as_provider_str().to_string(),
+            sdk: model.sdk.clone(),
             model: model.model_id.clone(),
             api_key,
             base_url: model.base_url.clone(),
@@ -169,7 +169,7 @@ impl LlmClient {
         self.log_payload("request", &body);
 
         debug!(
-            provider = %request.provider,
+            sdk = %request.sdk.as_str(),
             model = %request.model,
             "Sending streaming request to provider"
         );
@@ -329,7 +329,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(req.provider, "anthropic");
+        assert_eq!(req.sdk, Sdk::Anthropic);
         assert_eq!(req.model, "claude-test");
         assert_eq!(req.api_key, "sk-test-key");
         assert_eq!(req.max_tokens, 2048);

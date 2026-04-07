@@ -604,10 +604,11 @@ pub async fn generate(
 mod tests {
     use super::*;
     use serde_json::json;
+    use shore_config::models::Sdk;
 
     fn test_request() -> LlmRequest {
         LlmRequest {
-            provider: "zai".into(),
+            sdk: Sdk::Zai,
             model: "glm-5".into(),
             api_key: "test-key".into(),
             base_url: None,

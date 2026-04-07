@@ -98,7 +98,7 @@ pub async fn run_tool_loop(
 
         // Build LLM payload from content blocks.
         // Z.AI thinking blocks have no signature — include them unconditionally.
-        let assistant_content: Vec<Value> = if request.provider == "zai" {
+        let assistant_content: Vec<Value> = if request.sdk == shore_config::models::Sdk::Zai {
             assistant_blocks
                 .iter()
                 .map(crate::content_util::content_block_to_json)
@@ -344,7 +344,7 @@ mod tests {
     /// Build a test LlmRequest pointing at a mock server.
     fn test_request(base_url: &str, messages: Vec<Value>) -> LlmRequest {
         LlmRequest {
-            provider: "anthropic".into(),
+            sdk: shore_config::models::Sdk::Anthropic,
             model: "test".into(),
             api_key: "sk-test".into(),
             base_url: Some(base_url.to_string()),

@@ -4,13 +4,13 @@ Unexpected behavior, kludges, and idiosyncrasies that aren't obvious from readin
 
 ## Provider Integrations
 
-- **OpenRouter uses the OpenAI SDK path** (`Sdk::Openai`), not a dedicated provider. The `base_url` in hardcoded defaults is what routes requests to OpenRouter's API. If the base_url is missing or wrong, requests go to OpenAI instead — silently.
+- **OpenRouter defaults to `Sdk::Openai`** but can be overridden to `Sdk::Anthropic` per model (e.g. `sdk = "anthropic"` for Claude models). The `base_url` in hardcoded defaults routes requests to OpenRouter's API. If the base_url is missing or wrong, requests go to OpenAI instead — silently.
 
 - **OpenRouter inconsistently forwards thinking signatures.** When proxying Claude's extended thinking, OpenRouter sometimes strips or fails to relay `signature_delta` SSE events. This means thinking blocks stored via OpenRouter may have `signature: null` even when the upstream model produced one. Shore handles this gracefully (signatures are `Option<String>`), but if Anthropic ever strictly requires signatures on cached thinking blocks in subsequent turns, this could break multi-turn thinking continuity through OpenRouter.
 
 - **LLMs emit whitespace-only Text blocks before thinking/tool_use.** Claude (via OpenRouter) sometimes produces a `{"type": "text", "text": "\n\n"}` block before the thinking and tool_use blocks in a tool-loop response. The tool-loop merge must treat whitespace-only Text blocks as non-substantive — otherwise the merge predicate fails and tool results get orphaned.
 
-- **OpenRouter intermittently drops prompt cache hits.** With identical, static, never-changing system prompt breakpoints and 1h TTL, OpenRouter returns `cache_read_tokens: 0` on ~30% of requests. The same requests against the direct Anthropic API get 100% cache hits. This is not deterministic — the misses appear random. Confirmed 2026-04-01 with controlled A/B testing. This is why the Anthropic SDK no longer supports `base_url` (i.e. proxying through OpenRouter).
+- **OpenRouter intermittently drops prompt cache hits.** With identical, static, never-changing system prompt breakpoints and 1h TTL, OpenRouter returns `cache_read_tokens: 0` on ~30% of requests. The same requests against the direct Anthropic API get 100% cache hits. This is not deterministic — the misses appear random. Confirmed 2026-04-01 with controlled A/B testing. The Anthropic SDK now accepts custom `base_url` again (after the SDK/provider split), but be aware of this cache reliability issue when using OpenRouter with `sdk = "anthropic"`.
 
 ## Anthropic API
 

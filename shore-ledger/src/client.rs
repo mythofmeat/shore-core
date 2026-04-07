@@ -211,7 +211,7 @@ impl LedgerClient {
         let provider_key = request
             .provider_key
             .as_deref()
-            .unwrap_or(&request.provider);
+            .unwrap_or(request.sdk.as_str());
         self.pricing
             .get_or_fetch(provider_key, &request.model)
             .await;
@@ -258,7 +258,7 @@ impl LedgerClient {
         let provider_key = request
             .provider_key
             .as_deref()
-            .unwrap_or(&request.provider);
+            .unwrap_or(request.sdk.as_str());
         self.pricing
             .get_or_fetch(provider_key, &request.model)
             .await;

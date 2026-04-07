@@ -127,7 +127,7 @@ pub fn list_models(ctx: &CommandContext) -> CommandResult {
             json!({
                 "name": m.name,
                 "qualified_name": m.qualified_name,
-                "sdk": m.sdk.as_provider_str(),
+                "sdk": m.sdk.as_str(),
                 "provider": m.provider_key,
                 "model_id": m.model_id,
             })
@@ -139,7 +139,7 @@ pub fn list_models(ctx: &CommandContext) -> CommandResult {
         models.push(json!({
             "name": m.name,
             "qualified_name": m.qualified_name,
-            "sdk": m.sdk.as_provider_str(),
+            "sdk": m.sdk.as_str(),
             "provider": m.provider_key,
             "model_id": m.model_id,
         }));
