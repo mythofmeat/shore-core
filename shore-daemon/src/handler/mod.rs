@@ -582,7 +582,7 @@ async fn handle_generation(
         interiority_enabled: effective_config.app.behavior.autonomy.interiority.enabled,
         scratchpad_enabled: tool_toggles.scratchpad_read() || tool_toggles.scratchpad_write(),
         memory_enabled: tool_toggles.memory(),
-        image_memory_enabled: effective_config.app.memory.image_enabled,
+        image_memory_enabled: tool_toggles.remember_image(),
         send_image_enabled: tool_toggles.send_image(),
         remember_image_enabled: tool_toggles.remember_image(),
         generate_image_enabled: tool_toggles.generate_image(),
