@@ -226,3 +226,103 @@ async fn test_tool_result_persisted_in_jsonl() {
 
     harness.shutdown().await;
 }
+
+/// Verify that the daemon sends a "tools" array to the LLM provider when tool_use is enabled.
+///
+/// The default TestHarness config has tool_use enabled, so the first POST to the mock
+/// should include a non-empty "tools" array alongside "messages" and a "system" field.
+#[tokio::test]
+async fn test_request_body_includes_tools() {
+    let mut harness = TestHarness::boot().await;
+
+    harness.mock_llm.enqueue_text("Tools are present.").await;
+
+    let _response = harness.send_and_collect("Check if tools are sent").await;
+
+    let requests = harness.mock_llm.received_requests().await;
+    assert!(
+        !requests.is_empty(),
+        "Expected at least one LLM request, got none"
+    );
+
+    let body = &requests[0];
+
+    // "tools" must be present and non-empty.
+    let tools = body
+        .get("tools")
+        .and_then(|t| t.as_array())
+        .expect("Expected 'tools' array in request body");
+    assert!(
+        !tools.is_empty(),
+        "Expected non-empty 'tools' array, but it was empty"
+    );
+
+    // "messages" must be present.
+    let messages = body
+        .get("messages")
+        .and_then(|m| m.as_array())
+        .expect("Expected 'messages' array in request body");
+    assert!(
+        !messages.is_empty(),
+        "Expected non-empty 'messages' array, but it was empty"
+    );
+
+    // "system" field must be present (may be a string or array of blocks).
+    assert!(
+        body.get("system").is_some(),
+        "Expected 'system' field in request body, but it was absent; body keys: {:?}",
+        body.as_object().map(|o| o.keys().collect::<Vec<_>>())
+    );
+
+    harness.shutdown().await;
+}
+
+/// Verify that the user's message text is forwarded verbatim in the LLM request body.
+///
+/// The "messages" array in the POST body must contain at least one entry whose content
+/// includes the exact string "Hello test message".
+#[tokio::test]
+async fn test_request_body_contains_user_message() {
+    let mut harness = TestHarness::boot().await;
+
+    harness.mock_llm.enqueue_text("Message received.").await;
+
+    let _response = harness.send_and_collect("Hello test message").await;
+
+    let requests = harness.mock_llm.received_requests().await;
+    assert!(
+        !requests.is_empty(),
+        "Expected at least one LLM request, got none"
+    );
+
+    let body = &requests[0];
+    let messages = body
+        .get("messages")
+        .and_then(|m| m.as_array())
+        .expect("Expected 'messages' array in request body");
+
+    // Walk every message and every content block looking for the user text.
+    let found = messages.iter().any(|msg| {
+        // Content may be a plain string or an array of blocks.
+        if let Some(content_str) = msg.get("content").and_then(|c| c.as_str()) {
+            return content_str.contains("Hello test message");
+        }
+        if let Some(content_arr) = msg.get("content").and_then(|c| c.as_array()) {
+            return content_arr.iter().any(|block| {
+                block
+                    .get("text")
+                    .and_then(|t| t.as_str())
+                    .map_or(false, |t| t.contains("Hello test message"))
+            });
+        }
+        false
+    });
+
+    assert!(
+        found,
+        "Expected 'Hello test message' in the LLM request messages, but did not find it.\nMessages: {:#?}",
+        messages
+    );
+
+    harness.shutdown().await;
+}
