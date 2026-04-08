@@ -69,7 +69,7 @@ model = "claude-sonnet"            # Must match a key in [chat.*.*] below
 # Compaction — trims the active conversation when it grows too long.
 # [memory.compaction]
 # enabled = true
-# idle_trigger_minutes = 30  # Trigger after this many minutes of inactivity
+# idle_trigger = "30m"       # Trigger after this much inactivity
 # min_turns = 8              # Don't compact below this many user turns
 # max_turns = 16             # Force compaction when this many user turns is reached
 # keep_recent_turns = 2      # User turns to retain verbatim after compaction
@@ -93,7 +93,7 @@ model = "claude-sonnet"            # Must match a key in [chat.*.*] below
 # [notifications.command]
 # template = ""  # Shell command; use {title} and {body} as placeholders
 
-# generation_threshold_secs = 0  # Only notify message_complete when generation exceeds this (0 = always)
+# generation_threshold = "0s"  # Only notify message_complete when generation exceeds this (0 = always)
 
 # [notifications.events]
 # autonomous_message = true
@@ -140,7 +140,7 @@ model = "claude-sonnet"            # Must match a key in [chat.*.*] below
 # api_payload_logging = false
 # editor = "nvim"                   # Override $VISUAL / $EDITOR
 # max_retries = 2
-# retry_backoff_seconds = 0.5       # Base delay; doubles on each retry
+# retry_backoff = "500ms"           # Base delay; doubles on each retry
 # Data directory: override via $XDG_DATA_HOME (default: ~/.local/share/shore)
 
 # ── Chat models ──────────────────────────────────────────────────────────
@@ -178,7 +178,7 @@ model = "claude-sonnet"            # Must match a key in [chat.*.*] below
 #   — Prompt caching (Anthropic) —
 #   cache_ttl = "5m"                        # e.g. "5m", "1h"
 #   keepalive_enabled = true                # Send periodic pings to keep the cache alive (cost-saving)
-#   keepalive_ttl_minutes = 5              # Derive ping interval from TTL (default: 4 min)
+#   keepalive_ttl = "5m"                   # Derive ping interval from TTL (default: 4 min)
 #   keepalive_max_pings = 15               # Stop after this many pings to avoid runaway cost
 #
 #   — Provider-specific —
