@@ -66,6 +66,20 @@ impl TestHarness {
         let socket_path = tmp_dir.path().join("runtime").join("daemon.sock");
         let data_dir = config.dirs.data.clone();
 
+        Self::wire_daemon(config, mock_llm, tmp_dir, data_dir, socket_path).await
+    }
+
+    /// Internal: wire up daemon components and connect a SWP client.
+    ///
+    /// Called by both `boot_with` (fresh start) and `CrashedHarness::reboot`
+    /// (restart from existing state on disk).
+    pub(crate) async fn wire_daemon(
+        config: LoadedConfig,
+        mock_llm: MockLlmServer,
+        tmp_dir: tempfile::TempDir,
+        data_dir: PathBuf,
+        socket_path: PathBuf,
+    ) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(());
 
         // ── SWP Server ────────────────────────────────────────────────
@@ -172,6 +186,30 @@ impl TestHarness {
             server_handle,
             handler_handle,
             config,
+        }
+    }
+
+    /// Simulate a crash: abort server and handler tasks without graceful shutdown,
+    /// remove the stale socket file, and return a `CrashedHarness` for rebooting.
+    pub async fn crash(self) -> crate::chaos::CrashedHarness {
+        // Drop shutdown_tx without sending — no graceful shutdown signal.
+        drop(self.shutdown_tx);
+
+        // Abort both tasks immediately.
+        self.server_handle.abort();
+        self.handler_handle.abort();
+
+        // Wait briefly so the socket FD is released before we remove it.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Remove stale socket so the next bind succeeds.
+        let _ = std::fs::remove_file(&self.socket_path);
+
+        crate::chaos::CrashedHarness {
+            tmp_dir: self.tmp_dir,
+            mock_llm: self.mock_llm,
+            data_dir: self.data_dir,
+            socket_path: self.socket_path,
         }
     }
 
