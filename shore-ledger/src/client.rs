@@ -59,8 +59,10 @@ pub(crate) fn record_call(
 ) {
     let ts = Utc::now().to_rfc3339();
 
-    // Cache tracking (Anthropic only)
-    let (cache_state, cache_anomaly) = if provider == "anthropic" {
+    // Cache tracking: run for any call that reports cache metrics (not just
+    // provider == "anthropic", which misses OpenRouter-routed Anthropic calls).
+    let has_cache_metrics = usage.cache_read_tokens > 0 || usage.cache_creation_tokens > 0;
+    let (cache_state, cache_anomaly) = if has_cache_metrics || provider == "anthropic" {
         let obs = Observation {
             ts: ts.clone(),
             model: model.to_string(),
