@@ -601,14 +601,27 @@ The reviewer claims CJK text would be under-counted by the chars/4 heuristic, le
 
 **Where the review overstates:** Performance findings tend to describe theoretical worst cases without accounting for typical usage. The SSE O(n^2) pattern, mutex poisoning panics, and BM25 scan are all real patterns but unlikely to cause user-visible problems at current scale. The reviewer generally acknowledges this in "WHAT I COULD NOT VERIFY" sections, which is appropriate.
 
-**Where the developer should focus attention (priority order):**
+**Completed fixes (branch `refactor/glm-review`):**
+
+| Priority | Issue | Finding | Commit |
+|----------|-------|---------|--------|
+| **P0** | Autonomous message race condition | 3.2.2 / 2.1.1 | `6f6b87c` |
+| **P0** | Compaction atomicity gap | 3.1.1 | `6cceadf` |
+| **P1** | Non-atomic active.jsonl rewrite | 3.5.2 | `e84bc2f` |
+| **P1** | Generation handle not aborted | 3.2.1 | `2108776` |
+| **P1** | Silent vector indexing in collation | 3.1.2 | `7efbb3f` |
+| **P2** | LedgerStream finalization gap | 1.3 | `46ff6d0` |
+| **P2** | embed_text() bypasses LlmClient | 3.6.1 | `44c3f99` |
+
+**Remaining items (priority order):**
 
 | Priority | Issue | Finding |
 |----------|-------|---------|
-| **P0** | Autonomous message race condition | 3.2.2 / 2.1.1 |
-| **P0** | Compaction atomicity gap | 3.1.1 |
-| **P1** | Non-atomic active.jsonl rewrite | 3.5.2 |
-| **P1** | Generation handle not aborted | 3.2.1 |
-| **P1** | Silent vector indexing in collation | 3.1.2 |
-| **P2** | LedgerStream finalization gap | 1.3 |
-| **P2** | embed_text() bypasses LlmClient | 3.6.1 |
+| **P1** | MemoryDB open failure kills generation | 3.5.1 |
+| **P2** | SSE parser O(n²) allocation | S1.1 |
+| **P2** | Mutex poisoning panics (.lock().unwrap()) | S1.6 / 3.5.3 |
+| **P2** | Double reload dead code | S2.1.2 |
+| **P3** | Unbounded LLM call amplification | 3.1.3 |
+| **P3** | rid parameter unused / tracing gap | S1.5 / S2.1.4 |
+| **P3** | BM25 O(n) scan (no inverted index) | 3.1.4 |
+| **P3** | N+1 query pattern in semantic search | 3.1.5 |
