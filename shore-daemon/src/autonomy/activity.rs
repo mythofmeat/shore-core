@@ -1,5 +1,5 @@
 use chrono::{Datelike, Local, NaiveDateTime, Timelike, Weekday};
-use std::time::Instant;
+use tokio::time::Instant;
 use tracing::debug;
 
 // ---------------------------------------------------------------------------
@@ -453,7 +453,8 @@ fn median(values: &[f64]) -> Option<f64> {
 mod tests {
     use super::*;
     use chrono::{NaiveDate, Weekday};
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
+    use tokio::time::Instant;
 
     /// Helper: create a NaiveDateTime from components.
     fn dt(year: i32, month: u32, day: u32, hour: u32, min: u32, sec: u32) -> NaiveDateTime {

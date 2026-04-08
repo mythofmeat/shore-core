@@ -8,7 +8,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use dashmap::DashMap;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use tokio::time::Instant;
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -110,7 +111,7 @@ fn state_path(data_dir: &Path, character: &str) -> PathBuf {
     data_dir.join(character).join(STATE_FILENAME)
 }
 
-/// Convert a `std::time::Instant` to an RFC3339 wall-clock string.
+/// Convert a `tokio::time::Instant` to an RFC3339 wall-clock string.
 /// Approximate: uses the delta from `Instant::now()` applied to `Utc::now()`.
 fn instant_to_rfc3339(instant: Instant) -> String {
     let now_instant = Instant::now();

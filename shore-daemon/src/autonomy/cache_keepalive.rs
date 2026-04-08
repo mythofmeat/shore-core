@@ -1,4 +1,5 @@
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use tokio::time::Instant;
 
 /// Action returned by [`CacheKeepalive::tick`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

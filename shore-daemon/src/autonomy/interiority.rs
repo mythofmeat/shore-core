@@ -4,7 +4,8 @@
 //! holds that deadline and fires `RunTick` when it passes. An abandonment
 //! guard stops ticking when the user has been absent too long.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use tokio::time::Instant;
 
 use tracing::{debug, info, warn};
 
