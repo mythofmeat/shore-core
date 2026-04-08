@@ -1,5 +1,8 @@
 pub mod app;
+pub mod duration;
 pub mod models;
+
+pub use duration::ConfigDuration;
 
 use std::path::{Path, PathBuf};
 
