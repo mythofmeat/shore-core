@@ -101,7 +101,7 @@ impl TestHarness {
         )));
 
         // ── Autonomy Manager ──────────────────────────────────────────
-        let (autonomy, _compaction_rx) = AutonomyManager::new(
+        let (mut autonomy, _compaction_rx) = AutonomyManager::new(
             Default::default(),
             Default::default(),
             config.dirs.data.clone(),
@@ -112,6 +112,17 @@ impl TestHarness {
         let llm_client =
             LedgerClient::new(LlmClient::new(), &config.dirs.data.join("ledger.db"))
                 .expect("failed to create LedgerClient");
+
+        let notifier = shore_daemon::notifications::NotificationService::new(Default::default());
+
+        // Wire up autonomy with LLM resources (mirrors main.rs wiring).
+        autonomy.set_resources(
+            llm_client.clone(),
+            push_tx.clone(),
+            config.clone(),
+            notifier.clone(),
+        );
+        autonomy.set_registry(char_registry.clone());
 
         // ── Command Context ──────────────────────────────────────────
         let cmd_ctx = CommandContext {
@@ -138,7 +149,7 @@ impl TestHarness {
             has_seen_cache_read: Arc::new(AtomicBool::new(false)),
             compaction_occurred: Arc::new(AtomicBool::new(false)),
             autonomy,
-            notifier: shore_daemon::notifications::NotificationService::new(Default::default()),
+            notifier,
             generation_handle: None,
         };
 

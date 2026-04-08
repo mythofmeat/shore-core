@@ -277,6 +277,71 @@ impl MockLlmServer {
             .await;
     }
 
+    /// Enqueue a non-streaming JSON response (used by `generate()`, e.g. keepalive pings).
+    pub async fn enqueue_json_text(&self, text: &str) {
+        let body = json!({
+            "id": "msg_test_json",
+            "type": "message",
+            "role": "assistant",
+            "model": "claude-3-5-sonnet-20241022",
+            "content": [{ "type": "text", "text": text }],
+            "stop_reason": "end_turn",
+            "stop_sequence": null,
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 8
+            }
+        });
+        Mock::given(method("POST"))
+            .and(path_regex("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&body))
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&self.server)
+            .await;
+    }
+
+    /// Enqueue a non-streaming JSON response without strict expectation
+    /// (won't panic if not consumed).
+    pub async fn enqueue_json_text_optional(&self, text: &str) {
+        let body = json!({
+            "id": "msg_test_json",
+            "type": "message",
+            "role": "assistant",
+            "model": "claude-3-5-sonnet-20241022",
+            "content": [{ "type": "text", "text": text }],
+            "stop_reason": "end_turn",
+            "stop_sequence": null,
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 8
+            }
+        });
+        Mock::given(method("POST"))
+            .and(path_regex("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&body))
+            .up_to_n_times(1)
+            .mount(&self.server)
+            .await;
+    }
+
+    /// Enqueue an error response without strict expectation.
+    pub async fn enqueue_error_optional(&self, status: u16, body: &str) {
+        Mock::given(method("POST"))
+            .and(path_regex("/v1/messages"))
+            .respond_with(ErrorResponder {
+                status,
+                body: body.to_string(),
+            })
+            .up_to_n_times(1)
+            .mount(&self.server)
+            .await;
+    }
+
     pub async fn enqueue_hanging(&self) {
         Mock::given(method("POST"))
             .and(path_regex("/v1/messages"))
