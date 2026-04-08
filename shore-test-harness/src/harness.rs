@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -15,7 +15,7 @@ use shore_daemon::server::{Server, ServerConfig};
 use shore_ledger::LedgerClient;
 use shore_llm_client::LlmClient;
 use shore_protocol::server_msg::ServerMessage;
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use tracing::info;
@@ -41,7 +41,13 @@ pub struct TestHarness {
     shutdown_tx: watch::Sender<()>,
     server_handle: JoinHandle<()>,
     handler_handle: JoinHandle<()>,
+    compaction_handle: Option<JoinHandle<()>>,
+    pub compaction_occurred: Arc<AtomicBool>,
     pub config: LoadedConfig,
+    // Stored for `trigger_compaction_now`.
+    llm_client: LedgerClient,
+    push_tx: tokio::sync::broadcast::Sender<ServerMessage>,
+    notifier: shore_daemon::notifications::NotificationService,
 }
 
 impl TestHarness {
@@ -101,9 +107,9 @@ impl TestHarness {
         )));
 
         // ── Autonomy Manager ──────────────────────────────────────────
-        let (mut autonomy, _compaction_rx) = AutonomyManager::new(
-            Default::default(),
-            Default::default(),
+        let (mut autonomy, compaction_rx) = AutonomyManager::new(
+            config.app.behavior.autonomy.clone(),
+            config.app.memory.compaction.clone(),
             config.dirs.data.clone(),
             shutdown_rx.clone(),
         );
@@ -124,6 +130,22 @@ impl TestHarness {
         );
         autonomy.set_registry(char_registry.clone());
 
+        // ── Compaction Task ───────────────────────────────────────────
+        // Mirrors the background compaction task from shore-daemon/src/main.rs.
+        let compaction_occurred_flag = Arc::new(AtomicBool::new(false));
+        let compaction_handle = {
+            let cfg = config.clone();
+            let llm = llm_client.clone();
+            let data = config.dirs.data.clone();
+            let push = push_tx.clone();
+            let notif = notifier.clone();
+            let flag = compaction_occurred_flag.clone();
+            let aut = autonomy.clone();
+            tokio::spawn(async move {
+                run_compaction_task(compaction_rx, cfg, llm, data, push, notif, flag, aut).await;
+            })
+        };
+
         // ── Command Context ──────────────────────────────────────────
         let cmd_ctx = CommandContext {
             config: config.clone(),
@@ -139,6 +161,11 @@ impl TestHarness {
             memory_shell_sessions: HashMap::new(),
         };
 
+        // Clone for storage in TestHarness (before ownership is moved into msg_handler).
+        let stored_llm_client = llm_client.clone();
+        let stored_push_tx = push_tx.clone();
+        let stored_notifier = notifier.clone();
+
         // ── Message Handler ──────────────────────────────────────────
         let mut msg_handler = MessageHandler {
             registry: char_registry,
@@ -147,7 +174,7 @@ impl TestHarness {
             push_tx: push_tx.clone(),
             is_first_after_restart: Arc::new(AtomicBool::new(true)),
             has_seen_cache_read: Arc::new(AtomicBool::new(false)),
-            compaction_occurred: Arc::new(AtomicBool::new(false)),
+            compaction_occurred: compaction_occurred_flag.clone(),
             autonomy,
             notifier,
             generation_handle: None,
@@ -196,7 +223,38 @@ impl TestHarness {
             shutdown_tx,
             server_handle,
             handler_handle,
+            compaction_handle: Some(compaction_handle),
+            compaction_occurred: compaction_occurred_flag,
             config,
+            llm_client: stored_llm_client,
+            push_tx: stored_push_tx,
+            notifier: stored_notifier,
+        }
+    }
+
+    /// Directly trigger compaction for a character, bypassing the 30-second
+    /// autonomy tick.  Useful in tests where you don't want to wait 30s.
+    ///
+    /// Enqueue mock responses (compaction LLM call + embedding calls) BEFORE
+    /// calling this method.
+    pub async fn trigger_compaction_now(&self, character: &str) {
+        match shore_daemon::memory::compaction::run_compaction(
+            character,
+            &self.config,
+            &self.llm_client,
+            &self.data_dir,
+            &self.push_tx,
+            &self.notifier,
+        )
+        .await
+        {
+            Ok(retained) => {
+                self.compaction_occurred.store(true, Ordering::Release);
+                info!(character, retained, "trigger_compaction_now: compaction complete");
+            }
+            Err(e) => {
+                info!(character, error = %e, "trigger_compaction_now: compaction failed");
+            }
         }
     }
 
@@ -409,5 +467,48 @@ impl TestHarness {
         let _ = self.shutdown_tx.send(());
         let _ = self.server_handle.await;
         let _ = self.handler_handle.await;
+        // Abort the compaction task rather than awaiting it — the task holds an
+        // AutonomyManager clone which keeps compaction_tx alive, preventing the
+        // channel from closing and the task from ever exiting on its own.
+        if let Some(h) = self.compaction_handle {
+            h.abort();
+        }
+    }
+}
+
+// ── Background compaction task (mirrors shore-daemon/src/main.rs) ────────────
+
+async fn run_compaction_task(
+    mut rx: mpsc::Receiver<String>,
+    config: LoadedConfig,
+    llm_client: LedgerClient,
+    data_dir: std::path::PathBuf,
+    push_tx: tokio::sync::broadcast::Sender<ServerMessage>,
+    notifier: shore_daemon::notifications::NotificationService,
+    compaction_occurred: Arc<AtomicBool>,
+    autonomy: AutonomyManager,
+) {
+    while let Some(character) = rx.recv().await {
+        info!(character = %character, "TestHarness: background compaction triggered");
+        match shore_daemon::memory::compaction::run_compaction(
+            &character,
+            &config,
+            &llm_client,
+            &data_dir,
+            &push_tx,
+            &notifier,
+        )
+        .await
+        {
+            Ok(retained_count) => {
+                compaction_occurred.store(true, Ordering::Release);
+                autonomy.notify_compaction_complete(&character, retained_count);
+                info!(character = %character, retained = retained_count, "TestHarness: compaction complete");
+            }
+            Err(e) => {
+                tracing::warn!(character = %character, error = %e, "TestHarness: compaction failed");
+                autonomy.notify_compaction_failed(&character);
+            }
+        }
     }
 }

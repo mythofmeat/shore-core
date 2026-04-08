@@ -382,6 +382,31 @@ impl MockLlmServer {
             .await;
     }
 
+    /// Enqueue an OpenAI-format embedding response (optional — won't panic if unused).
+    ///
+    /// Returns a single embedding vector of `dimensions` zeros.  Matches
+    /// POST requests to `/embeddings` (the OpenAI-compatible embedding endpoint
+    /// called by `shore-llm-client`'s `embed()` function).
+    pub async fn enqueue_embedding_optional(&self, dimensions: usize) {
+        let zeros: Vec<f64> = vec![0.0; dimensions];
+        let body = json!({
+            "object": "list",
+            "data": [{
+                "object": "embedding",
+                "index": 0,
+                "embedding": zeros
+            }],
+            "model": "text-embedding-3-small",
+            "usage": { "prompt_tokens": 8, "total_tokens": 8 }
+        });
+        Mock::given(method("POST"))
+            .and(path_regex("/embeddings"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&body))
+            .up_to_n_times(100)
+            .mount(&self.server)
+            .await;
+    }
+
     pub async fn received_requests(&self) -> Vec<Value> {
         self.server
             .received_requests()
