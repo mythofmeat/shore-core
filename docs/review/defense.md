@@ -610,18 +610,24 @@ The reviewer claims CJK text would be under-counted by the chars/4 heuristic, le
 | **P1** | Non-atomic active.jsonl rewrite | 3.5.2 | `e84bc2f` |
 | **P1** | Generation handle not aborted | 3.2.1 | `2108776` |
 | **P1** | Silent vector indexing in collation | 3.1.2 | `7efbb3f` |
+| **P1** | MemoryDB open failure kills generation | 3.5.1 | `5a5d9ef` |
 | **P2** | LedgerStream finalization gap | 1.3 | `46ff6d0` |
 | **P2** | embed_text() bypasses LlmClient | 3.6.1 | `44c3f99` |
+| **P2** | SSE parser O(n²) allocation | S1.1 | `1ca7145` |
+| **P2** | Double reload dead code | S2.1.2 | `3b0f857` |
+| **P2** | Mutex poisoning panics (.lock().unwrap()) | S1.6 / 3.5.3 | `bec8fe4` |
+| **P3** | LLM call amplification guard | 3.1.3 | `ac1203e` |
+| **P3** | N+1 query pattern in semantic search | 3.1.5 | `16d7d0a` |
+| **P3** | BM25 O(n) scan (no inverted index) | 3.1.4 | `5291a3d` |
+| **P2** | Per-request MemoryDB/VectorStore | 2.3 / 3.7.2 | `e223d73` |
+| **P3** | AutonomyManager does too much | 3.3 | `2ad307b` |
+| **P3** | No abort on client disconnect | 3.4 | `fc1a7e6` |
 
-**Remaining items (priority order):**
+**Remaining items (deferred):**
 
-| Priority | Issue | Finding |
-|----------|-------|---------|
-| **P1** | MemoryDB open failure kills generation | 3.5.1 |
-| **P2** | SSE parser O(n²) allocation | S1.1 |
-| **P2** | Mutex poisoning panics (.lock().unwrap()) | S1.6 / 3.5.3 |
-| **P2** | Double reload dead code | S2.1.2 |
-| **P3** | Unbounded LLM call amplification | 3.1.3 |
-| **P3** | rid parameter unused / tracing gap | S1.5 / S2.1.4 |
-| **P3** | BM25 O(n) scan (no inverted index) | 3.1.4 |
-| **P3** | N+1 query pattern in semantic search | 3.1.5 |
+| Priority | Issue | Finding | Reason Deferred |
+|----------|-------|---------|-----------------|
+| **P3** | rid parameter unused / tracing gap | S1.5 / S2.1.4 | Requires X-Request-ID plumbing through LlmClient |
+| **P3** | handler.rs god file | 3.1 | Structural refactor |
+| **P3** | Two separate tool-loop implementations | 3.2 | Structural refactor |
+| **P3** | Broadcast channel capacity 256 | 4.4 | Unlikely to cause issues at current scale |
