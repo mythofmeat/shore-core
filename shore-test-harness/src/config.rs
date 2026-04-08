@@ -53,6 +53,9 @@ impl TestConfigBuilder {
     }
 
     pub fn build(&self, tmp_dir: &Path, mock_base_url: &str) -> LoadedConfig {
+        // Set a dummy API key so LlmClient::build_request succeeds.
+        std::env::set_var("SHORE_TEST_API_KEY", "sk-test-dummy");
+
         let config_dir = tmp_dir.join("config");
         let data_dir = tmp_dir.join("data");
         let runtime_dir = tmp_dir.join("runtime");
@@ -87,6 +90,8 @@ impl TestConfigBuilder {
             r#"
 [openrouter]
 base_url = "{base_url}"
+sdk = "anthropic"
+api_key_env = "SHORE_TEST_API_KEY"
 
 [openrouter.{alias}]
 model_id = "{model_id}"
