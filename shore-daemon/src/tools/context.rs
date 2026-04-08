@@ -6,6 +6,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 
 use shore_config::app::SearchConfig;
 use shore_config::models::ResolvedModel;
@@ -45,7 +46,7 @@ impl AgentRag for NoopRag {
 /// Used directly by interiority ticks. Wrapped by `HandlerToolContext` in the
 /// message handler (which adds `AutonomyManager` access).
 pub(crate) struct SharedToolContext {
-    pub(crate) db: MemoryDB,
+    pub(crate) db: Arc<MemoryDB>,
     pub(crate) agent: MemoryAgent,
     pub(crate) agent_llm: RealAgentLlm,
     pub(crate) agent_model_val: ResolvedModel,

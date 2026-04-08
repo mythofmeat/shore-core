@@ -552,7 +552,7 @@ async fn run_post_compaction_collation(
             collation_indexer
                 .as_ref()
                 .map(|i| i as &dyn crate::memory::agent::AgentIndexer),
-            collation_search_ctx.as_ref().map(|ctx| &ctx.vector_store),
+            collation_search_ctx.as_ref().map(|ctx| &*ctx.vector_store),
             Some(collation_limit),
         )
         .await
@@ -849,7 +849,7 @@ pub async fn collate(
                 indexer
                     .as_ref()
                     .map(|i| i as &dyn crate::memory::agent::AgentIndexer),
-                search_ctx.as_ref().map(|ctx| &ctx.vector_store),
+                search_ctx.as_ref().map(|ctx| &*ctx.vector_store),
                 Some(limit),
             )
             .await

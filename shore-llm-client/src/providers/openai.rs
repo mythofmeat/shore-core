@@ -249,6 +249,12 @@ fn build_headers(request: &LlmRequest, ctx: &ProviderContext) -> reqwest::header
         }
     }
 
+    if let Some(ref rid) = request.rid {
+        if let Ok(hv) = rid.parse::<reqwest::header::HeaderValue>() {
+            headers.insert("X-Request-ID", hv);
+        }
+    }
+
     headers
 }
 
@@ -886,6 +892,7 @@ mod tests {
             top_p: None,
             provider_options: None,
             provider_key: None,
+            rid: None,
         }
     }
 

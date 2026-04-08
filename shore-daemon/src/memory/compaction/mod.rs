@@ -240,7 +240,11 @@ impl CompactionManager {
             .unwrap_or_default();
 
         let now_str = Local::now().to_rfc3339();
-        let mut entry_ids = Vec::new();
+
+        // Track created resources for compensating deletes on failure.
+        // Each element: (entry_id, changelog_id, indexed_in_vector_store).
+        // changelog_id is None until the changelog row is successfully written.
+        let mut created: Vec<(String, Option<i64>, bool)> = Vec::new();
 
         for (i, ce) in compacted.iter().enumerate() {
             let entry_id = Self::generate_entry_id(i);
@@ -268,39 +272,64 @@ impl CompactionManager {
                 collated_at: String::new(),
             };
 
-            db.create_entry(&entry)
-                .map_err(|e| CompactionError::Db(e.to_string()))?;
+            if let Err(e) = db.create_entry(&entry) {
+                Self::rollback_compaction(&created, db, indexer).await;
+                return Err(CompactionError::Db(e.to_string()));
+            }
 
-            // Index to vector store.
-            indexer.index_entry(&entry_id, &ce.summary_text).await?;
+            // Entry now exists in SQLite. Track it (changelog_id=None, not yet indexed).
+            created.push((entry_id.clone(), None, false));
+
+            if let Err(e) = indexer.index_entry(&entry_id, &ce.summary_text).await {
+                Self::rollback_compaction(&created, db, indexer).await;
+                return Err(e);
+            }
+            // Mark as indexed so rollback will remove it from the vector store.
+            created.last_mut().unwrap().2 = true;
 
             // Record changelog.
-            let cl_id = db
-                .append_changelog(
-                    "compaction",
-                    &format!(
-                        "Compacted conversation {} into entry {}",
-                        conversation_id, entry_id
-                    ),
-                )
-                .map_err(|e| CompactionError::Db(e.to_string()))?;
+            let cl_id = match db.append_changelog(
+                "compaction",
+                &format!(
+                    "Compacted conversation {} into entry {}",
+                    conversation_id, entry_id
+                ),
+            ) {
+                Ok(id) => id,
+                Err(e) => {
+                    Self::rollback_compaction(&created, db, indexer).await;
+                    return Err(CompactionError::Db(e.to_string()));
+                }
+            };
+            created.last_mut().unwrap().1 = Some(cl_id);
 
-            db.link_changelog_entry(cl_id, &entry_id)
-                .map_err(|e| CompactionError::Db(e.to_string()))?;
-
-            entry_ids.push(entry_id);
+            // cl_id is now set on the tracked tuple above, so if link_changelog_entry
+            // fails below, rollback will correctly delete this changelog row.
+            if let Err(e) = db.link_changelog_entry(cl_id, &entry_id) {
+                Self::rollback_compaction(&created, db, indexer).await;
+                return Err(CompactionError::Db(e.to_string()));
+            }
         }
 
         // Archive compacted messages, retain recent, write recap.
+        // This is the final step — if it fails, roll back all SQLite and vector store writes.
         let retained = messages.len() - split_at;
-        let new_conversation_id = conversation_mgr.archive_and_retain(
+        let new_conversation_id = match conversation_mgr.archive_and_retain(
             conversation_id,
             RetentionParams {
                 keep_last_n: retained,
                 recap: recap.clone(),
                 active_content: active_content.to_string(),
             },
-        )?;
+        ) {
+            Ok(id) => id,
+            Err(e) => {
+                Self::rollback_compaction(&created, db, indexer).await;
+                return Err(e);
+            }
+        };
+
+        let entry_ids: Vec<String> = created.into_iter().map(|(id, _, _)| id).collect();
 
         info!(
             entries_created = entry_ids.len(),
@@ -317,6 +346,36 @@ impl CompactionManager {
             retained_turns,
             recap_generated: recap.is_some(),
         }))
+    }
+
+    /// Compensating-delete rollback for a failed compaction.
+    ///
+    /// Iterates the created list in reverse and removes each resource:
+    /// - changelog rows (SQLite)
+    /// - entry rows (SQLite, including FK cleanup)
+    /// - vector index entries (LanceDB, best-effort)
+    ///
+    /// Errors during cleanup are logged at WARN level and skipped so that
+    /// rollback continues regardless of individual failures.
+    async fn rollback_compaction(
+        created: &[(String, Option<i64>, bool)],
+        db: &MemoryDB,
+        indexer: &dyn VectorIndexer,
+    ) {
+        use tracing::warn;
+        for (entry_id, cl_id, was_indexed) in created.iter().rev() {
+            if let Some(cl_id) = cl_id {
+                if let Err(e) = db.delete_changelog(*cl_id) {
+                    warn!(entry_id, cl_id, error = %e, "rollback: failed to delete changelog");
+                }
+            }
+            if let Err(e) = db.delete_entry(entry_id) {
+                warn!(entry_id, error = %e, "rollback: failed to delete entry");
+            }
+            if *was_indexed {
+                indexer.remove_entry(entry_id).await;
+            }
+        }
     }
 
     /// Create an idle timer bound to this manager's activity signal.
@@ -446,6 +505,69 @@ mod tests {
                 .unwrap()
                 .push((conversation_id.to_string(), params.keep_last_n));
             Ok(self.next_id.clone())
+        }
+    }
+
+    struct FailingConversationMgr;
+
+    impl ConversationManager for FailingConversationMgr {
+        fn archive_and_retain(
+            &self,
+            _conversation_id: &str,
+            _params: RetentionParams,
+        ) -> Result<String, CompactionError> {
+            Err(CompactionError::ConversationManager(
+                "simulated archive failure".to_string(),
+            ))
+        }
+    }
+
+    struct FailingIndexer {
+        fail_on: usize,
+        call_count: StdMutex<usize>,
+        removed: StdMutex<Vec<String>>,
+    }
+
+    impl FailingIndexer {
+        fn new(fail_on: usize) -> Self {
+            Self {
+                fail_on,
+                call_count: StdMutex::new(0),
+                removed: StdMutex::new(Vec::new()),
+            }
+        }
+
+        fn removed_entries(&self) -> Vec<String> {
+            self.removed.lock().unwrap().clone()
+        }
+    }
+
+    impl VectorIndexer for FailingIndexer {
+        fn index_entry(
+            &self,
+            entry_id: &str,
+            _text: &str,
+        ) -> Pin<Box<dyn Future<Output = Result<(), CompactionError>> + Send + '_>> {
+            let mut count = self.call_count.lock().unwrap();
+            *count += 1;
+            let should_fail = *count == self.fail_on;
+            drop(count);
+            let _entry_id = entry_id;
+            Box::pin(async move {
+                if should_fail {
+                    Err(CompactionError::Indexing("simulated index failure".to_string()))
+                } else {
+                    Ok(())
+                }
+            })
+        }
+
+        fn remove_entry(
+            &self,
+            entry_id: &str,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            self.removed.lock().unwrap().push(entry_id.to_string());
+            Box::pin(async {})
         }
     }
 
@@ -1034,5 +1156,115 @@ They discussed daily activities and the user's beverage preferences.
         tokio::time::advance(Duration::from_secs(60)).await;
         handle.await.unwrap();
         assert!(fired.load(Ordering::SeqCst));
+    }
+
+    // -- Tests: rollback on failure -------------------------------------------
+
+    #[tokio::test]
+    async fn test_compact_rollback_on_archive_failure() {
+        let db = MemoryDB::open_in_memory().unwrap();
+        let llm = MockLlm {
+            response: make_xml_response(),
+        };
+        let indexer = MockIndexer::new();
+        let conv_mgr = FailingConversationMgr;
+        let mgr = CompactionManager::new(make_config_with_keep(2));
+
+        let result = mgr
+            .compact(
+                "conv-1",
+                &make_messages(10),
+                "",
+                false,
+                DEFAULT_COMPACT_PROMPT,
+                None,
+                "TestChar",
+                "TestUser",
+                &llm,
+                &db,
+                &indexer,
+                &conv_mgr,
+                false,
+            )
+            .await;
+
+        assert!(
+            matches!(result, Err(CompactionError::ConversationManager(_))),
+            "expected ConversationManager error, got {:?}",
+            result
+        );
+
+        // The key invariant: no entries should remain after rollback.
+        let entries = db.get_entries_by_status("active").unwrap();
+        assert!(
+            entries.is_empty(),
+            "rollback should remove all created entries; found {} entries",
+            entries.len()
+        );
+
+        // Changelog should also be clean.
+        let logs = db.get_recent_changelog(100).unwrap();
+        assert!(
+            logs.is_empty(),
+            "rollback should remove all created changelog records; found {} records",
+            logs.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_compact_rollback_on_index_failure() {
+        let db = MemoryDB::open_in_memory().unwrap();
+        let llm = MockLlm {
+            response: make_xml_response(),
+        };
+        // Fail on the second index_entry call (first entry indexes, second fails).
+        let indexer = FailingIndexer::new(2);
+        let conv_mgr = MockConversationMgr::new("new-conv-1");
+        let mgr = CompactionManager::new(make_config_with_keep(2));
+
+        let result = mgr
+            .compact(
+                "conv-1",
+                &make_messages(10),
+                "",
+                false,
+                DEFAULT_COMPACT_PROMPT,
+                None,
+                "TestChar",
+                "TestUser",
+                &llm,
+                &db,
+                &indexer,
+                &conv_mgr,
+                false,
+            )
+            .await;
+
+        assert!(
+            matches!(result, Err(CompactionError::Indexing(_))),
+            "expected Indexing error, got {:?}",
+            result
+        );
+
+        // No entries should remain.
+        let entries = db.get_entries_by_status("active").unwrap();
+        assert!(
+            entries.is_empty(),
+            "rollback should remove all created entries; found {} entries",
+            entries.len()
+        );
+
+        // The first entry was indexed before the second failed — it should have been removed.
+        let removed = indexer.removed_entries();
+        assert!(
+            !removed.is_empty(),
+            "rollback should have called remove_entry for the first indexed entry"
+        );
+
+        // archive_and_retain should NOT have been called.
+        assert!(
+            conv_mgr.archived_calls().is_empty(),
+            "archive_and_retain should not be called after rollback"
+        );
     }
 }

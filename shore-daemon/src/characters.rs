@@ -13,6 +13,8 @@ use tokio::sync::{broadcast, Mutex};
 use tracing::{info, warn};
 
 use crate::engine::{ConversationEngine, EngineError};
+use crate::memory::db::MemoryDB;
+use crate::memory::vectorstore::VectorStore;
 use shore_config::{
     discover_characters, load_character_config, load_character_definition, resolve_user_definition,
     LoadedConfig,
@@ -34,6 +36,10 @@ pub struct CharacterRegistry {
     global_config: LoadedConfig,
     /// Cached per-character configs. `Some(config)` = has override, `None` = no override file.
     char_configs: HashMap<String, Option<LoadedConfig>>,
+    /// Cached MemoryDB connections per character (opened once, reused).
+    db_cache: HashMap<String, Arc<MemoryDB>>,
+    /// Cached VectorStore connections per character (opened once, reused).
+    vs_cache: HashMap<String, Arc<VectorStore>>,
 }
 
 impl CharacterRegistry {
@@ -59,6 +65,8 @@ impl CharacterRegistry {
             available,
             global_config,
             char_configs: HashMap::new(),
+            db_cache: HashMap::new(),
+            vs_cache: HashMap::new(),
         }
     }
 
@@ -156,6 +164,32 @@ impl CharacterRegistry {
     /// Access the global config.
     pub fn global_config(&self) -> &LoadedConfig {
         &self.global_config
+    }
+
+    /// Get or open a cached MemoryDB connection for a character.
+    pub fn get_or_open_db(&mut self, name: &str) -> Result<Arc<MemoryDB>, rusqlite::Error> {
+        if let Some(db) = self.db_cache.get(name) {
+            return Ok(db.clone());
+        }
+        let db_path = self.data_dir.join(name).join("memory").join("memory.db");
+        let db = Arc::new(MemoryDB::open(&db_path)?);
+        self.db_cache.insert(name.to_string(), db.clone());
+        Ok(db)
+    }
+
+    /// Get or open a cached VectorStore connection for a character.
+    pub async fn get_or_open_vs(
+        &mut self,
+        name: &str,
+        dimension: i32,
+    ) -> Result<Arc<VectorStore>, crate::memory::vectorstore::VectorStoreError> {
+        if let Some(vs) = self.vs_cache.get(name) {
+            return Ok(vs.clone());
+        }
+        let vs_path = self.data_dir.join(name).join("memory").join("vectorstore");
+        let vs = Arc::new(VectorStore::open(&vs_path, dimension).await?);
+        self.vs_cache.insert(name.to_string(), vs.clone());
+        Ok(vs)
     }
 
     /// Select a character by name or auto-select if there's only one.

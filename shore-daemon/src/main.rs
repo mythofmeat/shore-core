@@ -158,6 +158,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         loaded.clone(),
         notifier.clone(),
     );
+    autonomy.set_registry(char_registry.clone());
 
     // In-memory diagnostic ring buffers (API calls, tool calls, errors).
     // Writer: generation tasks (handler.rs). Reader: `status`/`diagnostics` commands.

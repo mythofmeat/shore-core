@@ -437,7 +437,7 @@ pub fn extract_entries_for_reindex(
 /// to `VectorStore::reindex()` once embeddings have been computed.
 ///
 /// This is a synchronous extraction step. The caller is responsible for
-/// computing embeddings (via `embed_text`) and calling `VectorStore::reindex`.
+/// computing embeddings (via `LlmClient::embed`) and calling `VectorStore::reindex`.
 ///
 /// Example workflow:
 /// ```ignore

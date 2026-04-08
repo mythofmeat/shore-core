@@ -95,6 +95,42 @@ pub fn extract_tool_uses(blocks: &[ContentBlock]) -> Vec<(String, String, Value)
         .collect()
 }
 
+/// Convert a `dispatch_tool` result (`Result<Value, ToolError>`) to an
+/// `(output_string, is_error)` pair suitable for tool_result messages.
+///
+/// On success, extracts the string representation (bare string if the
+/// Value is a string, otherwise JSON-serialized). On error, uses the
+/// Display representation.
+pub fn dispatch_result_to_output(result: Result<Value, crate::tools::ToolError>) -> (String, bool) {
+    match result {
+        Ok(value) => {
+            let s = if let Some(s) = value.as_str() {
+                s.to_string()
+            } else {
+                serde_json::to_string(&value).unwrap_or_default()
+            };
+            (s, false)
+        }
+        Err(e) => (e.to_string(), true),
+    }
+}
+
+/// Build a `tool_result` JSON value for the LLM request payload.
+///
+/// The `is_error` field is only included when `true`, matching the
+/// Anthropic API convention.
+pub fn build_tool_result_json(tool_use_id: &str, content: &str, is_error: bool) -> Value {
+    let mut v = json!({
+        "type": "tool_result",
+        "tool_use_id": tool_use_id,
+        "content": content,
+    });
+    if is_error {
+        v["is_error"] = json!(true);
+    }
+    v
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
