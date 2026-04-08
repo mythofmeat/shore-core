@@ -33,7 +33,6 @@ use crate::memory::compaction_impls::resolve_embed_config;
 use crate::memory::compaction_impls::ImageGenConfig;
 use crate::memory::db::MemoryDB;
 use crate::memory::researcher::MemoryResearcher;
-use crate::memory::vectorstore::VectorStore;
 use crate::notifications::{NotificationEvent, NotificationService};
 use crate::server::RoutedMessage;
 use crate::tools::context::{NoopRag, SharedToolContext};
@@ -977,19 +976,21 @@ async fn run_tool_phase(
     cache_ctx: &CacheContext,
 ) -> Result<tools::ToolLoopResult, Box<dyn std::error::Error + Send + Sync>> {
     debug!(character = char_name, "run_tool_phase starting");
-    let db_path = data_dir.join(char_name).join("memory").join("memory.db");
-    let memory_db = match MemoryDB::open(&db_path) {
-        Ok(db) => db,
-        Err(e) => {
-            warn!(
-                character = char_name,
-                error = %e,
-                "Failed to open memory DB — memory tools disabled for this turn"
-            );
-            return Ok(tools::ToolLoopResult {
-                result,
-                intermediate_messages: vec![],
-            });
+    let memory_db = {
+        let mut registry = ctx.registry.lock().await;
+        match registry.get_or_open_db(char_name) {
+            Ok(db) => db,
+            Err(e) => {
+                warn!(
+                    character = char_name,
+                    error = %e,
+                    "Failed to open memory DB — memory tools disabled for this turn"
+                );
+                return Ok(tools::ToolLoopResult {
+                    result,
+                    intermediate_messages: vec![],
+                });
+            }
         }
     };
 
@@ -1008,8 +1009,8 @@ async fn run_tool_phase(
         &effective_config.models.embedding,
     ) {
         Ok(embed_config) => {
-            let vs_path = data_dir.join(char_name).join("memory").join("vectorstore");
-            match VectorStore::open(&vs_path, embed_config.dimensions).await {
+            let mut registry = ctx.registry.lock().await;
+            match registry.get_or_open_vs(char_name, embed_config.dimensions).await {
                 Ok(vs) => Some(AgentSearchContext::new(
                     vs,
                     ctx.llm_client.inner().clone(),

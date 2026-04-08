@@ -2,7 +2,7 @@
 
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
 use shore_llm_client::LlmClient;
@@ -147,7 +147,7 @@ pub trait AgentIndexer: Send + Sync {
 /// with reciprocal rank fusion). When absent, the tool returns an error
 /// and the agent falls back to FTS5-only `search_entries`.
 pub struct AgentSearchContext {
-    pub vector_store: VectorStore,
+    pub vector_store: Arc<VectorStore>,
     pub bm25: Mutex<Bm25Index>,
     pub llm_client: LlmClient,
     pub embed_config: EmbedConfig,
@@ -156,7 +156,7 @@ pub struct AgentSearchContext {
 
 impl AgentSearchContext {
     pub fn new(
-        vector_store: VectorStore,
+        vector_store: Arc<VectorStore>,
         llm_client: LlmClient,
         embed_config: EmbedConfig,
     ) -> Self {

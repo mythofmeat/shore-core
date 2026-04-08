@@ -106,7 +106,7 @@ pub async fn setup_search_context(
         .await
         .ok()?;
     Some(AgentSearchContext::new(
-        vs,
+        Arc::new(vs),
         ctx.llm_client.inner().clone(),
         embed_config,
     ))

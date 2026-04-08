@@ -11,6 +11,7 @@ use crate::memory::vectorstore::VectorStore;
 use chrono::Local;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::sync::Arc;
 use tracing::{debug, info, warn};
 
 // ---------------------------------------------------------------------------
@@ -863,7 +864,7 @@ pub async fn run_collation(
             let vs_path = character_dir.join("memory").join("vectorstore");
             match VectorStore::open(&vs_path, embed_config.dimensions).await {
                 Ok(vs) => Some(AgentSearchContext::new(
-                    vs,
+                    Arc::new(vs),
                     llm_client.inner().clone(),
                     embed_config,
                 )),
@@ -895,7 +896,7 @@ pub async fn run_collation(
             &refine_template,
             &collation_vars,
             indexer.as_ref().map(|i| i as &dyn AgentIndexer),
-            search_ctx.as_ref().map(|ctx| &ctx.vector_store),
+            search_ctx.as_ref().map(|ctx| &*ctx.vector_store),
             Some(collation_limit),
         )
         .await?;

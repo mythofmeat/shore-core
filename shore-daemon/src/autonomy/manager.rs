@@ -188,6 +188,8 @@ impl AutonomyManager {
             loaded_config,
             notifier,
             engine,
+            db: std::sync::Mutex::new(None),
+            vs: std::sync::Mutex::new(None),
         };
         let handle = tokio::spawn(async move {
             character_tick_loop(name, tick_ctx, shutdown_rx).await;
@@ -632,6 +634,8 @@ mod tests {
             loaded_config: None,
             notifier: None,
             engine: None,
+            db: std::sync::Mutex::new(None),
+            vs: std::sync::Mutex::new(None),
         };
         tick::tick_character_for_test("alice", &tick_ctx).await;
     }

@@ -48,6 +48,10 @@ pub(super) struct TickContext {
     /// Engine for routing autonomous messages through the locked message store,
     /// preventing races with handler.rs persist() full-file rewrites.
     pub(super) engine: Option<Arc<tokio::sync::Mutex<ConversationEngine>>>,
+    /// Cached MemoryDB connection (opened once, reused across ticks).
+    pub(super) db: std::sync::Mutex<Option<Arc<MemoryDB>>>,
+    /// Cached VectorStore connection (opened once, reused across ticks).
+    pub(super) vs: std::sync::Mutex<Option<Arc<VectorStore>>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -198,6 +202,8 @@ async fn tick_character(character: &str, ctx: &TickContext) {
                     ctx.loaded_config.as_deref(),
                     ctx.notifier.as_ref(),
                     ctx.engine.as_ref(),
+                    &ctx.db,
+                    &ctx.vs,
                 ),
             )
             .await
@@ -383,6 +389,8 @@ async fn execute_unified_tick(
     loaded_config: Option<&LoadedConfig>,
     notifier: Option<&NotificationService>,
     engine: Option<&Arc<tokio::sync::Mutex<ConversationEngine>>>,
+    db_cache: &Mutex<Option<Arc<MemoryDB>>>,
+    vs_cache: &Mutex<Option<Arc<VectorStore>>>,
 ) {
     let Some(client) = llm_client else { return };
 
@@ -414,7 +422,7 @@ async fn execute_unified_tick(
         .push(json!({"role": "user", "content": INTERIORITY_PROMPT}));
 
     let Some(lc) = loaded_config else { return };
-    let tool_ctx = match build_tool_context(character, data_dir, client, lc).await {
+    let tool_ctx = match build_tool_context(character, data_dir, client, lc, db_cache, vs_cache).await {
         Some(ctx) => ctx,
         None => {
             warn!(
@@ -635,16 +643,29 @@ async fn build_tool_context(
     data_dir: &Path,
     client: &LedgerClient,
     config: &LoadedConfig,
+    db_cache: &Mutex<Option<Arc<MemoryDB>>>,
+    vs_cache: &Mutex<Option<Arc<VectorStore>>>,
 ) -> Option<SharedToolContext> {
     let char_dir = data_dir.join(character);
 
-    // Memory DB.
-    let db_path = char_dir.join("memory").join("memory.db");
-    let db = match MemoryDB::open(&db_path) {
-        Ok(db) => db,
-        Err(e) => {
-            warn!(character, error = %e, "Interiority: failed to open memory DB");
-            return None;
+    // Memory DB (cached across ticks).
+    let db = {
+        let mut guard = db_cache.lock().unwrap();
+        if let Some(db) = guard.as_ref() {
+            db.clone()
+        } else {
+            let db_path = char_dir.join("memory").join("memory.db");
+            match MemoryDB::open(&db_path) {
+                Ok(db) => {
+                    let db = Arc::new(db);
+                    *guard = Some(db.clone());
+                    db
+                }
+                Err(e) => {
+                    warn!(character, error = %e, "Interiority: failed to open memory DB");
+                    return None;
+                }
+            }
         }
     };
 
@@ -671,11 +692,24 @@ async fn build_tool_context(
         &config.models.embedding,
     ) {
         Ok(embed_config) => {
-            let vs_path = char_dir.join("memory").join("vectorstore");
-            VectorStore::open(&vs_path, embed_config.dimensions)
-                .await
-                .ok()
-                .map(|vs| AgentSearchContext::new(vs, client.inner().clone(), embed_config))
+            // Check cache first.
+            let cached = vs_cache.lock().unwrap().clone();
+            if let Some(vs) = cached {
+                Some(AgentSearchContext::new(vs, client.inner().clone(), embed_config))
+            } else {
+                let vs_path = char_dir.join("memory").join("vectorstore");
+                match VectorStore::open(&vs_path, embed_config.dimensions).await {
+                    Ok(vs) => {
+                        let vs = Arc::new(vs);
+                        *vs_cache.lock().unwrap() = Some(vs.clone());
+                        Some(AgentSearchContext::new(vs, client.inner().clone(), embed_config))
+                    }
+                    Err(e) => {
+                        warn!(character, error = %e, "Interiority: failed to open vector store");
+                        None
+                    }
+                }
+            }
         }
         Err(_) => None,
     };
