@@ -329,6 +329,18 @@ impl VectorIndexer for RealVectorIndexer {
             Ok(())
         })
     }
+
+    fn remove_entry(
+        &self,
+        entry_id: &str,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        let entry_id = entry_id.to_string();
+        Box::pin(async move {
+            if let Err(e) = self.store.delete_entry(&entry_id).await {
+                tracing::warn!(entry_id = %entry_id, error = %e, "compaction rollback: failed to remove vector index entry");
+            }
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -426,9 +438,12 @@ impl ConversationManager for RealConversationManager {
         } else {
             retained_lines.join("\n") + "\n"
         };
-        std::fs::write(&active_path, &retained_content).map_err(|e| {
-            CompactionError::ConversationManager(format!("failed to write retained messages: {e}"))
-        })?;
+        crate::engine::atomic::atomic_write(&active_path, retained_content.as_bytes())
+            .map_err(|e| {
+                CompactionError::ConversationManager(format!(
+                    "failed to write retained messages: {e}"
+                ))
+            })?;
 
         // Write recap if provided.
         if let Some(recap) = &params.recap {

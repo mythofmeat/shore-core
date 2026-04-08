@@ -42,6 +42,8 @@ pub enum RoutedMessage {
         cmd: Command,
         character: Option<String>,
     },
+    /// All clients have disconnected — handler should cancel in-flight generation.
+    AllClientsDisconnected,
 }
 
 /// Configuration for the server.
@@ -317,6 +319,10 @@ where
     ctx.clients.write().await.remove(&client_id);
     info!(client_id, "Client disconnected");
 
+    if ctx.clients.read().await.is_empty() {
+        let _ = ctx.route_tx.send(RoutedMessage::AllClientsDisconnected).await;
+    }
+
     result
 }
 
@@ -334,6 +340,9 @@ where
     R: tokio::io::AsyncRead + Unpin + Send,
     W: tokio::io::AsyncWrite + Unpin + Send,
 {
+    let mut consecutive_lags: u32 = 0;
+    const MAX_CONSECUTIVE_LAGS: u32 = 3;
+
     loop {
         tokio::select! {
             // Incoming client message.
@@ -353,10 +362,17 @@ where
             msg = push_rx.recv() => {
                 match msg {
                     Ok(server_msg) => {
+                        consecutive_lags = 0;
                         write_message(writer, &server_msg).await?;
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
-                        warn!(client_id, skipped = n, "Client lagged on broadcast");
+                        consecutive_lags += 1;
+                        warn!(client_id, skipped = n, consecutive = consecutive_lags,
+                              "Client lagged on broadcast");
+                        if consecutive_lags >= MAX_CONSECUTIVE_LAGS {
+                            warn!(client_id, "Disconnecting client after repeated lag");
+                            break;
+                        }
                     }
                     Err(broadcast::error::RecvError::Closed) => {
                         break;

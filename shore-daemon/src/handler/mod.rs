@@ -7,6 +7,15 @@
 //! never blocks on LLM streaming. Commands (status, log, etc.) are processed
 //! inline and always return immediately.
 
+mod generation;
+mod images;
+mod persistence;
+
+pub(crate) use images::{build_content, embed_image_data, media_type_for_path};
+use generation::{run_tool_phase, stream_with_retry};
+use images::ingest_images;
+use persistence::persist_and_notify;
+
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -17,7 +26,7 @@ use serde_json::{json, Value};
 use shore_protocol::client_msg::{ClientMessage, ClientMessageBody};
 use shore_protocol::error::ErrorCode;
 use shore_protocol::server_msg::{Error as SwpError, ServerMessage};
-use shore_protocol::types::{derive_content_from_blocks, ContentBlock, ImageRef, Message, Role};
+use shore_protocol::types::{ContentBlock, Message, Role};
 use tokio::sync::{broadcast, Mutex};
 use tracing::{debug, error, info, instrument, warn};
 
@@ -26,28 +35,24 @@ use crate::autonomy::parse_cache_ttl_secs;
 use crate::characters::CharacterRegistry;
 use crate::commands::{self, CommandContext, SessionTokens};
 use crate::engine::prompt::{self, CapabilitiesConfig, PromptParams};
-use crate::engine::tools;
-use crate::memory::agent::{AgentSearchContext, CallerIdentity, MemoryAgent};
-use crate::memory::agent_llm::{AgentLlm, RealAgentLlm};
-use crate::memory::compaction_impls::resolve_embed_config;
+use crate::memory::agent::{AgentSearchContext, MemoryAgent};
+use crate::memory::agent_llm::AgentLlm;
 use crate::memory::compaction_impls::ImageGenConfig;
 use crate::memory::db::MemoryDB;
 use crate::memory::researcher::MemoryResearcher;
-use crate::memory::vectorstore::VectorStore;
 use crate::notifications::{NotificationEvent, NotificationService};
 use crate::server::RoutedMessage;
-use crate::tools::context::{NoopRag, SharedToolContext};
+use crate::tools::context::SharedToolContext;
 use crate::tools::{self as tool_system, ToolContext};
 use shore_config::app::SearchConfig;
 use shore_config::models::Sdk;
 use shore_config::LoadedConfig;
-use shore_ledger::{CallType, LedgerClient};
-use shore_llm_client::retry::{self, RetryDecision, RetryPolicy};
-use shore_llm_client::stream::{CacheContext, StreamConsumer};
+use shore_ledger::LedgerClient;
+use shore_llm_client::stream::CacheContext;
 
 // ── Per-request tool context (wraps SharedToolContext + autonomy) ────
 
-struct HandlerToolContext {
+pub(super) struct HandlerToolContext {
     inner: SharedToolContext,
     autonomy_val: AutonomyManager,
 }
@@ -160,63 +165,6 @@ pub struct MessageHandler {
     pub generation_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
-// ---------------------------------------------------------------------------
-// Image → LLM content helpers
-// ---------------------------------------------------------------------------
-
-/// Detect MIME type from file extension.
-pub(crate) fn media_type_for_path(path: &str) -> Option<&'static str> {
-    let ext = path.rsplit('.').next()?.to_ascii_lowercase();
-    match ext.as_str() {
-        "jpg" | "jpeg" => Some("image/jpeg"),
-        "png" => Some("image/png"),
-        "gif" => Some("image/gif"),
-        "webp" => Some("image/webp"),
-        _ => None,
-    }
-}
-
-/// Build a `content` value for an LLM message.
-///
-/// If `images` is non-empty, returns a JSON array containing image blocks
-/// (base64-encoded) followed by a text block. Otherwise returns a plain string.
-pub(crate) fn build_content(text: &str, images: &[ImageRef]) -> Value {
-    if images.is_empty() {
-        return json!(text);
-    }
-
-    let mut blocks: Vec<Value> = Vec::with_capacity(images.len() + 1);
-
-    for img in images {
-        let media_type = match media_type_for_path(&img.path) {
-            Some(mt) => mt,
-            None => {
-                warn!(path = %img.path, "Skipping image with unsupported extension");
-                continue;
-            }
-        };
-        match std::fs::read(&img.path) {
-            Ok(bytes) => {
-                let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
-                blocks.push(json!({
-                    "type": "image",
-                    "source": {
-                        "type": "base64",
-                        "media_type": media_type,
-                        "data": encoded,
-                    }
-                }));
-            }
-            Err(e) => {
-                warn!(path = %img.path, error = %e, "Failed to read image file");
-            }
-        }
-    }
-
-    blocks.push(json!({ "type": "text", "text": text }));
-    json!(blocks)
-}
-
 impl MessageHandler {
     /// Run the message processing loop. Blocks until the route channel closes.
     ///
@@ -243,30 +191,7 @@ impl MessageHandler {
                     debug!(character = ?character, kind = msg_kind, "handling engine message");
                     // Handle cancellation: abort the active generation task.
                     if matches!(msg, ClientMessage::Cancel(_)) {
-                        if let Some(handle) = self.generation_handle.take() {
-                            info!("Cancelling active generation");
-                            handle.abort();
-                            // Send a minimal StreamEnd so clients know to reset
-                            let _ = self.push_tx.send(ServerMessage::StreamEnd(
-                                shore_protocol::server_msg::StreamEnd {
-                                    content: String::new(),
-                                    metadata: shore_protocol::types::StreamMetadata {
-                                        tokens: shore_protocol::types::TokenCounts {
-                                            input: 0,
-                                            output: 0,
-                                            cache_read: 0,
-                                            cache_write: 0,
-                                        },
-                                        timing: shore_protocol::types::TimingInfo {
-                                            total_ms: 0,
-                                            ttft_ms: 0,
-                                        },
-                                        model: String::new(),
-                                    },
-                                    finish_reason: "cancelled".into(),
-                                },
-                            ));
-                        }
+                        self.cancel_generation("user cancelled");
                         continue;
                     }
 
@@ -306,7 +231,8 @@ impl MessageHandler {
                         _ => continue,
                     };
 
-                    let rid = body.rid.clone();
+                    // Validate rid is safe for HTTP headers before propagating.
+                    let rid = body.rid.clone().filter(|r| r.is_ascii() && !r.contains('\0'));
                     let gen = self.gen_context();
                     let push_tx = self.push_tx.clone();
                     let notifier = self.notifier.clone();
@@ -320,6 +246,10 @@ impl MessageHandler {
                         active_model: self.cmd_ctx.active_model.clone(),
                     };
 
+                    if let Some(prev) = self.generation_handle.take() {
+                        info!("Aborting previous generation (superseded by new request)");
+                        prev.abort();
+                    }
                     self.generation_handle = Some(tokio::spawn(async move {
                         let notify_name = params.char_name.clone();
                         if let Err(e) = handle_generation(gen, params).await {
@@ -337,9 +267,39 @@ impl MessageHandler {
                         }
                     }));
                 }
+                RoutedMessage::AllClientsDisconnected => {
+                    self.cancel_generation("all clients disconnected");
+                }
             }
         }
         info!("Message handler shutting down (route channel closed)");
+    }
+
+    /// Cancel any active generation task and send a minimal StreamEnd.
+    fn cancel_generation(&mut self, reason: &str) {
+        if let Some(handle) = self.generation_handle.take() {
+            info!(reason, "Cancelling active generation");
+            handle.abort();
+            let _ = self.push_tx.send(ServerMessage::StreamEnd(
+                shore_protocol::server_msg::StreamEnd {
+                    content: String::new(),
+                    metadata: shore_protocol::types::StreamMetadata {
+                        tokens: shore_protocol::types::TokenCounts {
+                            input: 0,
+                            output: 0,
+                            cache_read: 0,
+                            cache_write: 0,
+                        },
+                        timing: shore_protocol::types::TimingInfo {
+                            total_ms: 0,
+                            ttft_ms: 0,
+                        },
+                        model: String::new(),
+                    },
+                    finish_reason: "cancelled".into(),
+                },
+            ));
+        }
     }
 
     /// Build a GenContext from the current handler state.
@@ -440,7 +400,7 @@ async fn handle_generation(
         body,
         regen,
         char_name,
-        rid: _,
+        rid,
         effective_config,
         data_dir,
         active_model,
@@ -548,9 +508,11 @@ async fn handle_generation(
     // 5. Ensure autonomy state with cache TTL for unified interiority timer.
     // Must happen before notify_user_message so session_start is set on first message.
     let cache_ttl_secs = resolved.cache_ttl.as_deref().and_then(parse_cache_ttl_secs);
-    let is_new_autonomy_state =
-        ctx.autonomy
-            .ensure_state_with_config(&char_name, cache_ttl_secs, Some(&effective_config));
+    let is_new_autonomy_state = ctx.autonomy.ensure_state_with_config(
+        &char_name,
+        cache_ttl_secs,
+        Some(&effective_config),
+    );
 
     // Backfill activity tracker from existing chat history on first creation.
     // Only include the last 90 days — older data would pollute availability signals.
@@ -597,14 +559,7 @@ async fn handle_generation(
     }
 
     if !regen && (!body.text.is_empty() || !body.images.is_empty()) {
-        let mut engine = engine_arc.lock().await;
-        // If compaction ran since the last message, reload the engine from disk.
-        if ctx.autonomy.take_needs_reload(&char_name) {
-            info!(character = %char_name, "Reloading engine after compaction");
-            engine.reload().map_err(|e| e.to_string())?;
-        }
-        let turn_count = engine.turn_count();
-        drop(engine);
+        let turn_count = engine_arc.lock().await.turn_count();
         ctx.autonomy.notify_user_message(&char_name, turn_count);
     }
 
@@ -627,7 +582,7 @@ async fn handle_generation(
         interiority_enabled: effective_config.app.behavior.autonomy.interiority.enabled,
         scratchpad_enabled: tool_toggles.scratchpad_read() || tool_toggles.scratchpad_write(),
         memory_enabled: tool_toggles.memory(),
-        image_memory_enabled: effective_config.app.memory.image_enabled,
+        image_memory_enabled: tool_toggles.recall_image(),
         send_image_enabled: tool_toggles.send_image(),
         remember_image_enabled: tool_toggles.remember_image(),
         generate_image_enabled: tool_toggles.generate_image(),
@@ -679,6 +634,7 @@ async fn handle_generation(
 
     // 9. Build LLM request.
     let mut request = LedgerClient::build_request(resolved, llm_messages, system, tool_defs, None)?;
+    request.rid = rid;
 
     // Apply per-message parameter overrides from the client.
     if let Some(ref ov) = body.overrides {
@@ -851,462 +807,6 @@ pub(crate) fn build_llm_messages(
     (llm_messages, system)
 }
 
-/// Phase 10: Stream the LLM response with exponential backoff retry.
-#[instrument(skip(ctx, request, engine_arc, effective_config), fields(char = char_name, model = %resolved.qualified_name))]
-#[allow(clippy::too_many_arguments)]
-async fn stream_with_retry(
-    ctx: &GenContext,
-    request: &shore_llm_client::types::LlmRequest,
-    engine_arc: &Arc<Mutex<crate::engine::ConversationEngine>>,
-    resolved: &shore_config::models::ResolvedModel,
-    effective_config: &LoadedConfig,
-    regen: bool,
-    char_name: &str,
-    thinking_enabled: bool,
-) -> Result<shore_llm_client::types::StreamResult, Box<dyn std::error::Error + Send + Sync>> {
-    let retry_policy = RetryPolicy {
-        max_retries: effective_config
-            .app
-            .advanced
-            .max_retries
-            .unwrap_or(RetryPolicy::default().max_retries),
-        ..RetryPolicy::default()
-    };
-    debug!(
-        character = char_name,
-        model = %resolved.qualified_name,
-        max_retries = retry_policy.max_retries,
-        "stream_with_retry starting"
-    );
-    let mut attempt: u32 = 0;
-
-    loop {
-        let consumer = StreamConsumer::new(ctx.push_tx.clone());
-
-        let stream_result = async {
-            let mut ledger_stream = ctx
-                .llm_client
-                .stream_raw(request, CallType::Message, char_name, thinking_enabled)
-                .await?;
-
-            let turn_count = engine_arc.lock().await.messages().len();
-            let cache_warnings = resolved.provider_key == "anthropic"
-                && effective_config.app.advanced.cache_invalidation_warnings;
-            let is_first_after_compaction = ctx.compaction_occurred.swap(false, Ordering::AcqRel);
-            let cache_ctx = CacheContext {
-                conversation_turn_count: turn_count,
-                is_first_after_restart: ctx.is_first_after_restart.load(Ordering::Acquire),
-                is_first_after_compaction,
-                cache_invalidation_warnings: cache_warnings,
-                has_seen_cache_read: ctx.has_seen_cache_read.load(Ordering::Acquire),
-            };
-
-            let result = consumer
-                .consume(ledger_stream.reader_mut(), regen, &cache_ctx)
-                .await?;
-            ledger_stream.finalize(&result);
-            Ok(result)
-        }
-        .await;
-
-        match stream_result {
-            Ok(r) => {
-                if r.usage.cache_read_tokens > 0 {
-                    ctx.has_seen_cache_read.store(true, Ordering::Release);
-                }
-                debug!(
-                    attempts = attempt + 1,
-                    finish_reason = %r.finish_reason,
-                    input_tokens = r.usage.input_tokens,
-                    output_tokens = r.usage.output_tokens,
-                    "stream_with_retry complete"
-                );
-                return Ok(r);
-            }
-            Err(e) => match retry::should_retry_error(&e, attempt, &retry_policy) {
-                RetryDecision::Retry => {
-                    let base_ms = effective_config
-                        .app
-                        .advanced
-                        .retry_backoff_seconds
-                        .map(|s| (s * 1000.0) as u64)
-                        .unwrap_or(500);
-                    let delay = std::time::Duration::from_millis(base_ms * 2u64.pow(attempt));
-                    warn!(
-                        attempt,
-                        delay_ms = delay.as_millis() as u64,
-                        error = %e,
-                        "Retrying after transient LLM error"
-                    );
-                    tokio::time::sleep(delay).await;
-                    attempt += 1;
-                }
-                RetryDecision::FallbackModel(_model) => {
-                    error!(error = %e, "stream_with_retry failed — fallback model requested");
-                    return Err(e.into());
-                }
-                RetryDecision::Fail => {
-                    error!(attempts = attempt + 1, error = %e, "stream_with_retry exhausted retries");
-                    return Err(e.into());
-                }
-            },
-        }
-    }
-}
-
-/// Phase 11: Set up tool context and run the tool loop.
-#[instrument(skip(ctx, effective_config, agent_model, researcher_model, character_definition, user_definition, request, result, cache_ctx), fields(char = char_name))]
-#[allow(clippy::too_many_arguments)]
-async fn run_tool_phase(
-    ctx: &GenContext,
-    data_dir: &std::path::Path,
-    char_name: &str,
-    effective_config: &LoadedConfig,
-    agent_model: &shore_config::models::ResolvedModel,
-    researcher_model: &Option<shore_config::models::ResolvedModel>,
-    character_definition: &Option<String>,
-    user_definition: &Option<String>,
-    request: &mut shore_llm_client::types::LlmRequest,
-    result: shore_llm_client::types::StreamResult,
-    cache_ctx: &CacheContext,
-) -> Result<tools::ToolLoopResult, Box<dyn std::error::Error + Send + Sync>> {
-    debug!(character = char_name, "run_tool_phase starting");
-    let db_path = data_dir.join(char_name).join("memory").join("memory.db");
-    let memory_db =
-        MemoryDB::open(&db_path).map_err(|e| format!("failed to open memory DB: {e}"))?;
-
-    let char_def = character_definition.clone().unwrap_or_default();
-    let user_def = user_definition.clone().unwrap_or_default();
-
-    let image_gen_config = crate::memory::compaction_impls::resolve_image_gen_config(
-        effective_config.app.defaults.image_generation.as_deref(),
-        &effective_config.models.image_generation,
-    )
-    .ok();
-
-    // Build semantic search context (graceful: None if no embedding model configured).
-    let search_ctx = match resolve_embed_config(
-        effective_config.app.defaults.embedding.as_deref(),
-        &effective_config.models.embedding,
-    ) {
-        Ok(embed_config) => {
-            let vs_path = data_dir.join(char_name).join("memory").join("vectorstore");
-            match VectorStore::open(&vs_path, embed_config.dimensions).await {
-                Ok(vs) => Some(AgentSearchContext::new(
-                    vs,
-                    ctx.llm_client.inner().clone(),
-                    embed_config,
-                )),
-                Err(e) => {
-                    warn!("Failed to open vector store for semantic search: {e}");
-                    None
-                }
-            }
-        }
-        Err(_) => None,
-    };
-
-    let tool_ctx = HandlerToolContext {
-        inner: SharedToolContext {
-            db: memory_db,
-            agent: MemoryAgent::one_shot(
-                CallerIdentity::Char,
-                char_name,
-                &effective_config.app.defaults.resolve_display_name(),
-            ),
-            agent_llm: RealAgentLlm::new(ctx.llm_client.clone(), char_name.to_owned(), CallType::MemoryAgent),
-            agent_model_val: agent_model.clone(),
-            researcher: researcher_model
-                .as_ref()
-                .map(|_| MemoryResearcher::new(char_def, user_def)),
-            researcher_llm_val: researcher_model
-                .as_ref()
-                .map(|_| RealAgentLlm::new(ctx.llm_client.clone(), char_name.to_owned(), CallType::Researcher)),
-            researcher_model_val: researcher_model.clone(),
-            rag: NoopRag,
-            search_ctx,
-            image_dir_val: data_dir
-                .join(char_name)
-                .join("images")
-                .to_string_lossy()
-                .into_owned(),
-            llm_client_val: ctx.llm_client.inner().clone(),
-            image_gen_config_val: image_gen_config,
-            search_config_val: effective_config.app.behavior.tool_use.search.clone(),
-            character_name_val: char_name.to_owned(),
-            scratchpad_dir_val: data_dir
-                .join(char_name)
-                .join("scratchpad")
-                .to_string_lossy()
-                .into_owned(),
-        },
-        autonomy_val: ctx.autonomy.clone(),
-    };
-
-    let thinking_enabled = request
-        .provider_options
-        .as_ref()
-        .and_then(|opts| opts.get("budget_tokens"))
-        .and_then(|v| v.as_u64())
-        .map_or(false, |b| b > 0);
-
-    let tool_loop_result = tools::run_tool_loop(
-        &ctx.llm_client,
-        &ctx.push_tx,
-        request,
-        result,
-        &tool_ctx,
-        effective_config.app.behavior.tool_use.max_iterations,
-        cache_ctx,
-        &ctx.diagnostics,
-        char_name,
-        thinking_enabled,
-    )
-    .await?;
-
-    debug!(
-        character = char_name,
-        intermediate_messages = tool_loop_result.intermediate_messages.len(),
-        "run_tool_phase complete"
-    );
-    Ok(tool_loop_result)
-}
-
-/// Phase 12: Persist messages, record diagnostics, and send notifications.
-#[instrument(skip(ctx, engine_arc, result, request, tool_intermediate_messages), fields(char = char_name, model = %resolved.qualified_name))]
-#[allow(clippy::too_many_arguments)]
-async fn persist_and_notify(
-    ctx: &GenContext,
-    engine_arc: &Arc<Mutex<crate::engine::ConversationEngine>>,
-    char_name: &str,
-    resolved: &shore_config::models::ResolvedModel,
-    result: &shore_llm_client::types::StreamResult,
-    request: &shore_llm_client::types::LlmRequest,
-    tool_intermediate_messages: Vec<Message>,
-    wall_clock_start: Instant,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let notify_content = {
-        let mut engine = engine_arc.lock().await;
-
-        for msg in tool_intermediate_messages {
-            engine.append_message(msg)?;
-        }
-
-        // Track cumulative token usage.
-        {
-            let mut tokens = ctx.session_tokens.lock().unwrap();
-            tokens.input += result.usage.input_tokens;
-            tokens.output += result.usage.output_tokens;
-            tokens.cache_read += result.usage.cache_read_tokens;
-            tokens.cache_write += result.usage.cache_creation_tokens;
-        }
-
-        // Record API call in diagnostics ring buffer.
-        {
-            let entry = shore_diagnostics::ApiCallEntry {
-                timestamp: chrono::Local::now().to_rfc3339(),
-                model: result.model.clone(),
-                provider: resolved.provider_key.clone(),
-                input_tokens: result.usage.input_tokens,
-                output_tokens: result.usage.output_tokens,
-                cache_read_tokens: result.usage.cache_read_tokens,
-                cache_write_tokens: result.usage.cache_creation_tokens,
-                ttft_ms: result.timing.time_to_first_token_ms,
-                total_ms: result.timing.total_ms,
-                finish_reason: result.finish_reason.clone(),
-                error: None,
-            };
-            ctx.diagnostics.lock().unwrap().api_calls.push(entry);
-        }
-
-        info!(
-            input_tokens = result.usage.input_tokens,
-            output_tokens = result.usage.output_tokens,
-            cache_read = result.usage.cache_read_tokens,
-            cache_creation = result.usage.cache_creation_tokens,
-            model = %result.model,
-            "Response complete"
-        );
-
-        let content_blocks = if result.content_blocks.is_empty() && !result.content.is_empty() {
-            vec![ContentBlock::Text {
-                text: result.content.clone(),
-            }]
-        } else {
-            result.content_blocks.clone()
-        };
-        let content = derive_content_from_blocks(&content_blocks);
-
-        // Include the assistant response in last_request so the
-        // interiority system sees a complete conversation ending on an
-        // assistant turn — not the user turn that triggered this call.
-        {
-            let mut full_request = request.clone();
-            let assistant_api_content: Vec<serde_json::Value> = content_blocks
-                .iter()
-                .filter_map(crate::content_util::content_block_to_api_json)
-                .collect();
-            full_request.messages.push(serde_json::json!({
-                "role": "assistant",
-                "content": assistant_api_content,
-            }));
-            ctx.autonomy.notify_last_request(char_name, full_request);
-        }
-        let notify_content = content.clone();
-        let assistant_msg = Message {
-            msg_id: format!("m_{}", uuid::Uuid::new_v4()),
-            role: Role::Assistant,
-            content,
-            images: vec![],
-            content_blocks,
-            alt_index: None,
-            alt_count: None,
-            timestamp: chrono::Local::now().to_rfc3339(),
-        };
-        engine.append_message(assistant_msg)?;
-        ctx.autonomy
-            .notify_assistant_message(char_name, engine.turn_count());
-        notify_content
-    }; // engine lock released
-
-    let wall_clock_ms = wall_clock_start.elapsed().as_millis() as u32;
-    ctx.notifier.notify_message_complete(
-        &format!("Shore — {char_name}"),
-        &notify_content,
-        wall_clock_ms,
-    );
-
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Image ingestion
-// ---------------------------------------------------------------------------
-
-/// Ingest incoming images to durable attachments/ directory.
-///
-/// Prefers `image_data` (base64-encoded uploads from new clients) over
-/// `image_paths` (legacy path-based, same-machine only).
-/// Returns (persisted ImageRefs, annotation ContentBlocks).
-fn ingest_images(
-    data_dir: &std::path::Path,
-    char_name: &str,
-    image_paths: &[String],
-    image_data: &[shore_protocol::client_msg::ImageUpload],
-) -> (Vec<ImageRef>, Vec<ContentBlock>) {
-    use base64::Engine;
-
-    let character_data_dir = data_dir.join(char_name);
-    let attachments_dir = character_data_dir.join("images").join("attachments");
-    let mut images: Vec<ImageRef> = Vec::with_capacity(image_data.len() + image_paths.len());
-    let mut content_blocks: Vec<ContentBlock> = Vec::new();
-
-    // Preferred path: base64-encoded uploads (works across machines).
-    for upload in image_data {
-        if let Err(e) = std::fs::create_dir_all(&attachments_dir) {
-            warn!(error = %e, "Failed to create attachments directory");
-            continue;
-        }
-        let bytes = match base64::engine::general_purpose::STANDARD.decode(&upload.data) {
-            Ok(b) => b,
-            Err(e) => {
-                warn!(filename = %upload.filename, error = %e, "Failed to decode base64 image data");
-                continue;
-            }
-        };
-        let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
-        let dest_name = format!("{timestamp}_{}", upload.filename);
-        let dest_path = attachments_dir.join(&dest_name);
-
-        match std::fs::write(&dest_path, &bytes) {
-            Ok(()) => {
-                let abs_path = dest_path.to_string_lossy().to_string();
-                let rel_path = format!("attachments/{dest_name}");
-                images.push(ImageRef {
-                    path: abs_path,
-                    caption: None,
-                    data: None,
-                });
-                content_blocks.push(ContentBlock::Text {
-                    text: format!("[Attached image saved as: {rel_path}]"),
-                });
-                info!(filename = %upload.filename, dest = %rel_path, "Saved uploaded image to attachments");
-            }
-            Err(e) => {
-                warn!(filename = %upload.filename, error = %e, "Failed to write image to attachments");
-            }
-        }
-    }
-
-    // Legacy fallback: copy from filesystem paths (same-machine only).
-    if image_data.is_empty() {
-        for src_path_str in image_paths {
-            let src_path = std::path::Path::new(src_path_str);
-            if !src_path.exists() {
-                warn!(path = %src_path_str, "Skipping non-existent image");
-                continue;
-            }
-            if let Err(e) = std::fs::create_dir_all(&attachments_dir) {
-                warn!(error = %e, "Failed to create attachments directory");
-                continue;
-            }
-            let original_name = src_path
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| "image".to_string());
-            let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
-            let dest_name = format!("{timestamp}_{original_name}");
-            let dest_path = attachments_dir.join(&dest_name);
-
-            match std::fs::copy(src_path, &dest_path) {
-                Ok(_) => {
-                    let abs_path = dest_path.to_string_lossy().to_string();
-                    let rel_path = format!("attachments/{dest_name}");
-                    images.push(ImageRef {
-                        path: abs_path,
-                        caption: None,
-                        data: None,
-                    });
-                    content_blocks.push(ContentBlock::Text {
-                        text: format!("[Attached image saved as: {rel_path}]"),
-                    });
-                    info!(src = %src_path_str, dest = %rel_path, "Copied incoming image to attachments");
-                }
-                Err(e) => {
-                    warn!(src = %src_path_str, error = %e, "Failed to copy image to attachments");
-                    images.push(ImageRef {
-                        path: src_path_str.clone(),
-                        caption: None,
-                        data: None,
-                    });
-                }
-            }
-        }
-    }
-
-    (images, content_blocks)
-}
-
-/// Populate the `data` field on ImageRefs by reading and base64-encoding files.
-/// Called before sending Messages over the wire so clients can display images
-/// without needing filesystem access to the server's paths.
-pub fn embed_image_data(images: &mut [ImageRef]) {
-    use base64::Engine;
-    for img in images {
-        if img.data.is_some() {
-            continue;
-        }
-        match std::fs::read(&img.path) {
-            Ok(bytes) => {
-                img.data = Some(base64::engine::general_purpose::STANDARD.encode(&bytes));
-            }
-            Err(e) => {
-                warn!(path = %img.path, error = %e, "Failed to read image for wire embedding");
-            }
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -1316,6 +816,7 @@ mod tests {
     use super::*;
     use shore_protocol::client_msg::{Command, Regen};
     use shore_protocol::error::ErrorCode;
+    use shore_protocol::types::ImageRef;
     use std::collections::BTreeMap;
     use tempfile::TempDir;
 

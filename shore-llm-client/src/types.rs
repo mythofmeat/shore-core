@@ -51,6 +51,10 @@ pub struct LlmRequest {
     /// Distinct from `provider` (SDK protocol). Used for provider-specific behavior.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider_key: Option<String>,
+
+    /// Optional request ID for distributed tracing (sent as X-Request-ID header).
+    #[serde(skip)]
+    pub rid: Option<String>,
 }
 
 /// Token usage counts from shore-llm's normalized response.
@@ -229,6 +233,7 @@ mod tests {
             top_p: None,
             provider_options: None,
             provider_key: None,
+            rid: None,
         };
         let json = serde_json::to_value(&req).unwrap();
         assert!(!json.as_object().unwrap().contains_key("base_url"));

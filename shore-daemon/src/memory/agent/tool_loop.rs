@@ -15,7 +15,7 @@ use super::types::{
     AgentError, AgentIndexer, AgentSearchContext, ConfirmCallback, ProposedOperation, ToolResult,
 };
 
-const MAX_ITERATIONS: usize = 40;
+const MAX_ITERATIONS: usize = 20;
 
 const DENIED_MESSAGE: &str =
     "DENIED: The user explicitly rejected this operation. Do NOT retry it. \

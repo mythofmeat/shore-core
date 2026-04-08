@@ -119,6 +119,15 @@ pub trait VectorIndexer: Send + Sync {
         entry_id: &str,
         text: &str,
     ) -> Pin<Box<dyn Future<Output = Result<(), CompactionError>> + Send + '_>>;
+
+    /// Remove a previously indexed entry. Used for rollback on compaction failure.
+    /// Default no-op — impls that support deletion should override.
+    fn remove_entry(
+        &self,
+        _entry_id: &str,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        Box::pin(async {})
+    }
 }
 
 /// Conversation lifecycle management — archive old messages and retain recent ones.

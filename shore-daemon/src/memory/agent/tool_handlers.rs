@@ -201,20 +201,28 @@ pub async fn handle_semantic_search(
         return Ok("No results.".into());
     }
 
-    // 6. Fetch metadata for lifecycle scoring.
-    let metadata: Vec<EntryMeta> = all_ids
-        .iter()
-        .filter_map(|id| {
-            db.get_entry(id).ok().flatten().map(|e| EntryMeta {
-                entry_id: e.id,
-                status: e.status,
-                confidence: e.confidence,
-                created_at: e.created_at,
-            })
+    // 6. Batch-fetch all entries once, build a lookup map.
+    let id_slice: Vec<&str> = all_ids.iter().copied().collect();
+    let fetched = db
+        .get_entries_by_ids(&id_slice)
+        .unwrap_or_default();
+    let entry_map: HashMap<String, Entry> = fetched
+        .into_iter()
+        .map(|e| (e.id.clone(), e))
+        .collect();
+
+    // 7. Build metadata for lifecycle scoring from the map.
+    let metadata: Vec<EntryMeta> = entry_map
+        .values()
+        .map(|e| EntryMeta {
+            entry_id: e.id.clone(),
+            status: e.status.clone(),
+            confidence: e.confidence,
+            created_at: e.created_at.clone(),
         })
         .collect();
 
-    // 7. RRF fusion + lifecycle scoring.
+    // 8. RRF fusion + lifecycle scoring.
     let pipeline = RagPipeline::new(top_k);
     let ranked = pipeline.retrieve(&vector_source, &bm25_source, &metadata, false);
 
@@ -222,19 +230,19 @@ pub async fn handle_semantic_search(
         return Ok("No results.".into());
     }
 
-    // 8. Fetch full entries and format output (same format as search_entries).
+    // 9. Format output from map (same format as search_entries).
     let results: Vec<HashMap<String, Value>> = ranked
         .iter()
         .filter_map(|r| {
-            db.get_entry(&r.entry_id).ok().flatten().map(|e| {
+            entry_map.get(&r.entry_id).map(|e| {
                 let mut m = HashMap::new();
-                m.insert("id".into(), Value::String(e.id));
-                m.insert("summary_text".into(), Value::String(e.summary_text));
-                m.insert("topic_tags".into(), Value::String(e.topic_tags));
-                m.insert("topic_key".into(), Value::String(e.topic_key));
-                m.insert("status".into(), Value::String(e.status));
-                m.insert("memory_type".into(), Value::String(e.memory_type));
-                m.insert("created_at".into(), Value::String(e.created_at));
+                m.insert("id".into(), Value::String(e.id.clone()));
+                m.insert("summary_text".into(), Value::String(e.summary_text.clone()));
+                m.insert("topic_tags".into(), Value::String(e.topic_tags.clone()));
+                m.insert("topic_key".into(), Value::String(e.topic_key.clone()));
+                m.insert("status".into(), Value::String(e.status.clone()));
+                m.insert("memory_type".into(), Value::String(e.memory_type.clone()));
+                m.insert("created_at".into(), Value::String(e.created_at.clone()));
                 m.insert(
                     "confidence".into(),
                     serde_json::Number::from_f64(e.confidence)

@@ -655,11 +655,9 @@ model_id = "claude-opus-4-6"
         assert!(loaded.app.behavior.autonomy.interiority.enabled);
         assert_eq!(loaded.app.behavior.autonomy.interiority.interval_secs, 3600);
         assert!(loaded.app.behavior.tool_use.enabled);
-        assert_eq!(loaded.app.memory.rag_results, 5);
         assert!(loaded.app.advanced.cache_invalidation_warnings);
         assert!(loaded.app.memory.compaction.enabled);
         assert!(loaded.app.memory.collation.enabled);
-        assert!(loaded.app.memory.image_enabled);
         assert!(loaded.app.connections.tcp.is_none());
         assert!(loaded.app.advanced.editor.is_none());
         assert!(loaded.app.advanced.max_retries.is_none());

@@ -87,29 +87,27 @@ impl Bm25Index {
         let mut scores: HashMap<&str, f64> = HashMap::new();
 
         for term in &query_terms {
-            let df = self
-                .doc_freq
-                .get(term.as_str())
-                .map(|s| s.len())
-                .unwrap_or(0) as f64;
-
-            if df == 0.0 {
-                continue;
-            }
+            let matching_ids = match self.doc_freq.get(term.as_str()) {
+                Some(ids) if !ids.is_empty() => ids,
+                _ => continue,
+            };
+            let df = matching_ids.len() as f64;
 
             // IDF: log((N - df + 0.5) / (df + 0.5) + 1)
             let idf = ((n - df + 0.5) / (df + 0.5) + 1.0).ln();
 
-            for (entry_id, doc_tokens) in &self.documents {
-                let tf = doc_tokens.iter().filter(|t| *t == term).count() as f64;
-                if tf == 0.0 {
-                    continue;
+            for entry_id in matching_ids {
+                if let Some(doc_tokens) = self.documents.get(entry_id.as_str()) {
+                    let tf = doc_tokens.iter().filter(|t| *t == term).count() as f64;
+                    if tf == 0.0 {
+                        continue;
+                    }
+
+                    let dl = doc_tokens.len() as f64;
+                    let tf_norm = (tf * (K1 + 1.0)) / (tf + K1 * (1.0 - B + B * dl / avgdl));
+
+                    *scores.entry(entry_id.as_str()).or_insert(0.0) += idf * tf_norm;
                 }
-
-                let dl = doc_tokens.len() as f64;
-                let tf_norm = (tf * (K1 + 1.0)) / (tf + K1 * (1.0 - B + B * dl / avgdl));
-
-                *scores.entry(entry_id.as_str()).or_insert(0.0) += idf * tf_norm;
             }
         }
 

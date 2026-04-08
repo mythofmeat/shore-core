@@ -398,6 +398,27 @@ impl MemoryDB {
         }
     }
 
+    /// Fetch multiple entries by ID in a single query.
+    pub fn get_entries_by_ids(&self, ids: &[&str]) -> SqlResult<Vec<Entry>> {
+        if ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let placeholders: Vec<&str> = ids.iter().map(|_| "?").collect();
+        let sql = format!(
+            "SELECT id, memory_type, source, reason, status, confidence,
+                    summary_text, topic_tags, topic_key, start_timestamp, end_timestamp,
+                    message_count, source_entry_ids, related_entry_ids, superseded_by,
+                    created_at, updated_at, entry_type, image_path, collated_at
+             FROM entries WHERE id IN ({})",
+            placeholders.join(", ")
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let params: Vec<&dyn rusqlite::types::ToSql> =
+            ids.iter().map(|id| id as &dyn rusqlite::types::ToSql).collect();
+        let rows = stmt.query_map(rusqlite::params_from_iter(params), row_to_entry)?;
+        rows.collect()
+    }
+
     pub fn get_entries_by_status(&self, status: &str) -> SqlResult<Vec<Entry>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, memory_type, source, reason, status, confidence,
@@ -691,6 +712,23 @@ impl MemoryDB {
         self.conn.execute(
             "INSERT OR IGNORE INTO changelog_entities (changelog_id, entity_id) VALUES (?1, ?2)",
             params![changelog_id, entity_id],
+        )?;
+        Ok(())
+    }
+
+    /// Delete a changelog record and its entry/entity links by ID.
+    pub fn delete_changelog(&self, changelog_id: i64) -> SqlResult<()> {
+        self.conn.execute(
+            "DELETE FROM changelog_entries WHERE changelog_id = ?1",
+            params![changelog_id],
+        )?;
+        self.conn.execute(
+            "DELETE FROM changelog_entities WHERE changelog_id = ?1",
+            params![changelog_id],
+        )?;
+        self.conn.execute(
+            "DELETE FROM changelog WHERE changelog_id = ?1",
+            params![changelog_id],
         )?;
         Ok(())
     }
