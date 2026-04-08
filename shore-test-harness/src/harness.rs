@@ -334,6 +334,63 @@ impl TestHarness {
         messages
     }
 
+    /// Read all ledger entries from the SQLite database at `{data_dir}/ledger.db`.
+    ///
+    /// Returns each row from the `calls` table as a `serde_json::Value` object.
+    /// The caller should give the daemon time to flush (e.g. a short sleep) before
+    /// calling this, as ledger writes happen synchronously but may lag slightly.
+    pub fn read_ledger_entries(&self) -> Vec<serde_json::Value> {
+        let db_path = self.data_dir.join("ledger.db");
+        let conn = match rusqlite::Connection::open(&db_path) {
+            Ok(c) => c,
+            Err(_) => return Vec::new(),
+        };
+
+        let mut stmt = match conn.prepare(
+            "SELECT id, ts, character, provider, model, call_type, \
+             input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, \
+             cache_ttl, total_ms, ttft_ms, finish_reason, thinking_enabled, \
+             cache_state, cache_anomaly, input_cost, output_cost, \
+             cache_read_cost, cache_write_cost, total_cost \
+             FROM calls ORDER BY id ASC",
+        ) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+
+        let rows = stmt.query_map([], |row| {
+            Ok(serde_json::json!({
+                "id":                 row.get::<_, i64>(0)?,
+                "ts":                 row.get::<_, String>(1)?,
+                "character":          row.get::<_, String>(2)?,
+                "provider":           row.get::<_, String>(3)?,
+                "model":              row.get::<_, String>(4)?,
+                "call_type":          row.get::<_, String>(5)?,
+                "input_tokens":       row.get::<_, i64>(6)?,
+                "output_tokens":      row.get::<_, i64>(7)?,
+                "cache_read_tokens":  row.get::<_, i64>(8)?,
+                "cache_write_tokens": row.get::<_, i64>(9)?,
+                "cache_ttl":          row.get::<_, Option<String>>(10)?,
+                "total_ms":           row.get::<_, i64>(11)?,
+                "ttft_ms":            row.get::<_, i64>(12)?,
+                "finish_reason":      row.get::<_, String>(13)?,
+                "thinking_enabled":   row.get::<_, i64>(14)? != 0,
+                "cache_state":        row.get::<_, Option<String>>(15)?,
+                "cache_anomaly":      row.get::<_, Option<String>>(16)?,
+                "input_cost":         row.get::<_, Option<f64>>(17)?,
+                "output_cost":        row.get::<_, Option<f64>>(18)?,
+                "cache_read_cost":    row.get::<_, Option<f64>>(19)?,
+                "cache_write_cost":   row.get::<_, Option<f64>>(20)?,
+                "total_cost":         row.get::<_, Option<f64>>(21)?,
+            }))
+        });
+
+        match rows {
+            Ok(iter) => iter.filter_map(|r| r.ok()).collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
     /// Graceful shutdown: signal the server and handler, then await both tasks.
     pub async fn shutdown(self) {
         let _ = self.shutdown_tx.send(());
