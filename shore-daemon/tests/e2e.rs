@@ -134,9 +134,7 @@ fn build_test_config_inner(
                 llm_dist.canonicalize().unwrap().display()
             )),
             socket: Some(llm_socket.display().to_string()),
-            enabled: true,
         },
-        matrix: None,
     };
 
     let models_toml = r#"

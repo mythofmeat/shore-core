@@ -133,11 +133,6 @@ model = "claude-sonnet"            # Must match a key in [chat.*.*] below
 
 # ── Services ─────────────────────────────────────────────────────────────
 
-# [services.matrix]
-# enabled = true
-# command = "shore-mx"
-# socket = "/run/user/1000/shore/matrix.sock"
-
 # ── Advanced ─────────────────────────────────────────────────────────────
 
 # [advanced]

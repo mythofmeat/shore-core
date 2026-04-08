@@ -534,13 +534,10 @@ pub struct DiscordConfig {
 pub struct ServicesConfig {
     #[serde(default)]
     pub llm: ServiceEntry,
-
-    #[serde(default)]
-    pub matrix: Option<ServiceEntry>,
 }
 
 /// Configuration for a supervised service.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ServiceEntry {
     /// Command to spawn the service (e.g. "node shore-llm/dist/index.js").
@@ -548,20 +545,6 @@ pub struct ServiceEntry {
 
     /// Unix socket path the service listens on.
     pub socket: Option<String>,
-
-    /// Whether the service is enabled. Defaults to true.
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-}
-
-impl Default for ServiceEntry {
-    fn default() -> Self {
-        Self {
-            command: None,
-            socket: None,
-            enabled: true,
-        }
-    }
 }
 
 // ── [notifications] ─────────────────────────────────────────────────────
