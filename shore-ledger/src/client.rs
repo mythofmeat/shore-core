@@ -101,6 +101,13 @@ pub(crate) fn record_call(
                 cache_creation_tokens = usage.cache_creation_tokens,
                 "Cache anomaly detected"
             );
+            shore_llm_client::cache_forensics::notify_anomaly(
+                character,
+                anomaly,
+                call_type.as_str(),
+                usage.cache_read_tokens,
+                usage.cache_creation_tokens,
+            );
         }
 
         (Some(state_str.to_string()), anomaly_str.map(String::from))
@@ -145,6 +152,22 @@ pub(crate) fn record_call(
         cache_write_cost: cost.as_ref().map(|c| c.cache_write),
         total_cost: cost.as_ref().map(|c| c.total),
     };
+
+    // Cache forensics: log response-side data for ALL cache events.
+    // Uses call_id=0 since we don't have the request-side correlation ID
+    // here — but character + call_type + timestamp provide enough context.
+    if has_cache_metrics && shore_llm_client::cache_forensics::is_enabled() {
+        shore_llm_client::cache_forensics::log_response(
+            0, // no request-side correlation for streaming path
+            model,
+            character,
+            call_type.as_str(),
+            usage.input_tokens,
+            usage.output_tokens,
+            usage.cache_read_tokens,
+            usage.cache_creation_tokens,
+        );
+    }
 
     info!(
         provider,

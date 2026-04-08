@@ -635,6 +635,7 @@ async fn handle_generation(
     // 9. Build LLM request.
     let mut request = LedgerClient::build_request(resolved, llm_messages, system, tool_defs, None)?;
     request.rid = rid;
+    request.forensic_character = Some(char_name.to_owned());
 
     // Apply per-message parameter overrides from the client.
     if let Some(ref ov) = body.overrides {

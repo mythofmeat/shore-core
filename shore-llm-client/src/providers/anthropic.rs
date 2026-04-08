@@ -136,9 +136,20 @@ fn apply_breakpoint_to_message(msg: &mut Value, cc: &Value) {
 /// - **Message breakpoints (up to 3):** at depths 2, 4, and 8 from the last
 ///   real user message, each at a stable turn boundary.  Duplicate positions
 ///   are deduplicated.
-fn apply_cache_control(messages: &[Value], system: &Value, cache_ttl: &str) -> (Vec<Value>, Value) {
+/// Info returned alongside the cache-annotated payload for forensics.
+struct CachePlacement {
+    breakpoint_pos: Option<usize>,
+    sys_blocks: usize,
+    prefix_hash: u64,
+}
+
+fn apply_cache_control(messages: &[Value], system: &Value, cache_ttl: &str) -> (Vec<Value>, Value, CachePlacement) {
     if messages.is_empty() {
-        return (messages.to_vec(), system.clone());
+        return (messages.to_vec(), system.clone(), CachePlacement {
+            breakpoint_pos: None,
+            sys_blocks: 0,
+            prefix_hash: 0,
+        });
     }
 
     let mut result: Vec<Value> = messages.to_vec();
@@ -164,12 +175,37 @@ fn apply_cache_control(messages: &[Value], system: &Value, cache_ttl: &str) -> (
     });
 
     // Step 4: Single message breakpoint at depth 2.
+    let boundary_pos = find_turn_boundary(&result, 2);
     {
         let cc = make_cache_control(cache_ttl);
-        if let Some(pos) = find_turn_boundary(&result, 2) {
+        if let Some(pos) = boundary_pos {
             apply_breakpoint_to_message(&mut result[pos], &cc);
         }
     }
+
+    // Compute a FNV-style hash of the prefix (system + messages up to breakpoint)
+    // so we can detect byte-level differences between calls.
+    let prefix_hash = {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        // Hash the system content.
+        system.to_string().hash(&mut hasher);
+        // Hash messages up to and including the breakpoint.
+        let end = boundary_pos.map(|p| p + 1).unwrap_or(0);
+        for msg in &result[..end] {
+            msg.to_string().hash(&mut hasher);
+        }
+        hasher.finish()
+    };
+
+    let sys_blocks = system.as_array().map(|a| a.len()).unwrap_or(0);
+
+    tracing::debug!(
+        total_messages = result.len(),
+        boundary_pos = ?boundary_pos,
+        prefix_hash = format!("{prefix_hash:016x}"),
+        "apply_cache_control: breakpoint placement"
+    );
 
     // System breakpoint: cache the stable system content.  The recap
     // (if present) is always the last block and changes on compaction,
@@ -190,7 +226,7 @@ fn apply_cache_control(messages: &[Value], system: &Value, cache_ttl: &str) -> (
         }
     }
 
-    (result, sys)
+    (result, sys, CachePlacement { breakpoint_pos: boundary_pos, sys_blocks, prefix_hash })
 }
 
 /// Build the `thinking` config param from provider_options.
@@ -273,7 +309,10 @@ fn convert_inline_system_messages(messages: &[Value]) -> Vec<Value> {
 }
 
 /// Construct the JSON request body for the Anthropic Messages API.
-fn build_body(request: &LlmRequest, streaming: bool) -> Value {
+///
+/// Returns `(body, call_id)` where `call_id` is a forensic correlation ID
+/// (0 when forensics is disabled).
+fn build_body(request: &LlmRequest, streaming: bool) -> (Value, u64) {
     let opts = request.provider_options.as_ref();
     let empty_opts = json!({});
     let opts_ref = opts.unwrap_or(&empty_opts);
@@ -290,10 +329,9 @@ fn build_body(request: &LlmRequest, streaming: bool) -> Value {
     let cache_enabled = !cache_ttl.is_empty();
     let has_existing_markers = messages_have_cache_control(&converted_messages);
 
-    // On the first call of a turn (no existing markers), apply cache
-    // breakpoints.  On tool-loop continuations (markers already present),
-    // keep existing breakpoints immutable.
-    let (messages, system) = if cache_enabled && !has_existing_markers {
+    let msg_count = converted_messages.len();
+
+    let (messages, system, placement) = if cache_enabled && !has_existing_markers {
         apply_cache_control(
             &converted_messages,
             request.system.as_ref().unwrap_or(&json!(null)),
@@ -303,7 +341,28 @@ fn build_body(request: &LlmRequest, streaming: bool) -> Value {
         (
             converted_messages,
             request.system.clone().unwrap_or(json!(null)),
+            CachePlacement { breakpoint_pos: None, sys_blocks: 0, prefix_hash: 0 },
         )
+    };
+
+    // -- Cache forensics: log every Anthropic request --
+    let call_id = if crate::cache_forensics::is_enabled() {
+        let id = crate::cache_forensics::next_call_id();
+        crate::cache_forensics::log_request(
+            id,
+            request.forensic_character.as_deref(),
+            &request.model,
+            msg_count,
+            placement.breakpoint_pos,
+            placement.sys_blocks,
+            placement.prefix_hash,
+            has_existing_markers,
+            cache_enabled,
+            request.rid.as_deref(),
+        );
+        id
+    } else {
+        0
     };
 
     let thinking = build_thinking_config(opts_ref);
@@ -340,18 +399,19 @@ fn build_body(request: &LlmRequest, streaming: bool) -> Value {
         body["output_config"] = output_config;
     }
 
-    body
+    (body, call_id)
 }
 
 /// Build the reqwest request with Anthropic-specific headers.
 ///
 /// Accepts any `base_url`, enabling the Anthropic wire protocol through
 /// third-party gateways (e.g. OpenRouter, Bedrock proxies).
+/// Returns `(request_builder, forensic_call_id)`.
 fn build_http_request(
     client: &reqwest::Client,
     request: &LlmRequest,
     streaming: bool,
-) -> Result<reqwest::RequestBuilder, LlmError> {
+) -> Result<(reqwest::RequestBuilder, u64), LlmError> {
     let base = request
         .base_url
         .as_deref()
@@ -363,7 +423,7 @@ fn build_http_request(
     } else {
         format!("{base}/v1/messages")
     };
-    let body = build_body(request, streaming);
+    let (body, call_id) = build_body(request, streaming);
 
     // Log the post-transformation payload shape (no message content).
     {
@@ -391,7 +451,7 @@ fn build_http_request(
         builder = builder.header("X-Request-ID", rid);
     }
 
-    Ok(builder.json(&body))
+    Ok((builder.json(&body), call_id))
 }
 
 use super::check_response;
@@ -455,7 +515,7 @@ pub async fn stream(
     client: &reqwest::Client,
     request: &LlmRequest,
 ) -> Result<DuplexStream, LlmError> {
-    let http_req = build_http_request(client, request, true)?;
+    let (http_req, _call_id) = build_http_request(client, request, true)?;
     let response = http_req.send().await.map_err(|e| LlmError::Provider {
         message: format!("HTTP request failed: {e}"),
     })?;
@@ -707,7 +767,7 @@ pub async fn generate(
     request: &LlmRequest,
 ) -> Result<GenerateResponse, LlmError> {
     let start = Instant::now();
-    let http_req = build_http_request(client, request, false)?;
+    let (http_req, call_id) = build_http_request(client, request, false)?;
     let response = http_req.send().await.map_err(|e| LlmError::Provider {
         message: format!("HTTP request failed: {e}"),
     })?;
@@ -802,6 +862,21 @@ pub async fn generate(
         time_to_first_token_ms: total_ms,
     };
 
+    // Forensic log: response side (non-streaming only — streaming is
+    // logged from the ledger's record_call since usage arrives later).
+    if call_id > 0 && (usage.cache_creation_tokens > 0 || usage.cache_read_tokens > 0) {
+        crate::cache_forensics::log_response(
+            call_id,
+            &model,
+            "", // character not known at this layer
+            "", // call_type not known at this layer
+            usage.input_tokens,
+            usage.output_tokens,
+            usage.cache_read_tokens,
+            usage.cache_creation_tokens,
+        );
+    }
+
     Ok(GenerateResponse {
         content: text_content,
         content_blocks,
@@ -833,6 +908,7 @@ mod tests {
             provider_options: None,
             provider_key: None,
             rid: None,
+            forensic_character: None,
         }
     }
 
@@ -840,7 +916,7 @@ mod tests {
 
     #[test]
     fn test_apply_cache_control_empty_messages() {
-        let (msgs, sys) = apply_cache_control(&[], &json!(null), "5m");
+        let (msgs, sys, _) = apply_cache_control(&[], &json!(null), "5m");
         assert!(msgs.is_empty());
         assert_eq!(sys, json!(null));
     }
@@ -852,7 +928,7 @@ mod tests {
             { "type": "text", "text": "recap that changes" }
         ]);
         let messages = vec![json!({"role": "user", "content": "hi"})];
-        let (_, sys) = apply_cache_control(&messages, &system, "5m");
+        let (_, sys, _) = apply_cache_control(&messages, &system, "5m");
 
         // Breakpoint on second-to-last (index 0) — the stable block.
         let blocks = sys.as_array().unwrap();
@@ -864,7 +940,7 @@ mod tests {
     fn test_apply_cache_control_single_system_block() {
         let system = json!([{ "type": "text", "text": "only block" }]);
         let messages = vec![json!({"role": "user", "content": "hi"})];
-        let (_, sys) = apply_cache_control(&messages, &system, "5m");
+        let (_, sys, _) = apply_cache_control(&messages, &system, "5m");
 
         let blocks = sys.as_array().unwrap();
         assert!(blocks[0].get("cache_control").is_some());
@@ -876,7 +952,7 @@ mod tests {
             json!({"role": "user", "content": "hello"}),
             json!({"role": "assistant", "content": "hi there"}),
         ];
-        let (result, _) = apply_cache_control(&messages, &json!(null), "5m");
+        let (result, _, _) = apply_cache_control(&messages, &json!(null), "5m");
 
         // All string content should be normalized to array format.
         for msg in &result {
@@ -892,7 +968,7 @@ mod tests {
     fn test_apply_cache_control_custom_ttl() {
         let system = json!([{ "type": "text", "text": "prompt" }]);
         let messages = vec![json!({"role": "user", "content": "hi"})];
-        let (_, sys) = apply_cache_control(&messages, &system, "10m");
+        let (_, sys, _) = apply_cache_control(&messages, &system, "10m");
 
         let cc = &sys.as_array().unwrap()[0]["cache_control"];
         assert_eq!(cc["type"], "ephemeral");
@@ -1019,7 +1095,7 @@ mod tests {
     #[test]
     fn test_build_body_minimal() {
         let request = make_request(vec![json!({"role": "user", "content": "hi"})], None);
-        let body = build_body(&request, false);
+        let (body, _) = build_body(&request, false);
 
         assert_eq!(body["model"], "claude-test");
         assert_eq!(body["max_tokens"], 4096);
@@ -1038,7 +1114,7 @@ mod tests {
             "description": "Search the web",
             "input_schema": {"type": "object"}
         })]);
-        let body = build_body(&request, false);
+        let (body, _) = build_body(&request, false);
 
         assert!(body.get("system").is_some());
         assert!(body["tools"].is_array());
@@ -1048,10 +1124,10 @@ mod tests {
     #[test]
     fn test_build_body_streaming_flag() {
         let request = make_request(vec![json!({"role": "user", "content": "hi"})], None);
-        let body = build_body(&request, true);
+        let (body, _) = build_body(&request, true);
         assert_eq!(body["stream"], true);
 
-        let body_no_stream = build_body(&request, false);
+        let (body_no_stream, _) = build_body(&request, false);
         assert!(body_no_stream.get("stream").is_none());
     }
 
@@ -1488,7 +1564,7 @@ mod tests {
         let result = build_http_request(&client, &request, false);
         assert!(result.is_ok(), "custom base_url should be accepted");
 
-        let builder = result.unwrap();
+        let (builder, _) = result.unwrap();
         let built = builder.build().unwrap();
         assert_eq!(
             built.url().as_str(),
@@ -1507,7 +1583,8 @@ mod tests {
         let result = build_http_request(&client, &request, false);
         assert!(result.is_ok());
 
-        let built = result.unwrap().build().unwrap();
+        let (builder, _) = result.unwrap();
+        let built = builder.build().unwrap();
         assert_eq!(
             built.url().as_str(),
             "https://api.anthropic.com/v1/messages"
@@ -1527,7 +1604,8 @@ mod tests {
         let result = build_http_request(&client, &request, false);
         assert!(result.is_ok());
 
-        let built = result.unwrap().build().unwrap();
+        let (builder, _) = result.unwrap();
+        let built = builder.build().unwrap();
         assert_eq!(
             built.url().as_str(),
             "https://openrouter.ai/api/v1/messages"
@@ -1546,7 +1624,8 @@ mod tests {
         let result = build_http_request(&client, &request, false);
         assert!(result.is_ok());
 
-        let built = result.unwrap().build().unwrap();
+        let (builder, _) = result.unwrap();
+        let built = builder.build().unwrap();
         assert_eq!(
             built.url().as_str(),
             "http://127.0.0.1:8080/v1/messages"

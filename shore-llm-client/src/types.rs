@@ -55,6 +55,10 @@ pub struct LlmRequest {
     /// Optional request ID for distributed tracing (sent as X-Request-ID header).
     #[serde(skip)]
     pub rid: Option<String>,
+
+    /// Character name — transient, for cache forensic logging only.
+    #[serde(skip)]
+    pub forensic_character: Option<String>,
 }
 
 /// Token usage counts from shore-llm's normalized response.
@@ -234,6 +238,7 @@ mod tests {
             provider_options: None,
             provider_key: None,
             rid: None,
+            forensic_character: None,
         };
         let json = serde_json::to_value(&req).unwrap();
         assert!(!json.as_object().unwrap().contains_key("base_url"));

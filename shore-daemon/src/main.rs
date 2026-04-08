@@ -142,6 +142,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             loaded.dirs.data.display()
         );
     }
+
+    // Always-on cache forensics — writes to {data_dir}/cache_forensics.jsonl.
+    // Logs every Anthropic cache placement + response so cache misses are
+    // diagnosable after the fact without needing to reproduce.
+    shore_llm_client::cache_forensics::enable(loaded.dirs.data.clone());
+    info!(
+        "Cache forensics enabled → {}/cache_forensics.jsonl",
+        loaded.dirs.data.display()
+    );
+
     let llm_client = LedgerClient::new(raw_llm_client, &loaded.dirs.data.join("ledger.db"))?;
 
     // Reconstruct cache tracker state from the ledger for each known character.

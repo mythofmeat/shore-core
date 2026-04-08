@@ -1013,6 +1013,12 @@ async fn execute_unified_tick(
         }
     };
 
+    // Clear the stale request ID from the previous user message —
+    // reusing it across interiority iterations can confuse OpenRouter's
+    // routing/dedup and cause unexpected cache misses.
+    request.rid = None;
+    request.forensic_character = Some(character.to_owned());
+
     let Some(lc) = loaded_config else { return };
 
     // Build the dynamic interiority prompt.
@@ -1462,6 +1468,9 @@ async fn execute_dormant_ping(
             Some(req) => {
                 let mut ping = req.clone();
                 ping.max_tokens = 1;
+                // Clear stale request ID — same reason as execute_unified_tick.
+                ping.rid = None;
+                ping.forensic_character = Some(character.to_owned());
                 ping
             }
             None => {

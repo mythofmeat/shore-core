@@ -893,6 +893,7 @@ mod tests {
             provider_options: None,
             provider_key: None,
             rid: None,
+            forensic_character: None,
         }
     }
 
