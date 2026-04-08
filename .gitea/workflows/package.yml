@@ -2,15 +2,19 @@ name: Build and publish Arch packages
 
 on:
   push:
-    branches: [main]
+    tags: ['v*']
 
 jobs:
   package:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0  # full history needed for pkgver()
+
+      - name: Pin PKGBUILD source to tag
+        working-directory: contrib
+        run: |
+          TAG="${{ github.ref_name }}"
+          sed -i "s|silvershore.git\"|silvershore.git#tag=${TAG}\"|" PKGBUILD
 
       - name: Build packages
         working-directory: contrib
