@@ -506,3 +506,22 @@ Also renamed across other config sections:
 **Trade-offs:**
 - Breaking config change: old field names will fail to parse (`deny_unknown_fields`). Users must update config files.
 - `cache_ttl` was left as `Option<String>` since it passes through to the Anthropic API directly (only two valid values: `"5m"`, `"1h"`).
+
+## Integration Test Harness (2026-04-09)
+
+**Decision:** Created `shore-test-harness` crate with `TestHarness` that boots a
+real daemon in-process and mocks only the HTTP boundary via `wiremock`. All daemon
+plumbing (SWP, handler, persistence, autonomy, tools) runs for real.
+
+**Alternatives considered:**
+- Full mock of LlmClient via trait abstraction — rejected because it requires
+  significant refactoring and wouldn't test the real reqwest/SSE parsing path.
+- Record/replay from real API calls — rejected because recordings rot and are only
+  marginally better than canned SSE for the bugs that actually occur.
+- Real API calls in CI — rejected because it costs money and is non-deterministic.
+
+**Trade-offs:**
+- We don't test actual LLM response quality or real provider quirks (socket behavior,
+  undocumented error formats). The existing `#[ignore]`-gated e2e tests cover that.
+- Autonomy tests use `tokio::time::pause()` which requires all autonomy code to use
+  `tokio::time::Instant` instead of `std::time::Instant`.
