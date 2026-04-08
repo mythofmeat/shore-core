@@ -985,8 +985,20 @@ async fn run_tool_phase(
 ) -> Result<tools::ToolLoopResult, Box<dyn std::error::Error + Send + Sync>> {
     debug!(character = char_name, "run_tool_phase starting");
     let db_path = data_dir.join(char_name).join("memory").join("memory.db");
-    let memory_db =
-        MemoryDB::open(&db_path).map_err(|e| format!("failed to open memory DB: {e}"))?;
+    let memory_db = match MemoryDB::open(&db_path) {
+        Ok(db) => db,
+        Err(e) => {
+            warn!(
+                character = char_name,
+                error = %e,
+                "Failed to open memory DB — memory tools disabled for this turn"
+            );
+            return Ok(tools::ToolLoopResult {
+                result,
+                intermediate_messages: vec![],
+            });
+        }
+    };
 
     let char_def = character_definition.clone().unwrap_or_default();
     let user_def = user_definition.clone().unwrap_or_default();
