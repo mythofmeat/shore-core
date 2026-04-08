@@ -7,7 +7,7 @@ use super::CompactionManager;
 pub async fn run_compaction(
     character: &str,
     config: &shore_config::LoadedConfig,
-    llm_client: &shore_llm_client::LlmClient,
+    llm_client: &shore_ledger::LedgerClient,
     data_dir: &std::path::Path,
     _push_tx: &tokio::sync::broadcast::Sender<shore_protocol::server_msg::ServerMessage>,
     notifier: &crate::notifications::NotificationService,
@@ -91,8 +91,8 @@ pub async fn run_compaction(
         .map_err(|e| format!("Failed to open vector store: {e}"))?;
 
     // Create trait implementations.
-    let llm = RealCompactionLlm::new(llm_client.clone(), model);
-    let indexer = RealVectorIndexer::new(store, llm_client.clone(), embed_config);
+    let llm = RealCompactionLlm::new(llm_client.clone(), model, character.to_string());
+    let indexer = RealVectorIndexer::new(store, llm_client.inner().clone(), embed_config);
     let conv_mgr = RealConversationManager::new(&character_dir);
 
     let mgr = CompactionManager::new(effective.app.memory.compaction.clone());

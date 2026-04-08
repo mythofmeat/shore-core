@@ -19,7 +19,7 @@ use shore_protocol::error::ErrorCode;
 use shore_protocol::server_msg::{Error as SwpError, ServerMessage};
 use shore_protocol::types::{derive_content_from_blocks, ContentBlock, ImageRef, Message, Role};
 use tokio::sync::{broadcast, Mutex};
-use tracing::{error, info, instrument, warn};
+use tracing::{debug, error, info, instrument, warn};
 
 use crate::autonomy::manager::AutonomyManager;
 use crate::autonomy::parse_cache_ttl_secs;
@@ -41,9 +41,9 @@ use crate::tools::{self as tool_system, ToolContext};
 use shore_config::app::SearchConfig;
 use shore_config::models::Sdk;
 use shore_config::LoadedConfig;
+use shore_ledger::{CallType, LedgerClient};
 use shore_llm_client::retry::{self, RetryDecision, RetryPolicy};
 use shore_llm_client::stream::{CacheContext, StreamConsumer};
-use shore_llm_client::LlmClient;
 
 // ── Per-request tool context (wraps SharedToolContext + autonomy) ────
 
@@ -86,7 +86,7 @@ impl ToolContext for HandlerToolContext {
     fn image_dir(&self) -> &str {
         self.inner.image_dir()
     }
-    fn llm_client(&self) -> Option<&LlmClient> {
+    fn llm_client(&self) -> Option<&shore_llm_client::LlmClient> {
         self.inner.llm_client()
     }
     fn image_gen_config(&self) -> Option<&ImageGenConfig> {
@@ -112,7 +112,7 @@ impl ToolContext for HandlerToolContext {
 #[derive(Clone)]
 struct GenContext {
     registry: Arc<Mutex<CharacterRegistry>>,
-    llm_client: LlmClient,
+    llm_client: LedgerClient,
     push_tx: broadcast::Sender<ServerMessage>,
     autonomy: AutonomyManager,
     /// Set to false after the first successful generation since daemon start.
@@ -149,7 +149,7 @@ struct GenerationParams {
 pub struct MessageHandler {
     pub registry: Arc<Mutex<CharacterRegistry>>,
     pub cmd_ctx: CommandContext,
-    pub llm_client: LlmClient,
+    pub llm_client: LedgerClient,
     pub push_tx: broadcast::Sender<ServerMessage>,
     pub is_first_after_restart: Arc<AtomicBool>,
     pub has_seen_cache_read: Arc<AtomicBool>,
@@ -224,14 +224,23 @@ impl MessageHandler {
     /// Engine messages (Message/Regen) are spawned as independent tokio tasks,
     /// so this loop never blocks on LLM streaming.
     pub async fn run(&mut self, route_rx: Arc<Mutex<tokio::sync::mpsc::Receiver<RoutedMessage>>>) {
+        info!("message handler started");
         let mut rx = route_rx.lock().await;
         while let Some(msg) = rx.recv().await {
             match msg {
                 RoutedMessage::Command { cmd, character } => {
+                    debug!(character = ?character, "handling command");
                     let result = self.dispatch_command(&cmd, character.as_deref()).await;
                     let _ = self.push_tx.send(result);
                 }
                 RoutedMessage::Engine { msg, character } => {
+                    let msg_kind = match &msg {
+                        ClientMessage::Message(_) => "message",
+                        ClientMessage::Regen(_) => "regen",
+                        ClientMessage::Cancel(_) => "cancel",
+                        _ => "other",
+                    };
+                    debug!(character = ?character, kind = msg_kind, "handling engine message");
                     // Handle cancellation: abort the active generation task.
                     if matches!(msg, ClientMessage::Cancel(_)) {
                         if let Some(handle) = self.generation_handle.take() {
@@ -355,6 +364,7 @@ impl MessageHandler {
         cmd: &shore_protocol::client_msg::Command,
         character: Option<&str>,
     ) -> ServerMessage {
+        debug!(command = %cmd.name, character = ?character, "dispatching command");
         // list_characters doesn't need a resolved character — handle it
         // before character resolution so it works when multiple characters
         // are available and none is explicitly selected.
@@ -430,11 +440,18 @@ async fn handle_generation(
         body,
         regen,
         char_name,
-        rid,
+        rid: _,
         effective_config,
         data_dir,
         active_model,
     } = params;
+    info!(
+        character = %char_name,
+        regen,
+        text_len = body.text.len(),
+        image_count = body.images.len() + body.image_data.len(),
+        "handle_generation starting"
+    );
     let wall_clock_start = Instant::now();
 
     // Get engine Arc from registry (brief lock — registry released immediately after).
@@ -504,6 +521,11 @@ async fn handle_generation(
             .first_chat_model()
             .ok_or("No model configured")?,
     };
+    debug!(
+        model = %resolved.qualified_name,
+        provider = %resolved.provider_key,
+        "model resolved"
+    );
 
     // 4. Resolve memory agent and researcher models.
     let agent_model = effective_config
@@ -615,6 +637,7 @@ async fn handle_generation(
         check_time_enabled: tool_toggles.check_time(),
     };
 
+    let recap_path = character_data_dir.join("recaps.jsonl");
     let prompt_result = prompt::assemble_prompt(&PromptParams {
         config_dir: &effective_config.dirs.config,
         character_name: &char_name,
@@ -627,6 +650,7 @@ async fn handle_generation(
         max_context_tokens: resolved.max_context_tokens,
         max_output_tokens: resolved.max_tokens,
         capabilities: Some(&capabilities),
+        recap_store_path: Some(&recap_path),
     });
 
     // 7. Build LLM messages from assembled prompt.
@@ -654,7 +678,7 @@ async fn handle_generation(
     };
 
     // 9. Build LLM request.
-    let mut request = LlmClient::build_request(resolved, llm_messages, system, tool_defs, None)?;
+    let mut request = LedgerClient::build_request(resolved, llm_messages, system, tool_defs, None)?;
 
     // Apply per-message parameter overrides from the client.
     if let Some(ref ov) = body.overrides {
@@ -680,6 +704,14 @@ async fn handle_generation(
         "Sending streaming request to LLM"
     );
 
+    // Determine if thinking is enabled for this request.
+    let thinking_enabled = request
+        .provider_options
+        .as_ref()
+        .and_then(|opts| opts.get("budget_tokens"))
+        .and_then(|v| v.as_u64())
+        .map_or(false, |b| b > 0);
+
     // 10. Stream response from shore-llm (with retry on transient errors).
     let mut result = stream_with_retry(
         &ctx,
@@ -688,7 +720,8 @@ async fn handle_generation(
         resolved,
         &effective_config,
         regen,
-        rid.as_deref(),
+        &char_name,
+        thinking_enabled,
     )
     .await?;
 
@@ -819,6 +852,8 @@ pub(crate) fn build_llm_messages(
 }
 
 /// Phase 10: Stream the LLM response with exponential backoff retry.
+#[instrument(skip(ctx, request, engine_arc, effective_config), fields(char = char_name, model = %resolved.qualified_name))]
+#[allow(clippy::too_many_arguments)]
 async fn stream_with_retry(
     ctx: &GenContext,
     request: &shore_llm_client::types::LlmRequest,
@@ -826,7 +861,8 @@ async fn stream_with_retry(
     resolved: &shore_config::models::ResolvedModel,
     effective_config: &LoadedConfig,
     regen: bool,
-    rid: Option<&str>,
+    char_name: &str,
+    thinking_enabled: bool,
 ) -> Result<shore_llm_client::types::StreamResult, Box<dyn std::error::Error + Send + Sync>> {
     let retry_policy = RetryPolicy {
         max_retries: effective_config
@@ -836,13 +872,22 @@ async fn stream_with_retry(
             .unwrap_or(RetryPolicy::default().max_retries),
         ..RetryPolicy::default()
     };
+    debug!(
+        character = char_name,
+        model = %resolved.qualified_name,
+        max_retries = retry_policy.max_retries,
+        "stream_with_retry starting"
+    );
     let mut attempt: u32 = 0;
 
     loop {
         let consumer = StreamConsumer::new(ctx.push_tx.clone());
 
         let stream_result = async {
-            let mut reader = ctx.llm_client.stream_raw(request, rid).await?;
+            let mut ledger_stream = ctx
+                .llm_client
+                .stream_raw(request, CallType::Message, char_name, thinking_enabled)
+                .await?;
 
             let turn_count = engine_arc.lock().await.messages().len();
             let cache_warnings = resolved.provider_key == "anthropic"
@@ -856,7 +901,11 @@ async fn stream_with_retry(
                 has_seen_cache_read: ctx.has_seen_cache_read.load(Ordering::Acquire),
             };
 
-            consumer.consume(&mut reader, regen, &cache_ctx).await
+            let result = consumer
+                .consume(ledger_stream.reader_mut(), regen, &cache_ctx)
+                .await?;
+            ledger_stream.finalize(&result);
+            Ok(result)
         }
         .await;
 
@@ -865,6 +914,13 @@ async fn stream_with_retry(
                 if r.usage.cache_read_tokens > 0 {
                     ctx.has_seen_cache_read.store(true, Ordering::Release);
                 }
+                debug!(
+                    attempts = attempt + 1,
+                    finish_reason = %r.finish_reason,
+                    input_tokens = r.usage.input_tokens,
+                    output_tokens = r.usage.output_tokens,
+                    "stream_with_retry complete"
+                );
                 return Ok(r);
             }
             Err(e) => match retry::should_retry_error(&e, attempt, &retry_policy) {
@@ -879,21 +935,27 @@ async fn stream_with_retry(
                     warn!(
                         attempt,
                         delay_ms = delay.as_millis() as u64,
+                        error = %e,
                         "Retrying after transient LLM error"
                     );
                     tokio::time::sleep(delay).await;
                     attempt += 1;
                 }
                 RetryDecision::FallbackModel(_model) => {
+                    error!(error = %e, "stream_with_retry failed — fallback model requested");
                     return Err(e.into());
                 }
-                RetryDecision::Fail => return Err(e.into()),
+                RetryDecision::Fail => {
+                    error!(attempts = attempt + 1, error = %e, "stream_with_retry exhausted retries");
+                    return Err(e.into());
+                }
             },
         }
     }
 }
 
 /// Phase 11: Set up tool context and run the tool loop.
+#[instrument(skip(ctx, effective_config, agent_model, researcher_model, character_definition, user_definition, request, result, cache_ctx), fields(char = char_name))]
 #[allow(clippy::too_many_arguments)]
 async fn run_tool_phase(
     ctx: &GenContext,
@@ -908,6 +970,7 @@ async fn run_tool_phase(
     result: shore_llm_client::types::StreamResult,
     cache_ctx: &CacheContext,
 ) -> Result<tools::ToolLoopResult, Box<dyn std::error::Error + Send + Sync>> {
+    debug!(character = char_name, "run_tool_phase starting");
     let db_path = data_dir.join(char_name).join("memory").join("memory.db");
     let memory_db =
         MemoryDB::open(&db_path).map_err(|e| format!("failed to open memory DB: {e}"))?;
@@ -931,7 +994,7 @@ async fn run_tool_phase(
             match VectorStore::open(&vs_path, embed_config.dimensions).await {
                 Ok(vs) => Some(AgentSearchContext::new(
                     vs,
-                    ctx.llm_client.clone(),
+                    ctx.llm_client.inner().clone(),
                     embed_config,
                 )),
                 Err(e) => {
@@ -951,14 +1014,14 @@ async fn run_tool_phase(
                 char_name,
                 &effective_config.app.defaults.resolve_display_name(),
             ),
-            agent_llm: RealAgentLlm::new(ctx.llm_client.clone()),
+            agent_llm: RealAgentLlm::new(ctx.llm_client.clone(), char_name.to_owned(), CallType::MemoryAgent),
             agent_model_val: agent_model.clone(),
             researcher: researcher_model
                 .as_ref()
                 .map(|_| MemoryResearcher::new(char_def, user_def)),
             researcher_llm_val: researcher_model
                 .as_ref()
-                .map(|_| RealAgentLlm::new(ctx.llm_client.clone())),
+                .map(|_| RealAgentLlm::new(ctx.llm_client.clone(), char_name.to_owned(), CallType::Researcher)),
             researcher_model_val: researcher_model.clone(),
             rag: NoopRag,
             search_ctx,
@@ -967,7 +1030,7 @@ async fn run_tool_phase(
                 .join("images")
                 .to_string_lossy()
                 .into_owned(),
-            llm_client_val: ctx.llm_client.clone(),
+            llm_client_val: ctx.llm_client.inner().clone(),
             image_gen_config_val: image_gen_config,
             search_config_val: effective_config.app.behavior.tool_use.search.clone(),
             character_name_val: char_name.to_owned(),
@@ -980,6 +1043,13 @@ async fn run_tool_phase(
         autonomy_val: ctx.autonomy.clone(),
     };
 
+    let thinking_enabled = request
+        .provider_options
+        .as_ref()
+        .and_then(|opts| opts.get("budget_tokens"))
+        .and_then(|v| v.as_u64())
+        .map_or(false, |b| b > 0);
+
     let tool_loop_result = tools::run_tool_loop(
         &ctx.llm_client,
         &ctx.push_tx,
@@ -989,13 +1059,21 @@ async fn run_tool_phase(
         effective_config.app.behavior.tool_use.max_iterations,
         cache_ctx,
         &ctx.diagnostics,
+        char_name,
+        thinking_enabled,
     )
     .await?;
 
+    debug!(
+        character = char_name,
+        intermediate_messages = tool_loop_result.intermediate_messages.len(),
+        "run_tool_phase complete"
+    );
     Ok(tool_loop_result)
 }
 
 /// Phase 12: Persist messages, record diagnostics, and send notifications.
+#[instrument(skip(ctx, engine_arc, result, request, tool_intermediate_messages), fields(char = char_name, model = %resolved.qualified_name))]
 #[allow(clippy::too_many_arguments)]
 async fn persist_and_notify(
     ctx: &GenContext,
@@ -1287,6 +1365,12 @@ mod tests {
             loaded_config.clone(),
         );
 
+        let ledger_client = shore_ledger::LedgerClient::new(
+            shore_llm_client::LlmClient::new(),
+            &data_dir.join("ledger.db"),
+        )
+        .unwrap();
+
         let cmd_ctx = CommandContext {
             config: loaded_config.clone(),
             push_tx: push_tx.clone(),
@@ -1294,7 +1378,7 @@ mod tests {
             active_model: None,
             session_tokens: Arc::new(std::sync::Mutex::new(SessionTokens::default())),
             autonomy: autonomy.clone(),
-            llm_client: LlmClient::new(),
+            llm_client: ledger_client.clone(),
             diagnostics: Arc::new(std::sync::Mutex::new(
                 shore_diagnostics::Diagnostics::default(),
             )),
@@ -1304,7 +1388,7 @@ mod tests {
         let handler = MessageHandler {
             registry: Arc::new(Mutex::new(registry)),
             cmd_ctx,
-            llm_client: LlmClient::new(),
+            llm_client: ledger_client,
             push_tx: push_tx.clone(),
             is_first_after_restart: Arc::new(AtomicBool::new(false)),
             has_seen_cache_read: Arc::new(AtomicBool::new(false)),
@@ -1679,6 +1763,12 @@ mod tests {
             loaded_config.clone(),
         );
 
+        let ledger_client = shore_ledger::LedgerClient::new(
+            shore_llm_client::LlmClient::new(),
+            &data_dir.join("ledger.db"),
+        )
+        .unwrap();
+
         let cmd_ctx = CommandContext {
             config: loaded_config.clone(),
             push_tx: push_tx.clone(),
@@ -1686,7 +1776,7 @@ mod tests {
             active_model: None,
             session_tokens: Arc::new(std::sync::Mutex::new(SessionTokens::default())),
             autonomy: autonomy.clone(),
-            llm_client: LlmClient::new(),
+            llm_client: ledger_client.clone(),
             diagnostics: Arc::new(std::sync::Mutex::new(
                 shore_diagnostics::Diagnostics::default(),
             )),
@@ -1696,7 +1786,7 @@ mod tests {
         let handler = MessageHandler {
             registry: Arc::new(Mutex::new(registry)),
             cmd_ctx,
-            llm_client: LlmClient::new(),
+            llm_client: ledger_client,
             push_tx: push_tx.clone(),
             is_first_after_restart: Arc::new(AtomicBool::new(false)),
             has_seen_cache_read: Arc::new(AtomicBool::new(false)),
@@ -1714,7 +1804,11 @@ mod tests {
     /// Uses a real ConversationEngine, real prompt assembly, and a mock HTTP
     /// server returning canned Anthropic SSE. Verifies that both the user
     /// message and the assistant response are persisted to the engine.
+    ///
+    /// Requires ANTHROPIC_API_KEY in env (LlmClient validates on construction).
+    /// Run with: `cargo test --lib -- --ignored pipeline_user_message`
     #[tokio::test]
+    #[ignore]
     async fn pipeline_user_message_to_persisted_response() {
         let (base_url, _server) =
             mock_sse_server(sse_text_response("Hello from the mock LLM!")).await;

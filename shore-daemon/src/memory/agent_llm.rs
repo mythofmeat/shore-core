@@ -65,16 +65,18 @@ pub trait AgentLlm: Send + Sync {
 // Production implementation
 // ---------------------------------------------------------------------------
 
-use shore_llm_client::LlmClient;
+use shore_ledger::{CallType, LedgerClient};
 
-/// Production `AgentLlm` backed by `LlmClient` (Unix socket to shore-llm).
+/// Production `AgentLlm` backed by `LedgerClient` (ledger-tracked LLM calls).
 pub struct RealAgentLlm {
-    client: LlmClient,
+    client: LedgerClient,
+    character: String,
+    call_type: CallType,
 }
 
 impl RealAgentLlm {
-    pub fn new(client: LlmClient) -> Self {
-        Self { client }
+    pub fn new(client: LedgerClient, character: String, call_type: CallType) -> Self {
+        Self { client, character, call_type }
     }
 }
 
@@ -87,12 +89,12 @@ impl AgentLlm for RealAgentLlm {
         model: &'a ResolvedModel,
     ) -> Pin<Box<dyn Future<Output = Result<AgentLlmResponse, AgentLlmError>> + Send + 'a>> {
         Box::pin(async move {
-            let request = LlmClient::build_request(model, messages, system, tools, None)
+            let request = LedgerClient::build_request(model, messages, system, tools, None)
                 .map_err(|e| AgentLlmError::Transport(e.to_string()))?;
 
             let resp = self
                 .client
-                .generate(&request, None)
+                .generate(&request, self.call_type, &self.character, false)
                 .await
                 .map_err(|e| AgentLlmError::Transport(e.to_string()))?;
 

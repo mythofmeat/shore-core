@@ -2,7 +2,7 @@
 pkgbase=shore
 pkgname=(shore-daemon shore-cli shore-tui)
 # shore-matrix disabled: matrix-sdk 0.16.0 hits recursion_limit on rustc 1.94+
-pkgver=.r96.4df5d05
+pkgver=0.1.0
 pkgrel=1
 pkgdesc='Persistent AI character engine'
 arch=('x86_64')
@@ -15,10 +15,7 @@ sha256sums=('SKIP')
 
 pkgver() {
     cd "${pkgbase}"
-    printf "%s.r%s.%s" \
-        "$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')" \
-        "$(git rev-list --count HEAD)" \
-        "$(git rev-parse --short HEAD)"
+    git describe --tags --abbrev=0 | sed 's/^v//'
 }
 
 prepare() {

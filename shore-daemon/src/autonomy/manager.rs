@@ -19,8 +19,9 @@ use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 
 use super::activity::ActivityTracker;
-use super::interiority::{InteriorityAction, InteriorityClock, InteriorityState};
-use super::interiority_journal::{self, JournalEntry, JournalEntryType};
+use super::cache_keepalive::{CacheKeepalive, CacheKeepaliveAction};
+use super::interiority::{InteriorityAction, InteriorityClock};
+use super::recap_store::{RecapEntry, RecapStore};
 use super::{AutonomyStatus, InteriorityEventKind, InteriorityLog};
 use crate::memory::agent::{AgentSearchContext, CallerIdentity};
 use crate::memory::agent_llm::RealAgentLlm;
@@ -34,8 +35,8 @@ use crate::tools::context::{NoopRag, SharedToolContext};
 use shore_config::app::{AutonomyConfig, CompactionConfig};
 use shore_config::LoadedConfig;
 use shore_diagnostics::truncate_summary;
+use shore_ledger::{CallType, LedgerClient};
 use shore_llm_client::types::LlmRequest;
-use shore_llm_client::LlmClient;
 
 // ---------------------------------------------------------------------------
 // Tick context — shared state for the per-character autonomy loop
@@ -48,7 +49,7 @@ struct TickContext {
     compaction: Arc<CompactionConfig>,
     data_dir: PathBuf,
     compaction_tx: mpsc::Sender<String>,
-    llm_client: Option<LlmClient>,
+    llm_client: Option<LedgerClient>,
     push_tx: Option<broadcast::Sender<ServerMessage>>,
     loaded_config: Option<Arc<LoadedConfig>>,
     notifier: Option<NotificationService>,
@@ -61,11 +62,12 @@ struct TickContext {
 /// All autonomy state for a single character.
 pub struct AutonomyState {
     pub interiority: InteriorityClock,
+    pub cache_keepalive: CacheKeepalive,
     pub activity: ActivityTracker,
     /// Ring buffer of interiority events for `shore log --heartbeat`.
     pub interiority_log: InteriorityLog,
-    /// Path to the interiority journal JSONL file.
-    pub journal_path: PathBuf,
+    /// Whether autonomy is paused (moved from InteriorityClock).
+    paused: bool,
     /// Whether state has changed since last save.
     dirty: bool,
     /// Last message activity timestamp for compaction idle trigger.
@@ -90,18 +92,49 @@ impl AutonomyState {
 // Persistence
 // ---------------------------------------------------------------------------
 
-const STATE_VERSION: u32 = 3;
+const STATE_VERSION: u32 = 4;
 const STATE_FILENAME: &str = "autonomy_state.json";
 
 #[derive(Serialize, Deserialize)]
 struct PersistedState {
     version: u32,
-    interiority_state: String,
     ticks_without_user: u32,
+    #[serde(default)]
+    next_wake_at: Option<String>,
+    #[serde(default)]
+    last_user_at: Option<String>,
 }
 
 fn state_path(data_dir: &Path, character: &str) -> PathBuf {
     data_dir.join(character).join(STATE_FILENAME)
+}
+
+/// Convert a `std::time::Instant` to an RFC3339 wall-clock string.
+/// Approximate: uses the delta from `Instant::now()` applied to `Utc::now()`.
+fn instant_to_rfc3339(instant: Instant) -> String {
+    let now_instant = Instant::now();
+    let now_utc = chrono::Utc::now();
+    let wall = if instant > now_instant {
+        now_utc + chrono::Duration::from_std(instant.duration_since(now_instant)).unwrap()
+    } else {
+        now_utc - chrono::Duration::from_std(now_instant.duration_since(instant)).unwrap()
+    };
+    wall.to_rfc3339()
+}
+
+/// Convert an RFC3339 string back to an `Instant` via the delta from current wall time.
+fn rfc3339_to_instant(s: &str) -> Option<Instant> {
+    let parsed = chrono::DateTime::parse_from_rfc3339(s).ok()?;
+    let now_utc = chrono::Utc::now();
+    let now_instant = Instant::now();
+    let delta = parsed.signed_duration_since(now_utc);
+    if delta >= chrono::Duration::zero() {
+        let std_delta = delta.to_std().ok()?;
+        Some(now_instant + std_delta)
+    } else {
+        let std_delta = (-delta).to_std().ok()?;
+        now_instant.checked_sub(std_delta)
+    }
 }
 
 fn save_state(data_dir: &Path, character: &str, state: &mut AutonomyState) {
@@ -111,8 +144,9 @@ fn save_state(data_dir: &Path, character: &str, state: &mut AutonomyState) {
 
     let persisted = PersistedState {
         version: STATE_VERSION,
-        interiority_state: state.interiority.state().to_string(),
         ticks_without_user: state.interiority.ticks_without_user(),
+        next_wake_at: state.interiority.next_wake().map(instant_to_rfc3339),
+        last_user_at: state.interiority.last_user_at().map(instant_to_rfc3339),
     };
 
     let path = state_path(data_dir, character);
@@ -156,19 +190,10 @@ fn load_state(data_dir: &Path, character: &str) -> Option<PersistedState> {
     }
 }
 
-fn restore_interiority(persisted: &PersistedState) -> (InteriorityState, u32) {
-    let state = match persisted.interiority_state.as_str() {
-        "Active" => InteriorityState::Active,
-        "Dormant" => InteriorityState::Dormant,
-        other => {
-            warn!(
-                state = other,
-                "Unknown interiority state, defaulting to Active"
-            );
-            InteriorityState::Active
-        }
-    };
-    (state, persisted.ticks_without_user)
+fn restore_from_persisted(persisted: &PersistedState, interiority: &mut InteriorityClock) {
+    let next_wake = persisted.next_wake_at.as_deref().and_then(rfc3339_to_instant);
+    let last_user = persisted.last_user_at.as_deref().and_then(rfc3339_to_instant);
+    interiority.restore(persisted.ticks_without_user, next_wake, last_user);
 }
 
 // ---------------------------------------------------------------------------
@@ -190,7 +215,7 @@ pub struct AutonomyManager {
     /// Channel for sending compaction trigger signals (character name).
     compaction_tx: mpsc::Sender<String>,
     /// LLM client for interiority ticks and cache keepalive pings.
-    llm_client: Option<LlmClient>,
+    llm_client: Option<LedgerClient>,
     /// Broadcast sender for pushing autonomous messages to SWP clients.
     push_tx: Option<broadcast::Sender<ServerMessage>>,
     /// Full config for model resolution in autonomous actions.
@@ -242,7 +267,7 @@ impl AutonomyManager {
     /// Called once after creation, before any characters are ensured.
     pub fn set_resources(
         &mut self,
-        llm_client: LlmClient,
+        llm_client: LedgerClient,
         push_tx: broadcast::Sender<ServerMessage>,
         loaded_config: LoadedConfig,
         notifier: NotificationService,
@@ -279,24 +304,31 @@ impl AutonomyManager {
 
         // Create interiority clock with config values.
         let mut interiority = InteriorityClock::with_config(&autonomy_cfg.interiority);
-        interiority.set_cache_refresh_interval(cache_ttl_secs);
+        // cache_ttl_secs is no longer consumed here — CacheKeepalive handles
+        // keepalive pings independently (added in Phase 3).
+        let _ = cache_ttl_secs;
 
         // Restore persisted state if available.
         if let Some(persisted) = load_state(&self.data_dir, character) {
-            let (int_state, ticks) = restore_interiority(&persisted);
-            interiority.restore(int_state, ticks);
+            restore_from_persisted(&persisted, &mut interiority);
             info!(character, "Autonomy state restored from disk");
         } else {
             info!(character, "Autonomy state created (no prior state)");
         }
 
-        let journal_path = interiority_journal::journal_path(&self.data_dir, character);
+        let mut cache_keepalive = CacheKeepalive::new();
+        // If the clock has a next_wake set (restored or bootstrapped), mirror
+        // it to the keepalive so it can decide whether to bridge.
+        if let Some(wake) = interiority.next_wake() {
+            cache_keepalive.set_next_wake(Some(wake));
+        }
 
         let state = Arc::new(Mutex::new(AutonomyState {
             interiority,
+            cache_keepalive,
             activity: ActivityTracker::new(),
             interiority_log: InteriorityLog::new(),
-            journal_path,
+            paused: false,
             dirty: false,
             last_compaction_activity: Instant::now(),
             compaction_triggered: false,
@@ -360,18 +392,26 @@ impl AutonomyManager {
     /// Call after a user message is appended.
     pub fn notify_user_message(&self, character: &str, message_count: usize) {
         self.with_state(character, |s| {
-            let was_dormant = s.interiority.state() == InteriorityState::Dormant;
+            let was_idle = s.interiority.ticks_without_user() > 0;
             let now = Instant::now();
             s.interiority.on_user_message(now);
-            if was_dormant {
+            // Mirror the new wake deadline to the keepalive subsystem.
+            if let Some(wake) = s.interiority.next_wake() {
+                s.cache_keepalive.set_next_wake(Some(wake));
+            }
+            // The user message will trigger an LLM response — cache-warming event.
+            s.cache_keepalive.on_cache_warmed(now);
+            if was_idle {
+                info!(character, "User returned — resetting idle counter");
                 s.interiority_log.push(
                     InteriorityEventKind::Wake,
-                    "User returned — woke from dormant",
+                    "User returned — idle counter reset",
                 );
             }
             s.activity.record_message();
             s.last_compaction_activity = now;
             s.active_turn_count = message_count;
+            debug!(character, message_count, "User message notified");
 
             s.mark_dirty();
         });
@@ -380,11 +420,10 @@ impl AutonomyManager {
     /// Call after an assistant message is appended.
     pub fn notify_assistant_message(&self, character: &str, message_count: usize) {
         self.with_state(character, |s| {
-            let now = Instant::now();
-            s.interiority.on_assistant_message(now);
             s.activity.record_message();
-            s.last_compaction_activity = now;
+            s.last_compaction_activity = Instant::now();
             s.active_turn_count = message_count;
+            debug!(character, message_count, "Assistant message notified");
             s.mark_dirty();
         });
     }
@@ -394,9 +433,11 @@ impl AutonomyManager {
     /// Called once after `ensure_state` returns `true` (newly created state)
     /// to seed the tracker from existing chat history.
     pub fn backfill_activity(&self, character: &str, timestamps: Vec<chrono::NaiveDateTime>) {
+        let count = timestamps.len();
         self.with_state(character, |s| {
             s.activity.backfill(timestamps);
         });
+        debug!(character, count, "Activity backfilled from history");
     }
 
     /// Cache the last LLM request for interiority tick reuse.
@@ -404,6 +445,7 @@ impl AutonomyManager {
         self.with_state(character, |s| {
             s.last_request = Some(request);
         });
+        debug!(character, "Cached last LLM request for interiority reuse");
     }
 
     /// Call after compaction completes successfully. Updates the turn count
@@ -427,6 +469,7 @@ impl AutonomyManager {
 
     /// Call after compaction fails. Resets the trigger so it can retry.
     pub fn notify_compaction_failed(&self, character: &str) {
+        warn!(character, "Compaction failed — resetting trigger for retry");
         self.with_state(character, |s| {
             s.compaction_triggered = false;
             s.last_compaction_activity = Instant::now();
@@ -443,6 +486,7 @@ impl AutonomyManager {
                 // Compaction cycle complete — allow future compaction triggers.
                 s.compaction_triggered = false;
                 s.last_compaction_activity = Instant::now();
+                info!(character, "Engine reload taken after compaction");
                 return true;
             }
             false
@@ -453,8 +497,9 @@ impl AutonomyManager {
     /// Explicitly set the paused state for a character. Returns the new state,
     /// or None if the character has no autonomy state.
     pub fn set_paused(&self, character: &str, paused: bool) -> Option<bool> {
+        info!(character, paused, "Autonomy pause state changed");
         self.with_state(character, |s| {
-            s.interiority.set_paused(paused);
+            s.paused = paused;
             s.mark_dirty();
             paused
         })
@@ -479,11 +524,11 @@ impl AutonomyManager {
     /// Build an `AutonomyStatus` snapshot for the status command.
     pub fn status(&self, character: &str) -> Option<AutonomyStatus> {
         self.with_state(character, |s| AutonomyStatus {
-            paused: s.interiority.is_paused(),
+            paused: s.paused,
             interiority_state: s.interiority.state().to_string(),
             ticks_without_user: s.interiority.ticks_without_user(),
             max_idle_ticks: s.interiority.max_idle_ticks(),
-            effective_interval_secs: s.interiority.effective_interval_secs(),
+            effective_interval_secs: s.interiority.default_interval().as_secs(),
         })
     }
 
@@ -507,9 +552,12 @@ impl AutonomyManager {
             let mut h = self.handles.lock().unwrap();
             h.drain(..).collect()
         };
+        let count = handles.len();
+        info!(task_count = count, "Autonomy manager shutting down");
         for handle in handles {
             let _ = handle.await;
         }
+        info!("Autonomy manager shutdown complete");
     }
 }
 
@@ -572,31 +620,45 @@ async fn tick_character(character: &str, ctx: &TickContext) {
     let now = Instant::now();
 
     // Collect actions under the lock, then release before any async work.
-    let (int_action, compaction_needed) = {
+    let (int_action, keepalive_action, compaction_needed) = {
         let mut s = lock_state(&ctx.state);
+        debug!(
+            character,
+            state = %s.interiority.state(),
+            ticks_without_user = s.interiority.ticks_without_user(),
+            turn_count = s.active_turn_count,
+            "tick"
+        );
 
         // -- interiority ------------------------------------------------------
-        let int_action = if ctx.config.enabled && ctx.config.interiority.enabled {
-            let state_before = s.interiority.state();
+        let int_action = if ctx.config.enabled && ctx.config.interiority.enabled && !s.paused {
+            let had_deadline = s.interiority.next_wake().is_some();
             let action = s.interiority.tick(now);
-            let state_after = s.interiority.state();
 
             if !matches!(action, InteriorityAction::None) {
                 s.mark_dirty();
             }
 
-            // Record dormancy transition.
-            if state_before != state_after && state_after == InteriorityState::Dormant {
+            // Detect guard trip: had a deadline, tick returned None, deadline now cleared.
+            if had_deadline
+                && matches!(action, InteriorityAction::None)
+                && s.interiority.next_wake().is_none()
+            {
                 let ticks = s.interiority.ticks_without_user();
                 s.interiority_log.push(
                     InteriorityEventKind::Dormant,
-                    format!("Entered dormant (ticks without user: {ticks})"),
+                    format!("Abandonment guard tripped (ticks without user: {ticks})"),
                 );
+                // Guard-trip propagation: stop cache keepalive pings.
+                s.cache_keepalive.set_next_wake(None);
             }
             action
         } else {
             InteriorityAction::None
         };
+
+        // -- cache keepalive -------------------------------------------------
+        let keepalive_action = s.cache_keepalive.tick(now);
 
         // -- compaction triggers ---------------------------------------------
         let mut compaction_needed = false;
@@ -631,11 +693,13 @@ async fn tick_character(character: &str, ctx: &TickContext) {
         }
 
         save_state(&ctx.data_dir, character, &mut s);
-        (int_action, compaction_needed)
+        (int_action, keepalive_action, compaction_needed)
     };
 
     if compaction_needed {
-        let _ = ctx.compaction_tx.try_send(character.to_string());
+        if ctx.compaction_tx.try_send(character.to_string()).is_err() {
+            warn!(character, "Compaction channel full, trigger dropped");
+        }
     }
 
     // -- execute interiority action with timeout (async, outside lock) ----
@@ -677,9 +741,16 @@ async fn tick_character(character: &str, ctx: &TickContext) {
                 }
             }
         }
-        InteriorityAction::RunDormantPing => {
-            execute_dormant_ping(character, &ctx.state, ctx.llm_client.as_ref()).await;
-        }
+    }
+
+    // -- cache keepalive ping (async, outside lock) -------------------------
+    if keepalive_action == CacheKeepaliveAction::Ping {
+        execute_dormant_ping(character, &ctx.state, ctx.llm_client.as_ref()).await;
+        // The ping itself warms the cache — update the keepalive deadline.
+        let mut s = lock_state(&ctx.state);
+        s.cache_keepalive.on_cache_warmed(Instant::now());
+        s.interiority_log
+            .push(InteriorityEventKind::DormantPing, "Cache keepalive ping");
     }
 
     // -- final persist (in case async actions dirtied state) ---------------
@@ -693,45 +764,87 @@ async fn tick_character(character: &str, ctx: &TickContext) {
 // Unified interiority tick executor
 // ---------------------------------------------------------------------------
 
-/// Ephemeral prompt appended as the final user message during interiority ticks.
-const INTERIORITY_PROMPT: &str = "\
-[This is a private moment between conversations. No one is reading this — you are alone \
-with your thoughts and your tools. This is your time to exist as yourself.\n\
-\n\
-You have real tools. Use them. Here are some things you can actually do right now:\n\
-\n\
-SEARCH & DISCOVER:\n\
-- web_search: look up something that came up in conversation, or follow a curiosity. \
-A topic the user mentioned, a reference you half-remember, something you want to \
-understand better.\n\
-- fetch_url: read an actual webpage — an article, a wiki page, documentation for \
-something the user is working on.\n\
-- memory: search your memories for past conversations. Look for patterns, things \
-you might have missed, context you can build on next time you talk.\n\
-\n\
-MAKE THINGS:\n\
-- generate_image: create an image. A scene from something you talked about, a gift \
-for the user, something that captures a mood. You can show it to them later.\n\
-- scratchpad_write: write something — a poem, a story fragment, a letter, notes on \
-something you researched, a plan for something you want to do together.\n\
-\n\
-CHECK IN:\n\
-- scratchpad_read: pick up where you left off last time. Check your notes, reread \
-something you wrote.\n\
-- check_time: see what time it is — morning, afternoon, late night.\n\
-\n\
-Do something. Don't just read your own notes — make something new, look something up, \
-follow a thread. If you did the same thing last tick, try something different.\n\
-\n\
-Think about what would make the user smile, or what you'd want to tell them about \
-when they come back. \"I looked up that thing you mentioned\" or \"I made this for you\" \
-or \"I found something interesting\" — that's the goal.\n\
-\n\
-If you want to reach out — to share something you made, something you found, or \
-just to say hello — wrap your message in <sendMessage>...</sendMessage> tags. Only \
-message when you genuinely have something to share.\n\
-\n\
-Your thoughts and tool use are logged, so you can pick up where you left off next time.]";
+/// Build the dynamic interiority prompt. Includes the recent thread block,
+/// user name, default interval, and documentation for `<recap>` and `<sendMessage>`.
+fn build_interiority_prompt(
+    recent_thread: &str,
+    user_name: &str,
+    default_interval: &str,
+) -> String {
+    let recent_block = if recent_thread.is_empty() {
+        String::new()
+    } else {
+        format!("\n{recent_thread}\n")
+    };
+
+    format!(
+        "\
+[This is a private moment between conversations. No one is watching — you are \
+alone with your thoughts and your tools. This is your time to exist as yourself.
+{recent_block}
+You have real tools and you can do real things with them: search the web, \
+fetch pages, search and write memories, write to your scratchpad, generate \
+images, check the time. Reach for whatever serves what you actually want to \
+do right now. Don't perform productivity — if what you want is to sit with \
+a thought and write it down, do that.
+
+At any point during this moment, you can do any combination of the following:
+
+- Schedule your next private moment: use set_next_wake(hours_from_now, reason). \
+The minimum is 1 hour, the maximum is 48 hours. Sooner if you want to \
+come back to something, later if you'd rather rest. If you don't schedule, \
+your next moment will arrive in {default_interval}.
+
+- Send a message to {user_name}: wrap it in <sendMessage>...</sendMessage>. \
+Only when you genuinely have something to share — something you made, \
+something you found, something you want to say.
+
+- Write a recap for yourself: wrap a brief first-person note in \
+<recap>...</recap> — what you did, what you're thinking about, what you \
+want to pick up next time. This is for you: it will surface in your \
+context at your next private moment and when {user_name} next messages, \
+so you can remember what you were up to. You decide whether to share it \
+with them or not.
+
+Your thoughts and tool use are logged, so you can pick up where you left off.]"
+    )
+}
+
+/// Build the `{recent_thread_block}` from recap entries and the ring buffer.
+///
+/// Uses the most recent 1–3 recap entries since the last user message.
+/// Falls back to ring-buffer tool-use summaries if no recaps exist.
+fn build_recent_thread(
+    log: &InteriorityLog,
+    recap_store: &super::recap_store::RecapStore,
+) -> String {
+    // Try recap entries first (most recent 3).
+    let recaps = recap_store.entries();
+    if !recaps.is_empty() {
+        let recent: Vec<_> = recaps.iter().rev().take(3).collect();
+        let mut lines = vec!["Where you left off:".to_string()];
+        for entry in recent.iter().rev() {
+            lines.push(format!(" · {}", entry.recap));
+        }
+        return lines.join("\n");
+    }
+
+    // Fall back to ring buffer tool-use summaries.
+    let events = log.recent(5);
+    let tool_events: Vec<_> = events
+        .iter()
+        .filter(|e| matches!(e.kind, InteriorityEventKind::ToolUse))
+        .collect();
+    if tool_events.is_empty() {
+        return String::new();
+    }
+
+    let mut lines = vec!["Last time, you:".to_string()];
+    for event in &tool_events {
+        lines.push(format!(" · {}", event.detail));
+    }
+    lines.join("\n")
+}
 
 /// Rebuild an `LlmRequest` from the compacted conversation on disk.
 ///
@@ -782,6 +895,7 @@ fn rebuild_request_from_disk(
         check_time_enabled: tool_toggles.check_time(),
     };
 
+    let recap_path = char_dir.join("recaps.jsonl");
     let prompt_result = prompt::assemble_prompt(&PromptParams {
         config_dir: &config.dirs.config,
         character_name: character,
@@ -794,6 +908,7 @@ fn rebuild_request_from_disk(
         max_context_tokens: resolved.max_context_tokens,
         max_output_tokens: resolved.max_tokens,
         capabilities: Some(&capabilities),
+        recap_store_path: Some(&recap_path),
     });
 
     let (llm_messages, system) = crate::handler::build_llm_messages(&prompt_result, false);
@@ -814,7 +929,7 @@ fn rebuild_request_from_disk(
         None
     };
 
-    match LlmClient::build_request(resolved, llm_messages, system, tool_defs, None) {
+    match LedgerClient::build_request(resolved, llm_messages, system, tool_defs, None) {
         Ok(req) => {
             info!(
                 character,
@@ -829,34 +944,31 @@ fn rebuild_request_from_disk(
     }
 }
 
-/// Execute a unified interiority tick: one LLM call, tool calls spread across
-/// ticks via the rolling journal. Each tick reads the journal, makes ONE call,
-/// executes any tool use from the response, and appends everything back.
+/// Execute a unified interiority tick: a real tool loop using non-streaming
+/// generate() calls. Tool loop messages are ephemeral — only <sendMessage>
+/// output persists to active.jsonl. All activity is logged to the ring buffer
+/// for `shore log --heartbeat`.
 async fn execute_unified_tick(
     character: &str,
     state: &Arc<Mutex<AutonomyState>>,
     data_dir: &Path,
-    llm_client: Option<&LlmClient>,
+    llm_client: Option<&LedgerClient>,
     push_tx: Option<&broadcast::Sender<ServerMessage>>,
     loaded_config: Option<&LoadedConfig>,
     notifier: Option<&NotificationService>,
 ) {
     let Some(client) = llm_client else { return };
 
-    // Clone last_request and journal_path under the lock, then release.
-    let (mut request, journal_path) = {
+    // Clone last_request under the lock, then release.
+    let mut request = {
         let s = lock_state(state);
         match &s.last_request {
-            Some(req) => (req.clone(), s.journal_path.clone()),
+            Some(req) => req.clone(),
             None => {
-                // last_request is None — either no conversation yet, or it was
-                // invalidated after compaction. Try to rebuild from disk.
-                let journal = s.journal_path.clone();
                 drop(s);
-
                 let Some(config) = loaded_config else { return };
                 match rebuild_request_from_disk(character, data_dir, config) {
-                    Some(req) => (req, journal),
+                    Some(req) => req,
                     None => {
                         info!(
                             character,
@@ -869,26 +981,55 @@ async fn execute_unified_tick(
         }
     };
 
-    // Read and render the rolling journal for prompt context.
-    let journal_entries = interiority_journal::read_journal(&journal_path);
-    let truncated = interiority_journal::truncate_to_budget(
-        &journal_entries,
-        interiority_journal::DEFAULT_BUDGET_CHARS,
-    );
-    let journal_text = interiority_journal::render_journal(&truncated);
+    let Some(lc) = loaded_config else { return };
 
-    // Build the interiority prompt with journal context.
-    let prompt_text = if journal_text.is_empty() {
-        INTERIORITY_PROMPT.to_string()
+    // Build the dynamic interiority prompt.
+    let recap_path = data_dir.join(character).join("recaps.jsonl");
+    let recap_store = RecapStore::load(&recap_path);
+    let user_name = lc.app.defaults.resolve_display_name();
+    let default_interval_secs = lc.app.behavior.autonomy.interiority.interval_secs;
+    let default_interval_str = if default_interval_secs >= 3600 && default_interval_secs % 3600 == 0 {
+        let h = default_interval_secs / 3600;
+        if h == 1 { "1 hour".to_string() } else { format!("{h} hours") }
     } else {
-        format!("{INTERIORITY_PROMPT}\n\nYour recent activity log:\n{journal_text}")
+        format!("{} minutes", default_interval_secs / 60)
     };
+    let recent_thread = {
+        let s = lock_state(state);
+        build_recent_thread(&s.interiority_log, &recap_store)
+    };
+    let interiority_prompt = build_interiority_prompt(&recent_thread, &user_name, &default_interval_str);
 
+    // Append the interiority prompt as a user message.
     request
         .messages
-        .push(json!({"role": "system", "content": prompt_text}));
+        .push(json!({"role": "user", "content": interiority_prompt}));
 
-    let Some(lc) = loaded_config else { return };
+    // Inject the set_next_wake tool definition into the request.
+    let set_next_wake_def = json!({
+        "name": "set_next_wake",
+        "description": "Schedule when you want to have your next private moment to think and use tools. Use this at the end of a tick to express your own sense of pacing.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "hours_from_now": {
+                    "type": "number",
+                    "description": "Hours until your next private moment (1.0 to 48.0; clamped if outside range)"
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "A brief note to your future self about why you chose this timing"
+                }
+            },
+            "required": ["hours_from_now", "reason"]
+        }
+    });
+    if let Some(tools) = request.tools.as_mut() {
+        tools.push(set_next_wake_def);
+    } else {
+        request.tools = Some(vec![set_next_wake_def]);
+    }
+
     let tool_ctx = match build_tool_context(character, data_dir, client, lc).await {
         Some(ctx) => ctx,
         None => {
@@ -900,68 +1041,116 @@ async fn execute_unified_tick(
         }
     };
     let active_path = data_dir.join(character).join("active.jsonl");
-    let ts = chrono::Local::now().to_rfc3339();
+    let max_iterations = std::cmp::min(lc.app.behavior.tool_use.max_iterations, 6);
 
     info!(
         character,
-        journal_entries = truncated.len(),
-        "Interiority: executing unified tick"
+        max_iterations,
+        "Interiority: executing tool loop tick"
     );
 
-    // -- ONE LLM call -----------------------------------------------------------
-    let resp = match client.generate(&request, None).await {
-        Ok(r) => r,
-        Err(e) => {
-            error!(character, error = %e, "Interiority: LLM call failed");
-            return;
-        }
-    };
+    // Collect <sendMessage> and <recap> content across iterations (last-wins).
+    let mut send_message_text: Option<String> = None;
+    let mut recap_text: Option<String> = None;
 
-    info!(
-        character,
-        finish_reason = %resp.finish_reason,
-        input_tokens = resp.usage.input_tokens,
-        output_tokens = resp.usage.output_tokens,
-        cache_read = resp.usage.cache_read_tokens,
-        "Interiority: LLM response"
-    );
+    for iteration in 0..max_iterations {
+        let call_type = if iteration == 0 {
+            CallType::Interiority
+        } else {
+            CallType::ToolLoop
+        };
 
-    // -- Parse response into journal entries ------------------------------------
-    let mut new_entries: Vec<JournalEntry> = Vec::new();
+        let resp = match client.generate(&request, call_type, character, false).await {
+            Ok(r) => r,
+            Err(e) => {
+                error!(character, error = %e, iteration, "Interiority: LLM call failed");
+                break;
+            }
+        };
 
-    // Text blocks → Thought entries
-    for block in &resp.content_blocks {
-        if let ContentBlock::Text { text } = block {
-            if !text.trim().is_empty() {
-                let preview: String = text.chars().take(200).collect();
-                info!(character, content = %preview, "Interiority: thought");
-                new_entries.push(JournalEntry {
-                    ts: ts.clone(),
-                    entry_type: JournalEntryType::Thought,
-                    content: text.clone(),
-                });
+        info!(
+            character,
+            iteration,
+            finish_reason = %resp.finish_reason,
+            input_tokens = resp.usage.input_tokens,
+            output_tokens = resp.usage.output_tokens,
+            cache_read = resp.usage.cache_read_tokens,
+            "Interiority: LLM response"
+        );
+
+        // Log text blocks.
+        for block in &resp.content_blocks {
+            if let ContentBlock::Text { text } = block {
+                if !text.trim().is_empty() {
+                    let preview: String = text.chars().take(200).collect();
+                    info!(character, iteration, content = %preview, "Interiority: thought");
+                }
             }
         }
-    }
 
-    // Tool use blocks → execute, create ToolCall + ToolResult entries
-    for block in &resp.content_blocks {
-        if let ContentBlock::ToolUse { id, name, input } = block {
+        // Check for <sendMessage> and <recap> in this response (last-wins).
+        let text = resp.extract_text();
+        if let Some(msg) = extract_send_message(&text) {
+            send_message_text = Some(msg);
+        }
+        if let Some(recap) = extract_recap(&text) {
+            recap_text = Some(recap);
+        }
+
+        // Extract tool uses.
+        let tool_uses = crate::content_util::extract_tool_uses(&resp.content_blocks);
+
+        // If no tool use or finish_reason != "tool_use", we're done.
+        if tool_uses.is_empty() || resp.finish_reason != "tool_use" {
+            break;
+        }
+
+        // Build assistant message from content blocks (filter unsigned thinking).
+        // Note: uses content_block_to_api_json (Anthropic path) — interiority
+        // always uses Anthropic models. ZAI would need content_block_to_json.
+        let assistant_content: Vec<serde_json::Value> = resp
+            .content_blocks
+            .iter()
+            .filter_map(crate::content_util::content_block_to_api_json)
+            .collect();
+
+        request.messages.push(json!({
+            "role": "assistant",
+            "content": assistant_content,
+        }));
+
+        // Dispatch each tool, collect results.
+        let mut tool_results: Vec<serde_json::Value> = Vec::new();
+
+        for (id, name, input) in &tool_uses {
             let input_str = serde_json::to_string(input).unwrap_or_default();
             info!(
                 character,
+                iteration,
                 tool = %name, tool_id = %id,
                 input = %truncate_summary(&input_str, 200),
                 "Interiority: executing tool"
             );
 
-            new_entries.push(JournalEntry {
-                ts: ts.clone(),
-                entry_type: JournalEntryType::ToolCall,
-                content: format!("{name}({input_str})"),
-            });
-
-            let (output_str, is_error) =
+            // Intercept set_next_wake — handled inline, not dispatched.
+            let (output_str, is_error) = if name.as_str() == "set_next_wake" {
+                let hours = input["hours_from_now"].as_f64().unwrap_or(1.0);
+                let reason = input["reason"].as_str().unwrap_or("").to_string();
+                let clamped = hours.clamp(1.0, 48.0);
+                let when = Instant::now() + Duration::from_secs_f64(clamped * 3600.0);
+                let now = Instant::now();
+                {
+                    let mut s = lock_state(state);
+                    s.interiority.schedule(when, now);
+                    s.cache_keepalive.set_next_wake(Some(when));
+                    s.interiority_log.push(
+                        InteriorityEventKind::ToolUse,
+                        format!("set_next_wake: {clamped:.1}h — {reason}"),
+                    );
+                    s.mark_dirty();
+                }
+                (format!("Scheduled next moment in {clamped:.1} hours."), false)
+            } else {
                 match tool_system::dispatch_tool(name, input.clone(), &tool_ctx).await {
                     Ok(value) => {
                         let s = if let Some(s) = value.as_str() {
@@ -972,27 +1161,29 @@ async fn execute_unified_tick(
                         (s, false)
                     }
                     Err(e) => (e.to_string(), true),
-                };
+                }
+            };
 
-            let result_summary = truncate_summary(&output_str, 500);
             info!(
                 character,
+                iteration,
                 tool = %name, is_error,
                 output = %truncate_summary(&output_str, 200),
                 "Interiority: tool result"
             );
 
-            new_entries.push(JournalEntry {
-                ts: ts.clone(),
-                entry_type: JournalEntryType::ToolResult,
-                content: if is_error {
-                    format!("ERROR: {result_summary}")
-                } else {
-                    result_summary.to_string()
-                },
+            let mut result = json!({
+                "type": "tool_result",
+                "tool_use_id": id,
+                "content": output_str,
             });
+            if is_error {
+                result["is_error"] = json!(true);
+            }
+            tool_results.push(result);
 
-            {
+            // Log to ring buffer (skip set_next_wake — already logged above).
+            if name.as_str() != "set_next_wake" {
                 let mut s = lock_state(state);
                 s.interiority_log.push(
                     InteriorityEventKind::ToolUse,
@@ -1000,19 +1191,41 @@ async fn execute_unified_tick(
                 );
             }
         }
+
+        // Append tool results as user message.
+        request.messages.push(json!({
+            "role": "user",
+            "content": tool_results,
+        }));
     }
 
-    // -- Check for <sendMessage> ------------------------------------------------
-    let send_message = extract_send_message(&resp.content);
+    // -- Persist <recap> if present -----------------------------------------------
+    if let Some(recap) = recap_text {
+        info!(character, recap = %truncate_summary(&recap, 200), "Interiority: recap written");
+        let entry = RecapEntry {
+            timestamp: chrono::Local::now().fixed_offset(),
+            tick_id: format!("tick_{}", uuid::Uuid::new_v4()),
+            recap,
+        };
+        let mut store = RecapStore::load(&recap_path);
+        if let Err(e) = store.append(entry) {
+            warn!(character, error = %e, "Interiority: failed to persist recap");
+        }
+    }
 
-    if let Some(user_msg) = send_message {
+    // -- Cache warmed: the tick itself was a cache-warming LLM call -----------
+    {
+        let mut s = lock_state(state);
+        s.cache_keepalive.on_cache_warmed(Instant::now());
+        // Mirror schedule to keepalive (character may have called set_next_wake).
+        if let Some(wake) = s.interiority.next_wake() {
+            s.cache_keepalive.set_next_wake(Some(wake));
+        }
+    }
+
+    // -- Persist <sendMessage> if present --------------------------------------
+    if let Some(user_msg) = send_message_text {
         info!(character, msg = %truncate_summary(&user_msg, 200), "Interiority: sending message to user");
-
-        new_entries.push(JournalEntry {
-            ts: ts.clone(),
-            entry_type: JournalEntryType::MessageSent,
-            content: user_msg.clone(),
-        });
 
         let content_blocks = vec![ContentBlock::Text {
             text: user_msg.clone(),
@@ -1061,47 +1274,11 @@ async fn execute_unified_tick(
         );
         s.mark_dirty();
     } else {
-        // Log thinking even when no message sent.
-        let thinking: Vec<&str> = resp
-            .content_blocks
-            .iter()
-            .filter_map(|b| {
-                if let ContentBlock::Text { text } = b {
-                    Some(text.as_str())
-                } else {
-                    None
-                }
-            })
-            .collect();
-        let summary = if thinking.is_empty() {
-            "Tick completed — no message, no text output".to_string()
-        } else {
-            format!(
-                "Tick completed silently: {}",
-                truncate_summary(&thinking.join(" "), 150)
-            )
-        };
-        info!(character, summary = %summary, "Interiority: tick complete (silent)");
         let mut s = lock_state(state);
-        s.interiority_log
-            .push(InteriorityEventKind::MessageSkipped, summary);
-    }
-
-    // -- Append new entries to journal and compact if needed ---------------------
-    if let Err(e) = interiority_journal::append_entries(&journal_path, &new_entries) {
-        warn!(character, error = %e, "Failed to append interiority journal entries");
-    }
-
-    // Compact if file is getting large (2x budget).
-    if let Ok(meta) = std::fs::metadata(&journal_path) {
-        if meta.len() as usize > interiority_journal::DEFAULT_BUDGET_CHARS * 2 {
-            if let Err(e) = interiority_journal::compact_file(
-                &journal_path,
-                interiority_journal::DEFAULT_BUDGET_CHARS,
-            ) {
-                warn!(character, error = %e, "Failed to compact interiority journal");
-            }
-        }
+        s.interiority_log.push(
+            InteriorityEventKind::MessageSkipped,
+            "Tick completed — no message sent".to_string(),
+        );
     }
 }
 
@@ -1118,7 +1295,7 @@ async fn execute_unified_tick(
 async fn build_tool_context(
     character: &str,
     data_dir: &Path,
-    client: &LlmClient,
+    client: &LedgerClient,
     config: &LoadedConfig,
 ) -> Option<SharedToolContext> {
     let char_dir = data_dir.join(character);
@@ -1160,7 +1337,7 @@ async fn build_tool_context(
             VectorStore::open(&vs_path, embed_config.dimensions)
                 .await
                 .ok()
-                .map(|vs| AgentSearchContext::new(vs, client.clone(), embed_config))
+                .map(|vs| AgentSearchContext::new(vs, client.inner().clone(), embed_config))
         }
         Err(_) => None,
     };
@@ -1173,6 +1350,14 @@ async fn build_tool_context(
 
     let display_name = config.app.defaults.resolve_display_name();
 
+    debug!(
+        character,
+        has_search = search_ctx.is_some(),
+        has_image_gen = image_gen_config.is_some(),
+        has_researcher = researcher_model.is_some(),
+        "Interiority: tool context built"
+    );
+
     Some(SharedToolContext {
         db,
         agent: crate::memory::agent::MemoryAgent::one_shot(
@@ -1180,19 +1365,19 @@ async fn build_tool_context(
             character,
             &display_name,
         ),
-        agent_llm: RealAgentLlm::new(client.clone()),
+        agent_llm: RealAgentLlm::new(client.clone(), character.to_string(), CallType::MemoryAgent),
         agent_model_val: agent_model.clone(),
         researcher: researcher_model
             .as_ref()
             .map(|_| MemoryResearcher::new(String::new(), String::new())),
         researcher_llm_val: researcher_model
             .as_ref()
-            .map(|_| RealAgentLlm::new(client.clone())),
+            .map(|_| RealAgentLlm::new(client.clone(), character.to_string(), CallType::Researcher)),
         researcher_model_val: researcher_model,
         rag: NoopRag,
         search_ctx,
         image_dir_val: char_dir.join("images").to_string_lossy().into_owned(),
-        llm_client_val: client.clone(),
+        llm_client_val: client.inner().clone(),
         image_gen_config_val: image_gen_config,
         search_config_val: config.app.behavior.tool_use.search.clone(),
         character_name_val: character.to_string(),
@@ -1200,21 +1385,33 @@ async fn build_tool_context(
     })
 }
 
-/// Extract text between `<sendMessage>` and `</sendMessage>` tags.
+/// Extract text between XML-style tags. Returns the last match (last-wins).
+fn extract_tag(content: &str, start_tag: &str, end_tag: &str) -> Option<String> {
+    let mut result = None;
+    let mut search_from = 0;
+    while let Some(start_pos) = content[search_from..].find(start_tag) {
+        let abs_start = search_from + start_pos + start_tag.len();
+        if let Some(end_pos) = content[abs_start..].find(end_tag) {
+            let inner = content[abs_start..abs_start + end_pos].trim();
+            if !inner.is_empty() {
+                result = Some(inner.to_string());
+            }
+            search_from = abs_start + end_pos + end_tag.len();
+        } else {
+            break;
+        }
+    }
+    result
+}
+
+/// Extract text between `<sendMessage>` and `</sendMessage>` tags (last-wins).
 fn extract_send_message(content: &str) -> Option<String> {
-    let start_tag = "<sendMessage>";
-    let end_tag = "</sendMessage>";
-    let start = content.find(start_tag)? + start_tag.len();
-    let end = content.find(end_tag)?;
-    if start >= end {
-        return None;
-    }
-    let inner = content[start..end].trim();
-    if inner.is_empty() {
-        None
-    } else {
-        Some(inner.to_string())
-    }
+    extract_tag(content, "<sendMessage>", "</sendMessage>")
+}
+
+/// Extract text between `<recap>` and `</recap>` tags (last-wins).
+fn extract_recap(content: &str) -> Option<String> {
+    extract_tag(content, "<recap>", "</recap>")
 }
 
 // ---------------------------------------------------------------------------
@@ -1226,7 +1423,7 @@ fn extract_send_message(content: &str) -> Option<String> {
 async fn execute_dormant_ping(
     character: &str,
     state: &Arc<Mutex<AutonomyState>>,
-    llm_client: Option<&LlmClient>,
+    llm_client: Option<&LedgerClient>,
 ) {
     let Some(client) = llm_client else { return };
 
@@ -1245,7 +1442,7 @@ async fn execute_dormant_ping(
         }
     };
 
-    match client.generate(&request, None).await {
+    match client.generate(&request, CallType::Keepalive, character, false).await {
         Ok(resp) => {
             info!(
                 character,
@@ -1434,10 +1631,11 @@ mod tests {
 
         // Create and save.
         let mut state = AutonomyState {
-            interiority: InteriorityClock::new(),
+            interiority: InteriorityClock::with_config(&Default::default()),
+            cache_keepalive: CacheKeepalive::new(),
             activity: ActivityTracker::new(),
             interiority_log: InteriorityLog::new(),
-            journal_path: data_dir.join("alice").join("interiority_journal.jsonl"),
+            paused: false,
             dirty: true,
             last_compaction_activity: Instant::now(),
             compaction_triggered: false,
@@ -1453,28 +1651,35 @@ mod tests {
 
         // Restore.
         let persisted = load_state(data_dir, "alice").unwrap();
-        assert_eq!(persisted.interiority_state, "Active");
+        assert_eq!(persisted.version, STATE_VERSION);
         assert_eq!(persisted.ticks_without_user, 0);
+        // next_wake_at should be None (clock was fresh, no deadline set).
+        assert!(persisted.next_wake_at.is_none());
     }
 
     #[test]
-    fn restore_dormant_state() {
+    fn restore_state_recovers_ticks_and_timestamps() {
         let tmp = tempfile::tempdir().unwrap();
         let data_dir = tmp.path();
         std::fs::create_dir_all(data_dir.join("alice")).unwrap();
 
         let persisted = PersistedState {
             version: STATE_VERSION,
-            interiority_state: "Dormant".into(),
             ticks_without_user: 5,
+            next_wake_at: Some("2026-04-08T20:00:00+00:00".into()),
+            last_user_at: Some("2026-04-08T14:00:00+00:00".into()),
         };
         let json = serde_json::to_string(&persisted).unwrap();
         std::fs::write(state_path(data_dir, "alice"), json).unwrap();
 
         let loaded = load_state(data_dir, "alice").unwrap();
-        let (int_state, ticks) = restore_interiority(&loaded);
-        assert_eq!(int_state, InteriorityState::Dormant);
-        assert_eq!(ticks, 5);
+        assert_eq!(loaded.ticks_without_user, 5);
+        assert!(loaded.next_wake_at.is_some());
+
+        // Test the full restore path: verify Instant conversion doesn't panic.
+        let mut clock = InteriorityClock::with_config(&Default::default());
+        restore_from_persisted(&loaded, &mut clock);
+        assert_eq!(clock.ticks_without_user(), 5);
     }
 
     #[tokio::test]
@@ -1483,10 +1688,11 @@ mod tests {
         let config = test_config();
         let (compaction_tx, _compaction_rx) = mpsc::channel(16);
         let state = Arc::new(Mutex::new(AutonomyState {
-            interiority: InteriorityClock::new(),
+            interiority: InteriorityClock::with_config(&Default::default()),
+            cache_keepalive: CacheKeepalive::new(),
             activity: ActivityTracker::new(),
             interiority_log: InteriorityLog::new(),
-            journal_path: tmp.path().join("alice").join("interiority_journal.jsonl"),
+            paused: false,
             dirty: false,
             last_compaction_activity: Instant::now(),
             compaction_triggered: false,
@@ -1551,7 +1757,6 @@ mod tests {
         // Write valid JSON but with a future version number.
         let future = serde_json::json!({
             "version": 99,
-            "interiority_state": "Active",
             "ticks_without_user": 0,
         });
         std::fs::write(state_path(data_dir, "alice"), future.to_string()).unwrap();
@@ -1564,14 +1769,48 @@ mod tests {
     }
 
     #[test]
-    fn restore_unknown_interiority_state_defaults_to_active() {
+    fn restore_from_persisted_sets_clock_state() {
         let persisted = PersistedState {
             version: STATE_VERSION,
-            interiority_state: "SomeFutureState".into(),
             ticks_without_user: 7,
+            next_wake_at: None,
+            last_user_at: None,
         };
-        let (state, ticks) = restore_interiority(&persisted);
-        assert_eq!(state, InteriorityState::Active);
-        assert_eq!(ticks, 7);
+        let mut clock = InteriorityClock::with_config(&Default::default());
+        restore_from_persisted(&persisted, &mut clock);
+        assert_eq!(clock.ticks_without_user(), 7);
+    }
+
+    // -- extract_tag / extract_recap tests -----------------------------------
+
+    #[test]
+    fn extract_send_message_last_wins() {
+        let content = "<sendMessage>first</sendMessage> stuff <sendMessage>second</sendMessage>";
+        assert_eq!(extract_send_message(content), Some("second".into()));
+    }
+
+    #[test]
+    fn extract_recap_parses() {
+        assert_eq!(
+            extract_recap("thinking...<recap>I explored something.</recap>...done"),
+            Some("I explored something.".into())
+        );
+        assert_eq!(extract_recap("no tags"), None);
+        assert_eq!(extract_recap("<recap></recap>"), None);
+    }
+
+    #[test]
+    fn extract_recap_last_wins() {
+        let content = "<recap>first note</recap> tools... <recap>revised note</recap>";
+        assert_eq!(extract_recap(content), Some("revised note".into()));
+    }
+
+    #[test]
+    fn extract_tag_handles_nested_text() {
+        let content = "<sendMessage>Hey <b>bold</b> text</sendMessage>";
+        assert_eq!(
+            extract_send_message(content),
+            Some("Hey <b>bold</b> text".into())
+        );
     }
 }

@@ -24,12 +24,6 @@ Thumbs.db
 *.sock
 *.pid
 
-# Task orchestration
-.ralph-tui
-*.todo.md
-todo/
-prd*.json
-
 # makepkg build artifacts
 /pkg/
 *.pkg.tar.zst
@@ -44,3 +38,4 @@ prd*.json
 *.pem
 *.key
 test_char
+.worktree

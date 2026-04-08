@@ -11,6 +11,7 @@ use crate::memory::vectorstore::VectorStore;
 use chrono::Local;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use tracing::{debug, info};
 
 // ---------------------------------------------------------------------------
 // CollationManager
@@ -72,14 +73,17 @@ impl CollationManager {
         vector_store: Option<&VectorStore>,
         limit: Option<usize>,
     ) -> Result<CollationOutcome, CollationError> {
+        debug!(limit, "collation pipeline starting");
         let mut outcome = CollationOutcome::default();
         let mut id_counter: usize = 0;
         let mut candidates_processed: HashSet<String> = HashSet::new();
 
         // Phase 0: Backfill missing timestamps (incremental, no LLM)
+        debug!("collation phase 0: backfill timestamps");
         self.phase_backfill_timestamps(db, 20, &mut outcome)?;
 
         // Phase 1: Refine (unified merge/split/update)
+        debug!("collation phase 1: refine");
         self.phase_refine(
             db,
             llm,
@@ -95,6 +99,7 @@ impl CollationManager {
         .await?;
 
         // Phase 2: Confidence decay (math only)
+        debug!("collation phase 2: confidence decay");
         self.phase_confidence_decay(db, &mut outcome, &mut candidates_processed)?;
 
         // Stamp only entries that were examined as candidates this run.
@@ -103,6 +108,14 @@ impl CollationManager {
             let _ = db.stamp_collated(id, &stamp);
         }
 
+        debug!(
+            candidates = candidates_processed.len(),
+            refine_merges = outcome.refine_merges,
+            refine_splits = outcome.refine_splits,
+            refine_updates = outcome.refine_updates,
+            entries_decayed = outcome.entries_decayed,
+            "collation pipeline complete"
+        );
         Ok(outcome)
     }
 
@@ -806,7 +819,7 @@ impl CollationManager {
 pub async fn run_collation(
     character: &str,
     config: &shore_config::LoadedConfig,
-    llm_client: &shore_llm_client::LlmClient,
+    llm_client: &shore_ledger::LedgerClient,
     data_dir: &Path,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use crate::commands::state::resolve_collation_model;
@@ -816,8 +829,8 @@ pub async fn run_collation(
     use shore_config::{
         load_character_definition, resolve_prompt_template, resolve_user_definition,
     };
-    use tracing::info;
 
+    info!(character, "auto-collation starting");
     let character_dir = data_dir.join(character);
 
     // Open memory DB.
@@ -826,7 +839,7 @@ pub async fn run_collation(
 
     let model = resolve_collation_model(config).ok_or("No model configured")?;
 
-    let llm = RealCollationLlm::new(llm_client.clone(), model);
+    let llm = RealCollationLlm::new(llm_client.clone(), model, character.to_string());
 
     // Resolve prompt template.
     let refine_template = resolve_prompt_template(&config.dirs.config, character, "refine.md")
@@ -845,7 +858,7 @@ pub async fn run_collation(
             match VectorStore::open(&vs_path, embed_config.dimensions).await {
                 Ok(vs) => Some(AgentSearchContext::new(
                     vs,
-                    llm_client.clone(),
+                    llm_client.inner().clone(),
                     embed_config,
                 )),
                 Err(e) => {

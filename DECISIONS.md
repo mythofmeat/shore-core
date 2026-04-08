@@ -289,7 +289,9 @@ A single holistic call lets the LLM see all candidates + nearby context and make
 
 **Why:** User-sent images were completely invisible to the LLM — the most basic image feature was broken. The ingestion pipeline ensures images survive beyond the conversation (durable copy) and become searchable memories (via `remember_image` → memory DB → FTS5/RAG).
 
-**Trade-off:** No image compression on ingestion — large images inflate LLM context. No vector indexing at `remember_image` time (matches `generate_image` pattern; backfill via `shore memory reindex`). `send_image` still doesn't emit a `ServerMessage::SendImage` event to the client — display-side concern, separate fix.
+**Trade-off:** No image compression on ingestion — large images inflate LLM context. No vector indexing at `remember_image` time (matches `generate_image` pattern; backfill via `shore memory reindex`).
+
+**Follow-up (2026-04-07):** `send_image` now surfaces the image to clients. After a successful `send_image` dispatch in the tool loop (`shore-daemon/src/engine/tools.rs`), the resolved path is attached to the issuing assistant message's `images` vec (so log replay renders it inline in the TUI) and a `ServerMessage::SendImage` is broadcast for live consumers (TUI image cache, matrix bridge collector).
 
 ---
 
@@ -372,3 +374,107 @@ A single holistic call lets the LLM see all candidates + nearby context and make
 **Backward compatibility:** Old `+00:00` data in SQLite coexists safely with new local-offset data. chrono's `DateTime<FixedOffset>` arithmetic is offset-aware, so age calculations (`now - stored_timestamp`) produce correct durations regardless of offset. Lexicographic `ORDER BY` may mis-sort entries from the transition day; this affects only display ordering, not correctness. No data migration needed.
 
 **Trade-off:** Timestamps in the database are no longer uniformly UTC. Any future tool that needs absolute ordering across timezones would need to parse rather than string-sort. Accepted because: all current consumers already parse timestamps for arithmetic, and the string-sort sites only affect best-effort display ordering.
+
+## Token Usage Ledger (shore-ledger)
+
+**Decision:** Use SQLite (not TSV/CSV) for the token usage ledger from day one.
+
+**Why:** The primary use case is aggregation queries (cost per model per day, cache anomaly filtering, warm streak counting). These are fundamentally GROUP BY / SUM operations that SQLite handles natively. A TSV would require building a query engine in Rust. rusqlite was already a workspace dependency (used by shore-daemon for memory databases), so this adds zero new weight.
+
+**Decision:** Compiler-enforced recording via LedgerClient wrapper that consumes LlmClient.
+
+**Why:** Convention-based logging ("remember to call ledger.record() after every API call") is fragile and guaranteed to be missed somewhere. By consuming the LlmClient into a LedgerClient and making the daemon hold only the wrapper, it is structurally impossible to make an unlogged LLM call. The type system enforces the invariant.
+
+**Decision:** Use OpenRouter's public /api/v1/models endpoint for per-model pricing.
+
+**Why:** OpenRouter indexes pricing for nearly every model across all providers, with prices matching the official endpoints exactly (confirmed empirically). This gives us a single API call to get accurate pricing for any model, avoiding hardcoded pricing tables that go stale. Prices are cached lazily per-model in the SQLite DB with manual refresh via `shore usage --refresh-pricing`.
+
+**Decision:** Hardcode a 4x multiplier for Anthropic's 1-hour cache TTL write pricing.
+
+**Why:** OpenRouter reports 5-minute cache TTL prices. Shore uses 1-hour cache TTL for Anthropic. The 1h write price is 4x the 5m price. This is a stable relationship defined by Anthropic's pricing structure.
+
+## Interiority: Real Tool Loop Replaces Journal System (2026-04-05)
+
+**Decision:** Replaced the 1-call-per-tick interiority architecture (with JSONL journal for cross-tick continuity) with a real multi-turn tool loop within each tick.
+
+**Problem:** The journal-based approach caused the model to fixate on scratchpad journaling. The full conversation context plus rendered journal steered the model toward processing/introspection rather than using diverse tools (web_search, generate_image, memory, etc.). The model never saw tool results within the same tick, so it had no feedback loop.
+
+**What changed:**
+- Deleted `interiority_journal.rs` module (JSONL read/write/render/compact)
+- Removed `journal_path` field from `AutonomyState`
+- Rewrote `execute_unified_tick` to run a real `generate()` → dispatch → feed back loop, up to `min(max_iterations, 6)` iterations per tick
+- First call uses `CallType::Interiority`, subsequent calls use `CallType::ToolLoop`
+- Tool loop messages are ephemeral — only `<sendMessage>` content persists to `active.jsonl`
+- All tool activity logged to the interiority ring buffer for `shore log --heartbeat`
+
+**Trade-offs:**
+- Cost increase: ~$23/month extra (multiple generate() calls per tick instead of one)
+
+## `shore usage` Pricing & Anomaly Fixes
+
+**Date:** 2026-04-06
+
+**Problem:** `shore usage` showed no pricing data (all costs `—`) and `--anomalies` showed "No cache anomalies found" despite the summary reporting 7 anomalies.
+
+**Root causes found and fixed:**
+
+1. **OpenRouter single-model API endpoint dead:** `/api/v1/models/{id}` returns 404 for all models. Rewrote `PricingEngine::fetch_pricing` to fetch the full `/api/v1/models` catalog and scan for the target model. Also bulk-caches all discovered pricing in one pass.
+
+2. **Anthropic model ID mismatch:** Shore stores `claude-opus-4-6` but OpenRouter expects `claude-opus-4.6`. Added `normalize_anthropic_model()` to convert the last digit-hyphen-digit to a dot.
+
+3. **SQL NULL propagation:** `SUM(total_cost)` returns NULL if any row has NULL cost. Changed to `TOTAL()` which returns 0.0 instead.
+
+4. **Anomaly time window mismatch:** Summary counted anomalies over 7d unfiltered; `--anomalies` defaulted to today. Fixed `--anomalies` to default to 7d when `--last` is today (the default).
+
+5. **`--recalculate` silent failures:** Added failure reporting with model ID and reason when pricing can't be fetched.
+
+**Trade-offs:**
+- Catalog fetch is larger (full model list ~1MB JSON) but happens once and caches everything
+- Anomaly `--anomalies` defaults to 7d only when `--last` is "today"; explicit `--last today` still uses today
+- Lost: Cross-tick continuity (the model no longer "remembers" what it did on previous ticks via journal)
+- Gained: The model can actually use tools and see results, enabling genuine exploration and discovery
+
+## SDK/Provider Split (2026-04-07)
+
+Decoupled wire protocol (SDK) from endpoint identity (provider) in `shore-llm-client`.
+
+**What changed:**
+- `Sdk` enum shrunk from 6 to 4 variants: `Anthropic`, `Openai`, `Gemini`, `Zai`. Deepseek and Zhipuai were just OpenAI dialects, not distinct wire protocols.
+- Provider-specific logic (OpenRouter headers, Deepseek reasoning field, etc.) extracted from SDK modules into a centralized `ProviderContext` struct (`providers/context.rs`).
+- `LlmRequest.provider: String` renamed to `LlmRequest.sdk: Sdk` (the enum, not a string).
+- Anthropic SDK now accepts any `base_url`, re-enabling Anthropic wire protocol through OpenRouter and other gateways.
+- Legacy `sdk = "deepseek"` / `sdk = "zhipuai"` in TOML configs maps to `Sdk::Openai` with a deprecation warning.
+
+**Why:**
+- The old design tangled "how to format the request" (SDK) with "where to send it" (provider), making it impossible to use the Anthropic protocol through OpenRouter without hacks.
+- OpenRouter support for Claude models was hastily removed due to cache debugging issues. The real problem was the tight coupling, not the feature itself.
+
+**Config impact:**
+- Users can now override SDK per model: `[chat.openrouter."anthropic/claude-opus"] sdk = "anthropic"`
+- Both approaches work: override sdk on an openrouter model, or override base_url/api_key on an anthropic model
+
+## Interiority: Deadline Holder with Self-Scheduling (2026-04-08)
+
+**Decision:** Replaced the fixed-interval Active/Dormant state machine with a deadline-based `InteriorityClock` that lets characters self-schedule via `set_next_wake` tool, decoupled cache keepalive into its own subsystem, and added a recap system for inner-life continuity.
+
+**What changed:**
+- `InteriorityClock` rewritten: pure deadline holder + dual abandonment guard (`ticks_without_user >= 3` OR wall-clock silence >= 48h). No more `InteriorityState` enum.
+- `CacheKeepalive` (new module): independent 59min ping cycle with 18h break-even gate. No longer entangled with interiority tick scheduling.
+- `RecapStore` (new module): JSONL sidecar (`recaps.jsonl`) for character first-person recap entries via `<recap>` tag.
+- `set_next_wake` tool: injected into interiority tick tool list, intercepted before `dispatch_tool`. Characters schedule their own cadence (clamped to 1h–48h).
+- Dynamic `INTERIORITY_PROMPT`: replaces static constant, includes recent thread context from recaps or ring buffer.
+- Recap injection in `trim_messages`: recap entries appear alongside time-gap markers in conversation history.
+- `PersistedState` v4: RFC3339 timestamps for `next_wake_at` and `last_user_at`, enabling restart recovery.
+- `on_user_message` uses `max()` semantics: `next_wake_at = max(existing, now + min_wake_secs)`. Character-scheduled deadlines are preserved.
+- Removed: `InteriorityState` enum, `jitter_factor`, `cache_refresh_interval_secs`, `RunDormantPing` variant from `InteriorityAction`.
+- Added config: `max_silent_secs` (48h default), `min_wake_secs` (1h default, configurable for testing).
+
+**Why:**
+- The old system treated characters as passive tick recipients. The redesign gives characters agency over their own inner life cadence.
+- Cache keepalive was entangled with interiority state transitions, causing unnecessary complexity and coupling.
+- The journal system (removed in prior decision) left a gap in cross-tick continuity. Recaps fill this gap with first-person notes that survive compaction.
+
+**Trade-offs:**
+- Breaking config change: existing configs with `jitter_factor` will fail to parse (`deny_unknown_fields`).
+- `set_next_wake` adds a tool the character can misuse (requesting very frequent ticks). Clamping to [1h, 48h] bounds this.
+- RecapStore is append-only with no automatic pruning — acceptable for expected volume (~3 entries/day).

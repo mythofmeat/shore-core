@@ -1,6 +1,7 @@
 use serde_json::json;
 use shore_protocol::error::ErrorCode;
 use shore_protocol::types::{ContentBlock, Message, Role};
+use tracing::debug;
 
 use super::{engine_err, CommandContext, CommandResult};
 use crate::engine::ConversationEngine;
@@ -73,6 +74,7 @@ pub fn get(
         .find(|m| m.msg_id == msg_id)
         .ok_or_else(|| (ErrorCode::NotFound, format!("Message not found: {msg_id}")))?;
 
+    debug!(msg_id = %msg_id, role = ?msg.role, "Message retrieved");
     serde_json::to_value(msg).map_err(|e| (ErrorCode::InternalError, e.to_string()))
 }
 
@@ -134,6 +136,7 @@ pub fn edit(
     let msg_id = resolve_ref(&merged, raw_ref)?;
     engine.edit_message(&msg_id, content).map_err(engine_err)?;
 
+    debug!(msg_id = %msg_id, content_len = content.len(), "Message edited");
     Ok(json!({ "ref": msg_id, "edited": true }))
 }
 
@@ -178,6 +181,7 @@ pub fn delete(
         deleted.push(msg_id.clone());
     }
 
+    debug!(count = deleted.len(), "Messages deleted");
     Ok(json!({ "deleted": deleted }))
 }
 
@@ -212,6 +216,7 @@ pub fn inject_system(
     };
 
     engine.append_message(msg).map_err(engine_err)?;
+    debug!(text_len = text.len(), "System message injected");
     Ok(json!({ "injected": true }))
 }
 
@@ -262,7 +267,7 @@ mod tests {
             active_model: None,
             session_tokens: std::sync::Arc::new(std::sync::Mutex::new(SessionTokens::default())),
             autonomy,
-            llm_client: shore_llm_client::LlmClient::new(),
+            llm_client: shore_ledger::LedgerClient::new(shore_llm_client::LlmClient::new(), &data_dir.join("ledger.db")).unwrap(),
             diagnostics: std::sync::Arc::new(std::sync::Mutex::new(
                 shore_diagnostics::Diagnostics::default(),
             )),

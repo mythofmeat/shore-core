@@ -3,6 +3,7 @@ use std::path::Path;
 
 use chrono::{DateTime, FixedOffset, Local};
 use shore_protocol::types::{ContentBlock, ImageRef, Message, Role};
+use tracing::{debug, warn};
 
 use shore_config::resolve_prompt_template;
 
@@ -218,6 +219,9 @@ pub struct PromptParams<'a> {
     /// Capabilities config for building the tool-description system block.
     /// `None` means no capabilities block is emitted.
     pub capabilities: Option<&'a CapabilitiesConfig>,
+    /// Path to the character's `recaps.jsonl` file for continuity injection.
+    /// `None` means no recap entries are injected in time gaps.
+    pub recap_store_path: Option<&'a Path>,
 }
 
 // ---------------------------------------------------------------------------
@@ -254,8 +258,15 @@ pub fn assemble_prompt(params: &PromptParams<'_>) -> AssembledPrompt {
     vars.insert("time".into(), now.format("%H:%M").to_string());
 
     // ── 2. Resolve and render system template ─────────────────────────
-    let template = resolve_prompt_template(params.config_dir, params.character_name, "system.md")
-        .unwrap_or_else(|| BUILTIN_SYSTEM_TEMPLATE.to_string());
+    let custom_template =
+        resolve_prompt_template(params.config_dir, params.character_name, "system.md");
+    let using_builtin = custom_template.is_none();
+    let template = custom_template.unwrap_or_else(|| BUILTIN_SYSTEM_TEMPLATE.to_string());
+    debug!(
+        character = %params.character_name,
+        builtin_template = using_builtin,
+        "assembling prompt"
+    );
 
     let rendered_system = render_template(&template, &vars);
 
@@ -313,6 +324,15 @@ pub fn assemble_prompt(params: &PromptParams<'_>) -> AssembledPrompt {
         }
     }
 
+    debug!(
+        system_blocks = system.len(),
+        has_capabilities = params.capabilities.is_some(),
+        has_char_def = params.character_definition.filter(|s| !s.is_empty()).is_some(),
+        has_user_def = params.user_definition.filter(|s| !s.is_empty()).is_some(),
+        has_recap = !params.is_private,
+        "system blocks assembled"
+    );
+
     // ── 4. Calculate token budget for messages ────────────────────────
     let system_tokens = estimate_tokens(
         &system
@@ -325,8 +345,37 @@ pub fn assemble_prompt(params: &PromptParams<'_>) -> AssembledPrompt {
         .saturating_sub(max_output)
         .saturating_sub(system_tokens);
 
+    debug!(
+        max_context,
+        max_output,
+        system_tokens,
+        available_for_messages,
+        input_messages = params.messages.len(),
+        "token budget calculated"
+    );
+
+    if available_for_messages == 0 {
+        warn!(
+            max_context,
+            max_output,
+            system_tokens,
+            "zero tokens available for messages — system prompt may exceed context window"
+        );
+    }
+
     // ── 5. Trim conversation history to fit budget ────────────────────
-    let messages = trim_messages(params.messages, available_for_messages);
+    let messages = trim_messages(
+        params.messages,
+        available_for_messages,
+        params.recap_store_path,
+    );
+
+    debug!(
+        input_messages = params.messages.len(),
+        output_messages = messages.len(),
+        trimmed = params.messages.len().saturating_sub(messages.len()),
+        "prompt assembly complete"
+    );
 
     AssembledPrompt { system, messages }
 }
@@ -479,13 +528,37 @@ fn format_time_gap(gap_secs: f64, current_ts: &DateTime<FixedOffset>) -> Option<
     Some(format!("[{relative} · {time_str}]"))
 }
 
+/// Format recap entries as a bracketed marker for injection into conversation context.
+///
+/// Single entry: `[Your notes from between conversations: did something.]`
+/// Multiple: bullet list under the same header.
+fn format_recap_marker(entries: &[&crate::autonomy::recap_store::RecapEntry]) -> String {
+    if entries.len() == 1 {
+        format!(
+            "[Your notes from between conversations: {}]",
+            entries[0].recap
+        )
+    } else {
+        let mut lines = vec!["[Your notes from between conversations:".to_string()];
+        for entry in entries {
+            lines.push(format!(" · {}", entry.recap));
+        }
+        lines.push("]".to_string());
+        lines.join("\n")
+    }
+}
+
 /// Trim messages from the beginning to fit within the token budget.
 ///
 /// Keeps the most recent messages, discarding older ones first. After
 /// trimming, drops any leading tool-loop messages (tool_result user
 /// messages and tool_use-only assistant messages) that would be orphaned
 /// without their preceding context.
-fn trim_messages(messages: &[Message], token_budget: usize) -> Vec<PromptMessage> {
+fn trim_messages(
+    messages: &[Message],
+    token_budget: usize,
+    recap_store_path: Option<&Path>,
+) -> Vec<PromptMessage> {
     // Build from the end (most recent first), accumulating token cost.
     let mut selected: Vec<(PromptMessage, &str)> = Vec::new();
     let mut used_tokens = 0;
@@ -516,10 +589,13 @@ fn trim_messages(messages: &[Message], token_budget: usize) -> Vec<PromptMessage
         selected.remove(0);
     }
 
-    // ── Inject time-gap markers on user messages ─────────────────────
+    // ── Inject time-gap markers (and recap entries) on user messages ──
     // Walk forward, tracking the previous timestamp. When the gap between
     // consecutive messages exceeds the threshold, prepend a marker like
     // `[6 hours later · 9:14 PM]` to the next user message's content.
+    // If recap entries exist in that gap, also inject them.
+    let recap_store = recap_store_path.map(crate::autonomy::recap_store::RecapStore::load);
+
     let mut prev_ts: Option<DateTime<FixedOffset>> = None;
     let mut result: Vec<PromptMessage> = Vec::with_capacity(selected.len());
 
@@ -529,13 +605,29 @@ fn trim_messages(messages: &[Message], token_budget: usize) -> Vec<PromptMessage
         if pm.role == Role::User {
             if let (Some(prev), Some(cur)) = (prev_ts, current_ts) {
                 let gap_secs = (cur - prev).num_seconds() as f64;
-                if let Some(marker) = format_time_gap(gap_secs, &cur) {
-                    pm.content = format!("{marker}\n\n{}", pm.content);
-                    // Also update the leading Text block in content_blocks
-                    // so the marker is visible to the LLM regardless of
-                    // which representation the provider consumes.
+                let time_marker = format_time_gap(gap_secs, &cur);
+
+                // Recap injection: only when there's a significant gap.
+                let recap_marker = if gap_secs >= TIME_GAP_THRESHOLD_SECS {
+                    recap_store
+                        .as_ref()
+                        .map(|store| store.entries_in_range(&prev, &cur))
+                        .filter(|entries| !entries.is_empty())
+                        .map(|entries| format_recap_marker(&entries))
+                } else {
+                    None
+                };
+
+                let prefix = match (time_marker, recap_marker) {
+                    (Some(t), Some(r)) => Some(format!("{t}\n{r}")),
+                    (Some(t), None) => Some(t),
+                    (None, _) => None,
+                };
+
+                if let Some(prefix) = prefix {
+                    pm.content = format!("{prefix}\n\n{}", pm.content);
                     if let Some(ContentBlock::Text { text }) = pm.content_blocks.first_mut() {
-                        *text = format!("{marker}\n\n{text}");
+                        *text = format!("{prefix}\n\n{text}");
                     }
                 }
             }
@@ -618,6 +710,7 @@ mod tests {
             max_context_tokens: None,
             max_output_tokens: None,
             capabilities: None,
+            recap_store_path: None,
         }
     }
 
@@ -949,7 +1042,7 @@ mod tests {
         let recent_msg = make_msg(Role::User, "Recent");
 
         let msgs = vec![small_msg, big_msg, recent_msg];
-        let result = trim_messages(&msgs, 10);
+        let result = trim_messages(&msgs, 10, None);
         assert_eq!(result.last().unwrap().content, "Recent");
         assert!(result.len() < 3);
     }
@@ -960,7 +1053,7 @@ mod tests {
             make_msg(Role::User, "Hello"),
             make_msg(Role::Assistant, "Hi there"),
         ];
-        let result = trim_messages(&msgs, 1000);
+        let result = trim_messages(&msgs, 1000, None);
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].content, "Hello");
         assert_eq!(result[1].content, "Hi there");
@@ -973,7 +1066,7 @@ mod tests {
             make_msg(Role::Assistant, &"B".repeat(100)),
             make_msg(Role::User, "Recent"),
         ];
-        let result = trim_messages(&msgs, 30);
+        let result = trim_messages(&msgs, 30, None);
         assert!(result.len() < 3);
         assert_eq!(result.last().unwrap().content, "Recent");
     }
@@ -981,7 +1074,7 @@ mod tests {
     #[test]
     fn trim_messages_always_includes_at_least_one() {
         let msgs = vec![make_msg(Role::User, &"A".repeat(1000))];
-        let result = trim_messages(&msgs, 0);
+        let result = trim_messages(&msgs, 0, None);
         assert_eq!(result.len(), 1);
     }
 
@@ -992,7 +1085,7 @@ mod tests {
             make_msg(Role::Assistant, "Second"),
             make_msg(Role::User, "Third"),
         ];
-        let result = trim_messages(&msgs, 10000);
+        let result = trim_messages(&msgs, 10000, None);
         assert_eq!(result[0].content, "First");
         assert_eq!(result[1].content, "Second");
         assert_eq!(result[2].content, "Third");
@@ -1062,7 +1155,7 @@ mod tests {
             make_msg_at(Role::Assistant, "Morning!", "2026-04-04T09:01:00-07:00"),
             make_msg_at(Role::User, "I'm back", "2026-04-04T15:30:00-07:00"),
         ];
-        let result = trim_messages(&msgs, 100_000);
+        let result = trim_messages(&msgs, 100_000, None);
         assert_eq!(result.len(), 3);
         // First user message: no gap marker.
         assert!(!result[0].content.contains("later"));
@@ -1087,7 +1180,7 @@ mod tests {
             make_msg_at(Role::Assistant, "Hi", "2026-04-04T09:01:00-07:00"),
             make_msg_at(Role::User, "Quick follow-up", "2026-04-04T09:10:00-07:00"),
         ];
-        let result = trim_messages(&msgs, 100_000);
+        let result = trim_messages(&msgs, 100_000, None);
         assert_eq!(result[2].content, "Quick follow-up");
     }
 
@@ -1103,7 +1196,7 @@ mod tests {
             ),
             make_msg_at(Role::User, "Yeah!", "2026-04-04T15:01:00-07:00"),
         ];
-        let result = trim_messages(&msgs, 100_000);
+        let result = trim_messages(&msgs, 100_000, None);
         assert!(
             !result[1].content.contains("later"),
             "assistant messages should not get gap markers"
@@ -1136,6 +1229,7 @@ mod tests {
             max_context_tokens: Some(200_000),
             max_output_tokens: Some(4096),
             capabilities: None,
+            recap_store_path: None,
         };
 
         let result = assemble_prompt(&params);
@@ -1458,7 +1552,7 @@ mod tests {
         // With budget=5, newest-first picks Recent(2) + Done(1) + tool_result(~4) = 7 > 5,
         // so it stops. Result = [tool_result, Done, Recent].
         // Then orphan stripping removes the leading tool_result.
-        let result = trim_messages(&msgs, 5);
+        let result = trim_messages(&msgs, 5, None);
 
         // Leading ToolResult should be stripped.
         assert!(
@@ -1488,7 +1582,7 @@ mod tests {
         // Newest-first: Recent(2) + tool_result(~4) + tool_use(~6) = 12 > 5,
         // stops before tool_use. Result = [tool_result, Recent].
         // Then orphan stripping removes leading tool_result.
-        let result = trim_messages(&msgs, 5);
+        let result = trim_messages(&msgs, 5, None);
 
         assert!(
             !result.is_empty(),
@@ -1503,5 +1597,50 @@ mod tests {
                 "No tool-loop messages should remain at front"
             );
         }
+    }
+
+    // -- format_recap_marker -------------------------------------------------
+
+    #[test]
+    fn format_recap_marker_single_entry() {
+        use crate::autonomy::recap_store::RecapEntry;
+        use chrono::TimeZone;
+        let ts = chrono::FixedOffset::west_opt(7 * 3600)
+            .unwrap()
+            .with_ymd_and_hms(2026, 4, 7, 10, 0, 0)
+            .single()
+            .unwrap();
+        let entry = RecapEntry {
+            timestamp: ts,
+            tick_id: "t1".into(),
+            recap: "explored butterflies".into(),
+        };
+        let result = format_recap_marker(&[&entry]);
+        assert_eq!(
+            result,
+            "[Your notes from between conversations: explored butterflies]"
+        );
+    }
+
+    #[test]
+    fn format_recap_marker_multiple_entries() {
+        use crate::autonomy::recap_store::RecapEntry;
+        use chrono::TimeZone;
+        let offset = chrono::FixedOffset::west_opt(7 * 3600).unwrap();
+        let e1 = RecapEntry {
+            timestamp: offset.with_ymd_and_hms(2026, 4, 7, 10, 0, 0).single().unwrap(),
+            tick_id: "t1".into(),
+            recap: "first thing".into(),
+        };
+        let e2 = RecapEntry {
+            timestamp: offset.with_ymd_and_hms(2026, 4, 7, 14, 0, 0).single().unwrap(),
+            tick_id: "t2".into(),
+            recap: "second thing".into(),
+        };
+        let result = format_recap_marker(&[&e1, &e2]);
+        assert!(result.contains("· first thing"));
+        assert!(result.contains("· second thing"));
+        assert!(result.starts_with("[Your notes from between conversations:"));
+        assert!(result.ends_with(']'));
     }
 }

@@ -1,10 +1,13 @@
 use serde_json::json;
 use shore_protocol::error::ErrorCode;
 use shore_protocol::types::{ContentBlock, Role};
+use tracing::{debug, info};
 
 use crate::engine::ConversationEngine;
 use crate::memory::agent::{CallerIdentity, MemoryAgent, RealAgentIndexer};
 use crate::memory::agent_llm::RealAgentLlm;
+use crate::memory::researcher::MemoryResearcher;
+use shore_ledger::CallType;
 use crate::memory::collation::{
     CollationError, CollationManager, CollationOutcome, DecayConfig, DEFAULT_REFINE_PROMPT,
 };
@@ -125,7 +128,7 @@ pub fn list_models(ctx: &CommandContext) -> CommandResult {
             json!({
                 "name": m.name,
                 "qualified_name": m.qualified_name,
-                "sdk": m.sdk.as_provider_str(),
+                "sdk": m.sdk.as_str(),
                 "provider": m.provider_key,
                 "model_id": m.model_id,
             })
@@ -137,7 +140,7 @@ pub fn list_models(ctx: &CommandContext) -> CommandResult {
         models.push(json!({
             "name": m.name,
             "qualified_name": m.qualified_name,
-            "sdk": m.sdk.as_provider_str(),
+            "sdk": m.sdk.as_str(),
             "provider": m.provider_key,
             "model_id": m.model_id,
         }));
@@ -194,6 +197,7 @@ pub fn switch_model(ctx: &mut CommandContext, args: &serde_json::Value) -> Comma
                 ));
             }
             ctx.active_model = Some(name.to_string());
+            info!(model = name, "Model switched");
             Ok(json!({ "active": name, "changed": true }))
         }
     }
@@ -243,6 +247,7 @@ pub fn memory_changelog(
         })
         .collect();
 
+    debug!(character = char_name, count = entries.len(), "Memory changelog queried");
     Ok(json!({ "changelog": entries, "character": char_name }))
 }
 
@@ -256,10 +261,17 @@ pub async fn memory(
         .get("query")
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty());
+    let direct = args
+        .get("direct")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     match query {
         None => memory_status(engine, ctx),
-        Some(q) => memory_query(engine, ctx, q).await,
+        Some(q) => {
+            debug!(character = engine.character_name(), query_len = q.len(), direct, "Memory query requested");
+            memory_query(engine, ctx, q, direct).await
+        }
     }
 }
 
@@ -289,6 +301,7 @@ fn memory_status(engine: &ConversationEngine, ctx: &CommandContext) -> CommandRe
         .count_entries_by_status("active")
         .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
 
+    debug!(character = char_name, entries, entities, active, "Memory status queried");
     Ok(json!({
         "character": char_name,
         "entries": entries,
@@ -297,11 +310,14 @@ fn memory_status(engine: &ConversationEngine, ctx: &CommandContext) -> CommandRe
     }))
 }
 
-/// Run a one-shot memory agent query and return the synthesis.
+/// Run a memory query through the researcher→agent pipeline (matching tool-use path).
+///
+/// When `direct` is true, skips the researcher and queries the agent directly.
 async fn memory_query(
     engine: &ConversationEngine,
     ctx: &CommandContext,
     query: &str,
+    direct: bool,
 ) -> CommandResult {
     let char_name = engine.character_name();
     let db = open_memory_db(ctx, char_name)?;
@@ -309,7 +325,7 @@ async fn memory_query(
 
     let display_name = ctx.config.app.defaults.resolve_display_name();
     let agent = MemoryAgent::one_shot(CallerIdentity::User, &display_name, char_name);
-    let agent_llm = RealAgentLlm::new(ctx.llm_client.clone());
+    let agent_llm = RealAgentLlm::new(ctx.llm_client.clone(), char_name.to_string(), CallType::MemoryAgent);
 
     let search_ctx = setup_search_context(ctx, char_name).await;
     let real_indexer = search_ctx.as_ref().map(RealAgentIndexer::new);
@@ -317,22 +333,70 @@ async fn memory_query(
         .as_ref()
         .map(|i| i as &dyn crate::memory::agent::AgentIndexer);
 
-    let result = agent
-        .ask(
-            query,
-            &agent_llm,
-            &db,
-            indexer,
-            search_ctx.as_ref(),
-            &agent_model,
-        )
-        .await
-        .map_err(|e| {
-            (
-                ErrorCode::InternalError,
-                format!("Memory query failed: {e}"),
+    // Resolve the researcher model from defaults.tool_model (same as the handler path).
+    let researcher_model = if direct {
+        None
+    } else {
+        ctx.config
+            .app
+            .defaults
+            .tool_model
+            .as_deref()
+            .and_then(|name| ctx.config.models.find_model(name).ok())
+            .cloned()
+    };
+
+    let result = if let Some(ref r_model) = researcher_model {
+        // Full researcher→agent pipeline (matches tool-use path).
+        let char_def = shore_config::load_character_definition(&ctx.config.dirs.config, char_name)
+            .unwrap_or_default();
+        let user_def = shore_config::resolve_user_definition(&ctx.config.dirs.config, char_name)
+            .unwrap_or_default();
+        let researcher = MemoryResearcher::new(char_def, user_def);
+        let researcher_llm = RealAgentLlm::new(
+            ctx.llm_client.clone(),
+            char_name.to_string(),
+            CallType::Researcher,
+        );
+
+        researcher
+            .research(
+                query,
+                &researcher_llm,
+                r_model,
+                &agent,
+                &agent_llm,
+                &agent_model,
+                &db,
+                indexer,
+                search_ctx.as_ref(),
             )
-        })?;
+            .await
+            .map_err(|e| {
+                (
+                    ErrorCode::InternalError,
+                    format!("Memory query failed: {e}"),
+                )
+            })?
+    } else {
+        // Direct agent query (no researcher configured, or --direct flag).
+        agent
+            .ask(
+                query,
+                &agent_llm,
+                &db,
+                indexer,
+                search_ctx.as_ref(),
+                &agent_model,
+            )
+            .await
+            .map_err(|e| {
+                (
+                    ErrorCode::InternalError,
+                    format!("Memory query failed: {e}"),
+                )
+            })?
+    };
 
     Ok(json!({
         "character": char_name,
@@ -368,6 +432,7 @@ pub async fn memory_shell_start(
         },
     );
 
+    info!(character = %char_name, session_id = %session_id, "Memory shell session started");
     Ok(json!({
         "session_id": session_id,
         "character": char_name,
@@ -399,7 +464,7 @@ pub async fn memory_shell_query(
         .clone();
 
     let db = open_memory_db(ctx, &char_name)?;
-    let agent_llm = RealAgentLlm::new(ctx.llm_client.clone());
+    let agent_llm = RealAgentLlm::new(ctx.llm_client.clone(), char_name.clone(), CallType::MemoryAgent);
     let search_ctx = setup_search_context(ctx, &char_name).await;
     let real_indexer = search_ctx.as_ref().map(RealAgentIndexer::new);
     let indexer = real_indexer
@@ -435,6 +500,7 @@ pub async fn memory_shell_query(
         .unwrap_or("")
         .to_string();
 
+    debug!(session_id, mutations, response_len = response.len(), "Memory shell query complete");
     Ok(json!({
         "response": response,
         "mutations": mutations,
@@ -450,6 +516,7 @@ pub fn memory_shell_end(ctx: &mut CommandContext, args: &serde_json::Value) -> C
 
     ctx.memory_shell_sessions.remove(session_id);
 
+    info!(session_id, "Memory shell session ended");
     Ok(json!({ "ok": true }))
 }
 
@@ -464,7 +531,7 @@ async fn run_post_compaction_collation(
 
     let cmodel = collation_model?;
 
-    let collation_llm = RealCollationLlm::new(ctx.llm_client.clone(), cmodel);
+    let collation_llm = RealCollationLlm::new(ctx.llm_client.clone(), cmodel, char_name.to_string());
     let refine_template = resolve_prompt_template(&ctx.config.dirs.config, char_name, "refine.md")
         .unwrap_or_else(|| DEFAULT_REFINE_PROMPT.to_string());
 
@@ -555,6 +622,8 @@ pub async fn compact(
         ));
     }
 
+    info!(character = %char_name, message_count = messages.len(), dry_run, "Compaction started");
+
     // Open the memory database.
     let db = open_memory_db(ctx, &char_name)?;
 
@@ -570,8 +639,8 @@ pub async fn compact(
     let (store, embed_config) = super::open_embed_and_vectorstore(ctx, &char_name).await?;
 
     // Create trait implementations.
-    let llm = RealCompactionLlm::new(ctx.llm_client.clone(), model);
-    let indexer = RealVectorIndexer::new(store, ctx.llm_client.clone(), embed_config);
+    let llm = RealCompactionLlm::new(ctx.llm_client.clone(), model, char_name.clone());
+    let indexer = RealVectorIndexer::new(store, ctx.llm_client.inner().clone(), embed_config);
     let conv_mgr = RealConversationManager::new(engine.character_dir());
 
     // Create compaction manager with config.
@@ -615,6 +684,13 @@ pub async fn compact(
     // Build response and handle post-compaction engine state.
     match outcome {
         CompactionOutcome::Compacted(result) => {
+            info!(
+                character = %char_name,
+                entries_created = result.entries_created.len(),
+                message_count = result.message_count,
+                retained_count = result.retained_count,
+                "Compaction complete"
+            );
             // Reload retained messages from disk (active.jsonl now has only kept messages).
             engine
                 .reload()
@@ -734,7 +810,7 @@ pub async fn collate(
     let model = resolve_collation_model(&ctx.config)
         .ok_or_else(|| (ErrorCode::InternalError, "No model configured".to_string()))?;
 
-    let llm = RealCollationLlm::new(ctx.llm_client.clone(), model);
+    let llm = RealCollationLlm::new(ctx.llm_client.clone(), model, char_name.clone());
 
     // Resolve prompt template.
     let refine_template = resolve_prompt_template(&ctx.config.dirs.config, &char_name, "refine.md")
@@ -755,6 +831,8 @@ pub async fn collate(
 
     let display_name = ctx.config.app.defaults.resolve_display_name();
     let collation_vars = build_collation_vars(ctx, &char_name, &display_name);
+
+    info!(character = %char_name, full_mode, limit, "Collation started");
 
     const MAX_PASSES: usize = 10;
     let mut total = CollationOutcome::default();
@@ -796,6 +874,15 @@ pub async fn collate(
         }
     }
 
+    info!(
+        character = %char_name,
+        passes,
+        merges = total.refine_merges,
+        splits = total.refine_splits,
+        updates = total.refine_updates,
+        decayed = total.entries_decayed,
+        "Collation complete"
+    );
     Ok(json!({
         "status": "collated",
         "character": char_name,
@@ -908,6 +995,14 @@ pub async fn memory_purge(
             .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
     }
 
+    info!(
+        character = %char_name,
+        deleted,
+        skipped_image,
+        skipped_no_replacement,
+        older_than = older_than_str,
+        "Memory purge complete"
+    );
     Ok(json!({
         "status": "purged",
         "character": char_name,
@@ -1051,6 +1146,8 @@ pub async fn memory_reindex(engine: &ConversationEngine, ctx: &CommandContext) -
         return Ok(json!({ "reindexed": 0, "message": "No active entries to reindex" }));
     }
 
+    info!(character = %char_name, entries = entries.len(), "Memory reindex started");
+
     // Rebuild FTS index.
     db.rebuild_fts().map_err(|e| {
         (
@@ -1071,6 +1168,7 @@ pub async fn memory_reindex(engine: &ConversationEngine, ctx: &CommandContext) -
         let texts: Vec<&str> = chunk.iter().map(|e| e.summary_text.as_str()).collect();
         let batch = ctx
             .llm_client
+            .inner()
             .embed(
                 &embed_config.provider,
                 &embed_config.model_id,
@@ -1096,6 +1194,7 @@ pub async fn memory_reindex(engine: &ConversationEngine, ctx: &CommandContext) -
         )
     })?;
 
+    info!(character = %char_name, reindexed = entries.len(), "Memory reindex complete");
     Ok(json!({
         "reindexed": entries.len(),
         "message": format!("Reindexed {} entries (FTS + vector)", entries.len()),
@@ -1166,6 +1265,7 @@ pub fn config_reset(ctx: &mut CommandContext) -> CommandResult {
         Ok(fresh) => {
             ctx.active_model = None;
             ctx.config = fresh;
+            info!("Configuration reloaded from disk");
             Ok(json!({ "reset": true, "message": "Configuration reloaded from disk" }))
         }
         Err(e) => Err((
@@ -1237,7 +1337,7 @@ mod tests {
                 crate::commands::SessionTokens::default(),
             )),
             autonomy,
-            llm_client: shore_llm_client::LlmClient::new(),
+            llm_client: shore_ledger::LedgerClient::new(shore_llm_client::LlmClient::new(), &data_dir.join("ledger.db")).unwrap(),
             diagnostics: std::sync::Arc::new(std::sync::Mutex::new(
                 shore_diagnostics::Diagnostics::default(),
             )),

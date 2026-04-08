@@ -5,7 +5,7 @@
 //! then synthesizes results for the character.
 
 use serde_json::{json, Value};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::memory::agent::types::{AgentError, AgentIndexer, AgentSearchContext};
 use crate::memory::agent::MemoryAgent;
@@ -144,6 +144,13 @@ impl MemoryResearcher {
             format!("{}\n\n{}", context_parts.join("\n"), request)
         };
 
+        debug!(
+            request_len = request.len(),
+            researcher_model = %researcher_model.qualified_name,
+            agent_model = %agent_model.qualified_name,
+            "memory researcher starting"
+        );
+
         let mut messages: Vec<Value> = vec![json!({"role": "user", "content": user_content})];
 
         let tools = vec![ask_memory_agent_tool()];
@@ -152,6 +159,7 @@ impl MemoryResearcher {
         let mut last_text = String::new();
 
         for iteration in 0..MAX_RESEARCHER_ITERATIONS {
+            debug!(iteration, "researcher iteration");
             let response = researcher_llm
                 .generate(
                     messages.clone(),
@@ -233,6 +241,11 @@ impl MemoryResearcher {
         // Return final synthesis
         let final_text = last_text.trim().to_string();
         if !final_text.is_empty() && !is_refusal(&final_text) {
+            debug!(
+                tool_calls = all_tool_outputs.len(),
+                response_len = final_text.len(),
+                "memory researcher complete"
+            );
             return Ok(final_text);
         }
 

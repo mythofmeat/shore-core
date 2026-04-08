@@ -1,5 +1,6 @@
 use chrono::{Datelike, Local, NaiveDateTime, Timelike, Weekday};
 use std::time::Instant;
+use tracing::debug;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -120,6 +121,7 @@ impl ActivityTracker {
         if !self.timestamps.is_empty() || wall_clocks.is_empty() {
             return;
         }
+        debug!(count = wall_clocks.len(), "Backfilling activity tracker with historical timestamps");
 
         let monotonic_base = Instant::now();
         for (i, wall_clock) in wall_clocks.iter().enumerate() {
@@ -150,6 +152,7 @@ impl ActivityTracker {
             None => true,
         };
         if need_recompute {
+            debug!(messages = self.timestamps.len(), "Recomputing activity stats");
             let stats = self.compute_stats();
             self.cached_stats = Some(stats);
         }
@@ -158,6 +161,7 @@ impl ActivityTracker {
 
     /// Force recompute stats (bypasses cache TTL).
     pub fn recompute_stats(&mut self) -> &ActivityStats {
+        debug!(messages = self.timestamps.len(), "Force-recomputing activity stats");
         let stats = self.compute_stats();
         self.cached_stats = Some(stats);
         self.cached_stats.as_ref().unwrap()

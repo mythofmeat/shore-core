@@ -5,6 +5,7 @@ use lancedb::arrow::SendableRecordBatchStream;
 use lancedb::query::{ExecutableQuery, QueryBase};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tracing::{debug, error, instrument};
 
 const TABLE_NAME: &str = "vectors";
 
@@ -54,7 +55,9 @@ impl VectorStore {
     }
 
     /// Open or create the vector store at the given directory.
+    #[instrument(skip(path), fields(path = %path.display(), dimension))]
     pub async fn open(path: &Path, dimension: i32) -> Result<Self, VectorStoreError> {
+        debug!(path = %path.display(), dimension, "opening vector store");
         std::fs::create_dir_all(path).map_err(VectorStoreError::Io)?;
         let uri = path.to_str().ok_or_else(|| {
             VectorStoreError::Io(std::io::Error::new(
@@ -63,6 +66,7 @@ impl VectorStore {
             ))
         })?;
         let db = lancedb::connect(uri).execute().await?;
+        debug!(path = %path.display(), "vector store opened");
         Ok(Self { db, dimension })
     }
 
@@ -73,6 +77,7 @@ impl VectorStore {
         entry_id: &str,
         embedding: &[f32],
     ) -> Result<(), VectorStoreError> {
+        debug!(entry_id, dims = embedding.len(), "indexing entry in vector store");
         let batch = self.make_batch(&[(entry_id, embedding)])?;
 
         match self.db.open_table(TABLE_NAME).execute().await {
@@ -83,6 +88,7 @@ impl VectorStore {
             }
             Err(_) => {
                 // Table does not exist yet — create it.
+                debug!("vector table does not exist, creating");
                 self.db
                     .create_table(TABLE_NAME, vec![batch])
                     .execute()
@@ -94,14 +100,19 @@ impl VectorStore {
 
     /// Find the top-K nearest neighbors for a query embedding.
     /// Returns entry IDs with similarity scores (higher = more similar).
+    #[instrument(skip(self, query_embedding), fields(top_k))]
     pub async fn search(
         &self,
         query_embedding: &[f32],
         top_k: usize,
     ) -> Result<Vec<SearchResult>, VectorStoreError> {
+        debug!(top_k, "vector search starting");
         let table = match self.db.open_table(TABLE_NAME).execute().await {
             Ok(t) => t,
-            Err(_) => return Ok(vec![]),
+            Err(_) => {
+                debug!("vector table does not exist, returning empty results");
+                return Ok(vec![]);
+            }
         };
 
         let mut stream: SendableRecordBatchStream = table
@@ -136,12 +147,14 @@ impl VectorStore {
             }
         }
 
+        debug!(result_count = results.len(), "vector search complete");
         Ok(results)
     }
 
     /// Rebuild the entire index from the given entries.
     /// Drops the existing table and creates a fresh one.
     pub async fn reindex(&self, entries: &[(&str, &[f32])]) -> Result<(), VectorStoreError> {
+        debug!(entry_count = entries.len(), "reindexing vector store");
         let _ = self.db.drop_table(TABLE_NAME, &[]).await;
 
         if entries.is_empty() {
@@ -271,6 +284,7 @@ pub async fn embed_text(
     api_key: &str,
     input: &[&str],
 ) -> Result<Vec<Vec<f32>>, VectorStoreError> {
+    debug!(provider, model, input_count = input.len(), "requesting embeddings");
     let client = reqwest::Client::new();
     let body = serde_json::json!({
         "provider": provider,
@@ -287,9 +301,11 @@ pub async fn embed_text(
         .map_err(|e| VectorStoreError::Embed(e.to_string()))?;
 
     if !resp.status().is_success() {
+        let status = resp.status();
+        error!(status = %status, provider, model, "embed endpoint returned error");
         return Err(VectorStoreError::Embed(format!(
             "embed endpoint returned {}",
-            resp.status()
+            status
         )));
     }
 
@@ -303,6 +319,11 @@ pub async fn embed_text(
         .await
         .map_err(|e| VectorStoreError::Embed(e.to_string()))?;
 
+    debug!(
+        embedding_count = data.embeddings.len(),
+        dims = data.embeddings.first().map(|e| e.len()).unwrap_or(0),
+        "embeddings received"
+    );
     Ok(data.embeddings)
 }
 

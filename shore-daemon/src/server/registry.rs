@@ -11,6 +11,9 @@ pub struct InstanceInfo {
     pub socket_path: String,
     pub tcp_addr: Option<String>,
     pub started_at: String,
+    /// Resolved data directory so CLI commands can find the ledger.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_dir: Option<String>,
 }
 
 /// Handle to the instance registry file at a known path.
@@ -153,6 +156,7 @@ mod tests {
             socket_path: format!("/tmp/shore-{}.sock", id),
             tcp_addr: None,
             started_at: "2026-01-01T00:00:00Z".into(),
+            data_dir: None,
         }
     }
 

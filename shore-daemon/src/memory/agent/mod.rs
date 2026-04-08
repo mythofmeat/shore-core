@@ -12,6 +12,7 @@ pub mod tool_schemas;
 pub mod types;
 
 use serde_json::{json, Value};
+use tracing::{debug, info, instrument};
 
 use crate::memory::agent_llm::AgentLlm;
 use crate::memory::db::MemoryDB;
@@ -144,6 +145,7 @@ impl MemoryAgent {
     /// One-shot mode: answer a question about the memory database.
     ///
     /// No confirmation flow — all writes are auto-accepted.
+    #[instrument(skip(self, llm, db, indexer, search_ctx, question), fields(caller = %self.caller_name, model = %model.qualified_name, question_len = question.len()))]
     pub async fn ask(
         &self,
         question: &str,
@@ -153,6 +155,7 @@ impl MemoryAgent {
         search_ctx: Option<&AgentSearchContext>,
         model: &ResolvedModel,
     ) -> Result<String, AgentError> {
+        info!(caller = %self.caller_name, caller_type = ?self.caller, question_len = question.len(), "Memory agent ask started");
         let messages = vec![json!({"role": "user", "content": question})];
         let (text, _mutations) = tool_loop::run_agent_loop(
             llm,
@@ -165,6 +168,7 @@ impl MemoryAgent {
             None, // no confirmation
         )
         .await?;
+        debug!(response_len = text.len(), "Memory agent ask complete");
         Ok(text)
     }
 
@@ -183,6 +187,7 @@ impl MemoryAgent {
         model: &ResolvedModel,
         confirm_callback: Option<&dyn ConfirmCallback>,
     ) -> Result<String, AgentError> {
+        debug!(caller = %self.caller_name, mode = ?self.mode, content_len = content.len(), "Memory agent run_query started");
         history.push(json!({"role": "user", "content": content}));
 
         let (text, mutations) = tool_loop::run_agent_loop(
@@ -197,6 +202,7 @@ impl MemoryAgent {
         )
         .await?;
 
+        debug!(mutations = mutations.len(), response_len = text.len(), "Memory agent run_query complete");
         history.push(json!({"role": "assistant", "content": text}));
 
         if mutations.is_empty() {
@@ -224,6 +230,7 @@ impl MemoryAgent {
         }
 
         let resolved = resolve_pronouns(request, self.caller, &self.caller_name);
+        debug!(caller = %self.caller_name, original = request, resolved = %resolved, "Legacy RAG query");
         let hits = rag.query(&resolved, 32).await?;
 
         let mut entries = Vec::new();
@@ -242,6 +249,7 @@ impl MemoryAgent {
             }
         }
 
+        debug!(hits = hits.len(), entries = entries.len(), "Legacy RAG query complete");
         Ok(MemoryQueryResult {
             entries,
             query_text: request.to_string(),

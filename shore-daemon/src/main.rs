@@ -11,6 +11,7 @@ use shore_daemon::notifications::NotificationService;
 use shore_daemon::server::registry::{InstanceInfo, Registry};
 use shore_daemon::server::{Server, ServerConfig};
 use shore_diagnostics::Diagnostics;
+use shore_ledger::LedgerClient;
 use shore_llm_client::LlmClient;
 use shore_protocol::server_msg::ServerMessage;
 use tokio::sync::{broadcast, mpsc};
@@ -82,6 +83,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         socket_path: socket_path.display().to_string(),
         tcp_addr,
         started_at: epoch_timestamp(),
+        data_dir: Some(loaded.dirs.data.display().to_string()),
     };
     registry.register(instance_info)?;
     info!(instance_id = %instance_id, "Registered daemon instance");
@@ -132,13 +134,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         shutdown_rx.clone(),
     );
 
-    let mut llm_client = LlmClient::new();
+    let mut raw_llm_client = LlmClient::new();
     if loaded.app.advanced.api_payload_logging {
-        llm_client.set_payload_log_dir(loaded.dirs.data.clone());
+        raw_llm_client.set_payload_log_dir(loaded.dirs.data.clone());
         info!(
             "API payload logging enabled → {}/api_payloads.jsonl",
             loaded.dirs.data.display()
         );
+    }
+    let llm_client = LedgerClient::new(raw_llm_client, &loaded.dirs.data.join("ledger.db"))?;
+
+    // Reconstruct cache tracker state from the ledger for each known character.
+    // This prevents false-positive anomalies when the cache is still warm from
+    // before the restart.
+    for character in shore_config::discover_characters(&loaded.dirs.config) {
+        llm_client.reconstruct_cache_state(&character, 3600);
     }
 
     // Provide the autonomy manager with resources for interiority/keepalive execution.
@@ -260,7 +270,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn compaction_task(
     mut rx: mpsc::Receiver<String>,
     config: LoadedConfig,
-    llm_client: LlmClient,
+    llm_client: LedgerClient,
     data_dir: PathBuf,
     push_tx: broadcast::Sender<ServerMessage>,
     notifier: NotificationService,

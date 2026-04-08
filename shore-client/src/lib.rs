@@ -9,7 +9,7 @@ pub mod stream;
 pub use client_config::{load_client_config, ClientConfig};
 pub use conn_manager::{spawn_connection, ConnCommand, ConnEvent};
 pub use connection::{SWPConnection, ServerAddr};
-pub use discovery::{discover, discover_or_default};
+pub use discovery::{discover, discover_data_dir, discover_or_default};
 pub use error::{ClientError, Result};
 pub use image_protocol::{detect_protocol, ImageProtocol};
 pub use stream::{StreamCallbacks, StreamHandler};

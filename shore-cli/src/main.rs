@@ -7,8 +7,18 @@ mod state;
 use std::process::ExitCode;
 
 use cli::{Cli, CliCommand};
+use tracing_subscriber::EnvFilter;
 
 fn main() -> ExitCode {
+    // CLI logs to stderr so stdout stays clean for command output.
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn")),
+        )
+        .with_target(true)
+        .with_writer(std::io::stderr)
+        .init();
+
     let cli = <Cli as clap::Parser>::parse();
 
     // Initialize color control: --no-color flag or NO_COLOR env var disables color.

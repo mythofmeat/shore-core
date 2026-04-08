@@ -15,6 +15,7 @@ use uuid::Uuid;
 
 use crate::engine::segments::{CompactionManifest, SegmentEntry};
 use shore_config::models::ResolvedModel;
+use shore_ledger::{CallType, LedgerClient};
 use shore_llm_client::LlmClient;
 
 use super::compaction::{
@@ -225,17 +226,18 @@ pub fn resolve_image_gen_config(
 // RealCompactionLlm
 // ---------------------------------------------------------------------------
 
-/// Production `CompactionLlm` backed by `LlmClient` (Unix socket to shore-llm).
+/// Production `CompactionLlm` backed by `LedgerClient` (ledger-tracked LLM calls).
 ///
 /// Returns raw LLM text — the compaction library handles XML parsing.
 pub struct RealCompactionLlm {
-    client: LlmClient,
+    client: LedgerClient,
     model: ResolvedModel,
+    character: String,
 }
 
 impl RealCompactionLlm {
-    pub fn new(client: LlmClient, model: ResolvedModel) -> Self {
-        Self { client, model }
+    pub fn new(client: LedgerClient, model: ResolvedModel, character: String) -> Self {
+        Self { client, model, character }
     }
 }
 
@@ -248,7 +250,7 @@ impl CompactionLlm for RealCompactionLlm {
         Box::pin(async move {
             let messages = vec![json!({"role": "user", "content": prompt})];
 
-            let request = LlmClient::build_request(&self.model, messages, None, None, None)
+            let request = LedgerClient::build_request(&self.model, messages, None, None, None)
                 .map_err(|e| CompactionError::Llm(e.to_string()))?;
 
             debug!(
@@ -258,7 +260,7 @@ impl CompactionLlm for RealCompactionLlm {
             let t0 = std::time::Instant::now();
             let resp = self
                 .client
-                .generate(&request, None)
+                .generate(&request, CallType::Compaction, &self.character, false)
                 .await
                 .map_err(|e| CompactionError::Llm(e.to_string()))?;
             debug!(elapsed = ?t0.elapsed(), content_len = resp.content.len(), "compaction: LLM summarize done");

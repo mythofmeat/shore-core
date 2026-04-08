@@ -425,7 +425,6 @@ shore-daemon/
 │   ├── autonomy/
 │   │   ├── mod.rs              # Master autonomy controller
 │   │   ├── interiority.rs      # Interiority clock (dual-deadline timer + dormancy)
-│   │   ├── interiority_journal.rs # Rolling JSONL journal for tick continuity
 │   │   └── activity.rs         # Activity tracker (tempo, histograms)
 │   │
 │   ├── config/
@@ -955,98 +954,121 @@ pronouns in character queries.
 
 The V1 heartbeat (5-state probability machine) is replaced by the unified
 interiority system. Characters get periodic "turns to self" — full agentic
-turns with the same tool set as normal conversation, backed by a rolling JSONL
-journal for continuity across ticks. Cache refresh is unified into the same
-timer — no separate keepalive system.
+turns with the same tool set as normal conversation, running a real multi-turn
+tool loop within each tick. Cache refresh is unified into the same timer — no
+separate keepalive system.
 
 #### Design
 
 ```
-            ┌─────────┐  tick()   ┌──────────────┐
-            │  Active  │─────────▶│  RunTick      │──▶ ONE LLM call
-            └────┬────┘          └──────────────┘     reads journal
-                 │                 ┌──────────────┐   writes journal
-                 │  (cache only)──▶│RunDormantPing │──▶ max_tokens=1
-                 │                 └──────────────┘   cache refresh
-          ticks_without_user
-          > max_idle_ticks                         optional:
-                 │                                 <sendMessage>
-            ┌────▼────┐                            tag → user
-            │ Dormant  │──────────▶ RunDormantPing only
-            └────┬────┘            (cache stays warm)
+                                   set_next_wake()
+                                   (character tool)
+            ┌─────────┐  tick()    ┌──────────────┐     │
+            │  Active  │─────────▶│  RunTick      │──▶ tool loop ──▶ schedule()
+            └────┬────┘          └──────────────┘   (up to 6 iter)
                  │
-           user messages
+          abandonment guard:
+          ticks_without_user >= 3
+          OR silent >= 48h
+                 │
+            ┌────▼──────┐
+            │ Abandoned   │  next_wake_at = None
+            └────┬──────┘  cache_keepalive.set_next_wake(None)
+                 │
+           user message
                  │
             ┌────▼────┐
-            │  Active  │  (reset ticks_without_user)
-            └─────────┘
+            │  Active  │  next_wake_at = max(existing, now + min_wake)
+            └─────────┘  ticks_without_user = 0
+
+   Separate subsystem (independent cycle):
+   CacheKeepalive ──▶ 59min ping ──▶ max_tokens=1 cache refresh
+   (only fires if next_wake is within 18h break-even window)
 ```
 
-#### Dual-Deadline Timer
+#### Deadline-Based Clock
 
-InteriorityClock tracks two deadlines independently:
+`InteriorityClock` is a pure deadline holder. The character drives its own
+cadence via `set_next_wake` during interiority ticks. The clock holds the
+deadline, applies bounds (1h–48h), and stops ticking when the abandonment
+guard trips.
 
-| Deadline | Interval | Fires |
-|----------|----------|-------|
-| `next_tick_at` | `interval_secs ± jitter` | Full interiority tick (RunTick) |
-| `next_cache_ping_at` | `cache_ttl - 60s ± jitter×0.2` | Bare cache refresh (RunDormantPing) |
+If the character doesn't call `set_next_wake`, the clock falls back to
+`default_interval` (from `interval_secs` config).
 
-A full tick resets both deadlines (the LLM call refreshes the cache).
-A cache ping only resets the cache deadline.
+#### Cache Keepalive
+
+`CacheKeepalive` is a separate subsystem with its own 59-minute ping cycle.
+It only fires pings when a future wake is scheduled AND the wake is within
+the 18-hour break-even window (cost of pings vs. re-caching the full prompt).
+Guard-trip propagation: when the abandonment guard clears `next_wake_at`,
+it also clears `CacheKeepalive::next_wake`.
+
+#### Recap System
+
+Characters write first-person notes via `<recap>` tags during interiority
+ticks (last-wins semantics, same as `<sendMessage>`). Entries are stored in
+`recaps.jsonl` per character via `RecapStore`. During prompt assembly,
+`trim_messages` injects recap markers alongside time-gap markers so the
+character sees its own notes from between conversations.
 
 #### States
 
 | State | Description |
 |-------|-------------|
-| `Active` | Both timers run. Full interiority ticks fire at `interval_secs ± jitter_factor`. Between ticks, bare cache pings fire if the cache deadline passes. |
-| `Dormant` | `ticks_without_user >= max_idle_ticks`. Only cache pings fire (keeps cache warm). Wakes on next user message. |
+| `Active` | Character has a scheduled wake time. Full interiority ticks fire when the deadline arrives. Cache keepalive pings fire independently. |
+| `Abandoned` | `ticks_without_user >= max_idle_ticks` OR `time_since_last_user >= max_silent_secs`. No further ticks. Wakes on next user message. |
 
-#### Rolling Journal (`interiority_journal.rs`)
+#### Tool Loop (`execute_unified_tick`)
 
-Each interiority tick reads the journal, renders it into the prompt, makes ONE
-LLM call, and appends new entries. Entry types:
+Each interiority tick clones the last conversation request, appends the
+interiority prompt as a user message, then runs a real multi-turn tool loop:
+`generate()` → extract tool_use → dispatch tools → feed results back →
+`generate()` again, up to `min(max_iterations, 6)` iterations.
 
-| Type | Content |
-|------|---------|
-| `Thought` | Text blocks from LLM response |
-| `ToolCall` | Tool use blocks (name + args) |
-| `ToolResult` | Tool execution results |
-| `MessageSent` | `<sendMessage>` content delivered to user |
+Tool loop messages are **ephemeral** — they do not persist to `active.jsonl`
+or mutate the cached `last_request`. Only `<sendMessage>` content (if the
+character chooses to message the user) gets persisted to the conversation log.
+All tool activity is logged to the interiority ring buffer, visible via
+`shore log --heartbeat`.
 
-File: `{data_dir}/{character}/interiority_journal.jsonl`. Budget-capped at
-~16K chars (~4096 tokens). Oldest entries fall off. Compacted atomically
-(write-to-tmp + rename) when file exceeds 2× budget.
+The first `generate()` call uses `CallType::Interiority`; subsequent calls
+in the same tick use `CallType::ToolLoop` for cost tracking.
 
 #### Key Properties
 
-- **One call per tick**: Each tick makes exactly one LLM call. Tool calls from
-  the response are executed, but results are journaled for the next tick rather
-  than fed back in a loop. ~3.5× cheaper than the old multi-round approach.
+- **Self-scheduling**: Characters control their own cadence via `set_next_wake`
+  tool. The clock enforces [1h, 48h] bounds.
+- **Real tool loop**: The character sees tool results within the same tick,
+  enabling genuine exploration (web search → read results → compose message).
 - **Identical tool set**: Preserves Anthropic prompt cache — system prompt and
-  tool definitions are identical to normal conversation.
-- **Journal continuity**: The character sees its recent thoughts, tool calls,
-  and results rendered as text in the prompt. No context loss between ticks.
-- **Unified cache refresh**: Every LLM call (tick or ping) refreshes the prompt
-  cache. No separate keepalive system needed.
+  tool definitions are identical to normal conversation (plus `set_next_wake`).
+- **Ephemeral loop messages**: Tool loop messages don't pollute the conversation
+  log. The conversation only sees autonomous messages the character sends.
+- **Decoupled cache keepalive**: Cache pings are a separate subsystem with
+  break-even economics. Guard-trip propagation stops pings when the character
+  is abandoned.
+- **Recap continuity**: `<recap>` tags provide cross-tick memory that survives
+  compaction. Injected into conversation history at time-gap boundaries.
 
 #### Config
 
 ```toml
 [behavior.autonomy.interiority]
 enabled = true           # default: true
-interval_secs = 7200     # default: 3600 (1 hour)
-jitter_factor = 0.25     # ±25% random variation
-max_idle_ticks = 8       # go dormant after 8 ticks with no user
-
-[chat.anthropic]
-cache_ttl = "1h"         # drives cache_refresh_interval = 3540s
+interval_secs = 7200     # default: 3600 (1 hour) — fallback when character doesn't set_next_wake
+max_idle_ticks = 3       # abandon after 3 ticks with no user
+max_silent_secs = 172800 # 48h wall-clock silence guard
+min_wake_secs = 3600     # floor for on_user_message deadline (1h default)
 ```
 
-#### Persisted State (v3)
+#### Persisted State (v4)
 
-State is saved to `autonomy.json` per character. Version bumped from 2→3.
-Fields: `interiority_state` (Active/Dormant), `ticks_without_user` (u32).
-V2 state files are migrated gracefully (`cache_ping_count` dropped).
+State is saved to `autonomy.json` per character. Version bumped from 3→4.
+Fields: `ticks_without_user` (u32), `next_wake_at` (RFC3339, optional),
+`last_user_at` (RFC3339, optional). Instant recovery on restart converts
+RFC3339 back to `Instant` via delta from wall clock. V3 state files are
+silently discarded (fresh start).
 
 ### 13.2 Cache Invalidation Safeguard
 
@@ -1444,3 +1466,37 @@ To prevent deadlocks:
 - Per-character serialization of mutations (append/delete/edit) is enforced by the
   engine's tokio Mutex — generating and editing the same character's history at the
   same time will serialize, not corrupt.
+
+---
+
+## 10. Token Usage Ledger (`shore-ledger`)
+
+A dedicated crate for persistent LLM usage tracking, cost calculation, and cache health monitoring.
+
+### Architecture
+
+```
+shore-daemon ──▶ shore-ledger ──▶ shore-llm-client
+shore-cli    ──▶ shore-ledger (query only)
+```
+
+### Components
+
+- **LedgerClient** — wraps `LlmClient`, consumes it so the raw client is inaccessible.
+  Every `generate()` and `stream_raw()` call automatically records to the ledger.
+- **LedgerStream** — wraps the streaming reader. Must be `finalize()`d after consumption;
+  Drop impl warns if finalization was skipped.
+- **Ledger** — SQLite database at `$XDG_DATA_HOME/shore/ledger.db` with `calls` and `pricing` tables.
+- **CacheTracker** — per-character state machine (Cold/Warm) for Anthropic prompt cache.
+  Detects anomalies: unexpected reads (cold but got cache hit) and unexpected writes
+  (warm but cache_read decreased). Anomalies fire `tracing::error!` and notifications.
+- **PricingEngine** — fetches per-model pricing from OpenRouter's API, caches in DB.
+  Applies 4x multiplier for Anthropic 1h cache TTL writes.
+- **Query module** — aggregation, filtering, and TSV/CSV export for the CLI.
+
+### Data Flow
+
+1. Daemon constructs `LedgerClient::new(llm_client, db_path)` at startup
+2. Every LLM call goes through `LedgerClient` with `CallType` + character name
+3. On response: usage recorded to SQLite, cache tracker updated, cost calculated
+4. CLI queries the DB directly via `shore usage` (no daemon connection needed)

@@ -1,7 +1,7 @@
 use serde_json::json;
 use shore_protocol::error::ErrorCode;
 use shore_protocol::types::CharacterInfo;
-use tracing::info;
+use tracing::{debug, info};
 
 use super::{CommandContext, CommandResult};
 use crate::engine::ConversationEngine;
@@ -24,6 +24,7 @@ pub fn list_characters(engine: &ConversationEngine, ctx: &CommandContext) -> Com
         }
     }
 
+    debug!(count = characters.len(), "Listed characters");
     Ok(json!({ "characters": characters }))
 }
 
@@ -54,6 +55,7 @@ pub fn list_characters_standalone(ctx: &CommandContext) -> CommandResult {
         }
     }
 
+    debug!(count = characters.len(), "Listed characters (standalone)");
     Ok(json!({ "characters": characters }))
 }
 
@@ -109,6 +111,14 @@ pub fn character_info(
     let data_dir = ctx.data_dir.join(name);
     let has_data = data_dir.exists();
 
+    debug!(
+        character = name,
+        has_definition,
+        has_user_definition,
+        has_config_override,
+        prompt_override_count = prompt_overrides.len(),
+        "Character info queried"
+    );
     Ok(json!({
         "name": name,
         "active": name == engine.character_name(),
@@ -200,7 +210,7 @@ mod tests {
             active_model: None,
             session_tokens: std::sync::Arc::new(std::sync::Mutex::new(SessionTokens::default())),
             autonomy,
-            llm_client: shore_llm_client::LlmClient::new(),
+            llm_client: shore_ledger::LedgerClient::new(shore_llm_client::LlmClient::new(), &data_dir.join("ledger.db")).unwrap(),
             diagnostics: std::sync::Arc::new(std::sync::Mutex::new(
                 shore_diagnostics::Diagnostics::default(),
             )),

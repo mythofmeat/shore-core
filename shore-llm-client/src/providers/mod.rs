@@ -1,9 +1,13 @@
 pub(crate) mod anthropic;
+pub(crate) mod context;
 pub(crate) mod gemini;
 pub(crate) mod openai;
 pub(crate) mod sse;
 pub(crate) mod stream_helpers;
 pub(crate) mod zai;
+
+use shore_config::models::Sdk;
+use tracing::{debug, error, warn};
 
 use crate::types::{GenerateResponse, ImageGenerateParams, ImageGenerateResponse, LlmRequest};
 use crate::LlmError;
@@ -20,13 +24,19 @@ pub(crate) async fn check_response(
     }
     let status_code = status.as_u16();
     let body = response.text().await.unwrap_or_default();
+    error!(
+        status = status_code,
+        body_len = body.len(),
+        body_preview = %if body.len() > 200 { &body[..200] } else { &body },
+        "LLM API returned error status"
+    );
     Err(LlmError::HttpStatus {
         status: status_code,
         body,
     })
 }
 
-/// Dispatch a streaming request to the correct provider.
+/// Dispatch a streaming request to the correct SDK.
 ///
 /// Returns the read half of a DuplexStream that yields NDJSON `StreamEvent` lines.
 /// A background task reads SSE from the provider and writes NDJSON to the stream.
@@ -34,35 +44,58 @@ pub async fn stream(
     client: &reqwest::Client,
     request: &LlmRequest,
 ) -> Result<DuplexStream, LlmError> {
-    match request.provider.as_str() {
-        "anthropic" => anthropic::stream(client, request).await,
-        "openai" | "deepseek" | "zhipuai" | "xai" | "nanogpt" => {
-            openai::stream(client, request).await
-        }
-        "zai" => zai::stream(client, request).await,
-        "gemini" => gemini::stream(client, request).await,
-        other => Err(LlmError::Provider {
-            message: format!("unsupported provider: {other}"),
-        }),
+    debug!(
+        sdk = ?request.sdk,
+        model = %request.model,
+        max_tokens = request.max_tokens,
+        message_count = request.messages.len(),
+        has_tools = request.tools.is_some(),
+        "dispatching streaming LLM request"
+    );
+    let ctx = context::build_provider_context(request);
+    let result = match request.sdk {
+        Sdk::Anthropic => anthropic::stream(client, request).await,
+        Sdk::Openai => openai::stream(client, request, &ctx).await,
+        Sdk::Zai => zai::stream(client, request).await,
+        Sdk::Gemini => gemini::stream(client, request).await,
+    };
+    if let Err(e) = &result {
+        warn!(sdk = ?request.sdk, model = %request.model, error = %e, "streaming request failed");
     }
+    result
 }
 
-/// Dispatch a non-streaming generate request to the correct provider.
+/// Dispatch a non-streaming generate request to the correct SDK.
 pub async fn generate(
     client: &reqwest::Client,
     request: &LlmRequest,
 ) -> Result<GenerateResponse, LlmError> {
-    match request.provider.as_str() {
-        "anthropic" => anthropic::generate(client, request).await,
-        "openai" | "deepseek" | "zhipuai" | "xai" | "nanogpt" => {
-            openai::generate(client, request).await
-        }
-        "zai" => zai::generate(client, request).await,
-        "gemini" => gemini::generate(client, request).await,
-        other => Err(LlmError::Provider {
-            message: format!("unsupported provider: {other}"),
-        }),
+    debug!(
+        sdk = ?request.sdk,
+        model = %request.model,
+        max_tokens = request.max_tokens,
+        message_count = request.messages.len(),
+        "dispatching non-streaming LLM request"
+    );
+    let ctx = context::build_provider_context(request);
+    let result = match request.sdk {
+        Sdk::Anthropic => anthropic::generate(client, request).await,
+        Sdk::Openai => openai::generate(client, request, &ctx).await,
+        Sdk::Zai => zai::generate(client, request).await,
+        Sdk::Gemini => gemini::generate(client, request).await,
+    };
+    match &result {
+        Ok(resp) => debug!(
+            model = %resp.model,
+            finish_reason = %resp.finish_reason,
+            input_tokens = resp.usage.input_tokens,
+            output_tokens = resp.usage.output_tokens,
+            total_ms = resp.timing.total_ms,
+            "non-streaming request completed"
+        ),
+        Err(e) => warn!(sdk = ?request.sdk, model = %request.model, error = %e, "non-streaming request failed"),
     }
+    result
 }
 
 /// Dispatch an embedding request.
@@ -74,7 +107,7 @@ pub async fn embed(
     base_url: Option<&str>,
     input: &[&str],
 ) -> Result<Vec<Vec<f32>>, LlmError> {
-    // Embeddings are currently only supported via OpenAI-compatible API.
+    debug!(provider = %provider, model = %model, input_count = input.len(), "dispatching embedding request");
     openai::embed(client, provider, model, api_key, base_url, input).await
 }
 
@@ -83,6 +116,7 @@ pub async fn image_generate(
     client: &reqwest::Client,
     params: &ImageGenerateParams<'_>,
 ) -> Result<ImageGenerateResponse, LlmError> {
+    debug!(model = %params.model, "dispatching image generation request");
     openai::image_generate(client, params).await
 }
 
@@ -91,9 +125,9 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn make_request(provider: &str) -> LlmRequest {
+    fn make_request(sdk: Sdk) -> LlmRequest {
         LlmRequest {
-            provider: provider.into(),
+            sdk,
             model: "test-model".into(),
             api_key: "sk-test".into(),
             base_url: Some("http://127.0.0.1:1".into()), // unreachable
@@ -109,57 +143,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stream_unsupported_provider_returns_error() {
+    async fn stream_all_sdks_dispatch_without_panic() {
         let client = reqwest::Client::new();
-        let request = make_request("unsupported");
-        let result = stream(&client, &request).await;
-        match result {
-            Err(LlmError::Provider { message }) => {
-                assert!(message.contains("unsupported provider: unsupported"));
-            }
-            other => panic!("expected Provider error, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn generate_unsupported_provider_returns_error() {
-        let client = reqwest::Client::new();
-        let request = make_request("unsupported");
-        let result = generate(&client, &request).await;
-        match result {
-            Err(LlmError::Provider { message }) => {
-                assert!(message.contains("unsupported provider: unsupported"));
-            }
-            other => panic!("expected Provider error, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn stream_known_providers_do_not_hit_unsupported_error() {
-        let client = reqwest::Client::new();
-        // These should route to real provider impls and fail on HTTP, not on
-        // the "unsupported provider" dispatch branch.
-        for provider in &[
-            "anthropic",
-            "openai",
-            "deepseek",
-            "zhipuai",
-            "xai",
-            "zai",
-            "nanogpt",
-            "gemini",
-        ] {
-            let request = make_request(provider);
+        // All SDK variants should route to real impls and fail on HTTP
+        // (unreachable base_url), not panic.
+        for sdk in [Sdk::Anthropic, Sdk::Openai, Sdk::Zai, Sdk::Gemini] {
+            let request = make_request(sdk);
             let result = stream(&client, &request).await;
-            match &result {
-                Err(LlmError::Provider { message }) => {
-                    assert!(
-                        !message.contains("unsupported provider"),
-                        "{provider} should not hit unsupported provider path, got: {message}"
-                    );
-                }
-                _ => {} // Any other error (HTTP, connection) or Ok is fine.
-            }
+            // Any error is fine (HTTP, connection) — we just confirm dispatch works.
+            assert!(result.is_err(), "expected connection error for unreachable host");
         }
     }
 }

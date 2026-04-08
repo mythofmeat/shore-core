@@ -1,6 +1,7 @@
 pub mod conversation;
 pub mod navigation;
 pub mod state;
+pub mod usage;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -10,7 +11,7 @@ use shore_protocol::client_msg::Command;
 use shore_protocol::error::ErrorCode;
 use shore_protocol::server_msg::{CommandOutput, Error, ServerMessage};
 use tokio::sync::broadcast;
-use tracing::info;
+use tracing::{debug, info, warn};
 
 use crate::autonomy::manager::AutonomyManager;
 use crate::engine::{ConversationEngine, EngineError};
@@ -20,7 +21,7 @@ use crate::memory::vectorstore::VectorStore;
 use shore_config::models::ResolvedModel;
 use shore_config::{load_character_definition, resolve_user_definition, LoadedConfig};
 use shore_diagnostics::Diagnostics;
-use shore_llm_client::LlmClient;
+use shore_ledger::LedgerClient;
 
 /// Cumulative token usage tracked across the daemon session.
 #[derive(Debug, Default)]
@@ -54,7 +55,7 @@ pub struct CommandContext {
     /// Shared autonomy manager for scheduler state.
     pub autonomy: AutonomyManager,
     /// LLM client for commands that need model access (e.g. memory query).
-    pub llm_client: LlmClient,
+    pub llm_client: LedgerClient,
     /// In-memory diagnostics ring buffers.
     pub diagnostics: Arc<Mutex<Diagnostics>>,
     /// Active memory shell sessions, keyed by session ID.
@@ -106,7 +107,7 @@ pub async fn setup_search_context(
         .ok()?;
     Some(AgentSearchContext::new(
         vs,
-        ctx.llm_client.clone(),
+        ctx.llm_client.inner().clone(),
         embed_config,
     ))
 }
@@ -198,6 +199,7 @@ pub async fn dispatch(
         "config_reset" => state::config_reset(ctx),
         "diagnostics" => state::diagnostics(ctx, &cmd.args),
         "heartbeat_log" => state::heartbeat_log(engine, ctx, &cmd.args),
+        "usage" => usage::usage(ctx, &cmd.args).await,
 
         _ => Err((
             ErrorCode::InvalidRequest,
@@ -210,12 +212,16 @@ pub async fn dispatch(
             name: cmd.name.clone(),
             data,
         }),
-        Err((code, message)) => ServerMessage::Error(Error { code, message }),
+        Err((code, message)) => {
+            warn!(command = %cmd.name, ?code, %message, "Command failed");
+            ServerMessage::Error(Error { code, message })
+        }
     }
 }
 
 /// Dispatch commands that don't require a character/engine (e.g. list_characters).
 pub fn dispatch_characterless(ctx: &CommandContext, cmd: &Command) -> CommandResult {
+    debug!(command = %cmd.name, "Dispatching characterless command");
     match cmd.name.as_str() {
         "list_characters" => navigation::list_characters_standalone(ctx),
         _ => Err((
@@ -274,7 +280,7 @@ mod tests {
             active_model: None,
             session_tokens: Arc::new(Mutex::new(SessionTokens::default())),
             autonomy,
-            llm_client: LlmClient::new(),
+            llm_client: LedgerClient::new(shore_llm_client::LlmClient::new(), &data_dir.join("ledger.db")).unwrap(),
             diagnostics: Arc::new(Mutex::new(Diagnostics::default())),
             memory_shell_sessions: HashMap::new(),
         };

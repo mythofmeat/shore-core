@@ -2,6 +2,7 @@ use std::fs;
 use std::io::{self, Write};
 
 use base64::Engine;
+use tracing::{debug, warn};
 pub use shore_client::image_protocol::{detect_protocol, ImageProtocol};
 
 /// Render an image inline using the detected protocol, or fall back to text.
@@ -14,15 +15,18 @@ pub fn render_image(path: &str, caption: Option<&str>) {
     match detect_protocol() {
         Some(ImageProtocol::Kitty) => {
             if let Err(e) = render_kitty(path) {
+                warn!(path, error = %e, "Kitty image render failed");
                 eprintln!("[img: {label}] (kitty render failed: {e})");
             }
         }
         Some(ImageProtocol::Iterm2) => {
             if let Err(e) = render_iterm2(path, label) {
+                warn!(path, error = %e, "iTerm2 image render failed");
                 eprintln!("[img: {label}] (iterm2 render failed: {e})");
             }
         }
         None => {
+            debug!(path, "No image protocol detected, displaying as text");
             println!("[img: {label}]");
         }
     }

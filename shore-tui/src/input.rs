@@ -1,5 +1,6 @@
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use shore_protocol::client_msg::{Cancel, ClientMessage, ClientMessageBody, Command, Regen};
+use tracing::debug;
 
 use crate::app::{App, InputMode};
 use crate::connection::ConnCommand;
@@ -72,20 +73,24 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) -> Action {
     match (key.modifiers, key.code) {
         // Enter insert mode
         (KeyModifiers::NONE, KeyCode::Char('i')) => {
+            debug!("Input: Normal → Insert");
             app.input.mode = InputMode::Insert;
             Action::Redraw
         }
         (KeyModifiers::NONE, KeyCode::Char('a')) => {
+            debug!("Input: Normal → Insert (append)");
             app.input.move_right();
             app.input.mode = InputMode::Insert;
             Action::Redraw
         }
         (KeyModifiers::SHIFT, KeyCode::Char('A')) => {
+            debug!("Input: Normal → Insert (end)");
             app.input.move_end();
             app.input.mode = InputMode::Insert;
             Action::Redraw
         }
         (KeyModifiers::SHIFT, KeyCode::Char('I')) => {
+            debug!("Input: Normal → Insert (home)");
             app.input.move_home();
             app.input.mode = InputMode::Insert;
             Action::Redraw
@@ -202,6 +207,7 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) -> Action {
 
         // Command palette
         (KeyModifiers::SHIFT, KeyCode::Char(':')) | (KeyModifiers::NONE, KeyCode::Char(':')) => {
+            debug!("Input: Normal → Command");
             app.input.enter_command_mode();
             app.update_completions();
             Action::Redraw
@@ -246,6 +252,7 @@ fn handle_insert_mode(app: &mut App, key: KeyEvent) -> Action {
     match (key.modifiers, key.code) {
         // Exit insert mode (cancel edit or generation if active)
         (KeyModifiers::NONE, KeyCode::Esc) => {
+            debug!("Input: Insert → Normal");
             app.input.mode = InputMode::Normal;
             if app.editing_ref.take().is_some() {
                 app.input.text.clear();
@@ -410,6 +417,7 @@ fn handle_command_mode(app: &mut App, key: KeyEvent) -> Action {
     match (key.modifiers, key.code) {
         // Cancel
         (KeyModifiers::NONE, KeyCode::Esc) => {
+            debug!("Input: Command → Normal (cancelled)");
             app.input.exit_command_mode();
             app.completion.candidates.clear();
             app.completion.selected = None;
@@ -465,6 +473,7 @@ fn parse_command(app: &mut App, input: &str) -> Action {
     let cmd = parts.next().unwrap_or("");
     let arg = parts.next().unwrap_or("").trim();
 
+    debug!(cmd, has_arg = !arg.is_empty(), "TUI command dispatched");
     match cmd {
         "q" | "quit" => {
             app.should_quit = true;
