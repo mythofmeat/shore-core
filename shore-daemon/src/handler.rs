@@ -928,8 +928,8 @@ async fn stream_with_retry(
                     let base_ms = effective_config
                         .app
                         .advanced
-                        .retry_backoff_seconds
-                        .map(|s| (s * 1000.0) as u64)
+                        .retry_backoff
+                        .map(|d| d.as_millis())
                         .unwrap_or(500);
                     let delay = std::time::Duration::from_millis(base_ms * 2u64.pow(attempt));
                     warn!(
@@ -1692,7 +1692,7 @@ mod tests {
             budget_tokens: None,
             cache_ttl: None,
             keepalive_enabled: None,
-            keepalive_ttl_minutes: None,
+            keepalive_ttl: None,
             keepalive_max_pings: None,
             openrouter_provider: None,
             vertex_project: None,

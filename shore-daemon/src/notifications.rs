@@ -77,8 +77,8 @@ impl NotificationService {
     /// Fire a `MessageComplete` notification, but only if generation time
     /// exceeds the configured threshold (0 = always notify).
     pub fn notify_message_complete(&self, title: &str, body: &str, total_ms: u32) {
-        let threshold = self.config.generation_threshold_secs;
-        if threshold > 0 && (total_ms as u64) < threshold * 1000 {
+        let threshold_ms = self.config.generation_threshold.as_millis();
+        if threshold_ms > 0 && (total_ms as u64) < threshold_ms {
             return;
         }
         self.notify(NotificationEvent::MessageComplete, title, body);
@@ -169,7 +169,7 @@ mod tests {
             backend: NotificationBackend::NotifySend,
             ntfy: NtfyConfig::default(),
             command: CommandNotifyConfig::default(),
-            generation_threshold_secs: 0,
+            generation_threshold: shore_config::ConfigDuration::from_secs(0),
             events,
         })
     }

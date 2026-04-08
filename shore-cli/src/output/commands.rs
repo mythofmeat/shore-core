@@ -186,7 +186,7 @@ pub fn print_status(data: &serde_json::Value, character_name: &str) {
 
             let int_state = autonomy["interiority_state"].as_str().unwrap_or("Active");
             let ticks = autonomy["ticks_without_user"].as_u64().unwrap_or(0);
-            let max_ticks = autonomy["max_idle_ticks"].as_u64().unwrap_or(3);
+            let max_ticks = autonomy["dormant_after_interiority_turns"].as_u64().unwrap_or(3);
             let description = interiority_description(int_state, ticks, max_ticks);
 
             // Interiority row: description + state label.
@@ -1161,7 +1161,7 @@ mod tests {
                 "paused": false,
                 "interiority_state": "Active",
                 "ticks_without_user": 1,
-                "max_idle_ticks": 3,
+                "dormant_after_interiority_turns": 3,
                 "effective_interval_secs": 3540,
             }
         });
@@ -1190,7 +1190,7 @@ mod tests {
                 "paused": true,
                 "interiority_state": "Active",
                 "ticks_without_user": 0,
-                "max_idle_ticks": 3,
+                "dormant_after_interiority_turns": 3,
                 "effective_interval_secs": 3600,
             }
         });

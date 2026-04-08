@@ -32,7 +32,7 @@ fn make_model(effort: &str) -> ResolvedModel {
         budget_tokens: None,
         cache_ttl: None,
         keepalive_enabled: None,
-        keepalive_ttl_minutes: None,
+        keepalive_ttl: None,
         keepalive_max_pings: None,
         openrouter_provider: None,
         vertex_project: None,

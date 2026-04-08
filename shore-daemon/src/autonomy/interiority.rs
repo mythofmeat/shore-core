@@ -82,10 +82,10 @@ impl InteriorityClock {
             last_anchor: Instant::now(),
             ticks_without_user: 0,
             last_user_at: None,
-            default_interval: Duration::from_secs(config.interval_secs),
-            max_idle_ticks: config.max_idle_ticks,
-            max_silent_duration: Duration::from_secs(config.max_silent_secs),
-            min_wake_interval: Duration::from_secs(config.min_wake_secs),
+            default_interval: config.fallback_interiority_interval.as_duration(),
+            max_idle_ticks: config.dormant_after_interiority_turns,
+            max_silent_duration: config.dormant_after_idle_time.as_duration(),
+            min_wake_interval: config.minimum_interiority_latency.as_duration(),
         }
     }
 
@@ -268,12 +268,13 @@ mod tests {
     use super::*;
 
     fn clock(interval_secs: u64, max_idle: u32) -> InteriorityClock {
+        use shore_config::ConfigDuration;
         let config = InteriorityConfig {
             enabled: true,
-            interval_secs,
-            max_idle_ticks: max_idle,
-            max_silent_secs: 172800, // 48h
-            min_wake_secs: 3600,     // 1h (matches MIN_WAKE_INTERVAL)
+            fallback_interiority_interval: ConfigDuration::from_secs(interval_secs),
+            dormant_after_interiority_turns: max_idle,
+            dormant_after_idle_time: ConfigDuration::from_secs(172800), // 48h
+            minimum_interiority_latency: ConfigDuration::from_secs(3600), // 1h
             max_tool_rounds: 3,
         };
         InteriorityClock::with_config(&config)

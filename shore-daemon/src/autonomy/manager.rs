@@ -527,7 +527,7 @@ impl AutonomyManager {
             paused: s.paused,
             interiority_state: s.interiority.state().to_string(),
             ticks_without_user: s.interiority.ticks_without_user(),
-            max_idle_ticks: s.interiority.max_idle_ticks(),
+            dormant_after_interiority_turns: s.interiority.max_idle_ticks(),
             effective_interval_secs: s.interiority.default_interval().as_secs(),
         })
     }
@@ -677,7 +677,7 @@ async fn tick_character(character: &str, ctx: &TickContext) {
                 );
             } else if s.active_turn_count >= ctx.compaction.min_turns {
                 let idle_secs = now.duration_since(s.last_compaction_activity).as_secs();
-                let threshold_secs = u64::from(ctx.compaction.idle_trigger_minutes) * 60;
+                let threshold_secs = ctx.compaction.idle_trigger.as_secs();
                 if threshold_secs > 0 && idle_secs >= threshold_secs {
                     s.compaction_triggered = true;
                     compaction_needed = true;
@@ -987,7 +987,7 @@ async fn execute_unified_tick(
     let recap_path = data_dir.join(character).join("recaps.jsonl");
     let recap_store = RecapStore::load(&recap_path);
     let user_name = lc.app.defaults.resolve_display_name();
-    let default_interval_secs = lc.app.behavior.autonomy.interiority.interval_secs;
+    let default_interval_secs = lc.app.behavior.autonomy.interiority.fallback_interiority_interval.as_secs();
     let default_interval_str = if default_interval_secs >= 3600 && default_interval_secs % 3600 == 0 {
         let h = default_interval_secs / 3600;
         if h == 1 { "1 hour".to_string() } else { format!("{h} hours") }

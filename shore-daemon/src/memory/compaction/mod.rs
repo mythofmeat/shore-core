@@ -322,7 +322,7 @@ impl CompactionManager {
     /// Create an idle timer bound to this manager's activity signal.
     pub fn idle_timer(&self) -> IdleTimer {
         IdleTimer {
-            idle_duration: Duration::from_secs(u64::from(self.config.idle_trigger_minutes) * 60),
+            idle_duration: self.config.idle_trigger.as_duration(),
             activity_notify: Arc::clone(&self.activity_notify),
         }
     }
@@ -980,7 +980,7 @@ They discussed daily activities and the user's beverage preferences.
         tokio::time::pause();
 
         let mgr = CompactionManager::new(CompactionConfig {
-            idle_trigger_minutes: 5,
+            idle_trigger: shore_config::ConfigDuration::from_secs(300),
             ..Default::default()
         });
 
@@ -1007,7 +1007,7 @@ They discussed daily activities and the user's beverage preferences.
         tokio::time::pause();
 
         let mgr = CompactionManager::new(CompactionConfig {
-            idle_trigger_minutes: 5,
+            idle_trigger: shore_config::ConfigDuration::from_secs(300),
             ..Default::default()
         });
 
