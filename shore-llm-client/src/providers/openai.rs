@@ -996,6 +996,44 @@ mod tests {
         assert!(url.starts_with("data:image/png;base64,"));
     }
 
+    // ── System messages with array content (regression: SHA 2081b63) ──
+    //
+    // translate_messages() was dropping system messages whose content was an
+    // array of content_blocks rather than a plain string.  The fix routes them
+    // through extract_system_text() which concatenates all text blocks.
+
+    #[test]
+    fn test_translate_messages_inline_system_array_preserved() {
+        // System message arrives as a message in the messages array (not
+        // request.system) with content_blocks / array format.
+        let request = make_request(
+            vec![json!({
+                "role": "system",
+                "content": [
+                    {"type": "text", "text": "You are helpful. "},
+                    {"type": "text", "text": "Be concise."}
+                ]
+            })],
+            None,
+        );
+        let msgs = translate_messages(&request);
+        assert_eq!(
+            msgs.len(),
+            1,
+            "system message with array content must not be dropped"
+        );
+        assert_eq!(msgs[0]["role"], "system");
+        let content = msgs[0]["content"].as_str().unwrap();
+        assert!(
+            content.contains("You are helpful."),
+            "system text block 1 must be present in output"
+        );
+        assert!(
+            content.contains("Be concise."),
+            "system text block 2 must be present in output"
+        );
+    }
+
     // ── translate_tools ───────────────────────────────────────────────
 
     #[test]
