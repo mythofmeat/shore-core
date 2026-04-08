@@ -255,6 +255,11 @@ fn build_headers(request: &LlmRequest) -> reqwest::header::HeaderMap {
         reqwest::header::CONTENT_TYPE,
         "application/json".parse().unwrap(),
     );
+    if let Some(ref rid) = request.rid {
+        if let Ok(hv) = rid.parse::<reqwest::header::HeaderValue>() {
+            headers.insert("X-Request-ID", hv);
+        }
+    }
     headers
 }
 
@@ -620,6 +625,7 @@ mod tests {
             top_p: None,
             provider_options: None,
             provider_key: Some("zai".into()),
+            rid: None,
         }
     }
 

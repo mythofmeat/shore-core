@@ -496,7 +496,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 request.tools.as_ref().map(|t| t.len()).unwrap_or(0));
         }
 
-        let resp = client.generate(&request, None).await?;
+        let resp = client.generate(&request).await?;
         let tools_used = print_result(&format!("Run {run} — effort={effort}"), &resp);
 
         if interiority || rut {

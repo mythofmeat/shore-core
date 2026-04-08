@@ -376,9 +376,13 @@ pub async fn stream(
         request.api_key,
     );
 
-    let response = client
+    let mut req_builder = client
         .post(&url)
-        .header("Content-Type", "application/json")
+        .header("Content-Type", "application/json");
+    if let Some(ref rid) = request.rid {
+        req_builder = req_builder.header("X-Request-ID", rid);
+    }
+    let response = req_builder
         .body(body_str)
         .send()
         .await
@@ -531,9 +535,13 @@ pub async fn generate(
 
     let start = Instant::now();
 
-    let response = client
+    let mut req_builder = client
         .post(&url)
-        .header("Content-Type", "application/json")
+        .header("Content-Type", "application/json");
+    if let Some(ref rid) = request.rid {
+        req_builder = req_builder.header("X-Request-ID", rid);
+    }
+    let response = req_builder
         .body(body_str)
         .send()
         .await
@@ -631,6 +639,7 @@ mod tests {
             top_p: None,
             provider_options: None,
             provider_key: None,
+            rid: None,
         }
     }
 

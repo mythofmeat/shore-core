@@ -231,7 +231,8 @@ impl MessageHandler {
                         _ => continue,
                     };
 
-                    let rid = body.rid.clone();
+                    // Validate rid is safe for HTTP headers before propagating.
+                    let rid = body.rid.clone().filter(|r| r.is_ascii() && !r.contains('\0'));
                     let gen = self.gen_context();
                     let push_tx = self.push_tx.clone();
                     let notifier = self.notifier.clone();
@@ -399,7 +400,7 @@ async fn handle_generation(
         body,
         regen,
         char_name,
-        rid: _,
+        rid,
         effective_config,
         data_dir,
         active_model,
@@ -633,6 +634,7 @@ async fn handle_generation(
 
     // 9. Build LLM request.
     let mut request = LedgerClient::build_request(resolved, llm_messages, system, tool_defs, None)?;
+    request.rid = rid;
 
     // Apply per-message parameter overrides from the client.
     if let Some(ref ov) = body.overrides {

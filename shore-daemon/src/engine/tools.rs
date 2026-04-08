@@ -352,6 +352,7 @@ mod tests {
             top_p: None,
             provider_options: None,
             provider_key: None,
+            rid: None,
         }
     }
 
