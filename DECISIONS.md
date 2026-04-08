@@ -452,3 +452,29 @@ Decoupled wire protocol (SDK) from endpoint identity (provider) in `shore-llm-cl
 **Config impact:**
 - Users can now override SDK per model: `[chat.openrouter."anthropic/claude-opus"] sdk = "anthropic"`
 - Both approaches work: override sdk on an openrouter model, or override base_url/api_key on an anthropic model
+
+## Interiority: Deadline Holder with Self-Scheduling (2026-04-08)
+
+**Decision:** Replaced the fixed-interval Active/Dormant state machine with a deadline-based `InteriorityClock` that lets characters self-schedule via `set_next_wake` tool, decoupled cache keepalive into its own subsystem, and added a recap system for inner-life continuity.
+
+**What changed:**
+- `InteriorityClock` rewritten: pure deadline holder + dual abandonment guard (`ticks_without_user >= 3` OR wall-clock silence >= 48h). No more `InteriorityState` enum.
+- `CacheKeepalive` (new module): independent 59min ping cycle with 18h break-even gate. No longer entangled with interiority tick scheduling.
+- `RecapStore` (new module): JSONL sidecar (`recaps.jsonl`) for character first-person recap entries via `<recap>` tag.
+- `set_next_wake` tool: injected into interiority tick tool list, intercepted before `dispatch_tool`. Characters schedule their own cadence (clamped to 1h–48h).
+- Dynamic `INTERIORITY_PROMPT`: replaces static constant, includes recent thread context from recaps or ring buffer.
+- Recap injection in `trim_messages`: recap entries appear alongside time-gap markers in conversation history.
+- `PersistedState` v4: RFC3339 timestamps for `next_wake_at` and `last_user_at`, enabling restart recovery.
+- `on_user_message` uses `max()` semantics: `next_wake_at = max(existing, now + min_wake_secs)`. Character-scheduled deadlines are preserved.
+- Removed: `InteriorityState` enum, `jitter_factor`, `cache_refresh_interval_secs`, `RunDormantPing` variant from `InteriorityAction`.
+- Added config: `max_silent_secs` (48h default), `min_wake_secs` (1h default, configurable for testing).
+
+**Why:**
+- The old system treated characters as passive tick recipients. The redesign gives characters agency over their own inner life cadence.
+- Cache keepalive was entangled with interiority state transitions, causing unnecessary complexity and coupling.
+- The journal system (removed in prior decision) left a gap in cross-tick continuity. Recaps fill this gap with first-person notes that survive compaction.
+
+**Trade-offs:**
+- Breaking config change: existing configs with `jitter_factor` will fail to parse (`deny_unknown_fields`).
+- `set_next_wake` adds a tool the character can misuse (requesting very frequent ticks). Clamping to [1h, 48h] bounds this.
+- RecapStore is append-only with no automatic pruning — acceptable for expected volume (~3 entries/day).

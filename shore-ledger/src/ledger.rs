@@ -34,13 +34,12 @@ CREATE TABLE IF NOT EXISTS calls (
 );
 
 CREATE TABLE IF NOT EXISTS pricing (
-    model_id                TEXT PRIMARY KEY,
-    input_per_token         REAL NOT NULL,
-    output_per_token        REAL NOT NULL,
-    cache_read_per_token    REAL NOT NULL,
-    cache_write_per_token   REAL NOT NULL,
-    cache_write_1h_per_token REAL NOT NULL,
-    fetched_at              TEXT NOT NULL
+    model_id              TEXT PRIMARY KEY,
+    input_per_token       REAL NOT NULL,
+    output_per_token      REAL NOT NULL,
+    cache_read_per_token  REAL NOT NULL,
+    cache_write_per_token REAL NOT NULL,
+    fetched_at            TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_calls_ts        ON calls (ts);
@@ -119,11 +118,6 @@ impl Ledger {
         // v2: cache_ttl on calls
         add_if_missing(
             "ALTER TABLE calls ADD COLUMN cache_ttl TEXT DEFAULT '1h'",
-        )?;
-
-        // v3: cache_write_1h_per_token on pricing
-        add_if_missing(
-            "ALTER TABLE pricing ADD COLUMN cache_write_1h_per_token REAL NOT NULL DEFAULT 0.0",
         )?;
 
         Ok(())

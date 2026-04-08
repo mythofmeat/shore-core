@@ -961,44 +961,63 @@ separate keepalive system.
 #### Design
 
 ```
-            ┌─────────┐  tick()   ┌──────────────┐
-            │  Active  │─────────▶│  RunTick      │──▶ tool loop
-            └────┬────┘          └──────────────┘   (up to 6 iterations)
-                 │                 ┌──────────────┐
-                 │  (cache only)──▶│RunDormantPing │──▶ max_tokens=1
-                 │                 └──────────────┘   cache refresh
-          ticks_without_user
-          > max_idle_ticks                         optional:
-                 │                                 <sendMessage>
-            ┌────▼────┐                            tag → user
-            │ Dormant  │──────────▶ RunDormantPing only
-            └────┬────┘            (cache stays warm)
+                                   set_next_wake()
+                                   (character tool)
+            ┌─────────┐  tick()    ┌──────────────┐     │
+            │  Active  │─────────▶│  RunTick      │──▶ tool loop ──▶ schedule()
+            └────┬────┘          └──────────────┘   (up to 6 iter)
                  │
-           user messages
+          abandonment guard:
+          ticks_without_user >= 3
+          OR silent >= 48h
+                 │
+            ┌────▼──────┐
+            │ Abandoned   │  next_wake_at = None
+            └────┬──────┘  cache_keepalive.set_next_wake(None)
+                 │
+           user message
                  │
             ┌────▼────┐
-            │  Active  │  (reset ticks_without_user)
-            └─────────┘
+            │  Active  │  next_wake_at = max(existing, now + min_wake)
+            └─────────┘  ticks_without_user = 0
+
+   Separate subsystem (independent cycle):
+   CacheKeepalive ──▶ 59min ping ──▶ max_tokens=1 cache refresh
+   (only fires if next_wake is within 18h break-even window)
 ```
 
-#### Dual-Deadline Timer
+#### Deadline-Based Clock
 
-InteriorityClock tracks two deadlines independently:
+`InteriorityClock` is a pure deadline holder. The character drives its own
+cadence via `set_next_wake` during interiority ticks. The clock holds the
+deadline, applies bounds (1h–48h), and stops ticking when the abandonment
+guard trips.
 
-| Deadline | Interval | Fires |
-|----------|----------|-------|
-| `next_tick_at` | `interval_secs ± jitter` | Full interiority tick (RunTick) |
-| `next_cache_ping_at` | `cache_ttl - 60s ± jitter×0.2` | Bare cache refresh (RunDormantPing) |
+If the character doesn't call `set_next_wake`, the clock falls back to
+`default_interval` (from `interval_secs` config).
 
-A full tick resets both deadlines (the LLM call refreshes the cache).
-A cache ping only resets the cache deadline.
+#### Cache Keepalive
+
+`CacheKeepalive` is a separate subsystem with its own 59-minute ping cycle.
+It only fires pings when a future wake is scheduled AND the wake is within
+the 18-hour break-even window (cost of pings vs. re-caching the full prompt).
+Guard-trip propagation: when the abandonment guard clears `next_wake_at`,
+it also clears `CacheKeepalive::next_wake`.
+
+#### Recap System
+
+Characters write first-person notes via `<recap>` tags during interiority
+ticks (last-wins semantics, same as `<sendMessage>`). Entries are stored in
+`recaps.jsonl` per character via `RecapStore`. During prompt assembly,
+`trim_messages` injects recap markers alongside time-gap markers so the
+character sees its own notes from between conversations.
 
 #### States
 
 | State | Description |
 |-------|-------------|
-| `Active` | Both timers run. Full interiority ticks fire at `interval_secs ± jitter_factor`. Between ticks, bare cache pings fire if the cache deadline passes. |
-| `Dormant` | `ticks_without_user >= max_idle_ticks`. Only cache pings fire (keeps cache warm). Wakes on next user message. |
+| `Active` | Character has a scheduled wake time. Full interiority ticks fire when the deadline arrives. Cache keepalive pings fire independently. |
+| `Abandoned` | `ticks_without_user >= max_idle_ticks` OR `time_since_last_user >= max_silent_secs`. No further ticks. Wakes on next user message. |
 
 #### Tool Loop (`execute_unified_tick`)
 
@@ -1018,33 +1037,38 @@ in the same tick use `CallType::ToolLoop` for cost tracking.
 
 #### Key Properties
 
+- **Self-scheduling**: Characters control their own cadence via `set_next_wake`
+  tool. The clock enforces [1h, 48h] bounds.
 - **Real tool loop**: The character sees tool results within the same tick,
   enabling genuine exploration (web search → read results → compose message).
 - **Identical tool set**: Preserves Anthropic prompt cache — system prompt and
-  tool definitions are identical to normal conversation.
+  tool definitions are identical to normal conversation (plus `set_next_wake`).
 - **Ephemeral loop messages**: Tool loop messages don't pollute the conversation
   log. The conversation only sees autonomous messages the character sends.
-- **Unified cache refresh**: Every LLM call (tick or ping) refreshes the prompt
-  cache. No separate keepalive system needed.
+- **Decoupled cache keepalive**: Cache pings are a separate subsystem with
+  break-even economics. Guard-trip propagation stops pings when the character
+  is abandoned.
+- **Recap continuity**: `<recap>` tags provide cross-tick memory that survives
+  compaction. Injected into conversation history at time-gap boundaries.
 
 #### Config
 
 ```toml
 [behavior.autonomy.interiority]
 enabled = true           # default: true
-interval_secs = 7200     # default: 3600 (1 hour)
-jitter_factor = 0.25     # ±25% random variation
-max_idle_ticks = 8       # go dormant after 8 ticks with no user
-
-[chat.anthropic]
-cache_ttl = "1h"         # drives cache_refresh_interval = 3540s
+interval_secs = 7200     # default: 3600 (1 hour) — fallback when character doesn't set_next_wake
+max_idle_ticks = 3       # abandon after 3 ticks with no user
+max_silent_secs = 172800 # 48h wall-clock silence guard
+min_wake_secs = 3600     # floor for on_user_message deadline (1h default)
 ```
 
-#### Persisted State (v3)
+#### Persisted State (v4)
 
-State is saved to `autonomy.json` per character. Version bumped from 2→3.
-Fields: `interiority_state` (Active/Dormant), `ticks_without_user` (u32).
-V2 state files are migrated gracefully (`cache_ping_count` dropped).
+State is saved to `autonomy.json` per character. Version bumped from 3→4.
+Fields: `ticks_without_user` (u32), `next_wake_at` (RFC3339, optional),
+`last_user_at` (RFC3339, optional). Instant recovery on restart converts
+RFC3339 back to `Instant` via delta from wall clock. V3 state files are
+silently discarded (fresh start).
 
 ### 13.2 Cache Invalidation Safeguard
 

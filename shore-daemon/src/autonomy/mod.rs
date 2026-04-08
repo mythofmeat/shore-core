@@ -1,6 +1,8 @@
 pub mod activity;
+pub mod cache_keepalive;
 pub mod interiority;
 pub mod manager;
+pub mod recap_store;
 
 use std::collections::VecDeque;
 
