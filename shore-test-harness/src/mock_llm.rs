@@ -258,6 +258,7 @@ impl MockLlmServer {
         Mock::given(method("POST"))
             .and(path_regex("/v1/messages"))
             .respond_with(SseResponder(body))
+            .up_to_n_times(1)
             .expect(1)
             .mount(&self.server)
             .await;
@@ -270,6 +271,7 @@ impl MockLlmServer {
                 status,
                 body: body.to_string(),
             })
+            .up_to_n_times(1)
             .expect(1)
             .mount(&self.server)
             .await;
@@ -283,6 +285,7 @@ impl MockLlmServer {
                     .insert_header("content-type", "text/event-stream")
                     .set_delay(std::time::Duration::from_secs(3600)),
             )
+            .up_to_n_times(1)
             .expect(1)
             .mount(&self.server)
             .await;
