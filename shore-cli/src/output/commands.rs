@@ -1312,6 +1312,23 @@ mod tests {
     }
 
     #[test]
+    fn format_k_correctness() {
+        // Regression for SHA 31f20cb: verify correct formatting across boundary.
+        // 0 maps to em-dash (—), not a number.
+        assert_eq!(format_k(0), "\u{2014}");
+        // Numbers < 1000 display without K suffix.
+        assert_eq!(format_k(1), "1");
+        assert_eq!(format_k(500), "500");
+        assert_eq!(format_k(999), "999");
+        // 1000 is the first value that rounds to K.
+        assert_eq!(format_k(1000), "1.0K");
+        // 1500 → "1.5K"
+        assert_eq!(format_k(1500), "1.5K");
+        // 10000 → "10.0K"
+        assert_eq!(format_k(10000), "10.0K");
+    }
+
+    #[test]
     fn density_to_block_ranges() {
         assert_eq!(density_to_block(0.0), '\u{2591}'); // below threshold
         assert_eq!(density_to_block(0.04), '\u{2591}'); // below threshold

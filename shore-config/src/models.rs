@@ -846,6 +846,47 @@ size = "1024x1024"
     }
 
     #[test]
+    fn no_cross_provider_clobbering_same_short_name() {
+        // Regression for SHA 99354fd: two providers with the same short model
+        // name must produce distinct catalog entries, not overwrite each other.
+        let chat = parse_table(
+            r#"
+[anthropic.opus]
+model_id = "claude-opus-4-6"
+
+[openrouter.opus]
+model_id = "anthropic/claude-opus-4-6"
+"#,
+        );
+        let catalog = ModelCatalog::from_sections(Some(&chat), None, None, None).unwrap();
+
+        // Both entries must exist under their qualified names.
+        assert_eq!(catalog.chat.len(), 2);
+        assert!(catalog.chat.contains_key("chat.anthropic.opus"));
+        assert!(catalog.chat.contains_key("chat.openrouter.opus"));
+
+        // Each must carry the correct provider-specific model_id.
+        assert_eq!(catalog.chat["chat.anthropic.opus"].model_id, "claude-opus-4-6");
+        assert_eq!(
+            catalog.chat["chat.openrouter.opus"].model_id,
+            "anthropic/claude-opus-4-6"
+        );
+
+        // Looking up by qualified name returns the correct one.
+        let anthr = catalog.find_model("chat.anthropic.opus").unwrap();
+        assert_eq!(anthr.model_id, "claude-opus-4-6");
+        assert_eq!(anthr.provider_key, "anthropic");
+
+        let orouter = catalog.find_model("chat.openrouter.opus").unwrap();
+        assert_eq!(orouter.model_id, "anthropic/claude-opus-4-6");
+        assert_eq!(orouter.provider_key, "openrouter");
+
+        // Short name "opus" is ambiguous — must not silently return one.
+        let err = catalog.find_model("opus").unwrap_err();
+        assert!(matches!(err, CatalogError::AmbiguousName { .. }));
+    }
+
+    #[test]
     fn first_chat_model() {
         let chat = parse_table(
             r#"
