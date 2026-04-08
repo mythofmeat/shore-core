@@ -726,10 +726,10 @@ mod tests {
         assert!(config.defaults.stream);
         assert!(!config.behavior.autonomy.enabled);
         assert!(config.behavior.autonomy.interiority.enabled);
-        assert_eq!(config.behavior.autonomy.interiority.interval_secs, 3600);
-        assert_eq!(config.behavior.autonomy.interiority.max_idle_ticks, 3);
-        assert_eq!(config.behavior.autonomy.interiority.max_silent_secs, 172800);
-        assert_eq!(config.behavior.autonomy.interiority.min_wake_secs, 3600);
+        assert_eq!(config.behavior.autonomy.interiority.fallback_interiority_interval, ConfigDuration::from_secs(3600));
+        assert_eq!(config.behavior.autonomy.interiority.dormant_after_interiority_turns, 3);
+        assert_eq!(config.behavior.autonomy.interiority.dormant_after_idle_time, ConfigDuration::from_secs(172800));
+        assert_eq!(config.behavior.autonomy.interiority.minimum_interiority_latency, ConfigDuration::from_secs(3600));
         assert_eq!(config.behavior.autonomy.interiority.max_tool_rounds, 12);
         assert!(config.advanced.cache_invalidation_warnings);
         assert!(config.behavior.tool_use.enabled);
@@ -741,7 +741,7 @@ mod tests {
         // Advanced retry fields default to None.
         assert!(config.advanced.editor.is_none());
         assert!(config.advanced.max_retries.is_none());
-        assert!(config.advanced.retry_backoff_seconds.is_none());
+        assert!(config.advanced.retry_backoff.is_none());
     }
 
     #[test]
