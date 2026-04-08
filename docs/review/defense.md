@@ -247,12 +247,10 @@ The reviewer claims CJK text would be under-counted by the chars/4 heuristic, le
 | **P3** | BM25 O(n) scan (no inverted index) | 3.1.4 | `5291a3d` |
 | **P3** | AutonomyManager does too much | 3.3 | `2ad307b` |
 | **P3** | No abort on client disconnect | 3.4 | `fc1a7e6` |
+| **P3** | Race fix re-applied after dev merge | 3.2.2 | `2da0465` |
+| **P3** | handler.rs god file split | 3.1 | `306917e` |
+| **P3** | Tool loop deduplication | 3.2 | `94971a0` |
+| **P3** | X-Request-ID propagation | S1.5 / S2.1.4 | `f3678cf` |
+| **P3** | Broadcast lag disconnection | 4.4 | `83a1f42` |
 
-**Remaining items (deferred):**
-
-| Priority | Issue | Finding | Reason Deferred |
-|----------|-------|---------|-----------------|
-| **P3** | rid parameter unused / tracing gap | S1.5 / S2.1.4 | Requires X-Request-ID plumbing through LlmClient |
-| **P3** | handler.rs god file | 3.1 | Structural refactor |
-| **P3** | Two separate tool-loop implementations | 3.2 | Structural refactor |
-| **P3** | Broadcast channel capacity 256 | 4.4 | Unlikely to cause issues at current scale |
+**Remaining items: None. All findings addressed.**
