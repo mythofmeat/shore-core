@@ -133,10 +133,6 @@ personality = 0.5                # 0.0–1.0; shapes probe frequency
 enabled = true
 max_iterations = 10
 
-[memory]
-rag_results = 5                  # Memory entries injected per prompt
-rag_threshold = 0.3
-
 [memory.compaction]
 enabled = true
 idle_trigger_minutes = 30

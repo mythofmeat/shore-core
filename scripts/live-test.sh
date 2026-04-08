@@ -136,9 +136,6 @@ check_time = true
 roll_dice = true
 activity_heatmap = false
 
-[memory]
-rag_results = 0
-
 [memory.collation]
 enabled = false
 

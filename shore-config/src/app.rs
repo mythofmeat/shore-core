@@ -391,18 +391,6 @@ impl Default for SearchConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct MemoryConfig {
-    /// Number of RAG results to include in prompt context.
-    #[serde(default = "default_rag_results")]
-    pub rag_results: u32,
-
-    /// Minimum relevance score (0.0–1.0) for RAG results.
-    #[serde(default = "default_rag_threshold")]
-    pub rag_threshold: f64,
-
-    /// Whether the image memory subsystem is enabled.
-    #[serde(default = "default_true")]
-    pub image_enabled: bool,
-
     #[serde(default)]
     pub compaction: CompactionConfig,
 
@@ -410,15 +398,9 @@ pub struct MemoryConfig {
     pub collation: CollationConfig,
 }
 
-serde_default!(default_rag_results -> u32 { 5 });
-serde_default!(default_rag_threshold -> f64 { 0.3 });
-
 impl Default for MemoryConfig {
     fn default() -> Self {
         Self {
-            rag_results: default_rag_results(),
-            rag_threshold: default_rag_threshold(),
-            image_enabled: true,
             compaction: CompactionConfig::default(),
             collation: CollationConfig::default(),
         }
@@ -754,7 +736,6 @@ mod tests {
         assert!(config.behavior.tool_use.enabled);
         assert!(config.memory.compaction.enabled);
         assert!(config.memory.collation.enabled);
-        assert!(config.memory.image_enabled);
         // Tool toggles default to true.
         assert!(config.behavior.tool_use.tools.is_enabled("memory"));
         assert!(config.behavior.tool_use.tools.is_enabled("roll_dice"));

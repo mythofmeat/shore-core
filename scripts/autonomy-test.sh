@@ -158,9 +158,6 @@ roll_dice       = true
 activity_heatmap = true
 scratchpad      = true
 
-[memory]
-rag_results = 0
-
 [memory.collation]
 enabled = false
 
