@@ -328,9 +328,12 @@ impl AutonomyManager {
 
         let mut cache_keepalive = CacheKeepalive::new();
         // If the clock has a next_wake set (restored or bootstrapped), mirror
-        // it to the keepalive so it can decide whether to bridge.
+        // it to the keepalive so it can decide whether to bridge, and prime
+        // the ping timer so keepalive pings begin immediately (rather than
+        // waiting for the first user message or interiority tick).
         if let Some(wake) = interiority.next_wake() {
             cache_keepalive.set_next_wake(Some(wake));
+            cache_keepalive.on_cache_warmed(Instant::now());
         }
 
         let state = Arc::new(Mutex::new(AutonomyState {
@@ -467,6 +470,9 @@ impl AutonomyManager {
             // Invalidate the cached request — it contains the pre-compaction
             // conversation. The next interiority tick will rebuild from disk.
             s.last_request = None;
+            // Stop keepalive pings — the cached prompt prefix is stale.
+            // on_cache_warmed() will re-enable pings on the next real LLM call.
+            s.cache_keepalive.on_cache_invalidated();
             // Keep compaction_triggered = true until engine reload acknowledges it.
             s.mark_dirty();
             info!(
@@ -755,12 +761,20 @@ async fn tick_character(character: &str, ctx: &TickContext) {
 
     // -- cache keepalive ping (async, outside lock) -------------------------
     if keepalive_action == CacheKeepaliveAction::Ping {
-        execute_dormant_ping(character, &ctx.state, ctx.llm_client.as_ref()).await;
-        // The ping itself warms the cache — update the keepalive deadline.
+        let pinged = execute_dormant_ping(character, &ctx.state, ctx.llm_client.as_ref()).await;
         let mut s = lock_state(&ctx.state);
-        s.cache_keepalive.on_cache_warmed(Instant::now());
-        s.interiority_log
-            .push(InteriorityEventKind::DormantPing, "Cache keepalive ping");
+        if pinged {
+            // Ping actually sent and succeeded — confirm to the keepalive so
+            // it schedules the next ping 59 minutes from now.
+            s.cache_keepalive.on_cache_warmed(Instant::now());
+            s.interiority_log
+                .push(InteriorityEventKind::DormantPing, "Cache keepalive ping");
+        } else {
+            // Ping was skipped (no cached request) or failed. next_ping_at is
+            // still in the past, so tick() will return Ping again on the next
+            // iteration — effectively retrying every 30s until it succeeds.
+            s.cache_keepalive.on_ping_failed();
+        }
     }
 
     // -- final persist (in case async actions dirtied state) ---------------
@@ -978,7 +992,15 @@ async fn execute_unified_tick(
                 drop(s);
                 let Some(config) = loaded_config else { return };
                 match rebuild_request_from_disk(character, data_dir, config) {
-                    Some(req) => req,
+                    Some(req) => {
+                        // Persist the rebuilt request so keepalive pings can
+                        // use it — without this, pings silently no-op after
+                        // every daemon restart until the next user message.
+                        let mut s = lock_state(state);
+                        s.last_request = Some(req.clone());
+                        drop(s);
+                        req
+                    }
                     None => {
                         info!(
                             character,
@@ -1424,12 +1446,15 @@ fn extract_recap(content: &str) -> Option<String> {
 
 /// Send a minimal API call (max_tokens=1) to keep the prompt cache warm
 /// while the character is dormant (no user activity).
+///
+/// Returns `true` if the ping was actually sent and succeeded, `false` if
+/// it was skipped (no cached request) or the API call failed.
 async fn execute_dormant_ping(
     character: &str,
     state: &Arc<Mutex<AutonomyState>>,
     llm_client: Option<&LedgerClient>,
-) {
-    let Some(client) = llm_client else { return };
+) -> bool {
+    let Some(client) = llm_client else { return false };
 
     let request = {
         let s = lock_state(state);
@@ -1441,7 +1466,7 @@ async fn execute_dormant_ping(
             }
             None => {
                 debug!(character, "Dormant ping: no cached request, skipping");
-                return;
+                return false;
             }
         }
     };
@@ -1463,9 +1488,11 @@ async fn execute_dormant_ping(
                 ),
             );
             s.mark_dirty();
+            true
         }
         Err(e) => {
             error!(character, error = %e, "Dormant ping failed");
+            false
         }
     }
 }
@@ -1815,6 +1842,144 @@ mod tests {
         assert_eq!(
             extract_send_message(content),
             Some("Hey <b>bold</b> text".into())
+        );
+    }
+
+    // -- keepalive integration tests ------------------------------------------
+    // These test the seam between tick_character, execute_dormant_ping, and
+    // on_cache_warmed — the exact boundary where the phantom ping bug lived.
+
+    /// Helper: build a TickContext with no LLM client (pings always fail).
+    fn tick_ctx_no_llm(
+        state: Arc<Mutex<AutonomyState>>,
+        data_dir: &Path,
+    ) -> (TickContext, mpsc::Receiver<String>) {
+        let (compaction_tx, compaction_rx) = mpsc::channel(16);
+        let ctx = TickContext {
+            state,
+            config: Arc::new(test_config()),
+            compaction: Arc::new(Default::default()),
+            data_dir: data_dir.to_path_buf(),
+            compaction_tx,
+            llm_client: None,
+            loaded_config: None,
+            notifier: None,
+            registry: None,
+        };
+        (ctx, compaction_rx)
+    }
+
+    #[tokio::test]
+    async fn failed_ping_does_not_advance_timer() {
+        // The phantom ping bug: execute_dormant_ping returns early (no
+        // LLM client / no last_request), but on_cache_warmed was called
+        // unconditionally, resetting the timer for another 59 minutes.
+        // After the fix, the timer must stay in the past so the next
+        // tick retries.
+        let tmp = tempfile::tempdir().unwrap();
+        let now = Instant::now();
+
+        let mut ka = CacheKeepalive::new();
+        // Simulate: cache was warmed 59+ minutes ago, wake is set.
+        ka.on_cache_warmed(now - Duration::from_secs(60 * 60));
+        ka.set_next_wake(Some(now + Duration::from_secs(3600)));
+
+        // Precondition: keepalive is due right now.
+        assert_eq!(ka.tick(now), CacheKeepaliveAction::Ping);
+        // Reset — tick() didn't advance, so re-prime for the actual test.
+        ka.on_cache_warmed(now - Duration::from_secs(60 * 60));
+
+        let state = Arc::new(Mutex::new(AutonomyState {
+            interiority: InteriorityClock::with_config(&Default::default()),
+            cache_keepalive: ka,
+            activity: ActivityTracker::new(),
+            interiority_log: InteriorityLog::new(),
+            paused: false,
+            dirty: false,
+            last_compaction_activity: now,
+            compaction_triggered: false,
+            active_turn_count: 0,
+            needs_engine_reload: false,
+            last_request: None, // <-- no request → ping will be skipped
+        }));
+
+        let (ctx, _rx) = tick_ctx_no_llm(state.clone(), tmp.path());
+        tick_character("test", &ctx).await;
+
+        // After the tick: the keepalive should STILL return Ping on the
+        // next iteration because the failed ping did not advance the timer.
+        let mut s = lock_state(&state);
+        let action = s.cache_keepalive.tick(Instant::now());
+        assert_eq!(
+            action,
+            CacheKeepaliveAction::Ping,
+            "Failed ping must NOT advance the keepalive timer"
+        );
+    }
+
+    #[tokio::test]
+    async fn successful_ping_advances_timer() {
+        // Counterpart: after on_cache_warmed is called (simulating a
+        // successful ping), the next tick should NOT return Ping until
+        // 59 minutes later.
+        let now = Instant::now();
+        let mut ka = CacheKeepalive::new();
+        ka.on_cache_warmed(now - Duration::from_secs(60 * 60));
+        ka.set_next_wake(Some(now + Duration::from_secs(3600)));
+
+        // Ping is due.
+        assert_eq!(ka.tick(now), CacheKeepaliveAction::Ping);
+        // Caller confirms success.
+        ka.on_cache_warmed(now);
+
+        // Immediately after: should NOT be due (59 min away).
+        assert_eq!(ka.tick(now + Duration::from_secs(30)), CacheKeepaliveAction::None);
+        // 59 minutes later: should fire again.
+        assert_eq!(
+            ka.tick(now + Duration::from_secs(59 * 60)),
+            CacheKeepaliveAction::Ping
+        );
+    }
+
+    #[test]
+    fn startup_with_restored_wake_primes_keepalive() {
+        // After daemon restart, if the interiority clock had a next_wake
+        // restored from persistence, the keepalive timer must be primed
+        // so pings start immediately — not wait for the first user message.
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path();
+        std::fs::create_dir_all(data_dir.join("alice")).unwrap();
+
+        // Save persisted state with a next_wake_at in the future.
+        let wake_time = (chrono::Utc::now() + chrono::Duration::hours(2)).to_rfc3339();
+        let persisted = PersistedState {
+            version: STATE_VERSION,
+            ticks_without_user: 1,
+            next_wake_at: Some(wake_time),
+            last_user_at: Some(chrono::Utc::now().to_rfc3339()),
+        };
+        let json = serde_json::to_string_pretty(&persisted).unwrap();
+        std::fs::write(state_path(data_dir, "alice"), json).unwrap();
+
+        let mgr = rt.block_on(async { test_manager(data_dir) });
+        rt.block_on(async {
+            mgr.ensure_state("alice", None);
+        });
+
+        // The keepalive should be primed: after 59 minutes, tick should
+        // return Ping (not None).
+        let state = mgr.states.get("alice").unwrap();
+        let mut s = lock_state(&state);
+        let future = Instant::now() + Duration::from_secs(59 * 60);
+        let action = s.cache_keepalive.tick(future);
+        assert_eq!(
+            action,
+            CacheKeepaliveAction::Ping,
+            "Keepalive must be primed on startup when next_wake is restored"
         );
     }
 }

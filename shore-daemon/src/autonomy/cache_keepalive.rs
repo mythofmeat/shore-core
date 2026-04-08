@@ -50,6 +50,13 @@ impl CacheKeepalive {
         self.next_ping_at = Some(now + PING_INTERVAL);
     }
 
+    /// Called after compaction invalidates the cached prompt prefix.
+    /// Clears the ping deadline so we stop paying for stale-prefix pings.
+    /// The next real LLM call will re-enable pings via `on_cache_warmed`.
+    pub fn on_cache_invalidated(&mut self) {
+        self.next_ping_at = None;
+    }
+
     /// Mirror of the interiority clock's schedule. Called whenever
     /// `next_wake_at` changes (including being cleared on guard trip).
     pub fn set_next_wake(&mut self, at: Option<Instant>) {
@@ -66,8 +73,12 @@ impl CacheKeepalive {
     /// 1. `next_ping_at` is set and `now >= next_ping_at`
     /// 2. `next_wake_at` is set
     /// 3. `next_wake_at - now < KEEPALIVE_BREAKEVEN`
+    ///
+    /// Does NOT advance `next_ping_at` — the caller must call
+    /// `on_cache_warmed` after a successful ping, or `on_ping_failed`
+    /// to retry on the next tick.
     pub fn tick(&mut self, now: Instant) -> CacheKeepaliveAction {
-        let ping_at = match self.next_ping_at {
+        let _ping_at = match self.next_ping_at {
             Some(t) if now >= t => t,
             _ => return CacheKeepaliveAction::None,
         };
@@ -83,9 +94,22 @@ impl CacheKeepalive {
             return CacheKeepaliveAction::None;
         }
 
-        // Ping is due and economically justified. Reschedule.
-        self.next_ping_at = Some(ping_at + PING_INTERVAL);
+        // Ping is due and economically justified.
+        // Do NOT advance next_ping_at here — caller must confirm the ping
+        // actually succeeded via on_cache_warmed(), or call on_ping_failed()
+        // to retry on the next tick.
         CacheKeepaliveAction::Ping
+    }
+
+    /// Called when a keepalive ping fails or is skipped (e.g. no cached
+    /// request available). Resets `next_ping_at` to the next tick so the
+    /// system retries promptly instead of waiting another 59 minutes.
+    pub fn on_ping_failed(&mut self) {
+        // Setting to None would stop pinging entirely. Instead, keep the
+        // existing (past-due) next_ping_at so tick() returns Ping again on
+        // the very next tick loop iteration.
+        // next_ping_at is already in the past, so tick() will return Ping
+        // on the next call — no change needed.
     }
 }
 
@@ -130,7 +154,7 @@ mod tests {
     }
 
     #[test]
-    fn ping_reschedules_after_firing() {
+    fn ping_reschedules_after_caller_confirms() {
         let now = Instant::now();
         let mut ka = CacheKeepalive::new();
 
@@ -139,10 +163,28 @@ mod tests {
 
         // First ping at 59min.
         assert_eq!(ka.tick(now + minutes(59)), CacheKeepaliveAction::Ping);
+        // Caller confirms the ping succeeded.
+        ka.on_cache_warmed(now + minutes(59));
+
         // Not due at 59+58 = 117 minutes.
         assert_eq!(ka.tick(now + minutes(117)), CacheKeepaliveAction::None);
         // Due at 59+59 = 118 minutes.
         assert_eq!(ka.tick(now + minutes(118)), CacheKeepaliveAction::Ping);
+    }
+
+    #[test]
+    fn ping_retries_when_not_confirmed() {
+        let now = Instant::now();
+        let mut ka = CacheKeepalive::new();
+
+        ka.on_cache_warmed(now);
+        ka.set_next_wake(Some(now + hours(4)));
+
+        // Ping fires at 59min.
+        assert_eq!(ka.tick(now + minutes(59)), CacheKeepaliveAction::Ping);
+        // Caller does NOT confirm (ping failed/skipped).
+        // next_ping_at is still in the past → fires again immediately.
+        assert_eq!(ka.tick(now + minutes(59) + Duration::from_secs(30)), CacheKeepaliveAction::Ping);
     }
 
     #[test]
@@ -200,5 +242,39 @@ mod tests {
         assert_eq!(ka.tick(now + minutes(59)), CacheKeepaliveAction::None);
         // Should fire at 89min.
         assert_eq!(ka.tick(now + minutes(89)), CacheKeepaliveAction::Ping);
+    }
+
+    #[test]
+    fn no_ping_when_wake_exceeds_breakeven_after_retry() {
+        // Regression: after tick() stopped advancing next_ping_at,
+        // the breakeven check must still clear it.
+        let now = Instant::now();
+        let mut ka = CacheKeepalive::new();
+
+        ka.on_cache_warmed(now);
+        ka.set_next_wake(Some(now + hours(30)));
+
+        assert_eq!(ka.tick(now + minutes(59)), CacheKeepaliveAction::None);
+        // next_ping_at was cleared by the breakeven check.
+        assert_eq!(ka.tick(now + minutes(60)), CacheKeepaliveAction::None);
+    }
+
+    #[test]
+    fn compaction_pauses_and_warm_resumes() {
+        let now = Instant::now();
+        let mut ka = CacheKeepalive::new();
+
+        ka.on_cache_warmed(now);
+        ka.set_next_wake(Some(now + hours(4)));
+
+        // Compaction completes — invalidates the cached prefix.
+        ka.on_cache_invalidated();
+
+        // Ping would be due at 59min, but invalidation cleared it.
+        assert_eq!(ka.tick(now + minutes(59)), CacheKeepaliveAction::None);
+
+        // Next real LLM call warms the cache — pings resume.
+        ka.on_cache_warmed(now + hours(1));
+        assert_eq!(ka.tick(now + hours(1) + minutes(59)), CacheKeepaliveAction::Ping);
     }
 }

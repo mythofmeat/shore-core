@@ -682,7 +682,7 @@ async fn handle_generation(
     .await?;
 
     // Build cache context for tool loop.
-    let tool_cache_warnings = resolved.provider_key == "anthropic"
+    let tool_cache_warnings = matches!(resolved.sdk, Sdk::Anthropic)
         && effective_config.app.advanced.cache_invalidation_warnings;
     let cache_ctx = CacheContext {
         conversation_turn_count: engine_arc.lock().await.messages().len(),

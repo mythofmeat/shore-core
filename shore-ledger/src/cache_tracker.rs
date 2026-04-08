@@ -13,6 +13,9 @@ pub enum CacheState {
 pub enum Anomaly {
     UnexpectedRead,
     UnexpectedWrite,
+    /// The cache was Warm, TTL expired (→ Cold), and the next call was NOT a
+    /// keepalive — meaning the keepalive system failed to bridge the gap.
+    KeepaliveMiss,
 }
 
 #[derive(Debug, Clone)]
@@ -38,6 +41,11 @@ pub struct CacheTracker {
     last_thinking: Option<bool>,
     last_cache_read: u32,
     ttl_secs: u64,
+    /// True when the cache was Warm and just transitioned to Cold via TTL
+    /// expiry. The next non-keepalive call in this state triggers a
+    /// `KeepaliveMiss` anomaly — the keepalive system should have prevented
+    /// the cold start.
+    ttl_expired_since_warm: bool,
 }
 
 impl CacheTracker {
@@ -49,6 +57,7 @@ impl CacheTracker {
             last_thinking: None,
             last_cache_read: 0,
             ttl_secs: 3600,
+            ttl_expired_since_warm: false,
         }
     }
 
@@ -96,6 +105,7 @@ impl CacheTracker {
             last_thinking: Some(last_thinking),
             last_cache_read,
             ttl_secs,
+            ttl_expired_since_warm: false,
         }
     }
 
@@ -104,10 +114,11 @@ impl CacheTracker {
             .map(|dt| dt.with_timezone(&Utc))
             .ok();
 
-        // 1. Compaction always transitions to Cold
+        // 1. Compaction always transitions to Cold (deliberate, not a keepalive failure)
         if obs.call_type == "compaction" {
             self.state = CacheState::Cold;
             self.last_cache_read = 0;
+            self.ttl_expired_since_warm = false;
             self.update_metadata(obs_ts, &obs.model, obs.thinking_enabled);
             return ObservationResult {
                 state: self.state,
@@ -122,32 +133,35 @@ impl CacheTracker {
                 if elapsed.num_seconds() > self.ttl_secs as i64 {
                     self.state = CacheState::Cold;
                     self.last_cache_read = 0;
+                    self.ttl_expired_since_warm = true;
                 }
             }
         }
 
-        // 3. Model change: Warm → Cold
+        // 3. Model change: Warm → Cold (deliberate, not a keepalive failure)
         if self.state == CacheState::Warm {
             if let Some(ref last_model) = self.last_model {
                 if *last_model != obs.model {
                     self.state = CacheState::Cold;
                     self.last_cache_read = 0;
+                    self.ttl_expired_since_warm = false;
                 }
             }
         }
 
-        // 4. Thinking toggle: Warm → Cold
+        // 4. Thinking toggle: Warm → Cold (deliberate, not a keepalive failure)
         if self.state == CacheState::Warm {
             if let Some(last_thinking) = self.last_thinking {
                 if last_thinking != obs.thinking_enabled {
                     self.state = CacheState::Cold;
                     self.last_cache_read = 0;
+                    self.ttl_expired_since_warm = false;
                 }
             }
         }
 
         // 5. Evaluate against expected behavior
-        let anomaly = match self.state {
+        let mut anomaly = match self.state {
             CacheState::Warm => {
                 if obs.cache_read_tokens >= self.last_cache_read {
                     None // OK, stay Warm
@@ -166,6 +180,22 @@ impl CacheTracker {
                 }
             }
         };
+
+        // 5b. Keepalive miss detection: cache expired from Warm → Cold and the
+        // next call is NOT a keepalive. This means the keepalive system failed
+        // to bridge the gap — a cold start that should have been prevented.
+        if self.ttl_expired_since_warm {
+            if obs.call_type == "keepalive" {
+                // Keepalive arrived (possibly late, but it tried). Not an anomaly.
+                self.ttl_expired_since_warm = false;
+            } else {
+                // A non-keepalive call is the first after TTL expiry → keepalive missed.
+                if anomaly.is_none() {
+                    anomaly = Some(Anomaly::KeepaliveMiss);
+                }
+                self.ttl_expired_since_warm = false;
+            }
+        }
 
         // 6. Update internal state
         self.last_cache_read = obs.cache_read_tokens;
@@ -362,7 +392,7 @@ mod tests {
     }
 
     #[test]
-    fn ttl_expiry_transitions_to_cold() {
+    fn ttl_expiry_transitions_to_cold_with_keepalive_miss() {
         let mut tracker = CacheTracker::with_ttl_secs(60);
         tracker.observe(&Observation {
             ts: "2026-04-05T12:00:00Z".into(),
@@ -372,7 +402,7 @@ mod tests {
             cache_write_tokens: 500,
             call_type: "message".into(),
         });
-        // 2 minutes later → TTL expired
+        // 2 minutes later → TTL expired, non-keepalive call → keepalive miss
         let result = tracker.observe(&Observation {
             ts: "2026-04-05T12:02:00Z".into(),
             model: "claude-opus-4-6".into(),
@@ -382,7 +412,7 @@ mod tests {
             call_type: "message".into(),
         });
         assert_eq!(tracker.state(), CacheState::Warm); // cold → write → warm
-        assert!(result.anomaly.is_none());
+        assert_eq!(result.anomaly, Some(Anomaly::KeepaliveMiss));
     }
 
     #[test]
@@ -426,5 +456,106 @@ mod tests {
             3600,
         );
         assert_eq!(tracker.state(), CacheState::Cold);
+    }
+
+    // -- keepalive miss detection -------------------------------------------
+
+    #[test]
+    fn keepalive_miss_when_ttl_expires_and_next_call_is_not_keepalive() {
+        let mut tracker = CacheTracker::with_ttl_secs(60);
+        // Warm up.
+        tracker.observe(&Observation {
+            ts: "2026-04-05T12:00:00Z".into(),
+            model: "claude-opus-4-6".into(),
+            thinking_enabled: true,
+            cache_read_tokens: 0,
+            cache_write_tokens: 500,
+            call_type: "message".into(),
+        });
+        assert_eq!(tracker.state(), CacheState::Warm);
+
+        // 2 minutes later — TTL expired. Next call is interiority, not keepalive.
+        let result = tracker.observe(&Observation {
+            ts: "2026-04-05T12:02:00Z".into(),
+            model: "claude-opus-4-6".into(),
+            thinking_enabled: true,
+            cache_read_tokens: 0,
+            cache_write_tokens: 500,
+            call_type: "interiority".into(),
+        });
+        assert_eq!(result.anomaly, Some(Anomaly::KeepaliveMiss));
+    }
+
+    #[test]
+    fn no_keepalive_miss_when_keepalive_arrives_after_ttl() {
+        let mut tracker = CacheTracker::with_ttl_secs(60);
+        tracker.observe(&Observation {
+            ts: "2026-04-05T12:00:00Z".into(),
+            model: "claude-opus-4-6".into(),
+            thinking_enabled: true,
+            cache_read_tokens: 0,
+            cache_write_tokens: 500,
+            call_type: "message".into(),
+        });
+
+        // TTL expired, but next call IS a keepalive — system is working.
+        let result = tracker.observe(&Observation {
+            ts: "2026-04-05T12:02:00Z".into(),
+            model: "claude-opus-4-6".into(),
+            thinking_enabled: true,
+            cache_read_tokens: 0,
+            cache_write_tokens: 500,
+            call_type: "keepalive".into(),
+        });
+        assert!(result.anomaly.is_none());
+    }
+
+    #[test]
+    fn no_keepalive_miss_on_compaction_cold() {
+        let mut tracker = CacheTracker::with_ttl_secs(60);
+        tracker.observe(&Observation {
+            ts: "2026-04-05T12:00:00Z".into(),
+            model: "claude-opus-4-6".into(),
+            thinking_enabled: true,
+            cache_read_tokens: 0,
+            cache_write_tokens: 500,
+            call_type: "message".into(),
+        });
+
+        // Compaction deliberately clears the cache — not a keepalive failure.
+        tracker.observe(&Observation {
+            ts: "2026-04-05T12:00:30Z".into(),
+            model: "claude-opus-4-6".into(),
+            thinking_enabled: true,
+            cache_read_tokens: 0,
+            cache_write_tokens: 300,
+            call_type: "compaction".into(),
+        });
+
+        // Next call after compaction should not flag keepalive miss.
+        let result = tracker.observe(&Observation {
+            ts: "2026-04-05T12:02:00Z".into(),
+            model: "claude-opus-4-6".into(),
+            thinking_enabled: true,
+            cache_read_tokens: 0,
+            cache_write_tokens: 500,
+            call_type: "interiority".into(),
+        });
+        assert!(result.anomaly.is_none());
+    }
+
+    #[test]
+    fn no_keepalive_miss_when_cold_from_start() {
+        // Tracker starts Cold — TTL never expired from Warm. No miss.
+        let mut tracker = CacheTracker::with_ttl_secs(60);
+        let result = tracker.observe(&Observation {
+            ts: "2026-04-05T12:00:00Z".into(),
+            model: "claude-opus-4-6".into(),
+            thinking_enabled: true,
+            cache_read_tokens: 0,
+            cache_write_tokens: 500,
+            call_type: "interiority".into(),
+        });
+        assert!(result.anomaly.is_none());
     }
 }
