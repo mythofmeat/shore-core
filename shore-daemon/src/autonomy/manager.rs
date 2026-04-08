@@ -1160,17 +1160,9 @@ async fn execute_unified_tick(
                 }
                 (format!("Scheduled next moment in {clamped:.1} hours."), false)
             } else {
-                match tool_system::dispatch_tool(name, input.clone(), &tool_ctx).await {
-                    Ok(value) => {
-                        let s = if let Some(s) = value.as_str() {
-                            s.to_string()
-                        } else {
-                            serde_json::to_string(&value).unwrap_or_default()
-                        };
-                        (s, false)
-                    }
-                    Err(e) => (e.to_string(), true),
-                }
+                crate::content_util::dispatch_result_to_output(
+                    tool_system::dispatch_tool(name, input.clone(), &tool_ctx).await,
+                )
             };
 
             info!(
@@ -1181,15 +1173,9 @@ async fn execute_unified_tick(
                 "Interiority: tool result"
             );
 
-            let mut result = json!({
-                "type": "tool_result",
-                "tool_use_id": id,
-                "content": output_str,
-            });
-            if is_error {
-                result["is_error"] = json!(true);
-            }
-            tool_results.push(result);
+            tool_results.push(crate::content_util::build_tool_result_json(
+                id, &output_str, is_error,
+            ));
 
             // Log to ring buffer (skip set_next_wake — already logged above).
             if name.as_str() != "set_next_wake" {

@@ -152,18 +152,8 @@ pub async fn run_tool_loop(
                 tool_system::dispatch_tool(&tool_use.name, tool_use.input.clone(), ctx).await;
             let dispatch_ms = dispatch_start.elapsed().as_millis() as u64;
 
-            let (output_str, is_error) = match dispatch_result {
-                Ok(value) => {
-                    // Convert Value to string for the tool result
-                    let s = if let Some(s) = value.as_str() {
-                        s.to_string()
-                    } else {
-                        serde_json::to_string(&value).unwrap_or_default()
-                    };
-                    (s, false)
-                }
-                Err(e) => (e.to_string(), true),
-            };
+            let (output_str, is_error) =
+                crate::content_util::dispatch_result_to_output(dispatch_result);
 
             // Record tool call in diagnostics ring buffer.
             {
@@ -203,15 +193,11 @@ pub async fn run_tool_loop(
             });
 
             // JSON for LLM payload.
-            let mut result_block = json!({
-                "type": "tool_result",
-                "tool_use_id": tool_use.id,
-                "content": output_str,
-            });
-            if is_error {
-                result_block["is_error"] = json!(true);
-            }
-            tool_results.push(result_block);
+            tool_results.push(crate::content_util::build_tool_result_json(
+                &tool_use.id,
+                &output_str,
+                is_error,
+            ));
         }
 
         // Append tool results as user message to LLM payload.
