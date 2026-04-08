@@ -242,30 +242,7 @@ impl MessageHandler {
                     debug!(character = ?character, kind = msg_kind, "handling engine message");
                     // Handle cancellation: abort the active generation task.
                     if matches!(msg, ClientMessage::Cancel(_)) {
-                        if let Some(handle) = self.generation_handle.take() {
-                            info!("Cancelling active generation");
-                            handle.abort();
-                            // Send a minimal StreamEnd so clients know to reset
-                            let _ = self.push_tx.send(ServerMessage::StreamEnd(
-                                shore_protocol::server_msg::StreamEnd {
-                                    content: String::new(),
-                                    metadata: shore_protocol::types::StreamMetadata {
-                                        tokens: shore_protocol::types::TokenCounts {
-                                            input: 0,
-                                            output: 0,
-                                            cache_read: 0,
-                                            cache_write: 0,
-                                        },
-                                        timing: shore_protocol::types::TimingInfo {
-                                            total_ms: 0,
-                                            ttft_ms: 0,
-                                        },
-                                        model: String::new(),
-                                    },
-                                    finish_reason: "cancelled".into(),
-                                },
-                            ));
-                        }
+                        self.cancel_generation("user cancelled");
                         continue;
                     }
 
@@ -340,9 +317,39 @@ impl MessageHandler {
                         }
                     }));
                 }
+                RoutedMessage::AllClientsDisconnected => {
+                    self.cancel_generation("all clients disconnected");
+                }
             }
         }
         info!("Message handler shutting down (route channel closed)");
+    }
+
+    /// Cancel any active generation task and send a minimal StreamEnd.
+    fn cancel_generation(&mut self, reason: &str) {
+        if let Some(handle) = self.generation_handle.take() {
+            info!(reason, "Cancelling active generation");
+            handle.abort();
+            let _ = self.push_tx.send(ServerMessage::StreamEnd(
+                shore_protocol::server_msg::StreamEnd {
+                    content: String::new(),
+                    metadata: shore_protocol::types::StreamMetadata {
+                        tokens: shore_protocol::types::TokenCounts {
+                            input: 0,
+                            output: 0,
+                            cache_read: 0,
+                            cache_write: 0,
+                        },
+                        timing: shore_protocol::types::TimingInfo {
+                            total_ms: 0,
+                            ttft_ms: 0,
+                        },
+                        model: String::new(),
+                    },
+                    finish_reason: "cancelled".into(),
+                },
+            ));
+        }
     }
 
     /// Build a GenContext from the current handler state.

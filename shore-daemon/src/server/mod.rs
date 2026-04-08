@@ -42,6 +42,8 @@ pub enum RoutedMessage {
         cmd: Command,
         character: Option<String>,
     },
+    /// All clients have disconnected — handler should cancel in-flight generation.
+    AllClientsDisconnected,
 }
 
 /// Configuration for the server.
@@ -316,6 +318,10 @@ where
     // Unregister client on disconnect.
     ctx.clients.write().await.remove(&client_id);
     info!(client_id, "Client disconnected");
+
+    if ctx.clients.read().await.is_empty() {
+        let _ = ctx.route_tx.send(RoutedMessage::AllClientsDisconnected).await;
+    }
 
     result
 }
