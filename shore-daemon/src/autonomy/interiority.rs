@@ -69,6 +69,10 @@ pub struct InteriorityClock {
 
     /// Max wall-clock duration without user before the guard stops ticking.
     max_silent_duration: Duration,
+
+    /// Minimum interval between a user message and the next tick.
+    /// Prevents ticks from firing during active conversation.
+    min_wake_interval: Duration,
 }
 
 impl InteriorityClock {
@@ -81,6 +85,7 @@ impl InteriorityClock {
             default_interval: Duration::from_secs(config.interval_secs),
             max_idle_ticks: config.max_idle_ticks,
             max_silent_duration: Duration::from_secs(config.max_silent_secs),
+            min_wake_interval: Duration::from_secs(config.min_wake_secs),
         }
     }
 
@@ -210,7 +215,7 @@ impl InteriorityClock {
     /// Semantics:
     /// 1. Reset `ticks_without_user = 0`.
     /// 2. Set `last_user_at = Some(now)`.
-    /// 3. `next_wake_at = max(next_wake_at, Some(now + MIN_WAKE_INTERVAL))`.
+    /// 3. `next_wake_at = max(next_wake_at, Some(now + min_wake_interval))`.
     ///    If `next_wake_at` was None (first message, or abandoned), this
     ///    bootstraps the cycle. If the character had scheduled further out,
     ///    the schedule is preserved.
@@ -218,7 +223,7 @@ impl InteriorityClock {
         self.ticks_without_user = 0;
         self.last_user_at = Some(now);
 
-        let min_wake = now + MIN_WAKE_INTERVAL;
+        let min_wake = now + self.min_wake_interval;
         self.next_wake_at = Some(match self.next_wake_at {
             Some(existing) if existing > min_wake => existing,
             _ => min_wake,
@@ -268,6 +273,7 @@ mod tests {
             interval_secs,
             max_idle_ticks: max_idle,
             max_silent_secs: 172800, // 48h
+            min_wake_secs: 3600,     // 1h (matches MIN_WAKE_INTERVAL)
             max_tool_rounds: 3,
         };
         InteriorityClock::with_config(&config)

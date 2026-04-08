@@ -154,6 +154,11 @@ pub struct InteriorityConfig {
     #[serde(default = "default_max_silent_secs")]
     pub max_silent_secs: u64,
 
+    /// Minimum seconds between a user message and the next interiority tick.
+    /// Prevents ticks from firing during active conversation. Default: 3600 (1h).
+    #[serde(default = "default_min_wake_secs")]
+    pub min_wake_secs: u64,
+
     /// Maximum tool-use rounds per interiority tick.
     #[serde(default = "default_max_tool_rounds")]
     pub max_tool_rounds: u32,
@@ -162,6 +167,7 @@ pub struct InteriorityConfig {
 serde_default!(default_interiority_interval -> u64 { 3600 });
 serde_default!(default_max_idle_ticks -> u32 { 3 });
 serde_default!(default_max_silent_secs -> u64 { 172800 }); // 48 hours
+serde_default!(default_min_wake_secs -> u64 { 3600 });     // 1 hour
 serde_default!(default_max_tool_rounds -> u32 { 12 });
 
 impl Default for InteriorityConfig {
@@ -171,6 +177,7 @@ impl Default for InteriorityConfig {
             interval_secs: default_interiority_interval(),
             max_idle_ticks: default_max_idle_ticks(),
             max_silent_secs: default_max_silent_secs(),
+            min_wake_secs: default_min_wake_secs(),
             max_tool_rounds: default_max_tool_rounds(),
         }
     }
@@ -741,6 +748,7 @@ mod tests {
         assert_eq!(config.behavior.autonomy.interiority.interval_secs, 3600);
         assert_eq!(config.behavior.autonomy.interiority.max_idle_ticks, 3);
         assert_eq!(config.behavior.autonomy.interiority.max_silent_secs, 172800);
+        assert_eq!(config.behavior.autonomy.interiority.min_wake_secs, 3600);
         assert_eq!(config.behavior.autonomy.interiority.max_tool_rounds, 12);
         assert!(config.advanced.cache_invalidation_warnings);
         assert!(config.behavior.tool_use.enabled);
