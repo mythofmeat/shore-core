@@ -1112,7 +1112,7 @@ async fn persist_and_notify(
 
         // Track cumulative token usage.
         {
-            let mut tokens = ctx.session_tokens.lock().unwrap();
+            let mut tokens = ctx.session_tokens.lock().unwrap_or_else(|e| e.into_inner());
             tokens.input += result.usage.input_tokens;
             tokens.output += result.usage.output_tokens;
             tokens.cache_read += result.usage.cache_read_tokens;
@@ -1134,7 +1134,7 @@ async fn persist_and_notify(
                 finish_reason: result.finish_reason.clone(),
                 error: None,
             };
-            ctx.diagnostics.lock().unwrap().api_calls.push(entry);
+            ctx.diagnostics.lock().unwrap_or_else(|e| e.into_inner()).api_calls.push(entry);
         }
 
         info!(

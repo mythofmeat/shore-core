@@ -177,7 +177,7 @@ pub async fn run_tool_loop(
                     input_summary: diagnostics::truncate_summary(&input_str, 200),
                     output_summary: diagnostics::truncate_summary(&output_str, 200),
                 };
-                diag.lock().unwrap().tool_calls.push(entry);
+                diag.lock().unwrap_or_else(|e| e.into_inner()).tool_calls.push(entry);
             }
 
             // Push ToolResult event to SWP clients.
