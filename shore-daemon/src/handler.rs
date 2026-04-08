@@ -562,7 +562,6 @@ async fn handle_generation(
         &char_name,
         cache_ttl_secs,
         Some(&effective_config),
-        Some(engine_arc.clone()),
     );
 
     // Backfill activity tracker from existing chat history on first creation.
@@ -643,6 +642,7 @@ async fn handle_generation(
         check_time_enabled: tool_toggles.check_time(),
     };
 
+    let recap_path = character_data_dir.join("recaps.jsonl");
     let prompt_result = prompt::assemble_prompt(&PromptParams {
         config_dir: &effective_config.dirs.config,
         character_name: &char_name,
@@ -655,6 +655,7 @@ async fn handle_generation(
         max_context_tokens: resolved.max_context_tokens,
         max_output_tokens: resolved.max_tokens,
         capabilities: Some(&capabilities),
+        recap_store_path: Some(&recap_path),
     });
 
     // 7. Build LLM messages from assembled prompt.
@@ -1830,7 +1831,11 @@ mod tests {
     /// Uses a real ConversationEngine, real prompt assembly, and a mock HTTP
     /// server returning canned Anthropic SSE. Verifies that both the user
     /// message and the assistant response are persisted to the engine.
+    ///
+    /// Requires ANTHROPIC_API_KEY in env (LlmClient validates on construction).
+    /// Run with: `cargo test --lib -- --ignored pipeline_user_message`
     #[tokio::test]
+    #[ignore]
     async fn pipeline_user_message_to_persisted_response() {
         let (base_url, _server) =
             mock_sse_server(sse_text_response("Hello from the mock LLM!")).await;

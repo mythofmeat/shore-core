@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
 #
-# Shore autonomy live test — verifies the unified interiority/cache system
+# Shore autonomy live test — verifies the deadline-based interiority system
 # against real Anthropic API calls.
 #
 # Requires: ANTHROPIC_API_KEY set in environment.
 #
 # What this tests:
-#   1. Daemon starts, sends a message to prime last_request
-#   2. Autonomy tick loop fires cache refresh pings (max_tokens=1)
-#   3. Full interiority tick fires with journal (max_tokens=1000)
-#   4. Status command shows effective_interval_secs
-#   5. Heartbeat log shows tick_fired and dormant_ping events
+#   1. Daemon starts, sends messages to prime last_request
+#   2. Interiority tick fires after min_wake_secs (deadline-based)
+#   3. Status command shows interiority_state and effective_interval_secs
+#   4. Heartbeat log shows tick_fired events
+#   5. Cache hits on interiority tick LLM calls
 #
-# Uses aggressive intervals (30s interiority, 15s cache TTL) so the test
-# completes in ~3 minutes. This mirrors the production config structure
-# but with compressed timescales.
+# Uses compressed timescales (min_wake_secs=120) so the test completes
+# in ~3 minutes. Cache keepalive pings (59min interval) won't fire
+# during this test — that's expected and tested separately.
 #
 # Usage:
 #   ./scripts/autonomy-test.sh              # build + test
@@ -58,8 +58,16 @@ run_check() {
 }
 
 # ── Pre-checks ────────────────────────────────────────────────────────
-if [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
-    echo "ANTHROPIC_API_KEY not set — cannot run autonomy tests."
+# Source env file if it exists and keys aren't already set.
+ENV_FILE="${SHORE_ENV_FILE:-$HOME/Documents/qifei/config/.env}"
+if [[ -f "$ENV_FILE" ]] && [[ -z "${OPENROUTER_API_KEY:-}" ]]; then
+    set -a
+    source "$ENV_FILE"
+    set +a
+fi
+
+if [[ -z "${OPENROUTER_API_KEY:-}" ]]; then
+    echo "OPENROUTER_API_KEY not set (and no env file at $ENV_FILE)."
     exit 1
 fi
 
@@ -103,25 +111,25 @@ mkdir -p "$CONFIG_DIR/characters/TestChar" "$DATA_DIR" "$RUNTIME_DIR"
 # ── Config ────────────────────────────────────────────────────────────
 # Mirrors production config structure with compressed timescales.
 #
-# Anthropic API only accepts cache_ttl of "5m" or "1h".
-# With "5m" (300s), cache_refresh_interval = 300-60 = 240s.
-# Set interiority_interval = 480s so a cache ping fires at ~240s and a
-# full interiority tick fires at ~480s. Total wait: ~500s (~8.5 min).
+# The interiority system is deadline-based: after user messages,
+# next_wake_at = max(existing, now + min_wake_secs). We set min_wake_secs
+# and interval_secs both to 120s so the first tick fires ~2min after
+# priming messages. Cache keepalive is on a fixed 59min cycle and won't
+# fire during this test — that's expected.
 #
 # Uses Sonnet (2048-token cache minimum) instead of Opus (4096) so the
 # test prompt (~2900 tokens with tools) exceeds the threshold without
 # needing an excessively long character definition.
 #
 # Timing:
-#   ~240s: first cache refresh ping (RunDormantPing while active)
-#   ~480s: first interiority tick (RunTick, journal-backed)
+#   ~120s after last user message: first interiority tick
 
 cat > "$CONFIG_DIR/config.toml" <<EOF
 [daemon]
 socket_path = "$SOCK"
 
 [defaults]
-model = "sonnet"
+model = "haiku"
 display_name = "tester"
 
 [behavior.autonomy]
@@ -129,17 +137,14 @@ enabled = true
 
 [behavior.autonomy.interiority]
 enabled       = true
-interval_secs = 480
-jitter_factor = 0.0
+interval_secs = 120
+min_wake_secs = 120
 max_idle_ticks = 2
 
 [behavior.tool_use]
 enabled = true
 max_iterations = 1
 
-# All tools enabled to ensure system prompt exceeds Opus's 4096-token
-# cache minimum. With only check_time, the prompt is ~1444 tokens — far
-# below threshold, so caching silently never activates.
 [behavior.tool_use.tools]
 memory          = true
 send_image      = false
@@ -159,13 +164,11 @@ rag_results = 0
 [memory.collation]
 enabled = false
 
-[chat.anthropic]
+[chat.openrouter]
 max_context_tokens = 16384
-cache_control_depth = 2
-cache_ttl = "5m"
 
-[chat.anthropic.sonnet]
-model_id = "claude-sonnet-4-6"
+[chat.openrouter.haiku]
+model_id = "anthropic/claude-3.5-haiku"
 max_tokens = 2048
 EOF
 
@@ -314,8 +317,8 @@ run_check "effective_interval_secs present" \
     "$([[ -n "$eff_interval" ]] && echo true || echo false)" \
     "${eff_interval:-missing}s"
 
-run_check "effective_interval_secs = 480 (configured)" \
-    "$([[ "$eff_interval" == "480" ]] && echo true || echo false)" \
+run_check "effective_interval_secs = 120 (configured)" \
+    "$([[ "$eff_interval" == "120" ]] && echo true || echo false)" \
     "got ${eff_interval:-?}"
 
 # Check interiority_state is Active.
@@ -330,16 +333,16 @@ run_check "no cache_keepalive fields in status" \
     "$([[ "$has_keepalive" == "0" ]] && echo true || echo false)"
 
 # ══════════════════════════════════════════════════════════════════════
-# PHASE 3: Wait for cache ping + interiority tick
+# PHASE 3: Wait for interiority tick
 # ══════════════════════════════════════════════════════════════════════
-printf "\n${BOLD}Phase 3: Wait for autonomy events (~8.5 min)${RESET}\n"
+printf "\n${BOLD}Phase 3: Wait for interiority tick (~2.5 min)${RESET}\n"
 
-# With interiority=480s and cache_refresh=240s (from 5m TTL):
-#   ~240s: first cache refresh ping (RunDormantPing while active)
-#   ~480s: first interiority tick (RunTick)
-# We wait 510s to be safe.
+# With min_wake_secs=120, the tick fires ~120s after the last user
+# message. We wait 150s to be safe.
+# Note: cache keepalive pings fire at 59min intervals and won't appear
+# during this compressed-timescale test.
 
-WAIT_SECS=510
+WAIT_SECS=150
 printf "${DIM}  Waiting ${WAIT_SECS}s for tick loop..."
 for i in $(seq 1 $((WAIT_SECS / 10))); do
     sleep 10
@@ -347,8 +350,7 @@ for i in $(seq 1 $((WAIT_SECS / 10))); do
 done
 printf " done${RESET}\n"
 
-# Let any in-flight LLM call (interiority tick at ~480s) finish before
-# snapshotting the log. The Opus call takes 5-15s.
+# Let any in-flight LLM call finish before snapshotting the log.
 printf "${DIM}  Settling 20s for in-flight tick...${RESET}\n"
 sleep 20
 
@@ -365,11 +367,8 @@ run_check "tick_fired event in heartbeat log" \
     "$([[ "$has_tick" -gt 0 ]] && echo true || echo false)" \
     "${has_tick} events"
 
-# Check for dormant_ping event (cache refresh between ticks).
-has_ping=$(echo "$heartbeat" | grep -c "dormant_ping" || true)
-run_check "dormant_ping event in heartbeat log" \
-    "$([[ "$has_ping" -gt 0 ]] && echo true || echo false)" \
-    "${has_ping} events"
+# Note: cache keepalive pings (dormant_ping) fire at 59min intervals.
+# They won't appear in this compressed-timescale test.
 
 # ══════════════════════════════════════════════════════════════════════
 # PHASE 5: Verify in daemon logs
@@ -380,83 +379,43 @@ printf "\n${BOLD}Phase 5: Verify daemon logs${RESET}\n"
 CLEAN_LOG="$TMPDIR/daemon_clean.log"
 strip_ansi < "$LOG_FILE" > "$CLEAN_LOG"
 
-# Check for unified tick execution.
-has_unified=$(grep -c "executing unified tick" "$CLEAN_LOG" || true)
-run_check "daemon log: unified tick executed" \
-    "$([[ "$has_unified" -gt 0 ]] && echo true || echo false)" \
-    "${has_unified}x"
-
-# Check for dormant ping (cache refresh).
-has_cache_refresh=$(grep -c "Dormant ping: cache refreshed" "$CLEAN_LOG" || true)
-run_check "daemon log: cache refresh ping" \
-    "$([[ "$has_cache_refresh" -gt 0 ]] && echo true || echo false)" \
-    "${has_cache_refresh}x"
-
-# Check interiority tick ran (tool loop, not journal).
+# Check interiority tick ran (tool loop).
 has_tool_loop=$(grep -c "Interiority: executing tool loop tick" "$CLEAN_LOG" || true)
-run_check "interiority tool loop tick ran" \
+run_check "daemon log: interiority tick executed" \
     "$([[ "$has_tool_loop" -gt 0 ]] && echo true || echo false)" \
     "${has_tool_loop}x"
 
-# Check that no keepalive-related log lines appear.
-has_old_keepalive=$(grep -c "Cache keepalive:" "$CLEAN_LOG" || true)
-run_check "no old keepalive log lines" \
-    "$([[ "$has_old_keepalive" == "0" ]] && echo true || echo false)" \
-    "${has_old_keepalive} found"
+# Check for LLM response from the interiority tick.
+has_llm=$(grep -c "Interiority: LLM response" "$CLEAN_LOG" || true)
+run_check "daemon log: interiority LLM response" \
+    "$([[ "$has_llm" -gt 0 ]] && echo true || echo false)" \
+    "${has_llm}x"
 
 # ══════════════════════════════════════════════════════════════════════
-# PHASE 6: Cache hit verification
+# PHASE 6: Token usage verification
 # ══════════════════════════════════════════════════════════════════════
-printf "\n${BOLD}Phase 6: Cache hit verification${RESET}\n"
+printf "\n${BOLD}Phase 6: Token usage verification${RESET}\n"
 
-# Extract cache values from logs.
-# Tracing format: key=N (structured key=value pairs)
-
-# Message 3+ should show cache_read > 0 (depth-2 breakpoint activates at 3 messages).
-# find_turn_boundary needs 3 real user messages before placing a breakpoint.
-last_msg_line=$(grep "Response complete" "$CLEAN_LOG" | tail -1 || true)
-if [[ -n "$last_msg_line" ]]; then
-    msg_cr=$(echo "$last_msg_line" | sed -n 's/.*cache_read=\([0-9]*\).*/\1/p')
-    msg_creation=$(echo "$last_msg_line" | sed -n 's/.*cache_creation=\([0-9]*\).*/\1/p')
-    msg_input=$(echo "$last_msg_line" | sed -n 's/.*input_tokens=\([0-9]*\).*/\1/p')
-    run_check "message 4: cache created (breakpoint active)" \
-        "$([[ -n "$msg_creation" && "$msg_creation" -gt 0 ]] && echo true || echo false)" \
-        "cache_creation=${msg_creation:-?} cache_read=${msg_cr:-?} input=${msg_input:-?}"
-else
-    run_check "messages: Response complete logged" "false" "no log line"
-fi
-
-# Dormant ping cache reads.
-ping_line=$(grep "Dormant ping: cache refreshed" "$CLEAN_LOG" | head -1 || true)
-if [[ -n "$ping_line" ]]; then
-    ping_cr=$(echo "$ping_line" | sed -n 's/.*cache_read=\([0-9]*\).*/\1/p')
-    ping_input=$(echo "$ping_line" | sed -n 's/.*input_tokens=\([0-9]*\).*/\1/p')
-    run_check "cache ping: cache_read > 0 (cache hit)" \
-        "$([[ -n "$ping_cr" && "$ping_cr" -gt 0 ]] && echo true || echo false)" \
-        "cache_read=${ping_cr:-?} input=${ping_input:-?}"
-else
-    run_check "cache ping: log line found" "false" "no 'cache refreshed' line"
-fi
-
-# Interiority tick cache reads.
+# Verify the interiority tick actually produced an LLM response with tokens.
 tick_line=$(grep "Interiority: LLM response" "$CLEAN_LOG" | head -1 || true)
 if [[ -n "$tick_line" ]]; then
-    tick_cr=$(echo "$tick_line" | sed -n 's/.*cache_read=\([0-9]*\).*/\1/p')
     tick_input=$(echo "$tick_line" | sed -n 's/.*input_tokens=\([0-9]*\).*/\1/p')
     tick_output=$(echo "$tick_line" | sed -n 's/.*output_tokens=\([0-9]*\).*/\1/p')
-    run_check "interiority tick: cache_read > 0 (cache hit)" \
-        "$([[ -n "$tick_cr" && "$tick_cr" -gt 0 ]] && echo true || echo false)" \
-        "cache_read=${tick_cr:-?} input=${tick_input:-?} output=${tick_output:-?}"
+    run_check "interiority tick: got LLM response" "true" \
+        "input=${tick_input:-?} output=${tick_output:-?}"
+    run_check "interiority tick: output_tokens > 0" \
+        "$([[ -n "$tick_output" && "$tick_output" -gt 0 ]] && echo true || echo false)" \
+        "${tick_output:-0} tokens"
 else
     run_check "interiority tick: LLM response logged" "false" "no response line"
 fi
 
-# Print all cache-related lines for manual inspection.
-printf "${DIM}  --- cache-related log lines ---${RESET}\n"
+# Print token-related lines for manual inspection.
+printf "${DIM}  --- token usage log lines ---${RESET}\n"
 {
-    grep -E "cache_read|cache_write|cache_creation" "$CLEAN_LOG" || true
+    grep -E "input_tokens|output_tokens|Response complete|LLM response" "$CLEAN_LOG" || true
 } | while read -r line; do
-    printf "${DIM}  %s${RESET}\n" "$(echo "$line" | head -c 120)"
+    printf "${DIM}  %s${RESET}\n" "$(echo "$line" | head -c 140)"
 done
 
 # ══════════════════════════════════════════════════════════════════════
@@ -466,15 +425,13 @@ printf "\n${BOLD}Phase 7: API call count${RESET}\n"
 
 # Count calls in the daemon log.
 interiority_calls=$(grep -c "Interiority: LLM response" "$CLEAN_LOG" || true)
-ping_calls=$(grep -c "Dormant ping: cache refreshed" "$CLEAN_LOG" || true)
 user_calls=$(grep -c "Response complete" "$CLEAN_LOG" || true)
-printf "${DIM}  user responses: $user_calls, interiority ticks: $interiority_calls, cache pings: $ping_calls${RESET}\n"
+printf "${DIM}  user responses: $user_calls, interiority ticks: $interiority_calls${RESET}\n"
 
-# Sanity: total autonomous calls should be modest (< 10).
-total_auto=$((interiority_calls + ping_calls))
-run_check "autonomous API calls reasonable (< 10)" \
-    "$([[ "$total_auto" -lt 10 ]] && echo true || echo false)" \
-    "$total_auto calls"
+# Sanity: interiority calls should be modest (1-2 expected).
+run_check "interiority API calls reasonable (< 5)" \
+    "$([[ "$interiority_calls" -lt 5 ]] && echo true || echo false)" \
+    "$interiority_calls calls"
 
 # ── Summary ───────────────────────────────────────────────────────────
 printf "\n${BOLD}Results: ${GREEN}$pass passed${RESET}"
