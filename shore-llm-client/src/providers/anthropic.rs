@@ -381,11 +381,15 @@ fn build_http_request(
         );
     }
 
-    let builder = client
+    let mut builder = client
         .post(&url)
         .header("anthropic-version", ANTHROPIC_VERSION)
         .header("content-type", "application/json")
         .header("x-api-key", &request.api_key);
+
+    if let Some(ref rid) = request.rid {
+        builder = builder.header("X-Request-ID", rid);
+    }
 
     Ok(builder.json(&body))
 }
@@ -828,6 +832,7 @@ mod tests {
             top_p: None,
             provider_options: None,
             provider_key: None,
+            rid: None,
         }
     }
 

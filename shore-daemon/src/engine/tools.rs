@@ -154,7 +154,6 @@ pub async fn run_tool_loop(
 
             let (output_str, is_error, ok_value) = match dispatch_result {
                 Ok(value) => {
-                    // Convert Value to string for the tool result
                     let s = if let Some(s) = value.as_str() {
                         s.to_string()
                     } else {
@@ -206,7 +205,7 @@ pub async fn run_tool_loop(
                     input_summary: diagnostics::truncate_summary(&input_str, 200),
                     output_summary: diagnostics::truncate_summary(&output_str, 200),
                 };
-                diag.lock().unwrap().tool_calls.push(entry);
+                diag.lock().unwrap_or_else(|e| e.into_inner()).tool_calls.push(entry);
             }
 
             // Push ToolResult event to SWP clients.
@@ -232,15 +231,11 @@ pub async fn run_tool_loop(
             });
 
             // JSON for LLM payload.
-            let mut result_block = json!({
-                "type": "tool_result",
-                "tool_use_id": tool_use.id,
-                "content": output_str,
-            });
-            if is_error {
-                result_block["is_error"] = json!(true);
-            }
-            tool_results.push(result_block);
+            tool_results.push(crate::content_util::build_tool_result_json(
+                &tool_use.id,
+                &output_str,
+                is_error,
+            ));
         }
 
         // Append tool results as user message to LLM payload.
@@ -267,10 +262,19 @@ pub async fn run_tool_loop(
         let mut ledger_stream = client
             .stream_raw(request, CallType::ToolLoop, character, thinking_enabled)
             .await?;
-        result = consumer
+        match consumer
             .consume(ledger_stream.reader_mut(), false, cache_ctx)
-            .await?;
-        ledger_stream.finalize(&result);
+            .await
+        {
+            Ok(r) => {
+                ledger_stream.finalize(&r);
+                result = r;
+            }
+            Err(e) => {
+                ledger_stream.finalize_error();
+                return Err(e.into());
+            }
+        }
     }
 
     warn!(
@@ -386,6 +390,7 @@ mod tests {
             top_p: None,
             provider_options: None,
             provider_key: None,
+            rid: None,
         }
     }
 

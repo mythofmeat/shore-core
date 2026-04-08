@@ -126,6 +126,7 @@ mod tests {
             top_p: None,
             provider_options: None,
             provider_key: provider_key.map(String::from),
+            rid: None,
         }
     }
 

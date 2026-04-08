@@ -207,12 +207,6 @@ impl MessageStore {
     ///
     /// Uses `serialize_for_storage()` to omit the derived `content` field.
     fn persist(&self) -> Result<(), EngineError> {
-        if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| EngineError::Io {
-                path: parent.to_path_buf(),
-                source: e,
-            })?;
-        }
         let mut buf = String::new();
         for msg in &self.messages {
             let line = msg
@@ -224,10 +218,7 @@ impl MessageStore {
             buf.push_str(&line);
             buf.push('\n');
         }
-        std::fs::write(&self.path, &buf).map_err(|e| EngineError::Io {
-            path: self.path.clone(),
-            source: e,
-        })?;
+        super::atomic::atomic_write(&self.path, buf.as_bytes())?;
         Ok(())
     }
 }

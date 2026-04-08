@@ -34,8 +34,8 @@ impl SseParser {
         let mut events = Vec::new();
 
         while let Some(newline_pos) = self.buf.find('\n') {
-            let line = self.buf[..newline_pos].trim_end_matches('\r').to_string();
-            self.buf = self.buf[newline_pos + 1..].to_string();
+            let raw: String = self.buf.drain(..=newline_pos).collect();
+            let line = raw.trim_end_matches('\n').trim_end_matches('\r').to_string();
 
             if line.is_empty() {
                 // Empty line = end of event.  Dispatch if we have data.

@@ -153,6 +153,7 @@ impl LlmClient {
             top_p: model.top_p,
             provider_options,
             provider_key: Some(model.provider_key.clone()),
+            rid: None,
         })
     }
 
@@ -163,7 +164,6 @@ impl LlmClient {
     pub async fn stream_raw(
         &self,
         request: &LlmRequest,
-        _rid: Option<&str>,
     ) -> Result<BufReader<DuplexStream>, LlmError> {
         let body = serde_json::to_string(request).map_err(LlmError::Serialize)?;
         self.log_payload("request", &body);
@@ -182,7 +182,6 @@ impl LlmClient {
     pub async fn generate(
         &self,
         request: &LlmRequest,
-        _rid: Option<&str>,
     ) -> Result<types::GenerateResponse, LlmError> {
         let body = serde_json::to_string(request).map_err(LlmError::Serialize)?;
         self.log_payload("request", &body);

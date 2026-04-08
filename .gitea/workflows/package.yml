@@ -9,6 +9,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify tag is on main
+        run: |
+          git branch --contains HEAD | grep -qw main || \
+            { echo "::error::Tag is not on main — skipping build"; exit 1; }
 
       - name: Pin PKGBUILD source to tag
         working-directory: contrib

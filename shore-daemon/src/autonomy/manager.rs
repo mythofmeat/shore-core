@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use shore_protocol::server_msg::{NewMessage, ServerMessage};
+use shore_protocol::server_msg::ServerMessage;
 use shore_protocol::types::{derive_content_from_blocks, ContentBlock, Message, Role};
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinHandle;
@@ -29,6 +29,7 @@ use crate::memory::compaction_impls::{resolve_embed_config, resolve_image_gen_co
 use crate::memory::db::MemoryDB;
 use crate::memory::researcher::MemoryResearcher;
 use crate::memory::vectorstore::VectorStore;
+use crate::characters::CharacterRegistry;
 use crate::notifications::{NotificationEvent, NotificationService};
 use crate::tools as tool_system;
 use crate::tools::context::{NoopRag, SharedToolContext};
@@ -50,9 +51,9 @@ struct TickContext {
     data_dir: PathBuf,
     compaction_tx: mpsc::Sender<String>,
     llm_client: Option<LedgerClient>,
-    push_tx: Option<broadcast::Sender<ServerMessage>>,
     loaded_config: Option<Arc<LoadedConfig>>,
     notifier: Option<NotificationService>,
+    registry: Option<Arc<tokio::sync::Mutex<CharacterRegistry>>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -222,6 +223,8 @@ pub struct AutonomyManager {
     loaded_config: Option<Arc<LoadedConfig>>,
     /// Push notification service for autonomous events.
     notifier: Option<NotificationService>,
+    /// Character engine registry for safe message persistence.
+    registry: Option<Arc<tokio::sync::Mutex<CharacterRegistry>>>,
 }
 
 impl AutonomyManager {
@@ -259,6 +262,7 @@ impl AutonomyManager {
             push_tx: None,
             loaded_config: None,
             notifier: None,
+            registry: None,
         };
         (mgr, compaction_rx)
     }
@@ -276,6 +280,12 @@ impl AutonomyManager {
         self.push_tx = Some(push_tx);
         self.loaded_config = Some(Arc::new(loaded_config));
         self.notifier = Some(notifier);
+    }
+
+    /// Set the character engine registry for safe autonomous message persistence.
+    /// Called once after creation, before any characters are ensured.
+    pub fn set_registry(&mut self, registry: Arc<tokio::sync::Mutex<CharacterRegistry>>) {
+        self.registry = Some(registry);
     }
 
     /// Ensure autonomy state exists for a character. On first call for a
@@ -347,11 +357,11 @@ impl AutonomyManager {
         let shutdown_rx = self.shutdown_rx.clone();
         let compaction_tx = self.compaction_tx.clone();
         let llm_client = self.llm_client.clone();
-        let push_tx = self.push_tx.clone();
         let loaded_config = effective_config
             .map(|c| Arc::new(c.clone()))
             .or_else(|| self.loaded_config.clone());
         let notifier = self.notifier.clone();
+        let registry = self.registry.clone();
 
         let tick_ctx = TickContext {
             state,
@@ -360,9 +370,9 @@ impl AutonomyManager {
             data_dir,
             compaction_tx,
             llm_client,
-            push_tx,
             loaded_config,
             notifier,
+            registry,
         };
         let handle = tokio::spawn(async move {
             character_tick_loop(name, tick_ctx, shutdown_rx).await;
@@ -718,9 +728,9 @@ async fn tick_character(character: &str, ctx: &TickContext) {
                     &ctx.state,
                     &ctx.data_dir,
                     ctx.llm_client.as_ref(),
-                    ctx.push_tx.as_ref(),
                     ctx.loaded_config.as_deref(),
                     ctx.notifier.as_ref(),
+                    ctx.registry.as_ref(),
                 ),
             )
             .await
@@ -953,9 +963,9 @@ async fn execute_unified_tick(
     state: &Arc<Mutex<AutonomyState>>,
     data_dir: &Path,
     llm_client: Option<&LedgerClient>,
-    push_tx: Option<&broadcast::Sender<ServerMessage>>,
     loaded_config: Option<&LoadedConfig>,
     notifier: Option<&NotificationService>,
+    registry: Option<&Arc<tokio::sync::Mutex<CharacterRegistry>>>,
 ) {
     let Some(client) = llm_client else { return };
 
@@ -1040,7 +1050,6 @@ async fn execute_unified_tick(
             return;
         }
     };
-    let active_path = data_dir.join(character).join("active.jsonl");
     let max_iterations = std::cmp::min(lc.app.behavior.tool_use.max_iterations, 6);
 
     info!(
@@ -1151,17 +1160,9 @@ async fn execute_unified_tick(
                 }
                 (format!("Scheduled next moment in {clamped:.1} hours."), false)
             } else {
-                match tool_system::dispatch_tool(name, input.clone(), &tool_ctx).await {
-                    Ok(value) => {
-                        let s = if let Some(s) = value.as_str() {
-                            s.to_string()
-                        } else {
-                            serde_json::to_string(&value).unwrap_or_default()
-                        };
-                        (s, false)
-                    }
-                    Err(e) => (e.to_string(), true),
-                }
+                crate::content_util::dispatch_result_to_output(
+                    tool_system::dispatch_tool(name, input.clone(), &tool_ctx).await,
+                )
             };
 
             info!(
@@ -1172,15 +1173,9 @@ async fn execute_unified_tick(
                 "Interiority: tool result"
             );
 
-            let mut result = json!({
-                "type": "tool_result",
-                "tool_use_id": id,
-                "content": output_str,
-            });
-            if is_error {
-                result["is_error"] = json!(true);
-            }
-            tool_results.push(result);
+            tool_results.push(crate::content_util::build_tool_result_json(
+                id, &output_str, is_error,
+            ));
 
             // Log to ring buffer (skip set_next_wake — already logged above).
             if name.as_str() != "set_next_wake" {
@@ -1242,21 +1237,30 @@ async fn execute_unified_tick(
             timestamp: chrono::Local::now().to_rfc3339(),
         };
 
-        if let Ok(line) = msg.serialize_for_storage() {
-            use std::io::Write;
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&active_path)
-            {
-                let _ = writeln!(f, "{line}");
+        // Persist via the engine lock to avoid racing with the handler's
+        // MessageStore writes (atomic temp+rename). The engine's append_message
+        // also calls broadcast_history(), so clients are notified automatically.
+        if let Some(reg) = registry {
+            // Acquire engine_arc under registry lock, then drop it before
+            // locking the engine — matches handler's lock ordering and avoids
+            // holding the registry during disk I/O.
+            let engine_arc = {
+                let mut r = reg.lock().await;
+                r.get_or_create(character)
+            };
+            match engine_arc {
+                Ok(engine_arc) => {
+                    let mut engine = engine_arc.lock().await;
+                    if let Err(e) = engine.append_message(msg.clone()) {
+                        error!(character, error = %e, "Failed to persist autonomous message via engine");
+                    }
+                }
+                Err(e) => {
+                    error!(character, error = %e, "Failed to get engine for autonomous message");
+                }
             }
-        }
-
-        if let Some(tx) = push_tx {
-            let _ = tx.send(ServerMessage::NewMessage(NewMessage {
-                message: msg.clone(),
-            }));
+        } else {
+            error!(character, "No registry available, autonomous message not persisted");
         }
         if let Some(n) = notifier {
             n.notify(
@@ -1337,7 +1341,7 @@ async fn build_tool_context(
             VectorStore::open(&vs_path, embed_config.dimensions)
                 .await
                 .ok()
-                .map(|vs| AgentSearchContext::new(vs, client.inner().clone(), embed_config))
+                .map(|vs| AgentSearchContext::new(Arc::new(vs), client.inner().clone(), embed_config))
         }
         Err(_) => None,
     };
@@ -1359,7 +1363,7 @@ async fn build_tool_context(
     );
 
     Some(SharedToolContext {
-        db,
+        db: Arc::new(db),
         agent: crate::memory::agent::MemoryAgent::one_shot(
             CallerIdentity::Char,
             character,
@@ -1714,9 +1718,9 @@ mod tests {
             data_dir: tmp.path().to_path_buf(),
             compaction_tx,
             llm_client: None,
-            push_tx: None,
             loaded_config: None,
             notifier: None,
+            registry: None,
         };
         tick_character("alice", &tick_ctx).await;
     }

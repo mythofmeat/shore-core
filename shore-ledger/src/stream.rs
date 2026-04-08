@@ -103,6 +103,27 @@ impl LedgerStream {
         self.finalized = true;
     }
 
+    /// Record a failed/aborted call with zero token usage so the ledger has a
+    /// trace of the attempt even when `consume()` returns an error.
+    pub fn finalize_error(&mut self) {
+        use shore_llm_client::types::{Timing, Usage};
+        record_call(
+            &self.ledger,
+            &self.pricing,
+            &self.cache_trackers,
+            &self.provider,
+            &self.model,
+            self.call_type,
+            &self.character,
+            &Usage::default(),
+            &Timing::default(),
+            "error",
+            self.thinking_enabled,
+            self.cache_ttl.clone(),
+        );
+        self.finalized = true;
+    }
+
     pub fn is_finalized(&self) -> bool {
         self.finalized
     }
