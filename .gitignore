@@ -39,3 +39,4 @@ Thumbs.db
 *.key
 test_char
 .worktree
+.worktrees/
