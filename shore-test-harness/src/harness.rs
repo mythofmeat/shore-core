@@ -391,6 +391,19 @@ impl TestHarness {
         }
     }
 
+    /// Connect an additional SWP client to the same daemon.
+    pub async fn connect_second_client(&self) -> SWPConnection {
+        let (conn, _hello, _history) = SWPConnection::connect(
+            &ServerAddr::Unix(self.socket_path.display().to_string()),
+            "test",
+            "second-client",
+            None,
+        )
+        .await
+        .expect("Failed to connect second client");
+        conn
+    }
+
     /// Graceful shutdown: signal the server and handler, then await both tasks.
     pub async fn shutdown(self) {
         let _ = self.shutdown_tx.send(());

@@ -356,6 +356,32 @@ impl MockLlmServer {
             .await;
     }
 
+    /// Like `enqueue_hanging` but without strict expectation — won't panic if
+    /// the request is never made (e.g. because generation was aborted).
+    pub async fn enqueue_hanging_optional(&self) {
+        Mock::given(method("POST"))
+            .and(path_regex("/v1/messages"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_delay(std::time::Duration::from_secs(3600)),
+            )
+            .up_to_n_times(1)
+            .mount(&self.server)
+            .await;
+    }
+
+    /// Enqueue a text response without strict expectation (won't panic if not consumed).
+    pub async fn enqueue_text_optional(&self, text: &str) {
+        let body = AnthropicStreamBuilder::new().text(text).build();
+        Mock::given(method("POST"))
+            .and(path_regex("/v1/messages"))
+            .respond_with(SseResponder(body))
+            .up_to_n_times(1)
+            .mount(&self.server)
+            .await;
+    }
+
     pub async fn received_requests(&self) -> Vec<Value> {
         self.server
             .received_requests()
