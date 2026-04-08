@@ -1,6 +1,8 @@
 pub mod activity;
 pub mod interiority;
 pub mod manager;
+pub(crate) mod state;
+pub(crate) mod tick;
 
 use std::collections::VecDeque;
 
