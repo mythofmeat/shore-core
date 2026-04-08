@@ -997,8 +997,8 @@ A cache ping only resets the cache deadline.
 
 | State | Description |
 |-------|-------------|
-| `Active` | Both timers run. Full interiority ticks fire at `interval_secs ± jitter_factor`. Between ticks, bare cache pings fire if the cache deadline passes. |
-| `Dormant` | `ticks_without_user >= max_idle_ticks`. Only cache pings fire (keeps cache warm). Wakes on next user message. |
+| `Active` | Character has a scheduled wake time. Full interiority ticks fire when the deadline arrives. Cache keepalive pings fire independently between ticks. |
+| `Abandoned` | `ticks_without_user >= max_idle_ticks` OR `time_since_last_user >= max_silent_secs`. No further ticks. Wakes on next user message. |
 
 #### Tool Loop (`execute_unified_tick`)
 
@@ -1033,11 +1033,8 @@ in the same tick use `CallType::ToolLoop` for cost tracking.
 [behavior.autonomy.interiority]
 enabled = true           # default: true
 interval_secs = 7200     # default: 3600 (1 hour)
-jitter_factor = 0.25     # ±25% random variation
-max_idle_ticks = 8       # go dormant after 8 ticks with no user
-
-[chat.anthropic]
-cache_ttl = "1h"         # drives cache_refresh_interval = 3540s
+max_idle_ticks = 3       # abandon after 3 ticks with no user
+max_silent_secs = 172800 # 48h wall-clock silence guard
 ```
 
 #### Persisted State (v3)

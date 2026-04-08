@@ -186,7 +186,7 @@ pub fn print_status(data: &serde_json::Value, character_name: &str) {
 
             let int_state = autonomy["interiority_state"].as_str().unwrap_or("Active");
             let ticks = autonomy["ticks_without_user"].as_u64().unwrap_or(0);
-            let max_ticks = autonomy["max_idle_ticks"].as_u64().unwrap_or(8);
+            let max_ticks = autonomy["max_idle_ticks"].as_u64().unwrap_or(3);
             let description = interiority_description(int_state, ticks, max_ticks);
 
             // Interiority row: description + state label.

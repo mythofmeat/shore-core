@@ -144,13 +144,15 @@ pub struct InteriorityConfig {
     #[serde(default = "default_interiority_interval")]
     pub interval_secs: u64,
 
-    /// Jitter factor (0.0–1.0) applied to interval. 0.25 means ±25%.
-    #[serde(default = "default_jitter_factor")]
-    pub jitter_factor: f64,
-
-    /// Go dormant after this many consecutive ticks with no user message.
+    /// Consecutive ticks without a user message before the abandonment guard
+    /// stops scheduling further ticks (character sleeps until user returns).
     #[serde(default = "default_max_idle_ticks")]
     pub max_idle_ticks: u32,
+
+    /// Wall-clock seconds without a user message before the abandonment guard
+    /// stops scheduling further ticks. Default: 48 hours.
+    #[serde(default = "default_max_silent_secs")]
+    pub max_silent_secs: u64,
 
     /// Maximum tool-use rounds per interiority tick.
     #[serde(default = "default_max_tool_rounds")]
@@ -158,8 +160,8 @@ pub struct InteriorityConfig {
 }
 
 serde_default!(default_interiority_interval -> u64 { 3600 });
-serde_default!(default_jitter_factor -> f64 { 0.25 });
-serde_default!(default_max_idle_ticks -> u32 { 8 });
+serde_default!(default_max_idle_ticks -> u32 { 3 });
+serde_default!(default_max_silent_secs -> u64 { 172800 }); // 48 hours
 serde_default!(default_max_tool_rounds -> u32 { 12 });
 
 impl Default for InteriorityConfig {
@@ -167,8 +169,8 @@ impl Default for InteriorityConfig {
         Self {
             enabled: true,
             interval_secs: default_interiority_interval(),
-            jitter_factor: default_jitter_factor(),
             max_idle_ticks: default_max_idle_ticks(),
+            max_silent_secs: default_max_silent_secs(),
             max_tool_rounds: default_max_tool_rounds(),
         }
     }
@@ -737,8 +739,8 @@ mod tests {
         assert!(!config.behavior.autonomy.enabled);
         assert!(config.behavior.autonomy.interiority.enabled);
         assert_eq!(config.behavior.autonomy.interiority.interval_secs, 3600);
-        assert_eq!(config.behavior.autonomy.interiority.jitter_factor, 0.25);
-        assert_eq!(config.behavior.autonomy.interiority.max_idle_ticks, 8);
+        assert_eq!(config.behavior.autonomy.interiority.max_idle_ticks, 3);
+        assert_eq!(config.behavior.autonomy.interiority.max_silent_secs, 172800);
         assert_eq!(config.behavior.autonomy.interiority.max_tool_rounds, 12);
         assert!(config.advanced.cache_invalidation_warnings);
         assert!(config.behavior.tool_use.enabled);

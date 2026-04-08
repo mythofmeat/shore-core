@@ -130,7 +130,6 @@ enabled = true
 [behavior.autonomy.interiority]
 enabled       = true
 interval_secs = 480
-jitter_factor = 0.0
 max_idle_ticks = 2
 
 [behavior.tool_use]

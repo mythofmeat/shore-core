@@ -430,14 +430,6 @@ fn create_default_config(config_dir: &Path) {
 
 /// Validate cross-field config constraints.
 fn validate_config(app: &AppConfig, catalog: &ModelCatalog) -> Result<(), ConfigError> {
-    // Jitter factor must be 0.0–1.0.
-    let jf = app.behavior.autonomy.interiority.jitter_factor;
-    if !(0.0..=1.0).contains(&jf) {
-        return Err(ConfigError::Validation(format!(
-            "behavior.autonomy.interiority.jitter_factor must be 0.0–1.0, got {jf}"
-        )));
-    }
-
     // Validate model references exist in the catalog.
     for (field, value) in [
         ("defaults.model", app.defaults.model.as_deref()),
@@ -662,7 +654,6 @@ model_id = "claude-opus-4-6"
         assert!(!loaded.app.behavior.autonomy.enabled);
         assert!(loaded.app.behavior.autonomy.interiority.enabled);
         assert_eq!(loaded.app.behavior.autonomy.interiority.interval_secs, 3600);
-        assert_eq!(loaded.app.behavior.autonomy.interiority.jitter_factor, 0.25);
         assert!(loaded.app.behavior.tool_use.enabled);
         assert_eq!(loaded.app.memory.rag_results, 5);
         assert!(loaded.app.advanced.cache_invalidation_warnings);
@@ -721,25 +712,6 @@ model_id = "google/gemini-flash"
         assert!(loaded.models.find_model("mistral").is_ok());
         assert!(loaded.models.embedding.contains_key("text-large"));
         assert!(loaded.models.image_generation.contains_key("gemini-flash"));
-    }
-
-    #[test]
-    fn invalid_jitter_factor_range() {
-        let tmp = setup_config_dir(&[(
-            "config.toml",
-            r#"
-[behavior.autonomy.interiority]
-jitter_factor = 1.5
-"#,
-        )]);
-
-        let config_path = tmp.path().join("config.toml");
-        let err = load_config(Some(&config_path)).unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("jitter_factor"),
-            "Should mention jitter_factor: {msg}"
-        );
     }
 
     #[test]
