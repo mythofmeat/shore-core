@@ -1500,3 +1500,25 @@ shore-cli    ──▶ shore-ledger (query only)
 2. Every LLM call goes through `LedgerClient` with `CallType` + character name
 3. On response: usage recorded to SQLite, cache tracker updated, cost calculated
 4. CLI queries the DB directly via `shore usage` (no daemon connection needed)
+
+---
+
+## Test Architecture
+
+### shore-test-harness
+
+Dev-only crate providing integration test infrastructure. Not published.
+
+- **MockLlmServer** — wraps `wiremock::MockServer`, serves canned Anthropic SSE streams
+- **TestHarness** — boots real daemon stack in-process, connects SWP client, provides send/collect helpers
+- **CrashedHarness** — simulates crash/reboot for recovery testing
+- **TestConfigBuilder** — builds `LoadedConfig` pointing at mock server
+
+Integration tests in `shore-daemon/tests/integration_*.rs` use the harness.
+
+**Data flow in tests:**
+```
+SWPConnection → Server → MessageHandler → LlmClient → reqwest → MockServer (wiremock)
+```
+
+All components are real except the HTTP responses from the LLM provider.

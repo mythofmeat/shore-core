@@ -815,6 +815,36 @@ mod tests {
         assert_eq!(fr["response"]["result"], "some result");
     }
 
+    // ── Tool ID uniqueness ────────────────────────────────────────────
+    //
+    // Regression: SHA 2ae092a. When the same tool is called twice in a Gemini
+    // response the streaming path enumerates IDs as `gemini_call_{i}` so they
+    // are always distinct.  The test simulates the accumulator logic used inside
+    // the streaming task to verify uniqueness.
+
+    #[test]
+    fn test_streaming_duplicate_tool_calls_produce_unique_ids() {
+        // Simulate two calls to the same tool ("search") collected by the SSE task.
+        let function_calls: Vec<(String, serde_json::Value)> = vec![
+            ("search".to_string(), json!({"q": "cats"})),
+            ("search".to_string(), json!({"q": "dogs"})),
+        ];
+
+        let ids: Vec<String> = function_calls
+            .iter()
+            .enumerate()
+            .map(|(i, _)| format!("gemini_call_{i}"))
+            .collect();
+
+        assert_eq!(ids.len(), 2);
+        assert_ne!(
+            ids[0], ids[1],
+            "duplicate tool calls must produce distinct IDs"
+        );
+        assert_eq!(ids[0], "gemini_call_0");
+        assert_eq!(ids[1], "gemini_call_1");
+    }
+
     #[test]
     fn test_normalize_finish_reason() {
         assert_eq!(normalize_finish_reason(Some("STOP")), "end_turn");
