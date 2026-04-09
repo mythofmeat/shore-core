@@ -175,6 +175,7 @@ mod tests {
     fn client_message_body_without_overrides() {
         let body = ClientMessageBody {
             rid: None,
+            forensic_character: None,
             text: "hi".into(),
             stream: false,
             images: vec![],

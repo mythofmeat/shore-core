@@ -4933,6 +4933,7 @@ dependencies = [
 name = "shore-test-harness"
 version = "0.1.0"
 dependencies = [
+ "rusqlite",
  "serde_json",
  "shore-client",
  "shore-config",

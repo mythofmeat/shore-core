@@ -195,6 +195,76 @@ async fn test_request_body_no_stale_metadata() {
     harness.shutdown().await;
 }
 
+/// Verify that the `system` field in EVERY request sent to the LLM is a JSON
+/// array of `{"type": "text", "text": "..."}` blocks — never a bare string.
+/// The Anthropic API rejects bare-string system prompts.
+#[tokio::test]
+async fn test_system_prompt_always_array_format() {
+    let mut harness = TestHarness::boot().await;
+
+    // Round 1: simple exchange
+    harness.mock_llm.enqueue_text("Hello!").await;
+    let _r1 = harness.send_and_collect("Hi").await;
+
+    // Round 2: tool call round-trip (exercises post-tool request too)
+    harness
+        .mock_llm
+        .enqueue_tool_use("toolu_sys_01", "check_time", json!({}))
+        .await;
+    harness.mock_llm.enqueue_text("It is noon.").await;
+    harness
+        .conn
+        .send_message("What time?", true)
+        .await
+        .expect("failed to send message");
+    let _phase1 = harness.collect_stream().await;
+    let _phase2 = harness.collect_stream().await;
+
+    // Now inspect EVERY request the mock received.
+    let requests = harness.mock_llm.received_requests().await;
+    assert!(
+        !requests.is_empty(),
+        "Expected at least one LLM request, got none"
+    );
+
+    for (i, req) in requests.iter().enumerate() {
+        let system = match req.get("system") {
+            Some(s) => s,
+            None => continue, // system field absent is fine (unlikely but valid)
+        };
+
+        assert!(
+            system.is_array(),
+            "Request {} has 'system' as a string instead of an array. \
+             All system prompts must be arrays of {{\"type\": \"text\", \"text\": \"...\"}} blocks. \
+             Got: {}",
+            i,
+            system
+        );
+
+        let blocks = system.as_array().unwrap();
+        for (j, block) in blocks.iter().enumerate() {
+            assert_eq!(
+                block.get("type").and_then(|t| t.as_str()),
+                Some("text"),
+                "Request {} system block {} missing type: 'text'. Got: {}",
+                i,
+                j,
+                block
+            );
+            assert!(
+                block.get("text").and_then(|t| t.as_str()).is_some(),
+                "Request {} system block {} missing 'text' field. Got: {}",
+                i,
+                j,
+                block
+            );
+        }
+    }
+
+    harness.shutdown().await;
+}
+
 /// Verify that when the LLM returns two tool_use blocks in a single response,
 /// the follow-up request carries two tool_result blocks with unique IDs.
 #[tokio::test]

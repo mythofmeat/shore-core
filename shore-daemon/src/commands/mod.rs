@@ -295,6 +295,7 @@ mod tests {
 
         let cmd = Command {
             rid: None,
+            forensic_character: None,
             name: "bogus_command".into(),
             args: serde_json::json!({}),
         };
@@ -317,6 +318,7 @@ mod tests {
 
         let cmd = Command {
             rid: None,
+            forensic_character: None,
             name: "status".into(),
             args: serde_json::json!({}),
         };
@@ -350,6 +352,7 @@ mod tests {
 
         let cmd = Command {
             rid: None,
+            forensic_character: None,
             name: "list_characters".into(),
             args: serde_json::json!({}),
         };
@@ -367,6 +370,7 @@ mod tests {
 
         let cmd = Command {
             rid: None,
+            forensic_character: None,
             name: "status".into(),
             args: serde_json::json!({}),
         };

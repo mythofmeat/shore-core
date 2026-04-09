@@ -195,6 +195,7 @@ async fn character_paths_creates_directories() {
 fn text_message_becomes_swp_user_message() {
     let msg = ClientMessage::Message(ClientMessageBody {
         rid: None,
+            forensic_character: None,
         text: "Hello, Alice!".to_string(),
         stream: true,
         images: vec![],
@@ -216,6 +217,7 @@ fn text_message_becomes_swp_user_message() {
 fn command_message_becomes_swp_command() {
     let msg = ClientMessage::Command(Command {
         rid: None,
+            forensic_character: None,
         name: "status".to_string(),
         args: serde_json::json!({}),
     });
@@ -231,6 +233,7 @@ fn command_message_becomes_swp_command() {
 fn image_message_becomes_swp_message_with_image_path() {
     let msg = ClientMessage::Message(ClientMessageBody {
         rid: None,
+            forensic_character: None,
         text: "check this out".to_string(),
         stream: true,
         images: vec!["/tmp/photo.jpg".to_string()],
@@ -632,6 +635,7 @@ fn full_bridge_message_flow() {
     // Stage 1: Text message
     let text_swp = ClientMessage::Message(ClientMessageBody {
         rid: None,
+            forensic_character: None,
         text: "Hello, Alice!".to_string(),
         stream: true,
         images: vec![],
@@ -644,6 +648,7 @@ fn full_bridge_message_flow() {
     // Stage 2: Command message
     let cmd_swp = ClientMessage::Command(Command {
         rid: None,
+            forensic_character: None,
         name: "status".to_string(),
         args: serde_json::json!({}),
     });
@@ -654,6 +659,7 @@ fn full_bridge_message_flow() {
     // Stage 3: Image message
     let img_swp = ClientMessage::Message(ClientMessageBody {
         rid: None,
+            forensic_character: None,
         text: "Look at this!".to_string(),
         stream: true,
         images: vec!["/tmp/matrix_download_photo.jpg".to_string()],

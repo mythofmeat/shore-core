@@ -2,7 +2,8 @@ use std::path::Path;
 
 use shore_config::{
     LoadedConfig, ShoreDirs,
-    app::{AppConfig, BehaviorConfig, ToolUseConfig},
+    app::{AppConfig, BehaviorConfig, CompactionConfig, ToolUseConfig},
+    duration::ConfigDuration,
     models::ModelCatalog,
 };
 
@@ -14,6 +15,11 @@ pub struct TestConfigBuilder {
     pub max_tokens: u32,
     pub tool_use_enabled: bool,
     pub tool_use_max_iterations: u32,
+    pub compaction_enabled: bool,
+    pub compaction_max_turns: Option<usize>,
+    pub compaction_min_turns: Option<usize>,
+    pub compaction_keep_recent: Option<usize>,
+    pub autonomy_enabled: bool,
 }
 
 impl Default for TestConfigBuilder {
@@ -34,6 +40,11 @@ impl TestConfigBuilder {
             max_tokens: 1024,
             tool_use_enabled: true,
             tool_use_max_iterations: 5,
+            compaction_enabled: false,
+            compaction_max_turns: None,
+            compaction_min_turns: None,
+            compaction_keep_recent: None,
+            autonomy_enabled: false,
         }
     }
 
@@ -49,6 +60,31 @@ impl TestConfigBuilder {
 
     pub fn tool_use(mut self, enabled: bool) -> Self {
         self.tool_use_enabled = enabled;
+        self
+    }
+
+    pub fn compaction(mut self, enabled: bool) -> Self {
+        self.compaction_enabled = enabled;
+        self
+    }
+
+    pub fn compaction_max_turns(mut self, n: usize) -> Self {
+        self.compaction_max_turns = Some(n);
+        self
+    }
+
+    pub fn compaction_min_turns(mut self, n: usize) -> Self {
+        self.compaction_min_turns = Some(n);
+        self
+    }
+
+    pub fn compaction_keep_recent(mut self, n: usize) -> Self {
+        self.compaction_keep_recent = Some(n);
+        self
+    }
+
+    pub fn autonomy(mut self, enabled: bool) -> Self {
+        self.autonomy_enabled = enabled;
         self
     }
 
@@ -84,6 +120,21 @@ impl TestConfigBuilder {
             },
             ..BehaviorConfig::default()
         };
+        app.behavior.autonomy.enabled = self.autonomy_enabled;
+
+        if self.compaction_enabled {
+            app.memory.compaction = CompactionConfig {
+                enabled: true,
+                idle_trigger: ConfigDuration::from_secs(86400), // very long — tests use max_turns
+                min_turns: self.compaction_min_turns.unwrap_or(2),
+                max_turns: self.compaction_max_turns.unwrap_or(16),
+                keep_recent_turns: self.compaction_keep_recent.unwrap_or(2),
+            };
+            // Also set a default embedding profile name.
+            app.defaults.embedding = Some("test-embed".into());
+        }
+        // Disable collation auto_run to prevent post-compaction collation.
+        app.memory.collation.auto_run = false;
 
         // Build ModelCatalog from TOML pointing at the mock server.
         let models_toml = format!(
@@ -104,8 +155,31 @@ temperature = 0.0
             max_tokens = self.max_tokens,
         );
         let chat_table: toml::Table = models_toml.parse().expect("failed to parse model TOML");
-        let models = ModelCatalog::from_sections(Some(&chat_table), None, None, None)
-            .expect("failed to build ModelCatalog");
+
+        let embed_table: Option<toml::Table> = if self.compaction_enabled {
+            let embed_toml = format!(
+                r#"
+[test-embed]
+model_id = "text-embedding-3-small"
+provider = "openai"
+api_key_env = "SHORE_TEST_API_KEY"
+base_url = "{base_url}"
+dimensions = 8
+"#,
+                base_url = mock_base_url,
+            );
+            Some(embed_toml.parse().expect("failed to parse embed TOML"))
+        } else {
+            None
+        };
+
+        let models = ModelCatalog::from_sections(
+            Some(&chat_table),
+            None,
+            embed_table.as_ref(),
+            None,
+        )
+        .expect("failed to build ModelCatalog");
 
         LoadedConfig::new_for_test(
             app,

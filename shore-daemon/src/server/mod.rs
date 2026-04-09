@@ -789,6 +789,7 @@ mod tests {
             &mut h.client_writer,
             &ClientMessage::Message(ClientMessageBody {
                 rid: None,
+            forensic_character: None,
                 text: "oops".into(),
                 stream: false,
                 images: vec![],
