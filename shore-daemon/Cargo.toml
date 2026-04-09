@@ -30,6 +30,7 @@ reqwest = { version = "0.12", features = ["json"] }
 sha2 = "0.10"
 base64 = "0.22.1"
 tempfile = "3"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }
