@@ -121,12 +121,12 @@ pub fn handle_search_entries(db: &MemoryDB, input: &Value) -> Result<String, Str
                         m
                     })
                     .collect();
-                serde_json::to_string_pretty(&results).map_err(|e| format!("JSON error: {e}"))
+                serde_json::to_string_pretty(&results).map_err(|e| format!("Error: JSON serialization: {e}"))
             }
         }
         Err(e) => {
             warn!(error = %e, "FTS search error");
-            Err(format!("Search error: {e}"))
+            Err(format!("Error: search failed: {e}"))
         }
     }
 }
@@ -265,7 +265,7 @@ pub async fn handle_semantic_search(
     }
 
     debug!(results = results.len(), "Semantic search complete");
-    serde_json::to_string_pretty(&results).map_err(|e| format!("JSON error: {e}"))
+    serde_json::to_string_pretty(&results).map_err(|e| format!("Error: JSON serialization: {e}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -285,12 +285,12 @@ pub fn handle_query_db(db: &MemoryDB, input: &Value) -> Result<String, String> {
             if rows.is_empty() {
                 Ok("No results.".into())
             } else {
-                serde_json::to_string_pretty(&rows).map_err(|e| format!("JSON error: {e}"))
+                serde_json::to_string_pretty(&rows).map_err(|e| format!("Error: JSON serialization: {e}"))
             }
         }
         Err(e) => {
             warn!(error = %e, "DB query error");
-            Err(format!("SQL error: {e}"))
+            Err(format!("Error: SQL query failed: {e}"))
         }
     }
 }
@@ -355,11 +355,11 @@ pub async fn handle_create_entry(
     };
 
     db.create_entry(&entry)
-        .map_err(|e| format!("DB error: {e}"))?;
+        .map_err(|e| format!("Error: DB: {e}"))?;
 
     let cl_id = db
         .append_changelog("agent_create", &reason)
-        .map_err(|e| format!("DB error: {e}"))?;
+        .map_err(|e| format!("Error: DB: {e}"))?;
     let _ = db.link_changelog_entry(cl_id, &entry_id);
 
     // Index to vector store (best-effort)
@@ -390,8 +390,8 @@ pub async fn handle_update_entry(
     // Fetch current entry
     let mut entry = db
         .get_entry(&entry_id)
-        .map_err(|e| format!("DB error: {e}"))?
-        .ok_or_else(|| format!("Entry {entry_id} not found"))?;
+        .map_err(|e| format!("Error: DB: {e}"))?
+        .ok_or_else(|| format!("Error: entry {entry_id} not found"))?;
 
     // Apply partial updates
     let mut has_changes = false;
@@ -420,14 +420,14 @@ pub async fn handle_update_entry(
 
     let rows = db
         .update_entry(&entry)
-        .map_err(|e| format!("DB error: {e}"))?;
+        .map_err(|e| format!("Error: DB: {e}"))?;
     if rows == 0 {
-        return Err(format!("Entry {entry_id} not found"));
+        return Err(format!("Error: entry {entry_id} not found"));
     }
 
     let cl_id = db
         .append_changelog("agent_update", &reason)
-        .map_err(|e| format!("DB error: {e}"))?;
+        .map_err(|e| format!("Error: DB: {e}"))?;
     let _ = db.link_changelog_entry(cl_id, &entry_id);
 
     // Re-index (best-effort)
@@ -458,14 +458,14 @@ pub async fn handle_supersede_entry(
 
     let rows = db
         .supersede_entry(&entry_id, &superseded_by)
-        .map_err(|e| format!("DB error: {e}"))?;
+        .map_err(|e| format!("Error: DB: {e}"))?;
     if rows == 0 {
-        return Err(format!("Entry {entry_id} not found"));
+        return Err(format!("Error: entry {entry_id} not found"));
     }
 
     let cl_id = db
         .append_changelog("agent_supersede", &reason)
-        .map_err(|e| format!("DB error: {e}"))?;
+        .map_err(|e| format!("Error: DB: {e}"))?;
     let _ = db.link_changelog_entry(cl_id, &entry_id);
 
     // Re-index the superseded entry (best-effort)
@@ -493,14 +493,14 @@ pub fn handle_update_entity(db: &MemoryDB, input: &Value) -> Result<String, Stri
 
     let eid = db
         .upsert_entity(&name, &entity_type, &description)
-        .map_err(|e| format!("DB error: {e}"))?;
+        .map_err(|e| format!("Error: DB: {e}"))?;
 
     let cl_id = db
         .append_changelog(
             "entity_update",
             &format!("Memory agent updated entity '{name}'"),
         )
-        .map_err(|e| format!("DB error: {e}"))?;
+        .map_err(|e| format!("Error: DB: {e}"))?;
 
     // Link changelog to entity
     let _ = db.link_changelog_entity(cl_id, eid);
@@ -522,12 +522,12 @@ pub fn handle_merge_entity(db: &MemoryDB, input: &Value) -> Result<String, Strin
 
     let from_entity = db
         .get_entity_by_name(&from_name)
-        .map_err(|e| format!("DB error: {e}"))?
+        .map_err(|e| format!("Error: DB: {e}"))?
         .ok_or_else(|| format!("Error: entity '{from_name}' not found"))?;
 
     let to_entity = db
         .get_entity_by_name(&to_name)
-        .map_err(|e| format!("DB error: {e}"))?
+        .map_err(|e| format!("Error: DB: {e}"))?
         .ok_or_else(|| format!("Error: entity '{to_name}' not found"))?;
 
     if from_entity.entity_id == to_entity.entity_id {
@@ -539,7 +539,7 @@ pub fn handle_merge_entity(db: &MemoryDB, input: &Value) -> Result<String, Strin
     debug!(from = %from_name, to = %to_name, "Merging entities");
     let count = db
         .merge_entity(from_entity.entity_id, to_entity.entity_id)
-        .map_err(|e| format!("DB error: {e}"))?;
+        .map_err(|e| format!("Error: DB: {e}"))?;
 
     let cl_id = db
         .append_changelog(
@@ -549,7 +549,7 @@ pub fn handle_merge_entity(db: &MemoryDB, input: &Value) -> Result<String, Strin
                 from_name, from_entity.entity_id, to_name, to_entity.entity_id, count
             ),
         )
-        .map_err(|e| format!("DB error: {e}"))?;
+        .map_err(|e| format!("Error: DB: {e}"))?;
 
     // Link changelog to target entity
     let _ = db.link_changelog_entity(cl_id, to_entity.entity_id);
@@ -572,17 +572,17 @@ pub fn handle_resolve_flag(db: &MemoryDB, input: &Value) -> Result<String, Strin
     debug!(flag_id, "Resolving flag");
 
     // Get the flag first so we can boost confidence
-    let flag = db.get_flag(flag_id).map_err(|e| format!("DB error: {e}"))?;
+    let flag = db.get_flag(flag_id).map_err(|e| format!("Error: DB: {e}"))?;
 
     db.resolve_flag(flag_id, &resolution)
-        .map_err(|e| format!("DB error: {e}"))?;
+        .map_err(|e| format!("Error: DB: {e}"))?;
 
     let cl_id = db
         .append_changelog(
             "flag_resolve",
             &format!("Resolved flag {flag_id}: {resolution}"),
         )
-        .map_err(|e| format!("DB error: {e}"))?;
+        .map_err(|e| format!("Error: DB: {e}"))?;
     let _ = cl_id; // changelog doesn't need linking for flags
 
     // Boost confidence of the flagged entry to max(current, 0.8)
@@ -613,7 +613,7 @@ pub fn handle_create_flag(db: &MemoryDB, input: &Value) -> Result<String, String
     debug!(entry_id = %entry_id, flag_type = %flag_type, "Creating flag");
     let fid = db
         .create_flag(&entry_id, &flag_type, &reason)
-        .map_err(|e| format!("DB error: {e}"))?;
+        .map_err(|e| format!("Error: DB: {e}"))?;
 
     info!(flag_id = fid, entry_id = %entry_id, flag_type = %flag_type, "Created flag");
     Ok(format!("Created flag {fid} ({flag_type}) on {entry_id}"))
@@ -650,7 +650,7 @@ pub async fn execute_tool(
         "merge_entity" => handle_merge_entity(db, input),
         "resolve_flag" => handle_resolve_flag(db, input),
         "create_flag" => handle_create_flag(db, input),
-        _ => Err(format!("Unknown tool: {name}")),
+        _ => Err(format!("Error: unknown tool: {name}")),
     };
 
     match result {
@@ -1071,6 +1071,46 @@ mod tests {
         assert_eq!(
             infer_topic_key("", "Alice likes dark chocolate"),
             "alice_likes_dark"
+        );
+    }
+
+    /// `execute_tool` flattens Ok/Err into a String. The tool loop uses
+    /// `starts_with("Error")` to detect failures, but several error paths
+    /// return messages like "Entry X not found" or "SQL error: ..." that
+    /// don't start with "Error". These get misclassified as successful
+    /// mutations. All error strings must start with "Error".
+    #[tokio::test]
+    async fn execute_tool_errors_all_start_with_error_prefix() {
+        let db = test_db();
+
+        // update_entry with nonexistent entry → "Entry X not found"
+        let result = execute_tool(
+            "update_entry",
+            &db,
+            None,
+            None,
+            &json!({"entry_id": "nonexistent_99", "confidence": 0.5}),
+        )
+        .await;
+        assert!(
+            result.starts_with("Error"),
+            "Error from update_entry should start with 'Error', got: {result}"
+        );
+
+        // search_entries with a query that triggers FTS error
+        // (empty-after-strip query returns "Error: query produced no searchable terms")
+        // But a real FTS failure returns "Search error: ..."
+        let result = execute_tool(
+            "query_db",
+            &db,
+            None,
+            None,
+            &json!({"query": "SELECT * FROM nonexistent_table"}),
+        )
+        .await;
+        assert!(
+            result.starts_with("Error"),
+            "Error from query_db should start with 'Error', got: {result}"
         );
     }
 }

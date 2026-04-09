@@ -136,10 +136,13 @@ impl CompactionManager {
         result
     }
 
-    /// Generate an entry ID in the standard format: YYYYMMDD_HHMMSS_N
+    /// Generate an entry ID with a compaction prefix: c_YYYYMMDD_HHMMSS_N
+    ///
+    /// The `c_` prefix prevents collision with collation IDs (`l_` prefix)
+    /// when both run in the same second.
     fn generate_entry_id(index: usize) -> String {
         let now = Local::now();
-        format!("{}_{}", now.format("%Y%m%d_%H%M%S"), index)
+        format!("c_{}_{}", now.format("%Y%m%d_%H%M%S"), index)
     }
 
     /// Run compaction on a conversation.
@@ -1265,6 +1268,26 @@ They discussed daily activities and the user's beverage preferences.
         assert!(
             conv_mgr.archived_calls().is_empty(),
             "archive_and_retain should not be called after rollback"
+        );
+    }
+
+    /// Compaction and collation both generate entry IDs using the same
+    /// `YYYYMMDD_HHMMSS_N` format with index starting at 0. If both run
+    /// in the same second, they produce identical IDs → PK conflict.
+    /// IDs must include a source prefix to prevent collision.
+    #[test]
+    fn compaction_and_collation_ids_are_distinct() {
+        use crate::memory::collation::CollationManager;
+
+        // Generate IDs from both systems with the same index.
+        let compaction_id = CompactionManager::generate_entry_id(0);
+        let collation_id = CollationManager::generate_entry_id(0);
+
+        // If called within the same second, these must still be distinct.
+        // (They share the same timestamp format + index, so currently they collide.)
+        assert_ne!(
+            compaction_id, collation_id,
+            "Compaction and collation entry IDs must be distinct even in the same second"
         );
     }
 }

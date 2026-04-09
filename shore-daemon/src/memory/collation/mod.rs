@@ -27,10 +27,13 @@ impl CollationManager {
         Self { config }
     }
 
-    /// Generate an entry ID in the standard format: YYYYMMDD_HHMMSS_N
-    fn generate_entry_id(index: usize) -> String {
+    /// Generate an entry ID with a collation prefix: l_YYYYMMDD_HHMMSS_N
+    ///
+    /// The `l_` prefix prevents collision with compaction IDs (`c_` prefix)
+    /// when both run in the same second.
+    pub(crate) fn generate_entry_id(index: usize) -> String {
         let now = Local::now();
-        format!("{}_{}", now.format("%Y%m%d_%H%M%S"), index)
+        format!("l_{}_{}", now.format("%Y%m%d_%H%M%S"), index)
     }
 
     /// Unified candidate selection for the refine phase.
