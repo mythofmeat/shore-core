@@ -126,6 +126,15 @@ impl CacheTracker {
             };
         }
 
+        // 1b. Track whether this is an interiority/tool_loop call. These
+        // operate on a different message prefix (interiority appends a prompt,
+        // tool loops append tool_result), so their cache_read values are not
+        // comparable to the last normal message. We still run TTL expiry and
+        // keepalive miss detection, but skip the UnexpectedWrite check and
+        // don't update last_cache_read.
+        let skip_cache_read_comparison =
+            obs.call_type == "interiority" || obs.call_type == "tool_loop";
+
         // 2. TTL expiry: Warm → Cold
         if self.state == CacheState::Warm {
             if let (Some(last), Some(now)) = (self.last_ts, obs_ts) {
@@ -163,7 +172,9 @@ impl CacheTracker {
         // 5. Evaluate against expected behavior
         let mut anomaly = match self.state {
             CacheState::Warm => {
-                if obs.cache_read_tokens >= self.last_cache_read {
+                if skip_cache_read_comparison {
+                    None // Interiority/tool_loop — different prefix, can't compare
+                } else if obs.cache_read_tokens >= self.last_cache_read {
                     None // OK, stay Warm
                 } else {
                     Some(Anomaly::UnexpectedWrite)
@@ -197,8 +208,11 @@ impl CacheTracker {
             }
         }
 
-        // 6. Update internal state
-        self.last_cache_read = obs.cache_read_tokens;
+        // 6. Update internal state — only update cache_read baseline from
+        // normal message calls, not interiority/tool_loop (different prefix).
+        if !skip_cache_read_comparison {
+            self.last_cache_read = obs.cache_read_tokens;
+        }
         self.update_metadata(obs_ts, &obs.model, obs.thinking_enabled);
 
         debug!(
