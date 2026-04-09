@@ -1474,6 +1474,14 @@ async fn execute_dormant_ping(
                 // Clear stale request ID — same reason as execute_unified_tick.
                 ping.rid = None;
                 ping.forensic_character = Some(character.to_owned());
+                // The cloned request includes the assistant's last response,
+                // so the conversation ends with an assistant message. Anthropic
+                // requires conversations to end with a user message. Append a
+                // minimal user turn so the ping is a valid API request.
+                ping.messages.push(serde_json::json!({
+                    "role": "user",
+                    "content": "."
+                }));
                 ping
             }
             None => {
