@@ -115,6 +115,63 @@ Their "role switches" count both user and assistant messages; Shore's
 and D+2 roughly maps to Shore's depth D/2 and D/2+1, which is why
 `cache_depth_turns = [1, 2]` is the equivalent configuration.
 
+## Systematic experiment results (2026-04-09)
+
+Controlled curl-based experiments varying format, headers, delay, and
+breakpoint strategy. All tests: 10 turns, unique nonce (cold cache),
+through OpenRouter to `anthropic/claude-sonnet-4-6`, with 14 tool
+definitions to exceed the 2048-token caching minimum.
+
+| Experiment | Format | Headers | Delay | Breakpoints | Provider Pin | Rewrites | Miss Rate |
+|---|---|---|---|---|---|---|---|
+| A1 | OpenAI | ST | 4s | sillytavern | — | 3/9 | **33%** |
+| A2 | OpenAI | ST | 8s | sillytavern | — | 2/9 | **22%** |
+| A3 | OpenAI | ST | 15s | sillytavern | — | 4/9 | **44%** |
+| B1 | OpenAI | none | 8s | sillytavern | — | 2/9 | **22%** |
+| C1 | Anthropic | ST | 8s | sillytavern | — | 1/9 | **11%** |
+| C2 | Anthropic | none | 8s | sillytavern | — | 2/9 | **22%** |
+| D1 | OpenAI | ST | 8s | system-only | — | 2/9 | **22%** |
+| G1-G3 | OpenAI | ST | 4-8s | various | Anthropic | _(invalid: 402)_ | **needs retest** |
+
+### Key findings
+
+1. **Nothing client-side matters.** The miss rate is ~22-33% regardless
+   of: API format (OpenAI vs Anthropic), HTTP headers (SillyTavern vs
+   none), inter-message delay (4s vs 8s vs 15s), breakpoint strategy
+   (sliding vs system-only), or content format (strings vs arrays).
+
+2. **Longer delays make it worse, not better.** 15s delay had 44% miss
+   rate vs 33% at 4s. This disproves the cache propagation theory.
+
+3. **System-only breakpoints also fail at 22%.** With ZERO sliding
+   message breakpoints (only a pinned system anchor), the miss rate is
+   identical. The breakpoint resolution logic is not the cause.
+
+4. **The alternating-miss pattern (A1: t3, t5, t7) suggests
+   load-balancer round-robin.** OpenRouter appears to distribute
+   requests across multiple Anthropic backends, each with independent
+   prompt caches. Every backend switch = full cache miss.
+
+5. **Provider pinning is the most likely fix** but could not be tested
+   (credits exhausted during the test run — all G-group results are
+   invalid 402s). This is the **highest-priority retest** when credits
+   are available.
+
+6. **SillyTavern's <1% miss rate may come from provider pinning**
+   configured in the SillyTavern UI, or from OpenRouter giving sticky
+   routing to long-lived sessions. Shore's test harness creates a new
+   session per test, which may defeat sticky routing.
+
+### Implications for Shore
+
+If provider pinning confirms stable caching, Shore should:
+- Default to `openrouter_provider = { order = ["Anthropic"] }` when
+  using OpenRouter with Claude models and `cache_ttl` is set
+- Expose this as a model config option (already implemented as
+  `openrouter_provider` in the config)
+- Document that cache stability through OpenRouter requires provider
+  pinning
+
 ## Test harness
 
 Self-contained test scripts live in `scripts/cache-tests/`. Each test:
@@ -128,3 +185,6 @@ Self-contained test scripts live in `scripts/cache-tests/`. Each test:
 
 Run individual tests: `bash scripts/cache-tests/07-pinned-neg1-with-recap.sh`
 Run all: `bash scripts/cache-tests/run-all.sh`
+
+The `experiment.py` script runs controlled curl-based experiments:
+`python3 scripts/cache-tests/experiment.py --only G` (run specific groups)
