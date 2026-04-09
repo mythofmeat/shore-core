@@ -4,6 +4,29 @@ All notable changes to Shore are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] — 2026-04-10
+
+### Added
+- `shore-test-harness` crate: `TestHarness` with daemon boot and SWP client, `MockLlmServer` with Anthropic SSE stream builder, `TestConfigBuilder`, `CollectedResponse`, and `CrashedHarness` with crash/reboot/corrupt helpers
+- Comprehensive integration test suite: message roundtrip, persistence, recovery, concurrency, compaction, ledger, autonomy, tool execution, provider edge cases, and protocol validation
+- Configurable cache breakpoints for debugging cache stability
+- Cache forensics logging with stale request-ID fix and desktop anomaly alerts
+
+### Fixed
+- First streaming token dropped in OpenAI and Zai providers
+- Protocol, config, and state-machine bugs across multiple crates
+- Memory subsystem: ID collisions, timezone comparison, and error messages
+- Security hardening: shell escape in notifications, symlink escape in scratchpad
+- UTF-8 boundary safety for string truncation
+- Cache keepalive: phantom pings, startup priming, 55min interval with 10s tick granularity, user message appended for valid API request
+- Skip cache anomaly detection for interiority and tool-loop calls
+- Move `set_next_wake` to base tool set to prevent interiority cache busting
+- Ledger: run cache tracker for OpenRouter-routed Anthropic calls
+- Daemon: create data/runtime dirs on startup
+
+### Changed
+- Migrate autonomy to `tokio::time::Instant` for deterministic test time control
+
 ## [0.9.0] — 2026-04-08
 
 ### Added
@@ -236,6 +259,7 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Command dispatch (US-017)
 - End-to-end conversation milestone (US-018)
 
+[0.10.0]: https://github.com/eshen/silvershore/compare/v0.9.1...v0.10.0
 [0.9.0]: https://github.com/eshen/silvershore/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/eshen/silvershore/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/eshen/silvershore/compare/v0.6.0...v0.7.0
