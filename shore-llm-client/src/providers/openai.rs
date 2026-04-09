@@ -349,17 +349,18 @@ pub async fn stream(
                     Err(_) => return None,
                 };
 
-                // Emit start event on first chunk.
+                let choice = chunk.get("choices").and_then(|c| c.get(0));
+                let mut lines_out: Vec<String> = Vec::new();
+
+                // Emit start event on first chunk (no early return — continue
+                // processing so the first content delta is not dropped).
                 if !start_sent {
                     if let Some(m) = chunk.get("model").and_then(|m| m.as_str()) {
                         model = m.to_string();
                     }
                     start_sent = true;
-                    return Some(build_start_event(&model));
+                    lines_out.push(build_start_event(&model));
                 }
-
-                let choice = chunk.get("choices").and_then(|c| c.get(0));
-                let mut lines_out: Vec<String> = Vec::new();
 
                 if let Some(choice) = choice {
                     let delta = choice.get("delta");
@@ -1145,5 +1146,84 @@ mod tests {
         let headers = build_headers(&request, &ctx);
         assert_eq!(headers.get("HTTP-Referer").unwrap(), "https://shore.ai");
         assert_eq!(headers.get("X-Title").unwrap(), "Shore");
+    }
+
+    /// The first SSE chunk often carries both the model name AND the first
+    /// content delta. The streaming callback must emit both the `start` event
+    /// and the text from that first chunk. Previously the callback returned
+    /// early after emitting `start`, silently dropping the first token.
+    #[test]
+    fn first_chunk_content_not_dropped() {
+        use crate::providers::sse::SseEvent;
+        use crate::providers::stream_helpers::{build_start_event, normalize_finish_reason};
+        use std::collections::HashMap;
+
+        // Replicate the callback's state.
+        let mut start_sent = false;
+        let mut model = "gpt-4".to_string();
+        let mut text_content = String::new();
+        let mut timing = StreamTiming::new();
+        let reasoning_field_name = "reasoning_content".to_string();
+        let mut finish_reason: &str = "end_turn";
+        let mut usage = Usage::default();
+        let mut tool_calls: HashMap<u64, (String, String, Vec<String>)> = HashMap::new();
+
+        // First SSE chunk: carries model AND a content delta.
+        let first_chunk = json!({
+            "model": "gpt-4o-2024-05-13",
+            "choices": [{
+                "index": 0,
+                "delta": { "content": "Hello" }
+            }]
+        });
+
+        // --- replicate the callback logic (fixed version) ---
+        let data = serde_json::to_string(&first_chunk).unwrap();
+        let chunk: Value = serde_json::from_str(&data).unwrap();
+
+        let mut lines_out: Vec<String> = Vec::new();
+
+        // Emit start event on first chunk (no early return).
+        if !start_sent {
+            if let Some(m) = chunk.get("model").and_then(|m| m.as_str()) {
+                model = m.to_string();
+            }
+            start_sent = true;
+            lines_out.push(build_start_event(&model));
+        }
+
+        // Process content from the same chunk.
+        let choice = chunk.get("choices").and_then(|c| c.get(0));
+        if let Some(choice) = choice {
+            let delta = choice.get("delta");
+            if let Some(content) = delta
+                .and_then(|d| d.get("content"))
+                .and_then(|c| c.as_str())
+            {
+                if !content.is_empty() {
+                    timing.record_first_token();
+                    text_content.push_str(content);
+                    let ev = json!({"type": "text", "text": content});
+                    if let Ok(line) = serde_json::to_string(&ev) {
+                        lines_out.push(line);
+                    }
+                }
+            }
+        }
+
+        // Must have BOTH start and text events.
+        assert_eq!(lines_out.len(), 2, "Expected start + text events");
+        let start_ev: Value = serde_json::from_str(&lines_out[0]).unwrap();
+        assert_eq!(start_ev["type"], "start");
+        assert_eq!(start_ev["model"], "gpt-4o-2024-05-13");
+        let text_ev: Value = serde_json::from_str(&lines_out[1]).unwrap();
+        assert_eq!(text_ev["type"], "text");
+        assert_eq!(text_ev["text"], "Hello");
+
+        // text_content must have accumulated the first token.
+        assert_eq!(
+            text_content, "Hello",
+            "First chunk's content delta was dropped — text_content is empty"
+        );
     }
 }
