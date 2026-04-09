@@ -22,7 +22,7 @@ Unexpected behavior, kludges, and idiosyncrasies that aren't obvious from readin
 
 - **Anthropic prompt cache has ~5s propagation delay.** After a cache write, identical requests within ~2s may miss. Requests after ~5s reliably hit. This is relevant for tool loops where the continuation call fires within ~1s of the initial call — the cache from the initial call won't be available yet, but this is expected and not a bug.
 
-- **Cache breakpoints at depth 2 are sufficient.** Messages 1-3 of a conversation won't have cache breakpoints (not enough turns for depth-2 to exist), but once the breakpoint activates at message 4+, it works reliably across all subsequent turns including tool use exchanges. Multiple breakpoints at depths 4 and 8 were tested but provided no additional benefit on direct Anthropic.
+- **Sliding message breakpoints require a pinned system anchor.** Using `cache_depth_turns` alone (without any `cache_pinned_position`) causes intermittent full prefix rewrites — `cache_read_tokens=0` with a full `cache_creation_tokens` despite byte-identical prefix content. This affects all depths except depth=0. Adding any pinned system breakpoint (`[0]` or `[-1]`) completely fixes it. This is undocumented; SillyTavern works because it always includes system-level breakpoints. See `docs/PROMPT_CACHING.md` for full test results.
 
 ## Image Handling
 

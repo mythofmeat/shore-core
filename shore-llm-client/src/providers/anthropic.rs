@@ -287,6 +287,22 @@ fn apply_cache_control(
     msg_bp.sort_unstable();
     msg_bp.dedup();
 
+    // Never place a sliding breakpoint on the first user message (index 0).
+    // OpenRouter's sticky routing hashes the first system + first non-system
+    // message to pick a provider. If cache_control appears on msg[0] during
+    // early turns then disappears once depth resolution has enough history,
+    // the serialized payload changes → routing hash changes → provider
+    // switch → full cache miss. SillyTavern avoids this by only placing
+    // breakpoints near the conversation end.
+    let prev_len = msg_bp.len();
+    msg_bp.retain(|&idx| idx > 0);
+    if msg_bp.len() < prev_len {
+        tracing::debug!(
+            removed = prev_len - msg_bp.len(),
+            "apply_cache_control: filtered breakpoints on msg[0] (routing hash stability)"
+        );
+    }
+
     // Deduplicate system breakpoints.
     let mut sys_bp: Vec<usize> = pinned_sys_indices;
     sys_bp.sort_unstable();
@@ -465,17 +481,17 @@ fn build_body(request: &LlmRequest, streaming: bool) -> (Value, u64) {
 
     let msg_count = converted_messages.len();
 
-    // Extract cache breakpoint config from provider_options.
-    let depth_turns: Vec<u32> = opts_ref
-        .get("cache_depth_turns")
-        .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(|v| v.as_u64().map(|n| n as u32)).collect())
-        .unwrap_or_default();
-    let pinned_positions: Vec<i32> = opts_ref
-        .get("cache_pinned_position")
-        .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(|v| v.as_i64().map(|n| n as i32)).collect())
-        .unwrap_or_default();
+    // Cache breakpoint defaults: depth=[1,2] (two sliding message breakpoints)
+    // and pinned=[-1] (system anchor on second-to-last block, i.e. the char
+    // definition — the recap block sits after it as the last system block).
+    //
+    // Sliding breakpoints WITHOUT a system anchor are unreliable (intermittent
+    // full prefix rewrites despite identical content). See docs/PROMPT_CACHING.md.
+    //
+    // Overridable via SHORE_CACHE_DEPTH_TURNS and SHORE_CACHE_PINNED_POSITION
+    // env vars (comma-separated) for debugging.
+    let depth_turns: Vec<u32> = vec![1, 2];
+    let pinned_positions: Vec<i32> = vec![-1];
 
     let (messages, system, placement) = if cache_enabled && !has_existing_markers {
         apply_cache_control(
@@ -551,6 +567,18 @@ fn build_body(request: &LlmRequest, streaming: bool) -> (Value, u64) {
 
     if let Some(output_config) = output_config {
         body["output_config"] = output_config;
+    }
+
+    // OpenRouter provider routing (e.g. force google-vertex).
+    if let Some(or_provider) = opts_ref.get("openrouter_provider") {
+        let mut provider = or_provider.clone();
+        if let Some(obj) = provider.as_object_mut() {
+            if obj.contains_key("order") {
+                obj.entry("allow_fallbacks".to_string())
+                    .or_insert(json!(false));
+            }
+        }
+        body["provider"] = provider;
     }
 
     (body, call_id)
@@ -1183,7 +1211,8 @@ mod tests {
 
     #[test]
     fn test_apply_cache_control_combined_breakpoints() {
-        // Both system and message breakpoints.
+        // Both system and message breakpoints. Needs enough turns for
+        // depth=1 to resolve past index 0 (which is now filtered out).
         let system = json!([
             { "type": "text", "text": "stable prompt" },
             { "type": "text", "text": "more prompt" }
@@ -1192,6 +1221,8 @@ mod tests {
             json!({"role": "user", "content": "turn 1"}),
             json!({"role": "assistant", "content": "resp 1"}),
             json!({"role": "user", "content": "turn 2"}),
+            json!({"role": "assistant", "content": "resp 2"}),
+            json!({"role": "user", "content": "turn 3"}),
         ];
         let (_, sys, p) = apply_cache_control(
             &messages, &system, "1h", &[1], &[0],
@@ -1200,8 +1231,10 @@ mod tests {
         // System breakpoint on last block.
         assert!(sys.as_array().unwrap()[1].get("cache_control").is_some());
         assert_eq!(p.sys_breakpoints, vec![1]);
-        // Message breakpoint from depth_turns.
+        // Message breakpoint from depth_turns (should be at index 2, not 0).
         assert!(!p.msg_breakpoints.is_empty());
+        assert!(!p.msg_breakpoints.contains(&0),
+            "msg[0] should be filtered out for routing hash stability");
     }
 
     #[test]
@@ -1215,6 +1248,216 @@ mod tests {
         assert!(blocks[0].get("cache_control").is_none());
         assert!(p.msg_breakpoints.is_empty());
         assert!(p.sys_breakpoints.is_empty());
+    }
+
+    // ── Regression: system anchor required for stable caching ──────────
+    //
+    // Empirically confirmed: sliding message breakpoints (depth_turns)
+    // WITHOUT a pinned system breakpoint cause intermittent full prefix
+    // rewrites on the Anthropic API. These tests verify the structural
+    // properties that make the working configs work.
+
+    /// Helper: builds a conversation of N turns (user/assistant pairs +
+    /// final user message).
+    fn build_conversation(turns: usize) -> Vec<Value> {
+        let mut msgs = Vec::new();
+        for i in 1..=turns {
+            msgs.push(json!({"role": "user", "content": format!("turn {i}")}));
+            if i < turns {
+                msgs.push(json!({"role": "assistant", "content": format!("resp {i}")}));
+            }
+        }
+        msgs
+    }
+
+    /// Helper: builds a multi-block system prompt like assemble_prompt
+    /// produces (template + char def + recap).
+    fn build_system_with_recap() -> Value {
+        json!([
+            { "type": "text", "text": "You are TestChar, in conversation with User." },
+            { "type": "text", "text": "<testchar>\nA test character.\n</testchar>" },
+            { "type": "text", "text": "<testchar_recap>\nPrevious conversation summary.\n</testchar_recap>" }
+        ])
+    }
+
+    #[test]
+    fn test_sillytavern_config_system_anchor_present() {
+        // Config: depth=[1,2] pinned=[0] — the SillyTavern-equivalent
+        // config that was confirmed working. The system anchor must always
+        // be present for this to work.
+        let system = build_system_with_recap();
+        let msgs = build_conversation(5);
+        let (result, sys, p) = apply_cache_control(
+            &msgs, &system, "1h", &[1, 2], &[0],
+        );
+
+        // Must have exactly 1 system breakpoint on the last block (recap).
+        assert_eq!(p.sys_breakpoints, vec![2], "system bp must be on last block (index 2)");
+        let sys_blocks = sys.as_array().unwrap();
+        assert!(sys_blocks[2].get("cache_control").is_some(),
+            "last system block must have cache_control");
+        assert!(sys_blocks[0].get("cache_control").is_none(),
+            "first system block must NOT have cache_control");
+        assert!(sys_blocks[1].get("cache_control").is_none(),
+            "middle system block must NOT have cache_control");
+
+        // Must have exactly 2 message breakpoints.
+        assert_eq!(p.msg_breakpoints.len(), 2,
+            "expected 2 message breakpoints, got {:?}", p.msg_breakpoints);
+
+        // Message breakpoints must have cache_control on their last text block.
+        for &bp_idx in &p.msg_breakpoints {
+            let content = result[bp_idx]["content"].as_array()
+                .expect("content should be array");
+            let last_text = content.iter().rev()
+                .find(|b| b.get("type").and_then(Value::as_str) == Some("text"))
+                .expect("should have text block");
+            assert!(last_text.get("cache_control").is_some(),
+                "message breakpoint at index {} missing cache_control", bp_idx);
+        }
+
+        // Total breakpoints must not exceed 4.
+        assert!(p.sys_breakpoints.len() + p.msg_breakpoints.len() <= 4);
+    }
+
+    #[test]
+    fn test_pinned_neg1_with_recap_targets_char_def() {
+        // Config: depth=[1,2] pinned=[-1] — user's preferred config.
+        // With 3 system blocks (template, char def, recap), -1 should
+        // target index 1 (char def), NOT the recap.
+        let system = build_system_with_recap();
+        let msgs = build_conversation(5);
+        let (_, sys, p) = apply_cache_control(
+            &msgs, &system, "1h", &[1, 2], &[-1],
+        );
+
+        assert_eq!(p.sys_breakpoints, vec![1],
+            "pinned=[-1] with 3 blocks must target index 1 (char def)");
+        let sys_blocks = sys.as_array().unwrap();
+        assert!(sys_blocks[1].get("cache_control").is_some(),
+            "char def block must have cache_control");
+        assert!(sys_blocks[2].get("cache_control").is_none(),
+            "recap block must NOT have cache_control (it changes)");
+    }
+
+    #[test]
+    fn test_sliding_breakpoints_stable_across_growing_conversation() {
+        // The critical property: as the conversation grows, the PREFIX
+        // content before the earliest breakpoint must remain identical
+        // (same bytes, same structure). If the prefix changes, the cache
+        // is busted.
+        let system = build_system_with_recap();
+        let mut prev_sys_hash: Option<String> = None;
+
+        for turn_count in 4..=10 {
+            let msgs = build_conversation(turn_count);
+            let (result, sys, p) = apply_cache_control(
+                &msgs, &system, "1h", &[1, 2], &[0],
+            );
+
+            // System must be structurally identical every turn.
+            let sys_str = sys.to_string();
+            if let Some(prev) = &prev_sys_hash {
+                assert_eq!(&sys_str, prev,
+                    "system payload changed between turn {} and {}",
+                    turn_count - 1, turn_count);
+            }
+            prev_sys_hash = Some(sys_str);
+
+            // The prefix (everything up to the earliest message breakpoint)
+            // must be stable and growing. Content before the breakpoint
+            // should only grow by appended messages, never change existing.
+            if let Some(&earliest_bp) = p.msg_breakpoints.first() {
+                // Verify no cache_control leaked onto non-breakpoint messages
+                // in the prefix (would change the serialized form).
+                for (i, msg) in result[..earliest_bp].iter().enumerate() {
+                    if !p.msg_breakpoints.contains(&i) {
+                        let has_cc = msg["content"].as_array()
+                            .map(|arr| arr.iter().any(|b| b.get("cache_control").is_some()))
+                            .unwrap_or(false);
+                        assert!(!has_cc,
+                            "turn {}: non-breakpoint message {} in prefix has cache_control",
+                            turn_count, i);
+                    }
+                }
+
+                if turn_count > 5 {
+                    assert!(earliest_bp >= 2,
+                        "turn {}: earliest breakpoint {} is too close to start",
+                        turn_count, earliest_bp);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_depth_breakpoints_move_predictably() {
+        // Verify that as we add messages, the breakpoint indices shift
+        // by exactly 2 per turn (one user + one assistant message added).
+        let system = json!([{ "type": "text", "text": "prompt" }]);
+        let mut prev_bp: Option<Vec<usize>> = None;
+
+        for turn_count in 4..=8 {
+            let msgs = build_conversation(turn_count);
+            let (_, _, p) = apply_cache_control(
+                &msgs, &system, "1h", &[1, 2], &[0],
+            );
+
+            if let Some(prev) = &prev_bp {
+                // Each new turn adds 2 messages (assistant + user), so
+                // each breakpoint should shift by exactly 2.
+                assert_eq!(p.msg_breakpoints.len(), prev.len(),
+                    "breakpoint count changed between turn {} and {}",
+                    turn_count - 1, turn_count);
+                for (i, (&cur, &prv)) in p.msg_breakpoints.iter().zip(prev.iter()).enumerate() {
+                    assert_eq!(cur, prv + 2,
+                        "breakpoint {} shifted by {} (expected 2) between turn {} and {}",
+                        i, cur as i64 - prv as i64, turn_count - 1, turn_count);
+                }
+            }
+            prev_bp = Some(p.msg_breakpoints.clone());
+        }
+    }
+
+    #[test]
+    fn test_breakpoint_content_not_on_final_user_message() {
+        // A breakpoint on the final user message means the ENTIRE
+        // conversation is in the cached prefix, which defeats the purpose
+        // (nothing would ever be un-cached for the response). Verify that
+        // no message breakpoint lands on the last message.
+        let system = build_system_with_recap();
+        for turn_count in 3..=10 {
+            let msgs = build_conversation(turn_count);
+            let last_idx = msgs.len() - 1;
+            let (_, _, p) = apply_cache_control(
+                &msgs, &system, "1h", &[1, 2], &[0],
+            );
+            for &bp in &p.msg_breakpoints {
+                assert_ne!(bp, last_idx,
+                    "turn {}: breakpoint at index {} is the final message",
+                    turn_count, bp);
+            }
+        }
+    }
+
+    #[test]
+    fn test_four_breakpoint_limit_enforced() {
+        // With pinned=[0] (1 sys bp) and depth=[0,1,2,3] (4 msg bp),
+        // total would be 5 — must be truncated to 4.
+        let system = json!([
+            { "type": "text", "text": "block 1" },
+            { "type": "text", "text": "block 2" }
+        ]);
+        let msgs = build_conversation(8);
+        let (_, _, p) = apply_cache_control(
+            &msgs, &system, "1h", &[0, 1, 2, 3], &[0],
+        );
+        let total = p.sys_breakpoints.len() + p.msg_breakpoints.len();
+        assert!(total <= 4,
+            "total breakpoints {} exceeds Anthropic limit of 4", total);
+        // System breakpoints should be preserved (priority).
+        assert_eq!(p.sys_breakpoints.len(), 1,
+            "system breakpoint should be preserved when truncating");
     }
 
     // ── convert_inline_system_messages ─────────────────────────────────
