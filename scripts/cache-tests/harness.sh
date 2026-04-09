@@ -173,7 +173,7 @@ model        = "chat.test.model"
 enabled = false
 
 [behavior.tool_use.tools]
-memory = false
+memory = true
 
 [advanced]
 api_payload_logging = true

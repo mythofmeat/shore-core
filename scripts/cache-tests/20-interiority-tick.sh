@@ -39,7 +39,7 @@ dormant_after_interiority_turns = 5
 dormant_after_idle_time = "48h"
 
 [behavior.tool_use.tools]
-memory = false
+memory = true
 
 [advanced]
 api_payload_logging = true
