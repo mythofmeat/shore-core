@@ -123,20 +123,47 @@ wait_for_tick() {
     return 1
 }
 
-# ── Phase 1: Warm-up ──────────────────────────────────────────────
-echo -e "${CYAN}[$TEST_NAME]${NC} === PHASE 1: Warm-up ==="
-send_msg "Hello! What is 2 + 2?"
-send_msg "What is 10 * 5?"
-send_msg "What is 100 / 4?"
+# ── Phase 1: Build up a 20-turn conversation ─────────────────────
+echo -e "${CYAN}[$TEST_NAME]${NC} === PHASE 1: Build 20-turn conversation ==="
+for i in $(seq 1 20); do
+    a=$((RANDOM % 100))
+    b=$((RANDOM % 100))
+    send_msg "Turn $i: what is $a + $b?"
+done
+
+# Record the last cache_r before the tick for comparison.
+PRE_TICK_FORENSICS="$(grep '"type":"response"' "$(forensics_path)" | tail -1)"
+PRE_TICK_CACHE_R="$(echo "$PRE_TICK_FORENSICS" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('cache_read_tokens', 0))" 2>/dev/null)" || PRE_TICK_CACHE_R=0
+echo -e "${CYAN}[$TEST_NAME]${NC} pre-tick cache_r=$PRE_TICK_CACHE_R"
 
 # ── Phase 2: Force interiority tick ───────────────────────────────
 echo -e "${CYAN}[$TEST_NAME]${NC} === PHASE 2: Force interiority tick ==="
 send_cmd "force-tick"
 wait_for_tick || harness_fail "interiority tick did not fire"
 
-# ── Phase 3: Post-tick follow-up ──────────────────────────────────
-echo -e "${CYAN}[$TEST_NAME]${NC} === PHASE 3: Post-tick follow-up ==="
-send_msg "Hey, what is 3 + 3?"
-send_msg "And 7 * 7?"
+# ── Phase 3: Verify tick didn't bust cache ────────────────────────
+# Check ALL forensics entries from the tick — none should have cache_r=0
+# after the cold start.
+echo -e "${CYAN}[$TEST_NAME]${NC} === PHASE 3: Verify tick cache reads ==="
+TICK_BUSTED=0
+while IFS= read -r line; do
+    cr="$(echo "$line" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('cache_read_tokens', 0))" 2>/dev/null)" || cr=0
+    cw="$(echo "$line" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('cache_creation_tokens', 0))" 2>/dev/null)" || cw=0
+    if [[ "$cr" -eq 0 && "$cw" -gt "$_WRITE_THRESHOLD" ]]; then
+        echo -e "${RED}[$TEST_NAME]${NC}   tick entry: cache_r=0 cache_w=$cw — FULL REWRITE"
+        TICK_BUSTED=1
+    fi
+done < <(grep '"type":"response"' "$(forensics_path)" | tail -n +2)
+# (tail -n +2 skips the cold start entry)
+
+if [[ "$TICK_BUSTED" -eq 1 ]]; then
+    harness_fail "interiority tick caused a full cache rewrite"
+fi
+
+# ── Phase 4: Post-tick follow-up ──────────────────────────────────
+echo -e "${CYAN}[$TEST_NAME]${NC} === PHASE 4: Post-tick follow-up ==="
+send_msg "Post-tick: what is 3 + 3?"
+send_msg "Post-tick: what is 7 * 7?"
+send_msg "Post-tick: what is 99 - 1?"
 
 harness_pass
