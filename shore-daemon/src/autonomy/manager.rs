@@ -248,6 +248,14 @@ impl AutonomyManager {
                 );
                 compaction.enabled = false;
             }
+            if compaction.enabled && compaction.max_turns < compaction.min_turns {
+                tracing::error!(
+                    min_turns = compaction.min_turns,
+                    max_turns = compaction.max_turns,
+                    "Compaction disabled: max_turns must be >= min_turns"
+                );
+                compaction.enabled = false;
+            }
         }
 
         let (compaction_tx, compaction_rx) = mpsc::channel(16);
@@ -2057,6 +2065,33 @@ mod tests {
              Adding set_next_wake changes the tools prefix, which invalidates \
              the ENTIRE Anthropic cache (tools → system → messages). \
              Use an XML tag like <sendMessage> instead."
+        );
+    }
+
+    /// Configuring `max_turns < min_turns` should disable compaction or
+    /// be rejected, since the max_turns trigger can never fire when
+    /// `active_turn_count >= max_turns && active_turn_count >= min_turns`
+    /// requires both conditions simultaneously.
+    #[test]
+    fn compaction_disabled_when_max_turns_less_than_min_turns() {
+        let config = AutonomyConfig::default();
+        let compaction = CompactionConfig {
+            enabled: true,
+            min_turns: 12,
+            max_turns: 8,
+            keep_recent_turns: 3,
+            ..Default::default()
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let (_tx, rx) = tokio::sync::watch::channel(());
+        let (mgr, _rx) = AutonomyManager::new(config, compaction, tmp.path().to_path_buf(), rx);
+
+        // Compaction should be disabled because max_turns < min_turns
+        // makes the max_turns trigger dead code.
+        assert!(
+            !mgr.compaction.enabled,
+            "Compaction should be disabled when max_turns ({}) < min_turns ({})",
+            8, 12,
         );
     }
 }

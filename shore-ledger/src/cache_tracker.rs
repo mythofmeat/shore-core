@@ -177,6 +177,8 @@ impl CacheTracker {
                 } else if obs.cache_read_tokens >= self.last_cache_read {
                     None // OK, stay Warm
                 } else {
+                    self.state = CacheState::Cold;
+                    self.last_cache_read = 0;
                     Some(Anomaly::UnexpectedWrite)
                 }
             }
@@ -571,5 +573,55 @@ mod tests {
             call_type: "interiority".into(),
         });
         assert!(result.anomaly.is_none());
+    }
+
+    /// When the tracker is Warm and observes an UnexpectedWrite (cache_read
+    /// drops), it should transition to Cold — the cache was invalidated.
+    /// Currently it stays Warm, causing subsequent observations to have
+    /// incorrect state.
+    #[test]
+    fn unexpected_write_transitions_warm_to_cold() {
+        let mut tracker = CacheTracker::new();
+        // Warm up.
+        tracker.observe(&Observation {
+            ts: "2026-04-05T12:00:00Z".into(),
+            model: "claude-opus-4-6".into(),
+            thinking_enabled: true,
+            cache_read_tokens: 0,
+            cache_write_tokens: 500,
+            call_type: "message".into(),
+        });
+        assert_eq!(tracker.state(), CacheState::Warm);
+
+        // Now observe: cache_read dropped (cache was invalidated).
+        tracker.observe(&Observation {
+            ts: "2026-04-05T12:00:00Z".into(),
+            model: "claude-opus-4-6".into(),
+            thinking_enabled: true,
+            cache_read_tokens: 500,
+            cache_write_tokens: 0,
+            call_type: "message".into(),
+        });
+        // Set baseline: last_cache_read = 500.
+
+        let result = tracker.observe(&Observation {
+            ts: "2026-04-05T12:01:00Z".into(),
+            model: "claude-opus-4-6".into(),
+            thinking_enabled: true,
+            cache_read_tokens: 100, // dropped from 500 → UnexpectedWrite
+            cache_write_tokens: 400,
+            call_type: "message".into(),
+        });
+
+        assert_eq!(
+            result.anomaly,
+            Some(Anomaly::UnexpectedWrite),
+            "Should detect UnexpectedWrite"
+        );
+        assert_eq!(
+            tracker.state(),
+            CacheState::Cold,
+            "UnexpectedWrite should transition Warm → Cold"
+        );
     }
 }

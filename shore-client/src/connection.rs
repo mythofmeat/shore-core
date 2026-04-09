@@ -334,14 +334,21 @@ impl SWPConnection {
     }
 }
 
-/// Simple v4-style random ID (not cryptographic, just unique enough for rids).
+/// Generate a unique request ID using timestamp + atomic counter.
+///
+/// The counter ensures uniqueness even when multiple IDs are generated
+/// within the same nanosecond (e.g., concurrent threads).
 fn uuid_v4() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    format!("rid_{:016x}", nanos)
+    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("rid_{:016x}_{:04x}", nanos, seq)
 }
 
 #[cfg(test)]
@@ -355,7 +362,7 @@ mod tests {
     fn uuid_v4_unique_under_concurrent_calls() {
         use std::sync::{Arc, Mutex};
 
-        let ids = Arc::new(Mutex::new(std::collections::HashSet::new()));
+        let ids = Arc::new(Mutex::new(std::collections::HashSet::<String>::new()));
         let mut handles = Vec::new();
 
         // Spawn 8 threads each generating 100 IDs concurrently.

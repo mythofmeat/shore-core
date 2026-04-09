@@ -316,10 +316,15 @@ where
     .await;
 
     // Unregister client on disconnect.
-    ctx.clients.write().await.remove(&client_id);
-    info!(client_id, "Client disconnected");
-
-    if ctx.clients.read().await.is_empty() {
+    // Hold the write lock across remove + is_empty to prevent two concurrent
+    // disconnects from both seeing is_empty() == true (double-fire).
+    let all_gone = {
+        let mut clients = ctx.clients.write().await;
+        clients.remove(&client_id);
+        info!(client_id, "Client disconnected");
+        clients.is_empty()
+    };
+    if all_gone {
         let _ = ctx.route_tx.send(RoutedMessage::AllClientsDisconnected).await;
     }
 
@@ -457,6 +462,9 @@ where
 
 /// Read one ClientMessage from a newline-delimited JSON stream.
 /// Returns `None` on EOF.
+///
+/// The read is bounded to `MAX_MESSAGE_SIZE` bytes to prevent a
+/// malicious client from exhausting server memory with a single line.
 async fn read_message<R>(
     reader: &mut BufReader<R>,
 ) -> Result<Option<ClientMessage>, Box<dyn std::error::Error + Send + Sync>>
@@ -464,12 +472,28 @@ where
     R: tokio::io::AsyncRead + Unpin,
 {
     let mut line = String::new();
-    let n = reader.read_line(&mut line).await?;
-    if n == 0 {
-        return Ok(None);
-    }
-    if line.len() > MAX_MESSAGE_SIZE {
-        return Err("Message exceeds maximum size".into());
+    loop {
+        let buf = reader.fill_buf().await?;
+        if buf.is_empty() {
+            if line.is_empty() {
+                return Ok(None); // EOF
+            }
+            break; // EOF mid-line — try to parse what we have
+        }
+        // Find newline in the buffer.
+        let (consume, done) = match buf.iter().position(|&b| b == b'\n') {
+            Some(pos) => (pos + 1, true),
+            None => (buf.len(), false),
+        };
+        // Check size limit BEFORE allocating.
+        if line.len() + consume > MAX_MESSAGE_SIZE {
+            return Err("Message exceeds maximum size".into());
+        }
+        line.push_str(std::str::from_utf8(&buf[..consume]).map_err(|e| e.to_string())?);
+        reader.consume(consume);
+        if done {
+            break;
+        }
     }
     let msg: ClientMessage = serde_json::from_str(line.trim())?;
     Ok(Some(msg))
@@ -1034,25 +1058,20 @@ mod tests {
         let _ = shutdown_tx.send(());
     }
 
-    /// `read_message` checks size AFTER `read_line` has already consumed
-    /// the entire line into memory. A malicious client can send a line
-    /// larger than MAX_MESSAGE_SIZE, exhausting server memory before the
-    /// check runs. The read should be bounded.
+    /// `read_message` must reject messages exceeding MAX_MESSAGE_SIZE.
+    /// The read itself should be bounded to prevent OOM from a malicious
+    /// client sending a multi-GB line.
     #[tokio::test]
-    async fn read_message_rejects_oversized_before_full_alloc() {
-        // Create a message that exceeds MAX_MESSAGE_SIZE.
-        // We use a smaller threshold to keep the test fast.
+    async fn read_message_rejects_oversized() {
         let oversized = format!("{{\"type\":\"message\",\"body\":{{\"content\":\"{}\"}}}}\n", "x".repeat(MAX_MESSAGE_SIZE + 1));
 
         let (mut writer, reader) = duplex(MAX_MESSAGE_SIZE + 4096);
         let mut buf_reader = BufReader::new(reader);
 
-        // Write the oversized message.
         use tokio::io::AsyncWriteExt;
         writer.write_all(oversized.as_bytes()).await.unwrap();
-        drop(writer); // close to signal EOF after the line
+        drop(writer);
 
-        // read_message should return an error, not panic or OOM.
         let result = read_message(&mut buf_reader).await;
         assert!(
             result.is_err(),
