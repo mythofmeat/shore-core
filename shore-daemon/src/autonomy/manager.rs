@@ -513,6 +513,17 @@ impl AutonomyManager {
 
     /// Explicitly set the paused state for a character. Returns the new state,
     /// or None if the character has no autonomy state.
+    /// Force the interiority clock to fire on the next tick poll (~10s).
+    /// Returns true if the character state was found and updated.
+    pub fn force_tick(&self, character: &str) -> bool {
+        info!(character, "Forcing interiority tick");
+        self.with_state(character, |s| {
+            s.interiority.force_wake();
+            s.mark_dirty();
+        })
+        .is_some()
+    }
+
     pub fn set_paused(&self, character: &str, paused: bool) -> Option<bool> {
         info!(character, paused, "Autonomy pause state changed");
         self.with_state(character, |s| {
@@ -1047,30 +1058,10 @@ async fn execute_unified_tick(
         .messages
         .push(json!({"role": "user", "content": interiority_prompt}));
 
-    // Inject the set_next_wake tool definition into the request.
-    let set_next_wake_def = json!({
-        "name": "set_next_wake",
-        "description": "Schedule when you want to have your next private moment to think and use tools. Use this at the end of a tick to express your own sense of pacing.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "hours_from_now": {
-                    "type": "number",
-                    "description": "Hours until your next private moment (1.0 to 48.0; clamped if outside range)"
-                },
-                "reason": {
-                    "type": "string",
-                    "description": "A brief note to your future self about why you chose this timing"
-                }
-            },
-            "required": ["hours_from_now", "reason"]
-        }
-    });
-    if let Some(tools) = request.tools.as_mut() {
-        tools.push(set_next_wake_def);
-    } else {
-        request.tools = Some(vec![set_next_wake_def]);
-    }
+    // NOTE: set_next_wake is now in the base tool set (tools/basic.rs)
+    // so the tools array is identical between normal messages and interiority
+    // ticks. This prevents cache prefix invalidation. Instructions for using
+    // set_next_wake are in the interiority prompt, not the capabilities block.
 
     let tool_ctx = match build_tool_context(character, data_dir, client, lc).await {
         Some(ctx) => ctx,

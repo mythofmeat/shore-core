@@ -117,6 +117,24 @@ pub fn heartbeat_log(
     Ok(json!({ "events": events_json }))
 }
 
+/// Force an interiority tick to fire on the next poll (~10s).
+pub fn force_tick(
+    engine: &ConversationEngine,
+    ctx: &CommandContext,
+) -> CommandResult {
+    let char_name = engine.character_name();
+    let triggered = ctx.autonomy.force_tick(char_name);
+    if triggered {
+        Ok(json!({ "status": "scheduled", "character": char_name,
+                    "note": "Tick will fire within ~10 seconds" }))
+    } else {
+        Err((
+            ErrorCode::InvalidRequest,
+            format!("No autonomy state for character '{char_name}'"),
+        ))
+    }
+}
+
 /// List available model profiles from the model catalog.
 pub fn list_models(ctx: &CommandContext) -> CommandResult {
     let mut models: Vec<_> = ctx

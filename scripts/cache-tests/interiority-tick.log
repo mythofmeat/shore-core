@@ -1,0 +1,61 @@
+[0;36m[interiority-tick][0m init: /tmp/shore-cache-test-interiority-tick-MReVit
+[0;36m[interiority-tick][0m nonce: KehwN83rqv2o9l3gbMZVgaNt7Hs9c78
+[0;36m[interiority-tick][0m building...
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.38s
+[0;36m[interiority-tick][0m starting daemon...
+[0;36m[interiority-tick][0m daemon running (PID 1952253)
+[0;36m[interiority-tick][0m === PHASE 1: Warm-up ===
+[0;36m[interiority-tick][0m send: Hello! What is 2 + 2?
+4.
+[38;5;8m[anthropic/claude-4.6-sonnet | in:3 out:6 cache_r:0 cache_w:3479 | ttft:193ms total:251ms][0m
+
+
+[0;36m[interiority-tick][0m   turn 0: cache_w=3479 (cold start, threshold=1739)
+[0;36m[interiority-tick][0m send: What is 10 * 5?
+50.
+[38;5;8m[anthropic/claude-4.6-sonnet | in:21 out:6 cache_r:3479 cache_w:0 | ttft:3ms total:71ms][0m
+
+
+[0;36m[interiority-tick][0m   turn 1: cache_r=3479 cache_w=0
+[0;36m[interiority-tick][0m send: What is 100 / 4?
+25.
+[38;5;8m[anthropic/claude-4.6-sonnet | in:33 out:6 cache_r:3479 cache_w:6 | ttft:2ms total:97ms][0m
+
+
+[0;36m[interiority-tick][0m   turn 2: cache_r=3479 cache_w=6
+[0;36m[interiority-tick][0m === PHASE 2: Force interiority tick ===
+[0;36m[interiority-tick][0m cmd: force-tick
+[1mforce_tick[0m
+{
+  "status": "scheduled",
+  "character": "cachetest",
+  "note": "Tick will fire within ~10 seconds"
+}
+[0;36m[interiority-tick][0m waiting for interiority tick (forensics count=3)...
+[0;36m[interiority-tick][0m new forensics entry detected (count=5, waited 5x2s)
+[0;36m[interiority-tick][0m   tick: cache_r=3485 cache_w=18
+[0;36m[interiority-tick][0m === PHASE 3: Post-tick follow-up ===
+[0;36m[interiority-tick][0m send: Hey, what is 3 + 3?
+6.
+[38;5;8m[anthropic/claude-4.6-sonnet | in:35 out:6 cache_r:3503 cache_w:0 | ttft:25ms total:115ms][0m
+
+
+[0;36m[interiority-tick][0m   turn 3: cache_r=3503 cache_w=0
+[0;36m[interiority-tick][0m send: And 7 * 7?
+49.
+[38;5;8m[anthropic/claude-4.6-sonnet | in:34 out:6 cache_r:3503 cache_w:18 | ttft:12ms total:61ms][0m
+
+
+[0;36m[interiority-tick][0m   turn 4: cache_r=3503 cache_w=18
+[0;32m[interiority-tick] PASS[0m
+[0;36m[interiority-tick][0m forensics summary:
+  [0] input=3 cache_r=0 cache_w=3479  WRITE
+  [1] input=21 cache_r=3479 cache_w=0
+  [2] input=33 cache_r=3479 cache_w=6  WRITE
+  [3] input=376 cache_r=3485 cache_w=18  WRITE
+  [4] input=376 cache_r=3485 cache_w=18  WRITE
+  [5] input=35 cache_r=3503 cache_w=0
+  [6] input=574 cache_r=3503 cache_w=0
+  [7] input=574 cache_r=3503 cache_w=0
+  [8] input=34 cache_r=3503 cache_w=18  WRITE
+[0;36m[interiority-tick][0m cleaning up /tmp/shore-cache-test-interiority-tick-MReVit
