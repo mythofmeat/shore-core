@@ -189,6 +189,60 @@ def apply_system_only_caching(messages):
     return msgs
 
 
+def apply_shore_style_caching(messages, depth_turns=None, pinned=None):
+    """Shore-style breakpoints: depth_turns counts user msgs from end,
+    pinned places a system breakpoint. For OpenAI format (system inline).
+
+    depth_turns: list of ints, e.g. [1,2] or [0,1]. None = no sliding.
+    pinned: int or None. 0/-1 = system msg gets cache_control. None = no pin.
+    """
+    msgs = copy.deepcopy(messages)
+
+    # System breakpoint
+    if pinned is not None:
+        for msg in msgs:
+            if msg["role"] == "system":
+                content = msg["content"]
+                if isinstance(content, str):
+                    msg["content"] = [{"type": "text", "text": content,
+                                       "cache_control": {"type": "ephemeral"}}]
+                elif isinstance(content, list):
+                    content[-1]["cache_control"] = {"type": "ephemeral"}
+                break
+
+    if not depth_turns:
+        return msgs
+
+    # Sliding breakpoints: count real user msgs from end
+    non_system = [(i, m) for i, m in enumerate(msgs) if m["role"] != "system"]
+    user_positions = [i for i, m in non_system if m["role"] == "user"]
+
+    bp_indices = set()
+    for depth in depth_turns:
+        # depth=0 → last user msg's preceding assistant (or the user itself)
+        # depth=1 → one user msg further back, breakpoint on msg before it
+        target_user = len(user_positions) - 1 - depth
+        if target_user < 0:
+            continue  # not enough turns
+        user_real_idx = user_positions[target_user]
+        # Place BP on the message before this user msg (the assistant response)
+        bp_idx = user_real_idx - 1 if user_real_idx > 0 else user_real_idx
+        if bp_idx <= 0:
+            continue  # skip msg[0] (system) and msg[1] (first user)
+        bp_indices.add(bp_idx)
+
+    for idx in bp_indices:
+        if idx < len(msgs):
+            content = msgs[idx]["content"]
+            if isinstance(content, str):
+                msgs[idx]["content"] = [{"type": "text", "text": content,
+                                         "cache_control": {"type": "ephemeral"}}]
+            elif isinstance(content, list):
+                content[-1]["cache_control"] = {"type": "ephemeral"}
+
+    return msgs
+
+
 # ── Request sending ───────────────────────────────────────────────
 
 def send_openai_format(messages, api_key, headers, tools=True,
@@ -376,6 +430,11 @@ def run_experiment(config):
                     all_msgs = apply_sillytavern_caching(all_msgs)
                 elif bp_strategy == "system-only":
                     all_msgs = apply_system_only_caching(all_msgs)
+                elif bp_strategy == "shore":
+                    all_msgs = apply_shore_style_caching(
+                        all_msgs,
+                        depth_turns=config.get("depth_turns"),
+                        pinned=config.get("pinned"))
                 text, prompt, cache_r, cache_w = send_openai_format(
                     all_msgs, api_key, headers, tools=use_tools,
                     provider_pin=provider_pin)
@@ -495,6 +554,30 @@ EXPERIMENTS = [
     {"name": "G3-openai-sysonly-pin-4s", "format": "openai",
      "sillytavern_headers": True, "breakpoints": "system-only", "delay": 4,
      "provider_pin": "Anthropic"},
+
+    # Group H: Breakpoint combos (OpenAI, 3s delay, 6 turns, no pinning)
+    # sliding × pinned matrix
+    {"name": "H1-d12-pin-1", "format": "openai", "breakpoints": "shore",
+     "depth_turns": [1, 2], "pinned": -1, "delay": 3, "turns": 6},
+    {"name": "H2-d12-pin0", "format": "openai", "breakpoints": "shore",
+     "depth_turns": [1, 2], "pinned": 0, "delay": 3, "turns": 6},
+    {"name": "H3-d12-nopin", "format": "openai", "breakpoints": "shore",
+     "depth_turns": [1, 2], "pinned": None, "delay": 3, "turns": 6},
+    {"name": "H4-d01-pin-1", "format": "openai", "breakpoints": "shore",
+     "depth_turns": [0, 1], "pinned": -1, "delay": 3, "turns": 6},
+    {"name": "H5-d01-pin0", "format": "openai", "breakpoints": "shore",
+     "depth_turns": [0, 1], "pinned": 0, "delay": 3, "turns": 6},
+    {"name": "H6-d01-nopin", "format": "openai", "breakpoints": "shore",
+     "depth_turns": [0, 1], "pinned": None, "delay": 3, "turns": 6},
+    {"name": "H7-nosl-pin-1", "format": "openai", "breakpoints": "shore",
+     "depth_turns": None, "pinned": -1, "delay": 3, "turns": 6},
+    {"name": "H8-nosl-pin0", "format": "openai", "breakpoints": "shore",
+     "depth_turns": None, "pinned": 0, "delay": 3, "turns": 6},
+
+    # H9: provider pin control — retest G with fresh credits
+    {"name": "H9-pin-control", "format": "openai", "breakpoints": "sillytavern",
+     "delay": 3, "turns": 6, "provider_pin": "Anthropic",
+     "sillytavern_headers": True},
 ]
 
 
