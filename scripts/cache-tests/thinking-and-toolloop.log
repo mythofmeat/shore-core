@@ -1,0 +1,39 @@
+[0;36m[tool-loop][0m nonce: s777AbXBfWZm0JjlTrzgGZ8WzaxvBguA
+[0;36m[tool-loop][0m thinking=always, pin=Anthropic
+
+[0;36m[tool-loop][0m === WARM-UP ===
+[0;36m[tool-loop][0m s0: warm-up-1 (cold)
+  in=339 r=0 w=3029
+  → think=1 tools=0 text='7 + 3 = **10**'
+
+[0;36m[tool-loop][0m === THINKING TURNS (hard questions) ===
+[0;36m[tool-loop][0m s1: think-hard-1
+  in=417 r=3029 w=0
+  → think=1 tools=0 text='Sure! Let me carefully identify all prime numbers between 50'
+[0;36m[tool-loop][0m s2: think-hard-2
+  in=1951 r=3029 w=383
+  → think=1 tools=0 text='Great matrix problem! Let me work through this carefully.\n\n-'
+[0;36m[tool-loop][0m s3: think-hard-3
+  in=1081 r=3412 w=1899 [0;31m*** REWRITE ***[0m
+  → think=1 tools=0 text='A classic relative motion problem! Let me work through it st'
+
+[0;36m[tool-loop][0m === TOOL USE LOOP ===
+[0;36m[tool-loop][0m s4: multi-tool-request
+  in=1057 r=5311 w=1023
+  → think=1 tools=3 text="Sure! All three tasks are independent, so I'll kick them off"
+  🔧 check_time({})
+  🔧 web_search({"query": "current weather in Tokyo"})
+  🔧 roll_dice({"notation": "3d6"})
+[0;36m[tool-loop][0m s5: tool-loop-1
+  in=1398 r=6334 w=0
+  → think=0 tools=0 text='Here are all three results together:\n\n---\n\n### 🕐 Current Tim'
+
+[0;36m[tool-loop][0m === POST-TOOL FOLLOW-UP ===
+[0;36m[tool-loop][0m s6: follow-up-1
+  in=611 r=6334 w=990
+  → think=1 tools=0 text='5 + 5 = **10**! 😊'
+[0;36m[tool-loop][0m s7: follow-up-2
+  in=76 r=7324 w=586
+  → think=1 tools=0 text='100 / 4 = **25**! 🎉'
+
+[0;31m[tool-loop] 1/7 rewrites[0m

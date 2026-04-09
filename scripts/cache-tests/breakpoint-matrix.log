@@ -1,0 +1,141 @@
+Running 9 experiments, results → scripts/cache-tests/experiment-results.jsonl
+
+============================================================
+[0;36m[H1-d12-pin-1][0m starting
+  format=openai delay=3s bp=shore headers=none tools=True warmup=0
+  nonce=COfF7VnNU5HmpDGjo5HKUXl1CyPt4RT9
+============================================================
+[0;36m[H1-d12-pin-1][0m t0: w=2327 r=0 p=2665 (cold, thresh=1163)
+[0;36m[H1-d12-pin-1][0m t1: w=2327 r=0 p=2697 [0;31mREWRITE[0m
+[0;36m[H1-d12-pin-1][0m t2: w=349 r=2327 p=2729
+[0;36m[H1-d12-pin-1][0m t3: w=2708 r=0 p=2761 [0;31mREWRITE[0m
+[0;36m[H1-d12-pin-1][0m t4: w=64 r=2676 p=2793
+[0;36m[H1-d12-pin-1][0m t5: w=32 r=2740 p=2825
+
+[0;31m[H1-d12-pin-1] 2/5 rewrites (40% miss rate)[0m
+
+============================================================
+[0;36m[H2-d12-pin0][0m starting
+  format=openai delay=3s bp=shore headers=none tools=True warmup=0
+  nonce=jTuGNsYwfJ8vltbZkgJgAlZ53VB6qfpH
+============================================================
+[0;36m[H2-d12-pin0][0m t0: w=2329 r=0 p=2667 (cold, thresh=1164)
+[0;36m[H2-d12-pin0][0m t1: w=0 r=2329 p=2699
+[0;36m[H2-d12-pin0][0m t2: w=349 r=2329 p=2731
+[0;36m[H2-d12-pin0][0m t3: w=32 r=2678 p=2763
+[0;36m[H2-d12-pin0][0m t4: w=32 r=2710 p=2795
+[0;36m[H2-d12-pin0][0m t5: w=32 r=2742 p=2827
+
+[0;32m[H2-d12-pin0] 0/5 rewrites (0% miss rate)[0m
+
+============================================================
+[0;36m[H3-d12-nopin][0m starting
+  format=openai delay=3s bp=shore headers=none tools=True warmup=0
+  nonce=GgM5ZtX5YQ7PZVbA3FSEGYM8Ho6lj
+============================================================
+[0;36m[H3-d12-nopin][0m t0: w=0 r=0 p=2664 (cold, thresh=0)
+[0;36m[H3-d12-nopin][0m t1: w=0 r=0 p=2696
+[0;36m[H3-d12-nopin][0m t2: w=2675 r=0 p=2728
+[0;36m[H3-d12-nopin][0m t3: w=2707 r=0 p=2760
+[0;36m[H3-d12-nopin][0m t4: w=32 r=2707 p=2792
+[0;36m[H3-d12-nopin][0m t5: w=32 r=2739 p=2824
+
+[0;32m[H3-d12-nopin] 0/5 rewrites (0% miss rate)[0m
+
+============================================================
+[0;36m[H4-d01-pin-1][0m starting
+  format=openai delay=3s bp=shore headers=none tools=True warmup=0
+  nonce=fyn5qfNLwpx7aJHzLIbQmP0MFkEV2hv
+============================================================
+[0;36m[H4-d01-pin-1][0m t0: w=2330 r=0 p=2668 (cold, thresh=1165)
+[0;36m[H4-d01-pin-1][0m t1: w=349 r=2330 p=2700
+[0;36m[H4-d01-pin-1][0m t2: w=32 r=2679 p=2732
+[0;36m[H4-d01-pin-1][0m t3: w=2743 r=0 p=2764 [0;31mREWRITE[0m
+[0;36m[H4-d01-pin-1][0m t4: w=32 r=2743 p=2796
+[0;36m[H4-d01-pin-1][0m t5: w=32 r=2775 p=2828
+
+[0;33m[H4-d01-pin-1] 1/5 rewrites (20% miss rate)[0m
+
+============================================================
+[0;36m[H5-d01-pin0][0m starting
+  format=openai delay=3s bp=shore headers=none tools=True warmup=0
+  nonce=qNTbTsi2SFNqqtPWEz2pbI4LQKn02GY
+============================================================
+[0;36m[H5-d01-pin0][0m t0: w=2327 r=0 p=2665 (cold, thresh=1163)
+[0;36m[H5-d01-pin0][0m t1: w=349 r=2327 p=2697
+[0;36m[H5-d01-pin0][0m t2: w=32 r=2676 p=2729
+[0;36m[H5-d01-pin0][0m t3: w=32 r=2708 p=2761
+[0;36m[H5-d01-pin0][0m t4: w=32 r=2740 p=2793
+[0;36m[H5-d01-pin0][0m t5: w=32 r=2772 p=2825
+
+[0;32m[H5-d01-pin0] 0/5 rewrites (0% miss rate)[0m
+
+============================================================
+[0;36m[H6-d01-nopin][0m starting
+  format=openai delay=3s bp=shore headers=none tools=True warmup=0
+  nonce=zKkBLOf6gKs0CQ12IY6PW3kAhPNHpvC
+============================================================
+[0;36m[H6-d01-nopin][0m t0: w=0 r=0 p=2667 (cold, thresh=0)
+[0;36m[H6-d01-nopin][0m t1: w=2678 r=0 p=2699
+[0;36m[H6-d01-nopin][0m t2: w=32 r=2678 p=2731
+[0;36m[H6-d01-nopin][0m t3: w=2742 r=0 p=2763
+[0;36m[H6-d01-nopin][0m t4: w=64 r=2710 p=2795
+[0;36m[H6-d01-nopin][0m t5: w=32 r=2774 p=2827
+
+[0;32m[H6-d01-nopin] 0/5 rewrites (0% miss rate)[0m
+
+============================================================
+[0;36m[H7-nosl-pin-1][0m starting
+  format=openai delay=3s bp=shore headers=none tools=True warmup=0
+  nonce=AnEFCY8r6kUT91DQjF7gevVi1vLHc
+============================================================
+[0;36m[H7-nosl-pin-1][0m t0: w=2324 r=0 p=2662 (cold, thresh=1162)
+[0;36m[H7-nosl-pin-1][0m t1: w=2324 r=0 p=2694 [0;31mREWRITE[0m
+[0;36m[H7-nosl-pin-1][0m t2: w=0 r=2324 p=2726
+[0;36m[H7-nosl-pin-1][0m t3: w=0 r=2324 p=2758
+[0;36m[H7-nosl-pin-1][0m t4: w=0 r=2324 p=2790
+[0;36m[H7-nosl-pin-1][0m t5: w=0 r=2324 p=2822
+
+[0;33m[H7-nosl-pin-1] 1/5 rewrites (20% miss rate)[0m
+
+============================================================
+[0;36m[H8-nosl-pin0][0m starting
+  format=openai delay=3s bp=shore headers=none tools=True warmup=0
+  nonce=ZD2SkK9zTOUqhUbqzMxOP2CfchMfZIyi
+============================================================
+[0;36m[H8-nosl-pin0][0m t0: w=2329 r=0 p=2667 (cold, thresh=1164)
+[0;36m[H8-nosl-pin0][0m t1: w=0 r=2329 p=2699
+[0;36m[H8-nosl-pin0][0m t2: w=0 r=2329 p=2731
+[0;36m[H8-nosl-pin0][0m t3: w=0 r=2329 p=2763
+[0;36m[H8-nosl-pin0][0m t4: w=0 r=2329 p=2795
+[0;36m[H8-nosl-pin0][0m t5: w=0 r=2329 p=2827
+
+[0;32m[H8-nosl-pin0] 0/5 rewrites (0% miss rate)[0m
+
+============================================================
+[0;36m[H9-pin-control][0m starting
+  format=openai delay=3s bp=sillytavern headers=ST tools=True warmup=0
+  nonce=iz6KQSW3hSxvrh8K7IrGKmv1AvS9NwDr
+============================================================
+[0;36m[H9-pin-control][0m t0: w=2331 r=0 p=2669 (cold, thresh=1165)
+[0;36m[H9-pin-control][0m t1: w=335 r=2331 p=2701
+[0;36m[H9-pin-control][0m t2: w=32 r=2666 p=2733
+[0;36m[H9-pin-control][0m t3: w=32 r=2698 p=2765
+[0;36m[H9-pin-control][0m t4: w=32 r=2730 p=2797
+[0;36m[H9-pin-control][0m t5: w=32 r=2762 p=2829
+
+[0;32m[H9-pin-control] 0/5 rewrites (0% miss rate)[0m
+
+======================================================================
+Experiment                       Rewrites  Miss Rate   Result
+----------------------------------------------------------------------
+H1-d12-pin-1                       2/5          40% [0;31m    FAIL[0m
+H2-d12-pin0                        0/5           0% [0;32m    PASS[0m
+H3-d12-nopin                       0/5           0% [0;32m    PASS[0m
+H4-d01-pin-1                       1/5          20% [0;33m    FAIL[0m
+H5-d01-pin0                        0/5           0% [0;32m    PASS[0m
+H6-d01-nopin                       0/5           0% [0;32m    PASS[0m
+H7-nosl-pin-1                      1/5          20% [0;33m    FAIL[0m
+H8-nosl-pin0                       0/5           0% [0;32m    PASS[0m
+H9-pin-control                     0/5           0% [0;32m    PASS[0m
+======================================================================
