@@ -49,6 +49,8 @@ pub fn test_model() -> ResolvedModel {
         gemini_web_search: None,
         zai_clear_thinking: None,
         zai_subscription: None,
+        cache_depth_turns: None,
+        cache_pinned_position: None,
     }
 }
 

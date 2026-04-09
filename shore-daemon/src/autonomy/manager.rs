@@ -1991,4 +1991,69 @@ mod tests {
             "Keepalive must be primed on startup when next_wake is restored"
         );
     }
+
+    // -- cache prefix stability -----------------------------------------------
+
+    /// The interiority tick must NOT add tools (like `set_next_wake`) to the
+    /// request's tools array.  The Anthropic cache prefix order is
+    /// tools → system → messages.  Changing the tools array invalidates the
+    /// ENTIRE cache prefix — system AND messages.  Every interiority tick
+    /// with a different tools array pays full input price (20× expected).
+    ///
+    /// The fix is to handle `set_next_wake` via an XML tag in the response
+    /// (like `<sendMessage>` and `<recap>` already work), not as a tool.
+    #[test]
+    fn interiority_must_not_mutate_tools_array() {
+        // Simulate what execute_unified_tick does: clone last_request,
+        // then check if tools are modified.
+        let original_tools: Vec<serde_json::Value> = vec![
+            json!({"name": "check_time", "input_schema": {}}),
+            json!({"name": "memory", "input_schema": {}}),
+        ];
+
+        let mut request = LlmRequest {
+            sdk: shore_config::models::Sdk::Anthropic,
+            model: "test".into(),
+            api_key: "key".into(),
+            base_url: None,
+            messages: vec![json!({"role": "user", "content": "hello"})],
+            system: Some(json!([{"type": "text", "text": "system prompt"}])),
+            tools: Some(original_tools.clone()),
+            max_tokens: 4096,
+            temperature: None,
+            top_p: None,
+            provider_options: None,
+            provider_key: None,
+            rid: None,
+            forensic_character: None,
+        };
+
+        // This is exactly what execute_unified_tick does at lines 1046-1069.
+        let set_next_wake_def = json!({
+            "name": "set_next_wake",
+            "description": "Schedule when you want to have your next private moment.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "hours_from_now": { "type": "number" },
+                    "reason": { "type": "string" }
+                },
+                "required": ["hours_from_now", "reason"]
+            }
+        });
+        if let Some(tools) = request.tools.as_mut() {
+            tools.push(set_next_wake_def);
+        }
+
+        // The tools array must be identical to the original conversation's
+        // tools to preserve the cache prefix.
+        assert_eq!(
+            request.tools.as_ref().unwrap().len(),
+            original_tools.len(),
+            "Interiority must not add tools to the request. \
+             Adding set_next_wake changes the tools prefix, which invalidates \
+             the ENTIRE Anthropic cache (tools → system → messages). \
+             Use an XML tag like <sendMessage> instead."
+        );
+    }
 }

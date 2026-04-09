@@ -365,6 +365,8 @@ mod tests {
             gemini_web_search: None,
             zai_clear_thinking: None,
             zai_subscription: None,
+            cache_depth_turns: None,
+            cache_pinned_position: None,
         };
 
         let agent = MemoryAgent::one_shot(CallerIdentity::Char, "Alice", "Bob");
@@ -381,5 +383,63 @@ mod tests {
             .unwrap();
 
         assert_eq!(result, "No relevant memories found.");
+    }
+
+    /// The system prompt sent by the agent tool loop MUST be a JSON array of
+    /// `{"type": "text", "text": "..."}` objects — NOT a bare string.
+    /// The Anthropic API rejects bare-string system prompts.
+    #[tokio::test]
+    async fn agent_system_prompt_is_array_not_string() {
+        use crate::memory::agent_llm::{AgentLlmResponse, MockAgentLlm};
+        use crate::test_support::test_model;
+        use shore_llm_client::types::ContentBlock;
+
+        let mock = MockAgentLlm::new(vec![AgentLlmResponse {
+            text: "No relevant memories found.".into(),
+            content_blocks: vec![ContentBlock::Text {
+                text: "No relevant memories found.".into(),
+            }],
+            finish_reason: "end_turn".into(),
+        }]);
+
+        let db = MemoryDB::open_in_memory().unwrap();
+        let agent = MemoryAgent::one_shot(CallerIdentity::Char, "Alice", "Bob");
+        let model = test_model();
+
+        let _result = agent
+            .ask("test prompt format", &mock, &db, None, None, &model)
+            .await
+            .unwrap();
+
+        let calls = mock.calls.lock().unwrap();
+        assert!(!calls.is_empty(), "Expected at least one LLM call");
+
+        let system = calls[0]
+            .system
+            .as_ref()
+            .expect("system prompt must be present");
+
+        assert!(
+            system.is_array(),
+            "Agent tool_loop system prompt must be a JSON array, not a string. Got: {}",
+            system
+        );
+
+        // Each element must have type: "text" and a "text" field.
+        let blocks = system.as_array().unwrap();
+        assert!(!blocks.is_empty(), "System prompt array must not be empty");
+        for block in blocks {
+            assert_eq!(
+                block.get("type").and_then(|t| t.as_str()),
+                Some("text"),
+                "Each system block must have type: 'text', got: {}",
+                block
+            );
+            assert!(
+                block.get("text").and_then(|t| t.as_str()).is_some(),
+                "Each system block must have a 'text' field, got: {}",
+                block
+            );
+        }
     }
 }

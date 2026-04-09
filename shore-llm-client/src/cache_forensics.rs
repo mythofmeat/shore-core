@@ -55,7 +55,8 @@ pub fn log_request(
     character: Option<&str>,
     model: &str,
     msg_count: usize,
-    breakpoint_pos: Option<usize>,
+    msg_breakpoints: &[usize],
+    sys_breakpoints: &[usize],
     sys_blocks: usize,
     prefix_hash: u64,
     has_existing_markers: bool,
@@ -70,7 +71,8 @@ pub fn log_request(
         "character": character,
         "model": model,
         "msg_count": msg_count,
-        "breakpoint_pos": breakpoint_pos,
+        "msg_breakpoints": msg_breakpoints,
+        "sys_breakpoints": sys_breakpoints,
         "sys_blocks": sys_blocks,
         "prefix_hash": format!("{prefix_hash:016x}"),
         "has_existing_markers": has_existing_markers,
@@ -102,6 +104,27 @@ pub fn log_response(
         "output_tokens": output_tokens,
         "cache_read_tokens": cache_read_tokens,
         "cache_creation_tokens": cache_creation_tokens,
+    }));
+}
+
+/// Log a failed API call (error from generate/stream) so keepalive and
+/// other failures are visible in the forensic log, not just journald.
+pub fn log_error(
+    call_id: u64,
+    model: &str,
+    character: &str,
+    call_type: &str,
+    error: &str,
+) {
+    let ts = chrono::Local::now().to_rfc3339();
+    write_entry(&json!({
+        "ts": ts,
+        "type": "error",
+        "call_id": call_id,
+        "model": model,
+        "character": character,
+        "call_type": call_type,
+        "error": error,
     }));
 }
 

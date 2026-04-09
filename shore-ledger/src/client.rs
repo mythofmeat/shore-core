@@ -260,7 +260,21 @@ impl LedgerClient {
             .get_or_fetch(provider_key, &request.model)
             .await;
 
-        let resp = self.inner.generate(request).await?;
+        let resp = match self.inner.generate(request).await {
+            Ok(r) => r,
+            Err(e) => {
+                // Log the failure to the forensic log so keepalive and other
+                // errors are diagnosable from disk, not just journald.
+                shore_llm_client::cache_forensics::log_error(
+                    0,
+                    &request.model,
+                    character,
+                    call_type.as_str(),
+                    &e.to_string(),
+                );
+                return Err(e);
+            }
+        };
         debug!(
             model = request.model,
             call_type = call_type.as_str(),
@@ -320,7 +334,19 @@ impl LedgerClient {
             .get_or_fetch(provider_key, &request.model)
             .await;
 
-        let reader = self.inner.stream_raw(request).await?;
+        let reader = match self.inner.stream_raw(request).await {
+            Ok(r) => r,
+            Err(e) => {
+                shore_llm_client::cache_forensics::log_error(
+                    0,
+                    &request.model,
+                    character,
+                    call_type.as_str(),
+                    &e.to_string(),
+                );
+                return Err(e);
+            }
+        };
 
         let cache_ttl = request
             .provider_options

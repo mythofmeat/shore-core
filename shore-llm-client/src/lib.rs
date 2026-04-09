@@ -132,6 +132,12 @@ impl LlmClient {
             if let Some(sub) = model.zai_subscription {
                 map.insert("zai_subscription".into(), serde_json::json!(sub));
             }
+            if let Some(ref depths) = model.cache_depth_turns {
+                map.insert("cache_depth_turns".into(), serde_json::json!(depths));
+            }
+            if let Some(ref pinned) = model.cache_pinned_position {
+                map.insert("cache_pinned_position".into(), serde_json::json!(pinned));
+            }
             if map.is_empty() {
                 serde_json::Value::Null
             } else {
@@ -309,6 +315,8 @@ mod tests {
             gemini_web_search: None,
             zai_clear_thinking: None,
             zai_subscription: None,
+            cache_depth_turns: None,
+            cache_pinned_position: None,
         }
     }
 

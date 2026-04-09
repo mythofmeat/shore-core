@@ -178,6 +178,8 @@ fn openrouter_tool_model(name: &str, model_id: &str) -> ResolvedModel {
         gemini_web_search: None,
         zai_clear_thinking: None,
         zai_subscription: None,
+        cache_depth_turns: None,
+        cache_pinned_position: None,
     }
 }
 

@@ -94,6 +94,8 @@ pub struct ModelConfigFields {
     pub gemini_web_search: Option<bool>,
     pub zai_clear_thinking: Option<bool>,
     pub zai_subscription: Option<bool>,
+    pub cache_depth_turns: Option<Vec<u32>>,
+    pub cache_pinned_position: Option<Vec<i32>>,
 }
 
 impl ModelConfigFields {
@@ -126,6 +128,8 @@ impl ModelConfigFields {
         merge_opt!(gemini_web_search);
         merge_opt!(zai_clear_thinking);
         merge_opt!(zai_subscription);
+        merge_opt!(cache_depth_turns);
+        merge_opt!(cache_pinned_position);
     }
 
     /// Produce a new `ModelConfigFields` where each field is taken from `self`
@@ -157,6 +161,8 @@ impl ModelConfigFields {
             gemini_web_search: or_opt!(gemini_web_search),
             zai_clear_thinking: or_opt!(zai_clear_thinking),
             zai_subscription: or_opt!(zai_subscription),
+            cache_depth_turns: or_opt!(cache_depth_turns),
+            cache_pinned_position: or_opt!(cache_pinned_position),
         }
     }
 }
@@ -223,6 +229,8 @@ pub struct ResolvedModel {
     pub gemini_web_search: Option<bool>,
     pub zai_clear_thinking: Option<bool>,
     pub zai_subscription: Option<bool>,
+    pub cache_depth_turns: Option<Vec<u32>>,
+    pub cache_pinned_position: Option<Vec<i32>>,
 }
 
 impl ResolvedModel {
@@ -264,6 +272,8 @@ impl ResolvedModel {
             gemini_web_search: fields.gemini_web_search,
             zai_clear_thinking: fields.zai_clear_thinking,
             zai_subscription: fields.zai_subscription,
+            cache_depth_turns: fields.cache_depth_turns,
+            cache_pinned_position: fields.cache_pinned_position,
         }
     }
 }
@@ -303,6 +313,8 @@ pub enum CatalogError {
     AmbiguousName { name: String, locations: String },
     #[error("model \"{name}\" not found")]
     NotFound { name: String },
+    #[error("model \"{name}\": total cache breakpoints ({count}) exceeds Anthropic limit of 4")]
+    TooManyBreakpoints { name: String, count: usize },
 }
 
 /// Dict-valued TOML keys at the provider level that are config fields,
@@ -503,6 +515,16 @@ fn parse_category(
                 default_sdk(provider_key),
                 merged,
             );
+
+            // Validate cache breakpoint count.
+            let bp_count = resolved.cache_depth_turns.as_ref().map_or(0, |v| v.len())
+                + resolved.cache_pinned_position.as_ref().map_or(0, |v| v.len());
+            if bp_count > 4 {
+                return Err(CatalogError::TooManyBreakpoints {
+                    name: resolved.qualified_name.clone(),
+                    count: bp_count,
+                });
+            }
 
             let qualified = format!("{category}.{provider_key}.{model_name}");
             debug!(category, provider = provider_key, model = model_name, qualified, "Resolved model entry");

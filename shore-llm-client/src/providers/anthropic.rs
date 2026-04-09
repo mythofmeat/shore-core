@@ -73,21 +73,33 @@ fn messages_have_cache_control(messages: &[Value]) -> bool {
 /// turn boundary regardless of how many tool exchanges occurred within each
 /// turn.
 fn find_turn_boundary(messages: &[Value], depth: usize) -> Option<usize> {
+    if messages.is_empty() {
+        return None;
+    }
+
     let mut real_user_count = 0;
+    let mut best: Option<usize> = None;
     for i in (0..messages.len()).rev() {
         if messages[i].get("role").and_then(Value::as_str) == Some("user")
             && !is_tool_result_message(&messages[i])
         {
             real_user_count += 1;
-            // depth+1: skip the current turn, then count `depth` more turns.
             if real_user_count == depth + 1 && i > 0 {
-                // Place the breakpoint on the message just before this turn's
-                // user message — that's the last message of the preceding turn.
+                // Ideal: exact depth reached.
                 return Some(i - 1);
             }
+            // Track the earliest real user message as fallback.
+            best = Some(i);
         }
     }
-    None
+    // Fallback: not enough turns for requested depth — place breakpoint on
+    // the first message (index 0) so we still get *some* caching rather
+    // than wasting the entire prefix.
+    if best.is_some() {
+        Some(0)
+    } else {
+        None
+    }
 }
 
 /// Build a cache_control value, including TTL if non-default.
@@ -128,26 +140,116 @@ fn apply_breakpoint_to_message(msg: &mut Value, cc: &Value) {
     }
 }
 
-/// Apply cache_control breakpoints to messages and system.
-///
-/// Places up to 4 breakpoints:
-/// - **System breakpoint:** on the second-to-last system block (caches the
-///   stable system content before the recap, which changes on compaction).
-/// - **Message breakpoints (up to 3):** at depths 2, 4, and 8 from the last
-///   real user message, each at a stable turn boundary.  Duplicate positions
-///   are deduplicated.
 /// Info returned alongside the cache-annotated payload for forensics.
 struct CachePlacement {
-    breakpoint_pos: Option<usize>,
+    /// Message breakpoint positions (sorted).
+    msg_breakpoints: Vec<usize>,
+    /// System block breakpoint positions (sorted).
+    sys_breakpoints: Vec<usize>,
     sys_blocks: usize,
     prefix_hash: u64,
 }
 
-fn apply_cache_control(messages: &[Value], system: &Value, cache_ttl: &str) -> (Vec<Value>, Value, CachePlacement) {
+/// Parse a comma-separated env var into a Vec of integers.
+fn parse_env_vec<T: std::str::FromStr>(var: &str) -> Option<Vec<T>> {
+    std::env::var(var).ok().map(|s| {
+        s.split(',')
+            .filter_map(|v| v.trim().parse::<T>().ok())
+            .collect()
+    })
+}
+
+/// Resolve `cache_depth_turns` values into concrete message indices.
+///
+/// Each depth value N means "N user turns back from the end". The breakpoint
+/// is placed on the last message of the turn *before* the Nth-from-end user
+/// turn, so that editing the Nth-from-end message doesn't bust the cache.
+fn resolve_depth_turns(messages: &[Value], depths: &[u32]) -> Vec<usize> {
+    let mut positions = Vec::new();
+    for &depth in depths {
+        if let Some(pos) = find_turn_boundary(messages, depth as usize) {
+            positions.push(pos);
+        }
+    }
+    positions
+}
+
+/// Resolve `cache_pinned_position` values into system or message breakpoints.
+///
+/// - `0`: breakpoint on the last system block (between system and messages).
+/// - Negative: index from end of system blocks (-1 = second-to-last, etc.).
+/// - Positive: pinned at the Nth user turn in messages.
+fn resolve_pinned_positions(
+    messages: &[Value],
+    system_len: usize,
+    positions: &[i32],
+) -> (Vec<usize>, Vec<usize>) {
+    let mut sys_indices = Vec::new();
+    let mut msg_indices = Vec::new();
+    for &pos in positions {
+        if pos <= 0 {
+            // System block breakpoint.
+            // 0 = last block, -1 = second-to-last, etc.
+            let idx = system_len as i32 - 1 + pos; // 0→last, -1→second-to-last
+            if idx >= 0 && (idx as usize) < system_len {
+                sys_indices.push(idx as usize);
+            }
+        } else {
+            // Positive: pin at Nth user turn.
+            // Find the message index of the Nth real user turn.
+            let mut user_count = 0u32;
+            for (i, msg) in messages.iter().enumerate() {
+                if msg.get("role").and_then(Value::as_str) == Some("user")
+                    && !is_tool_result_message(msg)
+                {
+                    user_count += 1;
+                    if user_count == pos as u32 {
+                        // Breakpoint on the message after this user turn's
+                        // assistant response (or the user message itself if
+                        // there's no assistant response yet).
+                        let bp = if i + 1 < messages.len() { i + 1 } else { i };
+                        msg_indices.push(bp);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    (sys_indices, msg_indices)
+}
+
+/// Apply cache_control breakpoints to messages and system.
+///
+/// Breakpoints are configured via two arrays in provider_options:
+/// - `cache_depth_turns`: sliding breakpoints relative to conversation end
+/// - `cache_pinned_position`: static breakpoints at fixed positions
+///
+/// Both are overridable via `SHORE_CACHE_DEPTH_TURNS` and
+/// `SHORE_CACHE_PINNED_POSITION` environment variables (comma-separated).
+///
+/// Combined total must not exceed 4 (Anthropic's limit).
+fn apply_cache_control(
+    messages: &[Value],
+    system: &Value,
+    cache_ttl: &str,
+    depth_turns: &[u32],
+    pinned_positions: &[i32],
+) -> (Vec<Value>, Value, CachePlacement) {
+    // Normalize string system prompt to array-of-blocks so cache_control
+    // markers can be attached.
+    let system = if let Some(s) = system.as_str() {
+        json!([{ "type": "text", "text": s }])
+    } else {
+        system.clone()
+    };
+
+    let sys_blocks = system.as_array().map(|a| a.len()).unwrap_or(0);
+
     if messages.is_empty() {
-        return (messages.to_vec(), system.clone(), CachePlacement {
-            breakpoint_pos: None,
-            sys_blocks: 0,
+        return (messages.to_vec(), system, CachePlacement {
+            msg_breakpoints: vec![],
+            sys_breakpoints: vec![],
+            sys_blocks,
             prefix_hash: 0,
         });
     }
@@ -159,74 +261,106 @@ fn apply_cache_control(messages: &[Value], system: &Value, cache_ttl: &str) -> (
 
     // Step 2: Normalize all plain-string content to array format so the
     // serialised payload structure is identical regardless of where the
-    // cache breakpoint lands.  Without this, breakpoint placement converts
-    // string → array, and when the breakpoint shifts on the next turn the
-    // message reverts to string — changing the prefix bytes and busting
-    // every cache entry.
+    // cache breakpoint lands.
     for msg in result.iter_mut() {
         if let Some(Value::String(text)) = msg.get("content").cloned() {
             msg["content"] = json!([{ "type": "text", "text": text }]);
         }
     }
 
-    // Step 3: Find the last real (non-tool-result) user message.
-    let _last_real_user: Option<usize> = result.iter().rposition(|m| {
-        m.get("role").and_then(Value::as_str) == Some("user") && !is_tool_result_message(m)
-    });
+    // Step 3: Env var overrides.
+    let depth_turns = parse_env_vec::<u32>("SHORE_CACHE_DEPTH_TURNS")
+        .unwrap_or_else(|| depth_turns.to_vec());
+    let pinned_positions = parse_env_vec::<i32>("SHORE_CACHE_PINNED_POSITION")
+        .unwrap_or_else(|| pinned_positions.to_vec());
 
-    // Step 4: Single message breakpoint at depth 2.
-    let boundary_pos = find_turn_boundary(&result, 2);
-    {
-        let cc = make_cache_control(cache_ttl);
-        if let Some(pos) = boundary_pos {
-            apply_breakpoint_to_message(&mut result[pos], &cc);
+    // Step 4: Resolve breakpoint positions.
+    let depth_msg_indices = resolve_depth_turns(&result, &depth_turns);
+    let (pinned_sys_indices, pinned_msg_indices) =
+        resolve_pinned_positions(&result, sys_blocks, &pinned_positions);
+
+    // Deduplicate and sort message breakpoints.
+    let mut msg_bp: Vec<usize> = depth_msg_indices
+        .into_iter()
+        .chain(pinned_msg_indices)
+        .collect();
+    msg_bp.sort_unstable();
+    msg_bp.dedup();
+
+    // Deduplicate system breakpoints.
+    let mut sys_bp: Vec<usize> = pinned_sys_indices;
+    sys_bp.sort_unstable();
+    sys_bp.dedup();
+
+    // Enforce Anthropic's 4-breakpoint limit.
+    let total = msg_bp.len() + sys_bp.len();
+    if total > 4 {
+        tracing::warn!(
+            total,
+            msg = msg_bp.len(),
+            sys = sys_bp.len(),
+            "apply_cache_control: too many breakpoints ({total}), truncating to 4"
+        );
+        // Keep system breakpoints, truncate message breakpoints.
+        let allowed_msg = 4usize.saturating_sub(sys_bp.len());
+        msg_bp.truncate(allowed_msg);
+    }
+
+    // Step 5: Apply breakpoints.
+    let cc = make_cache_control(cache_ttl);
+
+    // System breakpoints.
+    let mut sys = system;
+    if let Some(arr) = sys.as_array_mut() {
+        for &idx in &sys_bp {
+            if let Some(obj) = arr.get_mut(idx).and_then(Value::as_object_mut) {
+                obj.insert("cache_control".into(), cc.clone());
+                tracing::debug!(idx, "apply_cache_control: system breakpoint placed");
+            }
+        }
+        // Strip _label fields — internal metadata, not part of the API.
+        for block in arr.iter_mut() {
+            if let Some(obj) = block.as_object_mut() {
+                obj.remove("_label");
+            }
         }
     }
 
-    // Compute a FNV-style hash of the prefix (system + messages up to breakpoint)
-    // so we can detect byte-level differences between calls.
+    // Message breakpoints.
+    for &pos in &msg_bp {
+        if pos < result.len() {
+            apply_breakpoint_to_message(&mut result[pos], &cc);
+            tracing::debug!(pos, "apply_cache_control: message breakpoint placed");
+        }
+    }
+
+    // Step 6: Compute prefix hash for forensics.
     let prefix_hash = {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        // Hash the system content.
-        system.to_string().hash(&mut hasher);
-        // Hash messages up to and including the breakpoint.
-        let end = boundary_pos.map(|p| p + 1).unwrap_or(0);
+        sys.to_string().hash(&mut hasher);
+        // Hash messages up to and including the earliest message breakpoint.
+        let end = msg_bp.first().map(|&p| p + 1).unwrap_or(0);
         for msg in &result[..end] {
             msg.to_string().hash(&mut hasher);
         }
         hasher.finish()
     };
 
-    let sys_blocks = system.as_array().map(|a| a.len()).unwrap_or(0);
-
     tracing::debug!(
         total_messages = result.len(),
-        boundary_pos = ?boundary_pos,
+        msg_breakpoints = ?msg_bp,
+        sys_breakpoints = ?sys_bp,
         prefix_hash = format!("{prefix_hash:016x}"),
         "apply_cache_control: breakpoint placement"
     );
 
-    // System breakpoint: cache the stable system content.  The recap
-    // (if present) is always the last block and changes on compaction,
-    // so place the breakpoint on the block just before it.  When there
-    // is no recap (≤1 block, or all blocks are stable), cache everything.
-    let cc_sys = make_cache_control(cache_ttl);
-    let mut sys = system.clone();
-    if let Some(arr) = sys.as_array_mut() {
-        let target_idx = if arr.len() >= 2 {
-            arr.len() - 2
-        } else if arr.len() == 1 {
-            0
-        } else {
-            usize::MAX
-        };
-        if let Some(obj) = arr.get_mut(target_idx).and_then(Value::as_object_mut) {
-            obj.insert("cache_control".into(), cc_sys);
-        }
-    }
-
-    (result, sys, CachePlacement { breakpoint_pos: boundary_pos, sys_blocks, prefix_hash })
+    (result, sys, CachePlacement {
+        msg_breakpoints: msg_bp,
+        sys_breakpoints: sys_bp,
+        sys_blocks,
+        prefix_hash,
+    })
 }
 
 /// Build the `thinking` config param from provider_options.
@@ -331,17 +465,36 @@ fn build_body(request: &LlmRequest, streaming: bool) -> (Value, u64) {
 
     let msg_count = converted_messages.len();
 
+    // Extract cache breakpoint config from provider_options.
+    let depth_turns: Vec<u32> = opts_ref
+        .get("cache_depth_turns")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(|v| v.as_u64().map(|n| n as u32)).collect())
+        .unwrap_or_default();
+    let pinned_positions: Vec<i32> = opts_ref
+        .get("cache_pinned_position")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(|v| v.as_i64().map(|n| n as i32)).collect())
+        .unwrap_or_default();
+
     let (messages, system, placement) = if cache_enabled && !has_existing_markers {
         apply_cache_control(
             &converted_messages,
             request.system.as_ref().unwrap_or(&json!(null)),
             cache_ttl,
+            &depth_turns,
+            &pinned_positions,
         )
     } else {
         (
             converted_messages,
             request.system.clone().unwrap_or(json!(null)),
-            CachePlacement { breakpoint_pos: None, sys_blocks: 0, prefix_hash: 0 },
+            CachePlacement {
+                msg_breakpoints: vec![],
+                sys_breakpoints: vec![],
+                sys_blocks: 0,
+                prefix_hash: 0,
+            },
         )
     };
 
@@ -353,7 +506,8 @@ fn build_body(request: &LlmRequest, streaming: bool) -> (Value, u64) {
             request.forensic_character.as_deref(),
             &request.model,
             msg_count,
-            placement.breakpoint_pos,
+            &placement.msg_breakpoints,
+            &placement.sys_breakpoints,
             placement.sys_blocks,
             placement.prefix_hash,
             has_existing_markers,
@@ -424,6 +578,14 @@ fn build_http_request(
         format!("{base}/v1/messages")
     };
     let (body, call_id) = build_body(request, streaming);
+
+    // Dump the full transformed body to a per-call file for debugging.
+    if crate::cache_forensics::is_enabled() {
+        let dump_dir = std::path::Path::new("/tmp/shore-body-dumps");
+        let _ = std::fs::create_dir_all(dump_dir);
+        let path = dump_dir.join(format!("call_{call_id}.json"));
+        let _ = std::fs::write(&path, serde_json::to_string_pretty(&body).unwrap_or_default());
+    }
 
     // Log the post-transformation payload shape (no message content).
     {
@@ -916,34 +1078,78 @@ mod tests {
 
     #[test]
     fn test_apply_cache_control_empty_messages() {
-        let (msgs, sys, _) = apply_cache_control(&[], &json!(null), "5m");
+        let (msgs, sys, p) = apply_cache_control(&[], &json!(null), "5m", &[], &[]);
         assert!(msgs.is_empty());
         assert_eq!(sys, json!(null));
+        assert!(p.msg_breakpoints.is_empty());
+        assert!(p.sys_breakpoints.is_empty());
     }
 
     #[test]
-    fn test_apply_cache_control_places_system_breakpoint() {
+    fn test_apply_cache_control_pinned_system_last_block() {
+        // cache_pinned_position = [0] → breakpoint on last system block.
         let system = json!([
             { "type": "text", "text": "stable system prompt" },
-            { "type": "text", "text": "recap that changes" }
+            { "type": "text", "text": "user definition" }
         ]);
         let messages = vec![json!({"role": "user", "content": "hi"})];
-        let (_, sys, _) = apply_cache_control(&messages, &system, "5m");
+        let (_, sys, p) = apply_cache_control(&messages, &system, "5m", &[], &[0]);
 
-        // Breakpoint on second-to-last (index 0) — the stable block.
+        let blocks = sys.as_array().unwrap();
+        assert!(blocks[0].get("cache_control").is_none());
+        assert!(blocks[1].get("cache_control").is_some());
+        assert_eq!(p.sys_breakpoints, vec![1]);
+    }
+
+    #[test]
+    fn test_apply_cache_control_pinned_system_second_to_last() {
+        // cache_pinned_position = [-1] → second-to-last system block.
+        let system = json!([
+            { "type": "text", "text": "stable system prompt" },
+            { "type": "text", "text": "recap that changes", "_label": "recap" }
+        ]);
+        let messages = vec![json!({"role": "user", "content": "hi"})];
+        let (_, sys, p) = apply_cache_control(&messages, &system, "5m", &[], &[-1]);
+
         let blocks = sys.as_array().unwrap();
         assert!(blocks[0].get("cache_control").is_some());
         assert!(blocks[1].get("cache_control").is_none());
+        assert_eq!(p.sys_breakpoints, vec![0]);
+        // _label fields should be stripped.
+        assert!(blocks[0].get("_label").is_none());
+        assert!(blocks[1].get("_label").is_none());
     }
 
     #[test]
     fn test_apply_cache_control_single_system_block() {
+        // cache_pinned_position = [0] with single block.
         let system = json!([{ "type": "text", "text": "only block" }]);
         let messages = vec![json!({"role": "user", "content": "hi"})];
-        let (_, sys, _) = apply_cache_control(&messages, &system, "5m");
+        let (_, sys, p) = apply_cache_control(&messages, &system, "5m", &[], &[0]);
 
         let blocks = sys.as_array().unwrap();
         assert!(blocks[0].get("cache_control").is_some());
+        assert_eq!(p.sys_breakpoints, vec![0]);
+    }
+
+    #[test]
+    fn test_apply_cache_control_depth_turns() {
+        // cache_depth_turns = [2] → sliding breakpoint 2 user turns back.
+        let messages = vec![
+            json!({"role": "user", "content": "turn 1"}),
+            json!({"role": "assistant", "content": "resp 1"}),
+            json!({"role": "user", "content": "turn 2"}),
+            json!({"role": "assistant", "content": "resp 2"}),
+            json!({"role": "user", "content": "turn 3"}),
+            json!({"role": "assistant", "content": "resp 3"}),
+            json!({"role": "user", "content": "turn 4"}),
+        ];
+        let (_, _, p) = apply_cache_control(&messages, &json!(null), "5m", &[2], &[]);
+
+        // depth=2: 2 real user turns back from end → breakpoint before turn 2
+        // (the assistant response at index 1).
+        assert_eq!(p.msg_breakpoints.len(), 1);
+        assert!(p.msg_breakpoints[0] < messages.len());
     }
 
     #[test]
@@ -952,7 +1158,7 @@ mod tests {
             json!({"role": "user", "content": "hello"}),
             json!({"role": "assistant", "content": "hi there"}),
         ];
-        let (result, _, _) = apply_cache_control(&messages, &json!(null), "5m");
+        let (result, _, _) = apply_cache_control(&messages, &json!(null), "5m", &[2], &[]);
 
         // All string content should be normalized to array format.
         for msg in &result {
@@ -968,11 +1174,47 @@ mod tests {
     fn test_apply_cache_control_custom_ttl() {
         let system = json!([{ "type": "text", "text": "prompt" }]);
         let messages = vec![json!({"role": "user", "content": "hi"})];
-        let (_, sys, _) = apply_cache_control(&messages, &system, "10m");
+        let (_, sys, _) = apply_cache_control(&messages, &system, "10m", &[], &[0]);
 
         let cc = &sys.as_array().unwrap()[0]["cache_control"];
         assert_eq!(cc["type"], "ephemeral");
         assert_eq!(cc["ttl"], "10m");
+    }
+
+    #[test]
+    fn test_apply_cache_control_combined_breakpoints() {
+        // Both system and message breakpoints.
+        let system = json!([
+            { "type": "text", "text": "stable prompt" },
+            { "type": "text", "text": "more prompt" }
+        ]);
+        let messages = vec![
+            json!({"role": "user", "content": "turn 1"}),
+            json!({"role": "assistant", "content": "resp 1"}),
+            json!({"role": "user", "content": "turn 2"}),
+        ];
+        let (_, sys, p) = apply_cache_control(
+            &messages, &system, "1h", &[1], &[0],
+        );
+
+        // System breakpoint on last block.
+        assert!(sys.as_array().unwrap()[1].get("cache_control").is_some());
+        assert_eq!(p.sys_breakpoints, vec![1]);
+        // Message breakpoint from depth_turns.
+        assert!(!p.msg_breakpoints.is_empty());
+    }
+
+    #[test]
+    fn test_apply_cache_control_no_breakpoints_configured() {
+        // No depth_turns, no pinned_positions → no breakpoints placed.
+        let system = json!([{ "type": "text", "text": "prompt" }]);
+        let messages = vec![json!({"role": "user", "content": "hi"})];
+        let (_, sys, p) = apply_cache_control(&messages, &system, "5m", &[], &[]);
+
+        let blocks = sys.as_array().unwrap();
+        assert!(blocks[0].get("cache_control").is_none());
+        assert!(p.msg_breakpoints.is_empty());
+        assert!(p.sys_breakpoints.is_empty());
     }
 
     // ── convert_inline_system_messages ─────────────────────────────────
@@ -1496,7 +1738,8 @@ mod tests {
     #[test]
     fn test_find_turn_boundary_single_user_message() {
         let msgs = vec![json!({"role": "user", "content": "hi"})];
-        assert_eq!(find_turn_boundary(&msgs, 2), None);
+        // Not enough depth, but falls back to index 0.
+        assert_eq!(find_turn_boundary(&msgs, 2), Some(0));
     }
 
     #[test]
@@ -1530,8 +1773,8 @@ mod tests {
         ];
         // depth=2: skip current turn (q3), then count 2 real user messages back.
         // That's q2 (1) and q1 (2). depth+1=3 matches q1 at index 0.
-        // i > 0 check passes? No, i=0, so i > 0 is false. Returns None.
-        assert_eq!(find_turn_boundary(&msgs, 2), None);
+        // i=0 so i > 0 is false for exact match — falls back to index 0.
+        assert_eq!(find_turn_boundary(&msgs, 2), Some(0));
 
         // depth=1: skip q3, count 1 back → q2 at index 2, return i-1=1.
         assert_eq!(find_turn_boundary(&msgs, 1), Some(1));

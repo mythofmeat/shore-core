@@ -33,7 +33,18 @@ pub struct CacheKeepalive {
 const KEEPALIVE_BREAKEVEN: Duration = Duration::from_secs(18 * 3600); // 18h
 
 /// Ping interval: just under 1h to keep the cache alive with headroom.
-const PING_INTERVAL: Duration = Duration::from_secs(59 * 60); // 59 min
+/// Override with `SHORE_KEEPALIVE_INTERVAL_SECS` env var for testing.
+fn ping_interval() -> Duration {
+    match std::env::var("SHORE_KEEPALIVE_INTERVAL_SECS") {
+        Ok(s) => {
+            let secs: u64 = s.parse().unwrap_or(59 * 60);
+            Duration::from_secs(secs)
+        }
+        Err(_) => Duration::from_secs(59 * 60), // 59 min default
+    }
+}
+
+const PING_INTERVAL_DEFAULT: Duration = Duration::from_secs(59 * 60); // 59 min
 
 impl CacheKeepalive {
     pub fn new() -> Self {
@@ -47,7 +58,7 @@ impl CacheKeepalive {
     /// assistant response, interiority tick, or keepalive ping itself.
     /// Resets the internal ping deadline.
     pub fn on_cache_warmed(&mut self, now: Instant) {
-        self.next_ping_at = Some(now + PING_INTERVAL);
+        self.next_ping_at = Some(now + ping_interval());
     }
 
     /// Called after compaction invalidates the cached prompt prefix.

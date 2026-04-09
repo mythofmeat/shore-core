@@ -801,7 +801,7 @@ pub(crate) fn build_llm_messages(
         Some(json!(prompt_result
             .system
             .iter()
-            .map(|b| { json!({"type": "text", "text": b.content}) })
+            .map(|b| { json!({"type": "text", "text": b.content, "_label": b.label}) })
             .collect::<Vec<_>>()))
     };
 
@@ -1203,6 +1203,8 @@ mod tests {
             gemini_web_search: None,
             zai_clear_thinking: None,
             zai_subscription: None,
+            cache_depth_turns: None,
+            cache_pinned_position: None,
         };
 
         let mut chat = BTreeMap::new();

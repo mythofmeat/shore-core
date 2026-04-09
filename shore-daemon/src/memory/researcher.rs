@@ -548,6 +548,72 @@ mod tests {
         assert!(!researcher.user_description.is_empty());
     }
 
+    /// The system prompt sent to the researcher LLM MUST be a JSON array of
+    /// `{"type": "text", "text": "..."}` objects — NOT a bare string.
+    /// The Anthropic API rejects bare-string system prompts.
+    #[tokio::test]
+    async fn researcher_system_prompt_is_array_not_string() {
+        let researcher_mock = MockAgentLlm::new(vec![AgentLlmResponse {
+            text: "No memory found.".into(),
+            content_blocks: vec![ContentBlock::Text {
+                text: "No memory found.".into(),
+            }],
+            finish_reason: "end_turn".into(),
+        }]);
+
+        let agent_mock = MockAgentLlm::new(vec![]);
+
+        let db = MemoryDB::open_in_memory().unwrap();
+        let agent = MemoryAgent::one_shot(CallerIdentity::Char, "Alice", "Bob");
+        let researcher = MemoryResearcher::new(String::new(), String::new());
+
+        let _result = researcher
+            .research(
+                "test prompt format",
+                &researcher_mock,
+                &test_model(),
+                &agent,
+                &agent_mock,
+                &test_model(),
+                &db,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let calls = researcher_mock.calls.lock().unwrap();
+        assert!(!calls.is_empty(), "Expected at least one LLM call");
+
+        let system = calls[0]
+            .system
+            .as_ref()
+            .expect("system prompt must be present");
+
+        assert!(
+            system.is_array(),
+            "Researcher system prompt must be a JSON array, not a string. Got: {}",
+            system
+        );
+
+        // Each element must have type: "text" and a "text" field.
+        let blocks = system.as_array().unwrap();
+        assert!(!blocks.is_empty(), "System prompt array must not be empty");
+        for block in blocks {
+            assert_eq!(
+                block.get("type").and_then(|t| t.as_str()),
+                Some("text"),
+                "Each system block must have type: 'text', got: {}",
+                block
+            );
+            assert!(
+                block.get("text").and_then(|t| t.as_str()).is_some(),
+                "Each system block must have a 'text' field, got: {}",
+                block
+            );
+        }
+    }
+
     /// Researcher always requests tool calls → exhausts MAX_RESEARCHER_ITERATIONS,
     /// then falls back to raw tool outputs.
     #[tokio::test]
