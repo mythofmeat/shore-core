@@ -344,6 +344,45 @@ fn uuid_v4() -> String {
     format!("rid_{:016x}", nanos)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `uuid_v4()` uses only nanosecond timestamps for IDs. Under high
+    /// concurrency (multiple threads calling simultaneously), identical
+    /// nanosecond timestamps produce duplicate IDs.
+    #[test]
+    fn uuid_v4_unique_under_concurrent_calls() {
+        use std::sync::{Arc, Mutex};
+
+        let ids = Arc::new(Mutex::new(std::collections::HashSet::new()));
+        let mut handles = Vec::new();
+
+        // Spawn 8 threads each generating 100 IDs concurrently.
+        for _ in 0..8 {
+            let ids = Arc::clone(&ids);
+            handles.push(std::thread::spawn(move || {
+                let mut local = Vec::with_capacity(100);
+                for _ in 0..100 {
+                    local.push(uuid_v4());
+                }
+                local
+            }));
+        }
+
+        let mut all_ids = std::collections::HashSet::new();
+        for h in handles {
+            for id in h.join().unwrap() {
+                assert!(
+                    all_ids.insert(id.clone()),
+                    "Duplicate request ID generated under concurrency: {id}"
+                );
+            }
+        }
+        assert_eq!(all_ids.len(), 800);
+    }
+}
+
 /// Check whether a path looks like it could be a Unix socket path.
 pub fn is_unix_path(s: &str) -> bool {
     Path::new(s).is_absolute()

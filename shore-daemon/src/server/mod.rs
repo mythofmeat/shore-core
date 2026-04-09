@@ -1034,6 +1034,33 @@ mod tests {
         let _ = shutdown_tx.send(());
     }
 
+    /// `read_message` checks size AFTER `read_line` has already consumed
+    /// the entire line into memory. A malicious client can send a line
+    /// larger than MAX_MESSAGE_SIZE, exhausting server memory before the
+    /// check runs. The read should be bounded.
+    #[tokio::test]
+    async fn read_message_rejects_oversized_before_full_alloc() {
+        // Create a message that exceeds MAX_MESSAGE_SIZE.
+        // We use a smaller threshold to keep the test fast.
+        let oversized = format!("{{\"type\":\"message\",\"body\":{{\"content\":\"{}\"}}}}\n", "x".repeat(MAX_MESSAGE_SIZE + 1));
+
+        let (mut writer, reader) = duplex(MAX_MESSAGE_SIZE + 4096);
+        let mut buf_reader = BufReader::new(reader);
+
+        // Write the oversized message.
+        use tokio::io::AsyncWriteExt;
+        writer.write_all(oversized.as_bytes()).await.unwrap();
+        drop(writer); // close to signal EOF after the line
+
+        // read_message should return an error, not panic or OOM.
+        let result = read_message(&mut buf_reader).await;
+        assert!(
+            result.is_err(),
+            "Oversized message should be rejected, got: {:?}",
+            result
+        );
+    }
+
     #[tokio::test]
     async fn tcp_acl_rejects_non_matching_ip() {
         let tmp = TempDir::new().unwrap();
