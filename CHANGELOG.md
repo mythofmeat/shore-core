@@ -4,6 +4,11 @@ All notable changes to Shore are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.1] — 2026-04-10
+
+### Fixed
+- Remove stale `forensic_character` references and fix 6 broken tests
+
 ## [0.10.0] — 2026-04-10
 
 ### Added
@@ -259,6 +264,7 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Command dispatch (US-017)
 - End-to-end conversation milestone (US-018)
 
+[0.10.1]: https://github.com/eshen/silvershore/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/eshen/silvershore/compare/v0.9.1...v0.10.0
 [0.9.0]: https://github.com/eshen/silvershore/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/eshen/silvershore/compare/v0.7.0...v0.8.0
