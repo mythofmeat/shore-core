@@ -1,3 +1,4 @@
+pub mod cache_forensics;
 pub(crate) mod providers;
 pub mod retry;
 pub mod stream;
@@ -154,6 +155,7 @@ impl LlmClient {
             provider_options,
             provider_key: Some(model.provider_key.clone()),
             rid: None,
+            forensic_character: None,
         })
     }
 
@@ -298,7 +300,7 @@ mod tests {
             budget_tokens: None,
             cache_ttl: None,
             keepalive_enabled: None,
-            keepalive_ttl_minutes: None,
+            keepalive_ttl: None,
             keepalive_max_pings: None,
             openrouter_provider: None,
             vertex_project: None,

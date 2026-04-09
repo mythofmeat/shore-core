@@ -186,7 +186,7 @@ pub fn print_status(data: &serde_json::Value, character_name: &str) {
 
             let int_state = autonomy["interiority_state"].as_str().unwrap_or("Active");
             let ticks = autonomy["ticks_without_user"].as_u64().unwrap_or(0);
-            let max_ticks = autonomy["max_idle_ticks"].as_u64().unwrap_or(3);
+            let max_ticks = autonomy["dormant_after_interiority_turns"].as_u64().unwrap_or(3);
             let description = interiority_description(int_state, ticks, max_ticks);
 
             // Interiority row: description + state label.
@@ -1161,7 +1161,7 @@ mod tests {
                 "paused": false,
                 "interiority_state": "Active",
                 "ticks_without_user": 1,
-                "max_idle_ticks": 3,
+                "dormant_after_interiority_turns": 3,
                 "effective_interval_secs": 3540,
             }
         });
@@ -1190,7 +1190,7 @@ mod tests {
                 "paused": true,
                 "interiority_state": "Active",
                 "ticks_without_user": 0,
-                "max_idle_ticks": 3,
+                "dormant_after_interiority_turns": 3,
                 "effective_interval_secs": 3600,
             }
         });
@@ -1309,6 +1309,23 @@ mod tests {
         set_color_enabled(false);
         // Should not panic and should abbreviate the date suffix.
         print_model_switched(&serde_json::json!({"active": "claude-sonnet-4-20250514"}));
+    }
+
+    #[test]
+    fn format_k_correctness() {
+        // Regression for SHA 31f20cb: verify correct formatting across boundary.
+        // 0 maps to em-dash (—), not a number.
+        assert_eq!(format_k(0), "\u{2014}");
+        // Numbers < 1000 display without K suffix.
+        assert_eq!(format_k(1), "1");
+        assert_eq!(format_k(500), "500");
+        assert_eq!(format_k(999), "999");
+        // 1000 is the first value that rounds to K.
+        assert_eq!(format_k(1000), "1.0K");
+        // 1500 → "1.5K"
+        assert_eq!(format_k(1500), "1.5K");
+        // 10000 → "10.0K"
+        assert_eq!(format_k(10000), "10.0K");
     }
 
     #[test]

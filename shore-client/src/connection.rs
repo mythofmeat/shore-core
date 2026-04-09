@@ -334,14 +334,60 @@ impl SWPConnection {
     }
 }
 
-/// Simple v4-style random ID (not cryptographic, just unique enough for rids).
+/// Generate a unique request ID using timestamp + atomic counter.
+///
+/// The counter ensures uniqueness even when multiple IDs are generated
+/// within the same nanosecond (e.g., concurrent threads).
 fn uuid_v4() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    format!("rid_{:016x}", nanos)
+    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("rid_{:016x}_{:04x}", nanos, seq)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `uuid_v4()` uses only nanosecond timestamps for IDs. Under high
+    /// concurrency (multiple threads calling simultaneously), identical
+    /// nanosecond timestamps produce duplicate IDs.
+    #[test]
+    fn uuid_v4_unique_under_concurrent_calls() {
+        use std::sync::{Arc, Mutex};
+
+        let ids = Arc::new(Mutex::new(std::collections::HashSet::<String>::new()));
+        let mut handles = Vec::new();
+
+        // Spawn 8 threads each generating 100 IDs concurrently.
+        for _ in 0..8 {
+            let ids = Arc::clone(&ids);
+            handles.push(std::thread::spawn(move || {
+                let mut local = Vec::with_capacity(100);
+                for _ in 0..100 {
+                    local.push(uuid_v4());
+                }
+                local
+            }));
+        }
+
+        let mut all_ids = std::collections::HashSet::new();
+        for h in handles {
+            for id in h.join().unwrap() {
+                assert!(
+                    all_ids.insert(id.clone()),
+                    "Duplicate request ID generated under concurrency: {id}"
+                );
+            }
+        }
+        assert_eq!(all_ids.len(), 800);
+    }
 }
 
 /// Check whether a path looks like it could be a Unix socket path.

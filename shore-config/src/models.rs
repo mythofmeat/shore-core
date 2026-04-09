@@ -10,6 +10,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
+use crate::duration::ConfigDuration;
+
 // ── SDK enum ────────────────────────────────────────────────────────────
 
 /// SDK/wire protocol.  Distinguishes the message format from the gateway.
@@ -83,7 +85,7 @@ pub struct ModelConfigFields {
     pub budget_tokens: Option<u32>,
     pub cache_ttl: Option<String>,
     pub keepalive_enabled: Option<bool>,
-    pub keepalive_ttl_minutes: Option<u32>,
+    pub keepalive_ttl: Option<ConfigDuration>,
     pub keepalive_max_pings: Option<u32>,
     pub openrouter_provider: Option<toml::Value>,
     pub vertex_project: Option<String>,
@@ -115,7 +117,7 @@ impl ModelConfigFields {
         merge_opt!(budget_tokens);
         merge_opt!(cache_ttl);
         merge_opt!(keepalive_enabled);
-        merge_opt!(keepalive_ttl_minutes);
+        merge_opt!(keepalive_ttl);
         merge_opt!(keepalive_max_pings);
         merge_opt!(openrouter_provider);
         merge_opt!(vertex_project);
@@ -146,7 +148,7 @@ impl ModelConfigFields {
             budget_tokens: or_opt!(budget_tokens),
             cache_ttl: or_opt!(cache_ttl),
             keepalive_enabled: or_opt!(keepalive_enabled),
-            keepalive_ttl_minutes: or_opt!(keepalive_ttl_minutes),
+            keepalive_ttl: or_opt!(keepalive_ttl),
             keepalive_max_pings: or_opt!(keepalive_max_pings),
             openrouter_provider: or_opt!(openrouter_provider),
             vertex_project: or_opt!(vertex_project),
@@ -212,7 +214,7 @@ pub struct ResolvedModel {
     pub budget_tokens: Option<u32>,
     pub cache_ttl: Option<String>,
     pub keepalive_enabled: Option<bool>,
-    pub keepalive_ttl_minutes: Option<u32>,
+    pub keepalive_ttl: Option<ConfigDuration>,
     pub keepalive_max_pings: Option<u32>,
     pub openrouter_provider: Option<toml::Value>,
     pub vertex_project: Option<String>,
@@ -253,7 +255,7 @@ impl ResolvedModel {
             budget_tokens: fields.budget_tokens,
             cache_ttl: fields.cache_ttl,
             keepalive_enabled: fields.keepalive_enabled,
-            keepalive_ttl_minutes: fields.keepalive_ttl_minutes,
+            keepalive_ttl: fields.keepalive_ttl,
             keepalive_max_pings: fields.keepalive_max_pings,
             openrouter_provider: fields.openrouter_provider,
             vertex_project: fields.vertex_project,
@@ -841,6 +843,47 @@ size = "1024x1024"
             ModelCatalog::from_sections(None, None, Some(&embedding), Some(&image_gen)).unwrap();
         assert!(catalog.embedding.contains_key("text-large"));
         assert!(catalog.image_generation.contains_key("gemini-flash"));
+    }
+
+    #[test]
+    fn no_cross_provider_clobbering_same_short_name() {
+        // Regression for SHA 99354fd: two providers with the same short model
+        // name must produce distinct catalog entries, not overwrite each other.
+        let chat = parse_table(
+            r#"
+[anthropic.opus]
+model_id = "claude-opus-4-6"
+
+[openrouter.opus]
+model_id = "anthropic/claude-opus-4-6"
+"#,
+        );
+        let catalog = ModelCatalog::from_sections(Some(&chat), None, None, None).unwrap();
+
+        // Both entries must exist under their qualified names.
+        assert_eq!(catalog.chat.len(), 2);
+        assert!(catalog.chat.contains_key("chat.anthropic.opus"));
+        assert!(catalog.chat.contains_key("chat.openrouter.opus"));
+
+        // Each must carry the correct provider-specific model_id.
+        assert_eq!(catalog.chat["chat.anthropic.opus"].model_id, "claude-opus-4-6");
+        assert_eq!(
+            catalog.chat["chat.openrouter.opus"].model_id,
+            "anthropic/claude-opus-4-6"
+        );
+
+        // Looking up by qualified name returns the correct one.
+        let anthr = catalog.find_model("chat.anthropic.opus").unwrap();
+        assert_eq!(anthr.model_id, "claude-opus-4-6");
+        assert_eq!(anthr.provider_key, "anthropic");
+
+        let orouter = catalog.find_model("chat.openrouter.opus").unwrap();
+        assert_eq!(orouter.model_id, "anthropic/claude-opus-4-6");
+        assert_eq!(orouter.provider_key, "openrouter");
+
+        // Short name "opus" is ambiguous — must not silently return one.
+        let err = catalog.find_model("opus").unwrap_err();
+        assert!(matches!(err, CatalogError::AmbiguousName { .. }));
     }
 
     #[test]

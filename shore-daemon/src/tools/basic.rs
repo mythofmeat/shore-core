@@ -39,6 +39,25 @@ pub fn tool_defs() -> Vec<ToolDef> {
             }),
             category: ToolCategory::Other,
         },
+        ToolDef {
+            name: "set_next_wake",
+            description: "Schedule when you want to have your next private moment to think and use tools. Use this at the end of a tick to express your own sense of pacing.",
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "hours_from_now": {
+                        "type": "number",
+                        "description": "Hours until your next private moment (1.0 to 48.0; clamped if outside range)"
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "A brief note to your future self about why you chose this timing"
+                    }
+                },
+                "required": ["hours_from_now", "reason"]
+            }),
+            category: ToolCategory::Other,
+        },
     ]
 }
 

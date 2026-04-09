@@ -160,6 +160,7 @@ impl ShoreBridge {
         let Some(tx) = &self.cmd_tx else { return };
         let msg = ClientMessage::Message(ClientMessageBody {
             rid: None,
+            forensic_character: None,
             text: text.to_string(),
             stream: true,
             images: vec![],
@@ -177,6 +178,7 @@ impl ShoreBridge {
             .unwrap_or(serde_json::json!({}));
         let msg = ClientMessage::Command(Command {
             rid: None,
+            forensic_character: None,
             name: name.to_string(),
             args,
         });

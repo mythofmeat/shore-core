@@ -12,6 +12,7 @@ use crate::memory::agent_llm::RealAgentLlm;
 use crate::memory::compaction_impls::resolve_embed_config;
 use crate::memory::researcher::MemoryResearcher;
 use crate::tools::context::{NoopRag, SharedToolContext};
+use shore_config::models::Sdk;
 use shore_config::LoadedConfig;
 use shore_ledger::CallType;
 use shore_llm_client::retry::{self, RetryDecision, RetryPolicy};
@@ -58,7 +59,7 @@ pub(super) async fn stream_with_retry(
                 .await?;
 
             let turn_count = engine_arc.lock().await.messages().len();
-            let cache_warnings = resolved.provider_key == "anthropic"
+            let cache_warnings = matches!(resolved.sdk, Sdk::Anthropic)
                 && effective_config.app.advanced.cache_invalidation_warnings;
             let is_first_after_compaction = ctx.compaction_occurred.swap(false, Ordering::AcqRel);
             let cache_ctx = CacheContext {
@@ -104,8 +105,8 @@ pub(super) async fn stream_with_retry(
                     let base_ms = effective_config
                         .app
                         .advanced
-                        .retry_backoff_seconds
-                        .map(|s| (s * 1000.0) as u64)
+                        .retry_backoff
+                        .map(|d| d.as_millis())
                         .unwrap_or(500);
                     let delay = std::time::Duration::from_millis(base_ms * 2u64.pow(attempt));
                     warn!(

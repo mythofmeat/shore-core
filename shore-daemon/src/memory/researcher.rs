@@ -15,6 +15,15 @@ use shore_config::models::ResolvedModel;
 
 const MAX_RESEARCHER_ITERATIONS: usize = 15;
 
+/// Truncate a string for logging, respecting UTF-8 char boundaries.
+fn truncate_for_log(s: &str, max: usize) -> &str {
+    if s.len() > max {
+        &s[..s.floor_char_boundary(max)]
+    } else {
+        s
+    }
+}
+
 const NO_RESULTS: &str = "No relevant memories found.";
 
 const RESEARCHER_SYSTEM_PROMPT: &str = "\
@@ -220,11 +229,7 @@ impl MemoryResearcher {
                     "Memory researcher tool: {}({}) -> {}",
                     tool_name,
                     tool_input,
-                    if result_text.len() > 200 {
-                        &result_text[..200]
-                    } else {
-                        &result_text
-                    }
+                    truncate_for_log(&result_text, 200),
                 );
 
                 all_tool_outputs.push(result_text.clone());
@@ -548,6 +553,72 @@ mod tests {
         assert!(!researcher.user_description.is_empty());
     }
 
+    /// The system prompt sent to the researcher LLM MUST be a JSON array of
+    /// `{"type": "text", "text": "..."}` objects — NOT a bare string.
+    /// The Anthropic API rejects bare-string system prompts.
+    #[tokio::test]
+    async fn researcher_system_prompt_is_array_not_string() {
+        let researcher_mock = MockAgentLlm::new(vec![AgentLlmResponse {
+            text: "No memory found.".into(),
+            content_blocks: vec![ContentBlock::Text {
+                text: "No memory found.".into(),
+            }],
+            finish_reason: "end_turn".into(),
+        }]);
+
+        let agent_mock = MockAgentLlm::new(vec![]);
+
+        let db = MemoryDB::open_in_memory().unwrap();
+        let agent = MemoryAgent::one_shot(CallerIdentity::Char, "Alice", "Bob");
+        let researcher = MemoryResearcher::new(String::new(), String::new());
+
+        let _result = researcher
+            .research(
+                "test prompt format",
+                &researcher_mock,
+                &test_model(),
+                &agent,
+                &agent_mock,
+                &test_model(),
+                &db,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let calls = researcher_mock.calls.lock().unwrap();
+        assert!(!calls.is_empty(), "Expected at least one LLM call");
+
+        let system = calls[0]
+            .system
+            .as_ref()
+            .expect("system prompt must be present");
+
+        assert!(
+            system.is_array(),
+            "Researcher system prompt must be a JSON array, not a string. Got: {}",
+            system
+        );
+
+        // Each element must have type: "text" and a "text" field.
+        let blocks = system.as_array().unwrap();
+        assert!(!blocks.is_empty(), "System prompt array must not be empty");
+        for block in blocks {
+            assert_eq!(
+                block.get("type").and_then(|t| t.as_str()),
+                Some("text"),
+                "Each system block must have type: 'text', got: {}",
+                block
+            );
+            assert!(
+                block.get("text").and_then(|t| t.as_str()).is_some(),
+                "Each system block must have a 'text' field, got: {}",
+                block
+            );
+        }
+    }
+
     /// Researcher always requests tool calls → exhausts MAX_RESEARCHER_ITERATIONS,
     /// then falls back to raw tool outputs.
     #[tokio::test]
@@ -605,5 +676,16 @@ mod tests {
         // Result should contain the raw agent outputs joined together.
         assert!(result.contains("Agent result 0"));
         assert!(result.contains(&format!("Agent result {}", MAX_RESEARCHER_ITERATIONS - 1)));
+    }
+
+    #[test]
+    fn truncate_for_log_handles_multibyte_at_boundary() {
+        // 199 ASCII bytes + "é" (2 bytes) = 201 bytes total.
+        // Slicing at byte 200 lands inside "é" → must not panic.
+        let s = format!("{}{}", "x".repeat(199), "é");
+        assert_eq!(s.len(), 201);
+        let truncated = truncate_for_log(&s, 200);
+        assert!(truncated.len() <= 200);
+        assert!(truncated.is_char_boundary(truncated.len()));
     }
 }

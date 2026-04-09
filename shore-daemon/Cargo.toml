@@ -37,3 +37,4 @@ shore-client = { path = "../shore-client" }
 shore-config = { workspace = true }
 shore-diagnostics = { workspace = true }
 shore-llm-client = { workspace = true }
+shore-test-harness = { path = "../shore-test-harness" }

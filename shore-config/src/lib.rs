@@ -1,5 +1,8 @@
 pub mod app;
+pub mod duration;
 pub mod models;
+
+pub use duration::ConfigDuration;
 
 use std::path::{Path, PathBuf};
 
@@ -592,7 +595,7 @@ enabled = true
 
 [behavior.autonomy.interiority]
 enabled = false
-interval_secs = 1800
+fallback_interiority_interval = "30m"
 
 [behavior.tool_use.tools]
 roll_dice = false
@@ -626,7 +629,7 @@ model_id = "claude-opus-4-6"
         );
         assert!(loaded.app.behavior.autonomy.enabled);
         assert!(!loaded.app.behavior.autonomy.interiority.enabled);
-        assert_eq!(loaded.app.behavior.autonomy.interiority.interval_secs, 1800);
+        assert_eq!(loaded.app.behavior.autonomy.interiority.fallback_interiority_interval, ConfigDuration::from_secs(1800));
         assert!(!loaded.app.behavior.tool_use.tools.roll_dice());
         assert!(loaded.app.behavior.tool_use.tools.memory());
         assert!(!loaded.app.advanced.cache_invalidation_warnings);
@@ -653,7 +656,7 @@ model_id = "claude-opus-4-6"
         assert!(loaded.app.defaults.stream);
         assert!(!loaded.app.behavior.autonomy.enabled);
         assert!(loaded.app.behavior.autonomy.interiority.enabled);
-        assert_eq!(loaded.app.behavior.autonomy.interiority.interval_secs, 3600);
+        assert_eq!(loaded.app.behavior.autonomy.interiority.fallback_interiority_interval, ConfigDuration::from_secs(3600));
         assert!(loaded.app.behavior.tool_use.enabled);
         assert!(loaded.app.advanced.cache_invalidation_warnings);
         assert!(loaded.app.memory.compaction.enabled);
@@ -661,7 +664,7 @@ model_id = "claude-opus-4-6"
         assert!(loaded.app.connections.tcp.is_none());
         assert!(loaded.app.advanced.editor.is_none());
         assert!(loaded.app.advanced.max_retries.is_none());
-        assert!(loaded.app.advanced.retry_backoff_seconds.is_none());
+        assert!(loaded.app.advanced.retry_backoff.is_none());
     }
 
     #[test]
@@ -1019,7 +1022,7 @@ model = "sonnet"
 enabled = false
 
 [behavior.autonomy.interiority]
-interval_secs = 3600
+fallback_interiority_interval = "1h"
 
 [chat.anthropic.sonnet]
 model_id = "claude-sonnet-4-6"
@@ -1039,7 +1042,7 @@ model = "opus"
 enabled = true
 
 [behavior.autonomy.interiority]
-interval_secs = 1800
+fallback_interiority_interval = "30m"
 "#,
             ),
         ]);
@@ -1050,13 +1053,13 @@ interval_secs = 1800
         // Global config should be unchanged.
         assert_eq!(global.app.defaults.model.as_deref(), Some("sonnet"));
         assert!(!global.app.behavior.autonomy.enabled);
-        assert_eq!(global.app.behavior.autonomy.interiority.interval_secs, 3600);
+        assert_eq!(global.app.behavior.autonomy.interiority.fallback_interiority_interval, ConfigDuration::from_secs(3600));
 
         // Character config should override specific keys.
         let alice = load_character_config(&global, "Alice").unwrap().unwrap();
         assert_eq!(alice.app.defaults.model.as_deref(), Some("opus"));
         assert!(alice.app.behavior.autonomy.enabled);
-        assert_eq!(alice.app.behavior.autonomy.interiority.interval_secs, 1800);
+        assert_eq!(alice.app.behavior.autonomy.interiority.fallback_interiority_interval, ConfigDuration::from_secs(1800));
 
         // Models should still be available (inherited from global).
         assert!(alice.models.find_model("sonnet").is_ok());

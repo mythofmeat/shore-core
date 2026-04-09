@@ -4,6 +4,25 @@ All notable changes to Shore are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] — 2026-04-08
+
+### Added
+- `ConfigDuration` type for human-readable duration parsing (e.g. `"30m"`, `"2h"`)
+- Renamed duration config fields to use `ConfigDuration` across all consumers
+- Propagate `X-Request-ID` from client through `LlmClient` to providers for end-to-end tracing
+
+### Fixed
+- Disconnect clients after 3 consecutive broadcast lags
+- Re-apply engine-locked autonomous message persistence
+
+### Changed
+- Split `handler.rs` into `handler/` module with extracted helpers
+- Extract `dispatch_result_to_output` and `build_tool_result_json` tool helpers
+- Remove dead config fields: `rag_results`, `rag_threshold`, `image_enabled`, `services.llm.enabled`, `services.matrix`
+- Derive `image_memory_enabled` from `tool_toggles.recall_image()` instead of standalone field
+- New packaging method for releases
+- Add `.worktrees/` to `.gitignore`
+
 ## [0.8.0] — 2026-04-08
 
 ### Added
@@ -217,6 +236,7 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Command dispatch (US-017)
 - End-to-end conversation milestone (US-018)
 
+[0.9.0]: https://github.com/eshen/silvershore/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/eshen/silvershore/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/eshen/silvershore/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/eshen/silvershore/compare/v0.5.0...v0.6.0

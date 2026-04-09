@@ -2,6 +2,8 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::duration::ConfigDuration;
+
 /// Generate a zero-argument function returning a constant, for `#[serde(default = "...")]`.
 macro_rules! serde_default {
     ($name:ident -> $ty:ty { $val:expr }) => {
@@ -140,44 +142,44 @@ pub struct InteriorityConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
 
-    /// Base interval in seconds between interiority ticks.
-    #[serde(default = "default_interiority_interval")]
-    pub interval_secs: u64,
+    /// Base interval between interiority ticks.
+    #[serde(default = "default_fallback_interiority_interval")]
+    pub fallback_interiority_interval: ConfigDuration,
 
     /// Consecutive ticks without a user message before the abandonment guard
     /// stops scheduling further ticks (character sleeps until user returns).
-    #[serde(default = "default_max_idle_ticks")]
-    pub max_idle_ticks: u32,
+    #[serde(default = "default_dormant_after_interiority_turns")]
+    pub dormant_after_interiority_turns: u32,
 
-    /// Wall-clock seconds without a user message before the abandonment guard
+    /// Time without a user message before the abandonment guard
     /// stops scheduling further ticks. Default: 48 hours.
-    #[serde(default = "default_max_silent_secs")]
-    pub max_silent_secs: u64,
+    #[serde(default = "default_dormant_after_idle_time")]
+    pub dormant_after_idle_time: ConfigDuration,
 
-    /// Minimum seconds between a user message and the next interiority tick.
-    /// Prevents ticks from firing during active conversation. Default: 3600 (1h).
-    #[serde(default = "default_min_wake_secs")]
-    pub min_wake_secs: u64,
+    /// Minimum time between a user message and the next interiority tick.
+    /// Prevents ticks from firing during active conversation. Default: 1h.
+    #[serde(default = "default_minimum_interiority_latency")]
+    pub minimum_interiority_latency: ConfigDuration,
 
     /// Maximum tool-use rounds per interiority tick.
     #[serde(default = "default_max_tool_rounds")]
     pub max_tool_rounds: u32,
 }
 
-serde_default!(default_interiority_interval -> u64 { 3600 });
-serde_default!(default_max_idle_ticks -> u32 { 3 });
-serde_default!(default_max_silent_secs -> u64 { 172800 }); // 48 hours
-serde_default!(default_min_wake_secs -> u64 { 3600 });     // 1 hour
+serde_default!(default_fallback_interiority_interval -> ConfigDuration { ConfigDuration::from_secs(3600) });
+serde_default!(default_dormant_after_interiority_turns -> u32 { 3 });
+serde_default!(default_dormant_after_idle_time -> ConfigDuration { ConfigDuration::from_secs(172800) }); // 48 hours
+serde_default!(default_minimum_interiority_latency -> ConfigDuration { ConfigDuration::from_secs(3600) }); // 1 hour
 serde_default!(default_max_tool_rounds -> u32 { 12 });
 
 impl Default for InteriorityConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            interval_secs: default_interiority_interval(),
-            max_idle_ticks: default_max_idle_ticks(),
-            max_silent_secs: default_max_silent_secs(),
-            min_wake_secs: default_min_wake_secs(),
+            fallback_interiority_interval: default_fallback_interiority_interval(),
+            dormant_after_interiority_turns: default_dormant_after_interiority_turns(),
+            dormant_after_idle_time: default_dormant_after_idle_time(),
+            minimum_interiority_latency: default_minimum_interiority_latency(),
             max_tool_rounds: default_max_tool_rounds(),
         }
     }
@@ -189,9 +191,9 @@ pub struct CompactionConfig {
     /// Whether compaction triggers are enabled.
     #[serde(default = "default_true")]
     pub enabled: bool,
-    /// Minutes of idle before compaction triggers.
-    #[serde(default = "default_idle_trigger_minutes")]
-    pub idle_trigger_minutes: u32,
+    /// Idle time before compaction triggers.
+    #[serde(default = "default_idle_trigger")]
+    pub idle_trigger: ConfigDuration,
     /// Minimum user turns before any compaction trigger fires.
     #[serde(default = "default_min_turns")]
     pub min_turns: usize,
@@ -203,7 +205,7 @@ pub struct CompactionConfig {
     pub keep_recent_turns: usize,
 }
 
-serde_default!(default_idle_trigger_minutes -> u32 { 30 });
+serde_default!(default_idle_trigger -> ConfigDuration { ConfigDuration::from_secs(1800) });
 serde_default!(default_min_turns -> usize { 8 });
 serde_default!(default_max_turns -> usize { 16 });
 serde_default!(default_keep_recent_turns -> usize { 2 });
@@ -212,7 +214,7 @@ impl Default for CompactionConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            idle_trigger_minutes: default_idle_trigger_minutes(),
+            idle_trigger: default_idle_trigger(),
             min_turns: default_min_turns(),
             max_turns: default_max_turns(),
             keep_recent_turns: default_keep_recent_turns(),
@@ -551,7 +553,6 @@ pub struct ServiceEntry {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-#[derive(Default)]
 pub struct NotificationsConfig {
     /// Master switch for push notifications.
     #[serde(default)]
@@ -570,13 +571,28 @@ pub struct NotificationsConfig {
     pub command: CommandNotifyConfig,
 
     /// Only fire `message_complete` notifications when generation takes longer
-    /// than this many seconds. 0 means always notify.
-    #[serde(default)]
-    pub generation_threshold_secs: u64,
+    /// than this duration. 0 means always notify.
+    #[serde(default = "default_generation_threshold")]
+    pub generation_threshold: ConfigDuration,
 
     /// Per-event toggles.
     #[serde(default)]
     pub events: NotificationEventsConfig,
+}
+
+serde_default!(default_generation_threshold -> ConfigDuration { ConfigDuration::from_secs(0) });
+
+impl Default for NotificationsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: bool::default(),
+            backend: NotificationBackend::default(),
+            ntfy: NtfyConfig::default(),
+            command: CommandNotifyConfig::default(),
+            generation_threshold: default_generation_threshold(),
+            events: NotificationEventsConfig::default(),
+        }
+    }
 }
 
 /// Notification delivery backend.
@@ -680,8 +696,8 @@ pub struct AdvancedConfig {
     /// Maximum LLM retry attempts before giving up. Overrides the default (2).
     pub max_retries: Option<u32>,
 
-    /// Seconds to wait between retry attempts. Overrides the default (no backoff).
-    pub retry_backoff_seconds: Option<f64>,
+    /// Time to wait between retry attempts. Overrides the default (no backoff).
+    pub retry_backoff: Option<ConfigDuration>,
 }
 
 impl Default for AdvancedConfig {
@@ -691,7 +707,7 @@ impl Default for AdvancedConfig {
             api_payload_logging: false,
             editor: None,
             max_retries: None,
-            retry_backoff_seconds: None,
+            retry_backoff: None,
         }
     }
 }
@@ -710,10 +726,10 @@ mod tests {
         assert!(config.defaults.stream);
         assert!(!config.behavior.autonomy.enabled);
         assert!(config.behavior.autonomy.interiority.enabled);
-        assert_eq!(config.behavior.autonomy.interiority.interval_secs, 3600);
-        assert_eq!(config.behavior.autonomy.interiority.max_idle_ticks, 3);
-        assert_eq!(config.behavior.autonomy.interiority.max_silent_secs, 172800);
-        assert_eq!(config.behavior.autonomy.interiority.min_wake_secs, 3600);
+        assert_eq!(config.behavior.autonomy.interiority.fallback_interiority_interval, ConfigDuration::from_secs(3600));
+        assert_eq!(config.behavior.autonomy.interiority.dormant_after_interiority_turns, 3);
+        assert_eq!(config.behavior.autonomy.interiority.dormant_after_idle_time, ConfigDuration::from_secs(172800));
+        assert_eq!(config.behavior.autonomy.interiority.minimum_interiority_latency, ConfigDuration::from_secs(3600));
         assert_eq!(config.behavior.autonomy.interiority.max_tool_rounds, 12);
         assert!(config.advanced.cache_invalidation_warnings);
         assert!(config.behavior.tool_use.enabled);
@@ -725,7 +741,7 @@ mod tests {
         // Advanced retry fields default to None.
         assert!(config.advanced.editor.is_none());
         assert!(config.advanced.max_retries.is_none());
-        assert!(config.advanced.retry_backoff_seconds.is_none());
+        assert!(config.advanced.retry_backoff.is_none());
     }
 
     #[test]

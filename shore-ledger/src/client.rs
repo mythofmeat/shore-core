@@ -59,8 +59,10 @@ pub(crate) fn record_call(
 ) {
     let ts = Utc::now().to_rfc3339();
 
-    // Cache tracking (Anthropic only)
-    let (cache_state, cache_anomaly) = if provider == "anthropic" {
+    // Cache tracking: run for any call that reports cache metrics (not just
+    // provider == "anthropic", which misses OpenRouter-routed Anthropic calls).
+    let has_cache_metrics = usage.cache_read_tokens > 0 || usage.cache_creation_tokens > 0;
+    let (cache_state, cache_anomaly) = if has_cache_metrics || provider == "anthropic" {
         let obs = Observation {
             ts: ts.clone(),
             model: model.to_string(),
@@ -84,6 +86,7 @@ pub(crate) fn record_call(
         let anomaly_str = result.anomaly.map(|a| match a {
             Anomaly::UnexpectedRead => "unexpected_read",
             Anomaly::UnexpectedWrite => "unexpected_write",
+            Anomaly::KeepaliveMiss => "keepalive_miss",
         });
 
         if let Some(anomaly) = &anomaly_str {
@@ -97,6 +100,13 @@ pub(crate) fn record_call(
                 cache_read_tokens = usage.cache_read_tokens,
                 cache_creation_tokens = usage.cache_creation_tokens,
                 "Cache anomaly detected"
+            );
+            shore_llm_client::cache_forensics::notify_anomaly(
+                character,
+                anomaly,
+                call_type.as_str(),
+                usage.cache_read_tokens,
+                usage.cache_creation_tokens,
             );
         }
 
@@ -142,6 +152,22 @@ pub(crate) fn record_call(
         cache_write_cost: cost.as_ref().map(|c| c.cache_write),
         total_cost: cost.as_ref().map(|c| c.total),
     };
+
+    // Cache forensics: log response-side data for ALL cache events.
+    // Uses call_id=0 since we don't have the request-side correlation ID
+    // here — but character + call_type + timestamp provide enough context.
+    if has_cache_metrics && shore_llm_client::cache_forensics::is_enabled() {
+        shore_llm_client::cache_forensics::log_response(
+            0, // no request-side correlation for streaming path
+            model,
+            character,
+            call_type.as_str(),
+            usage.input_tokens,
+            usage.output_tokens,
+            usage.cache_read_tokens,
+            usage.cache_creation_tokens,
+        );
+    }
 
     info!(
         provider,
@@ -234,7 +260,21 @@ impl LedgerClient {
             .get_or_fetch(provider_key, &request.model)
             .await;
 
-        let resp = self.inner.generate(request).await?;
+        let resp = match self.inner.generate(request).await {
+            Ok(r) => r,
+            Err(e) => {
+                // Log the failure to the forensic log so keepalive and other
+                // errors are diagnosable from disk, not just journald.
+                shore_llm_client::cache_forensics::log_error(
+                    0,
+                    &request.model,
+                    character,
+                    call_type.as_str(),
+                    &e.to_string(),
+                );
+                return Err(e);
+            }
+        };
         debug!(
             model = request.model,
             call_type = call_type.as_str(),
@@ -294,7 +334,19 @@ impl LedgerClient {
             .get_or_fetch(provider_key, &request.model)
             .await;
 
-        let reader = self.inner.stream_raw(request).await?;
+        let reader = match self.inner.stream_raw(request).await {
+            Ok(r) => r,
+            Err(e) => {
+                shore_llm_client::cache_forensics::log_error(
+                    0,
+                    &request.model,
+                    character,
+                    call_type.as_str(),
+                    &e.to_string(),
+                );
+                return Err(e);
+            }
+        };
 
         let cache_ttl = request
             .provider_options

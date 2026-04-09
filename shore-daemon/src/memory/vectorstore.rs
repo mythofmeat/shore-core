@@ -482,4 +482,5 @@ mod tests {
         let result = store.get_embeddings(&["e1"]).await.unwrap();
         assert!(result.is_empty());
     }
+
 }

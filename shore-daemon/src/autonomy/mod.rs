@@ -18,7 +18,7 @@ pub struct AutonomyStatus {
     /// Consecutive interiority ticks without a user message.
     pub ticks_without_user: u32,
     /// Max idle ticks before going dormant.
-    pub max_idle_ticks: u32,
+    pub dormant_after_interiority_turns: u32,
     /// Effective tick interval in seconds (min of interiority + cache refresh).
     pub effective_interval_secs: u64,
 }

@@ -635,6 +635,7 @@ async fn handle_generation(
     // 9. Build LLM request.
     let mut request = LedgerClient::build_request(resolved, llm_messages, system, tool_defs, None)?;
     request.rid = rid;
+    request.forensic_character = Some(char_name.to_owned());
 
     // Apply per-message parameter overrides from the client.
     if let Some(ref ov) = body.overrides {
@@ -682,7 +683,7 @@ async fn handle_generation(
     .await?;
 
     // Build cache context for tool loop.
-    let tool_cache_warnings = resolved.provider_key == "anthropic"
+    let tool_cache_warnings = matches!(resolved.sdk, Sdk::Anthropic)
         && effective_config.app.advanced.cache_invalidation_warnings;
     let cache_ctx = CacheContext {
         conversation_turn_count: engine_arc.lock().await.messages().len(),
@@ -800,7 +801,7 @@ pub(crate) fn build_llm_messages(
         Some(json!(prompt_result
             .system
             .iter()
-            .map(|b| { json!({"type": "text", "text": b.content}) })
+            .map(|b| { json!({"type": "text", "text": b.content, "_label": b.label}) })
             .collect::<Vec<_>>()))
     };
 
@@ -911,6 +912,7 @@ mod tests {
 
         let cmd = Command {
             rid: None,
+            forensic_character: None,
             name: "status".into(),
             args: serde_json::json!({}),
         };
@@ -930,6 +932,7 @@ mod tests {
 
         let cmd = Command {
             rid: None,
+            forensic_character: None,
             name: "status".into(),
             args: serde_json::json!({}),
         };
@@ -951,6 +954,7 @@ mod tests {
 
         let cmd = Command {
             rid: None,
+            forensic_character: None,
             name: "status".into(),
             args: serde_json::json!({}),
         };
@@ -970,6 +974,7 @@ mod tests {
 
         let cmd = Command {
             rid: None,
+            forensic_character: None,
             name: "status".into(),
             args: serde_json::json!({}),
         };
@@ -1034,6 +1039,7 @@ mod tests {
                 regen: is_regen,
                 char_name,
                 rid: None,
+            forensic_character: None,
                 effective_config,
                 data_dir,
                 active_model: None,
@@ -1193,7 +1199,7 @@ mod tests {
             budget_tokens: None,
             cache_ttl: None,
             keepalive_enabled: None,
-            keepalive_ttl_minutes: None,
+            keepalive_ttl: None,
             keepalive_max_pings: None,
             openrouter_provider: None,
             vertex_project: None,

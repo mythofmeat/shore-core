@@ -185,7 +185,7 @@ fn describe_mutation(tool_name: &str, input: &Value) -> String {
         "create_entry" => {
             let text = input["summary_text"].as_str().unwrap_or("");
             let truncated = if text.len() > 80 {
-                format!("{}...", &text[..80])
+                format!("{}...", &text[..text.floor_char_boundary(80)])
             } else {
                 text.to_string()
             };
@@ -549,5 +549,17 @@ mod tests {
         assert_eq!(text, "Agent loop reached maximum iterations.");
         assert!(mutations.is_empty());
         assert_eq!(mock.call_count(), MAX_ITERATIONS);
+    }
+
+    #[test]
+    fn describe_mutation_handles_multibyte_at_boundary() {
+        // 79 ASCII bytes + "é" (2 bytes) = 81 bytes total.
+        // Slicing at byte 80 lands inside "é" → must not panic.
+        let text = format!("{}{}", "a".repeat(79), "é");
+        assert_eq!(text.len(), 81);
+        let input = json!({"summary_text": text});
+        let desc = describe_mutation("create_entry", &input);
+        assert!(desc.starts_with("Create entry: "));
+        assert!(desc.ends_with("..."));
     }
 }

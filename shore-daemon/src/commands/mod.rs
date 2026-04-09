@@ -199,6 +199,7 @@ pub async fn dispatch(
         "config_reset" => state::config_reset(ctx),
         "diagnostics" => state::diagnostics(ctx, &cmd.args),
         "heartbeat_log" => state::heartbeat_log(engine, ctx, &cmd.args),
+        "force_tick" => state::force_tick(engine, ctx),
         "usage" => usage::usage(ctx, &cmd.args).await,
 
         _ => Err((
@@ -295,6 +296,7 @@ mod tests {
 
         let cmd = Command {
             rid: None,
+            forensic_character: None,
             name: "bogus_command".into(),
             args: serde_json::json!({}),
         };
@@ -317,6 +319,7 @@ mod tests {
 
         let cmd = Command {
             rid: None,
+            forensic_character: None,
             name: "status".into(),
             args: serde_json::json!({}),
         };
@@ -350,6 +353,7 @@ mod tests {
 
         let cmd = Command {
             rid: None,
+            forensic_character: None,
             name: "list_characters".into(),
             args: serde_json::json!({}),
         };
@@ -367,6 +371,7 @@ mod tests {
 
         let cmd = Command {
             rid: None,
+            forensic_character: None,
             name: "status".into(),
             args: serde_json::json!({}),
         };

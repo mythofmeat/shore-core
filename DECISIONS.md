@@ -467,7 +467,7 @@ Decoupled wire protocol (SDK) from endpoint identity (provider) in `shore-llm-cl
 - `PersistedState` v4: RFC3339 timestamps for `next_wake_at` and `last_user_at`, enabling restart recovery.
 - `on_user_message` uses `max()` semantics: `next_wake_at = max(existing, now + min_wake_secs)`. Character-scheduled deadlines are preserved.
 - Removed: `InteriorityState` enum, `jitter_factor`, `cache_refresh_interval_secs`, `RunDormantPing` variant from `InteriorityAction`.
-- Added config: `max_silent_secs` (48h default), `min_wake_secs` (1h default, configurable for testing).
+- Added config: `dormant_after_idle_time` (48h default), `minimum_interiority_latency` (1h default, configurable for testing).
 
 **Why:**
 - The old system treated characters as passive tick recipients. The redesign gives characters agency over their own inner life cadence.
@@ -478,3 +478,50 @@ Decoupled wire protocol (SDK) from endpoint identity (provider) in `shore-llm-cl
 - Breaking config change: existing configs with `jitter_factor` will fail to parse (`deny_unknown_fields`).
 - `set_next_wake` adds a tool the character can misuse (requesting very frequent ticks). Clamping to [1h, 48h] bounds this.
 - RecapStore is append-only with no automatic pruning — acceptable for expected volume (~3 entries/day).
+
+## ConfigDuration type for human-readable durations (2026-04-08)
+
+All duration-type config fields now accept systemd-style strings: `500ms`, `30s`, `2m`, `1h`, `2d`.
+Bare integers in TOML are interpreted as seconds for backwards compatibility with programmatic
+config generation. Internally stored as milliseconds to support sub-second precision
+(used by `retry_backoff`).
+
+Renamed interiority fields for clarity:
+- `interval_secs` → `fallback_interiority_interval`
+- `max_idle_ticks` → `dormant_after_interiority_turns`
+- `max_silent_secs` → `dormant_after_idle_time`
+- `min_wake_secs` → `minimum_interiority_latency`
+
+Also renamed across other config sections:
+- `idle_trigger_minutes` → `idle_trigger`
+- `generation_threshold_secs` → `generation_threshold`
+- `retry_backoff_seconds` → `retry_backoff`
+- `keepalive_ttl_minutes` → `keepalive_ttl`
+
+**Why:**
+- Raw numeric fields with `_secs` / `_minutes` suffixes were confusing — users had to mentally convert units and the naming was inconsistent.
+- systemd-style strings (`"1h"`, `"30m"`) are self-documenting in config files.
+- Interiority field names were opaque (`interval_secs`, `max_silent_secs`) — new names describe what happens from the user's perspective.
+
+**Trade-offs:**
+- Breaking config change: old field names will fail to parse (`deny_unknown_fields`). Users must update config files.
+- `cache_ttl` was left as `Option<String>` since it passes through to the Anthropic API directly (only two valid values: `"5m"`, `"1h"`).
+
+## Integration Test Harness (2026-04-09)
+
+**Decision:** Created `shore-test-harness` crate with `TestHarness` that boots a
+real daemon in-process and mocks only the HTTP boundary via `wiremock`. All daemon
+plumbing (SWP, handler, persistence, autonomy, tools) runs for real.
+
+**Alternatives considered:**
+- Full mock of LlmClient via trait abstraction — rejected because it requires
+  significant refactoring and wouldn't test the real reqwest/SSE parsing path.
+- Record/replay from real API calls — rejected because recordings rot and are only
+  marginally better than canned SSE for the bugs that actually occur.
+- Real API calls in CI — rejected because it costs money and is non-deterministic.
+
+**Trade-offs:**
+- We don't test actual LLM response quality or real provider quirks (socket behavior,
+  undocumented error formats). The existing `#[ignore]`-gated e2e tests cover that.
+- Autonomy tests use `tokio::time::pause()` which requires all autonomy code to use
+  `tokio::time::Instant` instead of `std::time::Instant`.
