@@ -32,19 +32,22 @@ pub struct CacheKeepalive {
 /// than the cold-start savings.
 const KEEPALIVE_BREAKEVEN: Duration = Duration::from_secs(18 * 3600); // 18h
 
-/// Ping interval: just under 1h to keep the cache alive with headroom.
+/// Ping interval: 55 minutes — 5 minutes of headroom before the 60-minute
+/// cache TTL expires.  If the first attempt fails, the 10s tick loop retries
+/// every 10s, giving ~30 retry attempts before the cache goes cold.
+/// Economics: one early ping costs ~0.1N tokens; a cache miss costs ~1.9N.
+/// The 5-minute insurance is worth ~$0.01 to avoid a ~$0.20 cold-start.
+///
 /// Override with `SHORE_KEEPALIVE_INTERVAL_SECS` env var for testing.
 fn ping_interval() -> Duration {
     match std::env::var("SHORE_KEEPALIVE_INTERVAL_SECS") {
         Ok(s) => {
-            let secs: u64 = s.parse().unwrap_or(59 * 60);
+            let secs: u64 = s.parse().unwrap_or(55 * 60);
             Duration::from_secs(secs)
         }
-        Err(_) => Duration::from_secs(59 * 60), // 59 min default
+        Err(_) => Duration::from_secs(55 * 60), // 55 min default
     }
 }
-
-const PING_INTERVAL_DEFAULT: Duration = Duration::from_secs(59 * 60); // 59 min
 
 impl CacheKeepalive {
     pub fn new() -> Self {
@@ -151,15 +154,15 @@ mod tests {
         ka.on_cache_warmed(now);
         ka.set_next_wake(Some(now + hours(4)));
 
-        // Not due yet at 58 minutes.
+        // Not due yet at 54 minutes (interval is 55min).
         assert_eq!(
-            ka.tick(now + minutes(58)),
+            ka.tick(now + minutes(54)),
             CacheKeepaliveAction::None
         );
 
-        // Due at 59 minutes.
+        // Due at 55 minutes.
         assert_eq!(
-            ka.tick(now + minutes(59)),
+            ka.tick(now + minutes(55)),
             CacheKeepaliveAction::Ping
         );
     }
@@ -172,15 +175,15 @@ mod tests {
         ka.on_cache_warmed(now);
         ka.set_next_wake(Some(now + hours(4)));
 
-        // First ping at 59min.
-        assert_eq!(ka.tick(now + minutes(59)), CacheKeepaliveAction::Ping);
+        // First ping at 55min.
+        assert_eq!(ka.tick(now + minutes(55)), CacheKeepaliveAction::Ping);
         // Caller confirms the ping succeeded.
-        ka.on_cache_warmed(now + minutes(59));
+        ka.on_cache_warmed(now + minutes(55));
 
-        // Not due at 59+58 = 117 minutes.
-        assert_eq!(ka.tick(now + minutes(117)), CacheKeepaliveAction::None);
-        // Due at 59+59 = 118 minutes.
-        assert_eq!(ka.tick(now + minutes(118)), CacheKeepaliveAction::Ping);
+        // Not due at 55+54 = 109 minutes.
+        assert_eq!(ka.tick(now + minutes(109)), CacheKeepaliveAction::None);
+        // Due at 55+55 = 110 minutes.
+        assert_eq!(ka.tick(now + minutes(110)), CacheKeepaliveAction::Ping);
     }
 
     #[test]
@@ -191,11 +194,11 @@ mod tests {
         ka.on_cache_warmed(now);
         ka.set_next_wake(Some(now + hours(4)));
 
-        // Ping fires at 59min.
-        assert_eq!(ka.tick(now + minutes(59)), CacheKeepaliveAction::Ping);
+        // Ping fires at 55min.
+        assert_eq!(ka.tick(now + minutes(55)), CacheKeepaliveAction::Ping);
         // Caller does NOT confirm (ping failed/skipped).
         // next_ping_at is still in the past → fires again immediately.
-        assert_eq!(ka.tick(now + minutes(59) + Duration::from_secs(30)), CacheKeepaliveAction::Ping);
+        assert_eq!(ka.tick(now + minutes(55) + Duration::from_secs(10)), CacheKeepaliveAction::Ping);
     }
 
     #[test]
@@ -207,8 +210,8 @@ mod tests {
         // Wake 30h out — beyond the 18h breakeven.
         ka.set_next_wake(Some(now + hours(30)));
 
-        // Ping would be due at 59min, but the breakeven check kills it.
-        assert_eq!(ka.tick(now + minutes(59)), CacheKeepaliveAction::None);
+        // Ping would be due at 55min, but the breakeven check kills it.
+        assert_eq!(ka.tick(now + minutes(55)), CacheKeepaliveAction::None);
         // next_ping_at was cleared, so future ticks also return None.
         assert_eq!(ka.tick(now + hours(2)), CacheKeepaliveAction::None);
     }
@@ -249,10 +252,10 @@ mod tests {
         // Simulate a user message warming the cache at 30min.
         ka.on_cache_warmed(now + minutes(30));
 
-        // The old ping at 59min should NOT fire (deadline moved to 30+59=89).
-        assert_eq!(ka.tick(now + minutes(59)), CacheKeepaliveAction::None);
-        // Should fire at 89min.
-        assert_eq!(ka.tick(now + minutes(89)), CacheKeepaliveAction::Ping);
+        // The old ping at 55min should NOT fire (deadline moved to 30+55=85).
+        assert_eq!(ka.tick(now + minutes(55)), CacheKeepaliveAction::None);
+        // Should fire at 85min.
+        assert_eq!(ka.tick(now + minutes(85)), CacheKeepaliveAction::Ping);
     }
 
     #[test]
@@ -265,9 +268,9 @@ mod tests {
         ka.on_cache_warmed(now);
         ka.set_next_wake(Some(now + hours(30)));
 
-        assert_eq!(ka.tick(now + minutes(59)), CacheKeepaliveAction::None);
+        assert_eq!(ka.tick(now + minutes(55)), CacheKeepaliveAction::None);
         // next_ping_at was cleared by the breakeven check.
-        assert_eq!(ka.tick(now + minutes(60)), CacheKeepaliveAction::None);
+        assert_eq!(ka.tick(now + minutes(56)), CacheKeepaliveAction::None);
     }
 
     #[test]
@@ -281,11 +284,11 @@ mod tests {
         // Compaction completes — invalidates the cached prefix.
         ka.on_cache_invalidated();
 
-        // Ping would be due at 59min, but invalidation cleared it.
-        assert_eq!(ka.tick(now + minutes(59)), CacheKeepaliveAction::None);
+        // Ping would be due at 55min, but invalidation cleared it.
+        assert_eq!(ka.tick(now + minutes(55)), CacheKeepaliveAction::None);
 
         // Next real LLM call warms the cache — pings resume.
         ka.on_cache_warmed(now + hours(1));
-        assert_eq!(ka.tick(now + hours(1) + minutes(59)), CacheKeepaliveAction::Ping);
+        assert_eq!(ka.tick(now + hours(1) + minutes(55)), CacheKeepaliveAction::Ping);
     }
 }

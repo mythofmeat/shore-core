@@ -582,7 +582,10 @@ impl AutonomyManager {
 // ---------------------------------------------------------------------------
 
 /// Tick interval for each character's autonomy loop.
-const TICK_INTERVAL: Duration = Duration::from_secs(30);
+/// 10s gives ±10s precision on keepalive timing (vs ±30s before).
+/// The per-tick work is microseconds (Instant comparisons + mutex lock)
+/// unless an actual action is triggered, so the overhead is negligible.
+const TICK_INTERVAL: Duration = Duration::from_secs(10);
 
 /// Maximum wall-clock time for a single interiority tick (including all tool
 /// rounds). If the tick exceeds this, the future is dropped and the tick loop
@@ -1930,7 +1933,7 @@ mod tests {
     async fn successful_ping_advances_timer() {
         // Counterpart: after on_cache_warmed is called (simulating a
         // successful ping), the next tick should NOT return Ping until
-        // 59 minutes later.
+        // 55 minutes later.
         let now = Instant::now();
         let mut ka = CacheKeepalive::new();
         ka.on_cache_warmed(now - Duration::from_secs(60 * 60));
@@ -1941,11 +1944,11 @@ mod tests {
         // Caller confirms success.
         ka.on_cache_warmed(now);
 
-        // Immediately after: should NOT be due (59 min away).
+        // Immediately after: should NOT be due (55 min away).
         assert_eq!(ka.tick(now + Duration::from_secs(30)), CacheKeepaliveAction::None);
-        // 59 minutes later: should fire again.
+        // 55 minutes later: should fire again.
         assert_eq!(
-            ka.tick(now + Duration::from_secs(59 * 60)),
+            ka.tick(now + Duration::from_secs(55 * 60)),
             CacheKeepaliveAction::Ping
         );
     }
@@ -1979,11 +1982,11 @@ mod tests {
             mgr.ensure_state("alice", None);
         });
 
-        // The keepalive should be primed: after 59 minutes, tick should
+        // The keepalive should be primed: after 55 minutes, tick should
         // return Ping (not None).
         let state = mgr.states.get("alice").unwrap();
         let mut s = lock_state(&state);
-        let future = Instant::now() + Duration::from_secs(59 * 60);
+        let future = Instant::now() + Duration::from_secs(55 * 60);
         let action = s.cache_keepalive.tick(future);
         assert_eq!(
             action,
