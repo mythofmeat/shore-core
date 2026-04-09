@@ -1,0 +1,192 @@
+[0;36m[interiority-tick][0m init: /tmp/shore-cache-test-interiority-tick-30d0bg
+[0;36m[interiority-tick][0m nonce: TwEuav7A0eBT6wBv8H7QZNoBOAPjyqS
+[0;36m[interiority-tick][0m building...
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.26s
+[0;36m[interiority-tick][0m starting daemon...
+[0;36m[interiority-tick][0m daemon running (PID 1953286)
+[0;36m[interiority-tick][0m === PHASE 1: Build 20-turn conversation ===
+[0;36m[interiority-tick][0m send: Turn 1: what is 22 + 0?
+22.
+[38;5;8m[anthropic/claude-4.6-sonnet | in:3 out:6 cache_r:0 cache_w:3482 | ttft:142ms total:180ms][0m
+
+
+[0;36m[interiority-tick][0m   turn 0: cache_w=3482 (cold start, threshold=1741)
+[0;36m[interiority-tick][0m send: Turn 2: what is 38 + 18?
+56.
+[38;5;8m[anthropic/claude-4.6-sonnet | in:25 out:6 cache_r:3482 cache_w:0 | ttft:4ms total:43ms][0m
+
+
+[0;36m[interiority-tick][0m   turn 1: cache_r=3482 cache_w=0
+[0;36m[interiority-tick][0m send: Turn 3: what is 0 + 5?
+5.
+[38;5;8m[anthropic/claude-4.6-sonnet | in:41 out:6 cache_r:3482 cache_w:6 | ttft:5ms total:53ms][0m
+
+
+[0;36m[interiority-tick][0m   turn 2: cache_r=3482 cache_w=6
+[0;36m[interiority-tick][0m send: Turn 4: what is 31 + 13?
+44.
+[38;5;8m[anthropic/claude-4.6-sonnet | in:41 out:6 cache_r:3488 cache_w:22 | ttft:11ms total:66ms][0m
+
+
+[0;36m[interiority-tick][0m   turn 3: cache_r=3488 cache_w=22
+[0;36m[interiority-tick][0m send: Turn 5: what is 1 + 89?
+90.
+[38;5;8m[anthropic/claude-4.6-sonnet | in:41 out:6 cache_r:3510 cache_w:22 | ttft:3ms total:50ms][0m
+
+
+[0;36m[interiority-tick][0m   turn 4: cache_r=3510 cache_w=22
+[0;36m[interiority-tick][0m send: Turn 6: what is 82 + 0?
+82.
+[38;5;8m[anthropic/claude-4.6-sonnet | in:41 out:6 cache_r:3532 cache_w:22 | ttft:6ms total:71ms][0m
+
+
+[0;36m[interiority-tick][0m   turn 5: cache_r=3532 cache_w=22
+[0;36m[interiority-tick][0m send: Turn 7: what is 49 + 0?
+49.
+[38;5;8m[anthropic/claude-4.6-sonnet | in:41 out:6 cache_r:3532 cache_w:44 | ttft:5ms total:59ms][0m
+
+
+[0;36m[interiority-tick][0m   turn 6: cache_r=3532 cache_w=44
+[0;36m[interiority-tick][0m send: Turn 8: what is 16 + 8?
+24.
+[38;5;8m[anthropic/claude-4.6-sonnet | in:41 out:6 cache_r:3554 cache_w:44 | ttft:4ms total:46ms][0m
+
+
+[0;36m[interiority-tick][0m   turn 7: cache_r=3554 cache_w=44
+[0;36m[interiority-tick][0m send: Turn 9: what is 63 + 92?
+155.
+[38;5;8m[anthropic/claude-4.6-sonnet | in:41 out:6 cache_r:3576 cache_w:44 | ttft:4ms total:67ms][0m
+
+
+[0;36m[interiority-tick][0m   turn 8: cache_r=3576 cache_w=44
+[0;36m[interiority-tick][0m send: Turn 10: what is 55 + 21?
+76.
+[38;5;8m[anthropic/claude-4.6-sonnet | in:41 out:6 cache_r:3620 cache_w:22 | ttft:4ms total:91ms][0m
+
+
+[0;36m[interiority-tick][0m   turn 9: cache_r=3620 cache_w=22
+[0;36m[interiority-tick][0m send: Turn 11: what is 19 + 42?
+61.
+[38;5;8m[anthropic/claude-4.6-sonnet | in:41 out:6 cache_r:3642 cache_w:22 | ttft:6ms total:66ms][0m
+
+
+[0;36m[interiority-tick][0m   turn 10: cache_r=3642 cache_w=22
+[0;36m[interiority-tick][0m send: Turn 12: what is 36 + 93?
+129.
+[38;5;8m[anthropic/claude-4.6-sonnet | in:41 out:6 cache_r:3664 cache_w:22 | ttft:18ms total:62ms][0m
+
+
+[0;36m[interiority-tick][0m   turn 11: cache_r=3664 cache_w=22
+[0;36m[interiority-tick][0m send: Turn 13: what is 39 + 73?
+112.
+[38;5;8m[anthropic/claude-4.6-sonnet | in:41 out:6 cache_r:3686 cache_w:22 | ttft:4ms total:54ms][0m
+
+
+[0;36m[interiority-tick][0m   turn 12: cache_r=3686 cache_w=22
+[0;36m[interiority-tick][0m send: Turn 14: what is 2 + 59?
+61.
+[38;5;8m[anthropic/claude-4.6-sonnet | in:41 out:6 cache_r:3708 cache_w:22 | ttft:2ms total:61ms][0m
+
+
+[0;36m[interiority-tick][0m   turn 13: cache_r=3708 cache_w=22
+[0;36m[interiority-tick][0m send: Turn 15: what is 87 + 15?
+[38;5;8m102[0m
+[38;5;8m---[0m
+
+102.
+[38;5;8m[anthropic/claude-4.6-sonnet | in:41 out:21 cache_r:3730 cache_w:22 | ttft:130ms total:184ms][0m
+
+
+[0;36m[interiority-tick][0m   turn 14: cache_r=3730 cache_w=22
+[0;36m[interiority-tick][0m send: Turn 16: what is 71 + 95?
+166.
+[38;5;8m[anthropic/claude-4.6-sonnet | in:41 out:6 cache_r:3730 cache_w:44 | ttft:5ms total:101ms][0m
+
+
+[0;36m[interiority-tick][0m   turn 15: cache_r=3730 cache_w=44
+[0;36m[interiority-tick][0m send: Turn 17: what is 69 + 99?
+168.
+[38;5;8m[anthropic/claude-4.6-sonnet | in:41 out:6 cache_r:3752 cache_w:44 | ttft:5ms total:30ms][0m
+
+
+[0;36m[interiority-tick][0m   turn 16: cache_r=3752 cache_w=44
+[0;36m[interiority-tick][0m send: Turn 18: what is 10 + 67?
+77.
+[38;5;8m[anthropic/claude-4.6-sonnet | in:41 out:6 cache_r:3796 cache_w:22 | ttft:106ms total:209ms][0m
+
+
+[0;36m[interiority-tick][0m   turn 17: cache_r=3796 cache_w=22
+[0;36m[interiority-tick][0m send: Turn 19: what is 0 + 33?
+33.
+[38;5;8m[anthropic/claude-4.6-sonnet | in:41 out:6 cache_r:3818 cache_w:22 | ttft:3ms total:157ms][0m
+
+
+[0;36m[interiority-tick][0m   turn 18: cache_r=3818 cache_w=22
+[0;36m[interiority-tick][0m send: Turn 20: what is 15 + 88?
+103.
+[38;5;8m[anthropic/claude-4.6-sonnet | in:41 out:6 cache_r:3840 cache_w:22 | ttft:2ms total:85ms][0m
+
+
+[0;36m[interiority-tick][0m   turn 19: cache_r=3840 cache_w=22
+[0;36m[interiority-tick][0m pre-tick cache_r=3840
+[0;36m[interiority-tick][0m === PHASE 2: Force interiority tick ===
+[0;36m[interiority-tick][0m cmd: force-tick
+[1mforce_tick[0m
+{
+  "status": "scheduled",
+  "character": "cachetest",
+  "note": "Tick will fire within ~10 seconds"
+}
+[0;36m[interiority-tick][0m waiting for interiority tick (forensics count=20)...
+[0;36m[interiority-tick][0m new forensics entry detected (count=22, waited 9x2s)
+[0;36m[interiority-tick][0m   tick: cache_r=3862 cache_w=22
+[0;36m[interiority-tick][0m === PHASE 3: Verify tick cache reads ===
+[0;36m[interiority-tick][0m === PHASE 4: Post-tick follow-up ===
+[0;36m[interiority-tick][0m send: Post-tick: what is 3 + 3?
+6.
+[38;5;8m[anthropic/claude-4.6-sonnet | in:41 out:6 cache_r:3884 cache_w:0 | ttft:36ms total:150ms][0m
+
+
+[0;36m[interiority-tick][0m   turn 20: cache_r=3884 cache_w=0
+[0;36m[interiority-tick][0m send: Post-tick: what is 7 * 7?
+49.
+[38;5;8m[anthropic/claude-4.6-sonnet | in:41 out:6 cache_r:3884 cache_w:22 | ttft:8ms total:105ms][0m
+
+
+[0;36m[interiority-tick][0m   turn 21: cache_r=3884 cache_w=22
+[0;36m[interiority-tick][0m send: Post-tick: what is 99 - 1?
+98.
+[38;5;8m[anthropic/claude-4.6-sonnet | in:41 out:6 cache_r:3906 cache_w:22 | ttft:5ms total:62ms][0m
+
+
+[0;36m[interiority-tick][0m   turn 22: cache_r=3906 cache_w=22
+[0;32m[interiority-tick] PASS[0m
+[0;36m[interiority-tick][0m forensics summary:
+  [0] input=3 cache_r=0 cache_w=3482  WRITE
+  [1] input=25 cache_r=3482 cache_w=0
+  [2] input=41 cache_r=3482 cache_w=6  WRITE
+  [3] input=41 cache_r=3488 cache_w=22  WRITE
+  [4] input=41 cache_r=3510 cache_w=22  WRITE
+  [5] input=41 cache_r=3532 cache_w=22  WRITE
+  [6] input=41 cache_r=3532 cache_w=44  WRITE
+  [7] input=41 cache_r=3554 cache_w=44  WRITE
+  [8] input=41 cache_r=3576 cache_w=44  WRITE
+  [9] input=41 cache_r=3620 cache_w=22  WRITE
+  [10] input=41 cache_r=3642 cache_w=22  WRITE
+  [11] input=41 cache_r=3664 cache_w=22  WRITE
+  [12] input=41 cache_r=3686 cache_w=22  WRITE
+  [13] input=41 cache_r=3708 cache_w=22  WRITE
+  [14] input=41 cache_r=3730 cache_w=22  WRITE
+  [15] input=41 cache_r=3730 cache_w=44  WRITE
+  [16] input=41 cache_r=3752 cache_w=44  WRITE
+  [17] input=41 cache_r=3796 cache_w=22  WRITE
+  [18] input=41 cache_r=3818 cache_w=22  WRITE
+  [19] input=41 cache_r=3840 cache_w=22  WRITE
+  [20] input=380 cache_r=3862 cache_w=22  WRITE
+  [21] input=380 cache_r=3862 cache_w=22  WRITE
+  [22] input=41 cache_r=3884 cache_w=0
+  [23] input=571 cache_r=3884 cache_w=0
+  [24] input=571 cache_r=3884 cache_w=0
+  [25] input=41 cache_r=3884 cache_w=22  WRITE
+  [26] input=41 cache_r=3906 cache_w=22  WRITE
+[0;36m[interiority-tick][0m cleaning up /tmp/shore-cache-test-interiority-tick-30d0bg

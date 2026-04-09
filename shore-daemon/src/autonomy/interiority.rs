@@ -96,6 +96,11 @@ impl InteriorityClock {
         self.next_wake_at
     }
 
+    /// Force the next tick to fire immediately by setting the deadline to now.
+    pub fn force_wake(&mut self) {
+        self.next_wake_at = Some(Instant::now());
+    }
+
     pub fn ticks_without_user(&self) -> u32 {
         self.ticks_without_user
     }

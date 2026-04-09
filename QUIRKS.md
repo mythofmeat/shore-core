@@ -10,7 +10,7 @@ Unexpected behavior, kludges, and idiosyncrasies that aren't obvious from readin
 
 - **LLMs emit whitespace-only Text blocks before thinking/tool_use.** Claude (via OpenRouter) sometimes produces a `{"type": "text", "text": "\n\n"}` block before the thinking and tool_use blocks in a tool-loop response. The tool-loop merge must treat whitespace-only Text blocks as non-substantive — otherwise the merge predicate fails and tool results get orphaned.
 
-- **OpenRouter intermittently drops prompt cache hits.** With identical, static, never-changing system prompt breakpoints and 1h TTL, OpenRouter returns `cache_read_tokens: 0` on ~30% of requests. The same requests against the direct Anthropic API get 100% cache hits. This is not deterministic — the misses appear random. Confirmed 2026-04-01 with controlled A/B testing. The Anthropic SDK now accepts custom `base_url` again (after the SDK/provider split), but be aware of this cache reliability issue when using OpenRouter with `sdk = "anthropic"`.
+- **OpenRouter drops ~22-33% of prompt cache hits without provider pinning.** OpenRouter load-balances across multiple Anthropic backends with independent prompt caches — each backend switch is a full miss. This is independent of API format, headers, delay, or breakpoint strategy. **Fix: `openrouter_provider = { order = ["Anthropic"] }` in model config.** Confirmed 0% miss rate across 6 independent runs (0/30 non-cold turns). Pinning to Google/Vertex does NOT help (still 20%). Only Anthropic's direct infrastructure provides stable per-key caching. See `docs/PROMPT_CACHING.md` for the full experiment matrix.
 
 ## Anthropic API
 
@@ -22,7 +22,7 @@ Unexpected behavior, kludges, and idiosyncrasies that aren't obvious from readin
 
 - **Anthropic prompt cache has ~5s propagation delay.** After a cache write, identical requests within ~2s may miss. Requests after ~5s reliably hit. This is relevant for tool loops where the continuation call fires within ~1s of the initial call — the cache from the initial call won't be available yet, but this is expected and not a bug.
 
-- **Cache breakpoints at depth 2 are sufficient.** Messages 1-3 of a conversation won't have cache breakpoints (not enough turns for depth-2 to exist), but once the breakpoint activates at message 4+, it works reliably across all subsequent turns including tool use exchanges. Multiple breakpoints at depths 4 and 8 were tested but provided no additional benefit on direct Anthropic.
+- **Sliding message breakpoints require a pinned system anchor.** Using `cache_depth_turns` alone (without any `cache_pinned_position`) causes intermittent full prefix rewrites — `cache_read_tokens=0` with a full `cache_creation_tokens` despite byte-identical prefix content. This affects all depths except depth=0. Adding any pinned system breakpoint (`[0]` or `[-1]`) completely fixes it. This is undocumented; SillyTavern works because it always includes system-level breakpoints. See `docs/PROMPT_CACHING.md` for full test results.
 
 ## Image Handling
 

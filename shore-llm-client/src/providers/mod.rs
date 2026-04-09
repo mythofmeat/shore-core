@@ -13,6 +13,15 @@ use crate::types::{GenerateResponse, ImageGenerateParams, ImageGenerateResponse,
 use crate::LlmError;
 use tokio::io::DuplexStream;
 
+/// Truncate a string for log preview, respecting UTF-8 char boundaries.
+fn body_preview(body: &str, max: usize) -> &str {
+    if body.len() > max {
+        &body[..body.floor_char_boundary(max)]
+    } else {
+        body
+    }
+}
+
 /// Check an HTTP response status, returning the response on success or
 /// an `HttpStatus` error with the body text on failure.
 pub(crate) async fn check_response(
@@ -27,7 +36,7 @@ pub(crate) async fn check_response(
     error!(
         status = status_code,
         body_len = body.len(),
-        body_preview = %if body.len() > 200 { &body[..200] } else { &body },
+        body_preview = %body_preview(&body, 200),
         "LLM API returned error status"
     );
     Err(LlmError::HttpStatus {
@@ -140,7 +149,19 @@ mod tests {
             provider_options: None,
             provider_key: None,
             rid: None,
+            forensic_character: None,
         }
+    }
+
+    #[test]
+    fn body_preview_handles_multibyte_at_boundary() {
+        // 199 ASCII bytes + "é" (2 bytes) = 201 bytes total.
+        // Slicing at byte 200 lands inside "é" → must not panic.
+        let body = format!("{}{}", "x".repeat(199), "é");
+        assert_eq!(body.len(), 201);
+        let preview = body_preview(&body, 200);
+        assert!(preview.len() <= 200);
+        assert!(preview.is_char_boundary(preview.len()));
     }
 
     #[tokio::test]

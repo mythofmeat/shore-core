@@ -39,6 +39,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let loaded = load_config(config_path.as_deref())?;
     info!("Configuration loaded");
 
+    // Ensure data and runtime directories exist before anything writes to them.
+    std::fs::create_dir_all(&loaded.dirs.data)?;
+    std::fs::create_dir_all(&loaded.dirs.runtime)?;
+
     // ── Notification service ──────────────────────────────────────────
     let notifier = NotificationService::new(loaded.app.notifications.clone());
 
@@ -142,6 +146,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             loaded.dirs.data.display()
         );
     }
+
+    // Always-on cache forensics — writes to {data_dir}/cache_forensics.jsonl.
+    // Logs every Anthropic cache placement + response so cache misses are
+    // diagnosable after the fact without needing to reproduce.
+    shore_llm_client::cache_forensics::enable(loaded.dirs.data.clone());
+    info!(
+        "Cache forensics enabled → {}/cache_forensics.jsonl",
+        loaded.dirs.data.display()
+    );
+
     let llm_client = LedgerClient::new(raw_llm_client, &loaded.dirs.data.join("ledger.db"))?;
 
     // Reconstruct cache tracker state from the ledger for each known character.

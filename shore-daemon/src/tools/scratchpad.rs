@@ -117,15 +117,32 @@ fn resolve_path(scratchpad_dir: &str, relative: &str) -> Result<PathBuf, ToolErr
     let base = PathBuf::from(scratchpad_dir);
     let resolved = base.join(relative);
 
-    // Double-check: canonicalize what exists, or verify the prefix for new paths.
-    // For new paths (write), parent may not exist yet, so we verify the joined
-    // path starts with the base after normalization.
-    if let Ok(canonical) = resolved.canonicalize() {
-        if let Ok(canonical_base) = base.canonicalize() {
+    // Double-check: canonicalize what exists to catch symlink escapes.
+    // Only perform the check when both the base and path (or an ancestor)
+    // can be canonicalized — otherwise there are no symlinks to follow.
+    if let Ok(canonical_base) = base.canonicalize() {
+        if let Ok(canonical) = resolved.canonicalize() {
+            // Full path exists — check directly.
             if !canonical.starts_with(&canonical_base) {
                 return Err(ToolError::InvalidArgs(
                     "resolved path escapes scratchpad".into(),
                 ));
+            }
+        } else {
+            // Path doesn't exist yet — walk up to find the closest existing
+            // ancestor and verify it's still inside the scratchpad.
+            // This catches symlink escapes in intermediate directories.
+            let mut ancestor = resolved.as_path();
+            while let Some(parent) = ancestor.parent() {
+                if let Ok(canonical_parent) = parent.canonicalize() {
+                    if !canonical_parent.starts_with(&canonical_base) {
+                        return Err(ToolError::InvalidArgs(
+                            "resolved path escapes scratchpad".into(),
+                        ));
+                    }
+                    break;
+                }
+                ancestor = parent;
             }
         }
     }
@@ -368,5 +385,35 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result["content"], "nested");
+    }
+
+    /// A symlink inside the scratchpad pointing outside should be caught
+    /// by resolve_path, even for new file paths (where the target doesn't
+    /// exist yet and canonicalize would fail).
+    #[test]
+    fn resolve_path_rejects_symlink_escape() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sp = tmp.path().join("scratchpad");
+        std::fs::create_dir_all(&sp).unwrap();
+
+        // Create an "escape" directory outside the scratchpad.
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+
+        // Create a symlink inside the scratchpad that points outside.
+        let link_path = sp.join("escape_link");
+        std::os::unix::fs::symlink(&outside, &link_path).unwrap();
+
+        let sp_str = sp.to_str().unwrap();
+
+        // Writing through the symlink to a new file should be rejected.
+        // The path "escape_link/secret.txt" resolves through the symlink
+        // to outside/secret.txt, which is outside the scratchpad.
+        let result = resolve_path(sp_str, "escape_link/secret.txt");
+        assert!(
+            result.is_err(),
+            "resolve_path should reject paths that escape via symlink, got: {:?}",
+            result.unwrap()
+        );
     }
 }

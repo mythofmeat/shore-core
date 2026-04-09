@@ -248,6 +248,14 @@ impl AutonomyManager {
                 );
                 compaction.enabled = false;
             }
+            if compaction.enabled && compaction.max_turns < compaction.min_turns {
+                tracing::error!(
+                    min_turns = compaction.min_turns,
+                    max_turns = compaction.max_turns,
+                    "Compaction disabled: max_turns must be >= min_turns"
+                );
+                compaction.enabled = false;
+            }
         }
 
         let (compaction_tx, compaction_rx) = mpsc::channel(16);
@@ -329,9 +337,12 @@ impl AutonomyManager {
 
         let mut cache_keepalive = CacheKeepalive::new();
         // If the clock has a next_wake set (restored or bootstrapped), mirror
-        // it to the keepalive so it can decide whether to bridge.
+        // it to the keepalive so it can decide whether to bridge, and prime
+        // the ping timer so keepalive pings begin immediately (rather than
+        // waiting for the first user message or interiority tick).
         if let Some(wake) = interiority.next_wake() {
             cache_keepalive.set_next_wake(Some(wake));
+            cache_keepalive.on_cache_warmed(Instant::now());
         }
 
         let state = Arc::new(Mutex::new(AutonomyState {
@@ -468,6 +479,9 @@ impl AutonomyManager {
             // Invalidate the cached request — it contains the pre-compaction
             // conversation. The next interiority tick will rebuild from disk.
             s.last_request = None;
+            // Stop keepalive pings — the cached prompt prefix is stale.
+            // on_cache_warmed() will re-enable pings on the next real LLM call.
+            s.cache_keepalive.on_cache_invalidated();
             // Keep compaction_triggered = true until engine reload acknowledges it.
             s.mark_dirty();
             info!(
@@ -507,6 +521,17 @@ impl AutonomyManager {
 
     /// Explicitly set the paused state for a character. Returns the new state,
     /// or None if the character has no autonomy state.
+    /// Force the interiority clock to fire on the next tick poll (~10s).
+    /// Returns true if the character state was found and updated.
+    pub fn force_tick(&self, character: &str) -> bool {
+        info!(character, "Forcing interiority tick");
+        self.with_state(character, |s| {
+            s.interiority.force_wake();
+            s.mark_dirty();
+        })
+        .is_some()
+    }
+
     pub fn set_paused(&self, character: &str, paused: bool) -> Option<bool> {
         info!(character, paused, "Autonomy pause state changed");
         self.with_state(character, |s| {
@@ -577,6 +602,9 @@ impl AutonomyManager {
 // ---------------------------------------------------------------------------
 
 /// Tick interval for each character's autonomy loop.
+/// 10s gives ±10s precision on keepalive timing (vs ±30s before).
+/// The per-tick work is microseconds (Instant comparisons + mutex lock)
+/// unless an actual action is triggered, so the overhead is negligible.
 const TICK_INTERVAL: Duration = Duration::from_secs(10);
 
 /// Maximum wall-clock time for a single interiority tick (including all tool
@@ -756,12 +784,20 @@ async fn tick_character(character: &str, ctx: &TickContext) {
 
     // -- cache keepalive ping (async, outside lock) -------------------------
     if keepalive_action == CacheKeepaliveAction::Ping {
-        execute_dormant_ping(character, &ctx.state, ctx.llm_client.as_ref()).await;
-        // The ping itself warms the cache — update the keepalive deadline.
+        let pinged = execute_dormant_ping(character, &ctx.state, ctx.llm_client.as_ref()).await;
         let mut s = lock_state(&ctx.state);
-        s.cache_keepalive.on_cache_warmed(Instant::now());
-        s.interiority_log
-            .push(InteriorityEventKind::DormantPing, "Cache keepalive ping");
+        if pinged {
+            // Ping actually sent and succeeded — confirm to the keepalive so
+            // it schedules the next ping 59 minutes from now.
+            s.cache_keepalive.on_cache_warmed(Instant::now());
+            s.interiority_log
+                .push(InteriorityEventKind::DormantPing, "Cache keepalive ping");
+        } else {
+            // Ping was skipped (no cached request) or failed. next_ping_at is
+            // still in the past, so tick() will return Ping again on the next
+            // iteration — effectively retrying every 30s until it succeeds.
+            s.cache_keepalive.on_ping_failed();
+        }
     }
 
     // -- final persist (in case async actions dirtied state) ---------------
@@ -979,7 +1015,15 @@ async fn execute_unified_tick(
                 drop(s);
                 let Some(config) = loaded_config else { return };
                 match rebuild_request_from_disk(character, data_dir, config) {
-                    Some(req) => req,
+                    Some(req) => {
+                        // Persist the rebuilt request so keepalive pings can
+                        // use it — without this, pings silently no-op after
+                        // every daemon restart until the next user message.
+                        let mut s = lock_state(state);
+                        s.last_request = Some(req.clone());
+                        drop(s);
+                        req
+                    }
                     None => {
                         info!(
                             character,
@@ -991,6 +1035,12 @@ async fn execute_unified_tick(
             }
         }
     };
+
+    // Clear the stale request ID from the previous user message —
+    // reusing it across interiority iterations can confuse OpenRouter's
+    // routing/dedup and cause unexpected cache misses.
+    request.rid = None;
+    request.forensic_character = Some(character.to_owned());
 
     let Some(lc) = loaded_config else { return };
 
@@ -1016,30 +1066,10 @@ async fn execute_unified_tick(
         .messages
         .push(json!({"role": "user", "content": interiority_prompt}));
 
-    // Inject the set_next_wake tool definition into the request.
-    let set_next_wake_def = json!({
-        "name": "set_next_wake",
-        "description": "Schedule when you want to have your next private moment to think and use tools. Use this at the end of a tick to express your own sense of pacing.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "hours_from_now": {
-                    "type": "number",
-                    "description": "Hours until your next private moment (1.0 to 48.0; clamped if outside range)"
-                },
-                "reason": {
-                    "type": "string",
-                    "description": "A brief note to your future self about why you chose this timing"
-                }
-            },
-            "required": ["hours_from_now", "reason"]
-        }
-    });
-    if let Some(tools) = request.tools.as_mut() {
-        tools.push(set_next_wake_def);
-    } else {
-        request.tools = Some(vec![set_next_wake_def]);
-    }
+    // NOTE: set_next_wake is now in the base tool set (tools/basic.rs)
+    // so the tools array is identical between normal messages and interiority
+    // ticks. This prevents cache prefix invalidation. Instructions for using
+    // set_next_wake are in the interiority prompt, not the capabilities block.
 
     let tool_ctx = match build_tool_context(character, data_dir, client, lc).await {
         Some(ctx) => ctx,
@@ -1425,12 +1455,15 @@ fn extract_recap(content: &str) -> Option<String> {
 
 /// Send a minimal API call (max_tokens=1) to keep the prompt cache warm
 /// while the character is dormant (no user activity).
+///
+/// Returns `true` if the ping was actually sent and succeeded, `false` if
+/// it was skipped (no cached request) or the API call failed.
 async fn execute_dormant_ping(
     character: &str,
     state: &Arc<Mutex<AutonomyState>>,
     llm_client: Option<&LedgerClient>,
-) {
-    let Some(client) = llm_client else { return };
+) -> bool {
+    let Some(client) = llm_client else { return false };
 
     let request = {
         let s = lock_state(state);
@@ -1438,8 +1471,13 @@ async fn execute_dormant_ping(
             Some(req) => {
                 let mut ping = req.clone();
                 ping.max_tokens = 1;
-                // The cloned request ends with the assistant's response.
-                // Anthropic requires conversations to end with a user message.
+                // Clear stale request ID — same reason as execute_unified_tick.
+                ping.rid = None;
+                ping.forensic_character = Some(character.to_owned());
+                // The cloned request includes the assistant's last response,
+                // so the conversation ends with an assistant message. Anthropic
+                // requires conversations to end with a user message. Append a
+                // minimal user turn so the ping is a valid API request.
                 ping.messages.push(serde_json::json!({
                     "role": "user",
                     "content": "."
@@ -1448,7 +1486,7 @@ async fn execute_dormant_ping(
             }
             None => {
                 debug!(character, "Dormant ping: no cached request, skipping");
-                return;
+                return false;
             }
         }
     };
@@ -1470,9 +1508,11 @@ async fn execute_dormant_ping(
                 ),
             );
             s.mark_dirty();
+            true
         }
         Err(e) => {
             error!(character, error = %e, "Dormant ping failed");
+            false
         }
     }
 }
@@ -1822,6 +1862,236 @@ mod tests {
         assert_eq!(
             extract_send_message(content),
             Some("Hey <b>bold</b> text".into())
+        );
+    }
+
+    // -- keepalive integration tests ------------------------------------------
+    // These test the seam between tick_character, execute_dormant_ping, and
+    // on_cache_warmed — the exact boundary where the phantom ping bug lived.
+
+    /// Helper: build a TickContext with no LLM client (pings always fail).
+    fn tick_ctx_no_llm(
+        state: Arc<Mutex<AutonomyState>>,
+        data_dir: &Path,
+    ) -> (TickContext, mpsc::Receiver<String>) {
+        let (compaction_tx, compaction_rx) = mpsc::channel(16);
+        let ctx = TickContext {
+            state,
+            config: Arc::new(test_config()),
+            compaction: Arc::new(Default::default()),
+            data_dir: data_dir.to_path_buf(),
+            compaction_tx,
+            llm_client: None,
+            loaded_config: None,
+            notifier: None,
+            registry: None,
+        };
+        (ctx, compaction_rx)
+    }
+
+    #[tokio::test]
+    async fn failed_ping_does_not_advance_timer() {
+        // The phantom ping bug: execute_dormant_ping returns early (no
+        // LLM client / no last_request), but on_cache_warmed was called
+        // unconditionally, resetting the timer for another 59 minutes.
+        // After the fix, the timer must stay in the past so the next
+        // tick retries.
+        let tmp = tempfile::tempdir().unwrap();
+        let now = Instant::now();
+
+        let mut ka = CacheKeepalive::new();
+        // Simulate: cache was warmed 59+ minutes ago, wake is set.
+        ka.on_cache_warmed(now - Duration::from_secs(60 * 60));
+        ka.set_next_wake(Some(now + Duration::from_secs(3600)));
+
+        // Precondition: keepalive is due right now.
+        assert_eq!(ka.tick(now), CacheKeepaliveAction::Ping);
+        // Reset — tick() didn't advance, so re-prime for the actual test.
+        ka.on_cache_warmed(now - Duration::from_secs(60 * 60));
+
+        let state = Arc::new(Mutex::new(AutonomyState {
+            interiority: InteriorityClock::with_config(&Default::default()),
+            cache_keepalive: ka,
+            activity: ActivityTracker::new(),
+            interiority_log: InteriorityLog::new(),
+            paused: false,
+            dirty: false,
+            last_compaction_activity: now,
+            compaction_triggered: false,
+            active_turn_count: 0,
+            needs_engine_reload: false,
+            last_request: None, // <-- no request → ping will be skipped
+        }));
+
+        let (ctx, _rx) = tick_ctx_no_llm(state.clone(), tmp.path());
+        tick_character("test", &ctx).await;
+
+        // After the tick: the keepalive should STILL return Ping on the
+        // next iteration because the failed ping did not advance the timer.
+        let mut s = lock_state(&state);
+        let action = s.cache_keepalive.tick(Instant::now());
+        assert_eq!(
+            action,
+            CacheKeepaliveAction::Ping,
+            "Failed ping must NOT advance the keepalive timer"
+        );
+    }
+
+    #[tokio::test]
+    async fn successful_ping_advances_timer() {
+        // Counterpart: after on_cache_warmed is called (simulating a
+        // successful ping), the next tick should NOT return Ping until
+        // 55 minutes later.
+        let now = Instant::now();
+        let mut ka = CacheKeepalive::new();
+        ka.on_cache_warmed(now - Duration::from_secs(60 * 60));
+        ka.set_next_wake(Some(now + Duration::from_secs(3600)));
+
+        // Ping is due.
+        assert_eq!(ka.tick(now), CacheKeepaliveAction::Ping);
+        // Caller confirms success.
+        ka.on_cache_warmed(now);
+
+        // Immediately after: should NOT be due (55 min away).
+        assert_eq!(ka.tick(now + Duration::from_secs(30)), CacheKeepaliveAction::None);
+        // 55 minutes later: should fire again.
+        assert_eq!(
+            ka.tick(now + Duration::from_secs(55 * 60)),
+            CacheKeepaliveAction::Ping
+        );
+    }
+
+    #[test]
+    fn startup_with_restored_wake_primes_keepalive() {
+        // After daemon restart, if the interiority clock had a next_wake
+        // restored from persistence, the keepalive timer must be primed
+        // so pings start immediately — not wait for the first user message.
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path();
+        std::fs::create_dir_all(data_dir.join("alice")).unwrap();
+
+        // Save persisted state with a next_wake_at in the future.
+        let wake_time = (chrono::Utc::now() + chrono::Duration::hours(2)).to_rfc3339();
+        let persisted = PersistedState {
+            version: STATE_VERSION,
+            ticks_without_user: 1,
+            next_wake_at: Some(wake_time),
+            last_user_at: Some(chrono::Utc::now().to_rfc3339()),
+        };
+        let json = serde_json::to_string_pretty(&persisted).unwrap();
+        std::fs::write(state_path(data_dir, "alice"), json).unwrap();
+
+        let mgr = rt.block_on(async { test_manager(data_dir) });
+        rt.block_on(async {
+            mgr.ensure_state("alice", None);
+        });
+
+        // The keepalive should be primed: after 55 minutes, tick should
+        // return Ping (not None).
+        let state = mgr.states.get("alice").unwrap();
+        let mut s = lock_state(&state);
+        let future = Instant::now() + Duration::from_secs(55 * 60);
+        let action = s.cache_keepalive.tick(future);
+        assert_eq!(
+            action,
+            CacheKeepaliveAction::Ping,
+            "Keepalive must be primed on startup when next_wake is restored"
+        );
+    }
+
+    // -- cache prefix stability -----------------------------------------------
+
+    /// The interiority tick must NOT add tools (like `set_next_wake`) to the
+    /// request's tools array.  The Anthropic cache prefix order is
+    /// tools → system → messages.  Changing the tools array invalidates the
+    /// ENTIRE cache prefix — system AND messages.  Every interiority tick
+    /// with a different tools array pays full input price (20× expected).
+    ///
+    /// The fix is to handle `set_next_wake` via an XML tag in the response
+    /// (like `<sendMessage>` and `<recap>` already work), not as a tool.
+    #[test]
+    fn interiority_must_not_mutate_tools_array() {
+        // Simulate what execute_unified_tick does: clone last_request,
+        // then check if tools are modified.
+        let original_tools: Vec<serde_json::Value> = vec![
+            json!({"name": "check_time", "input_schema": {}}),
+            json!({"name": "memory", "input_schema": {}}),
+        ];
+
+        let mut request = LlmRequest {
+            sdk: shore_config::models::Sdk::Anthropic,
+            model: "test".into(),
+            api_key: "key".into(),
+            base_url: None,
+            messages: vec![json!({"role": "user", "content": "hello"})],
+            system: Some(json!([{"type": "text", "text": "system prompt"}])),
+            tools: Some(original_tools.clone()),
+            max_tokens: 4096,
+            temperature: None,
+            top_p: None,
+            provider_options: None,
+            provider_key: None,
+            rid: None,
+            forensic_character: None,
+        };
+
+        // This is exactly what execute_unified_tick does at lines 1046-1069.
+        let set_next_wake_def = json!({
+            "name": "set_next_wake",
+            "description": "Schedule when you want to have your next private moment.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "hours_from_now": { "type": "number" },
+                    "reason": { "type": "string" }
+                },
+                "required": ["hours_from_now", "reason"]
+            }
+        });
+        if let Some(tools) = request.tools.as_mut() {
+            tools.push(set_next_wake_def);
+        }
+
+        // The tools array must be identical to the original conversation's
+        // tools to preserve the cache prefix.
+        assert_eq!(
+            request.tools.as_ref().unwrap().len(),
+            original_tools.len(),
+            "Interiority must not add tools to the request. \
+             Adding set_next_wake changes the tools prefix, which invalidates \
+             the ENTIRE Anthropic cache (tools → system → messages). \
+             Use an XML tag like <sendMessage> instead."
+        );
+    }
+
+    /// Configuring `max_turns < min_turns` should disable compaction or
+    /// be rejected, since the max_turns trigger can never fire when
+    /// `active_turn_count >= max_turns && active_turn_count >= min_turns`
+    /// requires both conditions simultaneously.
+    #[test]
+    fn compaction_disabled_when_max_turns_less_than_min_turns() {
+        let config = AutonomyConfig::default();
+        let compaction = CompactionConfig {
+            enabled: true,
+            min_turns: 12,
+            max_turns: 8,
+            keep_recent_turns: 3,
+            ..Default::default()
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let (_tx, rx) = tokio::sync::watch::channel(());
+        let (mgr, _rx) = AutonomyManager::new(config, compaction, tmp.path().to_path_buf(), rx);
+
+        // Compaction should be disabled because max_turns < min_turns
+        // makes the max_turns trigger dead code.
+        assert!(
+            !mgr.compaction.enabled,
+            "Compaction should be disabled when max_turns ({}) < min_turns ({})",
+            8, 12,
         );
     }
 }

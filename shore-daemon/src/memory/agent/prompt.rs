@@ -200,4 +200,40 @@ mod tests {
         assert!(prompt.contains("resolve_flag"));
         assert!(prompt.contains("create_flag"));
     }
+
+    /// The memory agent system prompt must NOT contain `{{date}}` or `{{time}}`
+    /// placeholders.  `render_system_prompt` calls `.replace("{{date}}", ...)`
+    /// and `.replace("{{time}}", ...)`, but if the template doesn't actually
+    /// contain these placeholders, those calls are dead code.
+    ///
+    /// If someone adds `{{date}}` or `{{time}}` to the template, the system
+    /// prompt changes every minute/day.  Since the memory agent's system prompt
+    /// is part of the Anthropic cache prefix, this would invalidate the cache
+    /// on every call (20× cost).
+    ///
+    /// This test guards against accidentally introducing time-varying content
+    /// into the cached system prompt.
+    #[test]
+    fn template_must_not_contain_date_or_time_placeholders() {
+        assert!(
+            !BUILTIN_MEMORY_AGENT_PROMPT.contains("{{date}}"),
+            "Memory agent template must not use {{{{date}}}} — \
+             it changes daily and would bust the Anthropic prompt cache"
+        );
+        assert!(
+            !BUILTIN_MEMORY_AGENT_PROMPT.contains("{{time}}"),
+            "Memory agent template must not use {{{{time}}}} — \
+             it changes every minute and would bust the Anthropic prompt cache"
+        );
+    }
+
+    /// Verify that `render_system_prompt` produces identical output when
+    /// called twice with the same arguments.  Any non-determinism would
+    /// invalidate the Anthropic prompt cache between LLM calls.
+    #[test]
+    fn render_system_prompt_is_deterministic() {
+        let a = render_system_prompt("Alice", "Bob");
+        let b = render_system_prompt("Alice", "Bob");
+        assert_eq!(a, b, "System prompt must be deterministic for cache stability");
+    }
 }

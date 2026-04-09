@@ -1643,4 +1643,70 @@ mod tests {
         assert!(result.starts_with("[Your notes from between conversations:"));
         assert!(result.ends_with(']'));
     }
+
+    // ── Cache stability: recap injection must not change cached prefix ──
+
+    /// When a recap entry is added to `recaps.jsonl` between two LLM calls,
+    /// messages that appeared in the FIRST call's output must have identical
+    /// content in the SECOND call's output.  If they differ, the Anthropic
+    /// prompt cache prefix changes and we pay 20× the expected price.
+    ///
+    /// This test creates a conversation with a >30min gap, runs trim_messages
+    /// without recaps, then again WITH a recap entry in the gap, and asserts
+    /// the overlapping messages are byte-identical.
+    #[test]
+    fn recap_injection_must_not_change_existing_message_content() {
+        use crate::autonomy::recap_store::RecapEntry;
+        use chrono::TimeZone;
+
+        let tmp = TempDir::new().unwrap();
+        let recap_path = tmp.path().join("recaps.jsonl");
+
+        // Conversation: Turn 1 at 09:00, Turn 2 at 11:00 (2h gap), Turn 3 at 11:05.
+        let msgs = vec![
+            make_msg_at(Role::User, "Good morning", "2026-04-04T09:00:00-07:00"),
+            make_msg_at(Role::Assistant, "Morning!", "2026-04-04T09:01:00-07:00"),
+            make_msg_at(Role::User, "I'm back", "2026-04-04T11:00:00-07:00"),
+            make_msg_at(Role::Assistant, "Welcome back!", "2026-04-04T11:01:00-07:00"),
+            make_msg_at(Role::User, "Thanks", "2026-04-04T11:05:00-07:00"),
+        ];
+
+        // Call 1: no recaps exist yet.
+        let result_before = trim_messages(&msgs, 100_000, Some(&recap_path));
+
+        // The 2h gap should produce a time-gap marker on "I'm back" but NO recap.
+        assert!(result_before[2].content.contains("hours later"));
+        assert!(!result_before[2].content.contains("Your notes"));
+
+        // Now write a recap entry in the gap (09:30, between Turn 1 and Turn 2).
+        let offset = chrono::FixedOffset::west_opt(7 * 3600).unwrap();
+        let mut store = crate::autonomy::recap_store::RecapStore::load(&recap_path);
+        store
+            .append(RecapEntry {
+                timestamp: offset
+                    .with_ymd_and_hms(2026, 4, 4, 9, 30, 0)
+                    .single()
+                    .unwrap(),
+                tick_id: "tick_test".into(),
+                recap: "thought about the weather".into(),
+            })
+            .unwrap();
+
+        // Call 2: same messages, but now recaps.jsonl has an entry.
+        let result_after = trim_messages(&msgs, 100_000, Some(&recap_path));
+
+        // The messages from Call 1 that also appear in Call 2 must be
+        // byte-identical.  If the recap marker is injected into an existing
+        // message, the cache prefix changes and we bust the cache.
+        assert_eq!(result_before.len(), result_after.len());
+        for (i, (before, after)) in result_before.iter().zip(result_after.iter()).enumerate() {
+            assert_eq!(
+                before.content, after.content,
+                "Message {} content changed between calls (cache prefix would change).\n\
+                 Before: {:?}\n\
+                 After:  {:?}",
+                i, before.content, after.content,
+            );
+        }
+    }
 }

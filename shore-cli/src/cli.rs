@@ -132,6 +132,13 @@ pub enum CliCommand {
         json: bool,
     },
 
+    /// Internal debug utilities (not for normal use)
+    #[command(hide = true)]
+    Debug {
+        #[command(subcommand)]
+        subcommand: DebugCommand,
+    },
+
     /// List or switch models (no args = list, with name = switch)
     Model {
         /// Model name to switch to
@@ -326,6 +333,12 @@ pub enum MemoryCommand {
     Shell,
 }
 
+#[derive(Subcommand, Debug)]
+pub enum DebugCommand {
+    /// Force an interiority tick to fire within ~10 seconds
+    ForceTick,
+}
+
 /// Generate and print shell completions to stdout.
 pub fn print_completions(shell: Shell) {
     use clap::CommandFactory;
@@ -397,6 +410,10 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
             ..
         } => Some(("diagnostics", json!({ "count": count }))),
         CliCommand::Status { .. } => Some(("status", json!({}))),
+
+        CliCommand::Debug { subcommand } => match subcommand {
+            DebugCommand::ForceTick => Some(("force_tick", json!({}))),
+        },
 
         CliCommand::Model {
             name, info, reset, ..

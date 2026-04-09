@@ -117,6 +117,24 @@ pub fn heartbeat_log(
     Ok(json!({ "events": events_json }))
 }
 
+/// Force an interiority tick to fire on the next poll (~10s).
+pub fn force_tick(
+    engine: &ConversationEngine,
+    ctx: &CommandContext,
+) -> CommandResult {
+    let char_name = engine.character_name();
+    let triggered = ctx.autonomy.force_tick(char_name);
+    if triggered {
+        Ok(json!({ "status": "scheduled", "character": char_name,
+                    "note": "Tick will fire within ~10 seconds" }))
+    } else {
+        Err((
+            ErrorCode::InvalidRequest,
+            format!("No autonomy state for character '{char_name}'"),
+        ))
+    }
+}
+
 /// List available model profiles from the model catalog.
 pub fn list_models(ctx: &CommandContext) -> CommandResult {
     let mut models: Vec<_> = ctx
@@ -935,9 +953,19 @@ pub async fn memory_purge(
     let mut skipped_image = 0u64;
     let mut skipped_no_replacement = 0u64;
 
+    let cutoff_dt = chrono::DateTime::parse_from_rfc3339(&cutoff).ok();
+
     for entry in &superseded {
         // Only purge entries older than the cutoff.
-        if entry.updated_at.as_str() >= cutoff.as_str() {
+        // Parse timestamps for correct chronological comparison across timezones.
+        let dominated_by_cutoff = match (
+            chrono::DateTime::parse_from_rfc3339(&entry.updated_at),
+            &cutoff_dt,
+        ) {
+            (Ok(entry_dt), Some(cutoff_ref)) => entry_dt < *cutoff_ref,
+            _ => entry.updated_at.as_str() < cutoff.as_str(), // fallback for malformed timestamps
+        };
+        if !dominated_by_cutoff {
             continue;
         }
 
@@ -1874,5 +1902,38 @@ dimensions = 1536
             .as_str()
             .unwrap()
             .contains("Reindexed 3 entries"));
+    }
+
+    /// RFC 3339 timestamps with different timezone offsets must be compared
+    /// chronologically (by parsing), not lexicographically. String comparison
+    /// of "2026-01-01T00:00:00Z" vs "2026-01-01T09:00:00+09:00" gives the
+    /// wrong order even though they represent the same instant.
+    #[test]
+    fn rfc3339_comparison_handles_mixed_timezones() {
+        // These represent the same moment in time.
+        let utc = "2026-01-01T00:00:00Z";
+        let tokyo = "2026-01-01T09:00:00+09:00";
+
+        let utc_dt = chrono::DateTime::parse_from_rfc3339(utc).unwrap();
+        let tokyo_dt = chrono::DateTime::parse_from_rfc3339(tokyo).unwrap();
+
+        // Chronologically equal:
+        assert_eq!(utc_dt, tokyo_dt, "Same instant in different timezones");
+
+        // String comparison gives the WRONG answer:
+        assert_ne!(
+            utc.cmp(tokyo),
+            utc_dt.cmp(&tokyo_dt),
+            "String comparison should disagree with chronological — \
+             this confirms string comparison is unreliable for RFC 3339"
+        );
+
+        // Verify an entry slightly BEFORE the cutoff is correctly identified.
+        let before = "2025-12-31T23:59:59Z";
+        let before_dt = chrono::DateTime::parse_from_rfc3339(before).unwrap();
+        assert!(
+            before_dt < tokyo_dt,
+            "An entry from before the cutoff should be < cutoff chronologically"
+        );
     }
 }

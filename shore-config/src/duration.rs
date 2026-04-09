@@ -27,22 +27,27 @@ impl ConfigDuration {
             return Ok(Self(secs * 1000));
         }
 
-        // Find where digits end and suffix begins
+        // Find where the numeric part ends and the suffix begins.
+        // Accept digits and '.' so fractional values like "1.5h" work.
         let digit_end = s
-            .find(|c: char| !c.is_ascii_digit())
+            .find(|c: char| !c.is_ascii_digit() && c != '.')
             .ok_or_else(|| format!("invalid duration: {s}"))?;
 
         let (num_str, suffix) = s.split_at(digit_end);
-        let value: u64 = num_str
+        let value: f64 = num_str
             .parse()
             .map_err(|_| format!("invalid number in duration: {s}"))?;
 
+        if value < 0.0 {
+            return Err("duration cannot be negative".into());
+        }
+
         let millis = match suffix {
-            "ms" => value,
-            "s" => value * 1000,
-            "m" => value * 60 * 1000,
-            "h" => value * 3600 * 1000,
-            "d" => value * 86400 * 1000,
+            "ms" => value as u64,
+            "s" => (value * 1000.0) as u64,
+            "m" => (value * 60.0 * 1000.0) as u64,
+            "h" => (value * 3600.0 * 1000.0) as u64,
+            "d" => (value * 86400.0 * 1000.0) as u64,
             _ => return Err(format!("invalid duration suffix: {suffix}")),
         };
 
@@ -223,5 +228,20 @@ mod tests {
     fn as_std_duration() {
         let d = ConfigDuration::from_secs(5);
         assert_eq!(d.as_duration(), Duration::from_secs(5));
+    }
+
+    /// Fractional durations like "1.5h" are reasonable user input but
+    /// currently fail because the parser splits at the first non-digit
+    /// character (`.`), producing num_str="1" and suffix=".5h".
+    #[test]
+    fn parse_fractional_duration() {
+        // "1.5h" should parse as 1 hour 30 minutes = 5400 seconds.
+        let result = ConfigDuration::parse("1.5h");
+        assert!(
+            result.is_ok(),
+            "Fractional duration '1.5h' should be parseable, got: {:?}",
+            result.err()
+        );
+        assert_eq!(result.unwrap(), ConfigDuration::from_millis(5400 * 1000));
     }
 }

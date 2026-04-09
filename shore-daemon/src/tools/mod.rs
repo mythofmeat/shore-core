@@ -192,6 +192,11 @@ pub fn dispatch_tool<'a>(
             "scratchpad_delete" => {
                 scratchpad::handle_scratchpad_delete(input, ctx.scratchpad_dir()).await
             }
+            // set_next_wake is in the base tool set for cache stability but
+            // only handled during interiority ticks (intercepted in manager.rs).
+            "set_next_wake" => Err(ToolError::InvalidArgs(
+                "set_next_wake is only available during interiority ticks".into(),
+            )),
             _ => Err(ToolError::NotImplemented(name.to_string())),
         }
     })
