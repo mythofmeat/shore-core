@@ -577,7 +577,7 @@ impl AutonomyManager {
 // ---------------------------------------------------------------------------
 
 /// Tick interval for each character's autonomy loop.
-const TICK_INTERVAL: Duration = Duration::from_secs(30);
+const TICK_INTERVAL: Duration = Duration::from_secs(10);
 
 /// Maximum wall-clock time for a single interiority tick (including all tool
 /// rounds). If the tick exceeds this, the future is dropped and the tick loop

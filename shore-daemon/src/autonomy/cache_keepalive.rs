@@ -33,8 +33,8 @@ pub struct CacheKeepalive {
 /// than the cold-start savings.
 const KEEPALIVE_BREAKEVEN: Duration = Duration::from_secs(18 * 3600); // 18h
 
-/// Ping interval: just under 1h to keep the cache alive with headroom.
-const PING_INTERVAL: Duration = Duration::from_secs(59 * 60); // 59 min
+/// Ping interval: 55 minutes — 5 minutes of headroom before 60-minute TTL.
+const PING_INTERVAL: Duration = Duration::from_secs(55 * 60); // 55 min
 
 impl CacheKeepalive {
     pub fn new() -> Self {
