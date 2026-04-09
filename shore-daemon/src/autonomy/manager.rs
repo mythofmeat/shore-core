@@ -1438,6 +1438,12 @@ async fn execute_dormant_ping(
             Some(req) => {
                 let mut ping = req.clone();
                 ping.max_tokens = 1;
+                // The cloned request ends with the assistant's response.
+                // Anthropic requires conversations to end with a user message.
+                ping.messages.push(serde_json::json!({
+                    "role": "user",
+                    "content": "."
+                }));
                 ping
             }
             None => {

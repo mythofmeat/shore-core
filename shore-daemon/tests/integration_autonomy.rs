@@ -61,11 +61,27 @@ async fn test_keepalive_ping_fires_after_59_minutes() {
     tokio::time::advance(Duration::from_secs(60)).await;
     yield_many(20).await;
 
-    let after = harness.mock_llm.received_requests().await.len();
+    let requests = harness.mock_llm.received_requests().await;
+    let after = requests.len();
     assert!(
         after > baseline,
-        "Expected keepalive ping request after 59+ minutes. \
+        "Expected keepalive ping request after 55+ minutes. \
          Baseline: {baseline}, After: {after}"
+    );
+
+    // Verify the keepalive request is a valid API request: the conversation
+    // MUST end with a user message. This catches the bug where the cloned
+    // request ended with an assistant message, causing Anthropic to reject
+    // it with "conversation must end with a user message" — silently
+    // failing every single keepalive ping ever sent.
+    let ping_request = &requests[after - 1];
+    let messages = ping_request["messages"].as_array()
+        .expect("ping request should have messages array");
+    let last_msg = messages.last().expect("messages should not be empty");
+    assert_eq!(
+        last_msg["role"].as_str().unwrap(), "user",
+        "Keepalive ping must end with a user message, got: {}",
+        last_msg["role"]
     );
 
     // Resume real time for graceful shutdown.
