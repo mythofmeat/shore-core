@@ -131,46 +131,38 @@ definitions to exceed the 2048-token caching minimum.
 | C1 | Anthropic | ST | 8s | sillytavern | — | 1/9 | **11%** |
 | C2 | Anthropic | none | 8s | sillytavern | — | 2/9 | **22%** |
 | D1 | OpenAI | ST | 8s | system-only | — | 2/9 | **22%** |
-| G1-G3 | OpenAI | ST | 4-8s | various | Anthropic | _(invalid: 402)_ | **needs retest** |
+| G1-G3 | OpenAI | ST | 4-8s | various | Anthropic | 0/15 | **0%** |
+| H1-H9 | OpenAI | — | 3s | various combos | mixed | varies | 0-60% |
+| V1-V3 | OpenAI | ST | 3s | sillytavern | Anthropic | 0/15 | **0%** |
+| X1 | OpenAI | ST | 3s | sillytavern | Google | 1/5 | **20%** |
 
 ### Key findings
 
-1. **Nothing client-side matters.** The miss rate is ~22-33% regardless
-   of: API format (OpenAI vs Anthropic), HTTP headers (SillyTavern vs
-   none), inter-message delay (4s vs 8s vs 15s), breakpoint strategy
-   (sliding vs system-only), or content format (strings vs arrays).
+1. **Provider pinning to Anthropic eliminates cache misses.** Confirmed
+   across 6 independent runs (0/30 non-cold turns had rewrites). This
+   is the fix.
 
-2. **Longer delays make it worse, not better.** 15s delay had 44% miss
+2. **Without pinning, nothing client-side matters.** The miss rate is
+   ~22-33% regardless of: API format (OpenAI vs Anthropic), HTTP headers,
+   delay (4s/8s/15s), breakpoint strategy, or content format.
+
+3. **Pinning to Google/Vertex does NOT help** (20% miss rate). Only
+   Anthropic's direct infrastructure provides stable per-key caching.
+
+4. **Longer delays make it worse, not better.** 15s delay had 44% miss
    rate vs 33% at 4s. This disproves the cache propagation theory.
 
-3. **System-only breakpoints also fail at 22%.** With ZERO sliding
-   message breakpoints (only a pinned system anchor), the miss rate is
-   identical. The breakpoint resolution logic is not the cause.
-
-4. **The alternating-miss pattern (A1: t3, t5, t7) suggests
-   load-balancer round-robin.** OpenRouter appears to distribute
-   requests across multiple Anthropic backends, each with independent
-   prompt caches. Every backend switch = full cache miss.
-
-5. **Provider pinning is the most likely fix** but could not be tested
-   (credits exhausted during the test run — all G-group results are
-   invalid 402s). This is the **highest-priority retest** when credits
-   are available.
-
-6. **SillyTavern's <1% miss rate may come from provider pinning**
-   configured in the SillyTavern UI, or from OpenRouter giving sticky
-   routing to long-lived sessions. Shore's test harness creates a new
-   session per test, which may defeat sticky routing.
+5. **The alternating-miss pattern (A1: t3, t5, t7) suggests
+   load-balancer round-robin.** OpenRouter distributes requests across
+   multiple Anthropic backends, each with independent prompt caches.
+   Provider pinning forces a single backend.
 
 ### Implications for Shore
 
-If provider pinning confirms stable caching, Shore should:
-- Default to `openrouter_provider = { order = ["Anthropic"] }` when
-  using OpenRouter with Claude models and `cache_ttl` is set
-- Expose this as a model config option (already implemented as
-  `openrouter_provider` in the config)
-- Document that cache stability through OpenRouter requires provider
-  pinning
+Cache stability through OpenRouter requires provider pinning:
+`openrouter_provider = { order = ["Anthropic"] }` in model config.
+This is not auto-applied — users must configure it per model. Revisit
+auto-detection if OpenRouter resolves their routing stability.
 
 ## Test harness
 

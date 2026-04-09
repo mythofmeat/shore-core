@@ -287,22 +287,6 @@ fn apply_cache_control(
     msg_bp.sort_unstable();
     msg_bp.dedup();
 
-    // Never place a sliding breakpoint on the first user message (index 0).
-    // OpenRouter's sticky routing hashes the first system + first non-system
-    // message to pick a provider. If cache_control appears on msg[0] during
-    // early turns then disappears once depth resolution has enough history,
-    // the serialized payload changes → routing hash changes → provider
-    // switch → full cache miss. SillyTavern avoids this by only placing
-    // breakpoints near the conversation end.
-    let prev_len = msg_bp.len();
-    msg_bp.retain(|&idx| idx > 0);
-    if msg_bp.len() < prev_len {
-        tracing::debug!(
-            removed = prev_len - msg_bp.len(),
-            "apply_cache_control: filtered breakpoints on msg[0] (routing hash stability)"
-        );
-    }
-
     // Deduplicate system breakpoints.
     let mut sys_bp: Vec<usize> = pinned_sys_indices;
     sys_bp.sort_unstable();
@@ -1231,10 +1215,8 @@ mod tests {
         // System breakpoint on last block.
         assert!(sys.as_array().unwrap()[1].get("cache_control").is_some());
         assert_eq!(p.sys_breakpoints, vec![1]);
-        // Message breakpoint from depth_turns (should be at index 2, not 0).
+        // Message breakpoint from depth_turns.
         assert!(!p.msg_breakpoints.is_empty());
-        assert!(!p.msg_breakpoints.contains(&0),
-            "msg[0] should be filtered out for routing hash stability");
     }
 
     #[test]
