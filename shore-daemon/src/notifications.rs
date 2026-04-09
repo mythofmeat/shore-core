@@ -139,6 +139,18 @@ async fn dispatch_ntfy(
     Ok(())
 }
 
+/// Escape a string for safe embedding in a single-quoted shell argument.
+///
+/// Replaces each `'` with `'\''` (end quote, escaped quote, re-open quote)
+/// and wraps the result in single quotes. Also strips `$()`, backticks,
+/// and other command-substitution patterns as a defense-in-depth measure
+/// since the template itself may not use single quotes around the placeholder.
+fn shell_escape(s: &str) -> String {
+    s.replace('\'', "'\\''")
+        .replace('`', "")
+        .replace("$(", "(")
+}
+
 async fn dispatch_command(
     template: &str,
     title: &str,
@@ -147,7 +159,9 @@ async fn dispatch_command(
     if template.is_empty() {
         return Err("notification command template is not configured".into());
     }
-    let rendered = template.replace("{title}", title).replace("{body}", body);
+    let rendered = template
+        .replace("{title}", &shell_escape(title))
+        .replace("{body}", &shell_escape(body));
     tokio::process::Command::new("sh")
         .arg("-c")
         .arg(&rendered)
@@ -209,5 +223,32 @@ mod tests {
             .replace("{title}", "Shore — Test")
             .replace("{body}", "hello world");
         assert_eq!(rendered, "echo 'Shore — Test: hello world'");
+    }
+
+    /// Shell metacharacters in notification title/body must be sanitized
+    /// before passing to `sh -c`. LLM-generated content can contain
+    /// single quotes, backticks, $(), etc. that would be interpreted
+    /// by the shell.
+    #[test]
+    fn command_template_sanitizes_shell_metacharacters() {
+        let title = "Shore — Alice's message";
+        let body = "$(whoami) said `hello` & more; rm -rf /";
+
+        let escaped_title = shell_escape(title);
+        let escaped_body = shell_escape(body);
+
+        assert!(
+            !escaped_body.contains("$("),
+            "Shell command substitution must be sanitized: {escaped_body}"
+        );
+        assert!(
+            !escaped_body.contains('`'),
+            "Backtick command substitution must be sanitized: {escaped_body}"
+        );
+        // Single quotes in title should be escaped.
+        assert!(
+            !escaped_title.contains("Alice's"),
+            "Bare single quote must be escaped: {escaped_title}"
+        );
     }
 }
