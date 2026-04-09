@@ -215,8 +215,8 @@ mod tests {
     #[test]
     fn test_all_tools_returns_expected_count() {
         let tools = all_tools();
-        // memory(1) + images(5) + web(2) + activity(1) + basic(2) + scratchpad(4) = 15
-        assert_eq!(tools.len(), 15);
+        // memory(1) + images(5) + web(2) + activity(1) + basic(2) + scratchpad(4) + 1 = 16
+        assert_eq!(tools.len(), 16);
     }
 
     #[test]
@@ -272,7 +272,7 @@ mod tests {
         assert!(!names.contains(&"web_search"));
         assert!(names.contains(&"memory"));
         assert!(names.contains(&"check_time"));
-        assert_eq!(tools.len(), 13); // 15 - 2 disabled
+        assert_eq!(tools.len(), 14); // 16 - 2 disabled
     }
 
     #[test]

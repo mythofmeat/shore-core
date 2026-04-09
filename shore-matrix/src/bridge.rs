@@ -45,7 +45,6 @@ pub fn input_to_swp(input: &MatrixInput) -> ClientMessage {
     match input {
         MatrixInput::Text(text) => ClientMessage::Message(ClientMessageBody {
             rid: None,
-            forensic_character: None,
             text: text.clone(),
             stream: true,
             images: vec![],
@@ -55,13 +54,11 @@ pub fn input_to_swp(input: &MatrixInput) -> ClientMessage {
         }),
         MatrixInput::Command { name, args } => ClientMessage::Command(Command {
             rid: None,
-            forensic_character: None,
             name: name.clone(),
             args: args.clone(),
         }),
         MatrixInput::Image { path, caption } => ClientMessage::Message(ClientMessageBody {
             rid: None,
-            forensic_character: None,
             text: caption.clone().unwrap_or_default(),
             stream: true,
             images: vec![path.clone()],

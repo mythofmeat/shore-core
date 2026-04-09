@@ -912,7 +912,6 @@ mod tests {
 
         let cmd = Command {
             rid: None,
-            forensic_character: None,
             name: "status".into(),
             args: serde_json::json!({}),
         };
@@ -932,7 +931,6 @@ mod tests {
 
         let cmd = Command {
             rid: None,
-            forensic_character: None,
             name: "status".into(),
             args: serde_json::json!({}),
         };
@@ -954,7 +952,6 @@ mod tests {
 
         let cmd = Command {
             rid: None,
-            forensic_character: None,
             name: "status".into(),
             args: serde_json::json!({}),
         };
@@ -974,7 +971,6 @@ mod tests {
 
         let cmd = Command {
             rid: None,
-            forensic_character: None,
             name: "status".into(),
             args: serde_json::json!({}),
         };
@@ -1039,7 +1035,6 @@ mod tests {
                 regen: is_regen,
                 char_name,
                 rid: None,
-            forensic_character: None,
                 effective_config,
                 data_dir,
                 active_model: None,

@@ -409,19 +409,19 @@ fn handle_conn_event(app: &mut App, event: ConnEvent) -> Vec<ConnCommand> {
             vec![
                 ConnCommand::Send(ClientMessage::Command(Command {
                     rid: None,
-            forensic_character: None,
+
                     name: "log".into(),
                     args: serde_json::json!({}),
                 })),
                 ConnCommand::Send(ClientMessage::Command(Command {
                     rid: None,
-            forensic_character: None,
+
                     name: "status".into(),
                     args: serde_json::json!({}),
                 })),
                 ConnCommand::Send(ClientMessage::Command(Command {
                     rid: None,
-            forensic_character: None,
+
                     name: "list_models".into(),
                     args: serde_json::json!({}),
                 })),
@@ -608,7 +608,7 @@ fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<ConnCommand> 
                 app.set_status("generation cancelled");
                 return vec![ConnCommand::Send(ClientMessage::Command(Command {
                     rid: None,
-            forensic_character: None,
+
                     name: "log".into(),
                     args: serde_json::json!({}),
                 }))];
@@ -639,7 +639,7 @@ fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<ConnCommand> 
             // (e.g. from background compaction) overwriting this response.
             return vec![ConnCommand::Send(ClientMessage::Command(Command {
                 rid: None,
-            forensic_character: None,
+
                 name: "log".into(),
                 args: serde_json::json!({}),
             }))];

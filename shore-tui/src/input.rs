@@ -167,7 +167,7 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) -> Action {
         (KeyModifiers::NONE, KeyCode::Char('r')) => {
             let msg = ClientMessage::Regen(Regen {
                 rid: None,
-            forensic_character: None,
+
                 stream: true,
                 guidance: None,
             });
@@ -279,13 +279,13 @@ fn handle_insert_mode(app: &mut App, key: KeyEvent) -> Action {
                 return Action::SendMulti(vec![
                     ConnCommand::Send(ClientMessage::Command(Command {
                         rid: None,
-            forensic_character: None,
+
                         name: "edit".into(),
                         args: serde_json::json!({ "ref": edit_ref, "content": text }),
                     })),
                     ConnCommand::Send(ClientMessage::Command(Command {
                         rid: None,
-            forensic_character: None,
+
                         name: "log".into(),
                         args: serde_json::json!({}),
                     })),
@@ -331,7 +331,7 @@ fn handle_insert_mode(app: &mut App, key: KeyEvent) -> Action {
             app.stream.active = true;
             let msg = ClientMessage::Message(ClientMessageBody {
                 rid: None,
-            forensic_character: None,
+
                 text,
                 stream: true,
                 images,
@@ -494,7 +494,7 @@ fn parse_command(app: &mut App, input: &str) -> Action {
                 // List characters
                 Action::Send(ConnCommand::Send(ClientMessage::Command(Command {
                     rid: None,
-            forensic_character: None,
+
                     name: "list_characters".into(),
                     args: serde_json::json!({}),
                 })))
@@ -503,19 +503,19 @@ fn parse_command(app: &mut App, input: &str) -> Action {
                 Action::SendMulti(vec![
                     ConnCommand::Send(ClientMessage::Command(Command {
                         rid: None,
-            forensic_character: None,
+
                         name: "switch_character".into(),
                         args: serde_json::json!({ "name": arg }),
                     })),
                     ConnCommand::Send(ClientMessage::Command(Command {
                         rid: None,
-            forensic_character: None,
+
                         name: "log".into(),
                         args: serde_json::json!({}),
                     })),
                     ConnCommand::Send(ClientMessage::Command(Command {
                         rid: None,
-            forensic_character: None,
+
                         name: "status".into(),
                         args: serde_json::json!({}),
                     })),
@@ -528,14 +528,14 @@ fn parse_command(app: &mut App, input: &str) -> Action {
                 app.show_model_list = true;
                 Action::Send(ConnCommand::Send(ClientMessage::Command(Command {
                     rid: None,
-            forensic_character: None,
+
                     name: "list_models".into(),
                     args: serde_json::json!({}),
                 })))
             } else if arg == "reset" {
                 Action::Send(ConnCommand::Send(ClientMessage::Command(Command {
                     rid: None,
-            forensic_character: None,
+
                     name: "reset_model".into(),
                     args: serde_json::json!({}),
                 })))
@@ -543,13 +543,13 @@ fn parse_command(app: &mut App, input: &str) -> Action {
                 Action::SendMulti(vec![
                     ConnCommand::Send(ClientMessage::Command(Command {
                         rid: None,
-            forensic_character: None,
+
                         name: "switch_model".into(),
                         args: serde_json::json!({ "name": arg }),
                     })),
                     ConnCommand::Send(ClientMessage::Command(Command {
                         rid: None,
-            forensic_character: None,
+
                         name: "status".into(),
                         args: serde_json::json!({}),
                     })),
@@ -559,7 +559,7 @@ fn parse_command(app: &mut App, input: &str) -> Action {
 
         "status" => Action::Send(ConnCommand::Send(ClientMessage::Command(Command {
             rid: None,
-            forensic_character: None,
+
             name: "status".into(),
             args: serde_json::json!({}),
         }))),
@@ -571,7 +571,7 @@ fn parse_command(app: &mut App, input: &str) -> Action {
             } else {
                 Action::Send(ConnCommand::Send(ClientMessage::Command(Command {
                     rid: None,
-            forensic_character: None,
+
                     name: "memory".into(),
                     args: serde_json::json!({ "query": arg }),
                 })))
@@ -580,7 +580,7 @@ fn parse_command(app: &mut App, input: &str) -> Action {
 
         "compact" => Action::Send(ConnCommand::Send(ClientMessage::Command(Command {
             rid: None,
-            forensic_character: None,
+
             name: "compact".into(),
             args: serde_json::json!({}),
         }))),
@@ -600,13 +600,13 @@ fn parse_command(app: &mut App, input: &str) -> Action {
                 Action::SendMulti(vec![
                     ConnCommand::Send(ClientMessage::Command(Command {
                         rid: None,
-            forensic_character: None,
+
                         name: "delete".into(),
                         args,
                     })),
                     ConnCommand::Send(ClientMessage::Command(Command {
                         rid: None,
-            forensic_character: None,
+
                         name: "log".into(),
                         args: serde_json::json!({}),
                     })),
@@ -644,7 +644,7 @@ fn parse_command(app: &mut App, input: &str) -> Action {
         "regen" => {
             let msg = ClientMessage::Regen(Regen {
                 rid: None,
-            forensic_character: None,
+
                 stream: true,
                 guidance: if arg.is_empty() {
                     None
@@ -703,7 +703,7 @@ fn parse_command(app: &mut App, input: &str) -> Action {
             } else {
                 Action::Send(ConnCommand::Send(ClientMessage::Command(Command {
                     rid: None,
-            forensic_character: None,
+
                     name: "inject_system".into(),
                     args: serde_json::json!({ "text": arg }),
                 })))

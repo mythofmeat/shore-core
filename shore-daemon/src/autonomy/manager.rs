@@ -2022,7 +2022,7 @@ mod tests {
             json!({"name": "memory", "input_schema": {}}),
         ];
 
-        let mut request = LlmRequest {
+        let request = LlmRequest {
             sdk: shore_config::models::Sdk::Anthropic,
             model: "test".into(),
             api_key: "key".into(),
@@ -2039,25 +2039,11 @@ mod tests {
             forensic_character: None,
         };
 
-        // This is exactly what execute_unified_tick does at lines 1046-1069.
-        let set_next_wake_def = json!({
-            "name": "set_next_wake",
-            "description": "Schedule when you want to have your next private moment.",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "hours_from_now": { "type": "number" },
-                    "reason": { "type": "string" }
-                },
-                "required": ["hours_from_now", "reason"]
-            }
-        });
-        if let Some(tools) = request.tools.as_mut() {
-            tools.push(set_next_wake_def);
-        }
-
-        // The tools array must be identical to the original conversation's
-        // tools to preserve the cache prefix.
+        // set_next_wake is now in the base tool set (tools/basic.rs),
+        // so execute_unified_tick no longer pushes it at call time.
+        // This test documents the invariant: the tools array must be
+        // identical to the original conversation's tools to preserve
+        // the cache prefix.
         assert_eq!(
             request.tools.as_ref().unwrap().len(),
             original_tools.len(),

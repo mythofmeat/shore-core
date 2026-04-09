@@ -54,7 +54,7 @@ pub async fn run_agent_loop(
         let response = llm
             .generate(
                 conversation.clone(),
-                Some(Value::String(system_prompt.to_string())),
+                Some(json!([{"type": "text", "text": system_prompt}])),
                 Some(tools.clone()),
                 model,
             )
