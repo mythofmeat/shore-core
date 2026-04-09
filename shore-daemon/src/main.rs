@@ -39,6 +39,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let loaded = load_config(config_path.as_deref())?;
     info!("Configuration loaded");
 
+    // Ensure data and runtime directories exist before anything writes to them.
+    std::fs::create_dir_all(&loaded.dirs.data)?;
+    std::fs::create_dir_all(&loaded.dirs.runtime)?;
+
     // ── Notification service ──────────────────────────────────────────
     let notifier = NotificationService::new(loaded.app.notifications.clone());
 
