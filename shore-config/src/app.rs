@@ -698,6 +698,12 @@ pub struct AdvancedConfig {
 
     /// Time to wait between retry attempts. Overrides the default (no backoff).
     pub retry_backoff: Option<ConfigDuration>,
+
+    /// Maximum image file size (bytes) before resizing for LLM upload.
+    /// Images larger than this are scaled down and re-encoded as JPEG.
+    /// Set to 0 to disable resizing. Default: 2,000,000 (2 MB).
+    #[serde(default = "default_max_image_size")]
+    pub max_image_size: u64,
 }
 
 impl Default for AdvancedConfig {
@@ -708,6 +714,7 @@ impl Default for AdvancedConfig {
             editor: None,
             max_retries: None,
             retry_backoff: None,
+            max_image_size: default_max_image_size(),
         }
     }
 }
@@ -715,6 +722,7 @@ impl Default for AdvancedConfig {
 // ── Shared defaults ─────────────────────────────────────────────────────
 
 serde_default!(default_true -> bool { true });
+serde_default!(default_max_image_size -> u64 { 2_000_000 });
 
 #[cfg(test)]
 mod tests {
@@ -1069,5 +1077,28 @@ homeserver = "https://matrix.example.com"
 
         toggles.set("custom_tool", false);
         assert!(!toggles.is_enabled("custom_tool"));
+    }
+
+    #[test]
+    fn max_image_size_defaults_and_overrides() {
+        // Default: 2 MB.
+        let config = AppConfig::default();
+        assert_eq!(config.advanced.max_image_size, 2_000_000);
+
+        // Override via TOML.
+        let toml_str = r#"
+[advanced]
+max_image_size = 5000000
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.advanced.max_image_size, 5_000_000);
+
+        // Disable via 0.
+        let toml_str = r#"
+[advanced]
+max_image_size = 0
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.advanced.max_image_size, 0);
     }
 }
