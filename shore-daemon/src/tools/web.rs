@@ -197,26 +197,33 @@ pub async fn handle_fetch_url(input: Value) -> Result<Value, ToolError> {
 /// Removes `<script>`, `<style>`, and `<head>` blocks entirely, strips remaining
 /// tags, decodes common HTML entities, and collapses whitespace.
 fn strip_html(html: &str) -> String {
-    // Phase 1: Remove script, style, and head blocks
+    // Phase 1: Remove script, style, and head blocks.
+    //
+    // We work entirely on the original `html` string using byte offsets
+    // that are always derived from `html` itself.  Case-insensitive
+    // comparisons use `str::to_ascii_lowercase()` on small slices rather
+    // than a parallel lowercased copy (which can differ in byte length
+    // for certain Unicode characters like ẞ → ß).
     let mut cleaned = String::with_capacity(html.len());
-    let lower = html.to_lowercase();
-    let lower_bytes = lower.as_bytes();
+    let bytes = html.as_bytes();
     let mut i = 0;
 
     while i < html.len() {
-        if lower_bytes[i] == b'<' {
-            // Check for blocks we want to skip entirely
-            let remaining = &lower[i..];
+        if bytes[i] == b'<' {
+            // Check for blocks we want to skip entirely.
+            // Compare case-insensitively against the original html slice.
+            let remaining_lower = html[i..].to_ascii_lowercase();
             if let Some(tag) = ["script", "style", "head"]
                 .iter()
-                .find(|t| remaining.starts_with(&format!("<{}", t)))
+                .find(|t| remaining_lower.starts_with(&format!("<{}", t)))
             {
-                // Find the closing tag
+                // Find the closing tag (case-insensitive) in the original string.
                 let close = format!("</{tag}");
-                if let Some(end_pos) = lower[i..].find(&close) {
+                let rest_lower = html[i..].to_ascii_lowercase();
+                if let Some(end_pos) = rest_lower.find(&close) {
                     // Skip past the closing tag's '>'
                     let after_close = i + end_pos + close.len();
-                    if let Some(gt) = lower[after_close..].find('>') {
+                    if let Some(gt) = html[after_close..].find('>') {
                         i = after_close + gt + 1;
                         continue;
                     }
@@ -384,5 +391,20 @@ mod tests {
         let text = strip_html(html);
         // Should not have runs of multiple spaces
         assert!(!text.contains("  "));
+    }
+
+    /// `ẞ` (U+1E9E, 3 bytes) lowercases to `ß` (U+00DF, 2 bytes).
+    /// When `to_lowercase()` shrinks the string, byte offsets from `html`
+    /// exceed `lower_bytes.len()` → out-of-bounds panic.
+    #[test]
+    fn test_strip_html_unicode_lowercase_length_change() {
+        // ẞ (3 bytes) → ß (2 bytes). After 10 ẞ chars:
+        //   html  = 30 bytes of ẞ + 10 bytes of tag = 40 bytes
+        //   lower = 20 bytes of ß + 10 bytes of tag = 30 bytes
+        // At offset 30 in html, lower_bytes[30] is out of bounds.
+        let html = format!("{}<b>x</b>", "ẞ".repeat(10));
+        let result = strip_html(&html);
+        // Should extract the text content without panicking.
+        assert!(result.contains("x"));
     }
 }

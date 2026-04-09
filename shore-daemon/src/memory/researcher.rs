@@ -15,6 +15,15 @@ use shore_config::models::ResolvedModel;
 
 const MAX_RESEARCHER_ITERATIONS: usize = 15;
 
+/// Truncate a string for logging, respecting UTF-8 char boundaries.
+fn truncate_for_log(s: &str, max: usize) -> &str {
+    if s.len() > max {
+        &s[..s.floor_char_boundary(max)]
+    } else {
+        s
+    }
+}
+
 const NO_RESULTS: &str = "No relevant memories found.";
 
 const RESEARCHER_SYSTEM_PROMPT: &str = "\
@@ -220,11 +229,7 @@ impl MemoryResearcher {
                     "Memory researcher tool: {}({}) -> {}",
                     tool_name,
                     tool_input,
-                    if result_text.len() > 200 {
-                        &result_text[..200]
-                    } else {
-                        &result_text
-                    }
+                    truncate_for_log(&result_text, 200),
                 );
 
                 all_tool_outputs.push(result_text.clone());
@@ -671,5 +676,16 @@ mod tests {
         // Result should contain the raw agent outputs joined together.
         assert!(result.contains("Agent result 0"));
         assert!(result.contains(&format!("Agent result {}", MAX_RESEARCHER_ITERATIONS - 1)));
+    }
+
+    #[test]
+    fn truncate_for_log_handles_multibyte_at_boundary() {
+        // 199 ASCII bytes + "é" (2 bytes) = 201 bytes total.
+        // Slicing at byte 200 lands inside "é" → must not panic.
+        let s = format!("{}{}", "x".repeat(199), "é");
+        assert_eq!(s.len(), 201);
+        let truncated = truncate_for_log(&s, 200);
+        assert!(truncated.len() <= 200);
+        assert!(truncated.is_char_boundary(truncated.len()));
     }
 }
