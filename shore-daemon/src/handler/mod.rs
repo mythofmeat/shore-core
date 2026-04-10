@@ -10,6 +10,7 @@
 mod generation;
 mod images;
 mod persistence;
+mod resize;
 
 pub(crate) use images::{build_content, embed_image_data, encode_image_block};
 use generation::{run_tool_phase, stream_with_retry};
