@@ -84,7 +84,6 @@ pub(crate) fn record_call(
         };
 
         let anomaly_str = result.anomaly.map(|a| match a {
-            Anomaly::UnexpectedRead => "unexpected_read",
             Anomaly::UnexpectedWrite => "unexpected_write",
             Anomaly::KeepaliveMiss => "keepalive_miss",
         });
