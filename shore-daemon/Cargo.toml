@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 shore-protocol = { path = "../shore-protocol" }
+shore-daemon-server = { path = "../shore-daemon-server" }
 shore-config = { workspace = true }
 shore-diagnostics = { workspace = true }
 shore-llm-client = { workspace = true }
@@ -16,7 +17,6 @@ toml = "0.8"
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
-fs2 = "0.4"
 uuid = { version = "1", features = ["v4"] }
 chrono = "0.4"
 rand = "0.8"

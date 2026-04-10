@@ -42,7 +42,7 @@ use crate::memory::compaction_impls::ImageGenConfig;
 use crate::memory::db::MemoryDB;
 use crate::memory::researcher::MemoryResearcher;
 use crate::notifications::{NotificationEvent, NotificationService};
-use crate::server::RoutedMessage;
+use shore_daemon_server::RoutedMessage;
 use crate::tools::context::SharedToolContext;
 use crate::tools::{self as tool_system, ToolContext};
 use shore_config::app::SearchConfig;

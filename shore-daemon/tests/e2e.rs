@@ -25,7 +25,7 @@ use shore_config::{LoadedConfig, ShoreDirs};
 use shore_daemon::characters::CharacterRegistry;
 use shore_daemon::commands::{CommandContext, SessionTokens};
 use shore_daemon::handler::MessageHandler;
-use shore_daemon::server::{Server, ServerConfig};
+use shore_daemon_server::{Server, ServerConfig};
 use shore_ledger::LedgerClient;
 use shore_llm_client::LlmClient;
 use shore_protocol::server_msg::ServerMessage;

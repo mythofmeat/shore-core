@@ -562,3 +562,11 @@ format-aware, cached, async pipeline in a new `resize.rs` module.
 **Default:** `127.0.0.1:7320` (localhost-only). `allowed_hosts` whitelist for remote access.
 
 **Trade-offs:** Marginally higher per-message overhead vs Unix sockets on localhost (negligible for JSON-Lines messages). Lost the ability to enforce filesystem-level permissions on the socket file — mitigated by `allowed_hosts` ACL and localhost-only default.
+
+## Extract shore-daemon-server crate (2026-04-10)
+
+Extracted `shore-daemon/src/server/` (~1.3K LOC) into a standalone `shore-daemon-server`
+workspace crate. The server module had zero internal dependencies on other daemon modules,
+making it the cleanest extraction candidate. `RoutedMessage` enum stays in the server crate
+because it's a server routing concern (not a wire protocol type) and handler already depends
+on the server crate. Registry stays as a submodule (221 LOC, not worth its own crate).

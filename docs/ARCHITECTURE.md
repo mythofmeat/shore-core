@@ -451,6 +451,12 @@ shore-daemon/
 
 No file should exceed ~1000 LOC. If it does, split it.
 
+### 4.1b shore-daemon-server
+
+SWP (Shore Wire Protocol) server and instance registry. Handles Unix socket + TCP listeners,
+client handshake, message routing, and broadcast. Also provides the daemon instance registry
+for service discovery. Depends on `shore-protocol` and `shore-config` only.
+
 ### 4.2 shore (CLI)
 
 **Language:** Rust
@@ -1201,6 +1207,10 @@ shore/                              # Git root
 │   ├── src/
 │   └── Cargo.toml
 │
+├── shore-daemon-server/            # Rust lib — SWP server, registry (see §4.1b)
+│   ├── src/
+│   └── Cargo.toml
+│
 ├── shore-cli/                      # Rust binary — CLI
 │   ├── src/
 │   └── Cargo.toml
@@ -1249,6 +1259,7 @@ members = [
     "shore-config",
     "shore-llm-client",
     "shore-daemon",
+    "shore-daemon-server",
     "shore-cli",
     "shore-tui",
     "shore-matrix",
@@ -1277,6 +1288,9 @@ Rust (compile-time):
   shore-llm-client  ← shore-daemon
   shore-config      ← shore-daemon
   shore-protocol    ← shore-daemon
+  shore-config      ← shore-daemon-server
+  shore-protocol    ← shore-daemon-server
+  shore-daemon-server ← shore-daemon
 
 Runtime:
   shore-daemon ──HTTPS──▶ LLM APIs (Anthropic, OpenAI, Gemini, etc.)
