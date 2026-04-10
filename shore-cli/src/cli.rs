@@ -90,6 +90,10 @@ pub enum CliCommand {
         #[arg(long)]
         content: bool,
 
+        /// Plain text output (no colors or decoration), pipe-friendly
+        #[arg(long)]
+        plain: bool,
+
         /// Show heartbeat probe decisions and timing history
         #[arg(long)]
         heartbeat: bool,
