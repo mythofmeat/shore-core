@@ -11,6 +11,8 @@ use fast_image_resize as fir;
 use image::codecs::jpeg::JpegEncoder;
 use image::codecs::png::{CompressionType, FilterType as PngFilterType, PngEncoder};
 use image::{DynamicImage, ExtendedColorType, ImageEncoder};
+use sha2::{Digest, Sha256};
+use std::path::Path;
 use tracing::{info, warn};
 
 const DIMENSION_FLOOR: u32 = 2048;
@@ -212,6 +214,74 @@ fn log_resize(
     );
 }
 
+/// Compute a cache key from image path, modification time, and byte limit.
+fn compute_cache_key(path: &str, mtime: std::time::SystemTime, max_bytes: u64) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(path.as_bytes());
+    let nanos = mtime
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    hasher.update(nanos.to_le_bytes());
+    hasher.update(max_bytes.to_le_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+/// Look up a cached resize result on disk. Returns `(bytes, media_type)` on hit.
+fn read_cache(cache_dir: &Path, key: &str) -> Option<(Vec<u8>, &'static str)> {
+    let jpg_path = cache_dir.join(format!("{key}.jpg"));
+    if let Ok(bytes) = std::fs::read(&jpg_path) {
+        return Some((bytes, "image/jpeg"));
+    }
+    let png_path = cache_dir.join(format!("{key}.png"));
+    if let Ok(bytes) = std::fs::read(&png_path) {
+        return Some((bytes, "image/png"));
+    }
+    None
+}
+
+/// Write a resize result to the cache directory.
+fn write_cache(cache_dir: &Path, key: &str, bytes: &[u8], media_type: &str) {
+    if let Err(e) = std::fs::create_dir_all(cache_dir) {
+        warn!(error = %e, "Failed to create resize cache directory");
+        return;
+    }
+    let ext = if media_type == "image/png" { "png" } else { "jpg" };
+    let path = cache_dir.join(format!("{key}.{ext}"));
+    if let Err(e) = std::fs::write(&path, bytes) {
+        warn!(error = %e, "Failed to write to resize cache");
+    }
+}
+
+/// Resize an image with caching. Checks the disk cache first; on miss,
+/// runs `smart_resize` and writes the result to cache.
+pub(super) fn cached_resize(
+    path: &str,
+    bytes: &[u8],
+    media_type: &str,
+    max_bytes: u64,
+    cache_dir: &Path,
+) -> Option<(Vec<u8>, &'static str)> {
+    if max_bytes == 0 || (bytes.len() as u64) <= max_bytes {
+        return None;
+    }
+
+    let mtime = std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .unwrap_or(std::time::UNIX_EPOCH);
+    let key = compute_cache_key(path, mtime, max_bytes);
+
+    let resized_dir = cache_dir.join("resized");
+    if let Some(cached) = read_cache(&resized_dir, &key) {
+        info!(path, "Using cached resized image");
+        return Some(cached);
+    }
+
+    let (resized_bytes, result_media_type) = smart_resize(bytes, media_type, max_bytes)?;
+    write_cache(&resized_dir, &key, &resized_bytes, result_media_type);
+    Some((resized_bytes, result_media_type))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -405,5 +475,94 @@ mod tests {
             longest >= 1024,
             "Longest side ({longest}) should respect dimension floor"
         );
+    }
+
+    // ── cache tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn cache_miss_resizes_and_writes() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cache_dir = tmp.path().to_path_buf();
+        let img_dir = tmp.path().join("images");
+        std::fs::create_dir_all(&img_dir).unwrap();
+
+        let jpeg = make_noisy_jpeg(3000, 2000);
+        let img_path = img_dir.join("photo.jpg");
+        std::fs::write(&img_path, &jpeg).unwrap();
+        assert!(jpeg.len() > 2_000_000);
+
+        let result = cached_resize(
+            img_path.to_str().unwrap(),
+            &jpeg,
+            "image/jpeg",
+            2_000_000,
+            &cache_dir,
+        );
+        assert!(result.is_some());
+        let (resized, _) = result.unwrap();
+        assert!(resized.len() <= 2_000_000);
+
+        // Cache file should now exist
+        let resized_dir = cache_dir.join("resized");
+        assert!(resized_dir.exists());
+        let entries: Vec<_> = std::fs::read_dir(&resized_dir).unwrap().collect();
+        assert_eq!(entries.len(), 1, "Should have exactly one cached file");
+    }
+
+    #[test]
+    fn cache_hit_skips_resize() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cache_dir = tmp.path().to_path_buf();
+        let img_dir = tmp.path().join("images");
+        std::fs::create_dir_all(&img_dir).unwrap();
+
+        let jpeg = make_noisy_jpeg(3000, 2000);
+        let img_path = img_dir.join("photo.jpg");
+        std::fs::write(&img_path, &jpeg).unwrap();
+
+        // First call: cache miss
+        let r1 = cached_resize(
+            img_path.to_str().unwrap(), &jpeg, "image/jpeg", 2_000_000, &cache_dir,
+        );
+        assert!(r1.is_some());
+
+        // Second call: should hit cache and return same bytes
+        let r2 = cached_resize(
+            img_path.to_str().unwrap(), &jpeg, "image/jpeg", 2_000_000, &cache_dir,
+        );
+        assert!(r2.is_some());
+        let (bytes1, mt1) = r1.unwrap();
+        let (bytes2, mt2) = r2.unwrap();
+        assert_eq!(mt1, mt2);
+        assert_eq!(bytes1.len(), bytes2.len());
+    }
+
+    #[test]
+    fn cache_invalidates_on_config_change() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cache_dir = tmp.path().to_path_buf();
+        let img_dir = tmp.path().join("images");
+        std::fs::create_dir_all(&img_dir).unwrap();
+
+        let jpeg = make_noisy_jpeg(3000, 2000);
+        let img_path = img_dir.join("photo.jpg");
+        std::fs::write(&img_path, &jpeg).unwrap();
+
+        // Resize with 2MB limit
+        let r1 = cached_resize(
+            img_path.to_str().unwrap(), &jpeg, "image/jpeg", 2_000_000, &cache_dir,
+        );
+        assert!(r1.is_some());
+
+        // Same image, different limit — should NOT use the old cached version
+        let r2 = cached_resize(
+            img_path.to_str().unwrap(), &jpeg, "image/jpeg", 1_000_000, &cache_dir,
+        );
+        assert!(r2.is_some());
+
+        // Cache dir should have 2 files (different keys)
+        let resized_dir = cache_dir.join("resized");
+        let entries: Vec<_> = std::fs::read_dir(&resized_dir).unwrap().collect();
+        assert_eq!(entries.len(), 2, "Different limits should produce separate cache entries");
     }
 }
