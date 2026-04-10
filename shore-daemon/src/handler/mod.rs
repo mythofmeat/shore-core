@@ -672,7 +672,6 @@ async fn handle_generation(
     let mut result = stream_with_retry(
         &ctx,
         &request,
-        &engine_arc,
         resolved,
         &effective_config,
         regen,

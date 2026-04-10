@@ -1,9 +1,7 @@
 //! Stream retry and tool-phase execution for the generation pipeline.
 
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 
-use tokio::sync::Mutex;
 use tracing::{debug, error, instrument, warn};
 
 use crate::engine::tools;
@@ -20,12 +18,11 @@ use shore_llm_client::stream::StreamConsumer;
 use super::{GenContext, HandlerToolContext};
 
 /// Phase 10: Stream the LLM response with exponential backoff retry.
-#[instrument(skip(ctx, request, _engine_arc, effective_config), fields(char = char_name, model = %resolved.qualified_name))]
+#[instrument(skip(ctx, request, effective_config), fields(char = char_name, model = %resolved.qualified_name))]
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn stream_with_retry(
     ctx: &GenContext,
     request: &shore_llm_client::types::LlmRequest,
-    _engine_arc: &Arc<Mutex<crate::engine::ConversationEngine>>,
     resolved: &shore_config::models::ResolvedModel,
     effective_config: &LoadedConfig,
     regen: bool,
