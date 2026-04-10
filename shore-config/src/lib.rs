@@ -588,7 +588,8 @@ mod tests {
             "config.toml",
             r#"
 [daemon]
-socket_path = "/tmp/shore.sock"
+addr = "127.0.0.1:9999"
+allowed_hosts = ["127.0.0.1"]
 
 [behavior.autonomy]
 enabled = true
@@ -599,11 +600,6 @@ fallback_interiority_interval = "30m"
 
 [behavior.tool_use.tools]
 roll_dice = false
-
-[connections.tcp]
-enabled = true
-addr = "127.0.0.1:7320"
-allowed_hosts = ["127.0.0.1"]
 
 [advanced]
 cache_invalidation_warnings = false
@@ -623,10 +619,8 @@ model_id = "claude-opus-4-6"
         let config_path = tmp.path().join("config.toml");
         let loaded = load_config(Some(&config_path)).unwrap();
 
-        assert_eq!(
-            loaded.app.daemon.socket_path.as_deref(),
-            Some("/tmp/shore.sock")
-        );
+        assert_eq!(loaded.app.daemon.addr, "127.0.0.1:9999");
+        assert_eq!(loaded.app.daemon.allowed_hosts, vec!["127.0.0.1"]);
         assert!(loaded.app.behavior.autonomy.enabled);
         assert!(!loaded.app.behavior.autonomy.interiority.enabled);
         assert_eq!(loaded.app.behavior.autonomy.interiority.fallback_interiority_interval, ConfigDuration::from_secs(1800));
@@ -634,11 +628,6 @@ model_id = "claude-opus-4-6"
         assert!(loaded.app.behavior.tool_use.tools.memory());
         assert!(!loaded.app.advanced.cache_invalidation_warnings);
         assert_eq!(loaded.app.advanced.max_retries, Some(5));
-
-        let tcp = loaded.app.connections.tcp.unwrap();
-        assert!(tcp.enabled);
-        assert_eq!(tcp.addr.as_deref(), Some("127.0.0.1:7320"));
-        assert_eq!(tcp.allowed_hosts, vec!["127.0.0.1"]);
 
         assert_eq!(loaded.models.chat.len(), 2);
         assert!(loaded.models.find_model("sonnet").is_ok());
@@ -661,7 +650,7 @@ model_id = "claude-opus-4-6"
         assert!(loaded.app.advanced.cache_invalidation_warnings);
         assert!(loaded.app.memory.compaction.enabled);
         assert!(loaded.app.memory.collation.enabled);
-        assert!(loaded.app.connections.tcp.is_none());
+        assert_eq!(loaded.app.daemon.addr, "127.0.0.1:7320"); // default
         assert!(loaded.app.advanced.editor.is_none());
         assert!(loaded.app.advanced.max_retries.is_none());
         assert!(loaded.app.advanced.retry_backoff.is_none());

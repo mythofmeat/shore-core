@@ -259,7 +259,7 @@ async fn e2e_conversation_milestone() {
     // ── AC 1: Connect and verify SWP handshake ────────────────────────
     eprintln!("=== AC 1: SWP Handshake ===");
     let (mut conn, server_hello, history) = SWPConnection::connect(
-        &ServerAddr::Tcp(addr.clone()),
+        &ServerAddr(addr.clone()),
         "test",
         "e2e-test",
         None,
@@ -737,7 +737,7 @@ impl E2EHarness {
         tokio::time::sleep(Duration::from_millis(200)).await;
 
         let (conn, server_hello, _history) = SWPConnection::connect(
-            &ServerAddr::Tcp(addr.clone()),
+            &ServerAddr(addr.clone()),
             "test",
             "e2e-test",
             None,
