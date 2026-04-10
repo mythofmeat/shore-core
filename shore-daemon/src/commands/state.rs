@@ -1345,6 +1345,7 @@ mod tests {
                 config: tmp.path().join("config"),
                 data: data_dir.clone(),
                 runtime: tmp.path().join("runtime"),
+                cache: tmp.path().join("cache"),
             },
         );
 

@@ -164,6 +164,7 @@ temperature = 0.0
             config: config_dir,
             data: data_dir,
             runtime: runtime_dir,
+            cache: tmp.path().join("cache"),
         },
     )
 }

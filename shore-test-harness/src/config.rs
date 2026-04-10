@@ -188,6 +188,7 @@ dimensions = 8
                 config: config_dir,
                 data: data_dir,
                 runtime: runtime_dir,
+                cache: tmp_dir.join("cache"),
             },
         )
     }

@@ -266,6 +266,7 @@ mod tests {
                 config: config_dir.clone(),
                 data: data_dir.clone(),
                 runtime: tmp.path().join("runtime"),
+                cache: tmp.path().join("cache"),
             },
         );
 

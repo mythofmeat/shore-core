@@ -56,6 +56,8 @@ pub struct ShoreDirs {
     pub data: PathBuf,
     /// Runtime directory: $XDG_RUNTIME_DIR/shore/
     pub runtime: PathBuf,
+    /// Cache directory: $XDG_CACHE_HOME/shore/
+    pub cache: PathBuf,
 }
 
 /// Resolve an XDG-style directory path with Shore-specific overrides.
@@ -113,6 +115,12 @@ impl ShoreDirs {
                 "XDG_RUNTIME_DIR",
                 dirs::runtime_dir,
                 "",
+            ),
+            cache: resolve_xdg_dir(
+                "SHORE_CACHE_DIR",
+                "XDG_CACHE_HOME",
+                dirs::cache_dir,
+                "~/.cache",
             ),
         }
     }
