@@ -525,3 +525,30 @@ plumbing (SWP, handler, persistence, autonomy, tools) runs for real.
   undocumented error formats). The existing `#[ignore]`-gated e2e tests cover that.
 - Autonomy tests use `tokio::time::pause()` which requires all autonomy code to use
   `tokio::time::Instant` instead of `std::time::Instant`.
+
+## Smart Image Resize Pipeline (2026-04-10)
+
+**Decision:** Replaced the MVP single-pass image resizer (`maybe_resize`) with a
+format-aware, cached, async pipeline in a new `resize.rs` module.
+
+**Key design choices:**
+- **Format preservation:** Transparent PNGs stay PNG; opaque images convert to JPEG.
+  Alpha detected by scanning decoded pixels — cheap since already decoded.
+- **Quality-first for small images:** Images ≤2048px try quality reduction (90→75)
+  before dimension reduction. Preserves resolution for screenshots/diagrams.
+- **`fast_image_resize` v6:** SIMD-optimized resize (~14x faster than `image` crate).
+  Pure Rust, no system library. `image` crate retained for decode/encode.
+- **XDG disk cache:** Resized images cached at `$XDG_CACHE_HOME/shore/resized/`.
+  Key = sha256(path + mtime + max_bytes). No eviction — images are ~1-2MB each.
+- **Pre-warm pattern:** Async `warm_image_cache()` via `spawn_blocking` before
+  sync `build_llm_messages()`. Cache is the communication channel.
+
+**Alternatives rejected:**
+- Making `build_llm_messages` async — large refactor for same result.
+- In-memory LRU cache — lost on restart, no persistence.
+- Iterative quality binary search — too many encodes for pathological images.
+
+**Compromises:**
+- Autonomy path is sync — `warm_image_cache` skipped, uses sync fallback.
+- Retry may return images slightly over the limit (warn log emitted).
+- bpp estimation is content-dependent; 0.85 safety margin handles most cases.

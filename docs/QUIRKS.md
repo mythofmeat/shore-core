@@ -38,4 +38,8 @@ Unexpected behavior, kludges, and idiosyncrasies that aren't obvious from readin
 
 ## Image Handling
 
+- **Autonomy path lacks image cache warm-up.** The `rebuild_request_from_disk` call in `autonomy/manager.rs` is synchronous, so it cannot call `warm_image_cache()` (which is async). Images sent during autonomous turns still get resized and cached via the synchronous `cached_resize()` fallback inside `build_content`, but the first encounter of each image pays the full resize cost inline rather than pre-warming in parallel. This only matters if the character has images in its conversation history when an autonomous turn fires.
+
+- **Retry may return over-limit images for transparent PNGs.** The resize pipeline retries once with more aggressive parameters if the first attempt exceeds the byte limit. For transparent images (which must stay PNG), if the retried result still exceeds the limit, it is sent anyway with a warn log. This is a deliberate trade-off: sending a slightly-too-large image that might work is better than dropping it entirely. The API may reject it, but the alternative (converting to JPEG and losing transparency) was deemed worse.
+
 - **User messages always have `content_blocks` populated.** This means the `build_content(text, images)` fallback in the LLM message builder is dead code for user messages — it only fires when `content_blocks` is empty. Prior to the fix, `m.images` was silently dropped for all user messages because the `content_blocks` branch didn't encode them. Image encoding must happen in both branches.

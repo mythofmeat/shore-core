@@ -79,6 +79,12 @@ fn resize_transparent(
         let correction = ((max_bytes as f64 / buf.len() as f64).sqrt() * 0.85).min(1.0);
         let (retry_w, retry_h) = scaled_dims(new_w, new_h, correction);
         if let Some(buf2) = fir_resize_and_encode_png(img, retry_w, retry_h) {
+            if (buf2.len() as u64) > max_bytes {
+                warn!(
+                    size = buf2.len(), max = max_bytes,
+                    "Transparent image still exceeds limit after retry; sending best-effort result"
+                );
+            }
             log_resize(src_w, src_h, retry_w, retry_h, src_bytes, buf2.len() as u64);
             return Some((buf2, "image/png"));
         }
@@ -129,6 +135,12 @@ fn resize_with_dims(
         let (retry_w, retry_h) = scaled_dims(new_w, new_h, correction);
         let retry_q: u8 = 85;
         if let Some(buf2) = fir_resize_and_encode_jpeg(img, retry_w, retry_h, retry_q) {
+            if (buf2.len() as u64) > max_bytes {
+                warn!(
+                    size = buf2.len(), max = max_bytes,
+                    "Image still exceeds limit after retry; sending best-effort result"
+                );
+            }
             log_resize(src_w, src_h, retry_w, retry_h, src_bytes, buf2.len() as u64);
             return Some((buf2, "image/jpeg"));
         }

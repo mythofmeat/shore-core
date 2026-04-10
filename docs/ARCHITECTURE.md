@@ -378,6 +378,7 @@ binary in the workspace.
 | **Cache Keepalive** | Anthropic prompt cache TTL refresh pings | — |
 | **Activity Tracker** | Session tempo, hour histograms, engagement scoring | — |
 | **Config** | TOML loading (config.toml + models.toml), validation, defaults | `toml`, `serde` |
+| **Image Resize** | Format-aware image resizing for LLM API limits; XDG disk cache with SHA-256 keys; async pre-warm before prompt assembly | `fast_image_resize`, `image`, `sha2` |
 | **Commands** | Command handlers dispatched by name+subcmd | — |
 | **Registry** | Instance registry in `$XDG_RUNTIME_DIR` with file locking | — |
 
@@ -431,6 +432,13 @@ shore-daemon/
 │   │   ├── mod.rs              # Config loading, resolution, validation
 │   │   ├── app.rs              # AppConfig struct (all sections)
 │   │   └── models.rs           # ModelConfig struct (models.toml)
+│   │
+│   ├── handler/
+│   │   ├── mod.rs              # Message handling: prompt assembly, image encoding, cache warm-up
+│   │   ├── images.rs           # Image ingestion, content block encoding
+│   │   ├── resize.rs           # Format-aware resize pipeline, XDG disk cache
+│   │   ├── generation.rs       # LLM response generation
+│   │   └── persistence.rs      # Message persistence
 │   │
 │   ├── commands/
 │   │   ├── mod.rs              # Command dispatch table (18 flat commands, see §3.7)
