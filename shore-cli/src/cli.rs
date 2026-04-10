@@ -9,9 +9,9 @@ use clap_complete::Shell;
     disable_help_subcommand = true
 )]
 pub struct Cli {
-    /// Path to daemon Unix socket (overrides discovery)
+    /// TCP address of the daemon (overrides discovery)
     #[arg(long, global = true)]
-    pub socket: Option<String>,
+    pub addr: Option<String>,
 
     /// Path to config file (selects daemon instance)
     #[arg(long, global = true)]
@@ -603,6 +603,7 @@ mod tests {
                 follow,
                 json,
                 content,
+                plain,
                 heartbeat,
             } => {
                 assert!(subcommand.is_none());
@@ -611,6 +612,7 @@ mod tests {
                 assert!(!follow);
                 assert!(!json);
                 assert!(!content);
+                assert!(!plain);
                 assert!(!heartbeat);
             }
             other => panic!("expected Log, got: {other:?}"),
@@ -999,9 +1001,9 @@ mod tests {
     // ── Global flags ─────────────────────────────────────────────────
 
     #[test]
-    fn parse_global_socket_flag() {
-        let cli = parse(&["--socket", "/tmp/shore.sock", "status"]);
-        assert_eq!(cli.socket.as_deref(), Some("/tmp/shore.sock"));
+    fn parse_global_addr_flag() {
+        let cli = parse(&["--addr", "127.0.0.1:7320", "status"]);
+        assert_eq!(cli.addr.as_deref(), Some("127.0.0.1:7320"));
         assert!(matches!(cli.command, CliCommand::Status { .. }));
     }
 
@@ -1136,6 +1138,7 @@ mod tests {
             follow: false,
             json: false,
             content: false,
+            plain: false,
             heartbeat: false,
         };
         let (name, args) = to_swp_command(&cmd).unwrap();
@@ -1155,6 +1158,7 @@ mod tests {
             follow: false,
             json: false,
             content: false,
+            plain: false,
             heartbeat: false,
         };
         let (name, args) = to_swp_command(&cmd).unwrap();
@@ -1171,6 +1175,7 @@ mod tests {
             follow: false,
             json: false,
             content: false,
+            plain: false,
             heartbeat: false,
         };
         let (name, args) = to_swp_command(&cmd).unwrap();
@@ -1187,6 +1192,7 @@ mod tests {
             follow: false,
             json: false,
             content: false,
+            plain: false,
             heartbeat: false,
         };
         let (name, args) = to_swp_command(&cmd).unwrap();
@@ -1243,6 +1249,7 @@ mod tests {
                 follow: false,
                 json: false,
                 content: false,
+                plain: false,
                 heartbeat: false,
             },
             CliCommand::Log {
@@ -1255,6 +1262,7 @@ mod tests {
                 follow: false,
                 json: false,
                 content: false,
+                plain: false,
                 heartbeat: false,
             },
             CliCommand::Log {
@@ -1266,6 +1274,7 @@ mod tests {
                 follow: false,
                 json: false,
                 content: false,
+                plain: false,
                 heartbeat: false,
             },
             CliCommand::Log {
@@ -1275,6 +1284,7 @@ mod tests {
                 follow: false,
                 json: false,
                 content: false,
+                plain: false,
                 heartbeat: false,
             },
             CliCommand::Status {

@@ -200,7 +200,7 @@ impl TestHarness {
 
         // ── SWP Client Connection ────────────────────────────────────
         let (conn, server_hello, _history) = SWPConnection::connect(
-            &ServerAddr::Tcp(addr.clone()),
+            &ServerAddr(addr.clone()),
             "test",
             "harness",
             None,
@@ -453,7 +453,7 @@ impl TestHarness {
     /// Connect an additional SWP client to the same daemon.
     pub async fn connect_second_client(&self) -> SWPConnection {
         let (conn, _hello, _history) = SWPConnection::connect(
-            &ServerAddr::Tcp(self.addr.clone()),
+            &ServerAddr(self.addr.clone()),
             "test",
             "second-client",
             None,
