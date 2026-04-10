@@ -11,7 +11,7 @@ Shore is a modular AI character engine built entirely in Rust. It provides persi
 | `shore-tui` | Rust | TUI — persistent connection, full terminal UI |
 | `shore-matrix` | Rust | Matrix bridge (includes embedded homeserver management) |
 
-All Rust services communicate via the Shore Wire Protocol (SWP) over Unix sockets or TCP. See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design.
+All Rust services communicate via the Shore Wire Protocol (SWP) over TCP. See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design.
 
 ## Prerequisites
 
@@ -167,7 +167,7 @@ Clients (CLI, TUI, bridges) can specify a default server address in `$XDG_CONFIG
 default_address = "100.64.0.1:7320"
 ```
 
-Address resolution order: `--socket` CLI flag → `client.toml` → instance discovery → default Unix socket. On the daemon machine, omit this file to use local socket discovery. See `examples/client.toml` for a full example.
+Address resolution order: `--addr` CLI flag → `client.toml` → instance discovery → default `127.0.0.1:7320`. On the daemon machine, omit this file to use instance discovery. See `examples/client.toml` for a full example.
 
 ## Usage
 

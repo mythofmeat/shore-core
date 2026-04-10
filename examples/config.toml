@@ -10,7 +10,8 @@
 # ── Daemon ───────────────────────────────────────────────────────────────
 
 # [daemon]
-# socket_path = "/tmp/shore.sock"   # Auto-generated if omitted
+# addr = "127.0.0.1:7320"       # Default listen address
+# allowed_hosts = []              # Empty = allow all; list IPs to restrict
 
 # ── Defaults ─────────────────────────────────────────────────────────────
 
@@ -104,11 +105,6 @@ model = "claude-sonnet"            # Must match a key in [chat.*.*] below
 # message_complete = false  # Notify when message generation completes
 
 # ── Connections ──────────────────────────────────────────────────────────
-
-# [connections.tcp]
-# enabled = false
-# addr = "127.0.0.1:7320"
-# allowed_hosts = []  # Empty = allow all; otherwise list allowed IPs
 
 # ── Matrix: External mode (connect to an existing homeserver) ─────────────
 # [connections.matrix]

@@ -499,7 +499,7 @@ clients — they can be developed independently.
 #### Configuration
 
 Receives most config from daemon via SWP `hello` exchange. Bridge only needs:
-- Daemon socket path (auto-discovered via registry, or `--socket` flag)
+- Daemon address (auto-discovered via registry, or `--addr` flag)
 - For external Matrix: access_token, homeserver_url, device_id (env/flags)
 - For embedded Synapse: admin credentials (env/flags)
 
@@ -699,8 +699,8 @@ Unchanged from V1 structure.
 ### 8.3 Bridge Configuration
 
 Bridges need exactly two things to start:
-1. **How to find the daemon** — socket path (auto-discovered via registry) or
-   explicit `--socket`/`--address` flag
+1. **How to find the daemon** — TCP address (auto-discovered via registry) or
+   explicit `--addr` flag
 2. **Platform credentials** — access token / bot token (env var or flag)
 
 Everything else comes from the daemon via the SWP `hello` exchange.
@@ -718,10 +718,10 @@ default_address = "100.64.0.1:7320"
 
 **Address resolution order:**
 
-1. `--socket` CLI flag (explicit address)
+1. `--addr` CLI flag (explicit address)
 2. `client.toml` `default_address`
 3. Instance discovery (`instances.json`, optionally filtered by `--config` ID)
-4. Default Unix socket (`$XDG_RUNTIME_DIR/shore/shore.sock`)
+4. Default: `127.0.0.1:7320`
 
 The file is optional. If missing or unparseable, resolution falls through to
 instance discovery. On the daemon machine, omit `client.toml` (or leave

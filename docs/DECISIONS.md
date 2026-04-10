@@ -266,12 +266,12 @@ A single holistic call lets the LLM see all candidates + nearby context and make
 
 **Changes made:**
 - New `shore-client/src/client_config.rs`: `ClientConfig` struct with `default_address` field, `load_client_config()` loader
-- Updated `discover_or_default()` to check `client.toml` between the `--socket` flag and instance discovery
+- Updated `discover_or_default()` to check `client.toml` between the `--addr` flag and instance discovery
 - Added `toml` dependency to shore-client
 
-**Why:** Remote clients (running on a different machine from the daemon) had to pass `--socket host:port` on every invocation. A persistent config eliminates the repetition. The file is intentionally separate from `config.toml` because: (a) the daemon config uses `deny_unknown_fields` and would reject a `[client]` section, and (b) the packages will eventually be split — client config must not depend on daemon config infrastructure.
+**Why:** Remote clients (running on a different machine from the daemon) had to pass `--addr host:port` on every invocation. A persistent config eliminates the repetition. The file is intentionally separate from `config.toml` because: (a) the daemon config uses `deny_unknown_fields` and would reject a `[client]` section, and (b) the packages will eventually be split — client config must not depend on daemon config infrastructure.
 
-**Resolution order:** `--socket` CLI flag → `client.toml` `default_address` → instance discovery → default Unix socket.
+**Resolution order:** `--addr` CLI flag → `client.toml` `default_address` → instance discovery → default `127.0.0.1:7320`.
 
 **Trade-off:** `load_client_config()` reads and parses the file on every invocation of `discover_or_default()`. This is acceptable because it is a single small file read, and caching would add complexity with no measurable benefit for a CLI tool.
 
@@ -525,3 +525,13 @@ plumbing (SWP, handler, persistence, autonomy, tools) runs for real.
   undocumented error formats). The existing `#[ignore]`-gated e2e tests cover that.
 - Autonomy tests use `tokio::time::pause()` which requires all autonomy code to use
   `tokio::time::Instant` instead of `std::time::Instant`.
+
+### Unix Sockets Removed — TCP-Only Transport (2026-04-10)
+
+**Decision:** Remove Unix socket support entirely. TCP is the sole transport.
+
+**Rationale:** Unix sockets added complexity (socket path management, stale file cleanup, dual-listener code) with no real benefit over TCP on localhost. For remote clients, identifying an instance by Unix socket path on another machine is meaningless. TCP was already a core feature, so making it the only transport simplifies the codebase and makes instance identity uniform (`host:port`).
+
+**Default:** `127.0.0.1:7320` (localhost-only). `allowed_hosts` whitelist for remote access.
+
+**Trade-offs:** Marginally higher per-message overhead vs Unix sockets on localhost (negligible for JSON-Lines messages). Lost the ability to enforce filesystem-level permissions on the socket file — mitigated by `allowed_hosts` ACL and localhost-only default.
