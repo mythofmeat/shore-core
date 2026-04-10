@@ -1,17 +1,15 @@
 pub mod registry;
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 
-use shore_config::app::TcpConfig;
 use shore_protocol::client_msg::{ClientMessage, Command};
 use shore_protocol::error::ErrorCode;
 use shore_protocol::server_msg::{Error, History, ServerHello, ServerMessage, Shutdown};
 use shore_protocol::types::CharacterInfo;
 use shore_protocol::SWP_V1;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::{TcpListener, UnixListener};
+use tokio::net::TcpListener;
 use tokio::sync::{broadcast, RwLock};
 use tracing::{error, info, instrument, warn};
 
@@ -49,16 +47,16 @@ pub enum RoutedMessage {
 /// Configuration for the server.
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
-    pub socket_path: PathBuf,
-    pub tcp: Option<TcpConfig>,
+    pub addr: String,
+    pub allowed_hosts: Vec<String>,
     pub server_name: String,
 }
 
 /// The SWP server.
 ///
-/// Listens on a Unix socket and optionally on TCP. Accepts concurrent client
-/// connections, performs the SWP handshake, routes incoming messages, and
-/// broadcasts push messages to all connected clients.
+/// Listens on TCP. Accepts concurrent client connections, performs the SWP
+/// handshake, routes incoming messages, and broadcasts push messages to all
+/// connected clients.
 pub struct Server {
     config: ServerConfig,
     clients: Arc<RwLock<HashMap<u64, ClientInfo>>>,
@@ -101,61 +99,22 @@ impl Server {
         self.clients.clone()
     }
 
-    /// Run the server. Listens on Unix socket (and optionally TCP) forever.
+    /// Run the server. Listens on TCP forever.
     #[instrument(skip(self), fields(server_name = %self.config.server_name))]
     pub async fn run(&self, shutdown: tokio::sync::watch::Receiver<()>) -> std::io::Result<()> {
-        // Ensure parent directory exists for Unix socket.
-        if let Some(parent) = self.config.socket_path.parent() {
-            tokio::fs::create_dir_all(parent).await?;
-        }
-        // Remove stale socket file.
-        let _ = tokio::fs::remove_file(&self.config.socket_path).await;
-
-        let unix_listener = UnixListener::bind(&self.config.socket_path)?;
-        info!(path = %self.config.socket_path.display(), "Unix socket listening");
-
-        let tcp_listener = match self.config.tcp.as_ref() {
-            Some(tcp) if tcp.enabled => {
-                let addr = tcp.addr.as_deref().unwrap_or("127.0.0.1:7320");
-                let listener = TcpListener::bind(addr).await?;
-                info!(%addr, "TCP listening");
-                Some(listener)
-            }
-            _ => None,
-        };
-        let tcp_allowed_hosts: Vec<String> = self
-            .config
-            .tcp
-            .as_ref()
-            .map(|t| t.allowed_hosts.clone())
-            .unwrap_or_default();
+        let listener = TcpListener::bind(&self.config.addr).await?;
+        info!(addr = %self.config.addr, "TCP listening");
 
         loop {
             tokio::select! {
-                // Accept Unix connections.
-                result = unix_listener.accept() => {
-                    match result {
-                        Ok((stream, _addr)) => {
-                            let (reader, writer) = stream.into_split();
-                            self.spawn_client(reader, writer, shutdown.clone());
-                        }
-                        Err(e) => error!(error = %e, "Unix accept error"),
-                    }
-                }
-
-                // Accept TCP connections (if enabled).
-                result = async {
-                    match tcp_listener.as_ref() {
-                        Some(l) => l.accept().await,
-                        None => std::future::pending().await,
-                    }
-                } => {
+                // Accept TCP connections.
+                result = listener.accept() => {
                     match result {
                         Ok((stream, addr)) => {
                             // ACL: check peer IP against allowed_hosts (empty = allow all).
-                            if !tcp_allowed_hosts.is_empty() {
+                            if !self.config.allowed_hosts.is_empty() {
                                 let peer_ip = addr.ip().to_string();
-                                if !tcp_allowed_hosts.iter().any(|h| h == &peer_ip) {
+                                if !self.config.allowed_hosts.iter().any(|h| h == &peer_ip) {
                                     warn!(%addr, "TCP connection rejected: not in allowed_hosts");
                                     drop(stream);
                                     continue;
@@ -181,8 +140,6 @@ impl Server {
             }
         }
 
-        // Clean up Unix socket.
-        let _ = tokio::fs::remove_file(&self.config.socket_path).await;
         Ok(())
     }
 
@@ -517,7 +474,6 @@ mod tests {
     use super::*;
     use shore_protocol::client_msg::{ClientHello, ClientMessageBody, Command, Regen};
     use shore_protocol::types::Message;
-    use tempfile::TempDir;
     use tokio::io::{duplex, AsyncWriteExt, BufReader};
 
     /// Helper: write a ClientMessage as JSON line into the writer half.
@@ -969,24 +925,18 @@ mod tests {
         listener.local_addr().unwrap().port()
     }
 
-    /// Spin up a real `Server::run()` with TCP enabled and the given allowed_hosts.
+    /// Spin up a real `Server::run()` with the given allowed_hosts.
     /// Returns the server handle and a shutdown sender.
     fn spawn_tcp_server(
-        tmp: &TempDir,
         port: u16,
         allowed_hosts: Vec<String>,
     ) -> (
         tokio::task::JoinHandle<std::io::Result<()>>,
         tokio::sync::watch::Sender<()>,
     ) {
-        let socket_path = tmp.path().join("shore.sock");
         let config = ServerConfig {
-            socket_path,
-            tcp: Some(TcpConfig {
-                enabled: true,
-                addr: Some(format!("127.0.0.1:{port}")),
-                allowed_hosts,
-            }),
+            addr: format!("127.0.0.1:{port}"),
+            allowed_hosts,
             server_name: "test-acl-server".into(),
         };
         let server = Server::new(config);
@@ -1032,9 +982,8 @@ mod tests {
 
     #[tokio::test]
     async fn tcp_acl_empty_allows_all() {
-        let tmp = TempDir::new().unwrap();
         let port = available_port();
-        let (_handle, shutdown_tx) = spawn_tcp_server(&tmp, port, vec![]);
+        let (_handle, shutdown_tx) = spawn_tcp_server(port, vec![]);
 
         assert!(
             tcp_handshake_succeeds(port).await,
@@ -1046,9 +995,8 @@ mod tests {
 
     #[tokio::test]
     async fn tcp_acl_allows_matching_ip() {
-        let tmp = TempDir::new().unwrap();
         let port = available_port();
-        let (_handle, shutdown_tx) = spawn_tcp_server(&tmp, port, vec!["127.0.0.1".into()]);
+        let (_handle, shutdown_tx) = spawn_tcp_server(port, vec!["127.0.0.1".into()]);
 
         assert!(
             tcp_handshake_succeeds(port).await,
@@ -1082,9 +1030,8 @@ mod tests {
 
     #[tokio::test]
     async fn tcp_acl_rejects_non_matching_ip() {
-        let tmp = TempDir::new().unwrap();
         let port = available_port();
-        let (_handle, shutdown_tx) = spawn_tcp_server(&tmp, port, vec!["10.0.0.1".into()]);
+        let (_handle, shutdown_tx) = spawn_tcp_server(port, vec!["10.0.0.1".into()]);
 
         assert!(
             !tcp_handshake_succeeds(port).await,

@@ -8,8 +8,7 @@ use serde::{Deserialize, Serialize};
 pub struct InstanceInfo {
     pub id: String,
     pub pid: u32,
-    pub socket_path: String,
-    pub tcp_addr: Option<String>,
+    pub addr: String,
     pub started_at: String,
     /// Resolved data directory so CLI commands can find the ledger.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -153,8 +152,7 @@ mod tests {
         InstanceInfo {
             id: id.into(),
             pid: std::process::id(),
-            socket_path: format!("/tmp/shore-{}.sock", id),
-            tcp_addr: None,
+            addr: format!("127.0.0.1:{}", 7320 + id.len()),
             started_at: "2026-01-01T00:00:00Z".into(),
             data_dir: None,
         }
@@ -191,12 +189,12 @@ mod tests {
         reg.register(sample_instance("test-4")).unwrap();
 
         let mut updated = sample_instance("test-4");
-        updated.socket_path = "/tmp/shore-test-4-new.sock".into();
+        updated.addr = "127.0.0.1:9999".into();
         reg.register(updated.clone()).unwrap();
 
         let entries = reg.list().unwrap();
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].socket_path, "/tmp/shore-test-4-new.sock");
+        assert_eq!(entries[0].addr, "127.0.0.1:9999");
     }
 
     #[test]

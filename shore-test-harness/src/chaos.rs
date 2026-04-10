@@ -8,18 +8,17 @@ use crate::mock_llm::MockLlmServer;
 /// Holds the persistent state of a crashed daemon so it can be rebooted.
 ///
 /// Obtained by calling [`TestHarness::crash`]. The daemon tasks have been
-/// aborted and the socket file removed; the on-disk data in `tmp_dir` is
-/// intact for recovery testing.
+/// aborted; the on-disk data in `tmp_dir` is intact for recovery testing.
 pub struct CrashedHarness {
     pub tmp_dir: tempfile::TempDir,
     pub mock_llm: MockLlmServer,
     pub data_dir: PathBuf,
-    pub socket_path: PathBuf,
+    pub addr: String,
 }
 
 impl CrashedHarness {
     /// Boot a new daemon from the existing on-disk state, reusing the same
-    /// temp directory, mock LLM server, data dir, and socket path.
+    /// temp directory, mock LLM server, data dir, and TCP address.
     pub async fn reboot(self) -> TestHarness {
         let config = TestConfigBuilder::default().build(
             self.tmp_dir.path(),
@@ -31,7 +30,7 @@ impl CrashedHarness {
             self.mock_llm,
             self.tmp_dir,
             self.data_dir,
-            self.socket_path,
+            self.addr,
         )
         .await
     }

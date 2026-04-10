@@ -178,16 +178,21 @@ async fn e2e_conversation_milestone() {
     }
 
     let tmp = tempfile::tempdir().unwrap();
-    let socket_path = tmp.path().join("runtime").join("daemon.sock");
     let llm_socket = tmp.path().join("runtime").join("llm.sock");
     let loaded = build_test_config(&tmp, &llm_socket);
+
+    let addr = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        format!("127.0.0.1:{port}")
+    };
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
 
     // ── Start SWP server ───────────────────────────────────────────────
     let server_config = ServerConfig {
-        socket_path: socket_path.clone(),
-        tcp: None,
+        addr: addr.clone(),
+        allowed_hosts: vec![],
         server_name: "shore-daemon-test".into(),
     };
     let server = Server::new(server_config);
@@ -255,7 +260,7 @@ async fn e2e_conversation_milestone() {
     // ── AC 1: Connect and verify SWP handshake ────────────────────────
     eprintln!("=== AC 1: SWP Handshake ===");
     let (mut conn, server_hello, history) = SWPConnection::connect(
-        &ServerAddr::Unix(socket_path.display().to_string()),
+        &ServerAddr(addr.clone()),
         "test",
         "e2e-test",
         None,
@@ -659,13 +664,17 @@ struct E2EHarness {
 
 impl E2EHarness {
     async fn start(loaded: LoadedConfig, tmp: tempfile::TempDir) -> Self {
-        let socket_path = tmp.path().join("runtime").join("daemon.sock");
+        let addr = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            format!("127.0.0.1:{port}")
+        };
 
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
 
         let server_config = ServerConfig {
-            socket_path: socket_path.clone(),
-            tcp: None,
+            addr: addr.clone(),
+            allowed_hosts: vec![],
             server_name: "shore-daemon-test".into(),
         };
         let server = Server::new(server_config);
@@ -729,7 +738,7 @@ impl E2EHarness {
         tokio::time::sleep(Duration::from_millis(200)).await;
 
         let (conn, server_hello, _history) = SWPConnection::connect(
-            &ServerAddr::Unix(socket_path.display().to_string()),
+            &ServerAddr(addr.clone()),
             "test",
             "e2e-test",
             None,

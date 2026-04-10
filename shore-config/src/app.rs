@@ -47,11 +47,27 @@ pub struct AppConfig {
 
 // ── [daemon] ────────────────────────────────────────────────────────────
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
+serde_default!(default_daemon_addr -> String { "127.0.0.1:7320".to_string() });
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct DaemonConfig {
-    /// Override the Unix socket path. Auto-generated if omitted.
-    pub socket_path: Option<String>,
+    /// TCP address to listen on (default: "127.0.0.1:7320").
+    #[serde(default = "default_daemon_addr")]
+    pub addr: String,
+
+    /// Allowed client hosts. Empty list means allow all.
+    #[serde(default)]
+    pub allowed_hosts: Vec<String>,
+}
+
+impl Default for DaemonConfig {
+    fn default() -> Self {
+        Self {
+            addr: default_daemon_addr(),
+            allowed_hosts: vec![],
+        }
+    }
 }
 
 // ── [defaults] ──────────────────────────────────────────────────────────
@@ -415,9 +431,6 @@ impl Default for MemoryConfig {
 #[serde(deny_unknown_fields)]
 pub struct ConnectionsConfig {
     #[serde(default)]
-    pub tcp: Option<TcpConfig>,
-
-    #[serde(default)]
     pub matrix: Option<MatrixConfig>,
 
     #[serde(default)]
@@ -425,21 +438,6 @@ pub struct ConnectionsConfig {
 
     #[serde(default)]
     pub discord: Option<DiscordConfig>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct TcpConfig {
-    /// Whether TCP listening is enabled.
-    #[serde(default)]
-    pub enabled: bool,
-
-    /// TCP address to listen on (e.g. "127.0.0.1:7320").
-    pub addr: Option<String>,
-
-    /// Allowed client hosts. Empty list means allow all.
-    #[serde(default)]
-    pub allowed_hosts: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -796,18 +794,15 @@ include_answer = false
     }
 
     #[test]
-    fn tcp_config_parses() {
+    fn daemon_config_parses() {
         let toml_str = r#"
-[connections.tcp]
-enabled = true
-addr = "127.0.0.1:7320"
-allowed_hosts = ["127.0.0.1", "192.168.1.0/24"]
+[daemon]
+addr = "0.0.0.0:9999"
+allowed_hosts = ["127.0.0.1", "192.168.1.100"]
 "#;
         let config: AppConfig = toml::from_str(toml_str).unwrap();
-        let tcp = config.connections.tcp.unwrap();
-        assert!(tcp.enabled);
-        assert_eq!(tcp.addr.as_deref(), Some("127.0.0.1:7320"));
-        assert_eq!(tcp.allowed_hosts.len(), 2);
+        assert_eq!(config.daemon.addr, "0.0.0.0:9999");
+        assert_eq!(config.daemon.allowed_hosts.len(), 2);
     }
 
     #[test]

@@ -356,8 +356,8 @@ async fn handle_matrix_command(
     if let Some(ref config) = cli.config {
         cmd.arg("--config").arg(config);
     }
-    if let Some(ref socket) = cli.socket {
-        cmd.arg("--socket").arg(socket);
+    if let Some(ref addr) = cli.addr {
+        cmd.arg("--addr").arg(addr);
     }
 
     match subcommand {
@@ -553,11 +553,8 @@ fn edit_message_in_editor() -> Result<String, Box<dyn std::error::Error>> {
 
 /// Resolve the daemon address from CLI flags or discovery.
 fn resolve_addr(cli: &Cli) -> ServerAddr {
-    if let Some(socket) = &cli.socket {
-        if shore_client::connection::is_unix_path(socket) {
-            return ServerAddr::Unix(socket.clone());
-        }
-        return ServerAddr::Tcp(socket.clone());
+    if let Some(addr) = &cli.addr {
+        return ServerAddr(addr.clone());
     }
     shore_client::discover_or_default(cli.config.as_deref())
 }
@@ -739,7 +736,7 @@ mod tests {
     /// Build a Cli struct for testing (bypasses actual socket connection).
     fn test_cli(command: CliCommand) -> Cli {
         Cli {
-            socket: None,
+            addr: None,
             config: None,
             character: None,
             no_color: false,
@@ -941,6 +938,7 @@ mod tests {
             follow: false,
             json: false,
             content: false,
+            plain: false,
             heartbeat: false,
         });
         let received = execute_with_mock(cli, command_response("edit")).await;
@@ -968,6 +966,7 @@ mod tests {
             follow: false,
             json: false,
             content: false,
+            plain: false,
             heartbeat: false,
         });
         let received = execute_with_mock(cli, command_response("delete")).await;

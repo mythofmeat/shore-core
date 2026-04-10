@@ -36,13 +36,13 @@ pub enum ConnCommand {
 /// Returns channels for bidirectional communication. The task automatically
 /// reconnects on disconnection with exponential backoff (500ms → 15s).
 ///
-/// - `socket`: optional explicit socket path or address
+/// - `addr`: optional explicit TCP address (`host:port`)
 /// - `config`: optional config path for service discovery
 /// - `client_id`: protocol-level client type (e.g. `"tui"`, `"bridge"`)
 /// - `app_name`: human-readable application name (e.g. `"shore-tui"`, `"shore-matrix"`)
 /// - `character`: optional character to select on connect
 pub fn spawn_connection(
-    socket: Option<String>,
+    addr: Option<String>,
     config: Option<String>,
     client_id: &str,
     app_name: &str,
@@ -55,7 +55,7 @@ pub fn spawn_connection(
     let app_name = app_name.to_string();
 
     tokio::spawn(connection_loop(
-        socket, config, client_id, app_name, character, event_tx, cmd_rx,
+        addr, config, client_id, app_name, character, event_tx, cmd_rx,
     ));
 
     (cmd_tx, event_rx)
@@ -66,18 +66,15 @@ fn next_backoff(current: Duration, max: Duration) -> Duration {
     (current * 2).min(max)
 }
 
-fn resolve_addr(socket: &Option<String>, config: &Option<String>) -> ServerAddr {
-    if let Some(socket) = socket {
-        if crate::connection::is_unix_path(socket) {
-            return ServerAddr::Unix(socket.clone());
-        }
-        return ServerAddr::Tcp(socket.clone());
+fn resolve_addr(addr: &Option<String>, config: &Option<String>) -> ServerAddr {
+    if let Some(addr) = addr {
+        return ServerAddr(addr.clone());
     }
     discover_or_default(config.as_deref())
 }
 
 async fn connection_loop(
-    socket: Option<String>,
+    addr: Option<String>,
     config: Option<String>,
     client_id: String,
     app_name: String,
@@ -89,7 +86,7 @@ async fn connection_loop(
     let max_backoff = Duration::from_secs(15);
 
     loop {
-        let addr = resolve_addr(&socket, &config);
+        let addr = resolve_addr(&addr, &config);
         info!(addr = ?addr, client = %app_name, "attempting connection");
 
         match SWPConnection::connect(&addr, &client_id, &app_name, character.clone()).await {
@@ -222,14 +219,8 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_addr_explicit_unix() {
-        let addr = resolve_addr(&Some("/tmp/shore.sock".into()), &None);
-        assert!(matches!(addr, ServerAddr::Unix(p) if p == "/tmp/shore.sock"));
-    }
-
-    #[test]
     fn test_resolve_addr_explicit_tcp() {
         let addr = resolve_addr(&Some("127.0.0.1:9090".into()), &None);
-        assert!(matches!(addr, ServerAddr::Tcp(a) if a == "127.0.0.1:9090"));
+        assert_eq!(addr.0, "127.0.0.1:9090");
     }
 }

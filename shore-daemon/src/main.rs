@@ -46,36 +46,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── Notification service ──────────────────────────────────────────
     let notifier = NotificationService::new(loaded.app.notifications.clone());
 
-    // ── Determine socket path ────────────────────────────────────────
     let instance_id = uuid::Uuid::new_v4().to_string();
-    let socket_path = loaded
-        .app
-        .daemon
-        .socket_path
-        .as_ref()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| loaded.dirs.runtime.join(format!("{}.sock", instance_id)));
 
-    // Resolve TCP config: config file → SHORE_TCP_ADDR env var fallback.
-    let tcp_config = match loaded.app.connections.tcp.clone() {
-        Some(tcp) => Some(tcp),
-        None => std::env::var("SHORE_TCP_ADDR")
-            .ok()
-            .map(|addr| shore_config::app::TcpConfig {
-                enabled: true,
-                addr: Some(addr),
-                allowed_hosts: vec![],
-            }),
-    };
-
-    let tcp_addr = tcp_config
-        .as_ref()
-        .filter(|t| t.enabled)
-        .and_then(|t| t.addr.clone());
+    // Resolve listen address: SHORE_ADDR env → config.
+    let addr = std::env::var("SHORE_ADDR")
+        .unwrap_or_else(|_| loaded.app.daemon.addr.clone());
 
     let server_config = ServerConfig {
-        socket_path: socket_path.clone(),
-        tcp: tcp_config,
+        addr: addr.clone(),
+        allowed_hosts: loaded.app.daemon.allowed_hosts.clone(),
         server_name: "shore-daemon".into(),
     };
 
@@ -84,8 +63,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let instance_info = InstanceInfo {
         id: instance_id.clone(),
         pid: std::process::id(),
-        socket_path: socket_path.display().to_string(),
-        tcp_addr,
+        addr,
         started_at: epoch_timestamp(),
         data_dir: Some(loaded.dirs.data.display().to_string()),
     };

@@ -12,14 +12,11 @@ pub struct InstanceEntry {
     /// Instance ID.
     #[serde(default)]
     pub id: Option<String>,
-    /// Socket path (Unix) or `host:port` (TCP) where the daemon listens.
-    pub socket_path: String,
+    /// TCP address where the daemon listens.
+    pub addr: String,
     /// PID of the daemon process.
     #[serde(default)]
     pub pid: Option<u32>,
-    /// Optional TCP address.
-    #[serde(default)]
-    pub tcp_addr: Option<String>,
     /// Resolved data directory (written by daemon at registration).
     #[serde(default)]
     pub data_dir: Option<String>,
@@ -74,18 +71,7 @@ pub fn discover(config_path: Option<&str>) -> Result<ServerAddr> {
             .ok_or_else(|| ClientError::Discovery("instances file is empty".into()))?,
     };
 
-    Ok(addr_from_socket(&entry.socket_path))
-}
-
-/// Convert a socket string to a `ServerAddr`.
-///
-/// Strings that look like file paths become `Unix`, everything else becomes `Tcp`.
-fn addr_from_socket(socket: &str) -> ServerAddr {
-    if crate::connection::is_unix_path(socket) {
-        ServerAddr::Unix(socket.to_string())
-    } else {
-        ServerAddr::Tcp(socket.to_string())
-    }
+    Ok(ServerAddr(entry.addr.clone()))
 }
 
 /// Discover the data directory from the first live daemon instance.
@@ -99,33 +85,25 @@ pub fn discover_data_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// Return the default socket path used when no instances file is present.
-pub fn default_socket_path() -> PathBuf {
-    shore_config::runtime_dir().join("shore.sock")
-}
+pub const DEFAULT_ADDR: &str = "127.0.0.1:7320";
 
 /// Convenience: check client.toml, then discover, then fall back to the
-/// default Unix socket.
+/// default TCP address.
 pub fn discover_or_default(config_path: Option<&str>) -> ServerAddr {
-    // 1. Check client.toml for a default_address.
     if let Some(cfg) = crate::client_config::load_client_config() {
         if let Some(addr) = &cfg.default_address {
             debug!(addr = %addr, "using address from client.toml");
-            return addr_from_socket(addr);
+            return ServerAddr(addr.clone());
         }
     }
-
-    // 2. Instance discovery (optionally filtered by --config ID).
     match discover(config_path) {
         Ok(addr) => {
             debug!(addr = ?addr, "resolved daemon via instance discovery");
             addr
         }
         Err(e) => {
-            // 3. Fall back to default Unix socket.
-            let sock = default_socket_path();
-            warn!(error = %e, fallback = %sock.display(), "instance discovery failed, using default socket");
-            ServerAddr::Unix(sock.to_string_lossy().into_owned())
+            warn!(error = %e, fallback = DEFAULT_ADDR, "instance discovery failed, using default address");
+            ServerAddr(DEFAULT_ADDR.to_string())
         }
     }
 }
@@ -140,9 +118,8 @@ mod tests {
     fn entry_alive_no_pid_assumes_alive() {
         let entry = InstanceEntry {
             id: None,
-            socket_path: "/tmp/shore.sock".into(),
+            addr: "127.0.0.1:7320".into(),
             pid: None,
-            tcp_addr: None,
             data_dir: None,
         };
         assert!(entry_alive(&entry));
@@ -152,9 +129,8 @@ mod tests {
     fn entry_alive_current_process() {
         let entry = InstanceEntry {
             id: None,
-            socket_path: "/tmp/shore.sock".into(),
+            addr: "127.0.0.1:7320".into(),
             pid: Some(std::process::id()),
-            tcp_addr: None,
             data_dir: None,
         };
         assert!(entry_alive(&entry));
@@ -164,38 +140,11 @@ mod tests {
     fn entry_alive_bogus_pid() {
         let entry = InstanceEntry {
             id: None,
-            socket_path: "/tmp/shore.sock".into(),
+            addr: "127.0.0.1:7320".into(),
             pid: Some(u32::MAX - 1),
-            tcp_addr: None,
             data_dir: None,
         };
         assert!(!entry_alive(&entry));
-    }
-
-    // ── addr_from_socket ─────────────────────────────────────────────
-
-    #[test]
-    fn addr_from_socket_absolute_path() {
-        match addr_from_socket("/run/shore/shore.sock") {
-            ServerAddr::Unix(p) => assert_eq!(p, "/run/shore/shore.sock"),
-            other => panic!("expected Unix, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn addr_from_socket_tcp_address() {
-        match addr_from_socket("localhost:7320") {
-            ServerAddr::Tcp(a) => assert_eq!(a, "localhost:7320"),
-            other => panic!("expected Tcp, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn addr_from_socket_relative_path() {
-        match addr_from_socket("./shore.sock") {
-            ServerAddr::Unix(p) => assert_eq!(p, "./shore.sock"),
-            other => panic!("expected Unix, got {other:?}"),
-        }
     }
 
     // ── InstanceEntry deserialization ─────────────────────────────────
@@ -204,28 +153,25 @@ mod tests {
     fn instance_entry_full_fields() {
         let json = r#"[{
             "id": "default",
-            "socket_path": "/run/user/1000/shore/shore.sock",
+            "addr": "127.0.0.1:7320",
             "pid": 12345,
-            "tcp_addr": "127.0.0.1:7320",
             "data_dir": "/home/user/data"
         }]"#;
         let entries: Vec<InstanceEntry> = serde_json::from_str(json).unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].id.as_deref(), Some("default"));
-        assert_eq!(entries[0].socket_path, "/run/user/1000/shore/shore.sock");
+        assert_eq!(entries[0].addr, "127.0.0.1:7320");
         assert_eq!(entries[0].pid, Some(12345));
-        assert_eq!(entries[0].tcp_addr.as_deref(), Some("127.0.0.1:7320"));
         assert_eq!(entries[0].data_dir.as_deref(), Some("/home/user/data"));
     }
 
     #[test]
     fn instance_entry_minimal_fields_use_defaults() {
-        let json = r#"[{"socket_path": "/tmp/shore.sock"}]"#;
+        let json = r#"[{"addr": "127.0.0.1:7320"}]"#;
         let entries: Vec<InstanceEntry> = serde_json::from_str(json).unwrap();
         assert_eq!(entries.len(), 1);
         assert!(entries[0].id.is_none());
         assert!(entries[0].pid.is_none());
-        assert!(entries[0].tcp_addr.is_none());
-        assert_eq!(entries[0].socket_path, "/tmp/shore.sock");
+        assert_eq!(entries[0].addr, "127.0.0.1:7320");
     }
 }

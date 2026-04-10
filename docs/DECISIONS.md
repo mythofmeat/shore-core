@@ -553,7 +553,7 @@ format-aware, cached, async pipeline in a new `resize.rs` module.
 - Retry may return images slightly over the limit (warn log emitted).
 - bpp estimation is content-dependent; 0.85 safety margin handles most cases.
 
-## Unix sockets removed — TCP-only transport (2026-04-10)
+## Unix Sockets Removed — TCP-Only Transport (2026-04-10)
 
 **Decision:** Remove Unix socket support entirely. TCP is the sole transport.
 
@@ -562,6 +562,7 @@ format-aware, cached, async pipeline in a new `resize.rs` module.
 **Default:** `127.0.0.1:7320` (localhost-only). `allowed_hosts` whitelist for remote access.
 
 **Trade-offs:** Marginally higher per-message overhead vs Unix sockets on localhost (negligible for JSON-Lines messages). Lost the ability to enforce filesystem-level permissions on the socket file — mitigated by `allowed_hosts` ACL and localhost-only default.
+
 
 ## Extract shore-daemon-server crate (2026-04-10)
 
