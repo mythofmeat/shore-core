@@ -47,11 +47,27 @@ pub struct AppConfig {
 
 // ── [daemon] ────────────────────────────────────────────────────────────
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
+serde_default!(default_daemon_addr -> String { "127.0.0.1:7320".to_string() });
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct DaemonConfig {
-    /// Override the Unix socket path. Auto-generated if omitted.
-    pub socket_path: Option<String>,
+    /// TCP address to listen on (default: "127.0.0.1:7320").
+    #[serde(default = "default_daemon_addr")]
+    pub addr: String,
+
+    /// Allowed client hosts. Empty list means allow all.
+    #[serde(default)]
+    pub allowed_hosts: Vec<String>,
+}
+
+impl Default for DaemonConfig {
+    fn default() -> Self {
+        Self {
+            addr: default_daemon_addr(),
+            allowed_hosts: vec![],
+        }
+    }
 }
 
 // ── [defaults] ──────────────────────────────────────────────────────────
@@ -415,9 +431,6 @@ impl Default for MemoryConfig {
 #[serde(deny_unknown_fields)]
 pub struct ConnectionsConfig {
     #[serde(default)]
-    pub tcp: Option<TcpConfig>,
-
-    #[serde(default)]
     pub matrix: Option<MatrixConfig>,
 
     #[serde(default)]
@@ -425,21 +438,6 @@ pub struct ConnectionsConfig {
 
     #[serde(default)]
     pub discord: Option<DiscordConfig>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct TcpConfig {
-    /// Whether TCP listening is enabled.
-    #[serde(default)]
-    pub enabled: bool,
-
-    /// TCP address to listen on (e.g. "127.0.0.1:7320").
-    pub addr: Option<String>,
-
-    /// Allowed client hosts. Empty list means allow all.
-    #[serde(default)]
-    pub allowed_hosts: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
