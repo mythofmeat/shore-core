@@ -136,13 +136,7 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) -> Action {
             Action::Redraw
         }
 
-        // Toggle thinking panel
-        (KeyModifiers::NONE, KeyCode::Tab) => {
-            app.stream.thinking_collapsed = !app.stream.thinking_collapsed;
-            Action::Redraw
-        }
-
-        // Toggle thinking blocks in history
+        // Toggle thinking blocks
         (KeyModifiers::NONE, KeyCode::Char('t')) => {
             app.show_thinking = !app.show_thinking;
             Action::Redraw
@@ -395,12 +389,6 @@ fn handle_insert_mode(app: &mut App, key: KeyEvent) -> Action {
         }
         (KeyModifiers::CONTROL, KeyCode::Char('d')) => {
             app.scroll_down(10);
-            Action::Redraw
-        }
-
-        // Toggle thinking panel
-        (KeyModifiers::NONE, KeyCode::Tab) => {
-            app.stream.thinking_collapsed = !app.stream.thinking_collapsed;
             Action::Redraw
         }
 

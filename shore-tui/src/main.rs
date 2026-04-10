@@ -22,7 +22,7 @@ use shore_protocol::types::{ContentBlock, Message, Role};
 use tracing::{info, instrument};
 use tracing_subscriber::EnvFilter;
 
-use app::{App, ConnectionStatus, ConversationEntry, InputState};
+use app::{App, ConnectionStatus, ConversationEntry, InputState, StreamBlock};
 use connection::{ConnCommand, ConnEvent};
 use input::Action;
 
@@ -590,13 +590,14 @@ fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<ConnCommand> 
         }
 
         ServerMessage::StreamChunk(chunk) => {
-            if chunk.content_type == "thinking" {
-                app.stream.thinking.push_str(&chunk.text);
-                app.stream.phase = "thinking".into();
-            } else {
-                app.stream.text.push_str(&chunk.text);
-                app.stream.phase = "responding".into();
+            let is_thinking = chunk.content_type == "thinking";
+            match (is_thinking, app.stream.blocks.last_mut()) {
+                (true, Some(StreamBlock::Thinking(ref mut s))) => s.push_str(&chunk.text),
+                (false, Some(StreamBlock::Text(ref mut s))) => s.push_str(&chunk.text),
+                (true, _) => app.stream.blocks.push(StreamBlock::Thinking(chunk.text)),
+                (false, _) => app.stream.blocks.push(StreamBlock::Text(chunk.text)),
             }
+            app.stream.phase = if is_thinking { "thinking" } else { "responding" }.into();
             if app.auto_scroll {
                 app.scroll_to_bottom();
             }
@@ -626,9 +627,7 @@ fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<ConnCommand> 
 
             if end.finish_reason == "tool_use" {
                 // Tool loop in progress — keep stream active, clear buffers
-                app.stream.text.clear();
-                app.stream.thinking.clear();
-                app.stream.thinking_collapsed = false;
+                app.stream.blocks.clear();
                 app.stream.phase = "tool_use".into();
                 app.stream.tool_name = None;
             } else {
