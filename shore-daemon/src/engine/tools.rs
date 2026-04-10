@@ -7,7 +7,7 @@ use tracing::{debug, info, instrument, warn};
 
 use crate::tools::{self as tool_system, ToolContext};
 use shore_diagnostics::{self as diagnostics, Diagnostics};
-use shore_llm_client::stream::{CacheContext, StreamConsumer};
+use shore_llm_client::stream::StreamConsumer;
 use shore_ledger::{CallType, LedgerClient};
 use shore_llm_client::types::{LlmRequest, StreamResult};
 use shore_llm_client::LlmError;
@@ -43,7 +43,7 @@ pub struct ToolLoopResult {
 /// `finish_reason != "tool_use"` or `max_iterations` is reached.
 ///
 /// Returns both the final result and any intermediate messages for persistence.
-#[instrument(skip(client, push_tx, request, result, ctx, cache_ctx, diag), fields(char = character, max_iterations))]
+#[instrument(skip(client, push_tx, request, result, ctx, diag), fields(char = character, max_iterations))]
 #[allow(clippy::too_many_arguments)]
 pub async fn run_tool_loop(
     client: &LedgerClient,
@@ -52,7 +52,6 @@ pub async fn run_tool_loop(
     mut result: StreamResult,
     ctx: &dyn ToolContext,
     max_iterations: u32,
-    cache_ctx: &CacheContext,
     diag: &Arc<Mutex<Diagnostics>>,
     character: &str,
     thinking_enabled: bool,
@@ -263,7 +262,7 @@ pub async fn run_tool_loop(
             .stream_raw(request, CallType::ToolLoop, character, thinking_enabled)
             .await?;
         match consumer
-            .consume(ledger_stream.reader_mut(), false, cache_ctx)
+            .consume(ledger_stream.reader_mut(), false)
             .await
         {
             Ok(r) => {
@@ -405,7 +404,6 @@ mod tests {
             let client = test_ledger_client(&tmp);
             let (push_tx, _rx) = broadcast::channel(16);
             let ctx = TestToolContext::new();
-            let cache_ctx = CacheContext::default();
 
             let mut request = test_request("http://unused", vec![]);
 
@@ -426,7 +424,6 @@ mod tests {
                 result,
                 &ctx,
                 10,
-                &cache_ctx,
                 &test_diag(),
                 "test",
                 false,
@@ -448,7 +445,6 @@ mod tests {
         let client = test_ledger_client(&tmp);
         let (push_tx, mut push_rx) = broadcast::channel(64);
         let ctx = TestToolContext::new();
-        let cache_ctx = CacheContext::default();
 
         let mut request = test_request(
             &base_url,
@@ -476,7 +472,6 @@ mod tests {
             initial,
             &ctx,
             10,
-            &cache_ctx,
             &test_diag(),
             "test",
             false,
@@ -541,7 +536,6 @@ mod tests {
         let client = test_ledger_client(&tmp);
         let (push_tx, _rx) = broadcast::channel(64);
         let ctx = TestToolContext::new();
-        let cache_ctx = CacheContext::default();
 
         let mut request = test_request(&base_url, vec![]);
 
@@ -566,7 +560,6 @@ mod tests {
             initial,
             &ctx,
             3,
-            &cache_ctx,
             &test_diag(),
             "test",
             false,
@@ -588,7 +581,6 @@ mod tests {
         let client = test_ledger_client(&tmp);
         let (push_tx, mut push_rx) = broadcast::channel(64);
         let ctx = TestToolContext::new();
-        let cache_ctx = CacheContext::default();
 
         let mut request = test_request(&base_url, vec![]);
 
@@ -613,7 +605,6 @@ mod tests {
             initial,
             &ctx,
             10,
-            &cache_ctx,
             &test_diag(),
             "test",
             false,
@@ -655,7 +646,6 @@ mod tests {
             let client = test_ledger_client(&tmp);
             let (push_tx, _rx) = broadcast::channel(16);
             let ctx = TestToolContext::new();
-            let cache_ctx = CacheContext::default();
 
             let mut request = test_request("http://unused", vec![]);
 
@@ -678,7 +668,6 @@ mod tests {
                 result,
                 &ctx,
                 10,
-                &cache_ctx,
                 &test_diag(),
                 "test",
                 false,
@@ -699,7 +688,6 @@ mod tests {
         let client = test_ledger_client(&tmp);
         let (push_tx, mut push_rx) = broadcast::channel(64);
         let ctx = TestToolContext::new();
-        let cache_ctx = CacheContext::default();
 
         let mut request = test_request(&base_url, vec![]);
 
@@ -732,7 +720,6 @@ mod tests {
             initial,
             &ctx,
             10,
-            &cache_ctx,
             &test_diag(),
             "test",
             false,
