@@ -146,7 +146,7 @@ pub fn notify_anomaly(
         "{character} ({call_type})\nread={cache_read} write={cache_write}"
     );
     let _ = std::process::Command::new("notify-send")
-        .args(["--urgency=critical", "--app-name=shore", &summary, &body])
+        .args(["--urgency=normal", "--app-name=shore", &summary, &body])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
