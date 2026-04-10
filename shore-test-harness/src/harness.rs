@@ -37,7 +37,7 @@ pub struct TestHarness {
     pub mock_llm: MockLlmServer,
     pub tmp_dir: tempfile::TempDir,
     pub data_dir: PathBuf,
-    pub socket_path: PathBuf,
+    pub addr: String,
     shutdown_tx: watch::Sender<()>,
     server_handle: JoinHandle<()>,
     handler_handle: JoinHandle<()>,
@@ -69,10 +69,14 @@ impl TestHarness {
         let tmp_dir = tempfile::tempdir().expect("failed to create temp dir");
         let config = builder.build(tmp_dir.path(), &mock_llm.base_url());
 
-        let socket_path = tmp_dir.path().join("runtime").join("daemon.sock");
+        let addr = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            format!("127.0.0.1:{port}")
+        };
         let data_dir = config.dirs.data.clone();
 
-        Self::wire_daemon(config, mock_llm, tmp_dir, data_dir, socket_path).await
+        Self::wire_daemon(config, mock_llm, tmp_dir, data_dir, addr).await
     }
 
     /// Internal: wire up daemon components and connect a SWP client.
@@ -84,14 +88,14 @@ impl TestHarness {
         mock_llm: MockLlmServer,
         tmp_dir: tempfile::TempDir,
         data_dir: PathBuf,
-        socket_path: PathBuf,
+        addr: String,
     ) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(());
 
         // ── SWP Server ────────────────────────────────────────────────
         let server_config = ServerConfig {
-            socket_path: socket_path.clone(),
-            tcp: None,
+            addr: addr.clone(),
+            allowed_hosts: vec![],
             server_name: "shore-test-harness".into(),
         };
         let server = Server::new(server_config);
@@ -196,7 +200,7 @@ impl TestHarness {
 
         // ── SWP Client Connection ────────────────────────────────────
         let (conn, server_hello, _history) = SWPConnection::connect(
-            &ServerAddr::Unix(socket_path.display().to_string()),
+            &ServerAddr::Tcp(addr.clone()),
             "test",
             "harness",
             None,
@@ -219,7 +223,7 @@ impl TestHarness {
             mock_llm,
             tmp_dir,
             data_dir,
-            socket_path,
+            addr,
             shutdown_tx,
             server_handle,
             handler_handle,
@@ -259,7 +263,7 @@ impl TestHarness {
     }
 
     /// Simulate a crash: abort server and handler tasks without graceful shutdown,
-    /// remove the stale socket file, and return a `CrashedHarness` for rebooting.
+    /// and return a `CrashedHarness` for rebooting.
     pub async fn crash(self) -> crate::chaos::CrashedHarness {
         // Drop shutdown_tx without sending — no graceful shutdown signal.
         drop(self.shutdown_tx);
@@ -268,17 +272,14 @@ impl TestHarness {
         self.server_handle.abort();
         self.handler_handle.abort();
 
-        // Wait briefly so the socket FD is released before we remove it.
+        // Wait briefly so the port is released before the next bind.
         tokio::time::sleep(Duration::from_millis(50)).await;
-
-        // Remove stale socket so the next bind succeeds.
-        let _ = std::fs::remove_file(&self.socket_path);
 
         crate::chaos::CrashedHarness {
             tmp_dir: self.tmp_dir,
             mock_llm: self.mock_llm,
             data_dir: self.data_dir,
-            socket_path: self.socket_path,
+            addr: self.addr,
         }
     }
 
@@ -452,7 +453,7 @@ impl TestHarness {
     /// Connect an additional SWP client to the same daemon.
     pub async fn connect_second_client(&self) -> SWPConnection {
         let (conn, _hello, _history) = SWPConnection::connect(
-            &ServerAddr::Unix(self.socket_path.display().to_string()),
+            &ServerAddr::Tcp(self.addr.clone()),
             "test",
             "second-client",
             None,
