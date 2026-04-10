@@ -11,7 +11,7 @@ mod generation;
 mod images;
 mod persistence;
 
-pub(crate) use images::{build_content, embed_image_data, encode_image_block, media_type_for_path};
+pub(crate) use images::{build_content, embed_image_data, encode_image_block};
 use generation::{run_tool_phase, stream_with_retry};
 use images::ingest_images;
 use persistence::persist_and_notify;
@@ -21,14 +21,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
-use base64::Engine as _;
 use serde_json::{json, Value};
 use shore_protocol::client_msg::{ClientMessage, ClientMessageBody};
 use shore_protocol::error::ErrorCode;
 use shore_protocol::server_msg::{Error as SwpError, ServerMessage};
 use shore_protocol::types::{ContentBlock, Message, Role};
 use tokio::sync::{broadcast, Mutex};
-use tracing::{debug, error, info, instrument, warn};
+use tracing::{debug, error, info, instrument};
 
 use crate::autonomy::manager::AutonomyManager;
 use crate::autonomy::parse_cache_ttl_secs;
@@ -805,6 +804,7 @@ pub(crate) fn build_llm_messages(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use images::media_type_for_path;
     use shore_protocol::client_msg::{Command, Regen};
     use shore_protocol::error::ErrorCode;
     use shore_protocol::types::ImageRef;

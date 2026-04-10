@@ -141,6 +141,7 @@ model = "claude-sonnet"            # Must match a key in [chat.*.*] below
 # editor = "nvim"                   # Override $VISUAL / $EDITOR
 # max_retries = 2
 # retry_backoff = "500ms"           # Base delay; doubles on each retry
+# max_image_size = 2000000          # Resize images above this size (bytes) before LLM upload; 0 = disable
 # Data directory: override via $XDG_DATA_HOME (default: ~/.local/share/shore)
 
 # ── Chat models ──────────────────────────────────────────────────────────

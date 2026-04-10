@@ -403,4 +403,131 @@ mod tests {
         let garbage = vec![0u8; 1_000_000];
         assert!(maybe_resize(&garbage, "image/jpeg", 100).is_none());
     }
+
+    // ── build_content integration ──────────────────────────────────────
+
+    #[test]
+    fn build_content_resizes_oversized_image_on_disk() {
+        use base64::Engine;
+        use shore_protocol::types::ImageRef;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        // Write a large noisy JPEG to disk (~3-4 MB at 4000x3000).
+        let big_jpeg = make_noisy_jpeg(4000, 3000);
+        let img_path = tmp.path().join("big.jpg");
+        std::fs::write(&img_path, &big_jpeg).unwrap();
+        let original_size = big_jpeg.len();
+        assert!(
+            original_size > 2_000_000,
+            "Test image should exceed 2MB, got {} bytes",
+            original_size
+        );
+
+        let images = vec![ImageRef {
+            path: img_path.to_str().unwrap().to_string(),
+            caption: None,
+            data: None,
+        }];
+
+        // Call build_content with a 2MB limit.
+        let result = build_content("describe this", &images, 2_000_000);
+        let blocks = result.as_array().expect("Should be a JSON array");
+        assert_eq!(blocks.len(), 2, "image block + text block");
+
+        // Image block should be resized JPEG.
+        assert_eq!(blocks[0]["type"], "image");
+        assert_eq!(blocks[0]["source"]["type"], "base64");
+        assert_eq!(blocks[0]["source"]["media_type"], "image/jpeg");
+
+        // Decode the base64 and verify the raw bytes are under 2MB.
+        let b64_data = blocks[0]["source"]["data"].as_str().unwrap();
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(b64_data)
+            .unwrap();
+        assert!(
+            decoded.len() < 2_000_000,
+            "Resized image should be under 2MB, got {} bytes (original was {})",
+            decoded.len(),
+            original_size
+        );
+
+        // Verify it's valid JPEG (starts with FFD8).
+        assert_eq!(&decoded[..2], &[0xFF, 0xD8], "Should be valid JPEG");
+    }
+
+    #[test]
+    fn build_content_does_not_resize_small_image() {
+        use base64::Engine;
+        use shore_protocol::types::ImageRef;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        // Write a small JPEG to disk.
+        let small_jpeg = make_jpeg(200, 200);
+        let img_path = tmp.path().join("small.jpg");
+        std::fs::write(&img_path, &small_jpeg).unwrap();
+        assert!(small_jpeg.len() < 2_000_000);
+
+        let images = vec![ImageRef {
+            path: img_path.to_str().unwrap().to_string(),
+            caption: None,
+            data: None,
+        }];
+
+        let result = build_content("test", &images, 2_000_000);
+        let blocks = result.as_array().unwrap();
+
+        // Should still be image/jpeg (not re-encoded).
+        assert_eq!(blocks[0]["source"]["media_type"], "image/jpeg");
+
+        // Base64 should decode to the exact original bytes (no resize).
+        let b64_data = blocks[0]["source"]["data"].as_str().unwrap();
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(b64_data)
+            .unwrap();
+        assert_eq!(decoded.len(), small_jpeg.len(), "Small image should pass through unchanged");
+    }
+
+    #[test]
+    fn build_content_resizes_oversized_png_to_jpeg() {
+        use base64::Engine;
+        use shore_protocol::types::ImageRef;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        // Write a large noisy PNG to disk.
+        let big_png = make_noisy_png(3000, 2000);
+        let img_path = tmp.path().join("big.png");
+        std::fs::write(&img_path, &big_png).unwrap();
+        let original_size = big_png.len();
+        assert!(
+            original_size > 2_000_000,
+            "Test PNG should exceed 2MB, got {} bytes",
+            original_size
+        );
+
+        let images = vec![ImageRef {
+            path: img_path.to_str().unwrap().to_string(),
+            caption: None,
+            data: None,
+        }];
+
+        let result = build_content("describe", &images, 2_000_000);
+        let blocks = result.as_array().unwrap();
+
+        // Should be converted to JPEG.
+        assert_eq!(blocks[0]["source"]["media_type"], "image/jpeg");
+
+        let b64_data = blocks[0]["source"]["data"].as_str().unwrap();
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(b64_data)
+            .unwrap();
+        assert!(
+            decoded.len() < 2_000_000,
+            "Resized PNG→JPEG should be under 2MB, got {} bytes",
+            decoded.len()
+        );
+        assert_eq!(&decoded[..2], &[0xFF, 0xD8], "Should be valid JPEG");
+    }
 }

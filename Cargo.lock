@@ -4856,6 +4856,7 @@ dependencies = [
  "dashmap",
  "fs2",
  "futures",
+ "image",
  "lancedb",
  "rand 0.8.5",
  "reqwest",
