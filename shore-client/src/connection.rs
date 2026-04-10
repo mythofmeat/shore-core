@@ -1,9 +1,5 @@
-use std::path::Path;
-
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::net::TcpStream;
-#[cfg(unix)]
-use tokio::net::UnixStream;
 use tracing::{debug, error, trace, warn};
 
 use shore_protocol::client_msg::{ClientHello, ClientMessage};
@@ -12,14 +8,9 @@ use shore_protocol::SWP_V1;
 
 use crate::error::{ClientError, Result};
 
-/// Address to connect to — either a Unix socket path or a TCP host:port.
+/// Address to connect to — a TCP host:port.
 #[derive(Debug, Clone)]
-pub enum ServerAddr {
-    /// Path to a Unix domain socket.
-    Unix(String),
-    /// TCP address in `host:port` form.
-    Tcp(String),
-}
+pub struct ServerAddr(pub String);
 
 /// Internal trait to unify read/write halves across transport types.
 trait AsyncReadWrite: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin {}
@@ -43,39 +34,17 @@ impl std::fmt::Debug for SWPConnection {
 impl SWPConnection {
     /// Open a raw transport to `addr` without performing the handshake.
     async fn open(addr: &ServerAddr) -> Result<Self> {
-        match addr {
-            #[cfg(unix)]
-            ServerAddr::Unix(path) => {
-                debug!(path = %path, "connecting via unix socket");
-                let stream = UnixStream::connect(path).await.map_err(|e| {
-                    error!(path = %path, error = %e, "unix socket connect failed");
-                    ClientError::Connect(format!("unix:{path}: {e}"))
-                })?;
-                let (r, w) = stream.into_split();
-                debug!(path = %path, "unix socket connected");
-                Ok(Self {
-                    reader: BufReader::new(Box::new(tokio::io::join(r, tokio::io::sink()))),
-                    writer: BufWriter::new(Box::new(tokio::io::join(tokio::io::empty(), w))),
-                })
-            }
-            #[cfg(not(unix))]
-            ServerAddr::Unix(_) => Err(ClientError::Connect(
-                "Unix sockets are not supported on this platform".into(),
-            )),
-            ServerAddr::Tcp(addr) => {
-                debug!(addr = %addr, "connecting via tcp");
-                let stream = TcpStream::connect(addr).await.map_err(|e| {
-                    error!(addr = %addr, error = %e, "tcp connect failed");
-                    ClientError::Connect(format!("tcp:{addr}: {e}"))
-                })?;
-                let (r, w) = stream.into_split();
-                debug!(addr = %addr, "tcp connected");
-                Ok(Self {
-                    reader: BufReader::new(Box::new(tokio::io::join(r, tokio::io::sink()))),
-                    writer: BufWriter::new(Box::new(tokio::io::join(tokio::io::empty(), w))),
-                })
-            }
-        }
+        debug!(addr = %addr.0, "connecting via tcp");
+        let stream = TcpStream::connect(&addr.0).await.map_err(|e| {
+            error!(addr = %addr.0, error = %e, "tcp connect failed");
+            ClientError::Connect(format!("tcp:{}: {e}", addr.0))
+        })?;
+        let (r, w) = stream.into_split();
+        debug!(addr = %addr.0, "tcp connected");
+        Ok(Self {
+            reader: BufReader::new(Box::new(tokio::io::join(r, tokio::io::sink()))),
+            writer: BufWriter::new(Box::new(tokio::io::join(tokio::io::empty(), w))),
+        })
     }
 
     /// Connect to the daemon and perform the SWP handshake.
@@ -390,10 +359,3 @@ mod tests {
     }
 }
 
-/// Check whether a path looks like it could be a Unix socket path.
-pub fn is_unix_path(s: &str) -> bool {
-    Path::new(s).is_absolute()
-        || s.starts_with("./")
-        || s.starts_with("../")
-        || s.ends_with(".sock")
-}

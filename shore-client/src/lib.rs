@@ -468,17 +468,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn is_unix_path_detection() {
-        assert!(crate::connection::is_unix_path("/tmp/shore.sock"));
-        assert!(crate::connection::is_unix_path(
-            "/run/user/1000/shore/shore.sock"
-        ));
-        assert!(crate::connection::is_unix_path("./shore.sock"));
-        assert!(!crate::connection::is_unix_path("localhost:8080"));
-        assert!(!crate::connection::is_unix_path("127.0.0.1:9090"));
-    }
-
     // ── ClientConfig tests ──────────────────────────────────────────
 
     #[test]
@@ -486,13 +475,6 @@ mod tests {
         let toml = r#"default_address = "192.168.1.50:7320""#;
         let cfg: crate::client_config::ClientConfig = toml::from_str(toml).unwrap();
         assert_eq!(cfg.default_address.as_deref(), Some("192.168.1.50:7320"));
-    }
-
-    #[test]
-    fn client_config_parses_unix_address() {
-        let toml = r#"default_address = "/tmp/shore.sock""#;
-        let cfg: crate::client_config::ClientConfig = toml::from_str(toml).unwrap();
-        assert_eq!(cfg.default_address.as_deref(), Some("/tmp/shore.sock"));
     }
 
     #[test]

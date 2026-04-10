@@ -9,8 +9,8 @@ use serde::Deserialize;
 #[derive(Debug, Default, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ClientConfig {
-    /// Default server address (Unix socket path or `host:port`).
-    /// Used when no `--socket` flag is provided.
+    /// Default server address (`host:port`).
+    /// Used when no `--addr` flag is provided.
     pub default_address: Option<String>,
 }
 
