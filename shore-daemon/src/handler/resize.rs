@@ -282,6 +282,58 @@ pub(super) fn cached_resize(
     Some((resized_bytes, result_media_type))
 }
 
+/// Pre-warm the resize cache for all images in the prompt messages.
+///
+/// Runs resize operations on tokio's blocking thread pool so the async
+/// event loop is not stalled. Multiple images are processed concurrently.
+pub(crate) async fn warm_image_cache(
+    messages: &[crate::engine::prompt::PromptMessage],
+    max_bytes: u64,
+    cache_dir: &Path,
+) {
+    use futures::future::join_all;
+
+    if max_bytes == 0 {
+        return;
+    }
+
+    let mut work: Vec<(String, String)> = Vec::new();
+    for msg in messages {
+        for img in &msg.images {
+            if let Some(mt) = super::images::media_type_for_path(&img.path) {
+                if let Ok(meta) = std::fs::metadata(&img.path) {
+                    if meta.len() > max_bytes {
+                        work.push((img.path.clone(), mt.to_string()));
+                    }
+                }
+            }
+        }
+    }
+
+    if work.is_empty() {
+        return;
+    }
+
+    let cache_dir = cache_dir.to_path_buf();
+    let futures: Vec<_> = work
+        .into_iter()
+        .map(|(path, media_type)| {
+            let cache_dir = cache_dir.clone();
+            tokio::task::spawn_blocking(move || {
+                if let Ok(bytes) = std::fs::read(&path) {
+                    let _ = cached_resize(&path, &bytes, &media_type, max_bytes, &cache_dir);
+                }
+            })
+        })
+        .collect();
+
+    for result in join_all(futures).await {
+        if let Err(e) = result {
+            warn!(error = %e, "Image cache warm-up task failed");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
