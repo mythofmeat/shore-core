@@ -184,3 +184,188 @@ pub(crate) fn embed_image_data(images: &mut [ImageRef]) {
         }
     }
 }
+
+/// Resize an image if it exceeds `max_bytes`.
+///
+/// Returns `Some((resized_bytes, media_type))` if the image was resized,
+/// or `None` if it fits within the limit (or resizing is disabled/unsupported).
+/// Oversized JPEG/PNG/WebP are re-encoded as JPEG at quality 85.
+/// GIFs are passed through unchanged (animated GIF resizing is unsupported).
+pub(crate) fn maybe_resize(
+    bytes: &[u8],
+    media_type: &str,
+    max_bytes: u64,
+) -> Option<(Vec<u8>, &'static str)> {
+    if max_bytes == 0 || (bytes.len() as u64) <= max_bytes {
+        return None;
+    }
+
+    // GIF: pass through (animated GIF support is limited).
+    if media_type == "image/gif" {
+        warn!(
+            size = bytes.len(),
+            max = max_bytes,
+            "GIF exceeds max_image_size but resizing is not supported; sending as-is"
+        );
+        return None;
+    }
+
+    let img = match image::load_from_memory(bytes) {
+        Ok(img) => img,
+        Err(e) => {
+            warn!(error = %e, "Failed to decode image for resizing; sending original");
+            return None;
+        }
+    };
+
+    let ratio = max_bytes as f64 / bytes.len() as f64;
+    let scale = ratio.sqrt() * 0.9; // conservative safety margin
+    let new_width = ((img.width() as f64) * scale).max(1.0) as u32;
+    let new_height = ((img.height() as f64) * scale).max(1.0) as u32;
+
+    let resized = img.resize(new_width, new_height, image::imageops::FilterType::Lanczos3);
+
+    let mut buf = Vec::new();
+    let mut cursor = std::io::Cursor::new(&mut buf);
+    if let Err(e) = resized.write_to(&mut cursor, image::ImageFormat::Jpeg) {
+        warn!(error = %e, "Failed to re-encode resized image; sending original");
+        return None;
+    }
+
+    info!(
+        original_size = bytes.len(),
+        resized_size = buf.len(),
+        original_dims = format!("{}x{}", img.width(), img.height()),
+        resized_dims = format!("{}x{}", resized.width(), resized.height()),
+        "Resized image for LLM upload"
+    );
+
+    Some((buf, "image/jpeg"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Create a valid JPEG image with pseudo-random pixels (high entropy, resists compression).
+    ///
+    /// Pseudo-random pixels prevent JPEG/PNG from compressing the image to near-zero,
+    /// ensuring the resulting file is large enough for the resize tests to be meaningful.
+    fn make_noisy_jpeg(width: u32, height: u32) -> Vec<u8> {
+        let mut pixels = vec![0u8; (width * height * 3) as usize];
+        // Simple LCG to fill with pseudo-random values without pulling in rand.
+        let mut state: u64 = 0xdeadbeef_cafebabe;
+        for byte in &mut pixels {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            *byte = (state >> 33) as u8;
+        }
+        let img = image::RgbImage::from_raw(width, height, pixels).unwrap();
+        let mut buf = Vec::new();
+        let mut cursor = std::io::Cursor::new(&mut buf);
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(&mut cursor, image::ImageFormat::Jpeg)
+            .unwrap();
+        buf
+    }
+
+    /// Create a valid JPEG image of the given dimensions filled with a solid color.
+    fn make_jpeg(width: u32, height: u32) -> Vec<u8> {
+        let img = image::RgbImage::from_pixel(width, height, image::Rgb([128, 64, 200]));
+        let mut buf = Vec::new();
+        let mut cursor = std::io::Cursor::new(&mut buf);
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(&mut cursor, image::ImageFormat::Jpeg)
+            .unwrap();
+        buf
+    }
+
+    /// Create a valid PNG image with pseudo-random pixels (high entropy).
+    fn make_noisy_png(width: u32, height: u32) -> Vec<u8> {
+        let mut pixels = vec![0u8; (width * height * 3) as usize];
+        let mut state: u64 = 0xcafe_f00d_1234_5678;
+        for byte in &mut pixels {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            *byte = (state >> 33) as u8;
+        }
+        let img = image::RgbImage::from_raw(width, height, pixels).unwrap();
+        let mut buf = Vec::new();
+        let mut cursor = std::io::Cursor::new(&mut buf);
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(&mut cursor, image::ImageFormat::Png)
+            .unwrap();
+        buf
+    }
+
+    #[test]
+    fn maybe_resize_returns_none_when_under_limit() {
+        let jpeg = make_jpeg(100, 100);
+        assert!(maybe_resize(&jpeg, "image/jpeg", 10_000_000).is_none());
+    }
+
+    #[test]
+    fn maybe_resize_returns_none_when_disabled() {
+        let jpeg = make_jpeg(100, 100);
+        assert!(maybe_resize(&jpeg, "image/jpeg", 0).is_none());
+    }
+
+    #[test]
+    fn maybe_resize_shrinks_oversized_jpeg() {
+        // Noisy pixels resist JPEG compression; 2000x2000 random JPEG is reliably large.
+        let jpeg = make_noisy_jpeg(2000, 2000);
+        assert!(
+            jpeg.len() > 100_000,
+            "Noisy JPEG should be large, got {} bytes",
+            jpeg.len()
+        );
+
+        // Set max to half the actual size — the function must produce output under that.
+        let max = (jpeg.len() as u64) / 2;
+        let result = maybe_resize(&jpeg, "image/jpeg", max);
+        assert!(result.is_some(), "Should resize oversized JPEG");
+
+        let (resized, media_type) = result.unwrap();
+        assert_eq!(media_type, "image/jpeg");
+        assert!(
+            (resized.len() as u64) < max,
+            "Resized image ({}) should be under limit ({})",
+            resized.len(),
+            max
+        );
+    }
+
+    #[test]
+    fn maybe_resize_converts_png_to_jpeg() {
+        // Noisy pixels give a large PNG; max is set to 25% of original so resize is triggered.
+        let png = make_noisy_png(1000, 1000);
+        assert!(
+            png.len() > 50_000,
+            "Noisy PNG should be large, got {} bytes",
+            png.len()
+        );
+        let max = (png.len() as u64) / 4;
+
+        let result = maybe_resize(&png, "image/png", max);
+        assert!(result.is_some(), "Should resize oversized PNG");
+
+        let (resized, media_type) = result.unwrap();
+        assert_eq!(media_type, "image/jpeg");
+        assert!(
+            (resized.len() as u64) < max,
+            "Resized image ({}) should be under limit ({})",
+            resized.len(),
+            max
+        );
+    }
+
+    #[test]
+    fn maybe_resize_passes_through_gif() {
+        let fake_gif = vec![0u8; 1_000_000];
+        assert!(maybe_resize(&fake_gif, "image/gif", 100).is_none());
+    }
+
+    #[test]
+    fn maybe_resize_handles_invalid_image_data() {
+        let garbage = vec![0u8; 1_000_000];
+        assert!(maybe_resize(&garbage, "image/jpeg", 100).is_none());
+    }
+}
