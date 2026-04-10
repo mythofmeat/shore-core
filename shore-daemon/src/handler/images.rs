@@ -25,7 +25,7 @@ pub(crate) fn media_type_for_path(path: &str) -> Option<&'static str> {
 /// If `images` is non-empty, returns a JSON array containing image blocks
 /// (base64-encoded, resized if over `max_image_size`) followed by a text block.
 /// Otherwise returns a plain string. Pass `0` for `max_image_size` to disable resizing.
-pub(crate) fn build_content(text: &str, images: &[ImageRef], max_image_size: u64) -> Value {
+pub(crate) fn build_content(text: &str, images: &[ImageRef], max_image_size: u64, cache_dir: &std::path::Path) -> Value {
     if images.is_empty() {
         return json!(text);
     }
@@ -43,7 +43,7 @@ pub(crate) fn build_content(text: &str, images: &[ImageRef], max_image_size: u64
         match std::fs::read(&img.path) {
             Ok(bytes) => {
                 let (final_bytes, final_media_type) =
-                    if let Some((resized, mt)) = maybe_resize(&bytes, media_type, max_image_size) {
+                    if let Some((resized, mt)) = super::resize::cached_resize(&img.path, &bytes, media_type, max_image_size, cache_dir) {
                         (resized, mt)
                     } else {
                         (bytes, media_type)
@@ -193,12 +193,12 @@ pub(crate) fn embed_image_data(images: &mut [ImageRef]) {
 }
 
 /// Encode a single image to a JSON block for the LLM API, resizing if needed.
-pub(crate) fn encode_image_block(img: &ImageRef, max_image_size: u64) -> Option<Value> {
+pub(crate) fn encode_image_block(img: &ImageRef, max_image_size: u64, cache_dir: &std::path::Path) -> Option<Value> {
     let media_type = media_type_for_path(&img.path)?;
     match std::fs::read(&img.path) {
         Ok(bytes) => {
             let (final_bytes, final_media_type) =
-                if let Some((resized, mt)) = maybe_resize(&bytes, media_type, max_image_size) {
+                if let Some((resized, mt)) = super::resize::cached_resize(&img.path, &bytes, media_type, max_image_size, cache_dir) {
                     (resized, mt)
                 } else {
                     (bytes, media_type)
@@ -218,64 +218,6 @@ pub(crate) fn encode_image_block(img: &ImageRef, max_image_size: u64) -> Option<
             None
         }
     }
-}
-
-/// Resize an image if it exceeds `max_bytes`.
-///
-/// Returns `Some((resized_bytes, media_type))` if the image was resized,
-/// or `None` if it fits within the limit (or resizing is disabled/unsupported).
-/// Oversized JPEG/PNG/WebP are re-encoded as JPEG at quality 85.
-/// GIFs are passed through unchanged (animated GIF resizing is unsupported).
-pub(crate) fn maybe_resize(
-    bytes: &[u8],
-    media_type: &str,
-    max_bytes: u64,
-) -> Option<(Vec<u8>, &'static str)> {
-    if max_bytes == 0 || (bytes.len() as u64) <= max_bytes {
-        return None;
-    }
-
-    // GIF: pass through (animated GIF support is limited).
-    if media_type == "image/gif" {
-        warn!(
-            size = bytes.len(),
-            max = max_bytes,
-            "GIF exceeds max_image_size but resizing is not supported; sending as-is"
-        );
-        return None;
-    }
-
-    let img = match image::load_from_memory(bytes) {
-        Ok(img) => img,
-        Err(e) => {
-            warn!(error = %e, "Failed to decode image for resizing; sending original");
-            return None;
-        }
-    };
-
-    let ratio = max_bytes as f64 / bytes.len() as f64;
-    let scale = ratio.sqrt() * 0.9; // conservative safety margin
-    let new_width = ((img.width() as f64) * scale).max(1.0) as u32;
-    let new_height = ((img.height() as f64) * scale).max(1.0) as u32;
-
-    let resized = img.resize(new_width, new_height, image::imageops::FilterType::Lanczos3);
-
-    let mut buf = Vec::new();
-    let mut cursor = std::io::Cursor::new(&mut buf);
-    if let Err(e) = resized.write_to(&mut cursor, image::ImageFormat::Jpeg) {
-        warn!(error = %e, "Failed to re-encode resized image; sending original");
-        return None;
-    }
-
-    info!(
-        original_size = bytes.len(),
-        resized_size = buf.len(),
-        original_dims = format!("{}x{}", img.width(), img.height()),
-        resized_dims = format!("{}x{}", resized.width(), resized.height()),
-        "Resized image for LLM upload"
-    );
-
-    Some((buf, "image/jpeg"))
 }
 
 #[cfg(test)]
@@ -331,79 +273,6 @@ mod tests {
         buf
     }
 
-    #[test]
-    fn maybe_resize_returns_none_when_under_limit() {
-        let jpeg = make_jpeg(100, 100);
-        assert!(maybe_resize(&jpeg, "image/jpeg", 10_000_000).is_none());
-    }
-
-    #[test]
-    fn maybe_resize_returns_none_when_disabled() {
-        let jpeg = make_jpeg(100, 100);
-        assert!(maybe_resize(&jpeg, "image/jpeg", 0).is_none());
-    }
-
-    #[test]
-    fn maybe_resize_shrinks_oversized_jpeg() {
-        // Noisy pixels resist JPEG compression; 2000x2000 random JPEG is reliably large.
-        let jpeg = make_noisy_jpeg(2000, 2000);
-        assert!(
-            jpeg.len() > 100_000,
-            "Noisy JPEG should be large, got {} bytes",
-            jpeg.len()
-        );
-
-        // Set max to half the actual size — the function must produce output under that.
-        let max = (jpeg.len() as u64) / 2;
-        let result = maybe_resize(&jpeg, "image/jpeg", max);
-        assert!(result.is_some(), "Should resize oversized JPEG");
-
-        let (resized, media_type) = result.unwrap();
-        assert_eq!(media_type, "image/jpeg");
-        assert!(
-            (resized.len() as u64) < max,
-            "Resized image ({}) should be under limit ({})",
-            resized.len(),
-            max
-        );
-    }
-
-    #[test]
-    fn maybe_resize_converts_png_to_jpeg() {
-        // Noisy pixels give a large PNG; max is set to 25% of original so resize is triggered.
-        let png = make_noisy_png(1000, 1000);
-        assert!(
-            png.len() > 50_000,
-            "Noisy PNG should be large, got {} bytes",
-            png.len()
-        );
-        let max = (png.len() as u64) / 4;
-
-        let result = maybe_resize(&png, "image/png", max);
-        assert!(result.is_some(), "Should resize oversized PNG");
-
-        let (resized, media_type) = result.unwrap();
-        assert_eq!(media_type, "image/jpeg");
-        assert!(
-            (resized.len() as u64) < max,
-            "Resized image ({}) should be under limit ({})",
-            resized.len(),
-            max
-        );
-    }
-
-    #[test]
-    fn maybe_resize_passes_through_gif() {
-        let fake_gif = vec![0u8; 1_000_000];
-        assert!(maybe_resize(&fake_gif, "image/gif", 100).is_none());
-    }
-
-    #[test]
-    fn maybe_resize_handles_invalid_image_data() {
-        let garbage = vec![0u8; 1_000_000];
-        assert!(maybe_resize(&garbage, "image/jpeg", 100).is_none());
-    }
-
     // ── build_content integration ──────────────────────────────────────
 
     #[test]
@@ -431,7 +300,7 @@ mod tests {
         }];
 
         // Call build_content with a 2MB limit.
-        let result = build_content("describe this", &images, 2_000_000);
+        let result = build_content("describe this", &images, 2_000_000, tmp.path());
         let blocks = result.as_array().expect("Should be a JSON array");
         assert_eq!(blocks.len(), 2, "image block + text block");
 
@@ -475,7 +344,7 @@ mod tests {
             data: None,
         }];
 
-        let result = build_content("test", &images, 2_000_000);
+        let result = build_content("test", &images, 2_000_000, tmp.path());
         let blocks = result.as_array().unwrap();
 
         // Should still be image/jpeg (not re-encoded).
@@ -513,7 +382,7 @@ mod tests {
             data: None,
         }];
 
-        let result = build_content("describe", &images, 2_000_000);
+        let result = build_content("describe", &images, 2_000_000, tmp.path());
         let blocks = result.as_array().unwrap();
 
         // Should be converted to JPEG.

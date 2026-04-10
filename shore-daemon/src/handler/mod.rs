@@ -13,6 +13,7 @@ mod persistence;
 mod resize;
 
 pub(crate) use images::{build_content, embed_image_data, encode_image_block};
+pub(crate) use resize::warm_image_cache;
 use generation::{run_tool_phase, stream_with_retry};
 use images::ingest_images;
 use persistence::persist_and_notify;
@@ -609,6 +610,9 @@ async fn handle_generation(
     });
 
     // 7. Build LLM messages from assembled prompt.
+    // Pre-warm the resize cache so build_llm_messages reads cached files (~1ms).
+    let cache_dir = &effective_config.dirs.cache;
+    warm_image_cache(&prompt_result.messages, effective_config.app.advanced.max_image_size, cache_dir).await;
     // Z.AI thinking blocks have no signature, so we include unsigned
     // thinking blocks for providers that handle them natively.
     let include_unsigned_thinking = matches!(resolved.sdk, Sdk::Zai);
@@ -616,6 +620,7 @@ async fn handle_generation(
         &prompt_result,
         include_unsigned_thinking,
         effective_config.app.advanced.max_image_size,
+        cache_dir,
     );
 
     // 8. Build tool definitions from unified tool system.
@@ -748,6 +753,7 @@ pub(crate) fn build_llm_messages(
     prompt_result: &prompt::AssembledPrompt,
     include_unsigned_thinking: bool,
     max_image_size: u64,
+    cache_dir: &std::path::Path,
 ) -> (Vec<Value>, Option<Value>) {
     let llm_messages: Vec<Value> = prompt_result
         .messages
@@ -763,7 +769,7 @@ pub(crate) fn build_llm_messages(
 
                 // Prepend base64-encoded image blocks from m.images.
                 for img in &m.images {
-                    if let Some(block) = encode_image_block(img, max_image_size) {
+                    if let Some(block) = encode_image_block(img, max_image_size, cache_dir) {
                         blocks.push(block);
                     }
                 }
@@ -777,7 +783,7 @@ pub(crate) fn build_llm_messages(
                 }
                 json!(blocks)
             } else {
-                build_content(&m.content, &m.images, max_image_size)
+                build_content(&m.content, &m.images, max_image_size, cache_dir)
             };
             json!({ "role": role, "content": content })
         })
@@ -1059,7 +1065,7 @@ mod tests {
 
     #[test]
     fn build_content_text_only() {
-        let result = build_content("hello", &[], 0);
+        let result = build_content("hello", &[], 0, std::path::Path::new("/tmp"));
         assert_eq!(result, serde_json::json!("hello"));
     }
 
@@ -1076,7 +1082,7 @@ mod tests {
             data: None,
         }];
 
-        let result = build_content("describe this", &images, 0);
+        let result = build_content("describe this", &images, 0, tmp.path());
         let blocks = result.as_array().expect("Should be a JSON array");
         assert_eq!(blocks.len(), 2); // image block + text block
 
@@ -1109,7 +1115,7 @@ mod tests {
             },
         ];
 
-        let result = build_content("text", &images, 0);
+        let result = build_content("text", &images, 0, tmp.path());
         let blocks = result.as_array().expect("Should be a JSON array");
         // Only the text block remains (both images were skipped).
         assert_eq!(blocks.len(), 1);
