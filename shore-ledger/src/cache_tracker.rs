@@ -184,6 +184,9 @@ impl CacheTracker {
             }
             CacheState::Cold => {
                 if obs.cache_read_tokens > 0 {
+                    // Cache is evidently warm — honor reality so we don't
+                    // fire UnexpectedRead on every subsequent call.
+                    self.state = CacheState::Warm;
                     Some(Anomaly::UnexpectedRead)
                 } else if obs.cache_write_tokens > 0 {
                     self.state = CacheState::Warm;
@@ -334,6 +337,39 @@ mod tests {
             call_type: "message".into(),
         });
         assert_eq!(result.anomaly, Some(Anomaly::UnexpectedRead));
+        assert_eq!(
+            tracker.state(),
+            CacheState::Warm,
+            "Cold + cache_read > 0 must transition to Warm"
+        );
+    }
+
+    #[test]
+    fn unexpected_read_does_not_repeat_on_subsequent_calls() {
+        let mut tracker = CacheTracker::new();
+        // First call: Cold + cache hit → UnexpectedRead, transitions to Warm.
+        let r1 = tracker.observe(&Observation {
+            ts: "2026-04-05T12:00:00Z".into(),
+            model: "claude-opus-4-6".into(),
+            thinking_enabled: true,
+            cache_read_tokens: 500,
+            cache_write_tokens: 100,
+            call_type: "message".into(),
+        });
+        assert_eq!(r1.anomaly, Some(Anomaly::UnexpectedRead));
+        assert_eq!(tracker.state(), CacheState::Warm);
+
+        // Second call: Warm + increasing cache_read → no anomaly.
+        let r2 = tracker.observe(&Observation {
+            ts: "2026-04-05T12:00:30Z".into(),
+            model: "claude-opus-4-6".into(),
+            thinking_enabled: true,
+            cache_read_tokens: 600,
+            cache_write_tokens: 50,
+            call_type: "message".into(),
+        });
+        assert!(r2.anomaly.is_none(), "Should not fire anomaly on second call");
+        assert_eq!(tracker.state(), CacheState::Warm);
     }
 
     #[test]

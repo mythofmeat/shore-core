@@ -274,6 +274,96 @@ pub fn print_log(messages: &[serde_json::Value], character_name: &str) {
     }
 }
 
+/// Print only the text content of a single message — no role, no timestamp, no decoration.
+pub fn print_message_content(data: &serde_json::Value) {
+    let content = data["content"].as_str().unwrap_or("");
+    let content_blocks = data["content_blocks"].as_array();
+
+    if let Some(blocks) = content_blocks {
+        if !blocks.is_empty() {
+            for block in blocks {
+                if block["type"].as_str() == Some("text") {
+                    let text = block["text"].as_str().unwrap_or("");
+                    if !text.is_empty() {
+                        println!("{text}");
+                    }
+                }
+            }
+            return;
+        }
+    }
+    if !content.is_empty() {
+        println!("{content}");
+    }
+}
+
+/// Print the conversation log as plain text — no colors, no box-drawing.
+/// Format: `role [HH:MM]: content` with blank lines between messages.
+pub fn print_log_plain(messages: &[serde_json::Value], character_name: &str) {
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+
+    for msg in messages {
+        let role_str = msg["role"].as_str().unwrap_or("user");
+        let content = msg["content"].as_str().unwrap_or("");
+        let ts = msg["timestamp"].as_str().unwrap_or("");
+        let content_blocks = msg["content_blocks"].as_array();
+
+        let name = match role_str {
+            "user" => "you",
+            "assistant" => character_name,
+            other => other,
+        };
+
+        let time_str = parse_timestamp(ts)
+            .map(|dt| dt.format("%H:%M").to_string())
+            .unwrap_or_default();
+
+        let _ = writeln!(out, "{name} [{time_str}]:");
+
+        if let Some(blocks) = content_blocks {
+            if !blocks.is_empty() {
+                for block in blocks {
+                    match block["type"].as_str().unwrap_or("text") {
+                        "text" => {
+                            let text = block["text"].as_str().unwrap_or("");
+                            if !text.is_empty() {
+                                let _ = writeln!(out, "{text}");
+                            }
+                        }
+                        "thinking" => {
+                            let t = block["thinking"].as_str().unwrap_or("");
+                            if !t.is_empty() {
+                                let _ = writeln!(out, "[thinking] {t}");
+                            }
+                        }
+                        "redacted_thinking" => {
+                            let _ = writeln!(out, "[redacted thinking]");
+                        }
+                        "tool_use" => {
+                            let name = block["name"].as_str().unwrap_or("?");
+                            let _ = writeln!(out, "[tool: {name}]");
+                        }
+                        "tool_result" => {
+                            let output = block["content"].as_str().unwrap_or("");
+                            let is_error = block["is_error"].as_bool().unwrap_or(false);
+                            let label = if is_error { "error" } else { "result" };
+                            let _ = writeln!(out, "[{label}: {output}]");
+                        }
+                        _ => {}
+                    }
+                }
+            } else if !content.is_empty() {
+                let _ = writeln!(out, "{content}");
+            }
+        } else if !content.is_empty() {
+            let _ = writeln!(out, "{content}");
+        }
+
+        let _ = writeln!(out);
+    }
+}
+
 /// Print a push NewMessage in the transcript format (used in follow mode).
 pub fn print_new_message(msg: &NewMessage, character_name: &str) {
     let stdout = io::stdout();

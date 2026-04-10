@@ -114,6 +114,8 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         CliCommand::Log {
             msg_ref: Some(r),
             json,
+            plain,
+            content,
             ..
         } => {
             conn.send_command("get", serde_json::json!({ "ref": r }))
@@ -121,6 +123,11 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let data = recv_command_data(&mut conn).await?;
             if *json {
                 println!("{}", serde_json::to_string_pretty(&data)?);
+            } else if *content {
+                output::print_message_content(&data);
+            } else if *plain {
+                let char_name = character.as_deref().unwrap_or("Assistant");
+                output::print_log_plain(std::slice::from_ref(&data), char_name);
             } else {
                 let char_name = character.as_deref().unwrap_or("Assistant");
                 output::print_single_message(&data, char_name);
@@ -146,6 +153,7 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             follow,
             json,
             content,
+            plain,
             ..
         } => {
             conn.send_command("log", serde_json::json!({ "count": count }))
@@ -161,6 +169,11 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                             println!("{}", c);
                         }
                     }
+                }
+            } else if *plain {
+                let char_name = character.as_deref().unwrap_or("Assistant");
+                if let Some(messages) = data["messages"].as_array() {
+                    output::print_log_plain(messages, char_name);
                 }
             } else {
                 let char_name = character.as_deref().unwrap_or("Assistant");
