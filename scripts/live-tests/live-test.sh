@@ -5,12 +5,12 @@
 # Requires: OPENROUTER_API_KEY set in environment.
 #
 # Usage:
-#   ./scripts/live-test.sh              # build + test
-#   ./scripts/live-test.sh --skip-build # reuse existing binaries
+#   ./scripts/live-tests/live-test.sh              # build + test
+#   ./scripts/live-tests/live-test.sh --skip-build # reuse existing binaries
 #
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 SKIP_BUILD=false
 [[ "${1:-}" == "--skip-build" ]] && SKIP_BUILD=true
 

@@ -59,7 +59,7 @@ Shore is a modular AI character engine in Rust. Workspace crates: `shore-protoco
 cargo build --workspace --release    # full build
 cargo test --workspace               # unit tests
 cargo test --test e2e -- --ignored   # e2e (requires OPENROUTER_API_KEY)
-./scripts/live-test.sh               # live integration tests
+./scripts/live-tests/live-test.sh     # live integration tests
 ```
 
 ## Priority (highest first)
@@ -80,20 +80,20 @@ When verifying a change:
 ## Mandatory Documentation
 
 ### decisions.md
-All decisions, additions, and compromises must be recorded in [DECISIONS.md](DECISIONS.md). This includes:
+All decisions, additions, and compromises must be recorded in [DECISIONS.md](docs/DECISIONS.md). This includes:
 - Features added, removed, or deferred
 - Design trade-offs and why one approach was chosen over another
 - Compromises made (and what was sacrificed)
 
 ### architecture.md
-All architectural changes must be recorded in [ARCHITECTURE.md](ARCHITECTURE.md). This includes:
+All architectural changes must be recorded in [ARCHITECTURE.md](docs/ARCHITECTURE.md). This includes:
 - New crates or modules
 - Changes to the wire protocol (SWP)
 - Changes to data flow between components
 - New binary targets or services
 
 ### Quirks & Gotchas (QUIRKS.md)
-Any idiosyncrasies, kludges, or unexpected behavior patterns must be recorded in [QUIRKS.md](QUIRKS.md). If you assume the program would behave a certain way and it does not, document it. Examples:
+Any idiosyncrasies, kludges, or unexpected behavior patterns must be recorded in [QUIRKS.md](docs/QUIRKS.md). If you assume the program would behave a certain way and it does not, document it. Examples:
 - API providers that deviate from their documented behavior
 - Bun/runtime bugs that required workarounds
 - Ordering or timing issues that aren't obvious from the code

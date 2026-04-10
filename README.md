@@ -11,7 +11,7 @@ Shore is a modular AI character engine built entirely in Rust. It provides persi
 | `shore-tui` | Rust | TUI — persistent connection, full terminal UI |
 | `shore-matrix` | Rust | Matrix bridge (includes embedded homeserver management) |
 
-All Rust services communicate via the Shore Wire Protocol (SWP) over Unix sockets or TCP. See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design.
+All Rust services communicate via the Shore Wire Protocol (SWP) over Unix sockets or TCP. See [ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design.
 
 ## Prerequisites
 

@@ -3,12 +3,12 @@
 # Shore smoke test — starts a temporary daemon and runs CLI commands against it.
 #
 # Usage:
-#   ./scripts/smoke-test.sh          # build + test
-#   ./scripts/smoke-test.sh --skip-build   # reuse existing binaries
+#   ./scripts/live-tests/smoke-test.sh          # build + test
+#   ./scripts/live-tests/smoke-test.sh --skip-build   # reuse existing binaries
 #
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 SKIP_BUILD=false
 [[ "${1:-}" == "--skip-build" ]] && SKIP_BUILD=true
 
