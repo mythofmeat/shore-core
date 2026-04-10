@@ -172,16 +172,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Shared flag: compaction task sets this after successful compaction so the
-    // message handler knows the next message is the first after compaction
-    // (expected cache miss, not an invalidation).
+    // message handler knows the next message is the first after compaction.
     let compaction_occurred = Arc::new(AtomicBool::new(false));
-    // True at startup, cleared by the first successful generation. Suppresses
-    // cache-invalidation warning on the first message (expected cache miss).
-    // Writer/reader: generation task (handler.rs).
-    let is_first_after_restart = Arc::new(AtomicBool::new(true));
-    // Set on first API response with cache_read_tokens > 0. Distinguishes
-    // "cache never populated" from "cache invalidated". Writer/reader: generation task.
-    let has_seen_cache_read = Arc::new(AtomicBool::new(false));
 
     // Spawn background compaction task driven by autonomy idle triggers.
     let compaction_handle = {
@@ -212,8 +204,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         cmd_ctx,
         llm_client,
         push_tx,
-        is_first_after_restart,
-        has_seen_cache_read,
         compaction_occurred,
         autonomy: autonomy.clone(),
         notifier,

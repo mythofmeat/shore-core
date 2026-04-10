@@ -19,7 +19,6 @@ use images::ingest_images;
 use persistence::persist_and_notify;
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -49,7 +48,6 @@ use shore_config::app::SearchConfig;
 use shore_config::models::Sdk;
 use shore_config::LoadedConfig;
 use shore_ledger::LedgerClient;
-use shore_llm_client::stream::CacheContext;
 
 // ── Per-request tool context (wraps SharedToolContext + autonomy) ────
 
@@ -121,10 +119,6 @@ struct GenContext {
     llm_client: LedgerClient,
     push_tx: broadcast::Sender<ServerMessage>,
     autonomy: AutonomyManager,
-    /// Set to false after the first successful generation since daemon start.
-    is_first_after_restart: Arc<AtomicBool>,
-    /// Set to true after the first cache-read hit is observed.
-    has_seen_cache_read: Arc<AtomicBool>,
     /// Set by the compaction task after a successful compaction.
     compaction_occurred: Arc<std::sync::atomic::AtomicBool>,
     /// Accumulated token counts (shared with CommandContext for status display).
@@ -157,8 +151,6 @@ pub struct MessageHandler {
     pub cmd_ctx: CommandContext,
     pub llm_client: LedgerClient,
     pub push_tx: broadcast::Sender<ServerMessage>,
-    pub is_first_after_restart: Arc<AtomicBool>,
-    pub has_seen_cache_read: Arc<AtomicBool>,
     pub compaction_occurred: Arc<std::sync::atomic::AtomicBool>,
     pub autonomy: AutonomyManager,
     pub notifier: NotificationService,
@@ -310,8 +302,6 @@ impl MessageHandler {
             llm_client: self.llm_client.clone(),
             push_tx: self.push_tx.clone(),
             autonomy: self.autonomy.clone(),
-            is_first_after_restart: self.is_first_after_restart.clone(),
-            has_seen_cache_read: self.has_seen_cache_read.clone(),
             compaction_occurred: self.compaction_occurred.clone(),
             session_tokens: self.cmd_ctx.session_tokens.clone(),
             diagnostics: self.cmd_ctx.diagnostics.clone(),
@@ -691,19 +681,6 @@ async fn handle_generation(
     )
     .await?;
 
-    // Build cache context for tool loop.
-    let tool_cache_warnings = matches!(resolved.sdk, Sdk::Anthropic)
-        && effective_config.app.advanced.cache_invalidation_warnings;
-    let cache_ctx = CacheContext {
-        conversation_turn_count: engine_arc.lock().await.messages().len(),
-        is_first_after_restart: ctx.is_first_after_restart.load(Ordering::Acquire),
-        is_first_after_compaction: false,
-        cache_invalidation_warnings: tool_cache_warnings,
-        has_seen_cache_read: ctx.has_seen_cache_read.load(Ordering::Acquire),
-    };
-
-    ctx.is_first_after_restart.store(false, Ordering::Release);
-
     // 11. Run tool loop if the LLM requested tool use.
     let tool_intermediate_messages =
         if result.finish_reason == "tool_use" && effective_config.app.behavior.tool_use.enabled {
@@ -718,7 +695,6 @@ async fn handle_generation(
                 &user_definition,
                 &mut request,
                 result,
-                &cache_ctx,
             )
             .await?;
             result = tool_loop_result.result;
@@ -890,8 +866,6 @@ mod tests {
             cmd_ctx,
             llm_client: ledger_client,
             push_tx: push_tx.clone(),
-            is_first_after_restart: Arc::new(AtomicBool::new(false)),
-            has_seen_cache_read: Arc::new(AtomicBool::new(false)),
             compaction_occurred: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             autonomy,
             notifier: NotificationService::new(Default::default()),
@@ -1289,8 +1263,6 @@ mod tests {
             cmd_ctx,
             llm_client: ledger_client,
             push_tx: push_tx.clone(),
-            is_first_after_restart: Arc::new(AtomicBool::new(false)),
-            has_seen_cache_read: Arc::new(AtomicBool::new(false)),
             compaction_occurred: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             autonomy,
             notifier: NotificationService::new(Default::default()),

@@ -176,8 +176,6 @@ impl TestHarness {
             cmd_ctx,
             llm_client,
             push_tx: push_tx.clone(),
-            is_first_after_restart: Arc::new(AtomicBool::new(true)),
-            has_seen_cache_read: Arc::new(AtomicBool::new(false)),
             compaction_occurred: compaction_occurred_flag.clone(),
             autonomy,
             notifier,
