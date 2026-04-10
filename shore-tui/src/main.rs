@@ -29,9 +29,9 @@ use input::Action;
 #[derive(Parser)]
 #[command(name = "shore-tui", about = "Shore terminal UI")]
 struct Cli {
-    /// Unix socket or TCP address of the daemon
+    /// TCP address of the daemon
     #[arg(long)]
-    socket: Option<String>,
+    addr: Option<String>,
 
     /// Config path to select daemon instance
     #[arg(long)]
@@ -287,7 +287,7 @@ async fn run_tui(cli: Cli) -> io::Result<()> {
     load_prefs(&mut app);
 
     // Spawn connection manager
-    let (cmd_tx, mut event_rx) = connection::spawn_connection(cli.socket, cli.config, character);
+    let (cmd_tx, mut event_rx) = connection::spawn_connection(cli.addr, cli.config, character);
 
     // Main event loop
     let result = loop {

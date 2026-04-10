@@ -52,9 +52,9 @@ struct Args {
     #[arg(long, env = "MATRIX_TRUSTED_USER")]
     trusted_user: Option<String>,
 
-    /// Daemon socket path or address
+    /// Daemon address (host:port)
     #[arg(long)]
-    socket: Option<String>,
+    addr: Option<String>,
 
     /// Shore config directory (for reading [connections.matrix] and daemon discovery)
     #[arg(long)]
@@ -216,7 +216,7 @@ async fn run_external(
 
     bot.start_sync();
 
-    let (daemon_tx, daemon_rx) = spawn_connection(args.socket.clone(), args.config.clone());
+    let (daemon_tx, daemon_rx) = spawn_connection(args.addr.clone(), args.config.clone());
     let room_manager = RoomManager::new();
 
     info!("shore-matrix bridge running (external mode)");
@@ -319,7 +319,7 @@ async fn run_embedded(
     }
 
     // 7. Connect to daemon to discover characters
-    let (daemon_tx, mut daemon_rx) = spawn_connection(args.socket.clone(), args.config.clone());
+    let (daemon_tx, mut daemon_rx) = spawn_connection(args.addr.clone(), args.config.clone());
 
     info!("waiting for daemon connection to discover characters...");
     let characters = wait_for_characters(&mut daemon_rx).await?;
