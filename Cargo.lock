@@ -4854,7 +4854,6 @@ dependencies = [
  "base64",
  "chrono",
  "dashmap",
- "fs2",
  "futures",
  "image",
  "lancedb",
@@ -4866,6 +4865,7 @@ dependencies = [
  "sha2",
  "shore-client",
  "shore-config",
+ "shore-daemon-server",
  "shore-diagnostics",
  "shore-ledger",
  "shore-llm-client",
@@ -4878,6 +4878,20 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "shore-daemon-server"
+version = "0.1.0"
+dependencies = [
+ "fs2",
+ "serde",
+ "serde_json",
+ "shore-config",
+ "shore-protocol",
+ "tempfile",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -4939,6 +4953,7 @@ dependencies = [
  "shore-client",
  "shore-config",
  "shore-daemon",
+ "shore-daemon-server",
  "shore-diagnostics",
  "shore-ledger",
  "shore-llm-client",
