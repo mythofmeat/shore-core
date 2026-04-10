@@ -958,7 +958,7 @@ fn rebuild_request_from_disk(
         recap_store_path: Some(&recap_path),
     });
 
-    let (llm_messages, system) = crate::handler::build_llm_messages(&prompt_result, false);
+    let (llm_messages, system) = crate::handler::build_llm_messages(&prompt_result, false, config.app.advanced.max_image_size);
 
     let tool_defs = if config.app.behavior.tool_use.enabled {
         let defs: Vec<serde_json::Value> = tool_system::available_tools(false, tool_toggles)

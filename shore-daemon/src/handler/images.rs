@@ -23,8 +23,9 @@ pub(crate) fn media_type_for_path(path: &str) -> Option<&'static str> {
 /// Build a `content` value for an LLM message.
 ///
 /// If `images` is non-empty, returns a JSON array containing image blocks
-/// (base64-encoded) followed by a text block. Otherwise returns a plain string.
-pub(crate) fn build_content(text: &str, images: &[ImageRef]) -> Value {
+/// (base64-encoded, resized if over `max_image_size`) followed by a text block.
+/// Otherwise returns a plain string. Pass `0` for `max_image_size` to disable resizing.
+pub(crate) fn build_content(text: &str, images: &[ImageRef], max_image_size: u64) -> Value {
     if images.is_empty() {
         return json!(text);
     }
@@ -41,12 +42,18 @@ pub(crate) fn build_content(text: &str, images: &[ImageRef]) -> Value {
         };
         match std::fs::read(&img.path) {
             Ok(bytes) => {
-                let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                let (final_bytes, final_media_type) =
+                    if let Some((resized, mt)) = maybe_resize(&bytes, media_type, max_image_size) {
+                        (resized, mt)
+                    } else {
+                        (bytes, media_type)
+                    };
+                let encoded = base64::engine::general_purpose::STANDARD.encode(&final_bytes);
                 blocks.push(json!({
                     "type": "image",
                     "source": {
                         "type": "base64",
-                        "media_type": media_type,
+                        "media_type": final_media_type,
                         "data": encoded,
                     }
                 }));
@@ -181,6 +188,34 @@ pub(crate) fn embed_image_data(images: &mut [ImageRef]) {
             Err(e) => {
                 warn!(path = %img.path, error = %e, "Failed to read image for wire embedding");
             }
+        }
+    }
+}
+
+/// Encode a single image to a JSON block for the LLM API, resizing if needed.
+pub(crate) fn encode_image_block(img: &ImageRef, max_image_size: u64) -> Option<Value> {
+    let media_type = media_type_for_path(&img.path)?;
+    match std::fs::read(&img.path) {
+        Ok(bytes) => {
+            let (final_bytes, final_media_type) =
+                if let Some((resized, mt)) = maybe_resize(&bytes, media_type, max_image_size) {
+                    (resized, mt)
+                } else {
+                    (bytes, media_type)
+                };
+            let encoded = base64::engine::general_purpose::STANDARD.encode(&final_bytes);
+            Some(json!({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": final_media_type,
+                    "data": encoded,
+                }
+            }))
+        }
+        Err(e) => {
+            warn!(path = %img.path, error = %e, "Failed to read image file for LLM");
+            None
         }
     }
 }

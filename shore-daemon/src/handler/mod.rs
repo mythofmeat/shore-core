@@ -11,7 +11,7 @@ mod generation;
 mod images;
 mod persistence;
 
-pub(crate) use images::{build_content, embed_image_data, media_type_for_path};
+pub(crate) use images::{build_content, embed_image_data, encode_image_block, media_type_for_path};
 use generation::{run_tool_phase, stream_with_retry};
 use images::ingest_images;
 use persistence::persist_and_notify;
@@ -612,7 +612,11 @@ async fn handle_generation(
     // Z.AI thinking blocks have no signature, so we include unsigned
     // thinking blocks for providers that handle them natively.
     let include_unsigned_thinking = matches!(resolved.sdk, Sdk::Zai);
-    let (llm_messages, system) = build_llm_messages(&prompt_result, include_unsigned_thinking);
+    let (llm_messages, system) = build_llm_messages(
+        &prompt_result,
+        include_unsigned_thinking,
+        effective_config.app.advanced.max_image_size,
+    );
 
     // 8. Build tool definitions from unified tool system.
     let tool_defs = if effective_config.app.behavior.tool_use.enabled {
@@ -743,6 +747,7 @@ async fn handle_generation(
 pub(crate) fn build_llm_messages(
     prompt_result: &prompt::AssembledPrompt,
     include_unsigned_thinking: bool,
+    max_image_size: u64,
 ) -> (Vec<Value>, Option<Value>) {
     let llm_messages: Vec<Value> = prompt_result
         .messages
@@ -758,23 +763,8 @@ pub(crate) fn build_llm_messages(
 
                 // Prepend base64-encoded image blocks from m.images.
                 for img in &m.images {
-                    if let Some(media_type) = media_type_for_path(&img.path) {
-                        match std::fs::read(&img.path) {
-                            Ok(bytes) => {
-                                let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
-                                blocks.push(json!({
-                                    "type": "image",
-                                    "source": {
-                                        "type": "base64",
-                                        "media_type": media_type,
-                                        "data": encoded,
-                                    }
-                                }));
-                            }
-                            Err(e) => {
-                                warn!(path = %img.path, error = %e, "Failed to read image file for LLM");
-                            }
-                        }
+                    if let Some(block) = encode_image_block(img, max_image_size) {
+                        blocks.push(block);
                     }
                 }
 
@@ -787,7 +777,7 @@ pub(crate) fn build_llm_messages(
                 }
                 json!(blocks)
             } else {
-                build_content(&m.content, &m.images)
+                build_content(&m.content, &m.images, max_image_size)
             };
             json!({ "role": role, "content": content })
         })
@@ -1067,7 +1057,7 @@ mod tests {
 
     #[test]
     fn build_content_text_only() {
-        let result = build_content("hello", &[]);
+        let result = build_content("hello", &[], 0);
         assert_eq!(result, serde_json::json!("hello"));
     }
 
@@ -1084,7 +1074,7 @@ mod tests {
             data: None,
         }];
 
-        let result = build_content("describe this", &images);
+        let result = build_content("describe this", &images, 0);
         let blocks = result.as_array().expect("Should be a JSON array");
         assert_eq!(blocks.len(), 2); // image block + text block
 
@@ -1117,7 +1107,7 @@ mod tests {
             },
         ];
 
-        let result = build_content("text", &images);
+        let result = build_content("text", &images, 0);
         let blocks = result.as_array().expect("Should be a JSON array");
         // Only the text block remains (both images were skipped).
         assert_eq!(blocks.len(), 1);
