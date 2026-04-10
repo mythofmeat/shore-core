@@ -66,7 +66,7 @@ platform integration for V2 launch.
 
 ### 3.1 Transport & Framing
 
-- **Transport:** Unix domain socket (local) or TCP (remote)
+- **Transport:** TCP
 - **Framing:** Newline-delimited JSON (JSON-Lines). Each message is a single
   JSON object followed by `\n`. Content newlines are JSON-escaped.
 - **Encoding:** UTF-8
@@ -726,14 +726,14 @@ default_address = "100.64.0.1:7320"
 
 **Address resolution order:**
 
-1. `--socket` CLI flag (explicit address)
+1. `--addr` CLI flag (explicit address)
 2. `client.toml` `default_address`
 3. Instance discovery (`instances.json`, optionally filtered by `--config` ID)
-4. Default Unix socket (`$XDG_RUNTIME_DIR/shore/shore.sock`)
+4. Default: `127.0.0.1:7320`
 
 The file is optional. If missing or unparseable, resolution falls through to
 instance discovery. On the daemon machine, omit `client.toml` (or leave
-`default_address` unset) to use local socket discovery as before.
+`default_address` unset) to use instance discovery as before.
 
 ---
 
