@@ -132,7 +132,6 @@ model = "claude-sonnet"            # Must match a key in [chat.*.*] below
 # ── Advanced ─────────────────────────────────────────────────────────────
 
 # [advanced]
-# cache_invalidation_warnings = true
 # api_payload_logging = false
 # editor = "nvim"                   # Override $VISUAL / $EDITOR
 # max_retries = 2

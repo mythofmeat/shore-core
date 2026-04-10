@@ -680,10 +680,6 @@ impl Default for NotificationEventsConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct AdvancedConfig {
-    /// Warn when prompt cache is unexpectedly invalidated (§13.3).
-    #[serde(default = "default_true")]
-    pub cache_invalidation_warnings: bool,
-
     /// Log full API request/response payloads to api_payloads.jsonl per character.
     #[serde(default)]
     pub api_payload_logging: bool,
@@ -707,7 +703,6 @@ pub struct AdvancedConfig {
 impl Default for AdvancedConfig {
     fn default() -> Self {
         Self {
-            cache_invalidation_warnings: true,
             api_payload_logging: false,
             editor: None,
             max_retries: None,
@@ -737,7 +732,6 @@ mod tests {
         assert_eq!(config.behavior.autonomy.interiority.dormant_after_idle_time, ConfigDuration::from_secs(172800));
         assert_eq!(config.behavior.autonomy.interiority.minimum_interiority_latency, ConfigDuration::from_secs(3600));
         assert_eq!(config.behavior.autonomy.interiority.max_tool_rounds, 12);
-        assert!(config.advanced.cache_invalidation_warnings);
         assert!(config.behavior.tool_use.enabled);
         assert!(config.memory.compaction.enabled);
         assert!(config.memory.collation.enabled);

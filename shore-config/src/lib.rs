@@ -610,7 +610,6 @@ fallback_interiority_interval = "30m"
 roll_dice = false
 
 [advanced]
-cache_invalidation_warnings = false
 max_retries = 5
 
 [chat.anthropic]
@@ -634,7 +633,6 @@ model_id = "claude-opus-4-6"
         assert_eq!(loaded.app.behavior.autonomy.interiority.fallback_interiority_interval, ConfigDuration::from_secs(1800));
         assert!(!loaded.app.behavior.tool_use.tools.roll_dice());
         assert!(loaded.app.behavior.tool_use.tools.memory());
-        assert!(!loaded.app.advanced.cache_invalidation_warnings);
         assert_eq!(loaded.app.advanced.max_retries, Some(5));
 
         assert_eq!(loaded.models.chat.len(), 2);
@@ -655,7 +653,6 @@ model_id = "claude-opus-4-6"
         assert!(loaded.app.behavior.autonomy.interiority.enabled);
         assert_eq!(loaded.app.behavior.autonomy.interiority.fallback_interiority_interval, ConfigDuration::from_secs(3600));
         assert!(loaded.app.behavior.tool_use.enabled);
-        assert!(loaded.app.advanced.cache_invalidation_warnings);
         assert!(loaded.app.memory.compaction.enabled);
         assert!(loaded.app.memory.collation.enabled);
         assert_eq!(loaded.app.daemon.addr, "127.0.0.1:7320"); // default
