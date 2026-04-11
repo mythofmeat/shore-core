@@ -46,8 +46,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let instance_id = uuid::Uuid::new_v4().to_string();
 
     // Resolve listen address: SHORE_ADDR env → config.
-    let addr = std::env::var("SHORE_ADDR")
-        .unwrap_or_else(|_| loaded.app.daemon.addr.clone());
+    let addr = std::env::var("SHORE_ADDR").unwrap_or_else(|_| loaded.app.daemon.addr.clone());
 
     let server_config = ServerConfig {
         addr: addr.clone(),
@@ -75,8 +74,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         #[cfg(unix)]
         {
             use tokio::signal::unix::{signal, SignalKind};
-            let mut sigterm =
-                signal(SignalKind::terminate()).expect("Failed to listen for SIGTERM");
+            let mut sigterm = signal(SignalKind::terminate())
+                .expect("startup-fatal: failed to listen for SIGTERM");
             tokio::select! {
                 _ = ctrl_c => info!("Received SIGINT"),
                 _ = sigterm.recv() => info!("Received SIGTERM"),
@@ -85,7 +84,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         #[cfg(not(unix))]
         {
-            ctrl_c.await.expect("Failed to listen for Ctrl+C");
+            ctrl_c
+                .await
+                .expect("startup-fatal: failed to listen for Ctrl+C");
             info!("Received shutdown signal");
         }
 

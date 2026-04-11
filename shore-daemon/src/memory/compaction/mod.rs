@@ -462,7 +462,9 @@ mod tests {
     use std::future::Future;
     use std::pin::Pin;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::mpsc;
     use std::sync::Mutex as StdMutex;
+    use tokio::sync::oneshot;
 
     // -- Mock implementations ------------------------------------------------
 
@@ -540,6 +542,65 @@ mod tests {
                 .push((conversation_id.to_string(), params.keep_last_n));
             let next_id = self.next_id.clone();
             Box::pin(async move { Ok(next_id) })
+        }
+    }
+
+    struct BlockingConversationMgr {
+        entered_tx: StdMutex<Option<oneshot::Sender<()>>>,
+        release_rx: StdMutex<Option<mpsc::Receiver<()>>>,
+        next_id: String,
+    }
+
+    impl BlockingConversationMgr {
+        fn new(next_id: &str) -> (Self, oneshot::Receiver<()>, mpsc::Sender<()>) {
+            let (entered_tx, entered_rx) = oneshot::channel();
+            let (release_tx, release_rx) = mpsc::channel();
+            (
+                Self {
+                    entered_tx: StdMutex::new(Some(entered_tx)),
+                    release_rx: StdMutex::new(Some(release_rx)),
+                    next_id: next_id.to_string(),
+                },
+                entered_rx,
+                release_tx,
+            )
+        }
+    }
+
+    impl ConversationManager for BlockingConversationMgr {
+        fn archive_and_retain(
+            &self,
+            _conversation_id: &str,
+            _params: RetentionParams,
+        ) -> Pin<Box<dyn Future<Output = Result<String, CompactionError>> + Send + '_>> {
+            let entered_tx = self.entered_tx.lock().unwrap().take();
+            let release_rx = self
+                .release_rx
+                .lock()
+                .unwrap()
+                .take()
+                .expect("test setup should install a release receiver");
+            let next_id = self.next_id.clone();
+
+            Box::pin(async move {
+                tokio::task::spawn_blocking(move || {
+                    if let Some(tx) = entered_tx {
+                        let _ = tx.send(());
+                    }
+                    release_rx.recv().map_err(|_| {
+                        CompactionError::ConversationManager(
+                            "test release signal dropped before archive completed".to_string(),
+                        )
+                    })?;
+                    Ok(next_id)
+                })
+                .await
+                .map_err(|err| {
+                    CompactionError::ConversationManager(format!(
+                        "blocking archive task failed: {err}"
+                    ))
+                })?
+            })
         }
     }
 
@@ -987,6 +1048,70 @@ They discussed daily activities and the user's beverage preferences.
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0, "old-conv");
         assert_eq!(calls[0].1, 6);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_compaction_archive_boundary_keeps_executor_responsive() {
+        let db = MemoryDB::open_in_memory().unwrap();
+        let llm = MockLlm {
+            response: make_xml_response(),
+        };
+        let indexer = MockIndexer::new();
+        let (conv_mgr, entered_rx, release_tx) = BlockingConversationMgr::new("new-conv-3");
+        let mgr = CompactionManager::new(make_config_with_keep(2));
+
+        let compaction = tokio::spawn(async move {
+            mgr.compact(
+                "conv-1",
+                &make_messages(10),
+                "",
+                false,
+                DEFAULT_COMPACT_PROMPT,
+                None,
+                "TestChar",
+                "TestUser",
+                &llm,
+                &db,
+                &indexer,
+                &conv_mgr,
+                false,
+            )
+            .await
+        });
+
+        tokio::time::timeout(Duration::from_millis(250), entered_rx)
+            .await
+            .expect("blocking archive boundary should start promptly")
+            .expect("blocking archive boundary should signal entry");
+
+        let sibling_ran = Arc::new(AtomicBool::new(false));
+        let sibling_ran_clone = Arc::clone(&sibling_ran);
+        let sibling_task = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            sibling_ran_clone.store(true, Ordering::SeqCst);
+        });
+
+        // This is a regression harness for the spawn_blocking boundary around
+        // archive/retain. On a current-thread runtime, a future that blocked the
+        // executor inline would starve this sibling task until release.
+        tokio::time::timeout(Duration::from_millis(250), sibling_task)
+            .await
+            .expect("sibling task should stay responsive during compaction")
+            .unwrap();
+        assert!(sibling_ran.load(Ordering::SeqCst));
+
+        release_tx
+            .send(())
+            .expect("test release signal should still be connected");
+
+        let result = compaction.await.unwrap().unwrap();
+        match result {
+            CompactionOutcome::Compacted(r) => {
+                assert_eq!(r.new_conversation_id, "new-conv-3");
+                assert_eq!(r.entries_created.len(), 2);
+            }
+            _ => panic!("Expected Compacted outcome"),
+        }
     }
 
     #[tokio::test]

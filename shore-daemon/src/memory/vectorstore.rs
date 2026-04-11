@@ -132,18 +132,20 @@ impl VectorStore {
 
         let mut results = Vec::new();
         while let Some(rb) = stream.try_next().await? {
+            // The vector-store module owns this table schema. A mismatch here means
+            // index corruption or an internal invariant break, so we fail loudly.
             let ids: &StringArray = rb
                 .column_by_name("entry_id")
-                .expect("missing entry_id column")
+                .expect("vector-store invariant violated: missing entry_id column")
                 .as_any()
                 .downcast_ref()
-                .expect("entry_id not StringArray");
+                .expect("vector-store invariant violated: entry_id not StringArray");
             let dists: &Float32Array = rb
                 .column_by_name("_distance")
-                .expect("missing _distance column")
+                .expect("vector-store invariant violated: missing _distance column")
                 .as_any()
                 .downcast_ref()
-                .expect("_distance not Float32Array");
+                .expect("vector-store invariant violated: _distance not Float32Array");
 
             for i in 0..rb.num_rows() {
                 let distance = dists.value(i);
@@ -213,18 +215,21 @@ impl VectorStore {
         let mut stream: SendableRecordBatchStream = table.query().only_if(filter).execute().await?;
 
         while let Some(rb) = stream.try_next().await? {
+            // These columns are produced from the schema this module creates.
+            // Treat shape drift as an invariant break until we make corruption
+            // handling a recoverable vector-store error.
             let ids: &StringArray = rb
                 .column_by_name("entry_id")
-                .expect("missing entry_id column")
+                .expect("vector-store invariant violated: missing entry_id column")
                 .as_any()
                 .downcast_ref()
-                .expect("entry_id not StringArray");
+                .expect("vector-store invariant violated: entry_id not StringArray");
             let vectors: &FixedSizeListArray = rb
                 .column_by_name("vector")
-                .expect("missing vector column")
+                .expect("vector-store invariant violated: missing vector column")
                 .as_any()
                 .downcast_ref()
-                .expect("vector not FixedSizeListArray");
+                .expect("vector-store invariant violated: vector not FixedSizeListArray");
 
             for i in 0..rb.num_rows() {
                 let entry_id = ids.value(i).to_string();
@@ -232,7 +237,7 @@ impl VectorStore {
                 let float_array: &Float32Array = vec_array
                     .as_any()
                     .downcast_ref()
-                    .expect("vector values not Float32Array");
+                    .expect("vector-store invariant violated: vector values not Float32Array");
                 let embedding: Vec<f32> = (0..float_array.len())
                     .map(|j| float_array.value(j))
                     .collect();
