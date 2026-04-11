@@ -87,6 +87,12 @@ pub struct DefaultsConfig {
     /// Default collation model name (for merge/split/normalize decisions).
     pub collation: Option<String>,
 
+    /// Default compaction model name (for conversation summarization).
+    pub compaction: Option<String>,
+
+    /// Default interiority model name (for autonomous interiority ticks).
+    pub interiority: Option<String>,
+
     /// Default embedding profile name.
     pub embedding: Option<String>,
 
@@ -119,6 +125,8 @@ impl Default for DefaultsConfig {
             tool_model: None,
             memory_agent: None,
             collation: None,
+            compaction: None,
+            interiority: None,
             embedding: None,
             image_generation: None,
             display_name: None,

@@ -940,12 +940,22 @@ fn rebuild_request_from_disk(
         return None;
     }
 
-    // Resolve model (same logic as handler: defaults.model → first_chat_model).
-    let model_name = config.app.defaults.model.as_deref();
-    let resolved = match model_name {
-        Some(name) => config.models.find_model(name).ok()?,
-        None => config.models.first_chat_model()?,
-    };
+    // Resolve model: defaults.interiority → defaults.model → first chat model.
+    let resolved = config
+        .app
+        .defaults
+        .interiority
+        .as_deref()
+        .and_then(|name| config.models.find_model(name).ok())
+        .or_else(|| {
+            config
+                .app
+                .defaults
+                .model
+                .as_deref()
+                .and_then(|name| config.models.find_model(name).ok())
+        })
+        .or_else(|| config.models.first_chat_model())?;
 
     let display_name = config.app.defaults.resolve_display_name();
     let character_definition =

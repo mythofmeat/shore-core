@@ -17,10 +17,13 @@
 
 [defaults]
 model = "claude-sonnet"            # Must match a key in [chat.*.*] below
-# tool_model = "mistral-small"      # Default model for tool-use calls
-# memory_agent = "mistral-small"    # Default model for memory agent calls
-# embedding = "text-large"          # Default embedding profile
-# image_generation = "gemini-flash" # Default image generation profile
+# tool_model = "mistral-small"      # Model for tool-use calls
+# memory_agent = "mistral-small"    # Model for memory agent queries
+# collation = "mistral-small"       # Model for memory collation (merge/split/normalize)
+# compaction = "mistral-small"      # Model for conversation compaction (summarization)
+# interiority = "claude-sonnet"     # Model for autonomous interiority ticks
+# embedding = "text-large"          # Embedding profile
+# image_generation = "gemini-flash" # Image generation profile
 # display_name = "Your Name"        # {{user}} in templates; falls back to $USER
 # stream = true
 

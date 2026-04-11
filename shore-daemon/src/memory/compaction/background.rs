@@ -68,14 +68,23 @@ pub async fn run_compaction(
     let prompt_template = resolve_prompt_template(&effective.dirs.config, character, "compact.md")
         .unwrap_or_else(|| DEFAULT_COMPACT_PROMPT.to_string());
 
-    // Resolve model from effective (character-merged) config.
+    // Resolve model: defaults.compaction → defaults.model → first chat model.
     let model = effective
         .app
         .defaults
-        .model
+        .compaction
         .as_deref()
         .and_then(|name| effective.models.find_model(name).ok())
-        .ok_or("No default model configured for background compaction")?
+        .or_else(|| {
+            effective
+                .app
+                .defaults
+                .model
+                .as_deref()
+                .and_then(|name| effective.models.find_model(name).ok())
+        })
+        .or_else(|| effective.models.first_chat_model())
+        .ok_or("No model configured for background compaction")?
         .clone();
 
     // Resolve embedding config.
