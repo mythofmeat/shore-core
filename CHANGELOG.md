@@ -4,6 +4,15 @@ All notable changes to Shore are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.0] — 2026-04-11
+
+### Added
+- Replace hidden `force-tick` with three explicit debug commands: `interiority_tick_now`, `interiority_status_dormant`, and `interiority_status_active`
+
+### Fixed
+- Prevent the interiority abandonment guard from immediately re-tripping on every tick after going dormant
+- Align dormant status reporting and cache-test debug scripts with the new explicit interiority debug commands
+
 ## [0.12.0] — 2026-04-11
 
 ### Added
@@ -292,6 +301,7 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Command dispatch (US-017)
 - End-to-end conversation milestone (US-018)
 
+[0.13.0]: https://github.com/eshen/silvershore/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/eshen/silvershore/compare/v0.11.1...v0.12.0
 [0.11.1]: https://github.com/eshen/silvershore/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/eshen/silvershore/compare/v0.10.1...v0.11.0
