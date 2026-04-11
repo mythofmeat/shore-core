@@ -825,6 +825,41 @@ mod tests {
         }
     }
 
+    // ── Debug ────────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_debug_tick_now() {
+        let cli = parse(&["debug", "interiority_tick_now"]);
+        match &cli.command {
+            CliCommand::Debug {
+                subcommand: DebugCommand::InteriorityTickNow,
+            } => {}
+            other => panic!("expected Debug InteriorityTickNow, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_debug_status_dormant() {
+        let cli = parse(&["debug", "interiority_status_dormant"]);
+        match &cli.command {
+            CliCommand::Debug {
+                subcommand: DebugCommand::InteriorityStatusDormant,
+            } => {}
+            other => panic!("expected Debug InteriorityStatusDormant, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_debug_status_active() {
+        let cli = parse(&["debug", "interiority_status_active"]);
+        match &cli.command {
+            CliCommand::Debug {
+                subcommand: DebugCommand::InteriorityStatusActive,
+            } => {}
+            other => panic!("expected Debug InteriorityStatusActive, got: {other:?}"),
+        }
+    }
+
     // ── Model ────────────────────────────────────────────────────────
 
     #[test]
@@ -1076,6 +1111,36 @@ mod tests {
     }
 
     #[test]
+    fn debug_tick_now_maps_to_command() {
+        let cmd = CliCommand::Debug {
+            subcommand: DebugCommand::InteriorityTickNow,
+        };
+        let (name, args) = to_swp_command(&cmd).unwrap();
+        assert_eq!(name, "interiority_tick_now");
+        assert_eq!(args, serde_json::json!({}));
+    }
+
+    #[test]
+    fn debug_status_dormant_maps_to_command() {
+        let cmd = CliCommand::Debug {
+            subcommand: DebugCommand::InteriorityStatusDormant,
+        };
+        let (name, args) = to_swp_command(&cmd).unwrap();
+        assert_eq!(name, "interiority_set_dormant");
+        assert_eq!(args, serde_json::json!({}));
+    }
+
+    #[test]
+    fn debug_status_active_maps_to_command() {
+        let cmd = CliCommand::Debug {
+            subcommand: DebugCommand::InteriorityStatusActive,
+        };
+        let (name, args) = to_swp_command(&cmd).unwrap();
+        assert_eq!(name, "interiority_set_active");
+        assert_eq!(args, serde_json::json!({}));
+    }
+
+    #[test]
     fn character_maps_to_none_without_info() {
         let cmd = CliCommand::Character {
             name: None,
@@ -1304,6 +1369,15 @@ mod tests {
                 diagnostics: true,
                 count: 10,
                 json: false,
+            },
+            CliCommand::Debug {
+                subcommand: DebugCommand::InteriorityTickNow,
+            },
+            CliCommand::Debug {
+                subcommand: DebugCommand::InteriorityStatusDormant,
+            },
+            CliCommand::Debug {
+                subcommand: DebugCommand::InteriorityStatusActive,
             },
             CliCommand::Model {
                 name: None,

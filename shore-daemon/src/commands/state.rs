@@ -1441,14 +1441,42 @@ model_id = "gpt-4o"
 
     #[test]
     fn status_returns_state() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         let tmp = TempDir::new().unwrap();
-        let (engine, mut ctx, _rx) = make_ctx(&tmp);
-        ctx.active_model = Some("claude-sonnet".into());
 
-        let result = status(&engine, &ctx).unwrap();
-        assert_eq!(result["character"], "TestChar");
-        assert_eq!(result["message_count"], 0);
-        assert_eq!(result["active_model"], "claude-sonnet");
+        rt.block_on(async {
+            let (engine, mut ctx, _rx) = make_ctx(&tmp);
+            ctx.active_model = Some("claude-sonnet".into());
+            ctx.autonomy.ensure_state(engine.character_name(), None);
+
+            let result = status(&engine, &ctx).unwrap();
+            assert_eq!(result["character"], "TestChar");
+            assert_eq!(result["message_count"], 0);
+            assert_eq!(result["active_model"], "claude-sonnet");
+            assert_eq!(result["autonomy"]["interiority_state"], "Active");
+        });
+    }
+
+    #[test]
+    fn status_reports_dormant_interiority() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let tmp = TempDir::new().unwrap();
+
+        rt.block_on(async {
+            let (engine, ctx, _rx) = make_ctx(&tmp);
+
+            ctx.autonomy.ensure_state(engine.character_name(), None);
+            assert!(ctx.autonomy.interiority_set_dormant(engine.character_name()));
+
+            let result = status(&engine, &ctx).unwrap();
+            assert_eq!(result["autonomy"]["interiority_state"], "Dormant");
+        });
     }
 
     #[test]

@@ -84,7 +84,7 @@ echo -e "${CYAN}[$TEST_NAME]${NC} === PHASE 2: Concurrent tick + message ==="
 echo -e "${CYAN}[$TEST_NAME]${NC} forcing tick and sending message simultaneously..."
 
 # Fire tick in background.
-send_cmd "force-tick" &
+send_cmd "interiority_tick_now" &
 TICK_PID=$!
 
 # Wait just 1 second, then send a message while the tick is pending/running.

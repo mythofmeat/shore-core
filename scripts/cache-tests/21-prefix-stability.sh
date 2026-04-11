@@ -108,7 +108,7 @@ done
 
 # ── Phase 2: Force tick ──────────────────────────────────────────
 echo -e "${CYAN}[$TEST_NAME]${NC} === PHASE 2: Force interiority tick ==="
-send_cmd "force-tick"
+send_cmd "interiority_tick_now"
 wait_for_tick || harness_fail "tick did not fire"
 # Give the tick's tool loop a moment to finish.
 sleep 5

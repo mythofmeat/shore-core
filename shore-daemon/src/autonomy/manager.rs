@@ -603,7 +603,7 @@ impl AutonomyManager {
     pub fn status(&self, character: &str) -> Option<AutonomyStatus> {
         self.with_state(character, |s| AutonomyStatus {
             paused: s.paused,
-            interiority_state: s.interiority.state().to_string(),
+            interiority_state: s.interiority.state_at(Instant::now()).to_string(),
             ticks_without_user: s.interiority.ticks_without_user(),
             dormant_after_interiority_turns: s.interiority.max_idle_ticks(),
             effective_interval_secs: s.interiority.default_interval().as_secs(),
@@ -705,7 +705,7 @@ async fn tick_character(character: &str, ctx: &TickContext) {
         let mut s = lock_state(&ctx.state);
         debug!(
             character,
-            state = %s.interiority.state(),
+            state = %s.interiority.state_at(now),
             ticks_without_user = s.interiority.ticks_without_user(),
             turn_count = s.active_turn_count,
             "tick"
@@ -1674,6 +1674,45 @@ mod tests {
             let status = mgr.status("alice").unwrap();
             assert_eq!(status.interiority_state, "Active");
             assert_eq!(status.ticks_without_user, 0);
+        });
+    }
+
+    #[test]
+    fn status_reports_dormant_after_force_dormant() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+
+        rt.block_on(async {
+            let mgr = test_manager(tmp.path());
+            mgr.ensure_state("alice", None);
+            assert!(mgr.interiority_set_dormant("alice"));
+
+            let status = mgr.status("alice").unwrap();
+            assert_eq!(status.interiority_state, "Dormant");
+        });
+    }
+
+    #[test]
+    fn status_reports_dormant_after_silent_duration() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+
+        rt.block_on(async {
+            let mgr = test_manager(tmp.path());
+            mgr.ensure_state("alice", None);
+            mgr.with_state("alice", |s| {
+                let now = Instant::now();
+                s.interiority.on_user_message(now - Duration::from_secs(3 * 24 * 60 * 60));
+            });
+
+            let status = mgr.status("alice").unwrap();
+            assert_eq!(status.interiority_state, "Dormant");
         });
     }
 

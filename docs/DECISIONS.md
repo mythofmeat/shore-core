@@ -570,7 +570,7 @@ format-aware, cached, async pipeline in a new `resize.rs` module.
 
 **Bug:** When the abandonment guard tripped, it cleared `next_wake_at`. On the next tick, step 1 unconditionally bootstrapped a new deadline from the stale `last_anchor`, causing it to immediately re-trip — infinite log-spam loop every tick.
 
-**Fix:** Added `is_abandoned(now)` check in step 1 of `InteriorityClock::tick()`. Once abandoned, the clock stays dormant until `reset_on_user_message()` clears the counter. Introduced `is_dormant()` as the public accessor.
+**Fix:** Added `is_abandoned(now)` check in step 1 of `InteriorityClock::tick()`. Once abandoned, the clock stays dormant until `reset_on_user_message()` clears the counter. Introduced `is_dormant()` as the public accessor, and made user-facing status/log output report the unified state label `Dormant` for tick-count dormancy, silent-duration dormancy, and forced dormancy.
 
 **Debug commands:** Replaced the single hidden `shore debug force-tick` with three explicit debug commands using snake_case naming (`#[command(rename_all = "snake_case")]`), and unhid the `debug` subcommand:
 
