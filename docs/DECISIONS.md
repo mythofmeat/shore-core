@@ -566,6 +566,24 @@ format-aware, cached, async pipeline in a new `resize.rs` module.
 
 ## Extract shore-daemon-server crate (2026-04-10)
 
+## Abandonment Guard Fix & Debug Commands (2026-04-11)
+
+**Bug:** When the abandonment guard tripped, it cleared `next_wake_at`. On the next tick, step 1 unconditionally bootstrapped a new deadline from the stale `last_anchor`, causing it to immediately re-trip — infinite log-spam loop every tick.
+
+**Fix:** Added `is_abandoned(now)` check in step 1 of `InteriorityClock::tick()`. Once abandoned, the clock stays dormant until `reset_on_user_message()` clears the counter. Introduced `is_dormant()` as the public accessor.
+
+**Debug commands:** Replaced the single hidden `shore debug force-tick` with three explicit debug commands using snake_case naming (`#[command(rename_all = "snake_case")]`), and unhid the `debug` subcommand:
+
+- `shore debug interiority_tick_now` — schedules immediate tick, warns if dormant
+- `shore debug interiority_status_dormant` — forces dormant, reverts on user message
+- `shore debug interiority_status_active` — forces active, reverts naturally via guard
+
+Snake_case was chosen over kebab-case for debug commands to visually distinguish them from normal CLI commands and signal "direct internal access, use with care". This also simplifies the SWP mapping since CLI and wire names are identical under `rename_all = "snake_case"`.
+
+`InteriorityClock` methods split: `force_wake()` (deadline only, no counter reset), `force_dormant()` (sets counter to max, clears deadline), `force_active()` (resets counter + last_user_at + deadline). The old monolithic `force_wake` that did everything was replaced because each debug command maps to a single primitive.
+
+**Compromise:** `interiority_tick_now` on a dormant clock sets the deadline but the tick will be suppressed by the guard. This is intentional — it's a debug tool and the user gets a warning. Silently auto-activating would mask the state.
+
 Extracted `shore-daemon/src/server/` (~1.3K LOC) into a standalone `shore-daemon-server`
 workspace crate. The server module had zero internal dependencies on other daemon modules,
 making it the cleanest extraction candidate. `RoutedMessage` enum stays in the server crate

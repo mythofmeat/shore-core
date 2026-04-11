@@ -199,7 +199,9 @@ pub async fn dispatch(
         "config_reset" => state::config_reset(ctx),
         "diagnostics" => state::diagnostics(ctx, &cmd.args),
         "heartbeat_log" => state::heartbeat_log(engine, ctx, &cmd.args),
-        "force_tick" => state::force_tick(engine, ctx),
+        "interiority_tick_now" => state::interiority_tick_now(engine, ctx),
+        "interiority_set_dormant" => state::interiority_set_dormant(engine, ctx),
+        "interiority_set_active" => state::interiority_set_active(engine, ctx),
         "usage" => usage::usage(ctx, &cmd.args).await,
 
         _ => Err((

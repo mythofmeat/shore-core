@@ -94,8 +94,24 @@ impl InteriorityClock {
         self.next_wake_at
     }
 
-    /// Force the next tick to fire immediately by setting the deadline to now.
+    /// Force the next tick to fire immediately. Does not reset abandonment counters.
     pub fn force_wake(&mut self) {
+        self.next_wake_at = Some(Instant::now());
+    }
+
+    /// Force the clock into dormant state. Stays dormant until a user message
+    /// resets it via reset_on_user_message().
+    pub fn force_dormant(&mut self) {
+        self.ticks_without_user = self.max_idle_ticks;
+        self.next_wake_at = None;
+    }
+
+    /// Force the clock into active state. Resets abandonment counters and
+    /// schedules an immediate tick. Guard will re-trip naturally if user
+    /// doesn't respond.
+    pub fn force_active(&mut self) {
+        self.ticks_without_user = 0;
+        self.last_user_at = Some(Instant::now());
         self.next_wake_at = Some(Instant::now());
     }
 
@@ -134,6 +150,10 @@ impl InteriorityClock {
             }
         }
         false
+    }
+
+    pub fn is_dormant(&self, now: Instant) -> bool {
+        self.is_abandoned(now)
     }
 
     // -- core ---------------------------------------------------------------

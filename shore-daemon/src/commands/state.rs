@@ -117,16 +117,55 @@ pub fn heartbeat_log(
     Ok(json!({ "events": events_json }))
 }
 
-/// Force an interiority tick to fire on the next poll (~10s).
-pub fn force_tick(
+pub fn interiority_tick_now(
     engine: &ConversationEngine,
     ctx: &CommandContext,
 ) -> CommandResult {
     let char_name = engine.character_name();
-    let triggered = ctx.autonomy.force_tick(char_name);
-    if triggered {
-        Ok(json!({ "status": "scheduled", "character": char_name,
-                    "note": "Tick will fire within ~10 seconds" }))
+    match ctx.autonomy.interiority_tick_now(char_name) {
+        Some(dormant) => {
+            let mut result = json!({
+                "status": "scheduled",
+                "character": char_name,
+            });
+            if dormant {
+                result["warning"] = json!(
+                    "Interiority is dormant. The scheduled tick will be suppressed \
+                     by the abandonment guard. Run `shore debug interiority_status_active` \
+                     first to wake the clock."
+                );
+            }
+            Ok(result)
+        }
+        None => Err((
+            ErrorCode::InvalidRequest,
+            format!("No autonomy state for character '{char_name}'"),
+        )),
+    }
+}
+
+pub fn interiority_set_dormant(
+    engine: &ConversationEngine,
+    ctx: &CommandContext,
+) -> CommandResult {
+    let char_name = engine.character_name();
+    if ctx.autonomy.interiority_set_dormant(char_name) {
+        Ok(json!({ "status": "dormant", "character": char_name }))
+    } else {
+        Err((
+            ErrorCode::InvalidRequest,
+            format!("No autonomy state for character '{char_name}'"),
+        ))
+    }
+}
+
+pub fn interiority_set_active(
+    engine: &ConversationEngine,
+    ctx: &CommandContext,
+) -> CommandResult {
+    let char_name = engine.character_name();
+    if ctx.autonomy.interiority_set_active(char_name) {
+        Ok(json!({ "status": "active", "character": char_name }))
     } else {
         Err((
             ErrorCode::InvalidRequest,

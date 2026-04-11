@@ -136,8 +136,7 @@ pub enum CliCommand {
         json: bool,
     },
 
-    /// Internal debug utilities (not for normal use)
-    #[command(hide = true)]
+    /// Advanced debugging utilities
     Debug {
         #[command(subcommand)]
         subcommand: DebugCommand,
@@ -338,9 +337,14 @@ pub enum MemoryCommand {
 }
 
 #[derive(Subcommand, Debug)]
+#[command(rename_all = "snake_case")]
 pub enum DebugCommand {
-    /// Force an interiority tick to fire within ~10 seconds
-    ForceTick,
+    /// Schedule an interiority tick to fire immediately
+    InteriorityTickNow,
+    /// Force interiority into dormant state (reverts on next user message)
+    InteriorityStatusDormant,
+    /// Force interiority into active state (reverts naturally via abandonment guard)
+    InteriorityStatusActive,
 }
 
 /// Generate and print shell completions to stdout.
@@ -416,7 +420,9 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
         CliCommand::Status { .. } => Some(("status", json!({}))),
 
         CliCommand::Debug { subcommand } => match subcommand {
-            DebugCommand::ForceTick => Some(("force_tick", json!({}))),
+            DebugCommand::InteriorityTickNow => Some(("interiority_tick_now", json!({}))),
+            DebugCommand::InteriorityStatusDormant => Some(("interiority_set_dormant", json!({}))),
+            DebugCommand::InteriorityStatusActive => Some(("interiority_set_active", json!({}))),
         },
 
         CliCommand::Model {

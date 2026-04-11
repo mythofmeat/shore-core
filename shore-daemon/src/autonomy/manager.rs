@@ -541,14 +541,34 @@ impl AutonomyManager {
         .unwrap_or(false)
     }
 
-    /// Explicitly set the paused state for a character. Returns the new state,
-    /// or None if the character has no autonomy state.
-    /// Force the interiority clock to fire on the next tick poll (~10s).
-    /// Returns true if the character state was found and updated.
-    pub fn force_tick(&self, character: &str) -> bool {
-        info!(character, "Forcing interiority tick");
+    /// Schedule an immediate interiority tick. Returns Some(dormant) where
+    /// dormant indicates whether the clock is currently in abandoned state
+    /// (meaning the tick will be suppressed). Returns None if no state found.
+    pub fn interiority_tick_now(&self, character: &str) -> Option<bool> {
+        info!(character, "Debug: scheduling immediate interiority tick");
         self.with_state(character, |s| {
+            let dormant = s.interiority.is_dormant(Instant::now());
             s.interiority.force_wake();
+            s.mark_dirty();
+            dormant
+        })
+    }
+
+    /// Force interiority into dormant state. Returns true if state was found.
+    pub fn interiority_set_dormant(&self, character: &str) -> bool {
+        info!(character, "Debug: forcing interiority dormant");
+        self.with_state(character, |s| {
+            s.interiority.force_dormant();
+            s.mark_dirty();
+        })
+        .is_some()
+    }
+
+    /// Force interiority into active state. Returns true if state was found.
+    pub fn interiority_set_active(&self, character: &str) -> bool {
+        info!(character, "Debug: forcing interiority active");
+        self.with_state(character, |s| {
+            s.interiority.force_active();
             s.mark_dirty();
         })
         .is_some()
