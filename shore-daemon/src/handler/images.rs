@@ -25,7 +25,12 @@ pub(crate) fn media_type_for_path(path: &str) -> Option<&'static str> {
 /// If `images` is non-empty, returns a JSON array containing image blocks
 /// (base64-encoded, resized if over `max_image_size`) followed by a text block.
 /// Otherwise returns a plain string. Pass `0` for `max_image_size` to disable resizing.
-pub(crate) fn build_content(text: &str, images: &[ImageRef], max_image_size: u64, cache_dir: &std::path::Path) -> Value {
+pub(crate) fn build_content(
+    text: &str,
+    images: &[ImageRef],
+    max_image_size: u64,
+    cache_dir: &std::path::Path,
+) -> Value {
     if images.is_empty() {
         return json!(text);
     }
@@ -42,12 +47,18 @@ pub(crate) fn build_content(text: &str, images: &[ImageRef], max_image_size: u64
         };
         match std::fs::read(&img.path) {
             Ok(bytes) => {
-                let (final_bytes, final_media_type) =
-                    if let Some((resized, mt)) = super::resize::cached_resize(&img.path, &bytes, media_type, max_image_size, cache_dir) {
-                        (resized, mt)
-                    } else {
-                        (bytes, media_type)
-                    };
+                let (final_bytes, final_media_type) = if let Some((resized, mt)) =
+                    super::resize::cached_resize(
+                        &img.path,
+                        &bytes,
+                        media_type,
+                        max_image_size,
+                        cache_dir,
+                    ) {
+                    (resized, mt)
+                } else {
+                    (bytes, media_type)
+                };
                 let encoded = base64::engine::general_purpose::STANDARD.encode(&final_bytes);
                 blocks.push(json!({
                     "type": "image",
@@ -193,16 +204,26 @@ pub(crate) fn embed_image_data(images: &mut [ImageRef]) {
 }
 
 /// Encode a single image to a JSON block for the LLM API, resizing if needed.
-pub(crate) fn encode_image_block(img: &ImageRef, max_image_size: u64, cache_dir: &std::path::Path) -> Option<Value> {
+pub(crate) fn encode_image_block(
+    img: &ImageRef,
+    max_image_size: u64,
+    cache_dir: &std::path::Path,
+) -> Option<Value> {
     let media_type = media_type_for_path(&img.path)?;
     match std::fs::read(&img.path) {
         Ok(bytes) => {
-            let (final_bytes, final_media_type) =
-                if let Some((resized, mt)) = super::resize::cached_resize(&img.path, &bytes, media_type, max_image_size, cache_dir) {
-                    (resized, mt)
-                } else {
-                    (bytes, media_type)
-                };
+            let (final_bytes, final_media_type) = if let Some((resized, mt)) =
+                super::resize::cached_resize(
+                    &img.path,
+                    &bytes,
+                    media_type,
+                    max_image_size,
+                    cache_dir,
+                ) {
+                (resized, mt)
+            } else {
+                (bytes, media_type)
+            };
             let encoded = base64::engine::general_purpose::STANDARD.encode(&final_bytes);
             Some(json!({
                 "type": "image",
@@ -233,7 +254,9 @@ mod tests {
         // Simple LCG to fill with pseudo-random values without pulling in rand.
         let mut state: u64 = 0xdeadbeef_cafebabe;
         for byte in &mut pixels {
-            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             *byte = (state >> 33) as u8;
         }
         let img = image::RgbImage::from_raw(width, height, pixels).unwrap();
@@ -261,7 +284,9 @@ mod tests {
         let mut pixels = vec![0u8; (width * height * 3) as usize];
         let mut state: u64 = 0xcafe_f00d_1234_5678;
         for byte in &mut pixels {
-            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             *byte = (state >> 33) as u8;
         }
         let img = image::RgbImage::from_raw(width, height, pixels).unwrap();
@@ -355,7 +380,11 @@ mod tests {
         let decoded = base64::engine::general_purpose::STANDARD
             .decode(b64_data)
             .unwrap();
-        assert_eq!(decoded.len(), small_jpeg.len(), "Small image should pass through unchanged");
+        assert_eq!(
+            decoded.len(),
+            small_jpeg.len(),
+            "Small image should pass through unchanged"
+        );
     }
 
     #[test]

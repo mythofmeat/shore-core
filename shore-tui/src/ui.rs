@@ -19,7 +19,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(3),              // conversation
+            Constraint::Min(3),               // conversation
             Constraint::Length(input_height), // input
         ])
         .split(size);
@@ -1117,7 +1117,11 @@ mod scenario_tests {
         fn stream_chunk(&mut self, text: &str) {
             match self.app.stream.blocks.last_mut() {
                 Some(StreamBlock::Text(ref mut s)) => s.push_str(text),
-                _ => self.app.stream.blocks.push(StreamBlock::Text(text.to_string())),
+                _ => self
+                    .app
+                    .stream
+                    .blocks
+                    .push(StreamBlock::Text(text.to_string())),
             }
             self.app.stream.phase = "responding".into();
             if self.app.auto_scroll {
@@ -1129,7 +1133,11 @@ mod scenario_tests {
         fn thinking_chunk(&mut self, text: &str) {
             match self.app.stream.blocks.last_mut() {
                 Some(StreamBlock::Thinking(ref mut s)) => s.push_str(text),
-                _ => self.app.stream.blocks.push(StreamBlock::Thinking(text.to_string())),
+                _ => self
+                    .app
+                    .stream
+                    .blocks
+                    .push(StreamBlock::Thinking(text.to_string())),
             }
             self.app.stream.phase = "thinking".into();
         }
@@ -1282,14 +1290,8 @@ mod scenario_tests {
 
         // Render with thinking visible (show_thinking defaults to true)
         let f1 = h.render("thinking visible inline");
-        assert!(
-            f1.contains("thinking"),
-            "inline thinking header visible"
-        );
-        assert!(
-            f1.contains("Here's my answer"),
-            "streaming text visible"
-        );
+        assert!(f1.contains("thinking"), "inline thinking header visible");
+        assert!(f1.contains("Here's my answer"), "streaming text visible");
 
         // Toggle thinking off via show_thinking (t key in normal mode)
         h.app.show_thinking = false;

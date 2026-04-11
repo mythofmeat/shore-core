@@ -38,9 +38,12 @@ async fn test_message_persistence() {
         messages.len()
     );
 
-    let has_user = messages.iter().any(|m| m.get("role").and_then(|r| r.as_str()) == Some("user"));
-    let has_assistant =
-        messages.iter().any(|m| m.get("role").and_then(|r| r.as_str()) == Some("assistant"));
+    let has_user = messages
+        .iter()
+        .any(|m| m.get("role").and_then(|r| r.as_str()) == Some("user"));
+    let has_assistant = messages
+        .iter()
+        .any(|m| m.get("role").and_then(|r| r.as_str()) == Some("assistant"));
 
     assert!(has_user, "No user message found in persisted messages");
     assert!(
@@ -55,7 +58,10 @@ async fn test_message_persistence() {
 async fn test_streaming_chunks_arrive_in_order() {
     let mut harness = TestHarness::boot().await;
 
-    harness.mock_llm.enqueue_text("Streaming works correctly").await;
+    harness
+        .mock_llm
+        .enqueue_text("Streaming works correctly")
+        .await;
 
     let response = harness.send_and_collect("Test streaming").await;
 
@@ -186,10 +192,7 @@ async fn test_tool_result_persisted_in_jsonl() {
         .mock_llm
         .enqueue_tool_use("toolu_persist01", "check_time", json!({}))
         .await;
-    harness
-        .mock_llm
-        .enqueue_text("Time check complete.")
-        .await;
+    harness.mock_llm.enqueue_text("Time check complete.").await;
 
     harness
         .conn

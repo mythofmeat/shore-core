@@ -76,7 +76,11 @@ pub struct RealAgentLlm {
 
 impl RealAgentLlm {
     pub fn new(client: LedgerClient, character: String, call_type: CallType) -> Self {
-        Self { client, character, call_type }
+        Self {
+            client,
+            character,
+            call_type,
+        }
     }
 }
 

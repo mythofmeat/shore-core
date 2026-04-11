@@ -146,9 +146,7 @@ async fn dispatch_ntfy(
 /// and other command-substitution patterns as a defense-in-depth measure
 /// since the template itself may not use single quotes around the placeholder.
 fn shell_escape(s: &str) -> String {
-    s.replace('\'', "'\\''")
-        .replace('`', "")
-        .replace("$(", "(")
+    s.replace('\'', "'\\''").replace('`', "").replace("$(", "(")
 }
 
 async fn dispatch_command(

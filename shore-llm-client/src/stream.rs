@@ -498,10 +498,7 @@ mod tests {
             writer.shutdown().await.unwrap();
         });
 
-        let err = consumer
-            .consume(&mut reader, false)
-            .await
-            .unwrap_err();
+        let err = consumer.consume(&mut reader, false).await.unwrap_err();
         assert!(matches!(err, LlmError::IncompleteStream));
 
         server_handle.await.unwrap();

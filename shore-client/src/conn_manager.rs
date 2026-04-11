@@ -172,7 +172,10 @@ async fn connection_loop(
         }
 
         // Exponential backoff before reconnect
-        info!(backoff_ms = backoff.as_millis(), "reconnecting after backoff");
+        info!(
+            backoff_ms = backoff.as_millis(),
+            "reconnecting after backoff"
+        );
         sleep(backoff).await;
         backoff = next_backoff(backoff, max_backoff);
     }

@@ -116,9 +116,8 @@ impl TestHarness {
         );
 
         // ── Ledger-wrapped LLM Client ────────────────────────────────
-        let llm_client =
-            LedgerClient::new(LlmClient::new(), &config.dirs.data.join("ledger.db"))
-                .expect("failed to create LedgerClient");
+        let llm_client = LedgerClient::new(LlmClient::new(), &config.dirs.data.join("ledger.db"))
+            .expect("failed to create LedgerClient");
 
         let notifier = shore_daemon::notifications::NotificationService::new(Default::default());
 
@@ -177,14 +176,10 @@ impl TestHarness {
         tokio::time::sleep(Duration::from_millis(200)).await;
 
         // ── SWP Client Connection ────────────────────────────────────
-        let (conn, server_hello, _history) = SWPConnection::connect(
-            &ServerAddr(addr.clone()),
-            "test",
-            "harness",
-            None,
-        )
-        .await
-        .expect("failed to connect to daemon");
+        let (conn, server_hello, _history) =
+            SWPConnection::connect(&ServerAddr(addr.clone()), "test", "harness", None)
+                .await
+                .expect("failed to connect to daemon");
 
         assert_eq!(
             server_hello.v,
@@ -229,7 +224,10 @@ impl TestHarness {
         .await
         {
             Ok(retained) => {
-                info!(character, retained, "trigger_compaction_now: compaction complete");
+                info!(
+                    character,
+                    retained, "trigger_compaction_now: compaction complete"
+                );
             }
             Err(e) => {
                 info!(character, error = %e, "trigger_compaction_now: compaction failed");
@@ -445,4 +443,3 @@ impl TestHarness {
         let _ = self.handler_handle.await;
     }
 }
-

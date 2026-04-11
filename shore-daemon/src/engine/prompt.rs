@@ -327,7 +327,10 @@ pub fn assemble_prompt(params: &PromptParams<'_>) -> AssembledPrompt {
     debug!(
         system_blocks = system.len(),
         has_capabilities = params.capabilities.is_some(),
-        has_char_def = params.character_definition.filter(|s| !s.is_empty()).is_some(),
+        has_char_def = params
+            .character_definition
+            .filter(|s| !s.is_empty())
+            .is_some(),
         has_user_def = params.user_definition.filter(|s| !s.is_empty()).is_some(),
         has_recap = !params.is_private,
         "system blocks assembled"
@@ -1637,12 +1640,18 @@ mod tests {
         use chrono::TimeZone;
         let offset = chrono::FixedOffset::west_opt(7 * 3600).unwrap();
         let e1 = RecapEntry {
-            timestamp: offset.with_ymd_and_hms(2026, 4, 7, 10, 0, 0).single().unwrap(),
+            timestamp: offset
+                .with_ymd_and_hms(2026, 4, 7, 10, 0, 0)
+                .single()
+                .unwrap(),
             tick_id: "t1".into(),
             recap: "first thing".into(),
         };
         let e2 = RecapEntry {
-            timestamp: offset.with_ymd_and_hms(2026, 4, 7, 14, 0, 0).single().unwrap(),
+            timestamp: offset
+                .with_ymd_and_hms(2026, 4, 7, 14, 0, 0)
+                .single()
+                .unwrap(),
             tick_id: "t2".into(),
             recap: "second thing".into(),
         };
@@ -1676,7 +1685,11 @@ mod tests {
             make_msg_at(Role::User, "Good morning", "2026-04-04T09:00:00-07:00"),
             make_msg_at(Role::Assistant, "Morning!", "2026-04-04T09:01:00-07:00"),
             make_msg_at(Role::User, "I'm back", "2026-04-04T11:00:00-07:00"),
-            make_msg_at(Role::Assistant, "Welcome back!", "2026-04-04T11:01:00-07:00"),
+            make_msg_at(
+                Role::Assistant,
+                "Welcome back!",
+                "2026-04-04T11:01:00-07:00",
+            ),
             make_msg_at(Role::User, "Thanks", "2026-04-04T11:05:00-07:00"),
         ];
 
@@ -1721,7 +1734,9 @@ mod tests {
                 // This is the injected recap — skip it.
                 continue;
             }
-            let before_msg = before_iter.next().expect("more messages in after than before");
+            let before_msg = before_iter
+                .next()
+                .expect("more messages in after than before");
             assert_eq!(
                 before_msg.content, msg.content,
                 "Original message content changed (cache prefix would change).\n\
@@ -1730,6 +1745,9 @@ mod tests {
                 before_msg.content, msg.content,
             );
         }
-        assert!(before_iter.next().is_none(), "all before messages accounted for");
+        assert!(
+            before_iter.next().is_none(),
+            "all before messages accounted for"
+        );
     }
 }

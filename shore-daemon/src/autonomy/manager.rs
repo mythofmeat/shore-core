@@ -24,13 +24,13 @@ use super::cache_keepalive::{CacheKeepalive, CacheKeepaliveAction};
 use super::interiority::{InteriorityAction, InteriorityClock};
 use super::recap_store::{RecapEntry, RecapStore};
 use super::{AutonomyStatus, InteriorityEventKind, InteriorityLog};
+use crate::characters::CharacterRegistry;
 use crate::memory::agent::{AgentSearchContext, CallerIdentity};
 use crate::memory::agent_llm::RealAgentLlm;
 use crate::memory::compaction_impls::{resolve_embed_config, resolve_image_gen_config};
 use crate::memory::db::MemoryDB;
 use crate::memory::researcher::MemoryResearcher;
 use crate::memory::vectorstore::VectorStore;
-use crate::characters::CharacterRegistry;
 use crate::notifications::{NotificationEvent, NotificationService};
 use crate::tools as tool_system;
 use crate::tools::context::{NoopRag, SharedToolContext};
@@ -193,8 +193,14 @@ fn load_state(data_dir: &Path, character: &str) -> Option<PersistedState> {
 }
 
 fn restore_from_persisted(persisted: &PersistedState, interiority: &mut InteriorityClock) {
-    let next_wake = persisted.next_wake_at.as_deref().and_then(rfc3339_to_instant);
-    let last_user = persisted.last_user_at.as_deref().and_then(rfc3339_to_instant);
+    let next_wake = persisted
+        .next_wake_at
+        .as_deref()
+        .and_then(rfc3339_to_instant);
+    let last_user = persisted
+        .last_user_at
+        .as_deref()
+        .and_then(rfc3339_to_instant);
     interiority.restore(persisted.ticks_without_user, next_wake, last_user);
 }
 
@@ -533,7 +539,10 @@ impl AutonomyManager {
         self.with_state(character, |s| {
             if s.compaction_pending {
                 s.compaction_pending = false;
-                info!(character, "Idle-triggered compaction pending taken by handler");
+                info!(
+                    character,
+                    "Idle-triggered compaction pending taken by handler"
+                );
                 return true;
             }
             false
@@ -1014,7 +1023,12 @@ fn rebuild_request_from_disk(
     });
 
     let cache_dir = &config.dirs.cache;
-    let (llm_messages, system) = crate::handler::build_llm_messages(&prompt_result, false, config.app.advanced.max_image_size, cache_dir);
+    let (llm_messages, system) = crate::handler::build_llm_messages(
+        &prompt_result,
+        false,
+        config.app.advanced.max_image_size,
+        cache_dir,
+    );
 
     let tool_defs = if config.app.behavior.tool_use.enabled {
         let defs: Vec<serde_json::Value> = tool_system::available_tools(false, tool_toggles)
@@ -1104,10 +1118,21 @@ async fn execute_unified_tick(
     let recap_path = data_dir.join(character).join("recaps.jsonl");
     let recap_store = RecapStore::load(&recap_path);
     let user_name = lc.app.defaults.resolve_display_name();
-    let default_interval_secs = lc.app.behavior.autonomy.interiority.fallback_interiority_interval.as_secs();
-    let default_interval_str = if default_interval_secs >= 3600 && default_interval_secs % 3600 == 0 {
+    let default_interval_secs = lc
+        .app
+        .behavior
+        .autonomy
+        .interiority
+        .fallback_interiority_interval
+        .as_secs();
+    let default_interval_str = if default_interval_secs >= 3600 && default_interval_secs % 3600 == 0
+    {
         let h = default_interval_secs / 3600;
-        if h == 1 { "1 hour".to_string() } else { format!("{h} hours") }
+        if h == 1 {
+            "1 hour".to_string()
+        } else {
+            format!("{h} hours")
+        }
     } else {
         format!("{} minutes", default_interval_secs / 60)
     };
@@ -1115,7 +1140,8 @@ async fn execute_unified_tick(
         let s = lock_state(state);
         build_recent_thread(&s.interiority_log, &recap_store)
     };
-    let interiority_prompt = build_interiority_prompt(&recent_thread, &user_name, &default_interval_str);
+    let interiority_prompt =
+        build_interiority_prompt(&recent_thread, &user_name, &default_interval_str);
 
     // Append the interiority prompt as a user message.
     request
@@ -1141,8 +1167,7 @@ async fn execute_unified_tick(
 
     info!(
         character,
-        max_iterations,
-        "Interiority: executing tool loop tick"
+        max_iterations, "Interiority: executing tool loop tick"
     );
 
     // Collect <sendMessage> and <recap> content across iterations (last-wins).
@@ -1245,7 +1270,10 @@ async fn execute_unified_tick(
                     );
                     s.mark_dirty();
                 }
-                (format!("Scheduled next moment in {clamped:.1} hours."), false)
+                (
+                    format!("Scheduled next moment in {clamped:.1} hours."),
+                    false,
+                )
             } else {
                 crate::content_util::dispatch_result_to_output(
                     tool_system::dispatch_tool(name, input.clone(), &tool_ctx).await,
@@ -1261,7 +1289,9 @@ async fn execute_unified_tick(
             );
 
             tool_results.push(crate::content_util::build_tool_result_json(
-                id, &output_str, is_error,
+                id,
+                &output_str,
+                is_error,
             ));
 
             // Log to ring buffer (skip set_next_wake — already logged above).
@@ -1347,7 +1377,10 @@ async fn execute_unified_tick(
                 }
             }
         } else {
-            error!(character, "No registry available, autonomous message not persisted");
+            error!(
+                character,
+                "No registry available, autonomous message not persisted"
+            );
         }
         if let Some(n) = notifier {
             n.notify(
@@ -1428,7 +1461,9 @@ async fn build_tool_context(
             VectorStore::open(&vs_path, embed_config.dimensions)
                 .await
                 .ok()
-                .map(|vs| AgentSearchContext::new(Arc::new(vs), client.inner().clone(), embed_config))
+                .map(|vs| {
+                    AgentSearchContext::new(Arc::new(vs), client.inner().clone(), embed_config)
+                })
         }
         Err(_) => None,
     };
@@ -1461,9 +1496,9 @@ async fn build_tool_context(
         researcher: researcher_model
             .as_ref()
             .map(|_| MemoryResearcher::new(String::new(), String::new())),
-        researcher_llm_val: researcher_model
-            .as_ref()
-            .map(|_| RealAgentLlm::new(client.clone(), character.to_string(), CallType::Researcher)),
+        researcher_llm_val: researcher_model.as_ref().map(|_| {
+            RealAgentLlm::new(client.clone(), character.to_string(), CallType::Researcher)
+        }),
         researcher_model_val: researcher_model,
         rag: NoopRag,
         search_ctx,
@@ -1519,7 +1554,9 @@ async fn execute_dormant_ping(
     state: &Arc<Mutex<AutonomyState>>,
     llm_client: Option<&LedgerClient>,
 ) -> bool {
-    let Some(client) = llm_client else { return false };
+    let Some(client) = llm_client else {
+        return false;
+    };
 
     let request = {
         let s = lock_state(state);
@@ -1547,7 +1584,10 @@ async fn execute_dormant_ping(
         }
     };
 
-    match client.generate(&request, CallType::Keepalive, character, false).await {
+    match client
+        .generate(&request, CallType::Keepalive, character, false)
+        .await
+    {
         Ok(resp) => {
             info!(
                 character,
@@ -1708,7 +1748,8 @@ mod tests {
             mgr.ensure_state("alice", None);
             mgr.with_state("alice", |s| {
                 let now = Instant::now();
-                s.interiority.on_user_message(now - Duration::from_secs(3 * 24 * 60 * 60));
+                s.interiority
+                    .on_user_message(now - Duration::from_secs(3 * 24 * 60 * 60));
             });
 
             let status = mgr.status("alice").unwrap();
@@ -1962,10 +2003,7 @@ mod tests {
     // on_cache_warmed — the exact boundary where the phantom ping bug lived.
 
     /// Helper: build a TickContext with no LLM client (pings always fail).
-    fn tick_ctx_no_llm(
-        state: Arc<Mutex<AutonomyState>>,
-        data_dir: &Path,
-    ) -> TickContext {
+    fn tick_ctx_no_llm(state: Arc<Mutex<AutonomyState>>, data_dir: &Path) -> TickContext {
         TickContext {
             state,
             config: Arc::new(test_config()),
@@ -2042,7 +2080,10 @@ mod tests {
         ka.on_cache_warmed(now);
 
         // Immediately after: should NOT be due (55 min away).
-        assert_eq!(ka.tick(now + Duration::from_secs(30)), CacheKeepaliveAction::None);
+        assert_eq!(
+            ka.tick(now + Duration::from_secs(30)),
+            CacheKeepaliveAction::None
+        );
         // 55 minutes later: should fire again.
         assert_eq!(
             ka.tick(now + Duration::from_secs(55 * 60)),
@@ -2183,9 +2224,13 @@ mod tests {
         };
         let tmp = tempfile::tempdir().unwrap();
         let (_tx, rx) = tokio::sync::watch::channel(());
-        let mgr = AutonomyManager::new(Default::default(), compaction, tmp.path().to_path_buf(), rx);
+        let mgr =
+            AutonomyManager::new(Default::default(), compaction, tmp.path().to_path_buf(), rx);
 
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         rt.block_on(async { mgr.ensure_state("alice", None::<u64>) });
 
         // Below max_turns: should not compact.
@@ -2194,7 +2239,10 @@ mod tests {
         assert!(mgr.should_compact_now("alice", 16));
         // After compaction, compaction_triggered is set so tick won't double-fire.
         let triggered = mgr.with_state("alice", |s| s.compaction_triggered).unwrap();
-        assert!(triggered, "compaction_triggered should be set after should_compact_now");
+        assert!(
+            triggered,
+            "compaction_triggered should be set after should_compact_now"
+        );
     }
 
     #[test]
@@ -2208,9 +2256,13 @@ mod tests {
         };
         let tmp = tempfile::tempdir().unwrap();
         let (_tx, rx) = tokio::sync::watch::channel(());
-        let mgr = AutonomyManager::new(Default::default(), compaction, tmp.path().to_path_buf(), rx);
+        let mgr =
+            AutonomyManager::new(Default::default(), compaction, tmp.path().to_path_buf(), rx);
 
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         rt.block_on(async { mgr.ensure_state("alice", None::<u64>) });
 
         // Below max_turns and no pending flag: should not compact.
@@ -2239,9 +2291,13 @@ mod tests {
         };
         let tmp = tempfile::tempdir().unwrap();
         let (_tx, rx) = tokio::sync::watch::channel(());
-        let mgr = AutonomyManager::new(Default::default(), compaction, tmp.path().to_path_buf(), rx);
+        let mgr =
+            AutonomyManager::new(Default::default(), compaction, tmp.path().to_path_buf(), rx);
 
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         rt.block_on(async { mgr.ensure_state("alice", None::<u64>) });
 
         // Even above max_turns, disabled config means no compaction.
@@ -2259,9 +2315,13 @@ mod tests {
         };
         let tmp = tempfile::tempdir().unwrap();
         let (_tx, rx) = tokio::sync::watch::channel(());
-        let mgr = AutonomyManager::new(Default::default(), compaction, tmp.path().to_path_buf(), rx);
+        let mgr =
+            AutonomyManager::new(Default::default(), compaction, tmp.path().to_path_buf(), rx);
 
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         rt.block_on(async { mgr.ensure_state("alice", None::<u64>) });
 
         // Trigger compaction.
@@ -2271,12 +2331,27 @@ mod tests {
         mgr.notify_compaction_complete("alice", 4);
 
         // Flags should be reset: compaction_triggered and compaction_pending cleared.
-        let (triggered, pending, turn_count) = mgr.with_state("alice", |s| {
-            (s.compaction_triggered, s.compaction_pending, s.active_turn_count)
-        }).unwrap();
-        assert!(!triggered, "compaction_triggered should be reset after completion");
-        assert!(!pending, "compaction_pending should be reset after completion");
-        assert_eq!(turn_count, 4, "active_turn_count should be updated to retained count");
+        let (triggered, pending, turn_count) = mgr
+            .with_state("alice", |s| {
+                (
+                    s.compaction_triggered,
+                    s.compaction_pending,
+                    s.active_turn_count,
+                )
+            })
+            .unwrap();
+        assert!(
+            !triggered,
+            "compaction_triggered should be reset after completion"
+        );
+        assert!(
+            !pending,
+            "compaction_pending should be reset after completion"
+        );
+        assert_eq!(
+            turn_count, 4,
+            "active_turn_count should be updated to retained count"
+        );
 
         // Should be able to trigger again.
         assert!(mgr.should_compact_now("alice", 16));

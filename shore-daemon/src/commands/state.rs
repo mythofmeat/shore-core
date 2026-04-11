@@ -6,8 +6,6 @@ use tracing::{debug, info};
 use crate::engine::ConversationEngine;
 use crate::memory::agent::{CallerIdentity, MemoryAgent, RealAgentIndexer};
 use crate::memory::agent_llm::RealAgentLlm;
-use crate::memory::researcher::MemoryResearcher;
-use shore_ledger::CallType;
 use crate::memory::collation::{
     CollationError, CollationManager, CollationOutcome, DecayConfig, DEFAULT_REFINE_PROMPT,
 };
@@ -20,7 +18,9 @@ use crate::memory::compaction_impls::{
     RealCompactionLlm, RealConversationManager, RealVectorIndexer,
 };
 use crate::memory::db::MemoryDB;
+use crate::memory::researcher::MemoryResearcher;
 use shore_config::resolve_prompt_template;
+use shore_ledger::CallType;
 
 use crate::autonomy::activity::HourClassification;
 
@@ -117,10 +117,7 @@ pub fn heartbeat_log(
     Ok(json!({ "events": events_json }))
 }
 
-pub fn interiority_tick_now(
-    engine: &ConversationEngine,
-    ctx: &CommandContext,
-) -> CommandResult {
+pub fn interiority_tick_now(engine: &ConversationEngine, ctx: &CommandContext) -> CommandResult {
     let char_name = engine.character_name();
     match ctx.autonomy.interiority_tick_now(char_name) {
         Some(dormant) => {
@@ -144,10 +141,7 @@ pub fn interiority_tick_now(
     }
 }
 
-pub fn interiority_set_dormant(
-    engine: &ConversationEngine,
-    ctx: &CommandContext,
-) -> CommandResult {
+pub fn interiority_set_dormant(engine: &ConversationEngine, ctx: &CommandContext) -> CommandResult {
     let char_name = engine.character_name();
     if ctx.autonomy.interiority_set_dormant(char_name) {
         Ok(json!({ "status": "dormant", "character": char_name }))
@@ -159,10 +153,7 @@ pub fn interiority_set_dormant(
     }
 }
 
-pub fn interiority_set_active(
-    engine: &ConversationEngine,
-    ctx: &CommandContext,
-) -> CommandResult {
+pub fn interiority_set_active(engine: &ConversationEngine, ctx: &CommandContext) -> CommandResult {
     let char_name = engine.character_name();
     if ctx.autonomy.interiority_set_active(char_name) {
         Ok(json!({ "status": "active", "character": char_name }))
@@ -304,7 +295,11 @@ pub fn memory_changelog(
         })
         .collect();
 
-    debug!(character = char_name, count = entries.len(), "Memory changelog queried");
+    debug!(
+        character = char_name,
+        count = entries.len(),
+        "Memory changelog queried"
+    );
     Ok(json!({ "changelog": entries, "character": char_name }))
 }
 
@@ -326,7 +321,12 @@ pub async fn memory(
     match query {
         None => memory_status(engine, ctx),
         Some(q) => {
-            debug!(character = engine.character_name(), query_len = q.len(), direct, "Memory query requested");
+            debug!(
+                character = engine.character_name(),
+                query_len = q.len(),
+                direct,
+                "Memory query requested"
+            );
             memory_query(engine, ctx, q, direct).await
         }
     }
@@ -358,7 +358,10 @@ fn memory_status(engine: &ConversationEngine, ctx: &CommandContext) -> CommandRe
         .count_entries_by_status("active")
         .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
 
-    debug!(character = char_name, entries, entities, active, "Memory status queried");
+    debug!(
+        character = char_name,
+        entries, entities, active, "Memory status queried"
+    );
     Ok(json!({
         "character": char_name,
         "entries": entries,
@@ -382,7 +385,11 @@ async fn memory_query(
 
     let display_name = ctx.config.app.defaults.resolve_display_name();
     let agent = MemoryAgent::one_shot(CallerIdentity::User, &display_name, char_name);
-    let agent_llm = RealAgentLlm::new(ctx.llm_client.clone(), char_name.to_string(), CallType::MemoryAgent);
+    let agent_llm = RealAgentLlm::new(
+        ctx.llm_client.clone(),
+        char_name.to_string(),
+        CallType::MemoryAgent,
+    );
 
     let search_ctx = setup_search_context(ctx, char_name).await;
     let real_indexer = search_ctx.as_ref().map(RealAgentIndexer::new);
@@ -521,7 +528,11 @@ pub async fn memory_shell_query(
         .clone();
 
     let db = open_memory_db(ctx, &char_name)?;
-    let agent_llm = RealAgentLlm::new(ctx.llm_client.clone(), char_name.clone(), CallType::MemoryAgent);
+    let agent_llm = RealAgentLlm::new(
+        ctx.llm_client.clone(),
+        char_name.clone(),
+        CallType::MemoryAgent,
+    );
     let search_ctx = setup_search_context(ctx, &char_name).await;
     let real_indexer = search_ctx.as_ref().map(RealAgentIndexer::new);
     let indexer = real_indexer
@@ -557,7 +568,12 @@ pub async fn memory_shell_query(
         .unwrap_or("")
         .to_string();
 
-    debug!(session_id, mutations, response_len = response.len(), "Memory shell query complete");
+    debug!(
+        session_id,
+        mutations,
+        response_len = response.len(),
+        "Memory shell query complete"
+    );
     Ok(json!({
         "response": response,
         "mutations": mutations,
@@ -588,7 +604,8 @@ async fn run_post_compaction_collation(
 
     let cmodel = collation_model?;
 
-    let collation_llm = RealCollationLlm::new(ctx.llm_client.clone(), cmodel, char_name.to_string());
+    let collation_llm =
+        RealCollationLlm::new(ctx.llm_client.clone(), cmodel, char_name.to_string());
     let refine_template = resolve_prompt_template(&ctx.config.dirs.config, char_name, "refine.md")
         .unwrap_or_else(|| DEFAULT_REFINE_PROMPT.to_string());
 
@@ -1405,7 +1422,11 @@ mod tests {
                 crate::commands::SessionTokens::default(),
             )),
             autonomy,
-            llm_client: shore_ledger::LedgerClient::new(shore_llm_client::LlmClient::new(), &data_dir.join("ledger.db")).unwrap(),
+            llm_client: shore_ledger::LedgerClient::new(
+                shore_llm_client::LlmClient::new(),
+                &data_dir.join("ledger.db"),
+            )
+            .unwrap(),
             diagnostics: std::sync::Arc::new(std::sync::Mutex::new(
                 shore_diagnostics::Diagnostics::default(),
             )),
@@ -1472,7 +1493,9 @@ model_id = "gpt-4o"
             let (engine, ctx, _rx) = make_ctx(&tmp);
 
             ctx.autonomy.ensure_state(engine.character_name(), None);
-            assert!(ctx.autonomy.interiority_set_dormant(engine.character_name()));
+            assert!(ctx
+                .autonomy
+                .interiority_set_dormant(engine.character_name()));
 
             let result = status(&engine, &ctx).unwrap();
             assert_eq!(result["autonomy"]["interiority_state"], "Dormant");

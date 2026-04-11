@@ -597,7 +597,12 @@ fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<ConnCommand> 
                 (true, _) => app.stream.blocks.push(StreamBlock::Thinking(chunk.text)),
                 (false, _) => app.stream.blocks.push(StreamBlock::Text(chunk.text)),
             }
-            app.stream.phase = if is_thinking { "thinking" } else { "responding" }.into();
+            app.stream.phase = if is_thinking {
+                "thinking"
+            } else {
+                "responding"
+            }
+            .into();
             if app.auto_scroll {
                 app.scroll_to_bottom();
             }

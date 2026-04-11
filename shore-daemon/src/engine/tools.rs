@@ -7,8 +7,8 @@ use tracing::{debug, info, instrument, warn};
 
 use crate::tools::{self as tool_system, ToolContext};
 use shore_diagnostics::{self as diagnostics, Diagnostics};
-use shore_llm_client::stream::StreamConsumer;
 use shore_ledger::{CallType, LedgerClient};
+use shore_llm_client::stream::StreamConsumer;
 use shore_llm_client::types::{LlmRequest, StreamResult};
 use shore_llm_client::LlmError;
 use shore_protocol::server_msg::{SendImage, ServerMessage, ToolCall, ToolResult as SwpToolResult};
@@ -204,7 +204,10 @@ pub async fn run_tool_loop(
                     input_summary: diagnostics::truncate_summary(&input_str, 200),
                     output_summary: diagnostics::truncate_summary(&output_str, 200),
                 };
-                diag.lock().unwrap_or_else(|e| e.into_inner()).tool_calls.push(entry);
+                diag.lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .tool_calls
+                    .push(entry);
             }
 
             // Push ToolResult event to SWP clients.
@@ -261,10 +264,7 @@ pub async fn run_tool_loop(
         let mut ledger_stream = client
             .stream_raw(request, CallType::ToolLoop, character, thinking_enabled)
             .await?;
-        match consumer
-            .consume(ledger_stream.reader_mut(), false)
-            .await
-        {
+        match consumer.consume(ledger_stream.reader_mut(), false).await {
             Ok(r) => {
                 ledger_stream.finalize(&r);
                 result = r;

@@ -214,7 +214,8 @@ async fn e2e_conversation_milestone() {
         shutdown_rx.clone(),
     );
 
-    let llm_client = LedgerClient::new(LlmClient::new(), &loaded.dirs.data.join("ledger.db")).unwrap();
+    let llm_client =
+        LedgerClient::new(LlmClient::new(), &loaded.dirs.data.join("ledger.db")).unwrap();
 
     let cmd_ctx = CommandContext {
         config: loaded.clone(),
@@ -257,14 +258,10 @@ async fn e2e_conversation_milestone() {
 
     // ── AC 1: Connect and verify SWP handshake ────────────────────────
     eprintln!("=== AC 1: SWP Handshake ===");
-    let (mut conn, server_hello, history) = SWPConnection::connect(
-        &ServerAddr(addr.clone()),
-        "test",
-        "e2e-test",
-        None,
-    )
-    .await
-    .expect("Failed to connect to daemon");
+    let (mut conn, server_hello, history) =
+        SWPConnection::connect(&ServerAddr(addr.clone()), "test", "e2e-test", None)
+            .await
+            .expect("Failed to connect to daemon");
 
     assert_eq!(server_hello.v, shore_protocol::SWP_V1);
     assert_eq!(server_hello.server_name, "shore-daemon-test");
@@ -695,7 +692,8 @@ impl E2EHarness {
             shutdown_rx.clone(),
         );
 
-        let llm_client = LedgerClient::new(LlmClient::new(), &loaded.dirs.data.join("ledger.db")).unwrap();
+        let llm_client =
+            LedgerClient::new(LlmClient::new(), &loaded.dirs.data.join("ledger.db")).unwrap();
 
         let cmd_ctx = CommandContext {
             config: loaded.clone(),
@@ -716,7 +714,7 @@ impl E2EHarness {
             cmd_ctx,
             llm_client,
             push_tx: push_tx.clone(),
-    
+
             autonomy,
             notifier: shore_daemon::notifications::NotificationService::new(Default::default()),
             generation_handle: None,
@@ -733,14 +731,10 @@ impl E2EHarness {
 
         tokio::time::sleep(Duration::from_millis(200)).await;
 
-        let (conn, server_hello, _history) = SWPConnection::connect(
-            &ServerAddr(addr.clone()),
-            "test",
-            "e2e-test",
-            None,
-        )
-        .await
-        .expect("Failed to connect to daemon");
+        let (conn, server_hello, _history) =
+            SWPConnection::connect(&ServerAddr(addr.clone()), "test", "e2e-test", None)
+                .await
+                .expect("Failed to connect to daemon");
 
         assert_eq!(server_hello.v, shore_protocol::SWP_V1);
 

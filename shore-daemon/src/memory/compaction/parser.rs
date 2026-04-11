@@ -116,7 +116,10 @@ pub fn parse_compaction_response(
 
     let entry_blocks = extract_all_xml_tags(raw, "entry");
     if entry_blocks.is_empty() {
-        warn!(response_len = raw.len(), "No <entry> blocks found in LLM compaction response");
+        warn!(
+            response_len = raw.len(),
+            "No <entry> blocks found in LLM compaction response"
+        );
         return Err(CompactionError::Parse(
             "no <entry> blocks found in LLM response".to_string(),
         ));
@@ -147,7 +150,11 @@ pub fn parse_compaction_response(
         });
     }
 
-    debug!(entries = entries.len(), has_recap = recap.is_some(), "Compaction response parsed");
+    debug!(
+        entries = entries.len(),
+        has_recap = recap.is_some(),
+        "Compaction response parsed"
+    );
     Ok((recap, entries))
 }
 

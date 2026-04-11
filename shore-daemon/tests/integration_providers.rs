@@ -14,7 +14,10 @@ async fn test_rate_limit_triggers_retry() {
     // Enqueue 429 first (served first by wiremock), then a successful response.
     harness
         .mock_llm
-        .enqueue_error(429, r#"{"error":{"type":"rate_limit_error","message":"Rate limited"}}"#)
+        .enqueue_error(
+            429,
+            r#"{"error":{"type":"rate_limit_error","message":"Rate limited"}}"#,
+        )
         .await;
     harness
         .mock_llm
@@ -101,9 +104,10 @@ async fn test_malformed_sse_returns_error() {
     // collect_stream has a 30s timeout — if it completes, the daemon didn't hang.
     let response = harness.collect_stream().await;
 
-    let received_error = response.raw_messages.iter().any(|m| {
-        matches!(m, ServerMessage::Error(_))
-    });
+    let received_error = response
+        .raw_messages
+        .iter()
+        .any(|m| matches!(m, ServerMessage::Error(_)));
 
     assert!(
         received_error || response.stream_ended,

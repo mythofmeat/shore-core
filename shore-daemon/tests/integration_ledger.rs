@@ -52,7 +52,10 @@ async fn test_failed_call_recorded_in_ledger() {
     // Enqueue a 500 error first — the daemon will retry.
     harness
         .mock_llm
-        .enqueue_error(500, r#"{"error":{"type":"overloaded_error","message":"Overloaded"}}"#)
+        .enqueue_error(
+            500,
+            r#"{"error":{"type":"overloaded_error","message":"Overloaded"}}"#,
+        )
         .await;
     // Enqueue the successful response the retry will consume.
     harness.mock_llm.enqueue_text("Retry succeeded").await;

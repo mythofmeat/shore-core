@@ -121,7 +121,8 @@ pub fn handle_search_entries(db: &MemoryDB, input: &Value) -> Result<String, Str
                         m
                     })
                     .collect();
-                serde_json::to_string_pretty(&results).map_err(|e| format!("Error: JSON serialization: {e}"))
+                serde_json::to_string_pretty(&results)
+                    .map_err(|e| format!("Error: JSON serialization: {e}"))
             }
         }
         Err(e) => {
@@ -203,13 +204,9 @@ pub async fn handle_semantic_search(
 
     // 6. Batch-fetch all entries once, build a lookup map.
     let id_slice: Vec<&str> = all_ids.iter().copied().collect();
-    let fetched = db
-        .get_entries_by_ids(&id_slice)
-        .unwrap_or_default();
-    let entry_map: HashMap<String, Entry> = fetched
-        .into_iter()
-        .map(|e| (e.id.clone(), e))
-        .collect();
+    let fetched = db.get_entries_by_ids(&id_slice).unwrap_or_default();
+    let entry_map: HashMap<String, Entry> =
+        fetched.into_iter().map(|e| (e.id.clone(), e)).collect();
 
     // 7. Build metadata for lifecycle scoring from the map.
     let metadata: Vec<EntryMeta> = entry_map
@@ -285,7 +282,8 @@ pub fn handle_query_db(db: &MemoryDB, input: &Value) -> Result<String, String> {
             if rows.is_empty() {
                 Ok("No results.".into())
             } else {
-                serde_json::to_string_pretty(&rows).map_err(|e| format!("Error: JSON serialization: {e}"))
+                serde_json::to_string_pretty(&rows)
+                    .map_err(|e| format!("Error: JSON serialization: {e}"))
             }
         }
         Err(e) => {
@@ -572,7 +570,9 @@ pub fn handle_resolve_flag(db: &MemoryDB, input: &Value) -> Result<String, Strin
     debug!(flag_id, "Resolving flag");
 
     // Get the flag first so we can boost confidence
-    let flag = db.get_flag(flag_id).map_err(|e| format!("Error: DB: {e}"))?;
+    let flag = db
+        .get_flag(flag_id)
+        .map_err(|e| format!("Error: DB: {e}"))?;
 
     db.resolve_flag(flag_id, &resolution)
         .map_err(|e| format!("Error: DB: {e}"))?;

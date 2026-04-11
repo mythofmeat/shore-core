@@ -485,7 +485,6 @@ async fn run_memory_shell(conn: &mut SWPConnection) -> Result<(), Box<dyn std::e
     Ok(())
 }
 
-
 /// Resolve the Shore config directory.
 fn config_dir() -> std::path::PathBuf {
     shore_config::config_dir()

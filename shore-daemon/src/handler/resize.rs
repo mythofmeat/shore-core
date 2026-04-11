@@ -38,7 +38,11 @@ pub(super) fn smart_resize(
         return None;
     }
     if media_type == "image/gif" {
-        warn!(size = bytes.len(), max = max_bytes, "GIF exceeds max_image_size but resizing is not supported; sending as-is");
+        warn!(
+            size = bytes.len(),
+            max = max_bytes,
+            "GIF exceeds max_image_size but resizing is not supported; sending as-is"
+        );
         return None;
     }
     let img = match image::load_from_memory(bytes) {
@@ -81,7 +85,8 @@ fn resize_transparent(
         if let Some(buf2) = fir_resize_and_encode_png(img, retry_w, retry_h) {
             if (buf2.len() as u64) > max_bytes {
                 warn!(
-                    size = buf2.len(), max = max_bytes,
+                    size = buf2.len(),
+                    max = max_bytes,
                     "Transparent image still exceeds limit after retry; sending best-effort result"
                 );
             }
@@ -97,7 +102,11 @@ fn resize_quality_only(img: &DynamicImage, max_bytes: u64) -> Option<(Vec<u8>, &
     for quality in [90u8, 75] {
         if let Some(buf) = encode_jpeg_from_dynamic(img, img.width(), img.height(), quality) {
             if (buf.len() as u64) <= max_bytes {
-                info!(quality, size = buf.len(), "Reduced image quality without dimension change");
+                info!(
+                    quality,
+                    size = buf.len(),
+                    "Reduced image quality without dimension change"
+                );
                 return Some((buf, "image/jpeg"));
             }
         }
@@ -117,8 +126,7 @@ fn resize_with_dims(
     } else {
         1.0
     };
-    let raw_scale =
-        ((max_bytes as f64 * format_factor / src_bytes as f64).sqrt() * 0.85).min(1.0);
+    let raw_scale = ((max_bytes as f64 * format_factor / src_bytes as f64).sqrt() * 0.85).min(1.0);
     let (mut new_w, mut new_h) = scaled_dims(src_w, src_h, raw_scale);
     if src_w.max(src_h) >= DIMENSION_FLOOR && new_w.max(new_h) < DIMENSION_FLOOR {
         let boost = DIMENSION_FLOOR as f64 / new_w.max(new_h) as f64;
@@ -137,7 +145,8 @@ fn resize_with_dims(
         if let Some(buf2) = fir_resize_and_encode_jpeg(img, retry_w, retry_h, retry_q) {
             if (buf2.len() as u64) > max_bytes {
                 warn!(
-                    size = buf2.len(), max = max_bytes,
+                    size = buf2.len(),
+                    max = max_bytes,
                     "Image still exceeds limit after retry; sending best-effort result"
                 );
             }
@@ -209,14 +218,7 @@ fn encode_jpeg_from_dynamic(img: &DynamicImage, w: u32, h: u32, quality: u8) -> 
     Some(buf)
 }
 
-fn log_resize(
-    src_w: u32,
-    src_h: u32,
-    dst_w: u32,
-    dst_h: u32,
-    src_bytes: u64,
-    dst_bytes: u64,
-) {
+fn log_resize(src_w: u32, src_h: u32, dst_w: u32, dst_h: u32, src_bytes: u64, dst_bytes: u64) {
     info!(
         original_size = src_bytes,
         resized_size = dst_bytes,
@@ -258,7 +260,11 @@ fn write_cache(cache_dir: &Path, key: &str, bytes: &[u8], media_type: &str) {
         warn!(error = %e, "Failed to create resize cache directory");
         return;
     }
-    let ext = if media_type == "image/png" { "png" } else { "jpg" };
+    let ext = if media_type == "image/png" {
+        "png"
+    } else {
+        "jpg"
+    };
     let path = cache_dir.join(format!("{key}.{ext}"));
     if let Err(e) = std::fs::write(&path, bytes) {
         warn!(error = %e, "Failed to write to resize cache");
@@ -586,13 +592,21 @@ mod tests {
 
         // First call: cache miss
         let r1 = cached_resize(
-            img_path.to_str().unwrap(), &jpeg, "image/jpeg", 2_000_000, &cache_dir,
+            img_path.to_str().unwrap(),
+            &jpeg,
+            "image/jpeg",
+            2_000_000,
+            &cache_dir,
         );
         assert!(r1.is_some());
 
         // Second call: should hit cache and return same bytes
         let r2 = cached_resize(
-            img_path.to_str().unwrap(), &jpeg, "image/jpeg", 2_000_000, &cache_dir,
+            img_path.to_str().unwrap(),
+            &jpeg,
+            "image/jpeg",
+            2_000_000,
+            &cache_dir,
         );
         assert!(r2.is_some());
         let (bytes1, mt1) = r1.unwrap();
@@ -614,19 +628,31 @@ mod tests {
 
         // Resize with 2MB limit
         let r1 = cached_resize(
-            img_path.to_str().unwrap(), &jpeg, "image/jpeg", 2_000_000, &cache_dir,
+            img_path.to_str().unwrap(),
+            &jpeg,
+            "image/jpeg",
+            2_000_000,
+            &cache_dir,
         );
         assert!(r1.is_some());
 
         // Same image, different limit — should NOT use the old cached version
         let r2 = cached_resize(
-            img_path.to_str().unwrap(), &jpeg, "image/jpeg", 1_000_000, &cache_dir,
+            img_path.to_str().unwrap(),
+            &jpeg,
+            "image/jpeg",
+            1_000_000,
+            &cache_dir,
         );
         assert!(r2.is_some());
 
         // Cache dir should have 2 files (different keys)
         let resized_dir = cache_dir.join("resized");
         let entries: Vec<_> = std::fs::read_dir(&resized_dir).unwrap().collect();
-        assert_eq!(entries.len(), 2, "Different limits should produce separate cache entries");
+        assert_eq!(
+            entries.len(),
+            2,
+            "Different limits should produce separate cache entries"
+        );
     }
 }

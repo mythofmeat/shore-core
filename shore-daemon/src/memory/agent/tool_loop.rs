@@ -66,7 +66,11 @@ pub async fn run_agent_loop(
 
         // --- No tool calls → final response ---
         if tool_uses.is_empty() {
-            info!(iterations = iteration + 1, mutations = mutations.len(), "Agent loop complete");
+            info!(
+                iterations = iteration + 1,
+                mutations = mutations.len(),
+                "Agent loop complete"
+            );
             return Ok((response.text, mutations));
         }
 
@@ -81,7 +85,12 @@ pub async fn run_agent_loop(
             }
         }
 
-        debug!(iteration, reads = read_ops.len(), writes = write_ops.len(), "Agent iteration");
+        debug!(
+            iteration,
+            reads = read_ops.len(),
+            writes = write_ops.len(),
+            "Agent iteration"
+        );
 
         let mut tool_results: Vec<ToolResult> = Vec::new();
 
@@ -172,7 +181,11 @@ pub async fn run_agent_loop(
     }
 
     // Reached max iterations
-    warn!(max = MAX_ITERATIONS, mutations = mutations.len(), "Agent loop hit max iterations");
+    warn!(
+        max = MAX_ITERATIONS,
+        mutations = mutations.len(),
+        "Agent loop hit max iterations"
+    );
     Ok((
         "Agent loop reached maximum iterations.".to_string(),
         mutations,

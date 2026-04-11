@@ -282,7 +282,10 @@ where
         clients.is_empty()
     };
     if all_gone {
-        let _ = ctx.route_tx.send(RoutedMessage::AllClientsDisconnected).await;
+        let _ = ctx
+            .route_tx
+            .send(RoutedMessage::AllClientsDisconnected)
+            .await;
     }
 
     result
@@ -1011,7 +1014,10 @@ mod tests {
     /// client sending a multi-GB line.
     #[tokio::test]
     async fn read_message_rejects_oversized() {
-        let oversized = format!("{{\"type\":\"message\",\"body\":{{\"content\":\"{}\"}}}}\n", "x".repeat(MAX_MESSAGE_SIZE + 1));
+        let oversized = format!(
+            "{{\"type\":\"message\",\"body\":{{\"content\":\"{}\"}}}}\n",
+            "x".repeat(MAX_MESSAGE_SIZE + 1)
+        );
 
         let (mut writer, reader) = duplex(MAX_MESSAGE_SIZE + 4096);
         let mut buf_reader = BufReader::new(reader);

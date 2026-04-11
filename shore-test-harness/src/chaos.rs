@@ -20,10 +20,8 @@ impl CrashedHarness {
     /// Boot a new daemon from the existing on-disk state, reusing the same
     /// temp directory, mock LLM server, data dir, and TCP address.
     pub async fn reboot(self) -> TestHarness {
-        let config = TestConfigBuilder::default().build(
-            self.tmp_dir.path(),
-            &self.mock_llm.base_url(),
-        );
+        let config =
+            TestConfigBuilder::default().build(self.tmp_dir.path(), &self.mock_llm.base_url());
 
         TestHarness::wire_daemon(
             config,
@@ -56,7 +54,11 @@ impl CrashedHarness {
             .open(&path)
             .unwrap_or_else(|e| panic!("truncate_file: could not open {}: {}", path.display(), e));
         file.set_len(bytes_to_keep).unwrap_or_else(|e| {
-            panic!("truncate_file: set_len failed for {}: {}", path.display(), e)
+            panic!(
+                "truncate_file: set_len failed for {}: {}",
+                path.display(),
+                e
+            )
         });
         // Flush to ensure the truncation is visible immediately.
         drop(file);

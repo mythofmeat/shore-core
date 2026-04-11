@@ -363,7 +363,11 @@ impl ModelCatalog {
         // 1. Try qualified name match.
         for model in self.chat.values().chain(self.tools.values()) {
             if model.qualified_name == name {
-                debug!(name, qualified_name = name, "Model resolved by qualified name");
+                debug!(
+                    name,
+                    qualified_name = name,
+                    "Model resolved by qualified name"
+                );
                 return Ok(model);
             }
         }
@@ -394,7 +398,11 @@ impl ModelCatalog {
                 })
             }
             1 => {
-                debug!(name, qualified_name = matches[0].qualified_name, "Model resolved by short name");
+                debug!(
+                    name,
+                    qualified_name = matches[0].qualified_name,
+                    "Model resolved by short name"
+                );
                 Ok(matches[0])
             }
             _ => {
@@ -436,7 +444,11 @@ fn parse_category(
     section: &toml::Table,
 ) -> Result<BTreeMap<String, ResolvedModel>, CatalogError> {
     let mut models = BTreeMap::new();
-    debug!(category, providers = section.len(), "Parsing model category");
+    debug!(
+        category,
+        providers = section.len(),
+        "Parsing model category"
+    );
 
     for (provider_key, provider_value) in section {
         let provider_table = match provider_value.as_table() {
@@ -505,7 +517,13 @@ fn parse_category(
             );
 
             let qualified = format!("{category}.{provider_key}.{model_name}");
-            debug!(category, provider = provider_key, model = model_name, qualified, "Resolved model entry");
+            debug!(
+                category,
+                provider = provider_key,
+                model = model_name,
+                qualified,
+                "Resolved model entry"
+            );
             models.insert(qualified, resolved);
         }
     }
@@ -866,7 +884,10 @@ model_id = "anthropic/claude-opus-4-6"
         assert!(catalog.chat.contains_key("chat.openrouter.opus"));
 
         // Each must carry the correct provider-specific model_id.
-        assert_eq!(catalog.chat["chat.anthropic.opus"].model_id, "claude-opus-4-6");
+        assert_eq!(
+            catalog.chat["chat.anthropic.opus"].model_id,
+            "claude-opus-4-6"
+        );
         assert_eq!(
             catalog.chat["chat.openrouter.opus"].model_id,
             "anthropic/claude-opus-4-6"

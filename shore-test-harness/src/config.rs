@@ -1,10 +1,10 @@
 use std::path::Path;
 
 use shore_config::{
-    LoadedConfig, ShoreDirs,
     app::{AppConfig, BehaviorConfig, CompactionConfig, ToolUseConfig},
     duration::ConfigDuration,
     models::ModelCatalog,
+    LoadedConfig, ShoreDirs,
 };
 
 pub struct TestConfigBuilder {
@@ -102,9 +102,7 @@ impl TestConfigBuilder {
         std::fs::create_dir_all(&runtime_dir).expect("failed to create runtime dir");
 
         // Write character definition file.
-        let char_dir = config_dir
-            .join("characters")
-            .join(&self.character_name);
+        let char_dir = config_dir.join("characters").join(&self.character_name);
         std::fs::create_dir_all(&char_dir).expect("failed to create character dir");
         std::fs::write(char_dir.join("character.md"), &self.character_definition)
             .expect("failed to write character.md");
@@ -173,13 +171,9 @@ dimensions = 8
             None
         };
 
-        let models = ModelCatalog::from_sections(
-            Some(&chat_table),
-            None,
-            embed_table.as_ref(),
-            None,
-        )
-        .expect("failed to build ModelCatalog");
+        let models =
+            ModelCatalog::from_sections(Some(&chat_table), None, embed_table.as_ref(), None)
+                .expect("failed to build ModelCatalog");
 
         LoadedConfig::new_for_test(
             app,

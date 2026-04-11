@@ -49,10 +49,7 @@ async fn test_second_client_receives_broadcasts() {
         .expect("failed to send message");
 
     // Collect on both clients concurrently.
-    let (r1, r2) = tokio::join!(
-        harness.collect_stream(),
-        collect_stream_from(&mut second),
-    );
+    let (r1, r2) = tokio::join!(harness.collect_stream(), collect_stream_from(&mut second),);
 
     r1.assert_text_contains("broadcast hello");
     r2.assert_text_contains("broadcast hello");
@@ -190,27 +187,20 @@ async fn test_multiple_clients_both_get_tool_events() {
         .expect("failed to send message");
 
     // Phase 1 stream: tool_use SSE (StreamStart → StreamEnd).
-    let (p1_c1, p1_c2) = tokio::join!(
-        harness.collect_stream(),
-        collect_stream_from(&mut second),
-    );
+    let (p1_c1, p1_c2) = tokio::join!(harness.collect_stream(), collect_stream_from(&mut second),);
     assert!(p1_c1.stream_ended);
     assert!(p1_c2.stream_ended);
 
     // Phase 2 stream: ToolCall → ToolResult → StreamStart → chunks → StreamEnd.
-    let (p2_c1, p2_c2) = tokio::join!(
-        harness.collect_stream(),
-        collect_stream_from(&mut second),
-    );
+    let (p2_c1, p2_c2) = tokio::join!(harness.collect_stream(), collect_stream_from(&mut second),);
 
     // Both clients should see the final text.
     p2_c1.assert_text_contains("Time checked by both clients");
     p2_c2.assert_text_contains("Time checked by both clients");
 
     // Both clients should have received ToolCall events.
-    let has_tool_call = |msgs: &[ServerMessage]| {
-        msgs.iter().any(|m| matches!(m, ServerMessage::ToolCall(_)))
-    };
+    let has_tool_call =
+        |msgs: &[ServerMessage]| msgs.iter().any(|m| matches!(m, ServerMessage::ToolCall(_)));
     assert!(
         has_tool_call(&p2_c1.raw_messages),
         "First client missing ToolCall event"

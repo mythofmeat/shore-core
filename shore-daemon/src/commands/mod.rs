@@ -284,7 +284,11 @@ mod tests {
             active_model: None,
             session_tokens: Arc::new(Mutex::new(SessionTokens::default())),
             autonomy,
-            llm_client: LedgerClient::new(shore_llm_client::LlmClient::new(), &data_dir.join("ledger.db")).unwrap(),
+            llm_client: LedgerClient::new(
+                shore_llm_client::LlmClient::new(),
+                &data_dir.join("ledger.db"),
+            )
+            .unwrap(),
             diagnostics: Arc::new(Mutex::new(Diagnostics::default())),
             memory_shell_sessions: HashMap::new(),
         };
