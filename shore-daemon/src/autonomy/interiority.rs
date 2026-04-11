@@ -52,7 +52,6 @@ pub struct InteriorityClock {
     last_anchor: Instant,
 
     // -- abandonment guard --------------------------------------------------
-
     /// Consecutive interiority ticks that fired without a user message.
     ticks_without_user: u32,
 
@@ -61,7 +60,6 @@ pub struct InteriorityClock {
     last_user_at: Option<Instant>,
 
     // -- config -------------------------------------------------------------
-
     /// Fallback interval when the character doesn't call set_next_wake.
     default_interval: Duration,
 
@@ -126,6 +124,18 @@ impl InteriorityClock {
         }
     }
 
+    fn is_abandoned(&self, now: Instant) -> bool {
+        if self.ticks_without_user >= self.max_idle_ticks {
+            return true;
+        }
+        if let Some(last_user) = self.last_user_at {
+            if now.duration_since(last_user) >= self.max_silent_duration {
+                return true;
+            }
+        }
+        false
+    }
+
     // -- core ---------------------------------------------------------------
 
     /// Called by the autonomy loop on each ~30s tick.
@@ -138,8 +148,13 @@ impl InteriorityClock {
     /// 4. Guard passes → increment counter, clear deadline, update anchor,
     ///    return RunTick.
     pub fn tick(&mut self, now: Instant) -> InteriorityAction {
-        // Step 1: bootstrap if no deadline set.
+        // Step 1: bootstrap if no deadline set — but only if the guard hasn't
+        // already tripped. Once abandoned, we stay dormant until reset by a
+        // user message.
         if self.next_wake_at.is_none() {
+            if self.is_abandoned(now) {
+                return InteriorityAction::None;
+            }
             let target = self.last_anchor + self.default_interval;
             self.next_wake_at = Some(target);
             debug!(
