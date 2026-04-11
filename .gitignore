@@ -9,6 +9,7 @@
 .vscode/
 .claude/
 .codex
+.skill-staging/
 *.swp
 *.swo
 *~
