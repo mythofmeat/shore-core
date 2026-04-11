@@ -14,13 +14,15 @@ You are operating within a constrained context window and strict system prompts.
 
 4. FORCED VERIFICATION: You are FORBIDDEN from claiming a task is complete until you have:
 
-- Run `npx tsc --noEmit` (or equivalent type check)
+- Run `cargo check --workspace` (or `cargo build --workspace` when a full build is more appropriate)
 
-- Run `npx eslint . --quiet` (if configured)
+- Run `cargo test --workspace`
+
+- Run the most relevant integration or live verification path for behavior changes when credentials and environment are available (`cargo test --test e2e -- --ignored` and/or `./scripts/live-tests/live-test.sh`)
 
 - Fixed ALL resulting errors
 
-If no type-checker is set up, state it clearly instead of saying "done".
+If a required verification path cannot run, state clearly what is missing or why it was skipped instead of saying "done".
 
 ## Context Management
 
