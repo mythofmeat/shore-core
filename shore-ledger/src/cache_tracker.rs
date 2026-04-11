@@ -47,6 +47,12 @@ pub struct CacheTracker {
     ttl_expired_since_warm: bool,
 }
 
+impl Default for CacheTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CacheTracker {
     pub fn new() -> Self {
         Self {
@@ -82,8 +88,7 @@ impl CacheTracker {
         last_cache_read: u32,
         ttl_secs: u64,
     ) -> Self {
-        let parsed = DateTime::parse_from_rfc3339(last_ts_str)
-            .map(|dt| dt.with_timezone(&Utc));
+        let parsed = DateTime::parse_from_rfc3339(last_ts_str).map(|dt| dt.with_timezone(&Utc));
 
         let state = match &parsed {
             Ok(ts) => {
@@ -171,9 +176,7 @@ impl CacheTracker {
         // 5. Evaluate against expected behavior
         let mut anomaly = match self.state {
             CacheState::Warm => {
-                if skip_cache_read_comparison {
-                    None // Interiority/tool_loop — different prefix, can't compare
-                } else if obs.cache_read_tokens >= self.last_cache_read {
+                if skip_cache_read_comparison || obs.cache_read_tokens >= self.last_cache_read {
                     None // OK, stay Warm
                 } else {
                     self.state = CacheState::Cold;
@@ -227,12 +230,7 @@ impl CacheTracker {
         }
     }
 
-    fn update_metadata(
-        &mut self,
-        ts: Option<DateTime<Utc>>,
-        model: &str,
-        thinking: bool,
-    ) {
+    fn update_metadata(&mut self, ts: Option<DateTime<Utc>>, model: &str, thinking: bool) {
         self.last_ts = ts;
         self.last_model = Some(model.to_string());
         self.last_thinking = Some(thinking);
@@ -459,44 +457,23 @@ mod tests {
 
     #[test]
     fn reconstruct_warm_within_ttl() {
-        let recent_ts = Utc::now()
-            .format("%Y-%m-%dT%H:%M:%SZ")
-            .to_string();
-        let tracker = CacheTracker::reconstruct(
-            &recent_ts,
-            "claude-opus-4-6",
-            true,
-            500,
-            3600,
-        );
+        let recent_ts = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        let tracker = CacheTracker::reconstruct(&recent_ts, "claude-opus-4-6", true, 500, 3600);
         assert_eq!(tracker.state(), CacheState::Warm);
         assert_eq!(tracker.last_cache_read(), 500);
     }
 
     #[test]
     fn reconstruct_cold_when_no_cache_read() {
-        let recent_ts = Utc::now()
-            .format("%Y-%m-%dT%H:%M:%SZ")
-            .to_string();
-        let tracker = CacheTracker::reconstruct(
-            &recent_ts,
-            "claude-opus-4-6",
-            true,
-            0,
-            3600,
-        );
+        let recent_ts = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        let tracker = CacheTracker::reconstruct(&recent_ts, "claude-opus-4-6", true, 0, 3600);
         assert_eq!(tracker.state(), CacheState::Cold);
     }
 
     #[test]
     fn reconstruct_cold_when_ttl_expired() {
-        let tracker = CacheTracker::reconstruct(
-            "2020-01-01T00:00:00Z",
-            "claude-opus-4-6",
-            true,
-            500,
-            3600,
-        );
+        let tracker =
+            CacheTracker::reconstruct("2020-01-01T00:00:00Z", "claude-opus-4-6", true, 500, 3600);
         assert_eq!(tracker.state(), CacheState::Cold);
     }
 

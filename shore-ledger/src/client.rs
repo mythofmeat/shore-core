@@ -4,6 +4,7 @@ use crate::cache_tracker::{Anomaly, CacheState, CacheTracker, Observation};
 use crate::ledger::{CallRow, Ledger};
 use crate::pricing::PricingEngine;
 use crate::stream::LedgerStream;
+use crate::sync::lock_or_recover;
 use chrono::Utc;
 use shore_config::models::ResolvedModel;
 use shore_llm_client::types::{GenerateResponse, LlmRequest, Timing, Usage};
@@ -44,21 +45,36 @@ impl CallType {
 
 // ── record_call ─────────────────────────────────────────────────────────────
 
-#[instrument(skip(ledger, pricing, cache_trackers, usage, timing, call_type), fields(call_type = call_type.as_str()))]
+pub(crate) struct RecordCall<'a> {
+    pub(crate) provider: &'a str,
+    pub(crate) model: &'a str,
+    pub(crate) call_type: CallType,
+    pub(crate) character: &'a str,
+    pub(crate) usage: &'a Usage,
+    pub(crate) timing: &'a Timing,
+    pub(crate) finish_reason: &'a str,
+    pub(crate) thinking_enabled: bool,
+    pub(crate) cache_ttl: Option<String>,
+}
+
+#[instrument(skip(ledger, pricing, cache_trackers, record), fields(call_type = record.call_type.as_str()))]
 pub(crate) fn record_call(
     ledger: &Ledger,
     pricing: &PricingEngine,
     cache_trackers: &Mutex<HashMap<String, CacheTracker>>,
-    provider: &str,
-    model: &str,
-    call_type: CallType,
-    character: &str,
-    usage: &Usage,
-    timing: &Timing,
-    finish_reason: &str,
-    thinking_enabled: bool,
-    cache_ttl: Option<String>,
+    record: RecordCall<'_>,
 ) {
+    let RecordCall {
+        provider,
+        model,
+        call_type,
+        character,
+        usage,
+        timing,
+        finish_reason,
+        thinking_enabled,
+        cache_ttl,
+    } = record;
     let ts = Utc::now().to_rfc3339();
 
     // Cache tracking: run for any call that reports cache metrics (not just
@@ -74,10 +90,8 @@ pub(crate) fn record_call(
             call_type: call_type.as_str().to_string(),
         };
 
-        let mut trackers = cache_trackers.lock().unwrap();
-        let tracker = trackers
-            .entry(character.to_string())
-            .or_insert_with(CacheTracker::new);
+        let mut trackers = lock_or_recover("ledger cache tracker map", cache_trackers);
+        let tracker = trackers.entry(character.to_string()).or_default();
         let result = tracker.observe(&obs);
 
         let state_str = match result.state {
@@ -118,15 +132,15 @@ pub(crate) fn record_call(
 
     // Cost calculation (sync — cached pricing only, no fetch)
     let cost = pricing
-        .calculate_cost(
+        .calculate_cost(crate::pricing::CostRequest {
             provider,
             model,
-            usage.input_tokens,
-            usage.output_tokens,
-            usage.cache_read_tokens,
-            usage.cache_creation_tokens,
-            cache_ttl.as_deref(),
-        )
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            cache_read_tokens: usage.cache_read_tokens,
+            cache_write_tokens: usage.cache_creation_tokens,
+            cache_ttl: cache_ttl.as_deref(),
+        })
         .ok()
         .flatten();
 
@@ -159,14 +173,16 @@ pub(crate) fn record_call(
     // here — but character + call_type + timestamp provide enough context.
     if has_cache_metrics && shore_llm_client::cache_forensics::is_enabled() {
         shore_llm_client::cache_forensics::log_response(
-            0, // no request-side correlation for streaming path
-            model,
-            character,
-            call_type.as_str(),
-            usage.input_tokens,
-            usage.output_tokens,
-            usage.cache_read_tokens,
-            usage.cache_creation_tokens,
+            shore_llm_client::cache_forensics::ResponseLog {
+                call_id: 0, // no request-side correlation for streaming path
+                model,
+                character,
+                call_type: call_type.as_str(),
+                input_tokens: usage.input_tokens,
+                output_tokens: usage.output_tokens,
+                cache_read_tokens: usage.cache_read_tokens,
+                cache_creation_tokens: usage.cache_creation_tokens,
+            },
         );
     }
 
@@ -197,10 +213,7 @@ pub struct LedgerClient {
 
 impl LedgerClient {
     /// Create a new LedgerClient backed by a file database at `db_path`.
-    pub fn new(
-        client: LlmClient,
-        db_path: &Path,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new(client: LlmClient, db_path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
         let ledger = Arc::new(Ledger::open(db_path)?);
         let pricing = Arc::new(PricingEngine::new(ledger.clone()));
         Ok(Self {
@@ -294,15 +307,17 @@ impl LedgerClient {
             &self.ledger,
             &self.pricing,
             &self.cache_trackers,
-            provider_key,
-            &request.model,
-            call_type,
-            character,
-            &resp.usage,
-            &resp.timing,
-            &resp.finish_reason,
-            thinking_enabled,
-            cache_ttl,
+            RecordCall {
+                provider: provider_key,
+                model: &request.model,
+                call_type,
+                character,
+                usage: &resp.usage,
+                timing: &resp.timing,
+                finish_reason: &resp.finish_reason,
+                thinking_enabled,
+                cache_ttl,
+            },
         );
 
         Ok(resp)
@@ -423,11 +438,13 @@ mod tests {
     use crate::pricing::PricingEngine;
     use std::sync::Arc;
 
-    fn test_parts() -> (
+    type TestParts = (
         Arc<Ledger>,
         Arc<PricingEngine>,
         Arc<Mutex<HashMap<String, CacheTracker>>>,
-    ) {
+    );
+
+    fn test_parts() -> TestParts {
         let ledger = Arc::new(Ledger::open_in_memory().unwrap());
         let pricing = Arc::new(PricingEngine::new(ledger.clone()));
         let trackers = Arc::new(Mutex::new(HashMap::new()));
@@ -441,23 +458,25 @@ mod tests {
             &ledger,
             &pricing,
             &trackers,
-            "anthropic",
-            "claude-opus-4-6",
-            CallType::Message,
-            "aria",
-            &Usage {
-                input_tokens: 100,
-                output_tokens: 50,
-                cache_read_tokens: 0,
-                cache_creation_tokens: 0,
+            RecordCall {
+                provider: "anthropic",
+                model: "claude-opus-4-6",
+                call_type: CallType::Message,
+                character: "aria",
+                usage: &Usage {
+                    input_tokens: 100,
+                    output_tokens: 50,
+                    cache_read_tokens: 0,
+                    cache_creation_tokens: 0,
+                },
+                timing: &Timing {
+                    total_ms: 1500,
+                    time_to_first_token_ms: 0,
+                },
+                finish_reason: "end_turn",
+                thinking_enabled: false,
+                cache_ttl: None,
             },
-            &Timing {
-                total_ms: 1500,
-                time_to_first_token_ms: 0,
-            },
-            "end_turn",
-            false,
-            None,
         );
         let rows = ledger.recent(1).unwrap();
         assert_eq!(rows.len(), 1);
@@ -472,23 +491,25 @@ mod tests {
             &ledger,
             &pricing,
             &trackers,
-            "anthropic",
-            "claude-opus-4-6",
-            CallType::Message,
-            "aria",
-            &Usage {
-                input_tokens: 100,
-                output_tokens: 50,
-                cache_read_tokens: 0,
-                cache_creation_tokens: 500,
+            RecordCall {
+                provider: "anthropic",
+                model: "claude-opus-4-6",
+                call_type: CallType::Message,
+                character: "aria",
+                usage: &Usage {
+                    input_tokens: 100,
+                    output_tokens: 50,
+                    cache_read_tokens: 0,
+                    cache_creation_tokens: 500,
+                },
+                timing: &Timing {
+                    total_ms: 1500,
+                    time_to_first_token_ms: 0,
+                },
+                finish_reason: "end_turn",
+                thinking_enabled: true,
+                cache_ttl: None,
             },
-            &Timing {
-                total_ms: 1500,
-                time_to_first_token_ms: 0,
-            },
-            "end_turn",
-            true,
-            None,
         );
         let map = trackers.lock().unwrap();
         let tracker = map.get("aria").unwrap();
@@ -502,23 +523,25 @@ mod tests {
             &ledger,
             &pricing,
             &trackers,
-            "openai",
-            "gpt-4o",
-            CallType::Message,
-            "aria",
-            &Usage {
-                input_tokens: 100,
-                output_tokens: 50,
-                cache_read_tokens: 0,
-                cache_creation_tokens: 0,
+            RecordCall {
+                provider: "openai",
+                model: "gpt-4o",
+                call_type: CallType::Message,
+                character: "aria",
+                usage: &Usage {
+                    input_tokens: 100,
+                    output_tokens: 50,
+                    cache_read_tokens: 0,
+                    cache_creation_tokens: 0,
+                },
+                timing: &Timing {
+                    total_ms: 500,
+                    time_to_first_token_ms: 0,
+                },
+                finish_reason: "stop",
+                thinking_enabled: false,
+                cache_ttl: None,
             },
-            &Timing {
-                total_ms: 500,
-                time_to_first_token_ms: 0,
-            },
-            "stop",
-            false,
-            None,
         );
         let rows = ledger.recent(1).unwrap();
         assert!(rows[0].cache_state.is_none());
@@ -543,23 +566,25 @@ mod tests {
             &ledger,
             &pricing,
             &trackers,
-            "anthropic",
-            "claude-opus-4-6",
-            CallType::Message,
-            "aria",
-            &Usage {
-                input_tokens: 100,
-                output_tokens: 50,
-                cache_read_tokens: 80,
-                cache_creation_tokens: 200,
+            RecordCall {
+                provider: "anthropic",
+                model: "claude-opus-4-6",
+                call_type: CallType::Message,
+                character: "aria",
+                usage: &Usage {
+                    input_tokens: 100,
+                    output_tokens: 50,
+                    cache_read_tokens: 80,
+                    cache_creation_tokens: 200,
+                },
+                timing: &Timing {
+                    total_ms: 1500,
+                    time_to_first_token_ms: 0,
+                },
+                finish_reason: "end_turn",
+                thinking_enabled: true,
+                cache_ttl: None,
             },
-            &Timing {
-                total_ms: 1500,
-                time_to_first_token_ms: 0,
-            },
-            "end_turn",
-            true,
-            None,
         );
         let rows = ledger.recent(1).unwrap();
         assert_eq!(rows[0].cache_write_tokens, 200);
@@ -573,23 +598,25 @@ mod tests {
             &ledger,
             &pricing,
             &trackers,
-            "anthropic",
-            "claude-opus-4-6",
-            CallType::Message,
-            "aria",
-            &Usage {
-                input_tokens: 100,
-                output_tokens: 50,
-                cache_read_tokens: 0,
-                cache_creation_tokens: 0,
+            RecordCall {
+                provider: "anthropic",
+                model: "claude-opus-4-6",
+                call_type: CallType::Message,
+                character: "aria",
+                usage: &Usage {
+                    input_tokens: 100,
+                    output_tokens: 50,
+                    cache_read_tokens: 0,
+                    cache_creation_tokens: 0,
+                },
+                timing: &Timing {
+                    total_ms: 1500,
+                    time_to_first_token_ms: 0,
+                },
+                finish_reason: "end_turn",
+                thinking_enabled: false,
+                cache_ttl: Some("5m".to_string()),
             },
-            &Timing {
-                total_ms: 1500,
-                time_to_first_token_ms: 0,
-            },
-            "end_turn",
-            false,
-            Some("5m".to_string()),
         );
         let rows = ledger.recent(1).unwrap();
         assert_eq!(rows.len(), 1);

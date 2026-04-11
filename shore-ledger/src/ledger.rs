@@ -1,8 +1,9 @@
 //! SQLite-backed append-only ledger for LLM call recording.
 
+use crate::sync::lock_or_recover;
 use rusqlite::{params, Connection, Result as SqlResult};
 use std::path::Path;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::Mutex;
 use tracing::{debug, info};
 
 // ── Schema ────────────────────────────────────────────────────────────────────
@@ -116,95 +117,110 @@ impl Ledger {
         };
 
         // v2: cache_ttl on calls
-        add_if_missing(
-            "ALTER TABLE calls ADD COLUMN cache_ttl TEXT DEFAULT '1h'",
-        )?;
+        add_if_missing("ALTER TABLE calls ADD COLUMN cache_ttl TEXT DEFAULT '1h'")?;
 
         Ok(())
     }
 
     /// Insert a call row, returning its autoincrement ID.
     pub fn insert(&self, row: &CallRow) -> Result<i64, rusqlite::Error> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
-            r#"INSERT INTO calls (
-                ts, character, provider, model, call_type,
-                input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
-                cache_ttl,
-                total_ms, ttft_ms, finish_reason, thinking_enabled,
-                cache_state, cache_anomaly,
-                input_cost, output_cost, cache_read_cost, cache_write_cost, total_cost
-            ) VALUES (
-                ?1, ?2, ?3, ?4, ?5,
-                ?6, ?7, ?8, ?9,
-                ?10,
-                ?11, ?12, ?13, ?14,
-                ?15, ?16,
-                ?17, ?18, ?19, ?20, ?21
-            )"#,
-            params![
-                row.ts,
-                row.character,
-                row.provider,
-                row.model,
-                row.call_type,
-                row.input_tokens,
-                row.output_tokens,
-                row.cache_read_tokens,
-                row.cache_write_tokens,
-                row.cache_ttl,
-                row.total_ms,
-                row.ttft_ms,
-                row.finish_reason,
-                row.thinking_enabled as i64,
-                row.cache_state,
-                row.cache_anomaly,
-                row.input_cost,
-                row.output_cost,
-                row.cache_read_cost,
-                row.cache_write_cost,
-                row.total_cost,
-            ],
-        )?;
+        let started = std::time::Instant::now();
+        let row_id = self.with_conn(|conn| {
+            conn.execute(
+                r#"INSERT INTO calls (
+                    ts, character, provider, model, call_type,
+                    input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+                    cache_ttl,
+                    total_ms, ttft_ms, finish_reason, thinking_enabled,
+                    cache_state, cache_anomaly,
+                    input_cost, output_cost, cache_read_cost, cache_write_cost, total_cost
+                ) VALUES (
+                    ?1, ?2, ?3, ?4, ?5,
+                    ?6, ?7, ?8, ?9,
+                    ?10,
+                    ?11, ?12, ?13, ?14,
+                    ?15, ?16,
+                    ?17, ?18, ?19, ?20, ?21
+                )"#,
+                params![
+                    row.ts,
+                    row.character,
+                    row.provider,
+                    row.model,
+                    row.call_type,
+                    row.input_tokens,
+                    row.output_tokens,
+                    row.cache_read_tokens,
+                    row.cache_write_tokens,
+                    row.cache_ttl,
+                    row.total_ms,
+                    row.ttft_ms,
+                    row.finish_reason,
+                    row.thinking_enabled as i64,
+                    row.cache_state,
+                    row.cache_anomaly,
+                    row.input_cost,
+                    row.output_cost,
+                    row.cache_read_cost,
+                    row.cache_write_cost,
+                    row.total_cost,
+                ],
+            )?;
+            Ok(conn.last_insert_rowid())
+        })?;
         debug!(
             character = row.character,
             call_type = row.call_type,
             input_tokens = row.input_tokens,
             output_tokens = row.output_tokens,
+            elapsed = ?started.elapsed(),
             "Ledger row inserted"
         );
-        Ok(conn.last_insert_rowid())
+        Ok(row_id)
     }
 
     /// Return the `limit` most recent rows, newest first.
     pub fn recent(&self, limit: u32) -> Result<Vec<CallRow>, rusqlite::Error> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT * FROM calls ORDER BY id DESC LIMIT ?1")?;
-        let rows = stmt
-            .query_map(params![limit], row_from_sqlite)?
-            .collect::<SqlResult<Vec<_>>>()?;
-        debug!(count = rows.len(), limit, "Ledger recent query");
+        let started = std::time::Instant::now();
+        let rows = self.with_conn(|conn| {
+            let mut stmt = conn.prepare("SELECT * FROM calls ORDER BY id DESC LIMIT ?1")?;
+            let rows = stmt.query_map(params![limit], row_from_sqlite)?;
+            rows.collect::<SqlResult<Vec<_>>>()
+        })?;
+        debug!(count = rows.len(), limit, elapsed = ?started.elapsed(), "Ledger recent query");
         Ok(rows)
     }
 
     /// Return the most recent non-compaction Anthropic call for `character`.
     pub fn last_anthropic_call(&self, character: &str) -> Result<Option<CallRow>, rusqlite::Error> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            r#"SELECT * FROM calls
-               WHERE character = ?1
-                 AND provider  = 'anthropic'
-                 AND call_type != 'compaction'
-               ORDER BY id DESC
-               LIMIT 1"#,
-        )?;
-        let mut rows = stmt.query_map(params![character], row_from_sqlite)?;
-        rows.next().transpose()
+        let started = std::time::Instant::now();
+        let row = self.with_conn(|conn| {
+            let mut stmt = conn.prepare(
+                r#"SELECT * FROM calls
+                   WHERE character = ?1
+                     AND provider  = 'anthropic'
+                     AND call_type != 'compaction'
+                   ORDER BY id DESC
+                   LIMIT 1"#,
+            )?;
+            let mut rows = stmt.query_map(params![character], row_from_sqlite)?;
+            rows.next().transpose()
+        })?;
+        debug!(
+            character,
+            found = row.is_some(),
+            elapsed = ?started.elapsed(),
+            "Ledger last anthropic call query"
+        );
+        Ok(row)
     }
 
-    /// Expose the underlying connection for sibling modules (e.g. PricingEngine).
-    pub fn conn(&self) -> MutexGuard<'_, Connection> {
-        self.conn.lock().unwrap()
+    pub(crate) fn with_conn<T>(
+        &self,
+        op: impl FnOnce(&Connection) -> Result<T, rusqlite::Error>,
+    ) -> Result<T, rusqlite::Error> {
+        let conn = lock_or_recover("ledger sqlite connection", &self.conn);
+        op(&conn)
     }
 }
 
@@ -242,6 +258,7 @@ pub(crate) fn row_from_sqlite(row: &rusqlite::Row) -> SqlResult<CallRow> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::panic::{catch_unwind, AssertUnwindSafe};
 
     fn test_ledger() -> Ledger {
         Ledger::open_in_memory().unwrap()
@@ -321,5 +338,19 @@ mod tests {
         ledger.insert(&row).unwrap();
         let rows = ledger.recent(1).unwrap();
         assert!(rows[0].total_cost.is_none());
+    }
+
+    #[test]
+    fn poisoned_connection_mutex_is_recovered() {
+        let ledger = test_ledger();
+
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let _guard = ledger.conn.lock().unwrap();
+            panic!("poison ledger sqlite connection");
+        }));
+        assert!(result.is_err());
+
+        let row_id = ledger.insert(&sample_row()).unwrap();
+        assert!(row_id > 0);
     }
 }

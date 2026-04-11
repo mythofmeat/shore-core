@@ -82,7 +82,11 @@ impl SWPConnection {
         let server_hello = match first_msg {
             ServerMessage::Hello(h) => {
                 if h.v != SWP_V1 {
-                    error!(server_version = h.v, expected = SWP_V1, "protocol version mismatch");
+                    error!(
+                        server_version = h.v,
+                        expected = SWP_V1,
+                        "protocol version mismatch"
+                    );
                     return Err(ClientError::Protocol(format!(
                         "unsupported protocol version: {} (expected {})",
                         h.v, SWP_V1
@@ -329,14 +333,10 @@ mod tests {
     /// nanosecond timestamps produce duplicate IDs.
     #[test]
     fn uuid_v4_unique_under_concurrent_calls() {
-        use std::sync::{Arc, Mutex};
-
-        let ids = Arc::new(Mutex::new(std::collections::HashSet::<String>::new()));
         let mut handles = Vec::new();
 
         // Spawn 8 threads each generating 100 IDs concurrently.
         for _ in 0..8 {
-            let ids = Arc::clone(&ids);
             handles.push(std::thread::spawn(move || {
                 let mut local = Vec::with_capacity(100);
                 for _ in 0..100 {
@@ -358,4 +358,3 @@ mod tests {
         assert_eq!(all_ids.len(), 800);
     }
 }
-

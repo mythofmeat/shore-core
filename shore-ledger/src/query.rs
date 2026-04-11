@@ -88,10 +88,9 @@ pub fn usage_summary(
             ORDER BY total_cost DESC"#,
     );
 
-    let conn = ledger.conn();
-    let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt
-        .query_map(params_from_iter(values.iter()), |row| {
+    ledger.with_conn(|conn| {
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params_from_iter(values.iter()), |row| {
             Ok(UsageSummary {
                 provider: row.get(0)?,
                 model: row.get(1)?,
@@ -102,9 +101,9 @@ pub fn usage_summary(
                 total_cache_write: row.get::<_, i64>(6)? as u64,
                 total_cost: row.get::<_, f64>(7)?,
             })
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(rows)
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()
+    })
 }
 
 // ── Anomalies ────────────────────────────────────────────────────────────────
@@ -125,12 +124,11 @@ pub fn query_anomalies(
 
     let sql = format!("SELECT * FROM calls{anomaly_clause} ORDER BY id DESC");
 
-    let conn = ledger.conn();
-    let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt
-        .query_map(params_from_iter(values.iter()), row_from_sqlite)?
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(rows)
+    ledger.with_conn(|conn| {
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params_from_iter(values.iter()), row_from_sqlite)?;
+        rows.collect::<Result<Vec<_>, _>>()
+    })
 }
 
 // ── TSV export ───────────────────────────────────────────────────────────────
@@ -184,18 +182,19 @@ pub fn export_tsv(ledger: &Ledger, filter: &QueryFilter) -> Result<String, rusql
     let (where_clause, values) = build_where(filter);
     let sql = format!("SELECT * FROM calls{where_clause} ORDER BY id ASC");
 
-    let conn = ledger.conn();
-    let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt
-        .query_map(params_from_iter(values.iter()), row_from_sqlite)?
-        .collect::<Result<Vec<_>, _>>()?;
+    ledger.with_conn(|conn| {
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt
+            .query_map(params_from_iter(values.iter()), row_from_sqlite)?
+            .collect::<Result<Vec<_>, _>>()?;
 
-    let mut out = String::from(TSV_HEADER);
-    for r in &rows {
-        out.push('\n');
-        out.push_str(&row_to_tsv(r));
-    }
-    Ok(out)
+        let mut out = String::from(TSV_HEADER);
+        for r in &rows {
+            out.push('\n');
+            out.push_str(&row_to_tsv(r));
+        }
+        Ok(out)
+    })
 }
 
 // ── Active Anthropic characters ──────────────────────────────────────────────
@@ -227,16 +226,15 @@ pub fn active_anthropic_characters(
            ORDER BY c.id DESC"#,
     );
 
-    let conn = ledger.conn();
-    let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt
-        .query_map(params_from_iter(values.iter()), |row| {
+    ledger.with_conn(|conn| {
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params_from_iter(values.iter()), |row| {
             let call = row_from_sqlite(row)?;
             let character = call.character.clone();
             Ok((character, call))
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(rows)
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()
+    })
 }
 
 // ── Warm streak ──────────────────────────────────────────────────────────────
@@ -244,21 +242,22 @@ pub fn active_anthropic_characters(
 /// Counts consecutive warm calls from most recent backwards for `character`.
 /// Bounded to prevent loading unbounded rows for high-volume characters.
 pub fn warm_streak(ledger: &Ledger, character: &str) -> Result<u32, rusqlite::Error> {
-    let conn = ledger.conn();
-    let mut stmt = conn.prepare(
-        "SELECT cache_state FROM calls WHERE character = ?1 ORDER BY id DESC LIMIT 10000",
-    )?;
-    let mut rows = stmt.query_map([character], |row| row.get::<_, Option<String>>(0))?;
+    ledger.with_conn(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT cache_state FROM calls WHERE character = ?1 ORDER BY id DESC LIMIT 10000",
+        )?;
+        let mut rows = stmt.query_map([character], |row| row.get::<_, Option<String>>(0))?;
 
-    let mut count = 0u32;
-    while let Some(Ok(state)) = rows.next() {
-        if state.as_deref() == Some("warm") {
-            count += 1;
-        } else {
-            break;
+        let mut count = 0u32;
+        while let Some(Ok(state)) = rows.next() {
+            if state.as_deref() == Some("warm") {
+                count += 1;
+            } else {
+                break;
+            }
         }
-    }
-    Ok(count)
+        Ok(count)
+    })
 }
 
 // ── Recalculate ─────────────────────────────────────────────────────────────
@@ -277,12 +276,11 @@ pub struct CostRow {
 
 /// Find all rows with NULL total_cost.
 pub fn null_cost_rows(ledger: &Ledger) -> Result<Vec<CostRow>, rusqlite::Error> {
-    let conn = ledger.conn();
-    let mut stmt = conn.prepare(
-        "SELECT id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cache_ttl FROM calls WHERE total_cost IS NULL",
-    )?;
-    let rows = stmt
-        .query_map([], |row| {
+    ledger.with_conn(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cache_ttl FROM calls WHERE total_cost IS NULL",
+        )?;
+        let rows = stmt.query_map([], |row| {
             Ok(CostRow {
                 id: row.get(0)?,
                 provider: row.get(1)?,
@@ -293,19 +291,18 @@ pub fn null_cost_rows(ledger: &Ledger) -> Result<Vec<CostRow>, rusqlite::Error> 
                 cache_write_tokens: row.get(6)?,
                 cache_ttl: row.get(7)?,
             })
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(rows)
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()
+    })
 }
 
 /// Find all rows (for force recalculation).
 pub fn all_cost_rows(ledger: &Ledger) -> Result<Vec<CostRow>, rusqlite::Error> {
-    let conn = ledger.conn();
-    let mut stmt = conn.prepare(
-        "SELECT id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cache_ttl FROM calls",
-    )?;
-    let rows = stmt
-        .query_map([], |row| {
+    ledger.with_conn(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cache_ttl FROM calls",
+        )?;
+        let rows = stmt.query_map([], |row| {
             Ok(CostRow {
                 id: row.get(0)?,
                 provider: row.get(1)?,
@@ -316,9 +313,9 @@ pub fn all_cost_rows(ledger: &Ledger) -> Result<Vec<CostRow>, rusqlite::Error> {
                 cache_write_tokens: row.get(6)?,
                 cache_ttl: row.get(7)?,
             })
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(rows)
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()
+    })
 }
 
 /// Update costs for a single row by id.
@@ -327,12 +324,13 @@ pub fn update_costs(
     id: i64,
     cost: &crate::pricing::CostBreakdown,
 ) -> Result<(), rusqlite::Error> {
-    let conn = ledger.conn();
-    conn.execute(
-        "UPDATE calls SET input_cost=?1, output_cost=?2, cache_read_cost=?3, cache_write_cost=?4, total_cost=?5 WHERE id=?6",
-        rusqlite::params![cost.input, cost.output, cost.cache_read, cost.cache_write, cost.total, id],
-    )?;
-    Ok(())
+    ledger.with_conn(|conn| {
+        conn.execute(
+            "UPDATE calls SET input_cost=?1, output_cost=?2, cache_read_cost=?3, cache_write_cost=?4, total_cost=?5 WHERE id=?6",
+            rusqlite::params![cost.input, cost.output, cost.cache_read, cost.cache_write, cost.total, id],
+        )?;
+        Ok(())
+    })
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────

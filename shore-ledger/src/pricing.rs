@@ -1,6 +1,7 @@
 //! Model pricing via OpenRouter API with local DB cache.
 
 use crate::ledger::Ledger;
+use crate::sync::lock_or_recover;
 use chrono::Utc;
 use rusqlite::params;
 use serde_json::Value;
@@ -32,6 +33,16 @@ pub struct CostBreakdown {
     pub total: f64,
 }
 
+pub struct CostRequest<'a> {
+    pub provider: &'a str,
+    pub model: &'a str,
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+    pub cache_read_tokens: u32,
+    pub cache_write_tokens: u32,
+    pub cache_ttl: Option<&'a str>,
+}
+
 // ── PricingEngine ────────────────────────────────────────────────────────────
 
 pub struct PricingEngine {
@@ -53,27 +64,29 @@ impl PricingEngine {
         model_id: &str,
         pricing: &ModelPricing,
     ) -> Result<(), rusqlite::Error> {
-        let conn = self.ledger.conn();
-        conn.execute(
-            r#"INSERT OR REPLACE INTO pricing
-                (model_id, input_per_token, output_per_token,
-                 cache_read_per_token, cache_write_per_token, fetched_at)
-               VALUES (?1, ?2, ?3, ?4, ?5, ?6)"#,
-            params![
-                model_id,
-                pricing.input_per_token,
-                pricing.output_per_token,
-                pricing.cache_read_per_token,
-                pricing.cache_write_per_token,
-                Utc::now().to_rfc3339(),
-            ],
-        )?;
-        drop(conn);
+        let started = std::time::Instant::now();
+        self.ledger.with_conn(|conn| {
+            conn.execute(
+                r#"INSERT OR REPLACE INTO pricing
+                    (model_id, input_per_token, output_per_token,
+                     cache_read_per_token, cache_write_per_token, fetched_at)
+                   VALUES (?1, ?2, ?3, ?4, ?5, ?6)"#,
+                params![
+                    model_id,
+                    pricing.input_per_token,
+                    pricing.output_per_token,
+                    pricing.cache_read_per_token,
+                    pricing.cache_write_per_token,
+                    Utc::now().to_rfc3339(),
+                ],
+            )?;
+            Ok(())
+        })?;
 
-        self.memory_cache
-            .lock()
-            .unwrap()
-            .insert(model_id.to_string(), pricing.clone());
+        self.with_memory_cache_mut(|cache| {
+            cache.insert(model_id.to_string(), pricing.clone());
+        });
+        debug!(model_id, elapsed = ?started.elapsed(), "pricing stored");
         Ok(())
     }
 
@@ -82,23 +95,29 @@ impl PricingEngine {
         &self,
         model_id: &str,
     ) -> Result<Option<ModelPricing>, rusqlite::Error> {
-        // Memory cache check
-        {
-            let cache = self.memory_cache.lock().unwrap();
-            if let Some(p) = cache.get(model_id) {
-                return Ok(Some(p.clone()));
-            }
+        let memory_lookup_started = std::time::Instant::now();
+        if let Some(pricing) = self.with_memory_cache(|cache| cache.get(model_id).cloned()) {
+            debug!(
+                model_id,
+                elapsed = ?memory_lookup_started.elapsed(),
+                "pricing memory cache hit"
+            );
+            return Ok(Some(pricing));
         }
+        debug!(
+            model_id,
+            elapsed = ?memory_lookup_started.elapsed(),
+            "pricing memory cache miss"
+        );
 
-        // DB check
-        let conn = self.ledger.conn();
-        let mut stmt = conn.prepare(
-            r#"SELECT input_per_token, output_per_token,
-                      cache_read_per_token, cache_write_per_token
-               FROM pricing WHERE model_id = ?1"#,
-        )?;
-        let result = stmt
-            .query_row(params![model_id], |row| {
+        let db_lookup_started = std::time::Instant::now();
+        let result = self.ledger.with_conn(|conn| {
+            let mut stmt = conn.prepare(
+                r#"SELECT input_per_token, output_per_token,
+                          cache_read_per_token, cache_write_per_token
+                   FROM pricing WHERE model_id = ?1"#,
+            )?;
+            stmt.query_row(params![model_id], |row| {
                 Ok(ModelPricing {
                     input_per_token: row.get(0)?,
                     output_per_token: row.get(1)?,
@@ -106,16 +125,20 @@ impl PricingEngine {
                     cache_write_per_token: row.get(3)?,
                 })
             })
-            .optional()?;
-        drop(stmt);
-        drop(conn);
+            .optional()
+        })?;
+        debug!(
+            model_id,
+            hit = result.is_some(),
+            elapsed = ?db_lookup_started.elapsed(),
+            "pricing DB cache lookup complete"
+        );
 
         // Populate memory cache on DB hit
         if let Some(ref p) = result {
-            self.memory_cache
-                .lock()
-                .unwrap()
-                .insert(model_id.to_string(), p.clone());
+            self.with_memory_cache_mut(|cache| {
+                cache.insert(model_id.to_string(), p.clone());
+            });
         }
 
         Ok(result)
@@ -202,17 +225,17 @@ impl PricingEngine {
             }
         }
 
-        info!(model_count = models.len(), found = result.is_some(), "OpenRouter catalog cached");
+        info!(
+            model_count = models.len(),
+            found = result.is_some(),
+            "OpenRouter catalog cached"
+        );
         Ok(result)
     }
 
     /// Try cached pricing, then fetch from OpenRouter. Returns None if unavailable.
     #[instrument(skip(self))]
-    pub async fn get_or_fetch(
-        &self,
-        provider: &str,
-        model: &str,
-    ) -> Option<ModelPricing> {
+    pub async fn get_or_fetch(&self, provider: &str, model: &str) -> Option<ModelPricing> {
         let model_id = to_openrouter_id(provider, model);
 
         match self.get_cached_pricing(&model_id) {
@@ -242,27 +265,21 @@ impl PricingEngine {
     /// cache write price for the appropriate TTL tier.
     pub fn calculate_cost(
         &self,
-        provider: &str,
-        model: &str,
-        input_tokens: u32,
-        output_tokens: u32,
-        cache_read_tokens: u32,
-        cache_write_tokens: u32,
-        cache_ttl: Option<&str>,
+        request: CostRequest<'_>,
     ) -> Result<Option<CostBreakdown>, rusqlite::Error> {
-        let model_id = to_openrouter_id(provider, model);
+        let model_id = to_openrouter_id(request.provider, request.model);
         let pricing = match self.get_cached_pricing(&model_id)? {
             Some(p) => p,
             None => return Ok(None),
         };
 
-        let input = pricing.input_per_token * input_tokens as f64;
-        let output = pricing.output_per_token * output_tokens as f64;
-        let cache_read = pricing.cache_read_per_token * cache_read_tokens as f64;
+        let input = pricing.input_per_token * request.input_tokens as f64;
+        let output = pricing.output_per_token * request.output_tokens as f64;
+        let cache_read = pricing.cache_read_per_token * request.cache_read_tokens as f64;
 
-        let mut cache_write = pricing.cache_write_per_token * cache_write_tokens as f64;
+        let mut cache_write = pricing.cache_write_per_token * request.cache_write_tokens as f64;
         // Anthropic 1h cache writes cost 1.6× the 5-minute price
-        if provider == "anthropic" && cache_ttl.unwrap_or("1h") == "1h" {
+        if request.provider == "anthropic" && request.cache_ttl.unwrap_or("1h") == "1h" {
             cache_write *= ANTHROPIC_1H_CACHE_WRITE_MULTIPLIER;
         }
 
@@ -277,11 +294,25 @@ impl PricingEngine {
 
     /// Delete all rows from pricing table and clear memory cache.
     pub fn clear_cache(&self) -> Result<(), rusqlite::Error> {
-        let conn = self.ledger.conn();
-        conn.execute("DELETE FROM pricing", [])?;
-        drop(conn);
-        self.memory_cache.lock().unwrap().clear();
+        self.ledger.with_conn(|conn| {
+            conn.execute("DELETE FROM pricing", [])?;
+            Ok(())
+        })?;
+        self.with_memory_cache_mut(|cache| cache.clear());
         Ok(())
+    }
+
+    fn with_memory_cache<T>(&self, op: impl FnOnce(&HashMap<String, ModelPricing>) -> T) -> T {
+        let cache = lock_or_recover("pricing memory cache", &self.memory_cache);
+        op(&cache)
+    }
+
+    fn with_memory_cache_mut<T>(
+        &self,
+        op: impl FnOnce(&mut HashMap<String, ModelPricing>) -> T,
+    ) -> T {
+        let mut cache = lock_or_recover("pricing memory cache", &self.memory_cache);
+        op(&mut cache)
     }
 }
 
@@ -334,6 +365,7 @@ use rusqlite::OptionalExtension;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::panic::{catch_unwind, AssertUnwindSafe};
     use std::sync::Arc;
 
     fn test_engine() -> PricingEngine {
@@ -357,7 +389,15 @@ mod tests {
             .store_pricing("anthropic/claude-opus-4.6", &anthropic_pricing())
             .unwrap();
         let cost = engine
-            .calculate_cost("anthropic", "claude-opus-4-6", 100, 50, 80, 20, Some("5m"))
+            .calculate_cost(CostRequest {
+                provider: "anthropic",
+                model: "claude-opus-4-6",
+                input_tokens: 100,
+                output_tokens: 50,
+                cache_read_tokens: 80,
+                cache_write_tokens: 20,
+                cache_ttl: Some("5m"),
+            })
             .unwrap();
         assert!(cost.is_some());
         let c = cost.unwrap();
@@ -374,7 +414,15 @@ mod tests {
             .store_pricing("anthropic/claude-opus-4.6", &anthropic_pricing())
             .unwrap();
         let cost = engine
-            .calculate_cost("anthropic", "claude-opus-4-6", 100, 50, 80, 20, Some("1h"))
+            .calculate_cost(CostRequest {
+                provider: "anthropic",
+                model: "claude-opus-4-6",
+                input_tokens: 100,
+                output_tokens: 50,
+                cache_read_tokens: 80,
+                cache_write_tokens: 20,
+                cache_ttl: Some("1h"),
+            })
             .unwrap();
         assert!(cost.is_some());
         let c = cost.unwrap();
@@ -393,7 +441,15 @@ mod tests {
             .store_pricing("anthropic/claude-opus-4.6", &anthropic_pricing())
             .unwrap();
         let cost = engine
-            .calculate_cost("anthropic", "claude-opus-4-6", 100, 50, 80, 20, None)
+            .calculate_cost(CostRequest {
+                provider: "anthropic",
+                model: "claude-opus-4-6",
+                input_tokens: 100,
+                output_tokens: 50,
+                cache_read_tokens: 80,
+                cache_write_tokens: 20,
+                cache_ttl: None,
+            })
             .unwrap();
         assert!(cost.is_some());
         let c = cost.unwrap();
@@ -405,7 +461,15 @@ mod tests {
     fn returns_none_for_unknown_model() {
         let engine = test_engine();
         let cost = engine
-            .calculate_cost("unknown", "model", 100, 50, 0, 0, None)
+            .calculate_cost(CostRequest {
+                provider: "unknown",
+                model: "model",
+                input_tokens: 100,
+                output_tokens: 50,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+                cache_ttl: None,
+            })
             .unwrap();
         assert!(cost.is_none());
     }
@@ -497,5 +561,31 @@ mod tests {
         // Verify memory cache was repopulated
         let cache = engine.memory_cache.lock().unwrap();
         assert!(cache.contains_key("test/model"));
+    }
+
+    #[test]
+    fn poisoned_memory_cache_mutex_is_recovered() {
+        let engine = test_engine();
+
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let _guard = engine.memory_cache.lock().unwrap();
+            panic!("poison pricing memory cache");
+        }));
+        assert!(result.is_err());
+
+        engine
+            .store_pricing(
+                "test/model",
+                &ModelPricing {
+                    input_per_token: 0.001,
+                    output_per_token: 0.002,
+                    cache_read_per_token: 0.0,
+                    cache_write_per_token: 0.0,
+                },
+            )
+            .unwrap();
+
+        let cached = engine.get_cached_pricing("test/model").unwrap();
+        assert!(cached.is_some());
     }
 }

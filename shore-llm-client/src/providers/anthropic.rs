@@ -246,12 +246,16 @@ fn apply_cache_control(
     let sys_blocks = system.as_array().map(|a| a.len()).unwrap_or(0);
 
     if messages.is_empty() {
-        return (messages.to_vec(), system, CachePlacement {
-            msg_breakpoints: vec![],
-            sys_breakpoints: vec![],
-            sys_blocks,
-            prefix_hash: 0,
-        });
+        return (
+            messages.to_vec(),
+            system,
+            CachePlacement {
+                msg_breakpoints: vec![],
+                sys_breakpoints: vec![],
+                sys_blocks,
+                prefix_hash: 0,
+            },
+        );
     }
 
     let mut result: Vec<Value> = messages.to_vec();
@@ -269,8 +273,8 @@ fn apply_cache_control(
     }
 
     // Step 3: Env var overrides.
-    let depth_turns = parse_env_vec::<u32>("SHORE_CACHE_DEPTH_TURNS")
-        .unwrap_or_else(|| depth_turns.to_vec());
+    let depth_turns =
+        parse_env_vec::<u32>("SHORE_CACHE_DEPTH_TURNS").unwrap_or_else(|| depth_turns.to_vec());
     let pinned_positions = parse_env_vec::<i32>("SHORE_CACHE_PINNED_POSITION")
         .unwrap_or_else(|| pinned_positions.to_vec());
 
@@ -355,12 +359,16 @@ fn apply_cache_control(
         "apply_cache_control: breakpoint placement"
     );
 
-    (result, sys, CachePlacement {
-        msg_breakpoints: msg_bp,
-        sys_breakpoints: sys_bp,
-        sys_blocks,
-        prefix_hash,
-    })
+    (
+        result,
+        sys,
+        CachePlacement {
+            msg_breakpoints: msg_bp,
+            sys_breakpoints: sys_bp,
+            sys_blocks,
+            prefix_hash,
+        },
+    )
 }
 
 /// Build the `thinking` config param from provider_options.
@@ -501,19 +509,19 @@ fn build_body(request: &LlmRequest, streaming: bool) -> (Value, u64) {
     // -- Cache forensics: log every Anthropic request --
     let call_id = if crate::cache_forensics::is_enabled() {
         let id = crate::cache_forensics::next_call_id();
-        crate::cache_forensics::log_request(
-            id,
-            request.forensic_character.as_deref(),
-            &request.model,
+        crate::cache_forensics::log_request(crate::cache_forensics::RequestLog {
+            call_id: id,
+            character: request.forensic_character.as_deref(),
+            model: &request.model,
             msg_count,
-            &placement.msg_breakpoints,
-            &placement.sys_breakpoints,
-            placement.sys_blocks,
-            placement.prefix_hash,
+            msg_breakpoints: &placement.msg_breakpoints,
+            sys_breakpoints: &placement.sys_breakpoints,
+            sys_blocks: placement.sys_blocks,
+            prefix_hash: placement.prefix_hash,
             has_existing_markers,
             cache_enabled,
-            request.rid.as_deref(),
-        );
+            rid: request.rid.as_deref(),
+        });
         id
     } else {
         0
@@ -578,10 +586,7 @@ fn build_http_request(
     request: &LlmRequest,
     streaming: bool,
 ) -> Result<(reqwest::RequestBuilder, u64), LlmError> {
-    let base = request
-        .base_url
-        .as_deref()
-        .unwrap_or(DEFAULT_BASE_URL);
+    let base = request.base_url.as_deref().unwrap_or(DEFAULT_BASE_URL);
     // If the base_url already includes a version path (e.g. OpenRouter's
     // default "https://openrouter.ai/api/v1"), just append /messages.
     let url = if base.ends_with("/v1") {
@@ -596,18 +601,31 @@ fn build_http_request(
         let dump_dir = std::path::Path::new("/tmp/shore-body-dumps");
         let _ = std::fs::create_dir_all(dump_dir);
         let path = dump_dir.join(format!("call_{call_id}.json"));
-        let _ = std::fs::write(&path, serde_json::to_string_pretty(&body).unwrap_or_default());
+        let _ = std::fs::write(
+            &path,
+            serde_json::to_string_pretty(&body).unwrap_or_default(),
+        );
     }
 
     // Log the post-transformation payload shape (no message content).
     {
         let model = body["model"].as_str().unwrap_or("?");
         let max_tokens = body["max_tokens"].as_u64().unwrap_or(0);
-        let thinking = body.get("thinking").map(|v| v.to_string()).unwrap_or_else(|| "none".into());
-        let output_cfg = body.get("output_config").map(|v| v.to_string()).unwrap_or_else(|| "none".into());
+        let thinking = body
+            .get("thinking")
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "none".into());
+        let output_cfg = body
+            .get("output_config")
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "none".into());
         let sys_blocks = body["system"].as_array().map(|a| a.len()).unwrap_or(0);
         let msg_count = body["messages"].as_array().map(|a| a.len()).unwrap_or(0);
-        let tool_count = body.get("tools").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
+        let tool_count = body
+            .get("tools")
+            .and_then(|v| v.as_array())
+            .map(|a| a.len())
+            .unwrap_or(0);
         tracing::debug!(
             model, max_tokens, %thinking, output_config = %output_cfg,
             sys_blocks, msg_count, tool_count,
@@ -1039,16 +1057,16 @@ pub async fn generate(
     // Forensic log: response side (non-streaming only — streaming is
     // logged from the ledger's record_call since usage arrives later).
     if call_id > 0 && (usage.cache_creation_tokens > 0 || usage.cache_read_tokens > 0) {
-        crate::cache_forensics::log_response(
+        crate::cache_forensics::log_response(crate::cache_forensics::ResponseLog {
             call_id,
-            &model,
-            "", // character not known at this layer
-            "", // call_type not known at this layer
-            usage.input_tokens,
-            usage.output_tokens,
-            usage.cache_read_tokens,
-            usage.cache_creation_tokens,
-        );
+            model: &model,
+            character: "", // character not known at this layer
+            call_type: "", // call_type not known at this layer
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            cache_read_tokens: usage.cache_read_tokens,
+            cache_creation_tokens: usage.cache_creation_tokens,
+        });
     }
 
     Ok(GenerateResponse {
@@ -1208,9 +1226,7 @@ mod tests {
             json!({"role": "assistant", "content": "resp 2"}),
             json!({"role": "user", "content": "turn 3"}),
         ];
-        let (_, sys, p) = apply_cache_control(
-            &messages, &system, "1h", &[1], &[0],
-        );
+        let (_, sys, p) = apply_cache_control(&messages, &system, "1h", &[1], &[0]);
 
         // System breakpoint on last block.
         assert!(sys.as_array().unwrap()[1].get("cache_control").is_some());
@@ -1269,33 +1285,51 @@ mod tests {
         // be present for this to work.
         let system = build_system_with_recap();
         let msgs = build_conversation(5);
-        let (result, sys, p) = apply_cache_control(
-            &msgs, &system, "1h", &[1, 2], &[0],
-        );
+        let (result, sys, p) = apply_cache_control(&msgs, &system, "1h", &[1, 2], &[0]);
 
         // Must have exactly 1 system breakpoint on the last block (recap).
-        assert_eq!(p.sys_breakpoints, vec![2], "system bp must be on last block (index 2)");
+        assert_eq!(
+            p.sys_breakpoints,
+            vec![2],
+            "system bp must be on last block (index 2)"
+        );
         let sys_blocks = sys.as_array().unwrap();
-        assert!(sys_blocks[2].get("cache_control").is_some(),
-            "last system block must have cache_control");
-        assert!(sys_blocks[0].get("cache_control").is_none(),
-            "first system block must NOT have cache_control");
-        assert!(sys_blocks[1].get("cache_control").is_none(),
-            "middle system block must NOT have cache_control");
+        assert!(
+            sys_blocks[2].get("cache_control").is_some(),
+            "last system block must have cache_control"
+        );
+        assert!(
+            sys_blocks[0].get("cache_control").is_none(),
+            "first system block must NOT have cache_control"
+        );
+        assert!(
+            sys_blocks[1].get("cache_control").is_none(),
+            "middle system block must NOT have cache_control"
+        );
 
         // Must have exactly 2 message breakpoints.
-        assert_eq!(p.msg_breakpoints.len(), 2,
-            "expected 2 message breakpoints, got {:?}", p.msg_breakpoints);
+        assert_eq!(
+            p.msg_breakpoints.len(),
+            2,
+            "expected 2 message breakpoints, got {:?}",
+            p.msg_breakpoints
+        );
 
         // Message breakpoints must have cache_control on their last text block.
         for &bp_idx in &p.msg_breakpoints {
-            let content = result[bp_idx]["content"].as_array()
+            let content = result[bp_idx]["content"]
+                .as_array()
                 .expect("content should be array");
-            let last_text = content.iter().rev()
+            let last_text = content
+                .iter()
+                .rev()
                 .find(|b| b.get("type").and_then(Value::as_str) == Some("text"))
                 .expect("should have text block");
-            assert!(last_text.get("cache_control").is_some(),
-                "message breakpoint at index {} missing cache_control", bp_idx);
+            assert!(
+                last_text.get("cache_control").is_some(),
+                "message breakpoint at index {} missing cache_control",
+                bp_idx
+            );
         }
 
         // Total breakpoints must not exceed 4.
@@ -1309,17 +1343,22 @@ mod tests {
         // target index 1 (char def), NOT the recap.
         let system = build_system_with_recap();
         let msgs = build_conversation(5);
-        let (_, sys, p) = apply_cache_control(
-            &msgs, &system, "1h", &[1, 2], &[-1],
-        );
+        let (_, sys, p) = apply_cache_control(&msgs, &system, "1h", &[1, 2], &[-1]);
 
-        assert_eq!(p.sys_breakpoints, vec![1],
-            "pinned=[-1] with 3 blocks must target index 1 (char def)");
+        assert_eq!(
+            p.sys_breakpoints,
+            vec![1],
+            "pinned=[-1] with 3 blocks must target index 1 (char def)"
+        );
         let sys_blocks = sys.as_array().unwrap();
-        assert!(sys_blocks[1].get("cache_control").is_some(),
-            "char def block must have cache_control");
-        assert!(sys_blocks[2].get("cache_control").is_none(),
-            "recap block must NOT have cache_control (it changes)");
+        assert!(
+            sys_blocks[1].get("cache_control").is_some(),
+            "char def block must have cache_control"
+        );
+        assert!(
+            sys_blocks[2].get("cache_control").is_none(),
+            "recap block must NOT have cache_control (it changes)"
+        );
     }
 
     #[test]
@@ -1333,16 +1372,18 @@ mod tests {
 
         for turn_count in 4..=10 {
             let msgs = build_conversation(turn_count);
-            let (result, sys, p) = apply_cache_control(
-                &msgs, &system, "1h", &[1, 2], &[0],
-            );
+            let (result, sys, p) = apply_cache_control(&msgs, &system, "1h", &[1, 2], &[0]);
 
             // System must be structurally identical every turn.
             let sys_str = sys.to_string();
             if let Some(prev) = &prev_sys_hash {
-                assert_eq!(&sys_str, prev,
+                assert_eq!(
+                    &sys_str,
+                    prev,
                     "system payload changed between turn {} and {}",
-                    turn_count - 1, turn_count);
+                    turn_count - 1,
+                    turn_count
+                );
             }
             prev_sys_hash = Some(sys_str);
 
@@ -1354,19 +1395,25 @@ mod tests {
                 // in the prefix (would change the serialized form).
                 for (i, msg) in result[..earliest_bp].iter().enumerate() {
                     if !p.msg_breakpoints.contains(&i) {
-                        let has_cc = msg["content"].as_array()
+                        let has_cc = msg["content"]
+                            .as_array()
                             .map(|arr| arr.iter().any(|b| b.get("cache_control").is_some()))
                             .unwrap_or(false);
-                        assert!(!has_cc,
+                        assert!(
+                            !has_cc,
                             "turn {}: non-breakpoint message {} in prefix has cache_control",
-                            turn_count, i);
+                            turn_count, i
+                        );
                     }
                 }
 
                 if turn_count > 5 {
-                    assert!(earliest_bp >= 2,
+                    assert!(
+                        earliest_bp >= 2,
                         "turn {}: earliest breakpoint {} is too close to start",
-                        turn_count, earliest_bp);
+                        turn_count,
+                        earliest_bp
+                    );
                 }
             }
         }
@@ -1381,20 +1428,28 @@ mod tests {
 
         for turn_count in 4..=8 {
             let msgs = build_conversation(turn_count);
-            let (_, _, p) = apply_cache_control(
-                &msgs, &system, "1h", &[1, 2], &[0],
-            );
+            let (_, _, p) = apply_cache_control(&msgs, &system, "1h", &[1, 2], &[0]);
 
             if let Some(prev) = &prev_bp {
                 // Each new turn adds 2 messages (assistant + user), so
                 // each breakpoint should shift by exactly 2.
-                assert_eq!(p.msg_breakpoints.len(), prev.len(),
+                assert_eq!(
+                    p.msg_breakpoints.len(),
+                    prev.len(),
                     "breakpoint count changed between turn {} and {}",
-                    turn_count - 1, turn_count);
+                    turn_count - 1,
+                    turn_count
+                );
                 for (i, (&cur, &prv)) in p.msg_breakpoints.iter().zip(prev.iter()).enumerate() {
-                    assert_eq!(cur, prv + 2,
+                    assert_eq!(
+                        cur,
+                        prv + 2,
                         "breakpoint {} shifted by {} (expected 2) between turn {} and {}",
-                        i, cur as i64 - prv as i64, turn_count - 1, turn_count);
+                        i,
+                        cur as i64 - prv as i64,
+                        turn_count - 1,
+                        turn_count
+                    );
                 }
             }
             prev_bp = Some(p.msg_breakpoints.clone());
@@ -1411,13 +1466,13 @@ mod tests {
         for turn_count in 3..=10 {
             let msgs = build_conversation(turn_count);
             let last_idx = msgs.len() - 1;
-            let (_, _, p) = apply_cache_control(
-                &msgs, &system, "1h", &[1, 2], &[0],
-            );
+            let (_, _, p) = apply_cache_control(&msgs, &system, "1h", &[1, 2], &[0]);
             for &bp in &p.msg_breakpoints {
-                assert_ne!(bp, last_idx,
+                assert_ne!(
+                    bp, last_idx,
                     "turn {}: breakpoint at index {} is the final message",
-                    turn_count, bp);
+                    turn_count, bp
+                );
             }
         }
     }
@@ -1431,15 +1486,19 @@ mod tests {
             { "type": "text", "text": "block 2" }
         ]);
         let msgs = build_conversation(8);
-        let (_, _, p) = apply_cache_control(
-            &msgs, &system, "1h", &[0, 1, 2, 3], &[0],
-        );
+        let (_, _, p) = apply_cache_control(&msgs, &system, "1h", &[0, 1, 2, 3], &[0]);
         let total = p.sys_breakpoints.len() + p.msg_breakpoints.len();
-        assert!(total <= 4,
-            "total breakpoints {} exceeds Anthropic limit of 4", total);
+        assert!(
+            total <= 4,
+            "total breakpoints {} exceeds Anthropic limit of 4",
+            total
+        );
         // System breakpoints should be preserved (priority).
-        assert_eq!(p.sys_breakpoints.len(), 1,
-            "system breakpoint should be preserved when truncating");
+        assert_eq!(
+            p.sys_breakpoints.len(),
+            1,
+            "system breakpoint should be preserved when truncating"
+        );
     }
 
     // ── convert_inline_system_messages ─────────────────────────────────
@@ -2022,10 +2081,7 @@ mod tests {
     #[test]
     fn build_http_request_accepts_custom_base_url() {
         let client = reqwest::Client::new();
-        let mut request = make_request(
-            vec![json!({"role": "user", "content": "hi"})],
-            None,
-        );
+        let mut request = make_request(vec![json!({"role": "user", "content": "hi"})], None);
         request.base_url = Some("https://openrouter.ai/api".into());
 
         // Should NOT return an error — custom base_url is now accepted.
@@ -2043,10 +2099,7 @@ mod tests {
     #[test]
     fn build_http_request_uses_default_base_url() {
         let client = reqwest::Client::new();
-        let request = make_request(
-            vec![json!({"role": "user", "content": "hi"})],
-            None,
-        );
+        let request = make_request(vec![json!({"role": "user", "content": "hi"})], None);
 
         let result = build_http_request(&client, &request, false);
         assert!(result.is_ok());
@@ -2062,10 +2115,7 @@ mod tests {
     #[test]
     fn build_http_request_base_url_with_v1_suffix() {
         let client = reqwest::Client::new();
-        let mut request = make_request(
-            vec![json!({"role": "user", "content": "hi"})],
-            None,
-        );
+        let mut request = make_request(vec![json!({"role": "user", "content": "hi"})], None);
         // OpenRouter's default base_url ends with /v1 — should not double it.
         request.base_url = Some("https://openrouter.ai/api/v1".into());
 
@@ -2083,10 +2133,7 @@ mod tests {
     #[test]
     fn build_http_request_localhost_still_works() {
         let client = reqwest::Client::new();
-        let mut request = make_request(
-            vec![json!({"role": "user", "content": "hi"})],
-            None,
-        );
+        let mut request = make_request(vec![json!({"role": "user", "content": "hi"})], None);
         request.base_url = Some("http://127.0.0.1:8080".into());
 
         let result = build_http_request(&client, &request, false);
@@ -2094,9 +2141,6 @@ mod tests {
 
         let (builder, _) = result.unwrap();
         let built = builder.build().unwrap();
-        assert_eq!(
-            built.url().as_str(),
-            "http://127.0.0.1:8080/v1/messages"
-        );
+        assert_eq!(built.url().as_str(), "http://127.0.0.1:8080/v1/messages");
     }
 }

@@ -122,10 +122,7 @@ pub trait VectorIndexer: Send + Sync {
 
     /// Remove a previously indexed entry. Used for rollback on compaction failure.
     /// Default no-op — impls that support deletion should override.
-    fn remove_entry(
-        &self,
-        _entry_id: &str,
-    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+    fn remove_entry(&self, _entry_id: &str) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
         Box::pin(async {})
     }
 }
@@ -136,5 +133,5 @@ pub trait ConversationManager: Send + Sync {
         &self,
         conversation_id: &str,
         params: RetentionParams,
-    ) -> Result<String, CompactionError>;
+    ) -> Pin<Box<dyn Future<Output = Result<String, CompactionError>> + Send + '_>>;
 }

@@ -12,11 +12,11 @@ mod images;
 mod persistence;
 mod resize;
 
-pub(crate) use images::{build_content, embed_image_data, encode_image_block};
-pub(crate) use resize::warm_image_cache;
 use generation::{run_tool_phase, stream_with_retry};
 use images::ingest_images;
+pub(crate) use images::{build_content, embed_image_data, encode_image_block};
 use persistence::persist_and_notify;
+pub(crate) use resize::warm_image_cache;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -41,12 +41,12 @@ use crate::memory::compaction_impls::ImageGenConfig;
 use crate::memory::db::MemoryDB;
 use crate::memory::researcher::MemoryResearcher;
 use crate::notifications::{NotificationEvent, NotificationService};
-use shore_daemon_server::RoutedMessage;
 use crate::tools::context::SharedToolContext;
 use crate::tools::{self as tool_system, ToolContext};
 use shore_config::app::SearchConfig;
 use shore_config::models::Sdk;
 use shore_config::LoadedConfig;
+use shore_daemon_server::RoutedMessage;
 use shore_ledger::LedgerClient;
 
 // ── Per-request tool context (wraps SharedToolContext + autonomy) ────
@@ -222,7 +222,10 @@ impl MessageHandler {
                     };
 
                     // Validate rid is safe for HTTP headers before propagating.
-                    let rid = body.rid.clone().filter(|r| r.is_ascii() && !r.contains('\0'));
+                    let rid = body
+                        .rid
+                        .clone()
+                        .filter(|r| r.is_ascii() && !r.contains('\0'));
                     let gen = self.gen_context();
                     let push_tx = self.push_tx.clone();
                     let notifier = self.notifier.clone();
@@ -485,11 +488,9 @@ async fn handle_generation(
     // 5. Ensure autonomy state with cache TTL for unified interiority timer.
     // Must happen before notify_user_message so session_start is set on first message.
     let cache_ttl_secs = resolved.cache_ttl.as_deref().and_then(parse_cache_ttl_secs);
-    let is_new_autonomy_state = ctx.autonomy.ensure_state_with_config(
-        &char_name,
-        cache_ttl_secs,
-        Some(&effective_config),
-    );
+    let is_new_autonomy_state =
+        ctx.autonomy
+            .ensure_state_with_config(&char_name, cache_ttl_secs, Some(&effective_config));
 
     // Backfill activity tracker from existing chat history on first creation.
     // Only include the last 90 days — older data would pollute availability signals.
@@ -588,7 +589,12 @@ async fn handle_generation(
     // 7. Build LLM messages from assembled prompt.
     // Pre-warm the resize cache so build_llm_messages reads cached files (~1ms).
     let cache_dir = &effective_config.dirs.cache;
-    warm_image_cache(&prompt_result.messages, effective_config.app.advanced.max_image_size, cache_dir).await;
+    warm_image_cache(
+        &prompt_result.messages,
+        effective_config.app.advanced.max_image_size,
+        cache_dir,
+    )
+    .await;
     // Z.AI thinking blocks have no signature, so we include unsigned
     // thinking blocks for providers that handle them natively.
     let include_unsigned_thinking = matches!(resolved.sdk, Sdk::Zai);
@@ -652,7 +658,7 @@ async fn handle_generation(
         .as_ref()
         .and_then(|opts| opts.get("budget_tokens"))
         .and_then(|v| v.as_u64())
-        .map_or(false, |b| b > 0);
+        .is_some_and(|b| b > 0);
 
     // 10. Stream response from shore-llm (with retry on transient errors).
     let mut result = stream_with_retry(
@@ -716,12 +722,12 @@ async fn handle_generation(
         let turn_count = engine.turn_count();
         if ctx.autonomy.should_compact_now(&char_name, turn_count) {
             info!(character = %char_name, turn_count, "Running inline compaction");
-            let _ = ctx.push_tx.send(ServerMessage::Phase(
-                shore_protocol::server_msg::Phase {
+            let _ = ctx
+                .push_tx
+                .send(ServerMessage::Phase(shore_protocol::server_msg::Phase {
                     phase: "compacting".into(),
                     model: None,
-                },
-            ));
+                }));
 
             match crate::memory::compaction::run_compaction(
                 &char_name,
@@ -735,7 +741,8 @@ async fn handle_generation(
             {
                 Ok(retained_count) => {
                     engine.reload().map_err(|e| e.to_string())?;
-                    ctx.autonomy.notify_compaction_complete(&char_name, retained_count);
+                    ctx.autonomy
+                        .notify_compaction_complete(&char_name, retained_count);
                     info!(
                         character = %char_name,
                         retained_count,
@@ -791,11 +798,17 @@ pub(crate) fn build_llm_messages(
                 }
 
                 if include_unsigned_thinking {
-                    blocks.extend(m.content_blocks.iter()
-                        .map(crate::content_util::content_block_to_json));
+                    blocks.extend(
+                        m.content_blocks
+                            .iter()
+                            .map(crate::content_util::content_block_to_json),
+                    );
                 } else {
-                    blocks.extend(m.content_blocks.iter()
-                        .filter_map(crate::content_util::content_block_to_api_json));
+                    blocks.extend(
+                        m.content_blocks
+                            .iter()
+                            .filter_map(crate::content_util::content_block_to_api_json),
+                    );
                 }
                 json!(blocks)
             } else {

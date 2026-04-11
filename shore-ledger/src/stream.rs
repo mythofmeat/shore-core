@@ -90,15 +90,17 @@ impl LedgerStream {
             &self.ledger,
             &self.pricing,
             &self.cache_trackers,
-            &self.provider,
-            &self.model,
-            self.call_type,
-            &self.character,
-            &result.usage,
-            &result.timing,
-            &result.finish_reason,
-            self.thinking_enabled,
-            self.cache_ttl.clone(),
+            crate::client::RecordCall {
+                provider: &self.provider,
+                model: &self.model,
+                call_type: self.call_type,
+                character: &self.character,
+                usage: &result.usage,
+                timing: &result.timing,
+                finish_reason: &result.finish_reason,
+                thinking_enabled: self.thinking_enabled,
+                cache_ttl: self.cache_ttl.clone(),
+            },
         );
         self.finalized = true;
     }
@@ -111,15 +113,17 @@ impl LedgerStream {
             &self.ledger,
             &self.pricing,
             &self.cache_trackers,
-            &self.provider,
-            &self.model,
-            self.call_type,
-            &self.character,
-            &Usage::default(),
-            &Timing::default(),
-            "error",
-            self.thinking_enabled,
-            self.cache_ttl.clone(),
+            crate::client::RecordCall {
+                provider: &self.provider,
+                model: &self.model,
+                call_type: self.call_type,
+                character: &self.character,
+                usage: &Usage::default(),
+                timing: &Timing::default(),
+                finish_reason: "error",
+                thinking_enabled: self.thinking_enabled,
+                cache_ttl: self.cache_ttl.clone(),
+            },
         );
         self.finalized = true;
     }

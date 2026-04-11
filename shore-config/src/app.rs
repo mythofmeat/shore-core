@@ -414,7 +414,7 @@ impl Default for SearchConfig {
 
 // ── [memory] ────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct MemoryConfig {
     #[serde(default)]
@@ -423,16 +423,6 @@ pub struct MemoryConfig {
     #[serde(default)]
     pub collation: CollationConfig,
 }
-
-impl Default for MemoryConfig {
-    fn default() -> Self {
-        Self {
-            compaction: CompactionConfig::default(),
-            collation: CollationConfig::default(),
-        }
-    }
-}
-
 // ── [connections] ───────────────────────────────────────────────────────
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
@@ -735,10 +725,34 @@ mod tests {
         assert!(config.defaults.stream);
         assert!(!config.behavior.autonomy.enabled);
         assert!(config.behavior.autonomy.interiority.enabled);
-        assert_eq!(config.behavior.autonomy.interiority.fallback_interiority_interval, ConfigDuration::from_secs(3600));
-        assert_eq!(config.behavior.autonomy.interiority.dormant_after_interiority_turns, 3);
-        assert_eq!(config.behavior.autonomy.interiority.dormant_after_idle_time, ConfigDuration::from_secs(172800));
-        assert_eq!(config.behavior.autonomy.interiority.minimum_interiority_latency, ConfigDuration::from_secs(3600));
+        assert_eq!(
+            config
+                .behavior
+                .autonomy
+                .interiority
+                .fallback_interiority_interval,
+            ConfigDuration::from_secs(3600)
+        );
+        assert_eq!(
+            config
+                .behavior
+                .autonomy
+                .interiority
+                .dormant_after_interiority_turns,
+            3
+        );
+        assert_eq!(
+            config.behavior.autonomy.interiority.dormant_after_idle_time,
+            ConfigDuration::from_secs(172800)
+        );
+        assert_eq!(
+            config
+                .behavior
+                .autonomy
+                .interiority
+                .minimum_interiority_latency,
+            ConfigDuration::from_secs(3600)
+        );
         assert_eq!(config.behavior.autonomy.interiority.max_tool_rounds, 12);
         assert!(config.behavior.tool_use.enabled);
         assert!(config.memory.compaction.enabled);

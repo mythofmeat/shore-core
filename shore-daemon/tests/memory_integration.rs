@@ -141,8 +141,9 @@ impl ConversationManager for MockConversationMgr {
         &self,
         _conversation_id: &str,
         _params: RetentionParams,
-    ) -> Result<String, CompactionError> {
-        Ok(self.next_id.clone())
+    ) -> Pin<Box<dyn Future<Output = Result<String, CompactionError>> + Send + '_>> {
+        let next_id = self.next_id.clone();
+        Box::pin(async move { Ok(next_id) })
     }
 }
 

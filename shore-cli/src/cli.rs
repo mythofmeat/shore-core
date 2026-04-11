@@ -340,11 +340,14 @@ pub enum MemoryCommand {
 #[command(rename_all = "snake_case")]
 pub enum DebugCommand {
     /// Schedule an interiority tick to fire immediately
-    InteriorityTickNow,
+    #[command(name = "interiority_tick_now")]
+    TickNow,
     /// Force interiority into dormant state (reverts on next user message)
-    InteriorityStatusDormant,
+    #[command(name = "interiority_status_dormant")]
+    StatusDormant,
     /// Force interiority into active state (reverts naturally via abandonment guard)
-    InteriorityStatusActive,
+    #[command(name = "interiority_status_active")]
+    StatusActive,
 }
 
 /// Generate and print shell completions to stdout.
@@ -420,9 +423,9 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
         CliCommand::Status { .. } => Some(("status", json!({}))),
 
         CliCommand::Debug { subcommand } => match subcommand {
-            DebugCommand::InteriorityTickNow => Some(("interiority_tick_now", json!({}))),
-            DebugCommand::InteriorityStatusDormant => Some(("interiority_set_dormant", json!({}))),
-            DebugCommand::InteriorityStatusActive => Some(("interiority_set_active", json!({}))),
+            DebugCommand::TickNow => Some(("interiority_tick_now", json!({}))),
+            DebugCommand::StatusDormant => Some(("interiority_set_dormant", json!({}))),
+            DebugCommand::StatusActive => Some(("interiority_set_active", json!({}))),
         },
 
         CliCommand::Model {
@@ -832,9 +835,9 @@ mod tests {
         let cli = parse(&["debug", "interiority_tick_now"]);
         match &cli.command {
             CliCommand::Debug {
-                subcommand: DebugCommand::InteriorityTickNow,
+                subcommand: DebugCommand::TickNow,
             } => {}
-            other => panic!("expected Debug InteriorityTickNow, got: {other:?}"),
+            other => panic!("expected Debug TickNow, got: {other:?}"),
         }
     }
 
@@ -843,9 +846,9 @@ mod tests {
         let cli = parse(&["debug", "interiority_status_dormant"]);
         match &cli.command {
             CliCommand::Debug {
-                subcommand: DebugCommand::InteriorityStatusDormant,
+                subcommand: DebugCommand::StatusDormant,
             } => {}
-            other => panic!("expected Debug InteriorityStatusDormant, got: {other:?}"),
+            other => panic!("expected Debug StatusDormant, got: {other:?}"),
         }
     }
 
@@ -854,9 +857,9 @@ mod tests {
         let cli = parse(&["debug", "interiority_status_active"]);
         match &cli.command {
             CliCommand::Debug {
-                subcommand: DebugCommand::InteriorityStatusActive,
+                subcommand: DebugCommand::StatusActive,
             } => {}
-            other => panic!("expected Debug InteriorityStatusActive, got: {other:?}"),
+            other => panic!("expected Debug StatusActive, got: {other:?}"),
         }
     }
 
@@ -1113,7 +1116,7 @@ mod tests {
     #[test]
     fn debug_tick_now_maps_to_command() {
         let cmd = CliCommand::Debug {
-            subcommand: DebugCommand::InteriorityTickNow,
+            subcommand: DebugCommand::TickNow,
         };
         let (name, args) = to_swp_command(&cmd).unwrap();
         assert_eq!(name, "interiority_tick_now");
@@ -1123,7 +1126,7 @@ mod tests {
     #[test]
     fn debug_status_dormant_maps_to_command() {
         let cmd = CliCommand::Debug {
-            subcommand: DebugCommand::InteriorityStatusDormant,
+            subcommand: DebugCommand::StatusDormant,
         };
         let (name, args) = to_swp_command(&cmd).unwrap();
         assert_eq!(name, "interiority_set_dormant");
@@ -1133,7 +1136,7 @@ mod tests {
     #[test]
     fn debug_status_active_maps_to_command() {
         let cmd = CliCommand::Debug {
-            subcommand: DebugCommand::InteriorityStatusActive,
+            subcommand: DebugCommand::StatusActive,
         };
         let (name, args) = to_swp_command(&cmd).unwrap();
         assert_eq!(name, "interiority_set_active");
@@ -1371,13 +1374,13 @@ mod tests {
                 json: false,
             },
             CliCommand::Debug {
-                subcommand: DebugCommand::InteriorityTickNow,
+                subcommand: DebugCommand::TickNow,
             },
             CliCommand::Debug {
-                subcommand: DebugCommand::InteriorityStatusDormant,
+                subcommand: DebugCommand::StatusDormant,
             },
             CliCommand::Debug {
-                subcommand: DebugCommand::InteriorityStatusActive,
+                subcommand: DebugCommand::StatusActive,
             },
             CliCommand::Model {
                 name: None,

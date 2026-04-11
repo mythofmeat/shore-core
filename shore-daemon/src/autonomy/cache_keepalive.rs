@@ -128,6 +128,12 @@ impl CacheKeepalive {
     }
 }
 
+impl Default for CacheKeepalive {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -156,16 +162,10 @@ mod tests {
         ka.set_next_wake(Some(now + hours(4)));
 
         // Not due yet at 54 minutes (interval is 55min).
-        assert_eq!(
-            ka.tick(now + minutes(54)),
-            CacheKeepaliveAction::None
-        );
+        assert_eq!(ka.tick(now + minutes(54)), CacheKeepaliveAction::None);
 
         // Due at 55 minutes.
-        assert_eq!(
-            ka.tick(now + minutes(55)),
-            CacheKeepaliveAction::Ping
-        );
+        assert_eq!(ka.tick(now + minutes(55)), CacheKeepaliveAction::Ping);
     }
 
     #[test]
@@ -199,7 +199,10 @@ mod tests {
         assert_eq!(ka.tick(now + minutes(55)), CacheKeepaliveAction::Ping);
         // Caller does NOT confirm (ping failed/skipped).
         // next_ping_at is still in the past → fires again immediately.
-        assert_eq!(ka.tick(now + minutes(55) + Duration::from_secs(10)), CacheKeepaliveAction::Ping);
+        assert_eq!(
+            ka.tick(now + minutes(55) + Duration::from_secs(10)),
+            CacheKeepaliveAction::Ping
+        );
     }
 
     #[test]
@@ -290,6 +293,9 @@ mod tests {
 
         // Next real LLM call warms the cache — pings resume.
         ka.on_cache_warmed(now + hours(1));
-        assert_eq!(ka.tick(now + hours(1) + minutes(55)), CacheKeepaliveAction::Ping);
+        assert_eq!(
+            ka.tick(now + hours(1) + minutes(55)),
+            CacheKeepaliveAction::Ping
+        );
     }
 }

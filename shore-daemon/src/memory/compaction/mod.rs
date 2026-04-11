@@ -170,6 +170,7 @@ impl CompactionManager {
         conversation_mgr: &dyn ConversationManager,
         dry_run: bool,
     ) -> Result<CompactionOutcome, CompactionError> {
+        let compaction_started = std::time::Instant::now();
         info!(
             conversation_id,
             messages = messages.len(),
@@ -248,6 +249,8 @@ impl CompactionManager {
         // Each element: (entry_id, changelog_id, indexed_in_vector_store).
         // changelog_id is None until the changelog row is successfully written.
         let mut created: Vec<(String, Option<i64>, bool)> = Vec::new();
+        let mut db_entry_elapsed = std::time::Duration::ZERO;
+        let mut vector_index_elapsed = std::time::Duration::ZERO;
 
         for (i, ce) in compacted.iter().enumerate() {
             let entry_id = Self::generate_entry_id(i);
@@ -275,18 +278,26 @@ impl CompactionManager {
                 collated_at: String::new(),
             };
 
+            let db_entry_started = std::time::Instant::now();
             if let Err(e) = db.create_entry(&entry) {
                 Self::rollback_compaction(&created, db, indexer).await;
                 return Err(CompactionError::Db(e.to_string()));
             }
+            let db_elapsed = db_entry_started.elapsed();
+            db_entry_elapsed += db_elapsed;
+            debug!(entry_id, elapsed = ?db_elapsed, "compaction: DB entry created");
 
             // Entry now exists in SQLite. Track it (changelog_id=None, not yet indexed).
             created.push((entry_id.clone(), None, false));
 
+            let vector_index_started = std::time::Instant::now();
             if let Err(e) = indexer.index_entry(&entry_id, &ce.summary_text).await {
                 Self::rollback_compaction(&created, db, indexer).await;
                 return Err(e);
             }
+            let index_elapsed = vector_index_started.elapsed();
+            vector_index_elapsed += index_elapsed;
+            debug!(entry_id, elapsed = ?index_elapsed, "compaction: vector entry indexed");
             // Mark as indexed so rollback will remove it from the vector store.
             created.last_mut().unwrap().2 = true;
 
@@ -313,24 +324,43 @@ impl CompactionManager {
                 return Err(CompactionError::Db(e.to_string()));
             }
         }
+        debug!(
+            entries = compacted.len(),
+            elapsed = ?db_entry_elapsed,
+            "compaction: DB entry loop complete"
+        );
+        debug!(
+            entries = compacted.len(),
+            elapsed = ?vector_index_elapsed,
+            "compaction: vector indexing loop complete"
+        );
 
         // Archive compacted messages, retain recent, write recap.
         // This is the final step — if it fails, roll back all SQLite and vector store writes.
         let retained = messages.len() - split_at;
-        let new_conversation_id = match conversation_mgr.archive_and_retain(
-            conversation_id,
-            RetentionParams {
-                keep_last_n: retained,
-                recap: recap.clone(),
-                active_content: active_content.to_string(),
-            },
-        ) {
+        let archive_started = std::time::Instant::now();
+        let new_conversation_id = match conversation_mgr
+            .archive_and_retain(
+                conversation_id,
+                RetentionParams {
+                    keep_last_n: retained,
+                    recap: recap.clone(),
+                    active_content: active_content.to_string(),
+                },
+            )
+            .await
+        {
             Ok(id) => id,
             Err(e) => {
                 Self::rollback_compaction(&created, db, indexer).await;
                 return Err(e);
             }
         };
+        debug!(
+            retained,
+            elapsed = ?archive_started.elapsed(),
+            "compaction: archive/retain done"
+        );
 
         let entry_ids: Vec<String> = created.into_iter().map(|(id, _, _)| id).collect();
 
@@ -338,6 +368,7 @@ impl CompactionManager {
             entries_created = entry_ids.len(),
             conversation_id,
             retained,
+            elapsed = ?compaction_started.elapsed(),
             "Compaction complete"
         );
         Ok(CompactionOutcome::Compacted(CompactionResult {
@@ -502,12 +533,13 @@ mod tests {
             &self,
             conversation_id: &str,
             params: RetentionParams,
-        ) -> Result<String, CompactionError> {
+        ) -> Pin<Box<dyn Future<Output = Result<String, CompactionError>> + Send + '_>> {
             self.archived
                 .lock()
                 .unwrap()
                 .push((conversation_id.to_string(), params.keep_last_n));
-            Ok(self.next_id.clone())
+            let next_id = self.next_id.clone();
+            Box::pin(async move { Ok(next_id) })
         }
     }
 
@@ -518,10 +550,12 @@ mod tests {
             &self,
             _conversation_id: &str,
             _params: RetentionParams,
-        ) -> Result<String, CompactionError> {
-            Err(CompactionError::ConversationManager(
-                "simulated archive failure".to_string(),
-            ))
+        ) -> Pin<Box<dyn Future<Output = Result<String, CompactionError>> + Send + '_>> {
+            Box::pin(async {
+                Err(CompactionError::ConversationManager(
+                    "simulated archive failure".to_string(),
+                ))
+            })
         }
     }
 
@@ -558,17 +592,16 @@ mod tests {
             let _entry_id = entry_id;
             Box::pin(async move {
                 if should_fail {
-                    Err(CompactionError::Indexing("simulated index failure".to_string()))
+                    Err(CompactionError::Indexing(
+                        "simulated index failure".to_string(),
+                    ))
                 } else {
                     Ok(())
                 }
             })
         }
 
-        fn remove_entry(
-            &self,
-            entry_id: &str,
-        ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        fn remove_entry(&self, entry_id: &str) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
             self.removed.lock().unwrap().push(entry_id.to_string());
             Box::pin(async {})
         }

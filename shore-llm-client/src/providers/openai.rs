@@ -1154,19 +1154,13 @@ mod tests {
     /// early after emitting `start`, silently dropping the first token.
     #[test]
     fn first_chunk_content_not_dropped() {
-        use crate::providers::sse::SseEvent;
-        use crate::providers::stream_helpers::{build_start_event, normalize_finish_reason};
-        use std::collections::HashMap;
+        use crate::providers::stream_helpers::build_start_event;
 
         // Replicate the callback's state.
         let mut start_sent = false;
         let mut model = "gpt-4".to_string();
         let mut text_content = String::new();
         let mut timing = StreamTiming::new();
-        let reasoning_field_name = "reasoning_content".to_string();
-        let mut finish_reason: &str = "end_turn";
-        let mut usage = Usage::default();
-        let mut tool_calls: HashMap<u64, (String, String, Vec<String>)> = HashMap::new();
 
         // First SSE chunk: carries model AND a content delta.
         let first_chunk = json!({
@@ -1212,6 +1206,7 @@ mod tests {
         }
 
         // Must have BOTH start and text events.
+        assert!(start_sent, "Expected first chunk to emit a start event");
         assert_eq!(lines_out.len(), 2, "Expected start + text events");
         let start_ev: Value = serde_json::from_str(&lines_out[0]).unwrap();
         assert_eq!(start_ev["type"], "start");
