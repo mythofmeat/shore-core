@@ -4,6 +4,11 @@ All notable changes to Shore are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.1] — 2026-04-11
+
+### Fixed
+- Eliminate compaction race condition by adding `CallType::Collation` to distinguish collation calls from regular compaction
+
 ## [0.11.0] — 2026-04-10
 
 ### Added
@@ -282,6 +287,7 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Command dispatch (US-017)
 - End-to-end conversation milestone (US-018)
 
+[0.11.1]: https://github.com/eshen/silvershore/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/eshen/silvershore/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/eshen/silvershore/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/eshen/silvershore/compare/v0.9.1...v0.10.0
