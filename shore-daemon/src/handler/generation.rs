@@ -1,7 +1,5 @@
 //! Stream retry and tool-phase execution for the generation pipeline.
 
-use std::sync::atomic::Ordering;
-
 use tracing::{debug, error, instrument, warn};
 
 use crate::engine::tools;
@@ -53,8 +51,6 @@ pub(super) async fn stream_with_retry(
                 .llm_client
                 .stream_raw(request, CallType::Message, char_name, thinking_enabled)
                 .await?;
-
-            let _ = ctx.compaction_occurred.swap(false, Ordering::AcqRel);
 
             match consumer
                 .consume(ledger_stream.reader_mut(), regen)

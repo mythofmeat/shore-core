@@ -80,7 +80,7 @@ impl RealCollationLlm {
 
         let resp = self
             .client
-            .generate(&request, CallType::MemoryAgent, &self.character, false)
+            .generate(&request, CallType::Collation, &self.character, false)
             .await
             .map_err(|e| CollationError::Llm(e.to_string()))?;
 

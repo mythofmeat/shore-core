@@ -22,6 +22,7 @@ pub enum CallType {
     Keepalive,
     Interiority,
     Compaction,
+    Collation,
     MemoryAgent,
     Researcher,
 }
@@ -34,6 +35,7 @@ impl CallType {
             CallType::Keepalive => "keepalive",
             CallType::Interiority => "interiority",
             CallType::Compaction => "compaction",
+            CallType::Collation => "collation",
             CallType::MemoryAgent => "memory_agent",
             CallType::Researcher => "researcher",
         }

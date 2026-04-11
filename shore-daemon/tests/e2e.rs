@@ -207,7 +207,7 @@ async fn e2e_conversation_milestone() {
         loaded.clone(),
     )));
 
-    let (autonomy, _compaction_rx) = shore_daemon::autonomy::manager::AutonomyManager::new(
+    let autonomy = shore_daemon::autonomy::manager::AutonomyManager::new(
         Default::default(),
         Default::default(),
         loaded.dirs.data.clone(),
@@ -235,7 +235,7 @@ async fn e2e_conversation_milestone() {
         cmd_ctx,
         llm_client,
         push_tx: push_tx.clone(),
-        compaction_occurred: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+
         autonomy,
         notifier: shore_daemon::notifications::NotificationService::new(Default::default()),
         generation_handle: None,
@@ -688,7 +688,7 @@ impl E2EHarness {
             loaded.clone(),
         )));
 
-        let (autonomy, _compaction_rx) = shore_daemon::autonomy::manager::AutonomyManager::new(
+        let autonomy = shore_daemon::autonomy::manager::AutonomyManager::new(
             Default::default(),
             Default::default(),
             loaded.dirs.data.clone(),
@@ -716,7 +716,7 @@ impl E2EHarness {
             cmd_ctx,
             llm_client,
             push_tx: push_tx.clone(),
-            compaction_occurred: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    
             autonomy,
             notifier: shore_daemon::notifications::NotificationService::new(Default::default()),
             generation_handle: None,

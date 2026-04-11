@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use shore_protocol::server_msg::ServerMessage;
 use shore_protocol::types::{derive_content_from_blocks, ContentBlock, Message, Role};
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 
@@ -50,7 +50,6 @@ struct TickContext {
     config: Arc<AutonomyConfig>,
     compaction: Arc<CompactionConfig>,
     data_dir: PathBuf,
-    compaction_tx: mpsc::Sender<String>,
     llm_client: Option<LedgerClient>,
     loaded_config: Option<Arc<LoadedConfig>>,
     notifier: Option<NotificationService>,
@@ -78,8 +77,9 @@ pub struct AutonomyState {
     compaction_triggered: bool,
     /// Current number of messages in active.jsonl (updated on each message notification).
     active_turn_count: usize,
-    /// Set after compaction completes — signals the handler to reload the engine.
-    needs_engine_reload: bool,
+    /// Set by the idle trigger tick — the handler checks and clears this after
+    /// each generation to run compaction inline (synchronously with the handler).
+    compaction_pending: bool,
     /// Cached last LLM request for interiority tick reuse.
     last_request: Option<LlmRequest>,
 }
@@ -214,8 +214,6 @@ pub struct AutonomyManager {
     compaction: Arc<CompactionConfig>,
     data_dir: PathBuf,
     shutdown_rx: tokio::sync::watch::Receiver<()>,
-    /// Channel for sending compaction trigger signals (character name).
-    compaction_tx: mpsc::Sender<String>,
     /// LLM client for interiority ticks and cache keepalive pings.
     llm_client: Option<LedgerClient>,
     /// Broadcast sender for pushing autonomous messages to SWP clients.
@@ -234,7 +232,7 @@ impl AutonomyManager {
         mut compaction: CompactionConfig,
         data_dir: PathBuf,
         shutdown_rx: tokio::sync::watch::Receiver<()>,
-    ) -> (Self, mpsc::Receiver<String>) {
+    ) -> Self {
         // Validate: turns thresholds must exceed keep_recent_turns, otherwise
         // there would never be anything to actually compact.
         if compaction.enabled {
@@ -258,22 +256,19 @@ impl AutonomyManager {
             }
         }
 
-        let (compaction_tx, compaction_rx) = mpsc::channel(16);
-        let mgr = Self {
+        Self {
             states: Arc::new(DashMap::new()),
             handles: Arc::new(Mutex::new(Vec::new())),
             config: Arc::new(config),
             compaction: Arc::new(compaction),
             data_dir,
             shutdown_rx,
-            compaction_tx,
             llm_client: None,
             push_tx: None,
             loaded_config: None,
             notifier: None,
             registry: None,
-        };
-        (mgr, compaction_rx)
+        }
     }
 
     /// Set the LLM client and push channel for autonomous actions.
@@ -355,7 +350,7 @@ impl AutonomyManager {
             last_compaction_activity: Instant::now(),
             compaction_triggered: false,
             active_turn_count: 0,
-            needs_engine_reload: false,
+            compaction_pending: false,
             last_request: None,
         }));
 
@@ -367,7 +362,6 @@ impl AutonomyManager {
         let compaction = self.compaction.clone();
         let data_dir = self.data_dir.clone();
         let shutdown_rx = self.shutdown_rx.clone();
-        let compaction_tx = self.compaction_tx.clone();
         let llm_client = self.llm_client.clone();
         let loaded_config = effective_config
             .map(|c| Arc::new(c.clone()))
@@ -380,7 +374,6 @@ impl AutonomyManager {
             config,
             compaction,
             data_dir,
-            compaction_tx,
             llm_client,
             loaded_config,
             notifier,
@@ -471,23 +464,28 @@ impl AutonomyManager {
     }
 
     /// Call after compaction completes successfully. Updates the turn count
-    /// and signals the handler to reload the engine on the next message.
+    /// and resets compaction state so future triggers can fire.
+    ///
+    /// The handler calls this inline after running compaction and reloading the
+    /// engine — no deferred reload flag is needed.
     pub fn notify_compaction_complete(&self, character: &str, new_turn_count: usize) {
         self.with_state(character, |s| {
             s.active_turn_count = new_turn_count;
-            s.needs_engine_reload = true;
             // Invalidate the cached request — it contains the pre-compaction
             // conversation. The next interiority tick will rebuild from disk.
             s.last_request = None;
             // Stop keepalive pings — the cached prompt prefix is stale.
             // on_cache_warmed() will re-enable pings on the next real LLM call.
             s.cache_keepalive.on_cache_invalidated();
-            // Keep compaction_triggered = true until engine reload acknowledges it.
+            // Compaction cycle complete — allow future triggers.
+            s.compaction_triggered = false;
+            s.compaction_pending = false;
+            s.last_compaction_activity = Instant::now();
             s.mark_dirty();
             info!(
                 character = %character,
                 new_turn_count,
-                "Compaction complete — engine reload pending, last_request invalidated"
+                "Compaction complete — last_request invalidated"
             );
         });
     }
@@ -502,16 +500,40 @@ impl AutonomyManager {
         });
     }
 
-    /// Check if a character's engine needs reloading after compaction.
-    /// Returns true (and clears the flag) if a reload is needed.
-    pub fn take_needs_reload(&self, character: &str) -> bool {
+    /// Check if compaction should run for this character: either the max_turns
+    /// threshold was reached, or an idle trigger set the pending flag.
+    /// Returns true (and clears the pending flag) if compaction should run.
+    /// Called by the handler inline after persist_and_notify.
+    pub fn should_compact_now(&self, character: &str, turn_count: usize) -> bool {
+        let compaction = &self.compaction;
+        if !compaction.enabled {
+            return false;
+        }
+        // Max-turns trigger: immediate, checked every generation.
+        if compaction.max_turns > 0
+            && turn_count >= compaction.max_turns
+            && turn_count >= compaction.min_turns
+        {
+            // Mark compaction_triggered so the tick doesn't also fire.
+            self.with_state(character, |s| {
+                s.compaction_triggered = true;
+                s.mark_dirty();
+            });
+            return true;
+        }
+        // Idle trigger: set by the tick loop, consumed here.
+        self.take_compaction_pending(character)
+    }
+
+    /// Check if the idle trigger has requested compaction for this character.
+    /// Returns true (and clears the pending flag) if compaction should run.
+    /// The handler calls this after each generation to decide whether to run
+    /// inline compaction.
+    fn take_compaction_pending(&self, character: &str) -> bool {
         self.with_state(character, |s| {
-            if s.needs_engine_reload {
-                s.needs_engine_reload = false;
-                // Compaction cycle complete — allow future compaction triggers.
-                s.compaction_triggered = false;
-                s.last_compaction_activity = Instant::now();
-                info!(character, "Engine reload taken after compaction");
+            if s.compaction_pending {
+                s.compaction_pending = false;
+                info!(character, "Idle-triggered compaction pending taken by handler");
                 return true;
             }
             false
@@ -735,10 +757,13 @@ async fn tick_character(character: &str, ctx: &TickContext) {
         (int_action, keepalive_action, compaction_needed)
     };
 
+    // Idle-triggered compaction: set the pending flag so the handler picks
+    // it up after the next generation completes (inline, synchronous).
     if compaction_needed {
-        if ctx.compaction_tx.try_send(character.to_string()).is_err() {
-            warn!(character, "Compaction channel full, trigger dropped");
-        }
+        let mut s = lock_state(&ctx.state);
+        s.compaction_pending = true;
+        s.mark_dirty();
+        info!(character, "Compaction pending flag set for handler pickup");
     }
 
     // -- execute interiority action with timeout (async, outside lock) ----
@@ -1532,13 +1557,12 @@ mod tests {
 
     fn test_manager(data_dir: &Path) -> AutonomyManager {
         let (_tx, rx) = tokio::sync::watch::channel(());
-        let (mgr, _compaction_rx) = AutonomyManager::new(
+        AutonomyManager::new(
             test_config(),
             Default::default(),
             data_dir.to_path_buf(),
             rx,
-        );
-        mgr
+        )
     }
 
     // -- ensure_state ---------------------------------------------------------
@@ -1580,7 +1604,7 @@ mod tests {
     fn notify_without_state_is_noop() {
         let tmp = tempfile::tempdir().unwrap();
         let (_tx, rx) = tokio::sync::watch::channel(());
-        let (mgr, _compaction_rx) = AutonomyManager::new(
+        let mgr = AutonomyManager::new(
             test_config(),
             Default::default(),
             tmp.path().to_path_buf(),
@@ -1597,7 +1621,7 @@ mod tests {
     fn status_returns_none_for_unknown() {
         let tmp = tempfile::tempdir().unwrap();
         let (_tx, rx) = tokio::sync::watch::channel(());
-        let (mgr, _compaction_rx) = AutonomyManager::new(
+        let mgr = AutonomyManager::new(
             test_config(),
             Default::default(),
             tmp.path().to_path_buf(),
@@ -1692,7 +1716,7 @@ mod tests {
             last_compaction_activity: Instant::now(),
             compaction_triggered: false,
             active_turn_count: 0,
-            needs_engine_reload: false,
+            compaction_pending: false,
             last_request: None,
         };
         save_state(data_dir, "alice", &mut state);
@@ -1738,7 +1762,6 @@ mod tests {
     async fn tick_character_runs_without_panic() {
         let tmp = tempfile::tempdir().unwrap();
         let config = test_config();
-        let (compaction_tx, _compaction_rx) = mpsc::channel(16);
         let state = Arc::new(Mutex::new(AutonomyState {
             interiority: InteriorityClock::with_config(&Default::default()),
             cache_keepalive: CacheKeepalive::new(),
@@ -1749,7 +1772,7 @@ mod tests {
             last_compaction_activity: Instant::now(),
             compaction_triggered: false,
             active_turn_count: 0,
-            needs_engine_reload: false,
+            compaction_pending: false,
             last_request: None,
         }));
 
@@ -1764,7 +1787,6 @@ mod tests {
             config: Arc::new(config),
             compaction: Arc::new(Default::default()),
             data_dir: tmp.path().to_path_buf(),
-            compaction_tx,
             llm_client: None,
             loaded_config: None,
             notifier: None,
@@ -1874,20 +1896,17 @@ mod tests {
     fn tick_ctx_no_llm(
         state: Arc<Mutex<AutonomyState>>,
         data_dir: &Path,
-    ) -> (TickContext, mpsc::Receiver<String>) {
-        let (compaction_tx, compaction_rx) = mpsc::channel(16);
-        let ctx = TickContext {
+    ) -> TickContext {
+        TickContext {
             state,
             config: Arc::new(test_config()),
             compaction: Arc::new(Default::default()),
             data_dir: data_dir.to_path_buf(),
-            compaction_tx,
             llm_client: None,
             loaded_config: None,
             notifier: None,
             registry: None,
-        };
-        (ctx, compaction_rx)
+        }
     }
 
     #[tokio::test]
@@ -1920,11 +1939,11 @@ mod tests {
             last_compaction_activity: now,
             compaction_triggered: false,
             active_turn_count: 0,
-            needs_engine_reload: false,
+            compaction_pending: false,
             last_request: None, // <-- no request → ping will be skipped
         }));
 
-        let (ctx, _rx) = tick_ctx_no_llm(state.clone(), tmp.path());
+        let ctx = tick_ctx_no_llm(state.clone(), tmp.path());
         tick_character("test", &ctx).await;
 
         // After the tick: the keepalive should STILL return Ping on the
@@ -2071,7 +2090,7 @@ mod tests {
         };
         let tmp = tempfile::tempdir().unwrap();
         let (_tx, rx) = tokio::sync::watch::channel(());
-        let (mgr, _rx) = AutonomyManager::new(config, compaction, tmp.path().to_path_buf(), rx);
+        let mgr = AutonomyManager::new(config, compaction, tmp.path().to_path_buf(), rx);
 
         // Compaction should be disabled because max_turns < min_turns
         // makes the max_turns trigger dead code.
@@ -2079,6 +2098,171 @@ mod tests {
             !mgr.compaction.enabled,
             "Compaction should be disabled when max_turns ({}) < min_turns ({})",
             8, 12,
+        );
+    }
+
+    // -- inline compaction tests -----------------------------------------------
+
+    #[test]
+    fn should_compact_now_fires_on_max_turns() {
+        let compaction = CompactionConfig {
+            enabled: true,
+            min_turns: 8,
+            max_turns: 16,
+            keep_recent_turns: 2,
+            ..Default::default()
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let (_tx, rx) = tokio::sync::watch::channel(());
+        let mgr = AutonomyManager::new(Default::default(), compaction, tmp.path().to_path_buf(), rx);
+
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async { mgr.ensure_state("alice", None::<u64>) });
+
+        // Below max_turns: should not compact.
+        assert!(!mgr.should_compact_now("alice", 15));
+        // At max_turns: should compact.
+        assert!(mgr.should_compact_now("alice", 16));
+        // After compaction, compaction_triggered is set so tick won't double-fire.
+        let triggered = mgr.with_state("alice", |s| s.compaction_triggered).unwrap();
+        assert!(triggered, "compaction_triggered should be set after should_compact_now");
+    }
+
+    #[test]
+    fn should_compact_now_respects_idle_pending_flag() {
+        let compaction = CompactionConfig {
+            enabled: true,
+            min_turns: 8,
+            max_turns: 34,
+            keep_recent_turns: 2,
+            ..Default::default()
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let (_tx, rx) = tokio::sync::watch::channel(());
+        let mgr = AutonomyManager::new(Default::default(), compaction, tmp.path().to_path_buf(), rx);
+
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async { mgr.ensure_state("alice", None::<u64>) });
+
+        // Below max_turns and no pending flag: should not compact.
+        assert!(!mgr.should_compact_now("alice", 20));
+
+        // Simulate idle trigger setting the pending flag.
+        mgr.with_state("alice", |s| {
+            s.compaction_pending = true;
+        });
+
+        // Now should_compact_now should return true (and clear the flag).
+        assert!(mgr.should_compact_now("alice", 20));
+        // Flag should be cleared.
+        let pending = mgr.with_state("alice", |s| s.compaction_pending).unwrap();
+        assert!(!pending, "compaction_pending should be cleared after take");
+    }
+
+    #[test]
+    fn should_compact_now_disabled_when_config_disabled() {
+        let compaction = CompactionConfig {
+            enabled: false,
+            min_turns: 8,
+            max_turns: 16,
+            keep_recent_turns: 2,
+            ..Default::default()
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let (_tx, rx) = tokio::sync::watch::channel(());
+        let mgr = AutonomyManager::new(Default::default(), compaction, tmp.path().to_path_buf(), rx);
+
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async { mgr.ensure_state("alice", None::<u64>) });
+
+        // Even above max_turns, disabled config means no compaction.
+        assert!(!mgr.should_compact_now("alice", 100));
+    }
+
+    #[test]
+    fn notify_compaction_complete_resets_flags() {
+        let compaction = CompactionConfig {
+            enabled: true,
+            min_turns: 8,
+            max_turns: 16,
+            keep_recent_turns: 2,
+            ..Default::default()
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let (_tx, rx) = tokio::sync::watch::channel(());
+        let mgr = AutonomyManager::new(Default::default(), compaction, tmp.path().to_path_buf(), rx);
+
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async { mgr.ensure_state("alice", None::<u64>) });
+
+        // Trigger compaction.
+        assert!(mgr.should_compact_now("alice", 16));
+
+        // Simulate compaction complete.
+        mgr.notify_compaction_complete("alice", 4);
+
+        // Flags should be reset: compaction_triggered and compaction_pending cleared.
+        let (triggered, pending, turn_count) = mgr.with_state("alice", |s| {
+            (s.compaction_triggered, s.compaction_pending, s.active_turn_count)
+        }).unwrap();
+        assert!(!triggered, "compaction_triggered should be reset after completion");
+        assert!(!pending, "compaction_pending should be reset after completion");
+        assert_eq!(turn_count, 4, "active_turn_count should be updated to retained count");
+
+        // Should be able to trigger again.
+        assert!(mgr.should_compact_now("alice", 16));
+    }
+
+    #[tokio::test]
+    async fn tick_sets_compaction_pending_on_idle_trigger() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut config = test_config();
+        config.enabled = true;
+        let compaction = CompactionConfig {
+            enabled: true,
+            min_turns: 4,
+            max_turns: 20,
+            keep_recent_turns: 2,
+            idle_trigger: shore_config::ConfigDuration::from_secs(1),
+            ..Default::default()
+        };
+
+        let state = Arc::new(Mutex::new(AutonomyState {
+            interiority: InteriorityClock::with_config(&Default::default()),
+            cache_keepalive: CacheKeepalive::new(),
+            activity: ActivityTracker::new(),
+            interiority_log: InteriorityLog::new(),
+            paused: false,
+            dirty: false,
+            last_compaction_activity: Instant::now() - Duration::from_secs(10),
+            compaction_triggered: false,
+            active_turn_count: 8,
+            compaction_pending: false,
+            last_request: None,
+        }));
+
+        let tick_ctx = TickContext {
+            state: state.clone(),
+            config: Arc::new(config),
+            compaction: Arc::new(compaction),
+            data_dir: tmp.path().to_path_buf(),
+            llm_client: None,
+            loaded_config: None,
+            notifier: None,
+            registry: None,
+        };
+
+        tick_character("alice", &tick_ctx).await;
+
+        // After tick with idle_trigger=1s and 10s idle, the pending flag should be set.
+        let s = lock_state(&state);
+        assert!(
+            s.compaction_pending,
+            "compaction_pending should be set after idle trigger fires in tick"
+        );
+        assert!(
+            s.compaction_triggered,
+            "compaction_triggered should prevent double-fire"
         );
     }
 }

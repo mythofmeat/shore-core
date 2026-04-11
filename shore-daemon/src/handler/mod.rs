@@ -119,8 +119,6 @@ struct GenContext {
     llm_client: LedgerClient,
     push_tx: broadcast::Sender<ServerMessage>,
     autonomy: AutonomyManager,
-    /// Set by the compaction task after a successful compaction.
-    compaction_occurred: Arc<std::sync::atomic::AtomicBool>,
     /// Accumulated token counts (shared with CommandContext for status display).
     session_tokens: Arc<std::sync::Mutex<SessionTokens>>,
     /// In-memory diagnostics ring buffers.
@@ -151,7 +149,6 @@ pub struct MessageHandler {
     pub cmd_ctx: CommandContext,
     pub llm_client: LedgerClient,
     pub push_tx: broadcast::Sender<ServerMessage>,
-    pub compaction_occurred: Arc<std::sync::atomic::AtomicBool>,
     pub autonomy: AutonomyManager,
     pub notifier: NotificationService,
     /// Handle to the active generation task, if any. Used for cancellation.
@@ -302,7 +299,6 @@ impl MessageHandler {
             llm_client: self.llm_client.clone(),
             push_tx: self.push_tx.clone(),
             autonomy: self.autonomy.clone(),
-            compaction_occurred: self.compaction_occurred.clone(),
             session_tokens: self.cmd_ctx.session_tokens.clone(),
             diagnostics: self.cmd_ctx.diagnostics.clone(),
             notifier: self.notifier.clone(),
@@ -413,17 +409,7 @@ async fn handle_generation(
             .map_err(|e| e.to_string())?
     };
 
-    // 1. Reload engine if compaction ran since the last message.
-    //    MUST happen before appending the user message — append calls persist()
-    //    which rewrites active.jsonl from the in-memory state; without a reload
-    //    first, that would overwrite the compacted file with stale messages.
-    if ctx.autonomy.take_needs_reload(&char_name) {
-        let mut engine = engine_arc.lock().await;
-        info!(character = %char_name, "Reloading engine after compaction");
-        engine.reload().map_err(|e| e.to_string())?;
-    }
-
-    // 2. Append user message or truncate after last user turn for regen.
+    // 1. Append user message or truncate after last user turn for regen.
     {
         let mut engine = engine_arc.lock().await;
         if regen {
@@ -713,7 +699,62 @@ async fn handle_generation(
         tool_intermediate_messages,
         wall_clock_start,
     )
-    .await
+    .await?;
+
+    // 13. Inline compaction — runs synchronously after persist.
+    //
+    //     We hold the engine lock for the ENTIRE compaction + reload sequence.
+    //     This is critical: run_compaction() bypasses the engine and writes
+    //     active.jsonl directly. If the interiority tick's engine.append_message()
+    //     fires between compaction's file write and our reload(), its persist()
+    //     would overwrite the compacted file with stale in-memory state — the
+    //     same class of race we're fixing. Holding the lock blocks interiority
+    //     (and any other engine writer) until the reload brings in-memory state
+    //     back in sync with disk.
+    {
+        let mut engine = engine_arc.lock().await;
+        let turn_count = engine.turn_count();
+        if ctx.autonomy.should_compact_now(&char_name, turn_count) {
+            info!(character = %char_name, turn_count, "Running inline compaction");
+            let _ = ctx.push_tx.send(ServerMessage::Phase(
+                shore_protocol::server_msg::Phase {
+                    phase: "compacting".into(),
+                    model: None,
+                },
+            ));
+
+            match crate::memory::compaction::run_compaction(
+                &char_name,
+                &effective_config,
+                &ctx.llm_client,
+                &data_dir,
+                &ctx.push_tx,
+                &ctx.notifier,
+            )
+            .await
+            {
+                Ok(retained_count) => {
+                    engine.reload().map_err(|e| e.to_string())?;
+                    ctx.autonomy.notify_compaction_complete(&char_name, retained_count);
+                    info!(
+                        character = %char_name,
+                        retained_count,
+                        "Inline compaction complete, engine reloaded"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        character = %char_name,
+                        error = %e,
+                        "Inline compaction failed"
+                    );
+                    ctx.autonomy.notify_compaction_failed(&char_name);
+                }
+            }
+        }
+    } // engine lock released
+
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -826,7 +867,7 @@ mod tests {
         );
 
         let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
-        let (autonomy, _compaction_rx) = AutonomyManager::new(
+        let autonomy = AutonomyManager::new(
             Default::default(),
             Default::default(),
             data_dir.clone(),
@@ -865,7 +906,7 @@ mod tests {
             cmd_ctx,
             llm_client: ledger_client,
             push_tx: push_tx.clone(),
-            compaction_occurred: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+
             autonomy,
             notifier: NotificationService::new(Default::default()),
             generation_handle: None,
@@ -1223,7 +1264,7 @@ mod tests {
         );
 
         let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
-        let (autonomy, _compaction_rx) = AutonomyManager::new(
+        let autonomy = AutonomyManager::new(
             Default::default(),
             Default::default(),
             data_dir.clone(),
@@ -1262,7 +1303,7 @@ mod tests {
             cmd_ctx,
             llm_client: ledger_client,
             push_tx: push_tx.clone(),
-            compaction_occurred: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+
             autonomy,
             notifier: NotificationService::new(Default::default()),
             generation_handle: None,

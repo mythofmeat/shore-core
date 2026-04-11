@@ -1,8 +1,7 @@
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
-use shore_config::{load_config, LoadedConfig};
+use shore_config::load_config;
 use shore_daemon::autonomy::manager::AutonomyManager;
 use shore_daemon::characters::CharacterRegistry;
 use shore_daemon::commands::{CommandContext, SessionTokens};
@@ -13,9 +12,7 @@ use shore_daemon_server::{Server, ServerConfig};
 use shore_diagnostics::Diagnostics;
 use shore_ledger::LedgerClient;
 use shore_llm_client::LlmClient;
-use shore_protocol::server_msg::ServerMessage;
-use tokio::sync::{broadcast, mpsc};
-use tracing::{error, info, warn};
+use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -109,7 +106,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )));
 
     // Create autonomy manager (shared between handler, commands, and per-character tick tasks).
-    let (mut autonomy, compaction_rx) = AutonomyManager::new(
+    let mut autonomy = AutonomyManager::new(
         loaded.app.behavior.autonomy.clone(),
         loaded.app.memory.compaction.clone(),
         loaded.dirs.data.clone(),
@@ -171,40 +168,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         memory_shell_sessions: std::collections::HashMap::new(),
     };
 
-    // Shared flag: compaction task sets this after successful compaction so the
-    // message handler knows the next message is the first after compaction.
-    let compaction_occurred = Arc::new(AtomicBool::new(false));
-
-    // Spawn background compaction task driven by autonomy idle triggers.
-    let compaction_handle = {
-        let config = loaded.clone();
-        let compaction_llm_client = llm_client.clone();
-        let data_dir = loaded.dirs.data.clone();
-        let compaction_push_tx = push_tx.clone();
-        let compaction_notifier = notifier.clone();
-        let compaction_flag = compaction_occurred.clone();
-        let compaction_autonomy = autonomy.clone();
-        tokio::spawn(async move {
-            compaction_task(
-                compaction_rx,
-                config,
-                compaction_llm_client,
-                data_dir,
-                compaction_push_tx,
-                compaction_notifier,
-                compaction_flag,
-                compaction_autonomy,
-            )
-            .await;
-        })
-    };
-
     let mut msg_handler = MessageHandler {
         registry: char_registry,
         cmd_ctx,
         llm_client,
         push_tx,
-        compaction_occurred,
         autonomy: autonomy.clone(),
         notifier,
         generation_handle: None,
@@ -221,19 +189,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Drop the server so its route_tx is released, unblocking the handler.
     drop(server);
 
-    // ── Wait for handler, autonomy tasks, and supervisor to finish ───
-    // Use timeouts to prevent indefinite hangs during shutdown.
-    // Order matters: autonomy must shut down before compaction, because
-    // autonomy holds the compaction channel sender — dropping it unblocks
-    // the compaction task's recv().
+    // ── Wait for handler and autonomy tasks to finish ─────────────────
     let shutdown_timeout = std::time::Duration::from_secs(10);
 
     let _ = tokio::time::timeout(shutdown_timeout, handler_handle).await;
     let _ = tokio::time::timeout(shutdown_timeout, autonomy.shutdown()).await;
-    // Drop the autonomy manager so its compaction_tx sender is released,
-    // allowing the compaction task's recv() to return None and exit.
-    drop(autonomy);
-    let _ = tokio::time::timeout(shutdown_timeout, compaction_handle).await;
 
     // ── Cleanup ──────────────────────────────────────────────────────
     if let Err(e) = registry.unregister(&instance_id) {
@@ -243,51 +203,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     result?;
     Ok(())
-}
-
-/// Background task that processes compaction triggers from the autonomy system.
-///
-/// Reads character names from the channel and runs compaction for each.
-/// Reads `active.jsonl` directly (no engine access needed).
-#[allow(clippy::too_many_arguments)]
-async fn compaction_task(
-    mut rx: mpsc::Receiver<String>,
-    config: LoadedConfig,
-    llm_client: LedgerClient,
-    data_dir: PathBuf,
-    push_tx: broadcast::Sender<ServerMessage>,
-    notifier: NotificationService,
-    compaction_occurred: std::sync::Arc<AtomicBool>,
-    autonomy: AutonomyManager,
-) {
-    while let Some(character) = rx.recv().await {
-        info!(character = %character, "Background compaction triggered");
-
-        match shore_daemon::memory::compaction::run_compaction(
-            &character,
-            &config,
-            &llm_client,
-            &data_dir,
-            &push_tx,
-            &notifier,
-        )
-        .await
-        {
-            Ok(retained_count) => {
-                compaction_occurred.store(true, std::sync::atomic::Ordering::Release);
-                autonomy.notify_compaction_complete(&character, retained_count);
-            }
-            Err(e) => {
-                warn!(
-                    character = %character,
-                    error = %e,
-                    "Background compaction failed"
-                );
-                autonomy.notify_compaction_failed(&character);
-            }
-        }
-    }
-    info!("Background compaction task shutting down");
 }
 
 /// Simple epoch-seconds timestamp without pulling in chrono.

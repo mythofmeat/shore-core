@@ -254,7 +254,7 @@ mod tests {
         );
 
         let (_tx, rx) = tokio::sync::watch::channel(());
-        let (autonomy, _compaction_rx) = crate::autonomy::manager::AutonomyManager::new(
+        let autonomy = crate::autonomy::manager::AutonomyManager::new(
             Default::default(),
             Default::default(),
             data_dir.clone(),
