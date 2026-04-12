@@ -570,20 +570,12 @@ fn parse_command(app: &mut App, input: &str) -> Action {
                 } else {
                     serde_json::json!({ "refs": refs })
                 };
-                Action::SendMulti(vec![
-                    ConnCommand::Send(ClientMessage::Command(Command {
-                        rid: None,
+                Action::Send(ConnCommand::Send(ClientMessage::Command(Command {
+                    rid: None,
 
-                        name: "delete".into(),
-                        args,
-                    })),
-                    ConnCommand::Send(ClientMessage::Command(Command {
-                        rid: None,
-
-                        name: "log".into(),
-                        args: serde_json::json!({}),
-                    })),
-                ])
+                    name: "delete".into(),
+                    args,
+                })))
             }
         }
 
@@ -789,6 +781,18 @@ mod tests {
                 assert_eq!(cmd.args["name"], "Bob");
             }
             _ => panic!("expected single switch_character send"),
+        }
+    }
+
+    #[test]
+    fn delete_command_sends_single_delete_request() {
+        let mut app = App::default();
+        match parse_command(&mut app, "delete last") {
+            Action::Send(ConnCommand::Send(ClientMessage::Command(cmd))) => {
+                assert_eq!(cmd.name, "delete");
+                assert_eq!(cmd.args["refs"], "last");
+            }
+            _ => panic!("expected single delete send"),
         }
     }
 }

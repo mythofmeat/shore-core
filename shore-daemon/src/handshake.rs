@@ -65,17 +65,20 @@ pub async fn build_session_history_snapshot(
                 messages,
                 config: _,
                 selected_character,
+                revision,
             } = engine.history_snapshot(serde_json::json!({}));
             HistorySnapshot {
                 messages,
                 config,
                 selected_character,
+                revision,
             }
         }
         None => HistorySnapshot {
             messages: Vec::new(),
             config,
             selected_character: None,
+            revision: 0,
         },
     }
 }

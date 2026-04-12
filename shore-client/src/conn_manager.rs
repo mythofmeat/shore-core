@@ -4,7 +4,7 @@
 //! managing the daemon connection with automatic reconnect and exponential
 //! backoff. Used by shore-tui and shore-matrix.
 
-use crate::{discover_or_default, SWPConnection, ServerAddr};
+use crate::{discover_or_default, SWPConnection, ServerAddr, SyncDecision, SyncState};
 use shore_protocol::client_msg::ClientMessage;
 use shore_protocol::server_msg::ServerMessage;
 use tokio::sync::mpsc;
@@ -99,6 +99,7 @@ async fn connection_loop(
                     "connected to daemon"
                 );
                 backoff = Duration::from_millis(500);
+                let mut sync_state = SyncState::new(history.revision);
 
                 let _ = event_tx
                     .send(ConnEvent::Connected {
@@ -148,6 +149,13 @@ async fn connection_loop(
                                     // Keepalive — ignore
                                 }
                                 Ok(msg) => {
+                                    if matches!(sync_state.observe(&msg), SyncDecision::DropStale) {
+                                        debug!(
+                                            latest_revision = sync_state.latest_revision(),
+                                            "dropping stale sync message"
+                                        );
+                                        continue;
+                                    }
                                     if event_tx.send(ConnEvent::Message(msg)).await.is_err() {
                                         debug!("event receiver dropped, exiting connection loop");
                                         return;

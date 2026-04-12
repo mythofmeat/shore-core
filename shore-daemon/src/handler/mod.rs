@@ -584,6 +584,7 @@ impl MessageHandler {
                                 messages: snapshot.messages,
                                 config: snapshot.config,
                                 selected_character: snapshot.selected_character,
+                                revision: snapshot.revision,
                             }),
                         )
                         .await;
@@ -667,10 +668,14 @@ async fn handle_generation(
             engine.append_message(user_msg.clone())?;
             // Embed image data before broadcasting so clients can display
             // without filesystem access to the server's paths.
+            let revision = engine.current_revision();
             let mut wire_msg = user_msg;
             embed_image_data(&mut wire_msg.images);
             let _ = ctx.event_tx.send(ServerMessage::NewMessage(
-                shore_protocol::server_msg::NewMessage { message: wire_msg },
+                shore_protocol::server_msg::NewMessage {
+                    revision,
+                    message: wire_msg,
+                },
             ));
         }
     } // engine lock released

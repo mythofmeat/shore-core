@@ -698,6 +698,7 @@ mod tests {
             messages: vec![],
             config: serde_json::json!({}),
             selected_character: None,
+            revision: 0,
         });
         write_json_line(&mut w, &history).await;
 

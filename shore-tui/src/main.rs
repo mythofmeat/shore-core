@@ -16,7 +16,6 @@ use crossterm::terminal::{
 use crossterm::ExecutableCommand;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
-use shore_protocol::client_msg::{ClientMessage, Command};
 use shore_protocol::server_msg::ServerMessage;
 use shore_protocol::types::{ContentBlock, Message, Role};
 use tracing::{info, instrument};
@@ -598,12 +597,7 @@ fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<ConnCommand> 
             if end.finish_reason == "cancelled" {
                 app.stream.reset();
                 app.set_status("generation cancelled");
-                return vec![ConnCommand::Send(ClientMessage::Command(Command {
-                    rid: None,
-
-                    name: "log".into(),
-                    args: serde_json::json!({}),
-                }))];
+                return vec![];
             }
 
             app.model = end.metadata.model.clone();
@@ -624,15 +618,6 @@ fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<ConnCommand> 
             } else {
                 app.stream.reset();
             }
-
-            // Re-request log to guard against stale History broadcasts
-            // (e.g. from background compaction) overwriting this response.
-            return vec![ConnCommand::Send(ClientMessage::Command(Command {
-                rid: None,
-
-                name: "log".into(),
-                args: serde_json::json!({}),
-            }))];
         }
 
         ServerMessage::Phase(phase) => {
@@ -642,65 +627,7 @@ fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<ConnCommand> 
             }
         }
 
-        ServerMessage::NewMessage(new_msg) => {
-            // Deduplicate: engine.append_message broadcasts History (which
-            // clears + rebuilds entries) AND the handler broadcasts NewMessage
-            // for the same user message.  Skip if the last entry already
-            // matches this timestamp (placed there by the preceding History).
-            let dominated = app.entries.last().is_some_and(|last| {
-                let ts = match last {
-                    ConversationEntry::User { timestamp, .. }
-                    | ConversationEntry::Assistant { timestamp, .. }
-                    | ConversationEntry::System { timestamp, .. } => timestamp.as_str(),
-                    _ => "",
-                };
-                !ts.is_empty() && ts == new_msg.message.timestamp
-            });
-
-            if !dominated {
-                // Check if the last entry is an optimistic user echo (empty
-                // timestamp) that matches this incoming NewMessage.  If so,
-                // replace it with the server-authoritative version instead of
-                // pushing a duplicate.
-                let is_optimistic_echo = new_msg.message.role == Role::User
-                    && app.entries.last().is_some_and(|last| {
-                        matches!(last, ConversationEntry::User { timestamp, content, .. }
-                            if timestamp.is_empty() && *content == new_msg.message.content)
-                    });
-
-                let (max_cols, max_rows) = image_max_cells();
-                for img in &new_msg.message.images {
-                    transmit_image_ref(&mut app.image_cache, img, max_cols, max_rows);
-                }
-                let entry = match new_msg.message.role {
-                    Role::User => ConversationEntry::User {
-                        content: new_msg.message.content,
-                        images: new_msg.message.images,
-                        timestamp: new_msg.message.timestamp,
-                    },
-                    Role::Assistant => ConversationEntry::Assistant {
-                        content: new_msg.message.content,
-                        images: new_msg.message.images,
-                        timestamp: new_msg.message.timestamp,
-                        metadata: None,
-                    },
-                    Role::System => ConversationEntry::System {
-                        content: new_msg.message.content,
-                        timestamp: new_msg.message.timestamp,
-                    },
-                };
-                if is_optimistic_echo {
-                    // Replace optimistic entry with authoritative version
-                    let last = app.entries.len() - 1;
-                    app.entries[last] = entry;
-                } else {
-                    app.entries.push(entry);
-                }
-            }
-            if app.auto_scroll {
-                app.scroll_to_bottom();
-            }
-        }
+        ServerMessage::NewMessage(_) => {}
 
         ServerMessage::ToolCall(tc) => {
             app.stream.active = true;
@@ -864,7 +791,6 @@ fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<ConnCommand> 
                         let count = deleted.len();
                         app.set_status(format!("deleted {count} message(s)"));
                     }
-                    // Log re-fetch follows automatically (sent as SendMulti)
                 }
                 "compact" | "collate" => {
                     let status = co

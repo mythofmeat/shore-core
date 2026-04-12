@@ -32,6 +32,7 @@ pub struct HistorySnapshot {
     pub messages: Vec<Message>,
     pub config: serde_json::Value,
     pub selected_character: Option<String>,
+    pub revision: u64,
 }
 
 #[derive(Clone)]
@@ -441,6 +442,7 @@ where
         messages: history_snapshot.messages,
         config: history_snapshot.config,
         selected_character: history_snapshot.selected_character,
+        revision: history_snapshot.revision,
     });
     write_message(&mut writer, &history).await?;
     info!(client_id, "Handshake complete");
@@ -590,6 +592,7 @@ async fn load_history_snapshot(
             messages: Vec::new(),
             config: serde_json::json!({}),
             selected_character,
+            revision: 0,
         },
     }
 }
@@ -811,6 +814,7 @@ mod tests {
                         messages,
                         config: serde_json::json!({}),
                         selected_character,
+                        revision: 1,
                     }
                 })
             }),
@@ -942,6 +946,7 @@ mod tests {
             ServerMessage::History(hist) => {
                 assert!(hist.messages.is_empty());
                 assert!(hist.selected_character.is_none());
+                assert_eq!(hist.revision, 1);
             }
             other => panic!("Expected History, got {:?}", other),
         }
@@ -1055,6 +1060,7 @@ mod tests {
                 assert_eq!(hist.selected_character.as_deref(), Some("alice"));
                 assert_eq!(hist.messages.len(), 1);
                 assert_eq!(hist.messages[0].content, "hello from alice");
+                assert_eq!(hist.revision, 1);
             }
             other => panic!("Expected History, got {:?}", other),
         }
@@ -1184,6 +1190,7 @@ mod tests {
                 model: Some("test-model".into()),
             }),
             ServerMessage::NewMessage(NewMessage {
+                revision: 2,
                 message: Message {
                     msg_id: "m1".into(),
                     role: shore_protocol::types::Role::Assistant,

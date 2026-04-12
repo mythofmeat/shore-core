@@ -20,6 +20,8 @@ pub struct History {
     pub config: serde_json::Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selected_character: Option<String>,
+    #[serde(default)]
+    pub revision: u64,
 }
 
 /// Server shutting down.
@@ -84,6 +86,8 @@ pub struct Phase {
 /// Autonomous message arrived.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct NewMessage {
+    #[serde(default)]
+    pub revision: u64,
     #[serde(flatten)]
     pub message: Message,
 }

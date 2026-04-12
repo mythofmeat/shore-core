@@ -85,7 +85,8 @@ const HISTORY_FIXTURE: &str = r#"{
         }
     ],
     "config": {"model": "claude-haiku-4-5-20251001"},
-    "selected_character": "alice"
+    "selected_character": "alice",
+    "revision": 12
 }"#;
 
 #[test]
@@ -112,6 +113,7 @@ fn history_golden() {
             // Config
             assert_eq!(h.config["model"], "claude-haiku-4-5-20251001");
             assert_eq!(h.selected_character.as_deref(), Some("alice"));
+            assert_eq!(h.revision, 12);
         }
         other => panic!("expected History, got {:?}", other),
     }
@@ -292,6 +294,7 @@ fn phase_golden() {
 
 const NEW_MESSAGE_FIXTURE: &str = r#"{
     "type": "new_message",
+    "revision": 8,
     "msg_id": "m_auto_01",
     "role": "assistant",
     "content": "I noticed something interesting.",
@@ -305,6 +308,7 @@ fn new_message_golden() {
     let msg: ServerMessage = assert_golden(NEW_MESSAGE_FIXTURE);
     match msg {
         ServerMessage::NewMessage(nm) => {
+            assert_eq!(nm.revision, 8);
             assert_eq!(nm.message.msg_id, "m_auto_01");
             assert_eq!(nm.message.role, Role::Assistant);
             assert_eq!(nm.message.content, "I noticed something interesting.");
@@ -319,6 +323,7 @@ fn new_message_golden() {
 
 const NEW_MESSAGE_WITH_ALTS_FIXTURE: &str = r#"{
     "type": "new_message",
+    "revision": 9,
     "msg_id": "m_auto_02",
     "role": "assistant",
     "content": "Alternative response.",
@@ -334,6 +339,7 @@ fn new_message_with_alts_golden() {
     let msg: ServerMessage = assert_golden(NEW_MESSAGE_WITH_ALTS_FIXTURE);
     match msg {
         ServerMessage::NewMessage(nm) => {
+            assert_eq!(nm.revision, 9);
             assert_eq!(nm.message.msg_id, "m_auto_02");
             assert_eq!(nm.message.alt_index, Some(1));
             assert_eq!(nm.message.alt_count, Some(3));

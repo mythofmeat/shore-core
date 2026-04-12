@@ -96,11 +96,11 @@ Client                          Server
 
 | Topic | Current truth in this branch | Planned follow-on |
 |------|------|------|
-| Handshake payloads | `hello` now carries the real character list, and the initial `history` carries real messages, `selected_character`, and a truthful minimal session/config snapshot. | Phase 4 adds revisioned state sync semantics. |
+| Handshake payloads | `hello` now carries the real character list, and the initial `history` carries real messages, `selected_character`, a truthful minimal session/config snapshot, and the current revision. | None. |
 | `rid` propagation | Client request messages carry `rid`, but SWP V1 server messages do not yet echo it on the wire. | Future SWP wire revision or capability negotiation. |
-| Direct responses vs events | Request-scoped command/stream/tool/cancel traffic now routes directly to the requesting session. Unsolicited state-change traffic still uses the event/broadcast path. | Phase 4 defines the final authoritative sync contract. |
-| `switch_character` | Character switching is a session mutation, not a reconnect flow. Successful switches update session state and push an authoritative `history` snapshot for the new selection. | Phase 4 adds revision/backfill rules. |
-| Snapshot vs event authority | Mixed today. `History` is the authoritative snapshot; `NewMessage` and other event-style traffic still coexist with it. | Phase 4 chooses and enforces one revisioned model. |
+| Direct responses vs events | Request-scoped command/stream/tool/cancel traffic routes directly to the requesting session. Authoritative conversation state sync travels via revisioned `history` snapshots. | None. |
+| `switch_character` | Character switching is a session mutation, not a reconnect flow. Successful switches update session state and push an authoritative direct `history` snapshot for the new selection. | None. |
+| Snapshot vs event authority | `History` is revisioned and authoritative. `NewMessage` remains revisioned advisory metadata; shared client code drops stale snapshot/event traffic instead of repairing with blind fetches. | None for SWP V1; future work is only if the wire contract changes again. |
 | TCP `ping` | Implemented. The server emits `ping` every 30 seconds on TCP connections. | None. |
 
 ### 3.3 Message Envelope
@@ -125,7 +125,8 @@ Server message example:
   "type": "history",
   "messages": [],
   "config": {},
-  "selected_character": "alice"
+  "selected_character": "alice",
+  "revision": 12
 }
 ```
 
@@ -196,14 +197,16 @@ this single envelope. See §3.7 for the complete command reference.
 | Type | When | Key Fields |
 |------|------|------------|
 | `hello` | After client connects | `v`, `server_name`, `characters[]` |
-| `history` | After handshake; after authoritative state changes | `messages[]`, `config`, `selected_character` |
+| `history` | After handshake; after authoritative state changes | `messages[]`, `config`, `selected_character`, `revision` |
 | `shutdown` | Server stopping | — |
 | `ping` | Periodic keepalive (TCP) | — |
 
 `history` is the authoritative snapshot for startup and conversation-state
-resynchronization. Request-scoped streaming/tool/command responses travel on
-their own direct-response paths, and `new_message` remains advisory until the
-revisioned Phase 4 sync model lands.
+resynchronization. Clients track the latest `revision` and drop stale
+snapshots/events in the shared `shore-client` layer instead of issuing blind
+repair fetches after normal operations. Request-scoped streaming/tool/command
+responses still travel on their own direct-response paths, and `new_message`
+remains advisory.
 
 #### Message Object
 
@@ -286,12 +289,12 @@ that don't support thinking display can ignore chunks where
 All fields are integers except `model` (string). Provider-specific token fields
 (`cache_read`, `cache_write`) are `0` for providers that don't support caching.
 
-#### Push (unsolicited, `rid: null`)
+#### Push (unsolicited)
 
 | Type | When | Key Fields |
 |------|------|------------|
 | `phase` | Generation phase change | `phase`, `model` |
-| `new_message` | Autonomous message arrived | full `Message` object |
+| `new_message` | Advisory message event | `revision`, full `Message` object |
 | `tool_call` | Tool invoked during generation | `tool_id`, `tool_name`, `input` (JSON object) |
 | `tool_result` | Tool completed | `tool_id`, `tool_name`, `output`, `is_error` |
 | `send_image` | Server-generated image ready | `path`, `caption?`, `data?` (base64) |

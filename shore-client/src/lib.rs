@@ -5,6 +5,7 @@ pub mod discovery;
 pub mod error;
 pub mod image_protocol;
 pub mod stream;
+pub mod sync;
 
 pub use client_config::{load_client_config, ClientConfig};
 pub use conn_manager::{spawn_connection, ConnCommand, ConnEvent};
@@ -13,6 +14,7 @@ pub use discovery::{discover, discover_data_dir, discover_or_default};
 pub use error::{ClientError, Result};
 pub use image_protocol::{detect_protocol, ImageProtocol};
 pub use stream::{StreamCallbacks, StreamHandler};
+pub use sync::{SyncDecision, SyncState};
 
 #[cfg(test)]
 mod tests {
@@ -94,6 +96,7 @@ mod tests {
                 }],
                 config: serde_json::json!({}),
                 selected_character: Some("alice".into()),
+                revision: 4,
             });
             write_json_line(&mut w, &history).await;
         });
@@ -109,6 +112,7 @@ mod tests {
         assert_eq!(history.messages.len(), 1);
         assert_eq!(history.messages[0].content, "hello");
         assert_eq!(history.selected_character.as_deref(), Some("alice"));
+        assert_eq!(history.revision, 4);
 
         drop(conn);
         server_handle.await.unwrap();

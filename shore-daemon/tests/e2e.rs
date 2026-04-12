@@ -277,6 +277,7 @@ async fn e2e_conversation_milestone() {
     assert_eq!(history.selected_character.as_deref(), Some("TestChar"));
     assert_eq!(history.config["active_model"], "haiku");
     assert_eq!(history.config["private"], false);
+    assert_eq!(history.revision, 0);
     eprintln!(
         "  Handshake OK: v={}, server={}",
         server_hello.v, server_hello.server_name

@@ -18,7 +18,7 @@ It is intentionally more concrete than the architecture plan:
 
 ## Status Snapshot
 
-Updated 2026-04-12 after the truthful-handshake closeout pass.
+Updated 2026-04-12 after the revisioned-sync and client-cleanup pass.
 
 Current program state:
 
@@ -38,7 +38,13 @@ Current program state:
   keepalive `ping` is implemented, and character switching now pushes an
   authoritative session snapshot instead of relying on reconnect or repair
   fetches.
-- Phases 4 through 7 are still ahead of us in wire-contract terms.
+- Phase 4 is complete enough to treat as landed. `History` is now revisioned
+  and authoritative, `NewMessage` is explicitly advisory, and shared client
+  code drops stale snapshots/events instead of guessing.
+- Phase 5 is complete enough to treat as landed. The TUI no longer depends on
+  connect-time bootstrap fetches, post-stream/delete repair fetches, or
+  timestamp-based `NewMessage` dedupe to remain correct under normal flows.
+- Phases 6 and 7 are still ahead of us in structural/process terms.
 
 What landed on this branch:
 
@@ -64,14 +70,14 @@ What landed on this branch:
 
 Next pickup point:
 
-1. start Phase 4 by choosing and encoding the authoritative revisioned
-   snapshot/event contract
-2. use that revision model to remove stale-state recovery logic from shared
-   client code
-3. keep client cleanup focused on protocol-driven behavior rather than ad hoc
-   UI repair fetches
-4. keep any remaining event-versus-snapshot ambiguity documented until the wire
-   contract is enforced in tests
+1. start Phase 6 by splitting the still-oversized daemon modules along the now
+   stable session/request/response boundaries
+2. use Phase 7 to turn the current protocol/state-ownership rules into durable
+   guardrails in docs, tests, and workflow policy
+3. keep any remaining UI fetches categorized as explicit UX requests rather
+   than silent correctness repair logic
+4. treat any future SWP wire change as a docs/types/tests/integration bundle,
+   not as an implementation-only patch
 
 ## 1. Scope
 
@@ -490,6 +496,23 @@ Exit criteria:
 
 ### Phase 4: Revisioned Authoritative State Sync
 
+Status:
+
+- Complete enough to treat as landed on 2026-04-12.
+- Landed on this branch:
+  - `History` snapshots now carry a monotonic `revision`.
+  - advisory `NewMessage` events now carry the same revision space and are no
+    longer treated as overlapping authorities.
+  - `shore-client` now owns shared stale-snapshot rejection via revision
+    tracking instead of leaving that behavior to frontend-specific heuristics.
+  - daemon history emitters now stamp revisioned authoritative snapshots for
+    handshake, switch-character, edit/delete/reset/reload, and generation-path
+    conversation mutations.
+- Remaining intentional boundary:
+  - request correlation on server messages is still the separate `rid` work;
+    this phase only closes snapshot/event authority, not wire-level request
+    echo semantics.
+
 Purpose:
 
 - replace the current mixed snapshot/event model with one authoritative sync
@@ -560,6 +583,23 @@ Exit criteria:
 - stale state can be detected rather than guessed at
 
 ### Phase 5: Client Cleanup Against The New Protocol
+
+Status:
+
+- Complete enough to treat as landed on 2026-04-12.
+- Landed on this branch:
+  - TUI connect-time bootstrap fetches are gone; handshake state is sufficient
+    for coherent startup.
+  - normal stream completion and delete flows no longer trigger blind `log`
+    repair fetches.
+  - the old timestamp-based `NewMessage` dedupe path has been removed in favor
+    of revisioned shared-client sync rules.
+  - client-side protocol state management now lives more squarely in
+    `shore-client` rather than bespoke TUI recovery logic.
+- Remaining intentional boundary:
+  - explicit user-driven commands like `status`, `log`, and `list_models`
+    remain as normal UX operations; they are no longer required for hidden
+    correctness repair.
 
 Purpose:
 
@@ -878,11 +918,12 @@ This program is complete when all of the following are true:
 
 ## 12. Suggested Immediate Next Step
 
-The next implementation PR after the current branch should pick up in Phase 4,
+The next implementation PR after the current branch should pick up in Phase 6,
 not Phase 1:
 
-1. define the revisioned authoritative snapshot/event contract on the wire
-2. centralize stale-state handling in shared client code instead of leaving it
-   to TUI heuristics
-3. then remove the remaining repair-fetch and dedupe logic only where the new
-   revisioned contract is test-backed
+1. split the remaining oversized daemon modules now that the wire/state model
+   is stable
+2. add explicit guardrails for protocol drift, state ownership, and large
+   mixed-responsibility files
+3. keep future SWP changes bundled with docs, golden tests, and integration
+   coverage from the start

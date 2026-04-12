@@ -17,6 +17,9 @@ Updated 2026-04-12:
 - the truthful-handshake closeout pass replaced placeholder startup data,
   implemented TCP `ping`, and made `switch_character` push an authoritative
   session snapshot
+- the revisioned-sync/client-cleanup pass made `History` authoritative,
+  downgraded `NewMessage` to advisory status, and removed the TUI's normal-flow
+  repair fetches
 
 ## Still Open
 
@@ -29,17 +32,6 @@ Updated 2026-04-12:
   - request IDs are end-to-end correlation identifiers.
 - Later owner:
   - `docs/todo/architecture-realignment/architecture-realignment-plan.md`, Phases 2-4.
-
-### 2. Snapshot And Event Sync Are Still Mixed
-
-- Current code behavior:
-  - Shore still mixes `History` snapshots, `NewMessage` events, stream events,
-    and client-side refresh behavior.
-- Current docs claim:
-  - the protocol should have one authoritative state synchronization model.
-- Later owner:
-  - `docs/todo/architecture-realignment/architecture-realignment-plan.md`, Phase 4: revisioned state
-    sync.
 
 ## Resolved Or Materially Narrowed On This Branch
 
@@ -69,12 +61,10 @@ Updated 2026-04-12:
   - unsolicited events still use the broadcast/event path.
 - What remains:
   - this is no longer a Phase 2 routing gap.
-  - the remaining open question is Phase 4 semantics: `History` and
-    `NewMessage` are still broadcast/event-style updates rather than a final
-    revisioned authoritative sync model.
+  - the remaining work is Phase 6/7 preservation: keep the routing split
+    documented and guarded so it does not regress.
 - Later owner:
-  - `docs/todo/architecture-realignment/architecture-realignment-plan.md`, Phase 4: revisioned
-    state sync.
+  - `docs/todo/architecture-realignment/architecture-realignment-plan.md`, Phases 6-7.
 
 ### 5. `switch_character` Is No Longer Reconnect-Oriented Or Repair-Fetch Driven
 
@@ -85,7 +75,25 @@ Updated 2026-04-12:
     an authoritative direct `history` snapshot for the new character.
   - the CLI now sends the daemon command before updating local state.
 - What remains:
-  - the remaining work is the Phase 4 revisioned sync contract, not reconnect
-    semantics or placeholder startup repair flows.
+  - the remaining work is preservation and module/guardrail follow-through, not
+    reconnect semantics or placeholder startup repair flows.
 - Later owner:
-  - `docs/todo/architecture-realignment/architecture-realignment-plan.md`, Phase 4.
+  - `docs/todo/architecture-realignment/architecture-realignment-plan.md`, Phases 6-7.
+
+### 6. Snapshot And Event Sync Now Have One Documented Authority Rule
+
+- Current code behavior:
+  - `History` snapshots now carry a revision and are the authoritative
+    conversation-state sync object.
+  - `NewMessage` remains on the wire only as a revisioned advisory event.
+  - `shore-client` now tracks the latest revision and drops stale
+    snapshot/event traffic before it reaches frontend-specific UI logic.
+  - the TUI no longer depends on post-stream/delete repair fetches or
+    timestamp-based `NewMessage` dedupe for normal correctness.
+- What remains:
+  - the open wire-contract mismatch is no longer snapshot/event authority.
+  - the remaining open protocol debt is request correlation on server messages
+    (`rid` echo), plus the later Phase 6/7 structural/guardrail work.
+- Later owner:
+  - `docs/todo/architecture-realignment/architecture-realignment-plan.md`, Phases 6-7 for
+    preservation, not for redefining sync authority.

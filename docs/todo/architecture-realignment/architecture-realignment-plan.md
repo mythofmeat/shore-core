@@ -7,7 +7,7 @@ becomes easier to reason about, iterate on, and extend.
 
 ## Status Snapshot
 
-Updated 2026-04-12 after the truthful-handshake closeout pass.
+Updated 2026-04-12 after the revisioned-sync and client-cleanup pass.
 
 - Workstream A is complete enough to treat as landed. `docs/ARCHITECTURE.md`,
   the mismatch checklist, and the implementation plan now describe the current
@@ -21,7 +21,13 @@ Updated 2026-04-12 after the truthful-handshake closeout pass.
   come from real daemon state, `switch_character` mutates session state
   authoritatively without reconnect semantics, and TCP keepalive `ping` is now
   implemented instead of merely documented.
-- Workstreams E through H are still open.
+- Workstream E is complete enough to treat as landed. Shore now has a
+  revisioned authoritative `History` snapshot model with shared-client stale
+  snapshot rejection instead of ad hoc repair fetches.
+- Workstream G is complete enough to treat as landed. The TUI no longer depends
+  on hidden bootstrap or post-stream/delete repair fetches to stay correct in
+  normal flows.
+- Workstreams F and H are still open.
 - For the exact pickup point and phase-by-phase execution status, use
   [`architecture-realignment-implementation-plan.md`](./architecture-realignment-implementation-plan.md).
 
@@ -154,20 +160,17 @@ Examples:
 
 This makes behavior feel magical instead of explicit.
 
-### Problem 4: The System Uses Both Snapshot and Event Sync Without A Clear Rule
+### Problem 4: The Snapshot/Event Contract Needed To Become Explicit
 
-Shore currently mixes:
+This branch closes the worst of the ambiguity by making:
 
-- full `History` snapshots
-- `NewMessage` events
-- stream events
-- client-initiated `log` refreshes to recover from stale state
+- revisioned `History` snapshots authoritative
+- `NewMessage` explicitly advisory
+- shared-client revision tracking responsible for stale-state rejection
 
-This is why clients have dedupe logic and why the TUI manually re-fetches
-state after operations that should already be authoritative.
-
-The problem is not that snapshots are wrong or that events are wrong.
-The problem is that the system has never fully committed to one coherent model.
+The remaining job is no longer to invent the model; it is to preserve it with
+tests, docs, and review guardrails so Shore does not drift back into
+overlapping authorities.
 
 ### Problem 5: The Clients Still Know Too Much
 

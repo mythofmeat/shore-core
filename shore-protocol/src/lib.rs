@@ -120,11 +120,13 @@ mod tests {
             }],
             config: json!({}),
             selected_character: Some("alice".into()),
+            revision: 7,
         });
         let (json, _back) = round_trip(&msg);
         assert_eq!(json["type"], "history");
         assert_eq!(json["messages"][0]["role"], "user");
         assert_eq!(json["selected_character"], "alice");
+        assert_eq!(json["revision"], 7);
     }
 
     #[test]
@@ -236,6 +238,7 @@ mod tests {
     #[test]
     fn server_new_message_round_trip() {
         let msg = ServerMessage::NewMessage(NewMessage {
+            revision: 3,
             message: Message {
                 msg_id: "m2".into(),
                 role: Role::Assistant,
@@ -250,6 +253,7 @@ mod tests {
         let (json, _back) = round_trip(&msg);
         assert_eq!(json["type"], "new_message");
         assert_eq!(json["msg_id"], "m2");
+        assert_eq!(json["revision"], 3);
     }
 
     #[test]
