@@ -204,14 +204,19 @@ impl ConversationEngine {
     /// Tool-loop messages are merged into single assistant turns so clients
     /// receive clean, logical messages rather than raw protocol intermediates.
     pub fn broadcast_history(&self) {
-        let merged = shore_protocol::merge::merge_tool_loop_messages(self.messages.messages());
-        let history = ServerMessage::History(History {
-            messages: merged,
-            config: serde_json::json!({}),
-        });
+        let history = ServerMessage::History(self.history_snapshot(serde_json::json!({})));
 
         // Ignore send errors — means no receivers are listening.
         let _ = self.push_tx.send(history);
+    }
+
+    pub fn history_snapshot(&self, config: serde_json::Value) -> History {
+        let merged = shore_protocol::merge::merge_tool_loop_messages(self.messages.messages());
+        History {
+            messages: merged,
+            config,
+            selected_character: Some(self.character_name.clone()),
+        }
     }
 }
 

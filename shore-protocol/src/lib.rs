@@ -119,10 +119,12 @@ mod tests {
                 timestamp: "2026-01-01T00:00:00Z".into(),
             }],
             config: json!({}),
+            selected_character: Some("alice".into()),
         });
         let (json, _back) = round_trip(&msg);
         assert_eq!(json["type"], "history");
         assert_eq!(json["messages"][0]["role"], "user");
+        assert_eq!(json["selected_character"], "alice");
     }
 
     #[test]

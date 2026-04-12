@@ -381,19 +381,26 @@ fn handle_conn_event(app: &mut App, event: ConnEvent) -> Vec<ConnCommand> {
             characters,
             history,
             config,
+            selected_character,
             ..
         } => {
             app.connection_status = ConnectionStatus::Connected;
             app.characters = characters.clone();
 
-            // Set character name from first character
-            if let Some(ch) = characters.first() {
+            if let Some(selected) = selected_character {
+                app.character_name = selected;
+            } else if let Some(ch) = characters.first() {
                 app.character_name = ch.name.clone();
             }
 
             // Check private flag from config
             if let Some(private) = config.get("private").and_then(|v| v.as_bool()) {
                 app.is_private = private;
+            }
+            if let Some(model) = config.get("active_model").and_then(|v| v.as_str()) {
+                app.model = model.to_string();
+            } else {
+                app.model.clear();
             }
 
             // Load any history from the handshake
@@ -404,28 +411,7 @@ fn handle_conn_event(app: &mut App, event: ConnEvent) -> Vec<ConnCommand> {
             transmit_entry_images(app);
 
             app.set_status("connected");
-
-            // Request full history, status, and model list from daemon
-            vec![
-                ConnCommand::Send(ClientMessage::Command(Command {
-                    rid: None,
-
-                    name: "log".into(),
-                    args: serde_json::json!({}),
-                })),
-                ConnCommand::Send(ClientMessage::Command(Command {
-                    rid: None,
-
-                    name: "status".into(),
-                    args: serde_json::json!({}),
-                })),
-                ConnCommand::Send(ClientMessage::Command(Command {
-                    rid: None,
-
-                    name: "list_models".into(),
-                    args: serde_json::json!({}),
-                })),
-            ]
+            vec![]
         }
 
         ConnEvent::Disconnected(reason) => {
@@ -806,6 +792,16 @@ fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<ConnCommand> 
                 "switch_character" => {
                     if let Some(name) = co.data.get("character").and_then(|v| v.as_str()) {
                         app.character_name = name.to_string();
+                    }
+                    if let Some(model) = co.data.get("active_model").and_then(|v| v.as_str()) {
+                        app.model = model.to_string();
+                    } else if co.data.get("active_model").is_some_and(|v| v.is_null()) {
+                        app.model.clear();
+                    }
+                    if let Some(private) = co.data.get("private").and_then(|v| v.as_bool()) {
+                        app.is_private = private;
+                    }
+                    if let Some(name) = co.data.get("character").and_then(|v| v.as_str()) {
                         app.set_status(format!("switched to {name}"));
                     }
                 }
@@ -893,6 +889,15 @@ fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<ConnCommand> 
         }
 
         ServerMessage::History(hist) => {
+            if let Some(private) = hist.config.get("private").and_then(|v| v.as_bool()) {
+                app.is_private = private;
+            }
+            if let Some(model) = hist.config.get("active_model").and_then(|v| v.as_str()) {
+                app.model = model.to_string();
+            }
+            if let Some(selected) = hist.selected_character {
+                app.character_name = selected;
+            }
             // Re-sync history
             app.image_cache.clear();
             app.entries.clear();

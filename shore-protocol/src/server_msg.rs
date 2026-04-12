@@ -18,6 +18,8 @@ pub struct History {
     pub messages: Vec<Message>,
     #[serde(default)]
     pub config: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_character: Option<String>,
 }
 
 /// Server shutting down.

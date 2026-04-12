@@ -19,6 +19,7 @@ pub enum ConnEvent {
         characters: Vec<shore_protocol::types::CharacterInfo>,
         history: Vec<shore_protocol::types::Message>,
         config: serde_json::Value,
+        selected_character: Option<String>,
     },
     Message(ServerMessage),
     Disconnected(String),
@@ -105,6 +106,7 @@ async fn connection_loop(
                         characters: hello.characters,
                         history: history.messages,
                         config: history.config,
+                        selected_character: history.selected_character,
                     })
                     .await;
 

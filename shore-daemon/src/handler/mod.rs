@@ -36,6 +36,7 @@ use crate::autonomy::parse_cache_ttl_secs;
 use crate::characters::CharacterRegistry;
 use crate::commands::{self, CommandContext, MemoryShellSession, SessionTokens};
 use crate::engine::prompt::{self, CapabilitiesConfig, PromptParams};
+use crate::handshake::build_session_history_snapshot;
 use crate::memory::agent::{AgentSearchContext, MemoryAgent};
 use crate::memory::agent_llm::AgentLlm;
 use crate::memory::compaction_impls::ImageGenConfig;
@@ -526,11 +527,12 @@ impl MessageHandler {
             memory_shell_sessions,
         };
 
-        let result = commands::dispatch(engine_arc.clone(), &mut cmd_ctx, cmd).await;
+        let mut result = commands::dispatch(engine_arc.clone(), &mut cmd_ctx, cmd).await;
+        let active_model_after_command = cmd_ctx.active_model.clone();
 
         {
             let session = self.session_state_mut(session_id);
-            session.active_model = cmd_ctx.active_model.clone();
+            session.active_model = active_model_after_command.clone();
             session.memory_shell_sessions = cmd_ctx.memory_shell_sessions;
         }
 
@@ -543,7 +545,7 @@ impl MessageHandler {
         }
 
         if cmd.name == "switch_character" {
-            if let ServerMessage::CommandOutput(output) = &result {
+            if let ServerMessage::CommandOutput(output) = &mut result {
                 let selected = output
                     .data
                     .get("character")
@@ -552,7 +554,38 @@ impl MessageHandler {
                 if let Some(selected) = selected {
                     let _ = self
                         .session_router
-                        .set_selected_character(session_id, Some(selected))
+                        .set_selected_character(session_id, Some(selected.clone()))
+                        .await;
+
+                    let snapshot = build_session_history_snapshot(
+                        self.registry.clone(),
+                        Some(selected.clone()),
+                        active_model_after_command.clone(),
+                    )
+                    .await;
+
+                    output.data["selected_character"] = serde_json::Value::String(selected.clone());
+                    output.data["active_model"] = snapshot
+                        .config
+                        .get("active_model")
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null);
+                    output.data["private"] = snapshot
+                        .config
+                        .get("private")
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Bool(false));
+
+                    let _ = self
+                        .session_router
+                        .send_to_session(
+                            session_id,
+                            ServerMessage::History(shore_protocol::server_msg::History {
+                                messages: snapshot.messages,
+                                config: snapshot.config,
+                                selected_character: snapshot.selected_character,
+                            }),
+                        )
                         .await;
                 }
             }
@@ -1072,6 +1105,7 @@ mod tests {
             addr: "127.0.0.1:0".into(),
             allowed_hosts: vec![],
             server_name: "handler-test".into(),
+            handshake: None,
         });
         let session_router = server.session_router();
         session_router
@@ -1223,6 +1257,65 @@ mod tests {
             "Expected auto-select to succeed, got {:?}",
             result
         );
+    }
+
+    #[tokio::test]
+    async fn switch_character_pushes_authoritative_history_to_session() {
+        let tmp = TempDir::new().unwrap();
+        let (mut handler, _push_rx, mut direct_rx) = make_handler(&tmp, &["Alice", "Bob"]).await;
+
+        let bob_engine = {
+            let mut registry = handler.registry.lock().await;
+            registry.get_or_create("Bob").unwrap()
+        };
+        bob_engine
+            .lock()
+            .await
+            .append_message(Message {
+                msg_id: "m1".into(),
+                role: Role::Assistant,
+                content: "hello from bob".into(),
+                images: vec![],
+                content_blocks: vec![ContentBlock::Text {
+                    text: "hello from bob".into(),
+                }],
+                alt_index: None,
+                alt_count: None,
+                timestamp: "2026-01-01T00:00:00Z".into(),
+            })
+            .unwrap();
+
+        let result = handler
+            .dispatch_command(
+                &Command {
+                    rid: None,
+                    name: "switch_character".into(),
+                    args: serde_json::json!({ "name": "Bob" }),
+                },
+                &test_request_meta(Some("Alice"), None),
+            )
+            .await;
+
+        match result {
+            ServerMessage::CommandOutput(output) => {
+                assert_eq!(output.name, "switch_character");
+                assert_eq!(output.data["character"], "Bob");
+                assert_eq!(output.data["selected_character"], "Bob");
+                assert_eq!(output.data["private"], false);
+            }
+            other => panic!("Expected CommandOutput, got {:?}", other),
+        }
+
+        let history = direct_rx.recv().await.unwrap();
+        match history {
+            ServerMessage::History(history) => {
+                assert_eq!(history.selected_character.as_deref(), Some("Bob"));
+                assert_eq!(history.messages.len(), 1);
+                assert_eq!(history.messages[0].content, "hello from bob");
+                assert_eq!(history.config["private"], false);
+            }
+            other => panic!("Expected direct History, got {:?}", other),
+        }
     }
 
     #[tokio::test]
@@ -1552,6 +1645,7 @@ mod tests {
             addr: "127.0.0.1:0".into(),
             allowed_hosts: vec![],
             server_name: "handler-test".into(),
+            handshake: None,
         });
         let session_router = server.session_router();
         session_router

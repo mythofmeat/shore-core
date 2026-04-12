@@ -8,6 +8,7 @@ pub mod compat;
 pub mod content_util;
 pub mod engine;
 pub mod handler;
+pub mod handshake;
 pub mod memory;
 pub mod notifications;
 mod sync;

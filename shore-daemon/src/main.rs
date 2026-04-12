@@ -6,6 +6,7 @@ use shore_daemon::autonomy::manager::AutonomyManager;
 use shore_daemon::characters::CharacterRegistry;
 use shore_daemon::commands::{CommandContext, SessionTokens};
 use shore_daemon::handler::MessageHandler;
+use shore_daemon::handshake::build_handshake_provider;
 use shore_daemon::notifications::NotificationService;
 use shore_daemon_server::registry::{InstanceInfo, Registry};
 use shore_daemon_server::{Server, ServerConfig};
@@ -52,6 +53,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         addr: addr.clone(),
         allowed_hosts: loaded.app.daemon.allowed_hosts.clone(),
         server_name: "shore-daemon".into(),
+        handshake: None,
     };
 
     // ── Register instance ────────────────────────────────────────────
@@ -94,7 +96,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // ── Create server and message handler ─────────────────────────────
-    let server = Server::new(server_config);
+    let mut server = Server::new(server_config);
     let push_tx = server.event_sender();
     let session_router = server.session_router();
     let route_rx = server.take_route_rx();
@@ -106,6 +108,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         push_tx.clone(),
         loaded.clone(),
     )));
+    server.set_handshake_provider(build_handshake_provider(char_registry.clone()));
 
     // Create autonomy manager (shared between handler, commands, and per-character tick tasks).
     let mut autonomy = AutonomyManager::new(

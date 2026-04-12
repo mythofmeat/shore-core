@@ -7,18 +7,23 @@ becomes easier to reason about, iterate on, and extend.
 
 ## Status Snapshot
 
-Updated 2026-04-12.
+Updated 2026-04-12 after the truthful-handshake closeout pass.
 
-- Workstream A is in progress. The mismatch checklist and implementation plan
-  now track the current branch state, but `docs/ARCHITECTURE.md` still needs
-  the full protocol-truth pass.
+- Workstream A is complete enough to treat as landed. `docs/ARCHITECTURE.md`,
+  the mismatch checklist, and the implementation plan now describe the current
+  SWP truth instead of the pre-refactor intent.
 - Workstream B is complete enough to treat as landed. Shore now has explicit
   daemon-owned session state and per-session request/generation bookkeeping.
-- Workstream C is in progress. Main request-scoped responses now use per-session
-  direct delivery, while unsolicited events still use the broadcast path.
-- Workstreams D through H are still open.
+- Workstream C is complete enough to treat as landed. Main request-scoped
+  responses now use per-session direct delivery with explicit multi-client
+  isolation coverage, while unsolicited events still use the broadcast path.
+- Workstream D is complete enough to treat as landed. Handshake payloads now
+  come from real daemon state, `switch_character` mutates session state
+  authoritatively without reconnect semantics, and TCP keepalive `ping` is now
+  implemented instead of merely documented.
+- Workstreams E through H are still open.
 - For the exact pickup point and phase-by-phase execution status, use
-  [`6-architecture-realignment-implementation-plan.md`](./6-architecture-realignment-implementation-plan.md).
+  [`architecture-realignment-implementation-plan.md`](./architecture-realignment-implementation-plan.md).
 
 ## 1. Why This Exists
 
@@ -110,12 +115,10 @@ Examples:
 
 - request IDs are described as end-to-end correlation, but server messages do
   not actually carry `rid`
-- the server is documented to send meaningful `hello` and `history` on
-  handshake, but the live handshake is mostly placeholder data
-- `ping` is described as part of the transport contract, but the TCP server
-  does not currently emit periodic pings
 - the docs describe a flatter message shape than the actual `content_blocks`
   model now on the wire
+- the docs still need to be explicit that request-scoped direct responses and
+  authoritative snapshots are distinct concepts in the live implementation
 
 This makes the docs unreliable as a foundation for implementation work.
 
@@ -166,11 +169,11 @@ state after operations that should already be authoritative.
 The problem is not that snapshots are wrong or that events are wrong.
 The problem is that the system has never fully committed to one coherent model.
 
-### Problem 5: The Transport Layer Knows Too Little, The Clients Know Too Much
+### Problem 5: The Clients Still Know Too Much
 
-The transport server is generic in the wrong way: it is generic enough that it
-cannot send truthful handshake state, but specific enough that it still bakes in
-Shore-specific assumptions and message types.
+The truthful-handshake gap is now closed, but clients still carry too much
+compensating protocol logic relative to what the server guarantees
+authoritatively.
 
 Meanwhile clients carry compensating logic for:
 
@@ -211,7 +214,7 @@ The TCP layer should own:
 - connection lifecycle
 - client registry
 
-It should not invent domain state such as fake character lists or placeholder
+It should not regress into inventing fake character lists or placeholder
 history snapshots.
 
 ### 4.2 Daemon Owns Sessions

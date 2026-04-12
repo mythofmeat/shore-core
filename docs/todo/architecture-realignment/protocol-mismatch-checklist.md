@@ -12,21 +12,15 @@ Updated 2026-04-12:
   resolved or materially narrowed by the first implementation pass
 - the execution tracker for future work is
   [`architecture-realignment-implementation-plan.md`](./architecture-realignment-implementation-plan.md)
+- the Phase 2 closeout pass added explicit two-client isolation coverage for
+  command, stream, tool, and cancel traffic
+- the truthful-handshake closeout pass replaced placeholder startup data,
+  implemented TCP `ping`, and made `switch_character` push an authoritative
+  session snapshot
 
 ## Still Open
 
-### 1. Placeholder Handshake State
-
-- Current code behavior:
-  - `shore-daemon-server` sends a placeholder `hello` character list and an
-    empty `history` snapshot during handshake.
-- Current docs claim:
-  - Handshake returns meaningful initial state that clients can trust.
-- Later owner:
-  - `docs/todo/architecture-realignment/architecture-realignment-plan.md`, Phase 3: truthful handshake
-    and session semantics.
-
-### 2. No Server `rid` Echo
+### 1. No Server `rid` Echo
 
 - Current code behavior:
   - client requests carry `rid`, but server response messages do not echo it on
@@ -36,21 +30,7 @@ Updated 2026-04-12:
 - Later owner:
   - `docs/todo/architecture-realignment/architecture-realignment-plan.md`, Phases 2-4.
 
-### 3. Startup And Session-State Truth Are Still Incomplete
-
-- Current code behavior:
-  - `switch_character` now updates session-owned selected character state after
-    daemon success and no longer returns reconnect-oriented command semantics.
-  - handshake payloads are still placeholder startup state rather than one
-    truthful authoritative session snapshot.
-- Current docs claim:
-  - connect-time and session-mutation behavior should be authoritative and
-    self-consistent.
-- Later owner:
-  - `docs/todo/architecture-realignment/architecture-realignment-plan.md`, Phase 3: truthful handshake
-    and session semantics, then Phase 4: revisioned state sync.
-
-### 4. Snapshot And Event Sync Are Still Mixed
+### 2. Snapshot And Event Sync Are Still Mixed
 
 - Current code behavior:
   - Shore still mixes `History` snapshots, `NewMessage` events, stream events,
@@ -63,29 +43,49 @@ Updated 2026-04-12:
 
 ## Resolved Or Materially Narrowed On This Branch
 
-### 5. Direct Responses No Longer Use Broadcast Delivery For Main Request Paths
+### 3. Handshake State Is No Longer Placeholder Data
+
+- Current code behavior:
+  - `shore-daemon-server` now loads the handshake from daemon-owned state:
+    real character discovery, truthful selected-character resolution, real
+    conversation history, and a minimal truthful session/config snapshot.
+  - TCP keepalive `ping` is now emitted by the server.
+- What remains:
+  - handshake truth is no longer the open mismatch.
+  - the remaining follow-on work is Phase 4 revision semantics, not placeholder
+    startup data.
+- Later owner:
+  - `docs/todo/architecture-realignment/architecture-realignment-plan.md`, Phase 4: revisioned
+    state sync.
+
+### 4. Direct Responses No Longer Use Broadcast Delivery For Main Request Paths
 
 - Current code behavior:
   - command results, request-scoped errors, stream/tool traffic, and
     cancellation outcomes now route through per-session direct senders.
+  - multi-client tests now assert isolation for command, stream, tool, and
+    cancel flows, and `shore-daemon-server` has a transport-level direct-send
+    isolation test.
   - unsolicited events still use the broadcast/event path.
 - What remains:
-  - Phase 2 still needs a final outbound-path audit and stronger two-client
-    coverage, but this is no longer the primary protocol mismatch it was at the
-    start of the program.
+  - this is no longer a Phase 2 routing gap.
+  - the remaining open question is Phase 4 semantics: `History` and
+    `NewMessage` are still broadcast/event-style updates rather than a final
+    revisioned authoritative sync model.
 - Later owner:
-  - `docs/todo/architecture-realignment/architecture-realignment-plan.md`, Phase 2: outbound channel
-    separation closeout.
+  - `docs/todo/architecture-realignment/architecture-realignment-plan.md`, Phase 4: revisioned
+    state sync.
 
-### 6. `switch_character` Is No Longer Reconnect-Oriented At Command Level
+### 5. `switch_character` Is No Longer Reconnect-Oriented Or Repair-Fetch Driven
 
 - Current code behavior:
   - the command now returns session-mutation semantics instead of
     `reconnect_required: true`.
+  - successful switches update session-owned selected character state and push
+    an authoritative direct `history` snapshot for the new character.
   - the CLI now sends the daemon command before updating local state.
 - What remains:
-  - handshake/startup truth and the final authoritative state model are still
-    open, so Phase 3 and Phase 4 are not done just because the command result
-    shape is fixed.
+  - the remaining work is the Phase 4 revisioned sync contract, not reconnect
+    semantics or placeholder startup repair flows.
 - Later owner:
-  - `docs/todo/architecture-realignment/architecture-realignment-plan.md`, Phase 3 and Phase 4.
+  - `docs/todo/architecture-realignment/architecture-realignment-plan.md`, Phase 4.

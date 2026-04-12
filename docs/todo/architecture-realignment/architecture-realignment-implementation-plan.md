@@ -18,21 +18,27 @@ It is intentionally more concrete than the architecture plan:
 
 ## Status Snapshot
 
-Updated 2026-04-12 after the first implementation pass.
+Updated 2026-04-12 after the truthful-handshake closeout pass.
 
 Current program state:
 
-- Phase 0 is partially complete. The mismatch checklist exists and this plan is
-  now updated, but the full `docs/ARCHITECTURE.md` truth pass is still pending.
+- Phase 0 is complete enough to treat as landed. `docs/ARCHITECTURE.md`, the
+  mismatch checklist, and this plan now agree on the current SWP wire truth.
 - Phase 1 is complete enough to treat as landed. Shore now has daemon-owned
   session state, per-session generation tracking, and explicit session-aware
   selected-character updates instead of relying on one daemon-global mutable
   path.
-- Phase 2 is in progress. Request-scoped command output, request errors,
-  stream/tool traffic, and cancellation results now route through per-session
-  direct senders; unsolicited events still use broadcast and the remaining
-  outbound paths still need a final audit plus stronger two-client coverage.
-- Phases 3 through 7 are still ahead of us in wire-contract terms.
+- Phase 2 is complete enough to treat as landed. Request-scoped command
+  output, request errors, stream/tool traffic, image sends, phase updates, and
+  cancellation results now route through per-session direct senders, while
+  unsolicited state-change events still use broadcast until Phase 4 defines the
+  authoritative revisioned sync model.
+- Phase 3 is complete enough to treat as landed. Handshake payloads now use
+  real daemon state, selected-character/session snapshots are truthful, TCP
+  keepalive `ping` is implemented, and character switching now pushes an
+  authoritative session snapshot instead of relying on reconnect or repair
+  fetches.
+- Phases 4 through 7 are still ahead of us in wire-contract terms.
 
 What landed on this branch:
 
@@ -44,7 +50,12 @@ What landed on this branch:
   - command output and request-scoped errors
   - LLM stream messages
   - tool call/result events and image sends
+  - request-triggered phase/status updates
   - cancellation outcomes
+- multi-client regression coverage now proves the non-requesting client does
+  not receive request-scoped command, stream, tool, or cancel traffic.
+- `shore-daemon-server` now has a direct-delivery isolation test alongside the
+  existing broadcast coverage.
 - `switch_character` no longer returns reconnect-oriented command semantics;
   successful switches update session-owned selected character state
   authoritatively on the server side.
@@ -53,14 +64,14 @@ What landed on this branch:
 
 Next pickup point:
 
-1. finish Phase 2 by auditing the remaining outbound paths so every
-   request-scoped message uses direct session delivery
-2. add or strengthen two-client coverage for command, streaming, tool, and
-   cancel flows so cross-delivery regressions are hard to reintroduce
-3. then start Phase 3 by replacing placeholder handshake payloads with
-   truthful daemon-owned startup state
-4. keep client-cleanup work parked until Phase 4 defines the authoritative
-   revisioned sync model
+1. start Phase 4 by choosing and encoding the authoritative revisioned
+   snapshot/event contract
+2. use that revision model to remove stale-state recovery logic from shared
+   client code
+3. keep client cleanup focused on protocol-driven behavior rather than ad hoc
+   UI repair fetches
+4. keep any remaining event-versus-snapshot ambiguity documented until the wire
+   contract is enforced in tests
 
 ## 1. Scope
 
@@ -103,7 +114,7 @@ Primary code and doc touchpoints for this program:
 
 - `docs/ARCHITECTURE.md`
 - `docs/todo/architecture-realignment/architecture-realignment-plan.md`
-- `docs/todo/protocol-mismatch-checklist.md`
+- `docs/todo/architecture-realignment/protocol-mismatch-checklist.md`
 - `shore-protocol/src/client_msg.rs`
 - `shore-protocol/src/server_msg.rs`
 - `shore-protocol/src/types.rs`
@@ -206,7 +217,7 @@ Purpose:
 
 Primary outputs:
 
-- updated `docs/todo/protocol-mismatch-checklist.md`
+- updated `docs/todo/architecture-realignment/protocol-mismatch-checklist.md`
 - targeted corrections in `docs/ARCHITECTURE.md`
 - explicit SWP versioning policy note
 
@@ -320,20 +331,22 @@ Exit criteria:
 
 Status:
 
-- In progress as of 2026-04-12.
+- Complete enough to treat as landed on 2026-04-12.
 - Already landed:
   - per-session direct response delivery in `shore-daemon-server`
   - direct routing for command output, request-scoped errors, stream/tool
     traffic, and cancellation outcomes
   - continued use of broadcast delivery only for unsolicited event-style
     messages
-- Still required before this phase can be called done:
-  - audit remaining outbound paths, especially persistence/background paths, so
-    no request-scoped message still leaks onto broadcast delivery
-  - add explicit multi-client routing tests covering command, stream, tool, and
-    cancel behavior
-  - decide whether any temporary compatibility bridge still exists and remove or
-    label it explicitly
+- Closeout added on this branch:
+  - explicit two-client isolation coverage for command, stream, tool, and
+    cancel behavior in `shore-daemon/tests/integration_concurrency.rs`
+  - direct-send transport isolation coverage in `shore-daemon-server/src/lib.rs`
+  - confirmation that request-triggered `Phase` messages, tool/image sends, and
+    cancellation outcomes stay on direct session delivery
+- Remaining intentional boundary:
+  - `History` and `NewMessage` remain broadcast/event-style messages until
+    Phase 4 defines the authoritative revisioned sync model
 
 Purpose:
 
@@ -396,6 +409,27 @@ Exit criteria:
 - event delivery is explicit and separately testable
 
 ### Phase 3: Truthful Handshake And Session Mutation Semantics
+
+Status:
+
+- Complete enough to treat as landed on 2026-04-12.
+- Landed on this branch:
+  - `shore-daemon-server` now sends real handshake payloads via a daemon-owned
+    handshake provider instead of placeholder character/history data.
+  - the initial `history` snapshot now carries authoritative
+    `selected_character` data and a truthful session/config snapshot payload.
+  - TCP keepalive `ping` is now emitted by the server instead of only existing
+    in documentation.
+  - successful `switch_character` commands now update session-owned selected
+    character state and push an authoritative direct `history` snapshot for the
+    new selection.
+  - client connection flows can become coherent from the handshake alone; the
+    TUI no longer needs a mandatory bootstrap `log`/`status` repair round-trip
+    just to render the initial state.
+- Remaining intentional boundary:
+  - revisioned stale-state handling is still Phase 4 work; this phase makes the
+    startup/session snapshot truthful but does not yet define the final
+    revisioned sync contract.
 
 Purpose:
 
@@ -844,14 +878,11 @@ This program is complete when all of the following are true:
 
 ## 12. Suggested Immediate Next Step
 
-The next implementation PR after the current branch should pick up in Phase 2,
+The next implementation PR after the current branch should pick up in Phase 4,
 not Phase 1:
 
-1. finish the outbound-path audit so every remaining request-scoped message is
-   guaranteed to use direct session delivery
-2. add or tighten two-client integration coverage for command results,
-   streaming, tool traffic, and cancellation
-3. once Phase 2 is closed, start Phase 3 by replacing placeholder handshake
-   payloads with truthful daemon-owned startup state
-4. keep Phase 4 and Phase 5 cleanup parked until handshake truthfulness and the
-   authoritative snapshot model are defined
+1. define the revisioned authoritative snapshot/event contract on the wire
+2. centralize stale-state handling in shared client code instead of leaving it
+   to TUI heuristics
+3. then remove the remaining repair-fetch and dedupe logic only where the new
+   revisioned contract is test-backed

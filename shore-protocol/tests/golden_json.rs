@@ -84,7 +84,8 @@ const HISTORY_FIXTURE: &str = r#"{
             "timestamp": "2026-01-15T10:30:01Z"
         }
     ],
-    "config": {"model": "claude-haiku-4-5-20251001"}
+    "config": {"model": "claude-haiku-4-5-20251001"},
+    "selected_character": "alice"
 }"#;
 
 #[test]
@@ -110,6 +111,7 @@ fn history_golden() {
             assert_eq!(h.messages[1].alt_count, Some(2));
             // Config
             assert_eq!(h.config["model"], "claude-haiku-4-5-20251001");
+            assert_eq!(h.selected_character.as_deref(), Some("alice"));
         }
         other => panic!("expected History, got {:?}", other),
     }

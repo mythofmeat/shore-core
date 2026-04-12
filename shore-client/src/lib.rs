@@ -93,6 +93,7 @@ mod tests {
                     timestamp: "2026-01-01T00:00:00Z".into(),
                 }],
                 config: serde_json::json!({}),
+                selected_character: Some("alice".into()),
             });
             write_json_line(&mut w, &history).await;
         });
@@ -107,6 +108,7 @@ mod tests {
         assert_eq!(server_hello.characters.len(), 1);
         assert_eq!(history.messages.len(), 1);
         assert_eq!(history.messages[0].content, "hello");
+        assert_eq!(history.selected_character.as_deref(), Some("alice"));
 
         drop(conn);
         server_handle.await.unwrap();

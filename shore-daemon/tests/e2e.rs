@@ -25,6 +25,7 @@ use shore_config::{LoadedConfig, ShoreDirs};
 use shore_daemon::characters::CharacterRegistry;
 use shore_daemon::commands::{CommandContext, SessionTokens};
 use shore_daemon::handler::MessageHandler;
+use shore_daemon::handshake::build_handshake_provider;
 use shore_daemon_server::{Server, ServerConfig};
 use shore_ledger::LedgerClient;
 use shore_llm_client::LlmClient;
@@ -194,8 +195,9 @@ async fn e2e_conversation_milestone() {
         addr: addr.clone(),
         allowed_hosts: vec![],
         server_name: "shore-daemon-test".into(),
+        handshake: None,
     };
-    let server = Server::new(server_config);
+    let mut server = Server::new(server_config);
     let push_tx = server.event_sender();
     let session_router = server.session_router();
     let route_rx = server.take_route_rx();
@@ -207,6 +209,7 @@ async fn e2e_conversation_milestone() {
         push_tx.clone(),
         loaded.clone(),
     )));
+    server.set_handshake_provider(build_handshake_provider(char_registry.clone()));
 
     let autonomy = shore_daemon::autonomy::manager::AutonomyManager::new(
         Default::default(),
@@ -265,10 +268,15 @@ async fn e2e_conversation_milestone() {
 
     assert_eq!(server_hello.v, shore_protocol::SWP_V1);
     assert_eq!(server_hello.server_name, "shore-daemon-test");
+    assert_eq!(server_hello.characters.len(), 1);
+    assert_eq!(server_hello.characters[0].name, "TestChar");
     assert!(
         history.messages.is_empty(),
         "Initial history should be empty"
     );
+    assert_eq!(history.selected_character.as_deref(), Some("TestChar"));
+    assert_eq!(history.config["active_model"], "haiku");
+    assert_eq!(history.config["private"], false);
     eprintln!(
         "  Handshake OK: v={}, server={}",
         server_hello.v, server_hello.server_name
@@ -671,8 +679,9 @@ impl E2EHarness {
             addr: addr.clone(),
             allowed_hosts: vec![],
             server_name: "shore-daemon-test".into(),
+            handshake: None,
         };
-        let server = Server::new(server_config);
+        let mut server = Server::new(server_config);
         let push_tx = server.event_sender();
         let session_router = server.session_router();
         let route_rx = server.take_route_rx();
@@ -685,6 +694,7 @@ impl E2EHarness {
             push_tx.clone(),
             loaded.clone(),
         )));
+        server.set_handshake_provider(build_handshake_provider(char_registry.clone()));
 
         let autonomy = shore_daemon::autonomy::manager::AutonomyManager::new(
             Default::default(),

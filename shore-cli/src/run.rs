@@ -697,6 +697,7 @@ mod tests {
         let history = ServerMessage::History(History {
             messages: vec![],
             config: serde_json::json!({}),
+            selected_character: None,
         });
         write_json_line(&mut w, &history).await;
 

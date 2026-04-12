@@ -84,7 +84,7 @@ Client                          Server
   │                               │
   │──── hello ──────────────────▶│  (client info, capabilities)
   │                               │
-  │◀──── history ────────────────│  (active messages + config snapshot)
+  │◀──── history ────────────────│  (authoritative startup snapshot)
   │                               │
   │     ... normal operation ...  │
   │                               │
@@ -92,27 +92,48 @@ Client                          Server
   │                               │
 ```
 
+#### Protocol Status
+
+| Topic | Current truth in this branch | Planned follow-on |
+|------|------|------|
+| Handshake payloads | `hello` now carries the real character list, and the initial `history` carries real messages, `selected_character`, and a truthful minimal session/config snapshot. | Phase 4 adds revisioned state sync semantics. |
+| `rid` propagation | Client request messages carry `rid`, but SWP V1 server messages do not yet echo it on the wire. | Future SWP wire revision or capability negotiation. |
+| Direct responses vs events | Request-scoped command/stream/tool/cancel traffic now routes directly to the requesting session. Unsolicited state-change traffic still uses the event/broadcast path. | Phase 4 defines the final authoritative sync contract. |
+| `switch_character` | Character switching is a session mutation, not a reconnect flow. Successful switches update session state and push an authoritative `history` snapshot for the new selection. | Phase 4 adds revision/backfill rules. |
+| Snapshot vs event authority | Mixed today. `History` is the authoritative snapshot; `NewMessage` and other event-style traffic still coexist with it. | Phase 4 chooses and enforces one revisioned model. |
+| TCP `ping` | Implemented. The server emits `ping` every 30 seconds on TCP connections. | None. |
+
 ### 3.3 Message Envelope
 
-Every message has this shape:
+SWP V1 is a tagged-message protocol, not a fully uniform top-level envelope.
+
+Client request example:
 
 ```json
 {
-  "type": "<message_type>",
-  "v": 1,
-  "rid": "optional-request-id",
-  ...fields specific to type
+  "type": "message",
+  "rid": "msg_01",
+  "text": "hello",
+  "stream": true
 }
 ```
 
-- `v` — protocol version. Clients and servers must reject unsupported versions.
-- `rid` — request ID. Client-generated, opaque string. The server echoes `rid`
-  on every response message (including streaming chunks and push messages)
-  that was triggered by that request. Push messages not tied to a request
-  (interiority, status_change) have `rid: null`. This enables:
-  - **Multiplexing** — TUI can send a status command while a message streams
-  - **Tracing** — follow a request through structured logs across all services
-  - **Debugging** — correlate "which request caused this error?"
+Server message example:
+
+```json
+{
+  "type": "history",
+  "messages": [],
+  "config": {},
+  "selected_character": "alice"
+}
+```
+
+- `type` — required on every message.
+- `v` — currently carried by `hello`, not by every message.
+- `rid` — client-generated opaque request ID on request messages. SWP V1 keeps
+  request correlation internally, but server messages do not yet echo `rid` on
+  the wire.
 
 ### 3.4 Client → Server Messages
 
@@ -175,35 +196,45 @@ this single envelope. See §3.7 for the complete command reference.
 | Type | When | Key Fields |
 |------|------|------------|
 | `hello` | After client connects | `v`, `server_name`, `characters[]` |
-| `history` | After handshake; after any state change (switch, new chat, toggle, edit, delete) | `messages[]`, `config` |
+| `history` | After handshake; after authoritative state changes | `messages[]`, `config`, `selected_character` |
 | `shutdown` | Server stopping | — |
 | `ping` | Periodic keepalive (TCP) | — |
 
-`history` is the workhorse — any time the client's view of the world should
-change, the server re-sends full state. Simple to implement, impossible to
-desync.
+`history` is the authoritative snapshot for startup and conversation-state
+resynchronization. Request-scoped streaming/tool/command responses travel on
+their own direct-response paths, and `new_message` remains advisory until the
+revisioned Phase 4 sync model lands.
 
 #### Message Object
 
 Every message in `history.messages[]`, `stream_end`, and `new_message` uses
-this flat struct. One shape everywhere — no polymorphism, no optional subtype
-variants.
+the shared `Message` type from `shore-protocol`, including structured
+`content_blocks` for tool-loop fidelity.
 
 ```rust
 struct Message {
-    msg_id:    String,                // stable ID for edit/delete/swipe refs
-    role:      Role,                  // "user" | "assistant" | "system"
-    content:   String,                // rendered text content
-    images:    Vec<ImageRef>,         // empty vec when none
-    alt_index: Option<u32>,           // swipe: current variant (0-based), null if no alternatives
-    alt_count: Option<u32>,           // swipe: total variants, null if no alternatives
-    timestamp: String,                // ISO 8601
+    msg_id:         String,                // stable ID for edit/delete/swipe refs
+    role:           Role,                  // "user" | "assistant" | "system"
+    content:        String,                // derived/rendered convenience text
+    images:         Vec<ImageRef>,         // empty vec when none
+    content_blocks: Vec<ContentBlock>,     // canonical structured content
+    alt_index:      Option<u32>,           // swipe: current variant (0-based), null if no alternatives
+    alt_count:      Option<u32>,           // swipe: total variants, null if no alternatives
+    timestamp:      String,                // ISO 8601
 }
 
 struct ImageRef {
     path:    String,                  // filesystem path to image
     caption: Option<String>,
     data:    Option<String>,          // base64-encoded bytes (wire only, stripped on disk)
+}
+
+enum ContentBlock {
+    Text { text: String },
+    Thinking { thinking: String, signature: Option<String> },
+    ToolUse { id: String, name: String, input: serde_json::Value },
+    ToolResult { tool_use_id: String, content: String, is_error: bool },
+    RedactedThinking { data: String },
 }
 ```
 
@@ -305,7 +336,7 @@ thing, bare verb/noun when unambiguous.
 | Command | Args | Description |
 |---------|------|-------------|
 | `list_characters` | — | List all characters |
-| `switch_character` | `name` | Switch active character → server re-sends `history` |
+| `switch_character` | `name` | Switch the active character for this session → server pushes an authoritative `history` snapshot; reconnect is not required |
 | `list_chats` | — | List conversations (shows `[private]` badge) |
 | `switch_chat` | `id` | Open a conversation → server re-sends `history` |
 | `new_chat` | `title?` | Start a new conversation |
@@ -352,6 +383,18 @@ These commands exist in V1 but are deferred to post-launch. The generic
 A shared Rust crate (`shore-protocol`) defines all message types as
 serde-serializable structs and enums. This crate is a dependency of every
 binary in the workspace.
+
+### 3.10 SWP Versioning Rule
+
+- Internal-only refactors do not require an SWP version bump.
+- User-visible wire-shape or wire-behavior changes require either:
+  - an explicit SWP version bump, or
+  - explicit capability negotiation documented alongside the change.
+- Any such change must update, in the same change set:
+  - `docs/ARCHITECTURE.md`
+  - `shore-protocol` types and serde behavior
+  - protocol golden tests
+  - at least one integration test proving the behavior
 
 ---
 

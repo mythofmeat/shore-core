@@ -1,12 +1,15 @@
 pub mod registry;
 
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 
 use shore_protocol::client_msg::{ClientMessage, Command};
 use shore_protocol::error::ErrorCode;
-use shore_protocol::server_msg::{Error, History, ServerHello, ServerMessage, Shutdown};
-use shore_protocol::types::CharacterInfo;
+use shore_protocol::server_msg::{Error, History, Ping, ServerHello, ServerMessage, Shutdown};
+use shore_protocol::types::{CharacterInfo, Message};
 use shore_protocol::SWP_V1;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
@@ -15,6 +18,33 @@ use tracing::{error, info, instrument, warn};
 
 /// Maximum SWP message size (16 MB).
 const MAX_MESSAGE_SIZE: usize = 16 * 1024 * 1024;
+const PING_INTERVAL: Duration = Duration::from_secs(30);
+
+type HandshakeFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
+
+#[derive(Debug, Clone)]
+pub struct HelloSnapshot {
+    pub characters: Vec<CharacterInfo>,
+}
+
+#[derive(Debug, Clone)]
+pub struct HistorySnapshot {
+    pub messages: Vec<Message>,
+    pub config: serde_json::Value,
+    pub selected_character: Option<String>,
+}
+
+#[derive(Clone)]
+pub struct HandshakeProvider {
+    pub hello: Arc<dyn Fn() -> HandshakeFuture<HelloSnapshot> + Send + Sync>,
+    pub history: Arc<dyn Fn(Option<String>) -> HandshakeFuture<HistorySnapshot> + Send + Sync>,
+}
+
+impl std::fmt::Debug for HandshakeProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HandshakeProvider").finish_non_exhaustive()
+    }
+}
 
 /// Connected client metadata.
 #[derive(Debug, Clone)]
@@ -169,6 +199,7 @@ pub struct ServerConfig {
     pub addr: String,
     pub allowed_hosts: Vec<String>,
     pub server_name: String,
+    pub handshake: Option<HandshakeProvider>,
 }
 
 /// The SWP server.
@@ -201,6 +232,10 @@ impl Server {
             route_rx: Arc::new(tokio::sync::Mutex::new(route_rx)),
             route_tx,
         }
+    }
+
+    pub fn set_handshake_provider(&mut self, handshake: HandshakeProvider) {
+        self.config.handshake = Some(handshake);
     }
 
     /// Returns a clone of the broadcast sender for unsolicited events.
@@ -292,6 +327,7 @@ impl Server {
         let event_rx = self.event_tx.subscribe();
         let route_tx = self.route_tx.clone();
         let server_name = self.config.server_name.clone();
+        let handshake = self.config.handshake.clone();
         let (direct_tx, direct_rx) = mpsc::channel(256);
 
         tokio::spawn(async move {
@@ -304,6 +340,7 @@ impl Server {
                 direct_tx,
                 route_tx,
                 server_name,
+                handshake,
                 shutdown,
             };
             if let Err(e) = handle_client(reader, writer, ctx).await {
@@ -323,6 +360,7 @@ struct ClientCtx {
     direct_tx: mpsc::Sender<ServerMessage>,
     route_tx: tokio::sync::mpsc::Sender<RoutedMessage>,
     server_name: String,
+    handshake: Option<HandshakeProvider>,
     shutdown: tokio::sync::watch::Receiver<()>,
 }
 
@@ -341,36 +379,29 @@ where
     let mut buf_reader = BufReader::new(reader);
     let mut writer = writer;
 
+    let hello_snapshot = load_hello_snapshot(ctx.handshake.as_ref()).await;
+
     // ── Step 1: Send server Hello ────────────────────────────────────
     let server_hello = ServerMessage::Hello(ServerHello {
         v: SWP_V1,
         server_name: ctx.server_name.clone(),
-        characters: vec![CharacterInfo {
-            name: "default".into(),
-        }],
+        characters: hello_snapshot.characters.clone(),
     });
     write_message(&mut writer, &server_hello).await?;
     info!(client_id, "Sent server hello");
 
     // ── Step 2: Receive client Hello ─────────────────────────────────
     let client_hello = read_message(&mut buf_reader).await?;
-    let client_info = match client_hello {
+    let client_hello = match client_hello {
         Some(ClientMessage::Hello(hello)) => {
-            let info = ClientInfo {
-                id: client_id,
-                client_type: hello.client_type,
-                client_name: hello.client_name,
-                capabilities: hello.capabilities,
-                character: hello.character,
-            };
             info!(
                 client_id,
-                client_type = %info.client_type,
-                client_name = %info.client_name,
-                character = ?info.character,
+                client_type = %hello.client_type,
+                client_name = %hello.client_name,
+                character = ?hello.character,
                 "Client hello received"
             );
-            info
+            hello
         }
         Some(other) => {
             let err = ServerMessage::Error(Error {
@@ -385,6 +416,17 @@ where
         }
     };
 
+    let selected_character =
+        resolve_handshake_character(client_hello.character, &hello_snapshot.characters);
+    let history_snapshot =
+        load_history_snapshot(ctx.handshake.as_ref(), selected_character.clone()).await;
+    let client_info = ClientInfo {
+        id: client_id,
+        client_type: client_hello.client_type,
+        client_name: client_hello.client_name,
+        capabilities: client_hello.capabilities,
+        character: history_snapshot.selected_character.clone(),
+    };
     let session = client_info.session_meta();
 
     // Register client.
@@ -396,8 +438,9 @@ where
 
     // ── Step 3: Send History ─────────────────────────────────────────
     let history = ServerMessage::History(History {
-        messages: Vec::new(),
-        config: serde_json::json!({}),
+        messages: history_snapshot.messages,
+        config: history_snapshot.config,
+        selected_character: history_snapshot.selected_character,
     });
     write_message(&mut writer, &history).await?;
     info!(client_id, "Handshake complete");
@@ -452,6 +495,9 @@ where
 {
     let mut consecutive_lags: u32 = 0;
     const MAX_CONSECUTIVE_LAGS: u32 = 3;
+    let mut ping_interval = tokio::time::interval(PING_INTERVAL);
+    ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    ping_interval.tick().await;
 
     loop {
         tokio::select! {
@@ -486,6 +532,10 @@ where
                 }
             }
 
+            _ = ping_interval.tick() => {
+                write_message(writer, &ServerMessage::Ping(Ping {})).await?;
+            }
+
             // Broadcast event from the event channel.
             msg = event_rx.recv() => {
                 match msg {
@@ -517,6 +567,46 @@ where
         }
     }
     Ok(())
+}
+
+async fn load_hello_snapshot(handshake: Option<&HandshakeProvider>) -> HelloSnapshot {
+    match handshake {
+        Some(provider) => (provider.hello)().await,
+        None => HelloSnapshot {
+            characters: vec![CharacterInfo {
+                name: "default".into(),
+            }],
+        },
+    }
+}
+
+async fn load_history_snapshot(
+    handshake: Option<&HandshakeProvider>,
+    selected_character: Option<String>,
+) -> HistorySnapshot {
+    match handshake {
+        Some(provider) => (provider.history)(selected_character).await,
+        None => HistorySnapshot {
+            messages: Vec::new(),
+            config: serde_json::json!({}),
+            selected_character,
+        },
+    }
+}
+
+fn resolve_handshake_character(
+    requested: Option<String>,
+    characters: &[CharacterInfo],
+) -> Option<String> {
+    match requested {
+        Some(name) if characters.iter().any(|character| character.name == name) => Some(name),
+        Some(name) => {
+            warn!(requested = %name, "Ignoring unknown connect-time character selection");
+            None
+        }
+        None if characters.len() == 1 => Some(characters[0].name.clone()),
+        None => None,
+    }
 }
 
 /// Route a client message to the appropriate handler.
@@ -667,7 +757,7 @@ fn msg_type_name(msg: &ClientMessage) -> &'static str {
 mod tests {
     use super::*;
     use shore_protocol::client_msg::{ClientHello, ClientMessageBody, Command, Regen};
-    use shore_protocol::types::Message;
+    use shore_protocol::types::{Message, Role};
     use tokio::io::{duplex, AsyncWriteExt, BufReader};
 
     /// Helper: write a ClientMessage as JSON line into the writer half.
@@ -686,6 +776,45 @@ mod tests {
         let mut line = String::new();
         reader.read_line(&mut line).await.unwrap();
         serde_json::from_str(line.trim()).unwrap()
+    }
+
+    fn test_handshake_provider() -> HandshakeProvider {
+        HandshakeProvider {
+            hello: Arc::new(|| {
+                Box::pin(async {
+                    HelloSnapshot {
+                        characters: vec![
+                            CharacterInfo {
+                                name: "alice".into(),
+                            },
+                            CharacterInfo { name: "bob".into() },
+                        ],
+                    }
+                })
+            }),
+            history: Arc::new(|selected_character| {
+                Box::pin(async move {
+                    let messages = match selected_character.as_deref() {
+                        Some("alice") => vec![Message {
+                            msg_id: "m1".into(),
+                            role: Role::Assistant,
+                            content: "hello from alice".into(),
+                            images: vec![],
+                            content_blocks: vec![],
+                            alt_index: None,
+                            alt_count: None,
+                            timestamp: "2026-01-01T00:00:00Z".into(),
+                        }],
+                        _ => Vec::new(),
+                    };
+                    HistorySnapshot {
+                        messages,
+                        config: serde_json::json!({}),
+                        selected_character,
+                    }
+                })
+            }),
+        }
     }
 
     /// Spawn a handle_client task and return the pieces the test needs.
@@ -724,6 +853,7 @@ mod tests {
                 direct_tx,
                 route_tx,
                 server_name: "test-server".into(),
+                handshake: Some(test_handshake_provider()),
                 shutdown: shutdown_rx,
             };
             handle_client(server_stream, server_stream2, ctx).await
@@ -745,6 +875,7 @@ mod tests {
         reader: &mut BufReader<tokio::io::DuplexStream>,
         writer: &mut tokio::io::DuplexStream,
         client_type: &str,
+        character: Option<&str>,
     ) {
         let _hello = recv_server_msg(reader).await;
         send_client_msg(
@@ -753,7 +884,7 @@ mod tests {
                 client_type: client_type.into(),
                 client_name: "test".into(),
                 capabilities: vec![],
-                character: None,
+                character: character.map(str::to_string),
             }),
         )
         .await
@@ -787,6 +918,9 @@ mod tests {
             ServerMessage::Hello(hello) => {
                 assert_eq!(hello.v, SWP_V1);
                 assert_eq!(hello.server_name, "test-server");
+                assert_eq!(hello.characters.len(), 2);
+                assert_eq!(hello.characters[0].name, "alice");
+                assert_eq!(hello.characters[1].name, "bob");
             }
             other => panic!("Expected Hello, got {:?}", other),
         }
@@ -805,7 +939,10 @@ mod tests {
 
         let history = recv_server_msg(&mut h.client_reader).await;
         match history {
-            ServerMessage::History(hist) => assert!(hist.messages.is_empty()),
+            ServerMessage::History(hist) => {
+                assert!(hist.messages.is_empty());
+                assert!(hist.selected_character.is_none());
+            }
             other => panic!("Expected History, got {:?}", other),
         }
 
@@ -834,7 +971,7 @@ mod tests {
     #[tokio::test]
     async fn routes_message_to_engine() {
         let mut h = spawn_handler();
-        do_handshake(&mut h.client_reader, &mut h.client_writer, "cli").await;
+        do_handshake(&mut h.client_reader, &mut h.client_writer, "cli", None).await;
 
         send_client_msg(
             &mut h.client_writer,
@@ -896,9 +1033,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn handshake_uses_requested_character_snapshot() {
+        let mut h = spawn_handler();
+
+        let _hello = recv_server_msg(&mut h.client_reader).await;
+        send_client_msg(
+            &mut h.client_writer,
+            &ClientMessage::Hello(ClientHello {
+                client_type: "tui".into(),
+                client_name: "test-client".into(),
+                capabilities: vec!["streaming".into()],
+                character: Some("alice".into()),
+            }),
+        )
+        .await
+        .unwrap();
+
+        let history = recv_server_msg(&mut h.client_reader).await;
+        match history {
+            ServerMessage::History(hist) => {
+                assert_eq!(hist.selected_character.as_deref(), Some("alice"));
+                assert_eq!(hist.messages.len(), 1);
+                assert_eq!(hist.messages[0].content, "hello from alice");
+            }
+            other => panic!("Expected History, got {:?}", other),
+        }
+
+        {
+            let map = h.clients.read().await;
+            let info = map.get(&1).expect("Client should be registered");
+            assert_eq!(info.character.as_deref(), Some("alice"));
+        }
+
+        drop(h.client_writer);
+        h.handle.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
     async fn routes_command_to_dispatcher() {
         let mut h = spawn_handler();
-        do_handshake(&mut h.client_reader, &mut h.client_writer, "cli").await;
+        do_handshake(&mut h.client_reader, &mut h.client_writer, "cli", None).await;
 
         send_client_msg(
             &mut h.client_writer,
@@ -930,7 +1104,13 @@ mod tests {
     #[tokio::test]
     async fn switch_character_waits_for_authoritative_session_update() {
         let mut h = spawn_handler();
-        do_handshake(&mut h.client_reader, &mut h.client_writer, "tui").await;
+        do_handshake(
+            &mut h.client_reader,
+            &mut h.client_writer,
+            "tui",
+            Some("alice"),
+        )
+        .await;
 
         send_client_msg(
             &mut h.client_writer,
@@ -949,7 +1129,7 @@ mod tests {
                 assert_eq!(cmd.name, "switch_character");
                 assert_eq!(meta.kind, RequestKind::Command);
                 assert_eq!(meta.rid.as_deref(), Some("cmd_switch"));
-                assert_session_meta(&meta.session, 1, "tui", "test", &[], None);
+                assert_session_meta(&meta.session, 1, "tui", "test", &[], Some("alice"));
             }
             other => panic!("Expected Command, got {:?}", other),
         }
@@ -988,7 +1168,7 @@ mod tests {
     #[tokio::test]
     async fn broadcast_reaches_client() {
         let mut h = spawn_handler();
-        do_handshake(&mut h.client_reader, &mut h.client_writer, "tui").await;
+        do_handshake(&mut h.client_reader, &mut h.client_writer, "tui", None).await;
 
         use shore_protocol::server_msg::{
             CacheWarning, NewMessage, Phase, SendImage, StreamChunk, ToolCall, ToolResult,
@@ -1053,6 +1233,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn periodic_ping_reaches_client() {
+        tokio::time::pause();
+        let mut h = spawn_handler();
+        do_handshake(&mut h.client_reader, &mut h.client_writer, "tui", None).await;
+
+        tokio::time::advance(PING_INTERVAL).await;
+
+        let ping = recv_server_msg(&mut h.client_reader).await;
+        assert!(matches!(ping, ServerMessage::Ping(_)));
+
+        drop(h.client_writer);
+        h.handle.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
     async fn protocol_error_on_non_hello_first() {
         let mut h = spawn_handler();
 
@@ -1087,7 +1282,7 @@ mod tests {
     #[tokio::test]
     async fn duplicate_hello_returns_error() {
         let mut h = spawn_handler();
-        do_handshake(&mut h.client_reader, &mut h.client_writer, "tui").await;
+        do_handshake(&mut h.client_reader, &mut h.client_writer, "tui", None).await;
 
         send_client_msg(
             &mut h.client_writer,
@@ -1140,6 +1335,7 @@ mod tests {
                 direct_tx,
                 route_tx: route_tx.clone(),
                 server_name: "test-server".into(),
+                handshake: Some(test_handshake_provider()),
                 shutdown: shutdown_tx.subscribe(),
             };
             tokio::spawn(async move { handle_client(s1_stream, s1_stream2, ctx).await })
@@ -1161,6 +1357,7 @@ mod tests {
                 direct_tx,
                 route_tx: route_tx.clone(),
                 server_name: "test-server".into(),
+                handshake: Some(test_handshake_provider()),
                 shutdown: shutdown_tx.subscribe(),
             };
             tokio::spawn(async move { handle_client(s2_stream, s2_stream2, ctx).await })
@@ -1169,8 +1366,8 @@ mod tests {
         let mut w2 = c2_stream;
 
         // Complete handshakes for both.
-        do_handshake(&mut r1, &mut w1, "tui").await;
-        do_handshake(&mut r2, &mut w2, "cli").await;
+        do_handshake(&mut r1, &mut w1, "tui", None).await;
+        do_handshake(&mut r2, &mut w2, "cli", None).await;
 
         // Both clients should be registered.
         assert_eq!(clients.read().await.len(), 2);
@@ -1202,9 +1399,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn direct_send_reaches_only_target_session() {
+        let server = Server::new(ServerConfig {
+            addr: "127.0.0.1:0".into(),
+            allowed_hosts: vec![],
+            server_name: "test-server".into(),
+            handshake: None,
+        });
+        let router = server.session_router();
+
+        let (tx1, mut rx1) = mpsc::channel(16);
+        let (tx2, mut rx2) = mpsc::channel(16);
+
+        router
+            .register_session(
+                ClientInfo {
+                    id: 1,
+                    client_type: "tui".into(),
+                    client_name: "first".into(),
+                    capabilities: vec![],
+                    character: None,
+                },
+                tx1,
+            )
+            .await;
+        router
+            .register_session(
+                ClientInfo {
+                    id: 2,
+                    client_type: "cli".into(),
+                    client_name: "second".into(),
+                    capabilities: vec![],
+                    character: None,
+                },
+                tx2,
+            )
+            .await;
+
+        let direct = ServerMessage::StreamChunk(shore_protocol::server_msg::StreamChunk {
+            text: "only one".into(),
+            content_type: "text".into(),
+        });
+        router
+            .send_to_session(SessionId(1), direct.clone())
+            .await
+            .unwrap();
+
+        let got1 = rx1.recv().await.unwrap();
+        assert_eq!(
+            serde_json::to_value(&got1).unwrap(),
+            serde_json::to_value(&direct).unwrap()
+        );
+
+        match tokio::time::timeout(std::time::Duration::from_millis(100), rx2.recv()).await {
+            Err(_) => {}
+            Ok(None) => {}
+            Ok(Some(other)) => panic!("unexpected direct delivery to other session: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
     async fn client_disconnect_is_graceful() {
         let mut h = spawn_handler();
-        do_handshake(&mut h.client_reader, &mut h.client_writer, "tui").await;
+        do_handshake(&mut h.client_reader, &mut h.client_writer, "tui", None).await;
 
         // Client is registered.
         assert_eq!(h.clients.read().await.len(), 1);
@@ -1241,6 +1498,7 @@ mod tests {
             addr: format!("127.0.0.1:{port}"),
             allowed_hosts,
             server_name: "test-acl-server".into(),
+            handshake: None,
         };
         let server = Server::new(config);
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
