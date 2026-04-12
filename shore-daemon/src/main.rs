@@ -13,7 +13,7 @@ use shore_daemon_server::{Server, ServerConfig};
 use shore_diagnostics::Diagnostics;
 use shore_ledger::LedgerClient;
 use shore_llm_client::LlmClient;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -48,6 +48,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Resolve listen address: SHORE_ADDR env → config.
     let addr = std::env::var("SHORE_ADDR").unwrap_or_else(|_| loaded.app.daemon.addr.clone());
+    let remote_access_warnings = validate_remote_access_policy(
+        &addr,
+        loaded.app.daemon.unsafe_allow_remote_access,
+        &loaded.app.daemon.allowed_hosts,
+    )
+    .map_err(|message| std::io::Error::new(std::io::ErrorKind::InvalidInput, message))?;
+    for warning in remote_access_warnings {
+        warn!(addr = %addr, warning = %warning, "Daemon remote access warning");
+    }
 
     let server_config = ServerConfig {
         addr: addr.clone(),
@@ -210,10 +219,116 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn validate_remote_access_policy(
+    addr: &str,
+    unsafe_allow_remote_access: bool,
+    allowed_hosts: &[String],
+) -> Result<Vec<String>, String> {
+    if bind_addr_is_loopback(addr)? {
+        return Ok(Vec::new());
+    }
+
+    if !unsafe_allow_remote_access {
+        return Err(format!(
+            "Refusing to bind shore-daemon to non-loopback address {addr}. \
+Set [daemon].unsafe_allow_remote_access = true to acknowledge unauthenticated remote TCP exposure. \
+[daemon].allowed_hosts is only an IP allowlist and does not provide authentication or TLS."
+        ));
+    }
+
+    let mut warnings = vec![String::from(
+        "Remote TCP access is enabled. Shore does not provide authentication or TLS. Restrict Shore to trusted private or overlay networks; [daemon].allowed_hosts only narrows peer IPs and is not a complete security boundary.",
+    )];
+    if allowed_hosts.is_empty() {
+        warnings.push(String::from(
+            "Remote TCP access is enabled with an empty [daemon].allowed_hosts list; any host that can reach the port may connect.",
+        ));
+    }
+
+    Ok(warnings)
+}
+
+fn bind_addr_is_loopback(addr: &str) -> Result<bool, String> {
+    if let Ok(socket_addr) = addr.parse::<std::net::SocketAddr>() {
+        return Ok(socket_addr.ip().is_loopback());
+    }
+
+    let host = extract_bind_host(addr).ok_or_else(|| {
+        format!("Invalid daemon listen address {addr:?}. Expected HOST:PORT or [IPv6]:PORT.")
+    })?;
+
+    Ok(matches!(host, "localhost" | "127.0.0.1" | "::1"))
+}
+
+fn extract_bind_host(addr: &str) -> Option<&str> {
+    if let Some(rest) = addr.strip_prefix('[') {
+        let (host, suffix) = rest.split_once(']')?;
+        if suffix.starts_with(':') && !host.is_empty() {
+            return Some(host);
+        }
+        return None;
+    }
+
+    let (host, port) = addr.rsplit_once(':')?;
+    if host.is_empty() || port.is_empty() {
+        return None;
+    }
+    Some(host)
+}
+
 /// Simple epoch-seconds timestamp without pulling in chrono.
 fn epoch_timestamp() -> String {
     let duration = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
     format!("{}s-since-epoch", duration.as_secs())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_remote_access_policy;
+
+    #[test]
+    fn loopback_bind_does_not_require_remote_opt_in() {
+        let warnings = validate_remote_access_policy("127.0.0.1:7320", false, &[]).unwrap();
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn remote_bind_requires_explicit_opt_in() {
+        let err = validate_remote_access_policy("0.0.0.0:7320", false, &[])
+            .expect_err("remote bind without opt-in should fail");
+        assert!(err.contains("unsafe_allow_remote_access"));
+        assert!(err.contains("allowed_hosts"));
+    }
+
+    #[test]
+    fn opted_in_remote_bind_warns_when_acl_is_empty() {
+        let warnings = validate_remote_access_policy("0.0.0.0:7320", true, &[]).unwrap();
+        assert_eq!(warnings.len(), 2);
+        assert!(warnings[0].contains("does not provide authentication or TLS"));
+        assert!(warnings[1].contains("any host that can reach the port may connect"));
+    }
+
+    #[test]
+    fn opted_in_remote_bind_with_acl_only_warns_about_thin_security() {
+        let warnings =
+            validate_remote_access_policy("0.0.0.0:7320", true, &[String::from("10.0.0.5")])
+                .unwrap();
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("trusted private or overlay networks"));
+    }
+
+    #[test]
+    fn localhost_name_is_treated_as_loopback() {
+        let warnings = validate_remote_access_policy("localhost:7320", false, &[]).unwrap();
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn invalid_bind_address_fails_validation() {
+        let err = validate_remote_access_policy("not-an-address", false, &[])
+            .expect_err("invalid address should fail validation");
+        assert!(err.contains("Invalid daemon listen address"));
+    }
 }

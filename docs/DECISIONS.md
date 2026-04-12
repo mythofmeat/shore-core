@@ -559,9 +559,11 @@ format-aware, cached, async pipeline in a new `resize.rs` module.
 
 **Rationale:** Unix sockets added complexity (socket path management, stale file cleanup, dual-listener code) with no real benefit over TCP on localhost. For remote clients, identifying an instance by Unix socket path on another machine is meaningless. TCP was already a core feature, so making it the only transport simplifies the codebase and makes instance identity uniform (`host:port`).
 
-**Default:** `127.0.0.1:7320` (localhost-only). `allowed_hosts` whitelist for remote access.
+**Default:** `127.0.0.1:7320` (localhost-only). Non-loopback binds require explicit
+`[daemon].unsafe_allow_remote_access = true`. `allowed_hosts` remains a peer IP
+allowlist, not authentication or TLS.
 
-**Trade-offs:** Marginally higher per-message overhead vs Unix sockets on localhost (negligible for JSON-Lines messages). Lost the ability to enforce filesystem-level permissions on the socket file — mitigated by `allowed_hosts` ACL and localhost-only default.
+**Trade-offs:** Marginally higher per-message overhead vs Unix sockets on localhost (negligible for JSON-Lines messages). Lost the ability to enforce filesystem-level permissions on the socket file. Shore mitigates this with a localhost-only default and an explicit unsafe remote-access opt-in, but remote TCP is still only appropriate on trusted private or overlay networks.
 
 
 ## Extract shore-daemon-server crate (2026-04-10)

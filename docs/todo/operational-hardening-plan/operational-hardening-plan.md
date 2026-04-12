@@ -9,6 +9,16 @@ session ownership, and protocol coherence.
 This document covers the adjacent issues that also make Shore harder to run,
 debug, and trust, but are not themselves the main protocol/session problem.
 
+## Status Snapshot
+
+Updated 2026-04-12 after the remote-security-model pass.
+
+- Workstream A is complete enough to treat as landed. Shore is now documented
+  as localhost-only by default, non-loopback daemon binds require explicit
+  `unsafe_allow_remote_access` opt-in, and daemon startup rejects accidental
+  remote exposure while warning that `allowed_hosts` is only an IP allowlist.
+- The next pickup point is Workstream B: client-side framing symmetry.
+
 ## 1. Why This Is Separate
 
 These issues matter, but they should not be allowed to derail the core

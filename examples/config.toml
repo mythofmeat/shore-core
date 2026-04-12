@@ -11,7 +11,8 @@
 
 # [daemon]
 # addr = "127.0.0.1:7320"       # Default listen address
-# allowed_hosts = []              # Empty = allow all; list IPs to restrict
+# unsafe_allow_remote_access = false  # Required for non-loopback binds
+# allowed_hosts = []                  # IP allowlist only; not auth/TLS
 
 # ── Defaults ─────────────────────────────────────────────────────────────
 

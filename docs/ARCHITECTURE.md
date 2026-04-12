@@ -823,6 +823,27 @@ The file is optional. If missing or unparseable, resolution falls through to
 instance discovery. On the daemon machine, omit `client.toml` (or leave
 `default_address` unset) to use instance discovery as before.
 
+**Remote security model:**
+
+- Shore is localhost-only by default via `[daemon].addr = "127.0.0.1:7320"`.
+- Non-loopback daemon binds require explicit operator opt-in with
+  `[daemon].unsafe_allow_remote_access = true`.
+- Remote TCP use is currently supported only for trusted private or overlay
+  networks.
+- `[daemon].allowed_hosts` is a peer IP allowlist, not authentication and not
+  transport encryption.
+- Authenticated/TLS remote access is deferred rather than implied by the
+  current transport.
+
+Example remote daemon config:
+
+```toml
+[daemon]
+addr = "100.64.0.1:7320"
+unsafe_allow_remote_access = true
+allowed_hosts = ["100.64.0.2"]
+```
+
 ---
 
 ## 9. SQLite Schema

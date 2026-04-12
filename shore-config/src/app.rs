@@ -56,6 +56,10 @@ pub struct DaemonConfig {
     #[serde(default = "default_daemon_addr")]
     pub addr: String,
 
+    /// Explicit opt-in for unauthenticated remote TCP exposure.
+    #[serde(default)]
+    pub unsafe_allow_remote_access: bool,
+
     /// Allowed client hosts. Empty list means allow all.
     #[serde(default)]
     pub allowed_hosts: Vec<String>,
@@ -65,6 +69,7 @@ impl Default for DaemonConfig {
     fn default() -> Self {
         Self {
             addr: default_daemon_addr(),
+            unsafe_allow_remote_access: false,
             allowed_hosts: vec![],
         }
     }
@@ -814,11 +819,21 @@ include_answer = false
         let toml_str = r#"
 [daemon]
 addr = "0.0.0.0:9999"
+unsafe_allow_remote_access = true
 allowed_hosts = ["127.0.0.1", "192.168.1.100"]
 "#;
         let config: AppConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.daemon.addr, "0.0.0.0:9999");
+        assert!(config.daemon.unsafe_allow_remote_access);
         assert_eq!(config.daemon.allowed_hosts.len(), 2);
+    }
+
+    #[test]
+    fn daemon_config_defaults_to_local_only() {
+        let config = AppConfig::default();
+        assert_eq!(config.daemon.addr, "127.0.0.1:7320");
+        assert!(!config.daemon.unsafe_allow_remote_access);
+        assert!(config.daemon.allowed_hosts.is_empty());
     }
 
     #[test]

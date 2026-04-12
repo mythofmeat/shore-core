@@ -198,6 +198,7 @@ pub enum RoutedMessage {
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
     pub addr: String,
+    /// Optional peer IP allowlist. This is not authentication or transport security.
     pub allowed_hosts: Vec<String>,
     pub server_name: String,
     pub handshake: Option<HandshakeProvider>,
@@ -276,7 +277,7 @@ impl Server {
                 result = listener.accept() => {
                     match result {
                         Ok((stream, addr)) => {
-                            // ACL: check peer IP against allowed_hosts (empty = allow all).
+                            // Best-effort peer IP allowlist. Empty means allow all.
                             if !self.config.allowed_hosts.is_empty() {
                                 let peer_ip = addr.ip().to_string();
                                 if !self.config.allowed_hosts.iter().any(|h| h == &peer_ip) {

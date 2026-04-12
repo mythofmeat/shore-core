@@ -169,6 +169,17 @@ default_address = "100.64.0.1:7320"
 
 Address resolution order: `--addr` CLI flag → `client.toml` → instance discovery → default `127.0.0.1:7320`. On the daemon machine, omit this file to use instance discovery. See `examples/client.toml` for a full example.
 
+The client address file does not make the daemon "remote-ready" by itself. Shore is localhost-only by default. To bind the daemon on a non-loopback address you must opt in explicitly:
+
+```toml
+[daemon]
+addr = "100.64.0.1:7320"
+unsafe_allow_remote_access = true
+allowed_hosts = ["100.64.0.2"]
+```
+
+This mode is still unauthenticated TCP. Use it only on trusted private or overlay networks such as Tailscale or WireGuard. `allowed_hosts` is only a source-IP allowlist; it is not authentication or TLS. Authenticated/TLS remote access is deferred for now and not part of the current Shore deployment model.
+
 ## Usage
 
 Start the daemon:
