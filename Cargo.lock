@@ -4896,6 +4896,7 @@ dependencies = [
  "arrow-schema",
  "base64",
  "chrono",
+ "clap",
  "dashmap",
  "fast_image_resize",
  "futures",

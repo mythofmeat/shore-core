@@ -1,7 +1,8 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use shore_config::load_config;
+use clap::Parser;
+use shore_config::{config_dir, load_config, ConfigError, LoadedConfig};
 use shore_daemon::autonomy::manager::AutonomyManager;
 use shore_daemon::characters::CharacterRegistry;
 use shore_daemon::commands::{CommandContext, SessionTokens};
@@ -16,6 +17,87 @@ use shore_llm_client::LlmClient;
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
+#[derive(Debug, Parser)]
+#[command(name = "shore-daemon", about = "Shore daemon")]
+struct Cli {
+    /// Config file to load instead of $XDG_CONFIG_HOME/shore/config.toml.
+    #[arg(long, value_name = "PATH")]
+    config: Option<PathBuf>,
+
+    /// TCP listen address for this process (overrides SHORE_ADDR and config).
+    #[arg(long, value_name = "ADDR")]
+    addr: Option<String>,
+}
+
+#[derive(Debug)]
+struct StartupConfig {
+    loaded: LoadedConfig,
+    config_path: PathBuf,
+    bind_addr: String,
+    bind_addr_source: StartupValueSource,
+    remote_access_warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StartupValueSource {
+    Cli,
+    Env,
+    Config,
+}
+
+impl std::fmt::Display for StartupValueSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let label = match self {
+            StartupValueSource::Cli => "--addr",
+            StartupValueSource::Env => "SHORE_ADDR",
+            StartupValueSource::Config => "[daemon].addr",
+        };
+        f.write_str(label)
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+enum StartupError {
+    #[error("Invalid --config path {path}: {reason}")]
+    InvalidConfigPath { path: PathBuf, reason: String },
+
+    #[error("Failed to load Shore config from {path}: {source}")]
+    LoadConfig {
+        path: PathBuf,
+        #[source]
+        source: ConfigError,
+    },
+
+    #[error("Refusing startup for daemon address {addr} (from {bind_addr_source}): {message}")]
+    RemoteAccessPolicy {
+        addr: String,
+        bind_addr_source: StartupValueSource,
+        message: String,
+    },
+
+    #[error("Failed to create {kind} directory {path}: {source}")]
+    CreateDir {
+        kind: &'static str,
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("Failed to register daemon instance in {path}: {source}")]
+    RegisterInstance {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("Failed to start shore-daemon on {addr}: {source}")]
+    ServerRun {
+        addr: String,
+        #[source]
+        source: std::io::Error,
+    },
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── Human-readable logging (journalctl already adds timestamps) ──
@@ -27,35 +109,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .without_time()
         .init();
 
-    // ── Load configuration ───────────────────────────────────────────
-    let config_path = std::env::args()
-        .nth(1)
-        .filter(|a| a == "--config")
-        .and_then(|_| std::env::args().nth(2))
-        .map(PathBuf::from);
-
-    let loaded = load_config(config_path.as_deref())?;
-    info!("Configuration loaded");
+    let StartupConfig {
+        loaded,
+        config_path,
+        bind_addr: addr,
+        bind_addr_source,
+        remote_access_warnings,
+    } = resolve_startup(Cli::parse(), startup_env_addr())?;
+    info!(
+        config_path = %config_path.display(),
+        bind_addr = %addr,
+        bind_addr_source = %bind_addr_source,
+        "Startup configuration resolved"
+    );
 
     // Ensure data and runtime directories exist before anything writes to them.
-    std::fs::create_dir_all(&loaded.dirs.data)?;
-    std::fs::create_dir_all(&loaded.dirs.runtime)?;
+    std::fs::create_dir_all(&loaded.dirs.data).map_err(|source| StartupError::CreateDir {
+        kind: "data",
+        path: loaded.dirs.data.clone(),
+        source,
+    })?;
+    std::fs::create_dir_all(&loaded.dirs.runtime).map_err(|source| StartupError::CreateDir {
+        kind: "runtime",
+        path: loaded.dirs.runtime.clone(),
+        source,
+    })?;
 
     // ── Notification service ──────────────────────────────────────────
     let notifier = NotificationService::new(loaded.app.notifications.clone());
 
     let instance_id = uuid::Uuid::new_v4().to_string();
 
-    // Resolve listen address: SHORE_ADDR env → config.
-    let addr = std::env::var("SHORE_ADDR").unwrap_or_else(|_| loaded.app.daemon.addr.clone());
-    let remote_access_warnings = validate_remote_access_policy(
-        &addr,
-        loaded.app.daemon.unsafe_allow_remote_access,
-        &loaded.app.daemon.allowed_hosts,
-    )
-    .map_err(|message| std::io::Error::new(std::io::ErrorKind::InvalidInput, message))?;
     for warning in remote_access_warnings {
-        warn!(addr = %addr, warning = %warning, "Daemon remote access warning");
+        warn!(
+            addr = %addr,
+            bind_addr_source = %bind_addr_source,
+            warning = %warning,
+            "Daemon remote access warning"
+        );
     }
 
     let server_config = ServerConfig {
@@ -70,11 +161,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let instance_info = InstanceInfo {
         id: instance_id.clone(),
         pid: std::process::id(),
-        addr,
+        addr: addr.clone(),
         started_at: epoch_timestamp(),
         data_dir: Some(loaded.dirs.data.display().to_string()),
     };
-    registry.register(instance_info)?;
+    registry
+        .register(instance_info)
+        .map_err(|source| StartupError::RegisterInstance {
+            path: registry.path().to_path_buf(),
+            source,
+        })?;
     info!(instance_id = %instance_id, "Registered daemon instance");
 
     // ── Shutdown signal (SIGINT / SIGTERM) ──────────────────────────
@@ -198,7 +294,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // ── Run server ───────────────────────────────────────────────────
-    let result = server.run(shutdown_rx).await;
+    let result = server
+        .run(shutdown_rx)
+        .await
+        .map_err(|source| StartupError::ServerRun {
+            addr: addr.clone(),
+            source,
+        });
 
     // Drop the server so its route_tx is released, unblocking the handler.
     drop(server);
@@ -217,6 +319,88 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     result?;
     Ok(())
+}
+
+fn resolve_startup(cli: Cli, env_addr: Option<String>) -> Result<StartupConfig, StartupError> {
+    let explicit_config_path = resolve_explicit_config_path(cli.config.as_deref())?;
+    let config_path_for_errors = explicit_config_path
+        .clone()
+        .unwrap_or_else(default_config_path);
+    let loaded = load_config(explicit_config_path.as_deref()).map_err(|source| {
+        StartupError::LoadConfig {
+            path: config_path_for_errors.clone(),
+            source,
+        }
+    })?;
+    let (bind_addr, bind_addr_source) = resolve_listen_addr(cli.addr, env_addr, &loaded);
+    let remote_access_warnings = validate_remote_access_policy(
+        &bind_addr,
+        loaded.app.daemon.unsafe_allow_remote_access,
+        &loaded.app.daemon.allowed_hosts,
+    )
+    .map_err(|message| StartupError::RemoteAccessPolicy {
+        addr: bind_addr.clone(),
+        bind_addr_source,
+        message,
+    })?;
+
+    Ok(StartupConfig {
+        loaded,
+        config_path: explicit_config_path.unwrap_or_else(default_config_path),
+        bind_addr,
+        bind_addr_source,
+        remote_access_warnings,
+    })
+}
+
+fn resolve_explicit_config_path(
+    config_path: Option<&Path>,
+) -> Result<Option<PathBuf>, StartupError> {
+    let Some(path) = config_path else {
+        return Ok(None);
+    };
+
+    if !path.exists() {
+        return Err(StartupError::InvalidConfigPath {
+            path: path.to_path_buf(),
+            reason: String::from("file does not exist"),
+        });
+    }
+
+    if path.is_dir() {
+        return Err(StartupError::InvalidConfigPath {
+            path: path.to_path_buf(),
+            reason: String::from("expected a config.toml file, not a directory"),
+        });
+    }
+
+    Ok(Some(path.to_path_buf()))
+}
+
+fn resolve_listen_addr(
+    cli_addr: Option<String>,
+    env_addr: Option<String>,
+    loaded: &LoadedConfig,
+) -> (String, StartupValueSource) {
+    if let Some(addr) = cli_addr {
+        return (addr, StartupValueSource::Cli);
+    }
+
+    if let Some(addr) = env_addr.filter(|value| !value.trim().is_empty()) {
+        return (addr, StartupValueSource::Env);
+    }
+
+    (loaded.app.daemon.addr.clone(), StartupValueSource::Config)
+}
+
+fn startup_env_addr() -> Option<String> {
+    std::env::var("SHORE_ADDR")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+}
+
+fn default_config_path() -> PathBuf {
+    config_dir().join("config.toml")
 }
 
 fn validate_remote_access_policy(
@@ -283,7 +467,14 @@ fn epoch_timestamp() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{epoch_timestamp, validate_remote_access_policy};
+    use std::path::{Path, PathBuf};
+
+    use super::{
+        epoch_timestamp, resolve_explicit_config_path, resolve_listen_addr, resolve_startup,
+        validate_remote_access_policy, Cli, StartupError, StartupValueSource,
+    };
+    use clap::Parser;
+    use tempfile::TempDir;
 
     #[test]
     fn loopback_bind_does_not_require_remote_opt_in() {
@@ -336,5 +527,126 @@ mod tests {
             chrono::DateTime::parse_from_rfc3339(&timestamp).is_ok(),
             "registry timestamps should use RFC3339, got: {timestamp}"
         );
+    }
+
+    #[test]
+    fn cli_parses_startup_flags() {
+        let cli = Cli::try_parse_from([
+            "shore-daemon",
+            "--config",
+            "/tmp/shore/config.toml",
+            "--addr",
+            "127.0.0.1:9000",
+        ])
+        .unwrap();
+
+        assert_eq!(cli.config, Some(PathBuf::from("/tmp/shore/config.toml")));
+        assert_eq!(cli.addr.as_deref(), Some("127.0.0.1:9000"));
+    }
+
+    #[test]
+    fn explicit_config_path_must_exist() {
+        let err = resolve_explicit_config_path(Some(Path::new("/definitely/missing.toml")))
+            .expect_err("missing explicit config path should fail");
+        assert!(matches!(err, StartupError::InvalidConfigPath { .. }));
+        assert!(err.to_string().contains("does not exist"));
+    }
+
+    #[test]
+    fn explicit_config_path_rejects_directories() {
+        let tmp = TempDir::new().unwrap();
+        let err = resolve_explicit_config_path(Some(tmp.path()))
+            .expect_err("directory should not be accepted as config file");
+        assert!(matches!(err, StartupError::InvalidConfigPath { .. }));
+        assert!(err.to_string().contains("expected a config.toml file"));
+    }
+
+    #[test]
+    fn listen_addr_precedence_is_cli_then_env_then_config() {
+        let tmp = TempDir::new().unwrap();
+        let loaded = shore_config::LoadedConfig::new_for_test(
+            shore_config::app::AppConfig::default(),
+            shore_config::models::ModelCatalog::default(),
+            shore_config::ShoreDirs {
+                config: tmp.path().join("config"),
+                data: tmp.path().join("data"),
+                runtime: tmp.path().join("runtime"),
+                cache: tmp.path().join("cache"),
+            },
+        );
+
+        let (addr, source) = resolve_listen_addr(
+            Some("127.0.0.1:9000".into()),
+            Some("127.0.0.1:8000".into()),
+            &loaded,
+        );
+        assert_eq!(addr, "127.0.0.1:9000");
+        assert_eq!(source, StartupValueSource::Cli);
+
+        let (addr, source) = resolve_listen_addr(None, Some("127.0.0.1:8000".into()), &loaded);
+        assert_eq!(addr, "127.0.0.1:8000");
+        assert_eq!(source, StartupValueSource::Env);
+
+        let (addr, source) = resolve_listen_addr(None, None, &loaded);
+        assert_eq!(addr, "127.0.0.1:7320");
+        assert_eq!(source, StartupValueSource::Config);
+    }
+
+    #[test]
+    fn resolve_startup_uses_single_precedence_model() {
+        let tmp = TempDir::new().unwrap();
+        let config_dir = tmp.path().join("config");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        let config_path = config_dir.join("config.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+[daemon]
+addr = "127.0.0.1:7000"
+unsafe_allow_remote_access = true
+"#,
+        )
+        .unwrap();
+
+        let startup = resolve_startup(
+            Cli {
+                config: Some(config_path.clone()),
+                addr: Some("0.0.0.0:9000".into()),
+            },
+            Some("127.0.0.1:8000".into()),
+        )
+        .unwrap();
+
+        assert_eq!(startup.config_path, config_path);
+        assert_eq!(startup.bind_addr, "0.0.0.0:9000");
+        assert_eq!(startup.bind_addr_source, StartupValueSource::Cli);
+        assert!(!startup.remote_access_warnings.is_empty());
+    }
+
+    #[test]
+    fn resolve_startup_reports_env_remote_access_source() {
+        let tmp = TempDir::new().unwrap();
+        let config_dir = tmp.path().join("config");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        let config_path = config_dir.join("config.toml");
+        std::fs::write(&config_path, "").unwrap();
+
+        let err = resolve_startup(
+            Cli {
+                config: Some(config_path),
+                addr: None,
+            },
+            Some("0.0.0.0:9000".into()),
+        )
+        .expect_err("non-loopback SHORE_ADDR should still enforce remote-access policy");
+
+        match err {
+            StartupError::RemoteAccessPolicy {
+                bind_addr_source, ..
+            } => {
+                assert_eq!(bind_addr_source, StartupValueSource::Env);
+            }
+            other => panic!("expected remote access policy error, got {other:?}"),
+        }
     }
 }

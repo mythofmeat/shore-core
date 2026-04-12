@@ -190,6 +190,19 @@ Start the daemon:
 shore-daemon
 ```
 
+Daemon startup precedence:
+
+- `--config <path>` selects an explicit config file. Explicit paths must exist;
+  Shore no longer silently creates a default config at an arbitrary operator-supplied path.
+- Bind address resolution is `--addr` CLI flag → `SHORE_ADDR` env var →
+  `[daemon].addr` in `config.toml`.
+- Remote-access safety is enforced against the final resolved address, so a CLI
+  or env override still requires `[daemon].unsafe_allow_remote_access = true`
+  for non-loopback binds.
+- Long-lived daemon behavior such as remote-access policy, allowlists,
+  notifications, and autonomy settings remains config-file owned rather than
+  being spread across additional env vars.
+
 ### CLI reference
 
 ```

@@ -821,6 +821,17 @@ Loaded by daemon on startup. Key changes from V1:
   (single section, mode determined by config present)
 - `[connections.telegram]` and `[connections.discord]` — reserved for future use
 
+Daemon startup precedence is explicit:
+
+1. `--config <path>` selects which `config.toml` file to load. Explicit paths
+   must exist and point to a file; invalid operator-supplied paths fail fast.
+2. Daemon bind address resolution is `--addr` CLI flag → `SHORE_ADDR` env var
+   → `[daemon].addr` from the loaded config.
+3. Remote-access policy validation runs against that final resolved address, so
+   CLI/env overrides cannot bypass `[daemon].unsafe_allow_remote_access`.
+4. Long-lived daemon settings stay config-owned; CLI/env overrides are limited
+   to startup-scoped operator concerns.
+
 ### 8.2 models.toml (Daemon)
 
 Unchanged from V1 structure.

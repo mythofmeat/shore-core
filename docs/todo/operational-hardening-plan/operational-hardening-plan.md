@@ -32,7 +32,12 @@ Updated 2026-04-13 after the runtime-invalidation pass.
   characters, drops merged per-character config cache, drops cached memory DB
   and vector-store handles, and removes engines only for deleted characters.
   The runtime refresh model is now documented and covered by daemon tests.
-- The next pickup point is Workstream E: clean up daemon startup surface.
+- Workstream E is complete enough to treat as landed. `shore-daemon` now uses
+  a real CLI parser, startup resolution has one documented precedence order
+  (`--addr` → `SHORE_ADDR` → `[daemon].addr`), explicit `--config` paths fail
+  fast when invalid, and startup diagnostics now report clearer config, remote
+  access, and bind failures.
+- The next pickup point is Workstream F: add a small operability review pass.
 
 ## 1. Why This Is Separate
 
