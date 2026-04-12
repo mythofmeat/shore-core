@@ -10,14 +10,11 @@ use shore_protocol::client_msg::{ClientMessage, Command};
 use shore_protocol::error::ErrorCode;
 use shore_protocol::server_msg::{Error, History, Ping, ServerHello, ServerMessage, Shutdown};
 use shore_protocol::types::{CharacterInfo, Message};
-use shore_protocol::SWP_V1;
+use shore_protocol::{MAX_WIRE_MESSAGE_SIZE, SWP_V1};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 use tokio::sync::{broadcast, mpsc, RwLock};
 use tracing::{error, info, instrument, warn};
-
-/// Maximum SWP message size (16 MB).
-const MAX_MESSAGE_SIZE: usize = 16 * 1024 * 1024;
 const PING_INTERVAL: Duration = Duration::from_secs(30);
 
 type HandshakeFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
@@ -708,7 +705,7 @@ where
 /// Read one ClientMessage from a newline-delimited JSON stream.
 /// Returns `None` on EOF.
 ///
-/// The read is bounded to `MAX_MESSAGE_SIZE` bytes to prevent a
+/// The read is bounded to `MAX_WIRE_MESSAGE_SIZE` bytes to prevent a
 /// malicious client from exhausting server memory with a single line.
 async fn read_message<R>(
     reader: &mut BufReader<R>,
@@ -731,7 +728,7 @@ where
             None => (buf.len(), false),
         };
         // Check size limit BEFORE allocating.
-        if line.len() + consume > MAX_MESSAGE_SIZE {
+        if line.len() + consume > MAX_WIRE_MESSAGE_SIZE {
             return Err("Message exceeds maximum size".into());
         }
         line.push_str(std::str::from_utf8(&buf[..consume]).map_err(|e| e.to_string())?);
@@ -1575,17 +1572,17 @@ mod tests {
         let _ = shutdown_tx.send(());
     }
 
-    /// `read_message` must reject messages exceeding MAX_MESSAGE_SIZE.
+    /// `read_message` must reject messages exceeding MAX_WIRE_MESSAGE_SIZE.
     /// The read itself should be bounded to prevent OOM from a malicious
     /// client sending a multi-GB line.
     #[tokio::test]
     async fn read_message_rejects_oversized() {
         let oversized = format!(
             "{{\"type\":\"message\",\"body\":{{\"content\":\"{}\"}}}}\n",
-            "x".repeat(MAX_MESSAGE_SIZE + 1)
+            "x".repeat(MAX_WIRE_MESSAGE_SIZE + 1)
         );
 
-        let (mut writer, reader) = duplex(MAX_MESSAGE_SIZE + 4096);
+        let (mut writer, reader) = duplex(MAX_WIRE_MESSAGE_SIZE + 4096);
         let mut buf_reader = BufReader::new(reader);
 
         use tokio::io::AsyncWriteExt;

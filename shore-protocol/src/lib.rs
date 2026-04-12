@@ -7,6 +7,9 @@ pub mod types;
 /// SWP protocol version.
 pub const SWP_V1: u32 = 1;
 
+/// Maximum newline-delimited SWP frame size in bytes.
+pub const MAX_WIRE_MESSAGE_SIZE: usize = 16 * 1024 * 1024;
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -15,7 +18,7 @@ mod tests {
     use crate::error::*;
     use crate::server_msg::*;
     use crate::types::*;
-    use crate::SWP_V1;
+    use crate::{MAX_WIRE_MESSAGE_SIZE, SWP_V1};
 
     /// Helper: serialize then deserialize, return the intermediate JSON.
     fn round_trip<T: serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug>(
@@ -31,6 +34,11 @@ mod tests {
     #[test]
     fn protocol_version_constant() {
         assert_eq!(SWP_V1, 1);
+    }
+
+    #[test]
+    fn wire_message_size_constant() {
+        assert_eq!(MAX_WIRE_MESSAGE_SIZE, 16 * 1024 * 1024);
     }
 
     // ── Client messages ───────────────────────────────────────────────

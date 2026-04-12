@@ -23,7 +23,7 @@ mod tests {
     use shore_protocol::client_msg::ClientMessage;
     use shore_protocol::server_msg::*;
     use shore_protocol::types::*;
-    use shore_protocol::SWP_V1;
+    use shore_protocol::{MAX_WIRE_MESSAGE_SIZE, SWP_V1};
 
     use crate::connection::SWPConnection;
     use crate::stream::StreamHandler;
@@ -49,6 +49,12 @@ mod tests {
         let mut line = String::new();
         r.read_line(&mut line).await.unwrap();
         serde_json::from_str(line.trim()).unwrap()
+    }
+
+    async fn write_raw_line<W: tokio::io::AsyncWriteExt + Unpin>(w: &mut W, line: &str) {
+        w.write_all(line.as_bytes()).await.unwrap();
+        w.write_all(b"\n").await.unwrap();
+        w.flush().await.unwrap();
     }
 
     // ── Handshake tests ──────────────────────────────────────────────
@@ -239,6 +245,57 @@ mod tests {
         assert!(
             format!("{}", result.unwrap_err()).contains("disconnected"),
             "expected disconnected error"
+        );
+    }
+
+    #[tokio::test]
+    async fn recv_rejects_oversized_server_message() {
+        let (client_stream, server_stream) = duplex(MAX_WIRE_MESSAGE_SIZE + 4096);
+
+        let server_handle = tokio::spawn(async move {
+            let (_r, mut w) = tokio::io::split(server_stream);
+            let oversized = ServerMessage::Error(Error {
+                code: shore_protocol::error::ErrorCode::InternalError,
+                message: "x".repeat(MAX_WIRE_MESSAGE_SIZE + 1),
+            });
+            let line = serde_json::to_string(&oversized).unwrap();
+            write_raw_line(&mut w, &line).await;
+        });
+
+        let mut conn = SWPConnection::from_raw_stream(client_stream);
+        let result = conn.recv().await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            format!("{err}").contains("maximum size"),
+            "expected explicit framing limit error, got: {err}"
+        );
+
+        drop(conn);
+        server_handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn handshake_rejects_oversized_server_hello() {
+        let (client_stream, server_stream) = duplex(MAX_WIRE_MESSAGE_SIZE + 4096);
+
+        tokio::spawn(async move {
+            let (_r, mut w) = tokio::io::split(server_stream);
+            let oversized = serde_json::json!({
+                "type": "hello",
+                "v": SWP_V1,
+                "server_name": "x".repeat(MAX_WIRE_MESSAGE_SIZE + 1),
+                "characters": [],
+            });
+            write_raw_line(&mut w, &serde_json::to_string(&oversized).unwrap()).await;
+        });
+
+        let result = SWPConnection::connect_raw(client_stream, "tui", "test-client", None).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            format!("{err}").contains("maximum size"),
+            "expected explicit framing limit error, got: {err}"
         );
     }
 

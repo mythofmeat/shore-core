@@ -11,13 +11,17 @@ debug, and trust, but are not themselves the main protocol/session problem.
 
 ## Status Snapshot
 
-Updated 2026-04-12 after the remote-security-model pass.
+Updated 2026-04-12 after the client-framing-hardening pass.
 
 - Workstream A is complete enough to treat as landed. Shore is now documented
   as localhost-only by default, non-loopback daemon binds require explicit
   `unsafe_allow_remote_access` opt-in, and daemon startup rejects accidental
   remote exposure while warning that `allowed_hosts` is only an IP allowlist.
-- The next pickup point is Workstream B: client-side framing symmetry.
+- Workstream B is complete enough to treat as landed. `shore-client` now
+  applies the same bounded newline framing limit as the server, using a shared
+  `MAX_WIRE_MESSAGE_SIZE` constant and explicit oversized-frame errors during
+  both handshake and steady-state reads.
+- The next pickup point is Workstream C: registry and discovery hardening.
 
 ## 1. Why This Is Separate
 
