@@ -551,16 +551,40 @@ fn config_reset_clears_active_model_and_reloads() {
     let tmp = TempDir::new().unwrap();
     let (_engine, mut ctx, _rx) = make_ctx(&tmp);
 
+    std::fs::create_dir_all(tmp.path().join("config")).unwrap();
+    std::fs::write(
+        tmp.path().join("config").join("config.toml"),
+        "[defaults]\nstream = false\n",
+    )
+    .unwrap();
+
     ctx.active_model = Some("custom-override".into());
-    ctx.config.app.defaults.stream = false;
+    ctx.config.app.defaults.stream = true;
+    ctx.memory_shell_sessions.insert(
+        "shell-1".into(),
+        crate::commands::MemoryShellSession {
+            agent: crate::memory::agent::MemoryAgent::interactive(
+                crate::memory::agent::CallerIdentity::User,
+                "TestChar",
+                "User",
+            ),
+            history: vec![],
+            character: "TestChar".into(),
+            model: sample_models().first_chat_model().cloned().unwrap(),
+        },
+    );
 
     let result = config_reset(&mut ctx).unwrap();
 
     assert_eq!(result["reset"], true);
     assert!(ctx.active_model.is_none(), "active_model should be cleared");
     assert!(
-        ctx.config.app.defaults.stream,
-        "config should be reloaded from defaults"
+        !ctx.config.app.defaults.stream,
+        "config should be reloaded from ctx.config.dirs.config"
+    );
+    assert!(
+        ctx.memory_shell_sessions.is_empty(),
+        "memory shell sessions should be cleared because they hold stale runtime state"
     );
 }
 

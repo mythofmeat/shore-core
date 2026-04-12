@@ -206,6 +206,33 @@ fn restore_from_persisted(persisted: &PersistedState, interiority: &mut Interior
     interiority.restore(persisted.ticks_without_user, next_wake, last_user);
 }
 
+fn sanitize_compaction_config(mut compaction: CompactionConfig) -> CompactionConfig {
+    // Validate: turns thresholds must exceed keep_recent_turns, otherwise
+    // there would never be anything to actually compact.
+    if compaction.enabled {
+        let k = compaction.keep_recent_turns;
+        if compaction.min_turns <= k || compaction.max_turns <= k {
+            tracing::error!(
+                min_turns = compaction.min_turns,
+                max_turns = compaction.max_turns,
+                keep_recent_turns = k,
+                "Compaction disabled: min_turns and max_turns must be greater than keep_recent_turns"
+            );
+            compaction.enabled = false;
+        }
+        if compaction.enabled && compaction.max_turns < compaction.min_turns {
+            tracing::error!(
+                min_turns = compaction.min_turns,
+                max_turns = compaction.max_turns,
+                "Compaction disabled: max_turns must be >= min_turns"
+            );
+            compaction.enabled = false;
+        }
+    }
+
+    compaction
+}
+
 // ---------------------------------------------------------------------------
 // AutonomyManager
 // ---------------------------------------------------------------------------
@@ -237,38 +264,15 @@ pub struct AutonomyManager {
 impl AutonomyManager {
     pub fn new(
         config: AutonomyConfig,
-        mut compaction: CompactionConfig,
+        compaction: CompactionConfig,
         data_dir: PathBuf,
         shutdown_rx: tokio::sync::watch::Receiver<()>,
     ) -> Self {
-        // Validate: turns thresholds must exceed keep_recent_turns, otherwise
-        // there would never be anything to actually compact.
-        if compaction.enabled {
-            let k = compaction.keep_recent_turns;
-            if compaction.min_turns <= k || compaction.max_turns <= k {
-                tracing::error!(
-                    min_turns = compaction.min_turns,
-                    max_turns = compaction.max_turns,
-                    keep_recent_turns = k,
-                    "Compaction disabled: min_turns and max_turns must be greater than keep_recent_turns"
-                );
-                compaction.enabled = false;
-            }
-            if compaction.enabled && compaction.max_turns < compaction.min_turns {
-                tracing::error!(
-                    min_turns = compaction.min_turns,
-                    max_turns = compaction.max_turns,
-                    "Compaction disabled: max_turns must be >= min_turns"
-                );
-                compaction.enabled = false;
-            }
-        }
-
         Self {
             states: Arc::new(DashMap::new()),
             handles: Arc::new(Mutex::new(Vec::new())),
             config: Arc::new(config),
-            compaction: Arc::new(compaction),
+            compaction: Arc::new(sanitize_compaction_config(compaction)),
             data_dir,
             shutdown_rx,
             llm_client: None,
@@ -292,6 +296,23 @@ impl AutonomyManager {
         self.push_tx = Some(push_tx);
         self.loaded_config = Some(Arc::new(loaded_config));
         self.notifier = Some(notifier);
+    }
+
+    /// Reload runtime autonomy and compaction configuration after `config_reset`.
+    ///
+    /// This updates the manager-held config used for future status checks,
+    /// future `ensure_state*` calls, and fresh command contexts. Already-running
+    /// per-character tick tasks keep the config snapshot they were spawned with
+    /// until the daemon is restarted.
+    pub fn reload_runtime_config(&mut self, loaded_config: LoadedConfig) {
+        let autonomy = loaded_config.app.behavior.autonomy.clone();
+        let compaction = sanitize_compaction_config(loaded_config.app.memory.compaction.clone());
+
+        self.config = Arc::new(autonomy);
+        self.compaction = Arc::new(compaction);
+        self.loaded_config = Some(Arc::new(loaded_config));
+
+        info!("Reloaded autonomy runtime configuration");
     }
 
     /// Set the character engine registry for safe autonomous message persistence.

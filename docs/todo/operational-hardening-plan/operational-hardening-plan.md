@@ -11,7 +11,7 @@ debug, and trust, but are not themselves the main protocol/session problem.
 
 ## Status Snapshot
 
-Updated 2026-04-12 after the registry-and-discovery-hardening pass.
+Updated 2026-04-13 after the runtime-invalidation pass.
 
 - Workstream A is complete enough to treat as landed. Shore is now documented
   as localhost-only by default, non-loopback daemon binds require explicit
@@ -26,7 +26,13 @@ Updated 2026-04-12 after the registry-and-discovery-hardening pass.
   preserved and surfaced instead of being treated as empty state, discovery
   distinguishes missing registries from corrupt ones, and registry metadata now
   uses RFC3339 timestamps.
-- The next pickup point is Workstream D: runtime invalidation rules.
+- Workstream D is complete enough to treat as landed. `config_reset` is now the
+  explicit runtime invalidation boundary: it reloads the active config dir,
+  clears session runtime overrides and memory-shell sessions, rescans
+  characters, drops merged per-character config cache, drops cached memory DB
+  and vector-store handles, and removes engines only for deleted characters.
+  The runtime refresh model is now documented and covered by daemon tests.
+- The next pickup point is Workstream E: clean up daemon startup surface.
 
 ## 1. Why This Is Separate
 

@@ -4,7 +4,7 @@
 //! (`characters/<name>/character.md`) and lazily creates ConversationEngine
 //! instances per character on first request.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -40,6 +40,16 @@ pub struct CharacterRegistry {
     db_cache: HashMap<String, Arc<MemoryDB>>,
     /// Cached VectorStore connections per character (opened once, reused).
     vs_cache: HashMap<String, Arc<VectorStore>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RuntimeReloadSummary {
+    pub available_before: usize,
+    pub available_after: usize,
+    pub character_discovery_changed: bool,
+    pub dropped_engines: usize,
+    pub dropped_db_handles: usize,
+    pub dropped_vector_stores: usize,
 }
 
 impl CharacterRegistry {
@@ -159,6 +169,60 @@ impl CharacterRegistry {
     pub fn set_global_config(&mut self, config: LoadedConfig) {
         self.global_config = config;
         self.char_configs.clear();
+    }
+
+    /// Reload the registry's runtime view after an explicit config refresh.
+    ///
+    /// This is Shore's process-level invalidation boundary: global config is
+    /// replaced, character discovery is re-scanned, merged per-character config
+    /// cache is dropped, memory/vector-store handles are reopened on demand,
+    /// and engines for removed characters are discarded.
+    pub fn reload_runtime_state(&mut self, config: LoadedConfig) -> RuntimeReloadSummary {
+        let available_before = self.available.clone();
+        let available_after = discover_characters(&self.config_dir);
+        let available_after_set: HashSet<String> = available_after.iter().cloned().collect();
+
+        let removed_engines: Vec<String> = self
+            .engines
+            .keys()
+            .filter(|name| !available_after_set.contains(name.as_str()))
+            .cloned()
+            .collect();
+        let dropped_engines = removed_engines.len();
+        for name in removed_engines {
+            self.engines.remove(&name);
+        }
+
+        let dropped_db_handles = self.db_cache.len();
+        self.db_cache.clear();
+
+        let dropped_vector_stores = self.vs_cache.len();
+        self.vs_cache.clear();
+
+        self.global_config = config;
+        self.char_configs.clear();
+        self.available = available_after;
+
+        let summary = RuntimeReloadSummary {
+            available_before: available_before.len(),
+            available_after: self.available.len(),
+            character_discovery_changed: available_before != self.available,
+            dropped_engines,
+            dropped_db_handles,
+            dropped_vector_stores,
+        };
+
+        info!(
+            available_before = summary.available_before,
+            available_after = summary.available_after,
+            character_discovery_changed = summary.character_discovery_changed,
+            dropped_engines = summary.dropped_engines,
+            dropped_db_handles = summary.dropped_db_handles,
+            dropped_vector_stores = summary.dropped_vector_stores,
+            "Reloaded character registry runtime state"
+        );
+
+        summary
     }
 
     /// Access the global config.
@@ -414,5 +478,63 @@ mod tests {
             .join("user.md");
         std::fs::write(&user_path, "Alice user context").unwrap();
         assert_eq!(reg.user_definition("Alice").unwrap(), "Alice user context");
+    }
+
+    #[tokio::test]
+    async fn reload_runtime_state_refreshes_characters_and_clears_caches() {
+        let tmp = TempDir::new().unwrap();
+        let mut reg = make_registry(&tmp, &["Alice"]);
+
+        let alice_dir = tmp.path().join("config").join("characters").join("Alice");
+        std::fs::write(
+            alice_dir.join("config.toml"),
+            "[defaults]\nstream = false\n",
+        )
+        .unwrap();
+
+        assert!(!reg.effective_config("Alice").app.defaults.stream);
+        let old_engine = reg.get_or_create("Alice").unwrap();
+        let old_db = reg.get_or_open_db("Alice").unwrap();
+        let old_vs = reg.get_or_open_vs("Alice", 3).await.unwrap();
+
+        let bob_dir = tmp.path().join("config").join("characters").join("Bob");
+        std::fs::create_dir_all(&bob_dir).unwrap();
+        std::fs::write(bob_dir.join("character.md"), "Bob prompt").unwrap();
+        std::fs::write(alice_dir.join("config.toml"), "[defaults]\nstream = true\n").unwrap();
+
+        let summary = reg.reload_runtime_state(reg.global_config().clone());
+        assert_eq!(summary.available_before, 1);
+        assert_eq!(summary.available_after, 2);
+        assert_eq!(summary.dropped_db_handles, 1);
+        assert_eq!(summary.dropped_vector_stores, 1);
+        assert_eq!(summary.dropped_engines, 0);
+        assert!(reg.has_character("Bob"));
+        assert!(reg.effective_config("Alice").app.defaults.stream);
+
+        let new_db = reg.get_or_open_db("Alice").unwrap();
+        let new_vs = reg.get_or_open_vs("Alice", 3).await.unwrap();
+        assert!(!Arc::ptr_eq(&old_db, &new_db));
+        assert!(!Arc::ptr_eq(&old_vs, &new_vs));
+        assert!(Arc::ptr_eq(
+            &old_engine,
+            &reg.get_or_create("Alice").unwrap()
+        ));
+    }
+
+    #[test]
+    fn reload_runtime_state_drops_engines_for_removed_characters() {
+        let tmp = TempDir::new().unwrap();
+        let mut reg = make_registry(&tmp, &["Alice"]);
+        reg.get_or_create("Alice").unwrap();
+
+        std::fs::remove_dir_all(tmp.path().join("config").join("characters").join("Alice"))
+            .unwrap();
+
+        let summary = reg.reload_runtime_state(reg.global_config().clone());
+        assert_eq!(summary.available_before, 1);
+        assert_eq!(summary.available_after, 0);
+        assert_eq!(summary.dropped_engines, 1);
+        assert!(!reg.has_character("Alice"));
+        assert!(reg.get_or_create("Alice").is_err());
     }
 }

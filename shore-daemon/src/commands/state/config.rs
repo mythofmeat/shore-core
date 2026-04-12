@@ -173,12 +173,24 @@ fn config_set(ctx: &mut CommandContext, key: &str, value: &str) -> CommandResult
 
 /// Reset all runtime config overrides by reloading from disk.
 pub fn config_reset(ctx: &mut CommandContext) -> CommandResult {
-    match shore_config::load_config(None) {
+    let config_path = ctx.config.dirs.config.join("config.toml");
+    match shore_config::load_config(Some(&config_path)) {
         Ok(fresh) => {
+            let cleared_memory_shell_sessions = ctx.memory_shell_sessions.len();
             ctx.active_model = None;
+            ctx.memory_shell_sessions.clear();
+            ctx.autonomy.reload_runtime_config(fresh.clone());
             ctx.config = fresh;
-            info!("Configuration reloaded from disk");
-            Ok(json!({ "reset": true, "message": "Configuration reloaded from disk" }))
+            info!(path = %config_path.display(), "Configuration reloaded from disk");
+            Ok(json!({
+                "reset": true,
+                "message": "Configuration reloaded from disk",
+                "config_path": config_path.display().to_string(),
+                "invalidated": {
+                    "runtime_overrides": true,
+                    "memory_shell_sessions": cleared_memory_shell_sessions,
+                }
+            }))
         }
         Err(e) => Err((
             ErrorCode::InternalError,

@@ -268,6 +268,77 @@ async fn dispatch_command_ambiguous_character() {
 }
 
 #[tokio::test]
+async fn config_reset_refreshes_registry_runtime_state() {
+    let tmp = TempDir::new().unwrap();
+    let (mut handler, _rx, _direct_rx) = make_handler(&tmp, &["Alice"]).await;
+
+    let alice_dir = tmp.path().join("config").join("characters").join("Alice");
+    std::fs::write(
+        alice_dir.join("config.toml"),
+        "[defaults]\nstream = false\n",
+    )
+    .unwrap();
+
+    let (old_db, old_vs) = {
+        let mut registry = handler.registry.lock().await;
+        assert!(!registry.effective_config("Alice").app.defaults.stream);
+        let old_db = registry.get_or_open_db("Alice").unwrap();
+        let old_vs = registry.get_or_open_vs("Alice", 3).await.unwrap();
+        (old_db, old_vs)
+    };
+
+    std::fs::create_dir_all(tmp.path().join("config").join("characters").join("Bob")).unwrap();
+    std::fs::write(
+        tmp.path()
+            .join("config")
+            .join("characters")
+            .join("Bob")
+            .join("character.md"),
+        "Bob prompt",
+    )
+    .unwrap();
+    std::fs::write(alice_dir.join("config.toml"), "[defaults]\nstream = true\n").unwrap();
+    std::fs::write(
+        tmp.path().join("config").join("config.toml"),
+        "[defaults]\nstream = true\n",
+    )
+    .unwrap();
+
+    let result = handler
+        .dispatch_command(
+            &Command {
+                rid: None,
+                name: "config_reset".into(),
+                args: serde_json::json!({}),
+            },
+            &test_request_meta(Some("Alice"), None),
+        )
+        .await;
+
+    match result {
+        ServerMessage::CommandOutput(output) => {
+            assert_eq!(output.name, "config_reset");
+            assert_eq!(output.data["invalidated"]["character_discovery"], true);
+            assert_eq!(output.data["invalidated"]["memory_db_handles"], 1);
+            assert_eq!(output.data["invalidated"]["vector_store_handles"], 1);
+        }
+        other => panic!("Expected CommandOutput, got {:?}", other),
+    }
+
+    let (new_db, new_vs) = {
+        let mut registry = handler.registry.lock().await;
+        assert!(registry.has_character("Bob"));
+        assert!(registry.effective_config("Alice").app.defaults.stream);
+        let new_db = registry.get_or_open_db("Alice").unwrap();
+        let new_vs = registry.get_or_open_vs("Alice", 3).await.unwrap();
+        (new_db, new_vs)
+    };
+
+    assert!(!Arc::ptr_eq(&old_db, &new_db));
+    assert!(!Arc::ptr_eq(&old_vs, &new_vs));
+}
+
+#[tokio::test]
 async fn handle_engine_message_regen_builds_empty_body() {
     let tmp = TempDir::new().unwrap();
     let (mut handler, _rx, _direct_rx) = make_handler(&tmp, &["Alice"]).await;

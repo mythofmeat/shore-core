@@ -1,3 +1,4 @@
+use serde_json::json;
 use tokio::sync::mpsc;
 
 use shore_daemon_server::{RequestMeta, SessionId};
@@ -174,9 +175,36 @@ impl MessageHandler {
         }
 
         if cmd.name == "config_reset" {
-            self.cmd_ctx.config = cmd_ctx.config.clone();
-            let mut registry = self.registry.lock().await;
-            registry.set_global_config(cmd_ctx.config.clone());
+            if let ServerMessage::CommandOutput(output) = &mut result {
+                let reloaded_config = cmd_ctx.config.clone();
+                self.cmd_ctx.config = reloaded_config.clone();
+                self.cmd_ctx
+                    .autonomy
+                    .reload_runtime_config(reloaded_config.clone());
+                self.autonomy.reload_runtime_config(reloaded_config.clone());
+
+                let summary = {
+                    let mut registry = self.registry.lock().await;
+                    registry.reload_runtime_state(reloaded_config)
+                };
+
+                if output
+                    .data
+                    .get("invalidated")
+                    .and_then(serde_json::Value::as_object)
+                    .is_none()
+                {
+                    output.data["invalidated"] = json!({});
+                }
+                output.data["invalidated"]["character_discovery"] =
+                    json!(summary.character_discovery_changed);
+                output.data["invalidated"]["merged_character_configs"] = json!(true);
+                output.data["invalidated"]["memory_db_handles"] = json!(summary.dropped_db_handles);
+                output.data["invalidated"]["vector_store_handles"] =
+                    json!(summary.dropped_vector_stores);
+                output.data["invalidated"]["removed_character_engines"] =
+                    json!(summary.dropped_engines);
+            }
         }
 
         if cmd.name == "switch_character" {

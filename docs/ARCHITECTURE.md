@@ -468,6 +468,32 @@ The daemon's LLM provider integrations live in the `shore-llm-client` crate,
 which implements direct HTTP calls to each provider's API using `reqwest`.
 There is no separate LLM proxy process.
 
+#### Runtime Refresh Model
+
+Shore does not run filesystem watchers for config or character directories.
+Runtime refresh is explicit rather than ambient.
+
+- Character definitions (`character.md`) and user definitions (`user.md`) are
+  read from disk on demand, so edits to those files are visible on the next
+  request that reads them.
+- The daemon caches discovered character names, merged per-character configs,
+  and opened `MemoryDB` / `VectorStore` handles in the process.
+- `config_reset` is the explicit invalidation boundary for those process caches.
+  A successful reset reloads `config.toml` from the daemon's current config
+  directory, clears session runtime overrides and memory-shell sessions, rescans
+  `characters/`, drops the merged per-character config cache, and closes cached
+  DB/vector-store handles so they reopen from disk on demand.
+- Character engines are retained for characters that still exist so live
+  in-memory conversation state is preserved. Engines for deleted characters are
+  dropped during `config_reset`; the next request for that character fails until
+  the client switches to a valid one.
+- A newly added or deleted character directory is therefore not visible to the
+  daemon until `config_reset`.
+- Already-running autonomy tick tasks keep the config snapshot they were spawned
+  with. `config_reset` updates manager-held autonomy settings for future state
+  creation and commands, but a daemon restart is still required for a full live
+  scheduler reconfiguration.
+
 #### Internal Module Layout
 
 ```
@@ -526,7 +552,7 @@ shore-daemon/
 │   │   ├── mod.rs              # Command dispatch table (18 flat commands, see §3.7)
 │   │   ├── navigation.rs       # list_characters, switch_character, list_chats, switch_chat, new_chat
 │   │   ├── conversation.rs     # swipe, log, edit, delete
-│   │   └── state.rs            # status, list_models, switch_model, memory, toggle_private, compact, collate, toggle_autonomy, config
+│   │   └── state.rs            # status, list_models, switch_model, memory, toggle_private, compact, collate, toggle_autonomy, config, config_reset
 │   │
 │   └── types.rs                # Shared daemon-internal types
 ```
