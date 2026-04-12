@@ -1,5 +1,7 @@
 # Daemon Lock Hardening Plan
 
+Status: Implemented on 2026-04-12.
+
 Focused follow-up to Shore's earlier hardening pass for the four remaining
 runtime `lock().unwrap()` sites we called out in the daemon.
 

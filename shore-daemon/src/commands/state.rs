@@ -23,6 +23,7 @@ use shore_config::resolve_prompt_template;
 use shore_ledger::CallType;
 
 use crate::autonomy::activity::HourClassification;
+use crate::sync::lock_or_recover;
 
 use super::{
     build_collation_vars, memory_dir, resolve_agent_model, setup_search_context, CommandContext,
@@ -71,7 +72,7 @@ pub fn status(engine: &ConversationEngine, ctx: &CommandContext) -> CommandResul
         .as_deref()
         .or(ctx.config.app.defaults.model.as_deref());
 
-    let tokens = ctx.session_tokens.lock().unwrap();
+    let tokens = lock_or_recover("command session tokens", &ctx.session_tokens);
     Ok(json!({
         "character": engine.character_name(),
         "message_count": engine.message_count(),
@@ -92,7 +93,7 @@ pub fn status(engine: &ConversationEngine, ctx: &CommandContext) -> CommandResul
 /// Return recent diagnostics from in-memory ring buffers.
 pub fn diagnostics(ctx: &CommandContext, args: &serde_json::Value) -> CommandResult {
     let count = args.get("count").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
-    let diag = ctx.diagnostics.lock().unwrap();
+    let diag = lock_or_recover("command diagnostics buffer", &ctx.diagnostics);
     Ok(diag.to_json(count))
 }
 
@@ -1367,6 +1368,7 @@ mod tests {
     use shore_config::models::ModelCatalog;
     use shore_protocol::server_msg::ServerMessage;
     use shore_protocol::types::{Message, Role};
+    use std::panic::{catch_unwind, AssertUnwindSafe};
     use tempfile::TempDir;
     use tokio::sync::broadcast;
 
@@ -1772,6 +1774,37 @@ model_id = "gpt-4o"
         assert_eq!(result["tool_calls"]["count"], 0);
         assert_eq!(result["errors"]["count"], 0);
         assert!(result["api_calls"]["recent"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn status_recovers_from_poisoned_session_tokens_mutex() {
+        let tmp = TempDir::new().unwrap();
+        let (engine, ctx, _rx) = make_ctx(&tmp);
+
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let _guard = ctx.session_tokens.lock().unwrap();
+            panic!("poison command session tokens");
+        }));
+        assert!(result.is_err());
+
+        let status_json = status(&engine, &ctx).unwrap();
+        assert_eq!(status_json["tokens"]["input"], 0);
+        assert_eq!(status_json["tokens"]["output"], 0);
+    }
+
+    #[test]
+    fn diagnostics_recovers_from_poisoned_mutex() {
+        let tmp = TempDir::new().unwrap();
+        let (_engine, ctx, _rx) = make_ctx(&tmp);
+
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let _guard = ctx.diagnostics.lock().unwrap();
+            panic!("poison command diagnostics");
+        }));
+        assert!(result.is_err());
+
+        let diag_json = diagnostics(&ctx, &json!({})).unwrap();
+        assert_eq!(diag_json["errors"]["count"], 0);
     }
 
     #[test]

@@ -10,5 +10,6 @@ pub mod engine;
 pub mod handler;
 pub mod memory;
 pub mod notifications;
+mod sync;
 pub mod templates;
 pub mod tools;

@@ -11,6 +11,7 @@ use crate::memory::compaction_impls::EmbedConfig;
 use crate::memory::db::MemoryDB;
 use crate::memory::search::Bm25Index;
 use crate::memory::vectorstore::VectorStore;
+use crate::sync::lock_or_recover;
 
 // ---------------------------------------------------------------------------
 // Caller identity
@@ -179,7 +180,7 @@ impl AgentSearchContext {
             .get_entries_by_status("active")
             .map_err(|e| AgentError::Db(e.to_string()))?;
 
-        let mut index = self.bm25.lock().unwrap();
+        let mut index = lock_or_recover("memory agent BM25 index", &self.bm25);
         for entry in &entries {
             index.add_document(&entry.id, &entry.summary_text);
         }
@@ -265,5 +266,71 @@ impl<'a> AgentIndexer for RealAgentIndexer<'a> {
 
             Ok(())
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::memory::db::Entry;
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+    use tempfile::TempDir;
+
+    fn make_entry(id: &str, summary: &str) -> Entry {
+        let now = chrono::Utc::now().to_rfc3339();
+        Entry {
+            id: id.to_string(),
+            memory_type: "semantic".to_string(),
+            source: "test".to_string(),
+            reason: "test".to_string(),
+            status: "active".to_string(),
+            confidence: 0.9,
+            summary_text: summary.to_string(),
+            topic_tags: "test".to_string(),
+            topic_key: "test".to_string(),
+            start_timestamp: now.clone(),
+            end_timestamp: now.clone(),
+            message_count: 0,
+            source_entry_ids: String::new(),
+            related_entry_ids: String::new(),
+            superseded_by: String::new(),
+            created_at: now.clone(),
+            updated_at: now,
+            entry_type: String::new(),
+            image_path: String::new(),
+            collated_at: String::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn populate_bm25_recovers_from_poisoned_mutex() {
+        let tmp = TempDir::new().unwrap();
+        let vector_store = Arc::new(VectorStore::open(tmp.path(), 3).await.unwrap());
+        let search_ctx = AgentSearchContext::new(
+            vector_store,
+            LlmClient::new(),
+            EmbedConfig {
+                provider: "test".into(),
+                model_id: "test".into(),
+                api_key: "test".into(),
+                base_url: None,
+                dimensions: 3,
+            },
+        );
+        let db = MemoryDB::open_in_memory().unwrap();
+        db.create_entry(&make_entry("entry-1", "Alice likes chocolate"))
+            .unwrap();
+
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let _guard = search_ctx.bm25.lock().unwrap();
+            panic!("poison memory agent BM25 populate");
+        }));
+        assert!(result.is_err());
+
+        search_ctx.populate_bm25_if_needed(&db).unwrap();
+
+        let hits = lock_or_recover("memory agent BM25 index", &search_ctx.bm25).search("Alice", 5);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].entry_id, "entry-1");
     }
 }
