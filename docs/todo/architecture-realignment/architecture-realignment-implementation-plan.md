@@ -102,7 +102,7 @@ The implementation should deliver the following concrete outcomes:
 Primary code and doc touchpoints for this program:
 
 - `docs/ARCHITECTURE.md`
-- `docs/todo/1-architecture-realignment-plan.md`
+- `docs/todo/architecture-realignment/architecture-realignment-plan.md`
 - `docs/todo/protocol-mismatch-checklist.md`
 - `shore-protocol/src/client_msg.rs`
 - `shore-protocol/src/server_msg.rs`

@@ -23,7 +23,7 @@ Updated 2026-04-12:
 - Current docs claim:
   - Handshake returns meaningful initial state that clients can trust.
 - Later owner:
-  - `docs/todo/1-architecture-realignment-plan.md`, Phase 3: truthful handshake
+  - `docs/todo/architecture-realignment/architecture-realignment-plan.md`, Phase 3: truthful handshake
     and session semantics.
 
 ### 2. No Server `rid` Echo
@@ -34,7 +34,7 @@ Updated 2026-04-12:
 - Current docs claim:
   - request IDs are end-to-end correlation identifiers.
 - Later owner:
-  - `docs/todo/1-architecture-realignment-plan.md`, Phases 2-4.
+  - `docs/todo/architecture-realignment/architecture-realignment-plan.md`, Phases 2-4.
 
 ### 3. Startup And Session-State Truth Are Still Incomplete
 
@@ -47,7 +47,7 @@ Updated 2026-04-12:
   - connect-time and session-mutation behavior should be authoritative and
     self-consistent.
 - Later owner:
-  - `docs/todo/1-architecture-realignment-plan.md`, Phase 3: truthful handshake
+  - `docs/todo/architecture-realignment/architecture-realignment-plan.md`, Phase 3: truthful handshake
     and session semantics, then Phase 4: revisioned state sync.
 
 ### 4. Snapshot And Event Sync Are Still Mixed
@@ -58,7 +58,7 @@ Updated 2026-04-12:
 - Current docs claim:
   - the protocol should have one authoritative state synchronization model.
 - Later owner:
-  - `docs/todo/1-architecture-realignment-plan.md`, Phase 4: revisioned state
+  - `docs/todo/architecture-realignment/architecture-realignment-plan.md`, Phase 4: revisioned state
     sync.
 
 ## Resolved Or Materially Narrowed On This Branch
@@ -74,7 +74,7 @@ Updated 2026-04-12:
     coverage, but this is no longer the primary protocol mismatch it was at the
     start of the program.
 - Later owner:
-  - `docs/todo/1-architecture-realignment-plan.md`, Phase 2: outbound channel
+  - `docs/todo/architecture-realignment/architecture-realignment-plan.md`, Phase 2: outbound channel
     separation closeout.
 
 ### 6. `switch_character` Is No Longer Reconnect-Oriented At Command Level
@@ -88,4 +88,4 @@ Updated 2026-04-12:
     open, so Phase 3 and Phase 4 are not done just because the command result
     shape is fixed.
 - Later owner:
-  - `docs/todo/1-architecture-realignment-plan.md`, Phase 3 and Phase 4.
+  - `docs/todo/architecture-realignment/architecture-realignment-plan.md`, Phase 3 and Phase 4.

@@ -196,7 +196,8 @@ async fn e2e_conversation_milestone() {
         server_name: "shore-daemon-test".into(),
     };
     let server = Server::new(server_config);
-    let push_tx = server.push_sender();
+    let push_tx = server.event_sender();
+    let session_router = server.session_router();
     let route_rx = server.take_route_rx();
 
     // Create character registry.
@@ -231,16 +232,15 @@ async fn e2e_conversation_milestone() {
         memory_shell_sessions: std::collections::HashMap::new(),
     };
 
-    let mut msg_handler = MessageHandler {
-        registry: char_registry,
+    let mut msg_handler = MessageHandler::new(
+        char_registry,
         cmd_ctx,
         llm_client,
-        push_tx: push_tx.clone(),
-
+        push_tx.clone(),
+        session_router,
         autonomy,
-        notifier: shore_daemon::notifications::NotificationService::new(Default::default()),
-        generation_handle: None,
-    };
+        shore_daemon::notifications::NotificationService::new(Default::default()),
+    );
 
     // Spawn message handler.
     let handler_handle = tokio::spawn(async move {
@@ -673,7 +673,8 @@ impl E2EHarness {
             server_name: "shore-daemon-test".into(),
         };
         let server = Server::new(server_config);
-        let push_tx = server.push_sender();
+        let push_tx = server.event_sender();
+        let session_router = server.session_router();
         let route_rx = server.take_route_rx();
 
         let data_dir = loaded.dirs.data.clone();
@@ -709,16 +710,15 @@ impl E2EHarness {
             memory_shell_sessions: std::collections::HashMap::new(),
         };
 
-        let mut msg_handler = MessageHandler {
-            registry: char_registry,
+        let mut msg_handler = MessageHandler::new(
+            char_registry,
             cmd_ctx,
             llm_client,
-            push_tx: push_tx.clone(),
-
+            push_tx.clone(),
+            session_router,
             autonomy,
-            notifier: shore_daemon::notifications::NotificationService::new(Default::default()),
-            generation_handle: None,
-        };
+            shore_daemon::notifications::NotificationService::new(Default::default()),
+        );
 
         let handler_handle = tokio::spawn(async move {
             msg_handler.run(route_rx).await;
