@@ -8,7 +8,7 @@ Scope guardrails:
 - Do not use this file for protocol debt, architecture mismatches, or planned
   cleanup work.
 - If the issue changes Shore's intended wire contract or state ownership, put
-  it in `docs/ARCHITECTURE.md` or the relevant `docs/todo/*` plan instead.
+  it in `docs/ARCHITECTURE.md` or a focused design document instead.
 
 ## Provider Integrations
 
