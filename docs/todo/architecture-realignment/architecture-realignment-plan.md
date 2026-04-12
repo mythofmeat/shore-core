@@ -7,7 +7,7 @@ becomes easier to reason about, iterate on, and extend.
 
 ## Status Snapshot
 
-Updated 2026-04-12 after the revisioned-sync and client-cleanup pass.
+Updated 2026-04-12 after the daemon-module-decomposition pass.
 
 - Workstream A is complete enough to treat as landed. `docs/ARCHITECTURE.md`,
   the mismatch checklist, and the implementation plan now describe the current
@@ -27,7 +27,10 @@ Updated 2026-04-12 after the revisioned-sync and client-cleanup pass.
 - Workstream G is complete enough to treat as landed. The TUI no longer depends
   on hidden bootstrap or post-stream/delete repair fetches to stay correct in
   normal flows.
-- Workstreams F and H are still open.
+- Workstream F is complete enough to treat as landed. The main daemon
+  orchestration surfaces now split session/request routing and state-command
+  families into focused modules instead of one large handler/state file pair.
+- Workstream H is still open.
 - For the exact pickup point and phase-by-phase execution status, use
   [`architecture-realignment-implementation-plan.md`](./architecture-realignment-implementation-plan.md).
 
@@ -190,8 +193,9 @@ to repair them.
 
 ### Problem 6: Oversized Modules Hide Architectural Drift
 
-Several central files have grown large enough that they now mix orchestration,
-policy, transport semantics, and domain logic in one place.
+This branch has now split the worst of the handler/state-command monoliths, but
+oversized files still matter because they encourage orchestration, policy,
+transport semantics, and domain logic to collapse back into one place.
 
 That makes it too easy to:
 
@@ -201,7 +205,8 @@ That makes it too easy to:
 - update implementation without updating docs
 
 The size problem is not separate from the protocol problem. It is one reason
-the protocol problem keeps recurring.
+the protocol problem kept recurring, and why Workstream H still needs
+guardrails to preserve the new boundaries.
 
 ## 4. North Star Architecture
 

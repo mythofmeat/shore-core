@@ -1,0 +1,735 @@
+use super::*;
+use images::media_type_for_path;
+use shore_protocol::client_msg::{Command, Regen};
+use shore_protocol::error::ErrorCode;
+use shore_protocol::types::{ContentBlock, ImageRef, Message, Role};
+use std::collections::BTreeMap;
+use tempfile::TempDir;
+
+/// Build a `MessageHandler` backed by a tempdir with the given characters.
+async fn make_handler(
+    tmp: &TempDir,
+    chars: &[&str],
+) -> (
+    MessageHandler,
+    broadcast::Receiver<ServerMessage>,
+    tokio::sync::mpsc::Receiver<ServerMessage>,
+) {
+    let config_dir = tmp.path().join("config");
+    let data_dir = tmp.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+
+    for name in chars {
+        let char_dir = config_dir.join("characters").join(name);
+        std::fs::create_dir_all(&char_dir).unwrap();
+        std::fs::write(
+            char_dir.join("character.md"),
+            format!("{name} system prompt"),
+        )
+        .unwrap();
+    }
+
+    let (push_tx, push_rx) = broadcast::channel(16);
+    let (direct_tx, direct_rx) = tokio::sync::mpsc::channel(16);
+    let server = shore_daemon_server::Server::new(shore_daemon_server::ServerConfig {
+        addr: "127.0.0.1:0".into(),
+        allowed_hosts: vec![],
+        server_name: "handler-test".into(),
+        handshake: None,
+    });
+    let session_router = server.session_router();
+    session_router
+        .register_session(
+            shore_daemon_server::ClientInfo {
+                id: 1,
+                client_type: "test-client".into(),
+                client_name: "test".into(),
+                capabilities: vec!["streaming".into()],
+                character: None,
+            },
+            direct_tx,
+        )
+        .await;
+
+    let loaded_config = shore_config::LoadedConfig::new_for_test(
+        shore_config::app::AppConfig::default(),
+        shore_config::models::ModelCatalog::default(),
+        shore_config::ShoreDirs {
+            config: config_dir.clone(),
+            data: data_dir.clone(),
+            runtime: tmp.path().join("runtime"),
+            cache: tmp.path().join("cache"),
+        },
+    );
+
+    let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+    let autonomy = AutonomyManager::new(
+        Default::default(),
+        Default::default(),
+        data_dir.clone(),
+        shutdown_rx,
+    );
+
+    let registry = CharacterRegistry::new(
+        config_dir,
+        data_dir.clone(),
+        push_tx.clone(),
+        loaded_config.clone(),
+    );
+
+    let ledger_client = shore_ledger::LedgerClient::new(
+        shore_llm_client::LlmClient::new(),
+        &data_dir.join("ledger.db"),
+    )
+    .unwrap();
+
+    let cmd_ctx = CommandContext {
+        config: loaded_config.clone(),
+        push_tx: push_tx.clone(),
+        data_dir: data_dir.clone(),
+        active_model: None,
+        session_tokens: Arc::new(std::sync::Mutex::new(SessionTokens::default())),
+        autonomy: autonomy.clone(),
+        llm_client: ledger_client.clone(),
+        diagnostics: Arc::new(std::sync::Mutex::new(
+            shore_diagnostics::Diagnostics::default(),
+        )),
+        memory_shell_sessions: std::collections::HashMap::new(),
+    };
+
+    let handler = MessageHandler::new(
+        Arc::new(Mutex::new(registry)),
+        cmd_ctx,
+        ledger_client,
+        push_tx.clone(),
+        session_router,
+        autonomy,
+        NotificationService::new(Default::default()),
+    );
+
+    (handler, push_rx, direct_rx)
+}
+
+fn test_request_meta(character: Option<&str>, rid: Option<&str>) -> RequestMeta {
+    RequestMeta {
+        session: shore_daemon_server::SessionMeta {
+            client_id: shore_daemon_server::ClientId(1),
+            session_id: shore_daemon_server::SessionId(1),
+            client_type: "test-client".into(),
+            client_name: "test".into(),
+            capabilities: vec!["streaming".into()],
+            selected_character: character.map(str::to_string),
+        },
+        rid: rid.map(str::to_string),
+        kind: shore_daemon_server::RequestKind::Command,
+    }
+}
+
+#[tokio::test]
+async fn dispatch_command_valid_character() {
+    let tmp = TempDir::new().unwrap();
+    let (mut handler, _rx, _direct_rx) = make_handler(&tmp, &["Alice"]).await;
+
+    let cmd = Command {
+        rid: None,
+        name: "status".into(),
+        args: serde_json::json!({}),
+    };
+
+    let meta = test_request_meta(Some("Alice"), None);
+    let result = handler.dispatch_command(&cmd, &meta).await;
+    assert!(
+        matches!(result, ServerMessage::CommandOutput(_)),
+        "Expected CommandOutput, got {:?}",
+        result
+    );
+}
+
+#[tokio::test]
+async fn dispatch_command_invalid_character() {
+    let tmp = TempDir::new().unwrap();
+    let (mut handler, _rx, _direct_rx) = make_handler(&tmp, &["Alice"]).await;
+
+    let cmd = Command {
+        rid: None,
+        name: "status".into(),
+        args: serde_json::json!({}),
+    };
+
+    let meta = test_request_meta(Some("Bob"), None);
+    let result = handler.dispatch_command(&cmd, &meta).await;
+    match result {
+        ServerMessage::Error(e) => {
+            assert_eq!(e.code, ErrorCode::InvalidRequest);
+            assert!(e.message.contains("Bob"));
+        }
+        other => panic!("Expected Error, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn dispatch_command_auto_select() {
+    let tmp = TempDir::new().unwrap();
+    let (mut handler, _rx, _direct_rx) = make_handler(&tmp, &["Alice"]).await;
+
+    let cmd = Command {
+        rid: None,
+        name: "status".into(),
+        args: serde_json::json!({}),
+    };
+
+    let meta = test_request_meta(None, None);
+    let result = handler.dispatch_command(&cmd, &meta).await;
+    assert!(
+        matches!(result, ServerMessage::CommandOutput(_)),
+        "Expected auto-select to succeed, got {:?}",
+        result
+    );
+}
+
+#[tokio::test]
+async fn switch_character_pushes_authoritative_history_to_session() {
+    let tmp = TempDir::new().unwrap();
+    let (mut handler, _push_rx, mut direct_rx) = make_handler(&tmp, &["Alice", "Bob"]).await;
+
+    let bob_engine = {
+        let mut registry = handler.registry.lock().await;
+        registry.get_or_create("Bob").unwrap()
+    };
+    bob_engine
+        .lock()
+        .await
+        .append_message(Message {
+            msg_id: "m1".into(),
+            role: Role::Assistant,
+            content: "hello from bob".into(),
+            images: vec![],
+            content_blocks: vec![ContentBlock::Text {
+                text: "hello from bob".into(),
+            }],
+            alt_index: None,
+            alt_count: None,
+            timestamp: "2026-01-01T00:00:00Z".into(),
+        })
+        .unwrap();
+
+    let result = handler
+        .dispatch_command(
+            &Command {
+                rid: None,
+                name: "switch_character".into(),
+                args: serde_json::json!({ "name": "Bob" }),
+            },
+            &test_request_meta(Some("Alice"), None),
+        )
+        .await;
+
+    match result {
+        ServerMessage::CommandOutput(output) => {
+            assert_eq!(output.name, "switch_character");
+            assert_eq!(output.data["character"], "Bob");
+            assert_eq!(output.data["selected_character"], "Bob");
+            assert_eq!(output.data["private"], false);
+        }
+        other => panic!("Expected CommandOutput, got {:?}", other),
+    }
+
+    let history = direct_rx.recv().await.unwrap();
+    match history {
+        ServerMessage::History(history) => {
+            assert_eq!(history.selected_character.as_deref(), Some("Bob"));
+            assert_eq!(history.messages.len(), 1);
+            assert_eq!(history.messages[0].content, "hello from bob");
+            assert_eq!(history.config["private"], false);
+        }
+        other => panic!("Expected direct History, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn dispatch_command_ambiguous_character() {
+    let tmp = TempDir::new().unwrap();
+    let (mut handler, _rx, _direct_rx) = make_handler(&tmp, &["Alice", "Bob"]).await;
+
+    let cmd = Command {
+        rid: None,
+        name: "status".into(),
+        args: serde_json::json!({}),
+    };
+
+    let meta = test_request_meta(None, None);
+    let result = handler.dispatch_command(&cmd, &meta).await;
+    match result {
+        ServerMessage::Error(e) => {
+            assert_eq!(e.code, ErrorCode::InvalidRequest);
+        }
+        other => panic!("Expected Error, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn handle_engine_message_regen_builds_empty_body() {
+    let tmp = TempDir::new().unwrap();
+    let (mut handler, _rx, _direct_rx) = make_handler(&tmp, &["Alice"]).await;
+
+    let regen = ClientMessage::Regen(Regen {
+        rid: Some("r1".into()),
+        stream: false,
+        guidance: None,
+    });
+
+    let (char_name, effective_config) = {
+        let mut registry = handler.registry.lock().await;
+        let char_name = registry.resolve_character(Some("Alice")).unwrap();
+        let effective_config = registry.effective_config(&char_name).clone();
+        (char_name, effective_config)
+    };
+
+    let (body, is_regen) = match regen {
+        ClientMessage::Regen(r) => {
+            let body = shore_protocol::client_msg::ClientMessageBody {
+                rid: r.rid,
+                text: String::new(),
+                stream: r.stream,
+                images: vec![],
+                image_data: vec![],
+                absence_seconds: None,
+                overrides: None,
+            };
+            (body, true)
+        }
+        _ => unreachable!(),
+    };
+
+    let direct_tx = handler
+        .session_router
+        .sender_for(shore_daemon_server::SessionId(1))
+        .await
+        .unwrap();
+    let gen = handler.gen_context(shore_daemon_server::SessionId(1), direct_tx);
+    let data_dir = handler.cmd_ctx.data_dir.clone();
+
+    let result = super::task::handle_generation(
+        gen,
+        GenerationParams {
+            request: RequestMeta {
+                kind: shore_daemon_server::RequestKind::Regen,
+                ..test_request_meta(Some("Alice"), Some("r1"))
+            },
+            body,
+            regen: is_regen,
+            char_name,
+            rid: None,
+            effective_config,
+            data_dir,
+            active_model: None,
+        },
+    )
+    .await;
+
+    assert!(result.is_err(), "Expected error due to no model configured");
+}
+
+#[tokio::test]
+async fn run_cancel_route_aborts_active_generation() {
+    let tmp = TempDir::new().unwrap();
+    let (mut handler, _push_rx, mut direct_rx) = make_handler(&tmp, &["Alice"]).await;
+    let (route_tx, route_rx) = tokio::sync::mpsc::channel(4);
+    let route_rx = Arc::new(Mutex::new(route_rx));
+
+    handler
+        .session_state_mut(shore_daemon_server::SessionId(1))
+        .generation_handle = Some(tokio::spawn(async {
+        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+    }));
+
+    let handler_task = tokio::spawn(async move {
+        handler.run(route_rx).await;
+    });
+
+    route_tx
+        .send(RoutedMessage::Engine {
+            msg: ClientMessage::Cancel(shore_protocol::client_msg::Cancel {}),
+            meta: RequestMeta {
+                kind: shore_daemon_server::RequestKind::Cancel,
+                ..test_request_meta(Some("Alice"), None)
+            },
+        })
+        .await
+        .unwrap();
+    drop(route_tx);
+
+    let msg = direct_rx.recv().await.unwrap();
+    match msg {
+        ServerMessage::StreamEnd(end) => assert_eq!(end.finish_reason, "cancelled"),
+        other => panic!("Expected StreamEnd, got {:?}", other),
+    }
+
+    handler_task.await.unwrap();
+}
+
+#[test]
+fn media_type_for_path_supported() {
+    assert_eq!(media_type_for_path("photo.jpg"), Some("image/jpeg"));
+    assert_eq!(media_type_for_path("photo.jpeg"), Some("image/jpeg"));
+    assert_eq!(media_type_for_path("photo.JPG"), Some("image/jpeg"));
+    assert_eq!(media_type_for_path("photo.png"), Some("image/png"));
+    assert_eq!(media_type_for_path("photo.gif"), Some("image/gif"));
+    assert_eq!(media_type_for_path("photo.webp"), Some("image/webp"));
+}
+
+#[test]
+fn media_type_for_path_unsupported() {
+    assert_eq!(media_type_for_path("photo.bmp"), None);
+    assert_eq!(media_type_for_path("photo.tiff"), None);
+    assert_eq!(media_type_for_path("file.txt"), None);
+    assert_eq!(media_type_for_path("noext"), None);
+}
+
+#[test]
+fn build_content_text_only() {
+    let result = build_content("hello", &[], 0, std::path::Path::new("/tmp"));
+    assert_eq!(result, serde_json::json!("hello"));
+}
+
+#[test]
+fn build_content_with_image() {
+    let tmp = TempDir::new().unwrap();
+    let img_path = tmp.path().join("test.png");
+    std::fs::write(&img_path, b"\x89PNG\r\n\x1a\n").unwrap();
+
+    let images = vec![ImageRef {
+        path: img_path.to_str().unwrap().to_string(),
+        caption: None,
+        data: None,
+    }];
+
+    let result = build_content("describe this", &images, 0, tmp.path());
+    let blocks = result.as_array().expect("Should be a JSON array");
+    assert_eq!(blocks.len(), 2);
+
+    assert_eq!(blocks[0]["type"], "image");
+    assert_eq!(blocks[0]["source"]["type"], "base64");
+    assert_eq!(blocks[0]["source"]["media_type"], "image/png");
+    assert!(!blocks[0]["source"]["data"].as_str().unwrap().is_empty());
+
+    assert_eq!(blocks[1]["type"], "text");
+    assert_eq!(blocks[1]["text"], "describe this");
+}
+
+#[test]
+fn build_content_skips_unsupported_and_missing() {
+    let tmp = TempDir::new().unwrap();
+    let images = vec![
+        ImageRef {
+            path: tmp.path().join("file.bmp").to_str().unwrap().to_string(),
+            caption: None,
+            data: None,
+        },
+        ImageRef {
+            path: tmp.path().join("ghost.png").to_str().unwrap().to_string(),
+            caption: None,
+            data: None,
+        },
+    ];
+
+    let result = build_content("text", &images, 0, tmp.path());
+    let blocks = result.as_array().expect("Should be a JSON array");
+    assert_eq!(blocks.len(), 1);
+    assert_eq!(blocks[0]["type"], "text");
+}
+
+fn sse_text_response(text: &str) -> String {
+    format!(
+        "event: message_start\n\
+         data: {{\"type\":\"message_start\",\"message\":{{\"model\":\"test\",\"usage\":{{\"input_tokens\":20}}}}}}\n\n\
+         event: content_block_start\n\
+         data: {{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{{\"type\":\"text\",\"text\":\"\"}}}}\n\n\
+         event: content_block_delta\n\
+         data: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"text_delta\",\"text\":\"{text}\"}}}}\n\n\
+         event: content_block_stop\n\
+         data: {{\"type\":\"content_block_stop\",\"index\":0}}\n\n\
+         event: message_delta\n\
+         data: {{\"type\":\"message_delta\",\"delta\":{{\"stop_reason\":\"end_turn\"}},\"usage\":{{\"output_tokens\":10}}}}\n\n\
+         event: message_stop\n\
+         data: {{\"type\":\"message_stop\"}}\n\n"
+    )
+}
+
+async fn mock_sse_server(sse_body: String) -> (String, tokio::task::JoinHandle<()>) {
+    use tokio::io::AsyncWriteExt;
+    use tokio::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let base_url = format!("http://127.0.0.1:{port}");
+
+    let handle = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let (mut reader, mut writer) = stream.split();
+        let mut buf = vec![0u8; 16384];
+        let _ = tokio::io::AsyncReadExt::read(&mut reader, &mut buf).await;
+
+        let response = format!(
+            "HTTP/1.1 200 OK\r\n\
+             Content-Type: text/event-stream\r\n\
+             \r\n\
+             {sse_body}"
+        );
+        writer.write_all(response.as_bytes()).await.unwrap();
+        writer.shutdown().await.unwrap();
+    });
+
+    (base_url, handle)
+}
+
+fn mock_model_catalog(base_url: &str) -> shore_config::models::ModelCatalog {
+    use shore_config::models::{ModelCatalog, ResolvedModel, Sdk};
+
+    let model = ResolvedModel {
+        name: "test".into(),
+        qualified_name: "chat.anthropic.test".into(),
+        category: "chat".into(),
+        provider_key: "anthropic".into(),
+        sdk: Sdk::Anthropic,
+        model_id: "claude-test".into(),
+        api_key_env: None,
+        base_url: Some(base_url.to_string()),
+        max_context_tokens: None,
+        max_tokens: Some(4096),
+        temperature: Some(0.7),
+        top_p: None,
+        reasoning_effort: None,
+        budget_tokens: None,
+        cache_ttl: None,
+        keepalive_enabled: None,
+        keepalive_ttl: None,
+        keepalive_max_pings: None,
+        openrouter_provider: None,
+        vertex_project: None,
+        vertex_location: None,
+        gemini_generation: None,
+        gemini_web_search: None,
+        zai_clear_thinking: None,
+        zai_subscription: None,
+    };
+
+    let mut chat = BTreeMap::new();
+    chat.insert("test".into(), model);
+    ModelCatalog {
+        chat,
+        ..Default::default()
+    }
+}
+
+async fn make_handler_with_models(
+    tmp: &TempDir,
+    chars: &[&str],
+    models: shore_config::models::ModelCatalog,
+) -> (
+    MessageHandler,
+    broadcast::Receiver<ServerMessage>,
+    tokio::sync::mpsc::Receiver<ServerMessage>,
+) {
+    let config_dir = tmp.path().join("config");
+    let data_dir = tmp.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+
+    for name in chars {
+        let char_dir = config_dir.join("characters").join(name);
+        std::fs::create_dir_all(&char_dir).unwrap();
+        std::fs::write(
+            char_dir.join("character.md"),
+            format!("You are {name}. Keep responses very short."),
+        )
+        .unwrap();
+    }
+
+    let (push_tx, push_rx) = broadcast::channel(64);
+    let (direct_tx, direct_rx) = tokio::sync::mpsc::channel(64);
+    let server = shore_daemon_server::Server::new(shore_daemon_server::ServerConfig {
+        addr: "127.0.0.1:0".into(),
+        allowed_hosts: vec![],
+        server_name: "handler-test".into(),
+        handshake: None,
+    });
+    let session_router = server.session_router();
+    session_router
+        .register_session(
+            shore_daemon_server::ClientInfo {
+                id: 1,
+                client_type: "test-client".into(),
+                client_name: "test".into(),
+                capabilities: vec!["streaming".into()],
+                character: None,
+            },
+            direct_tx,
+        )
+        .await;
+
+    let mut app_config = shore_config::app::AppConfig::default();
+    app_config.defaults.model = Some("test".into());
+    app_config.behavior.tool_use.enabled = false;
+
+    let loaded_config = shore_config::LoadedConfig::new_for_test(
+        app_config,
+        models,
+        shore_config::ShoreDirs {
+            config: config_dir.clone(),
+            data: data_dir.clone(),
+            runtime: tmp.path().join("runtime"),
+            cache: tmp.path().join("cache"),
+        },
+    );
+
+    let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
+    let autonomy = AutonomyManager::new(
+        Default::default(),
+        Default::default(),
+        data_dir.clone(),
+        shutdown_rx,
+    );
+
+    let registry = CharacterRegistry::new(
+        config_dir,
+        data_dir.clone(),
+        push_tx.clone(),
+        loaded_config.clone(),
+    );
+
+    let ledger_client = shore_ledger::LedgerClient::new(
+        shore_llm_client::LlmClient::new(),
+        &data_dir.join("ledger.db"),
+    )
+    .unwrap();
+
+    let cmd_ctx = CommandContext {
+        config: loaded_config.clone(),
+        push_tx: push_tx.clone(),
+        data_dir: data_dir.clone(),
+        active_model: None,
+        session_tokens: Arc::new(std::sync::Mutex::new(SessionTokens::default())),
+        autonomy: autonomy.clone(),
+        llm_client: ledger_client.clone(),
+        diagnostics: Arc::new(std::sync::Mutex::new(
+            shore_diagnostics::Diagnostics::default(),
+        )),
+        memory_shell_sessions: std::collections::HashMap::new(),
+    };
+
+    let handler = MessageHandler::new(
+        Arc::new(Mutex::new(registry)),
+        cmd_ctx,
+        ledger_client,
+        push_tx.clone(),
+        session_router,
+        autonomy,
+        NotificationService::new(Default::default()),
+    );
+
+    (handler, push_rx, direct_rx)
+}
+
+#[tokio::test]
+#[ignore]
+async fn pipeline_user_message_to_persisted_response() {
+    let (base_url, _server) = mock_sse_server(sse_text_response("Hello from the mock LLM!")).await;
+    let models = mock_model_catalog(&base_url);
+
+    let tmp = TempDir::new().unwrap();
+    let (mut handler, mut push_rx, _direct_rx) =
+        make_handler_with_models(&tmp, &["Alice"], models).await;
+
+    let (char_name, effective_config) = {
+        let mut registry = handler.registry.lock().await;
+        let char_name = registry.resolve_character(Some("Alice")).unwrap();
+        let effective_config = registry.effective_config(&char_name).clone();
+        (char_name, effective_config)
+    };
+
+    let body = shore_protocol::client_msg::ClientMessageBody {
+        rid: Some("test-rid".into()),
+        text: "Hello, Alice!".into(),
+        stream: true,
+        images: vec![],
+        image_data: vec![],
+        absence_seconds: None,
+        overrides: None,
+    };
+
+    let direct_tx = handler
+        .session_router
+        .sender_for(shore_daemon_server::SessionId(1))
+        .await
+        .unwrap();
+    let gen = handler.gen_context(shore_daemon_server::SessionId(1), direct_tx);
+    let data_dir = handler.cmd_ctx.data_dir.clone();
+
+    let result = super::task::handle_generation(
+        gen,
+        GenerationParams {
+            request: RequestMeta {
+                kind: shore_daemon_server::RequestKind::Message,
+                ..test_request_meta(Some("Alice"), Some("test-rid"))
+            },
+            body,
+            regen: false,
+            char_name: char_name.clone(),
+            rid: Some("test-rid".into()),
+            effective_config,
+            data_dir: data_dir.clone(),
+            active_model: None,
+        },
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "Pipeline should succeed: {:?}",
+        result.err()
+    );
+
+    let engine_arc = {
+        let mut registry = handler.registry.lock().await;
+        registry.get_or_create(&char_name).unwrap()
+    };
+    let engine = engine_arc.lock().await;
+    let messages = engine.messages();
+    assert_eq!(
+        messages.len(),
+        2,
+        "Should have user + assistant messages, got {}",
+        messages.len()
+    );
+    assert_eq!(messages[0].role, Role::User);
+    assert_eq!(messages[0].content, "Hello, Alice!");
+    assert_eq!(messages[1].role, Role::Assistant);
+    assert!(
+        messages[1].content.contains("Hello from the mock LLM!"),
+        "Assistant content should contain mock response, got: {}",
+        messages[1].content
+    );
+
+    let active_path = data_dir.join(&char_name).join("active.jsonl");
+    assert!(active_path.exists(), "active.jsonl should exist");
+    let line_count = std::fs::read_to_string(&active_path)
+        .unwrap()
+        .lines()
+        .filter(|l| !l.is_empty())
+        .count();
+    assert_eq!(
+        line_count, 2,
+        "active.jsonl should have 2 lines (user + assistant)"
+    );
+
+    let mut saw_new_message = false;
+    while let Ok(msg) = push_rx.try_recv() {
+        if matches!(msg, ServerMessage::NewMessage(_)) {
+            saw_new_message = true;
+        }
+    }
+    assert!(
+        saw_new_message,
+        "Should have broadcast at least one NewMessage"
+    );
+}

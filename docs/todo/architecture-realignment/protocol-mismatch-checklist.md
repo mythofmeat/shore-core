@@ -61,10 +61,10 @@ Updated 2026-04-12:
   - unsolicited events still use the broadcast/event path.
 - What remains:
   - this is no longer a Phase 2 routing gap.
-  - the remaining work is Phase 6/7 preservation: keep the routing split
+  - the remaining work is Phase 7 preservation: keep the routing split
     documented and guarded so it does not regress.
 - Later owner:
-  - `docs/todo/architecture-realignment/architecture-realignment-plan.md`, Phases 6-7.
+  - `docs/todo/architecture-realignment/architecture-realignment-plan.md`, Phase 7.
 
 ### 5. `switch_character` Is No Longer Reconnect-Oriented Or Repair-Fetch Driven
 
@@ -78,7 +78,7 @@ Updated 2026-04-12:
   - the remaining work is preservation and module/guardrail follow-through, not
     reconnect semantics or placeholder startup repair flows.
 - Later owner:
-  - `docs/todo/architecture-realignment/architecture-realignment-plan.md`, Phases 6-7.
+  - `docs/todo/architecture-realignment/architecture-realignment-plan.md`, Phase 7.
 
 ### 6. Snapshot And Event Sync Now Have One Documented Authority Rule
 
@@ -93,7 +93,7 @@ Updated 2026-04-12:
 - What remains:
   - the open wire-contract mismatch is no longer snapshot/event authority.
   - the remaining open protocol debt is request correlation on server messages
-    (`rid` echo), plus the later Phase 6/7 structural/guardrail work.
+    (`rid` echo), plus the later Phase 7 guardrail work.
 - Later owner:
-  - `docs/todo/architecture-realignment/architecture-realignment-plan.md`, Phases 6-7 for
+  - `docs/todo/architecture-realignment/architecture-realignment-plan.md`, Phase 7 for
     preservation, not for redefining sync authority.

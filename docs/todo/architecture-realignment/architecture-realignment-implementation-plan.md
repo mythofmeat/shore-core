@@ -18,7 +18,7 @@ It is intentionally more concrete than the architecture plan:
 
 ## Status Snapshot
 
-Updated 2026-04-12 after the revisioned-sync and client-cleanup pass.
+Updated 2026-04-12 after the daemon-module-decomposition pass.
 
 Current program state:
 
@@ -44,7 +44,11 @@ Current program state:
 - Phase 5 is complete enough to treat as landed. The TUI no longer depends on
   connect-time bootstrap fetches, post-stream/delete repair fetches, or
   timestamp-based `NewMessage` dedupe to remain correct under normal flows.
-- Phases 6 and 7 are still ahead of us in structural/process terms.
+- Phase 6 is complete enough to treat as landed. The highest-churn daemon
+  orchestration surfaces are now split along clearer session/request/command
+  boundaries instead of living in monolithic `handler/mod.rs` and
+  `commands/state.rs` files.
+- Phase 7 is still ahead of us in structural/process terms.
 
 What landed on this branch:
 
@@ -67,16 +71,20 @@ What landed on this branch:
   authoritatively on the server side.
 - CLI character switching now actually sends the daemon command before updating
   local state.
+- `shore-daemon/src/handler/mod.rs` is now reduced to session lifecycle and
+  main loop orchestration, with command dispatch, generation task execution,
+  and test scaffolding split into focused submodules.
+- `shore-daemon/src/commands/state.rs` is now split into command-family
+  modules for status/diagnostics, model selection, config handling, and memory
+  workflows, with tests moved alongside the new boundary.
 
 Next pickup point:
 
-1. start Phase 6 by splitting the still-oversized daemon modules along the now
-   stable session/request/response boundaries
-2. use Phase 7 to turn the current protocol/state-ownership rules into durable
-   guardrails in docs, tests, and workflow policy
-3. keep any remaining UI fetches categorized as explicit UX requests rather
+1. start Phase 7 by turning the current protocol/state-ownership rules into
+   durable guardrails in docs, tests, and workflow policy
+2. keep any remaining UI fetches categorized as explicit UX requests rather
    than silent correctness repair logic
-4. treat any future SWP wire change as a docs/types/tests/integration bundle,
+3. treat any future SWP wire change as a docs/types/tests/integration bundle,
    not as an implementation-only patch
 
 ## 1. Scope
@@ -652,6 +660,23 @@ Exit criteria:
 
 ### Phase 6: Daemon Module Decomposition
 
+Status:
+
+- Complete enough to treat as landed on 2026-04-12.
+- Landed on this branch:
+  - `shore-daemon/src/handler/mod.rs` now focuses on session lifecycle and the
+    main routed-message loop, while command dispatch and generation task logic
+    live in dedicated submodules.
+  - `shore-daemon/src/commands/state.rs` is replaced by a command-family module
+    tree (`status`, `models`, `config`, `memory`) so state-command ownership is
+    visible in the layout instead of hidden in one 2k-line file.
+  - daemon unit coverage for the split boundaries moved with the new modules,
+    so the refactor did not rely on a giant legacy test appendix to stay safe.
+- Remaining intentional boundary:
+  - some other oversized daemon internals still exist, but the main
+    session/request/response orchestration surfaces called out by this plan are
+    no longer monoliths.
+
 Purpose:
 
 - split large modules after ownership boundaries are clear
@@ -918,12 +943,10 @@ This program is complete when all of the following are true:
 
 ## 12. Suggested Immediate Next Step
 
-The next implementation PR after the current branch should pick up in Phase 6,
+The next implementation PR after the current branch should pick up in Phase 7,
 not Phase 1:
 
-1. split the remaining oversized daemon modules now that the wire/state model
-   is stable
-2. add explicit guardrails for protocol drift, state ownership, and large
+1. add explicit guardrails for protocol drift, state ownership, and large
    mixed-responsibility files
-3. keep future SWP changes bundled with docs, golden tests, and integration
+2. keep future SWP changes bundled with docs, golden tests, and integration
    coverage from the start
