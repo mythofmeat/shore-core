@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use serde_json::{json, Value};
-use tokio::sync::broadcast;
+use tokio::sync::mpsc;
 use tracing::{debug, info, instrument, warn};
 
 use crate::tools::{self as tool_system, ToolContext};
@@ -43,11 +43,11 @@ pub struct ToolLoopResult {
 /// `finish_reason != "tool_use"` or `max_iterations` is reached.
 ///
 /// Returns both the final result and any intermediate messages for persistence.
-#[instrument(skip(client, push_tx, request, result, ctx, diag), fields(char = character, max_iterations))]
+#[instrument(skip(client, direct_tx, request, result, ctx, diag), fields(char = character, max_iterations))]
 #[allow(clippy::too_many_arguments)]
 pub async fn run_tool_loop(
     client: &LedgerClient,
-    push_tx: &broadcast::Sender<ServerMessage>,
+    direct_tx: &mpsc::Sender<ServerMessage>,
     request: &mut LlmRequest,
     mut result: StreamResult,
     ctx: &dyn ToolContext,
@@ -56,7 +56,7 @@ pub async fn run_tool_loop(
     character: &str,
     thinking_enabled: bool,
 ) -> Result<ToolLoopResult, ToolLoopError> {
-    let consumer = StreamConsumer::new(push_tx.clone());
+    let consumer = StreamConsumer::new(direct_tx.clone());
     let mut intermediate_messages: Vec<Message> = Vec::new();
 
     for iteration in 0..max_iterations {
@@ -133,11 +133,13 @@ pub async fn run_tool_loop(
 
         for tool_use in &result.tool_uses {
             // Push ToolCall event to SWP clients.
-            let _ = push_tx.send(ServerMessage::ToolCall(ToolCall {
-                tool_id: tool_use.id.clone(),
-                tool_name: tool_use.name.clone(),
-                input: tool_use.input.clone(),
-            }));
+            let _ = direct_tx
+                .send(ServerMessage::ToolCall(ToolCall {
+                    tool_id: tool_use.id.clone(),
+                    tool_name: tool_use.name.clone(),
+                    input: tool_use.input.clone(),
+                }))
+                .await;
 
             debug!(
                 tool_id = %tool_use.id,
@@ -183,11 +185,13 @@ pub async fn run_tool_loop(
                         if let Some(last) = intermediate_messages.last_mut() {
                             last.images.push(image_ref);
                         }
-                        let _ = push_tx.send(ServerMessage::SendImage(SendImage {
-                            path: path.to_string(),
-                            caption,
-                            data: None,
-                        }));
+                        let _ = direct_tx
+                            .send(ServerMessage::SendImage(SendImage {
+                                path: path.to_string(),
+                                caption,
+                                data: None,
+                            }))
+                            .await;
                     }
                 }
             }
@@ -211,12 +215,14 @@ pub async fn run_tool_loop(
             }
 
             // Push ToolResult event to SWP clients.
-            let _ = push_tx.send(ServerMessage::ToolResult(SwpToolResult {
-                tool_id: tool_use.id.clone(),
-                tool_name: tool_use.name.clone(),
-                output: output_str.clone(),
-                is_error,
-            }));
+            let _ = direct_tx
+                .send(ServerMessage::ToolResult(SwpToolResult {
+                    tool_id: tool_use.id.clone(),
+                    tool_name: tool_use.name.clone(),
+                    output: output_str.clone(),
+                    is_error,
+                }))
+                .await;
 
             debug!(
                 tool_id = %tool_use.id,
@@ -296,6 +302,7 @@ mod tests {
     use shore_llm_client::LlmClient;
     use tokio::io::AsyncWriteExt;
     use tokio::net::TcpListener;
+    use tokio::sync::mpsc;
 
     fn test_ledger_client(tmp: &tempfile::TempDir) -> LedgerClient {
         LedgerClient::new(LlmClient::new(), &tmp.path().join("ledger.db")).unwrap()
@@ -402,7 +409,7 @@ mod tests {
         rt.block_on(async {
             let tmp = tempfile::tempdir().unwrap();
             let client = test_ledger_client(&tmp);
-            let (push_tx, _rx) = broadcast::channel(16);
+            let (push_tx, _rx) = mpsc::channel(16);
             let ctx = TestToolContext::new();
 
             let mut request = test_request("http://unused", vec![]);
@@ -443,7 +450,7 @@ mod tests {
 
         let tmp = tempfile::tempdir().unwrap();
         let client = test_ledger_client(&tmp);
-        let (push_tx, mut push_rx) = broadcast::channel(64);
+        let (push_tx, mut push_rx) = mpsc::channel(64);
         let ctx = TestToolContext::new();
 
         let mut request = test_request(
@@ -534,7 +541,7 @@ mod tests {
 
         let tmp = tempfile::tempdir().unwrap();
         let client = test_ledger_client(&tmp);
-        let (push_tx, _rx) = broadcast::channel(64);
+        let (push_tx, _rx) = mpsc::channel(64);
         let ctx = TestToolContext::new();
 
         let mut request = test_request(&base_url, vec![]);
@@ -579,7 +586,7 @@ mod tests {
 
         let tmp = tempfile::tempdir().unwrap();
         let client = test_ledger_client(&tmp);
-        let (push_tx, mut push_rx) = broadcast::channel(64);
+        let (push_tx, mut push_rx) = mpsc::channel(64);
         let ctx = TestToolContext::new();
 
         let mut request = test_request(&base_url, vec![]);
@@ -644,7 +651,7 @@ mod tests {
         rt.block_on(async {
             let tmp = tempfile::tempdir().unwrap();
             let client = test_ledger_client(&tmp);
-            let (push_tx, _rx) = broadcast::channel(16);
+            let (push_tx, _rx) = mpsc::channel(16);
             let ctx = TestToolContext::new();
 
             let mut request = test_request("http://unused", vec![]);
@@ -686,7 +693,7 @@ mod tests {
 
         let tmp = tempfile::tempdir().unwrap();
         let client = test_ledger_client(&tmp);
-        let (push_tx, mut push_rx) = broadcast::channel(64);
+        let (push_tx, mut push_rx) = mpsc::channel(64);
         let ctx = TestToolContext::new();
 
         let mut request = test_request(&base_url, vec![]);

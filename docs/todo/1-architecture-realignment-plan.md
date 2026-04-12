@@ -5,6 +5,21 @@ That earlier document is mostly about hardening specific implementation risks.
 This one is about restoring Shore's original architectural intent so the codebase
 becomes easier to reason about, iterate on, and extend.
 
+## Status Snapshot
+
+Updated 2026-04-12.
+
+- Workstream A is in progress. The mismatch checklist and implementation plan
+  now track the current branch state, but `docs/ARCHITECTURE.md` still needs
+  the full protocol-truth pass.
+- Workstream B is complete enough to treat as landed. Shore now has explicit
+  daemon-owned session state and per-session request/generation bookkeeping.
+- Workstream C is in progress. Main request-scoped responses now use per-session
+  direct delivery, while unsolicited events still use the broadcast path.
+- Workstreams D through H are still open.
+- For the exact pickup point and phase-by-phase execution status, use
+  [`6-architecture-realignment-implementation-plan.md`](./6-architecture-realignment-implementation-plan.md).
+
 ## 1. Why This Exists
 
 Shore's implementation has drifted away from its stated goals.

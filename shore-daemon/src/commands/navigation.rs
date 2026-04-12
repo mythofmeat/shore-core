@@ -159,9 +159,7 @@ pub fn switch_character(
 
     info!(character = name, "Character switch requested");
 
-    // In multi-character mode, the client should reconnect with the new character.
-    // For now, acknowledge the request.
-    Ok(json!({ "character": name, "changed": true, "reconnect_required": true }))
+    Ok(json!({ "character": name, "changed": true }))
 }
 
 #[cfg(test)]

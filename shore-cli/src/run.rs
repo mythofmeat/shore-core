@@ -289,31 +289,10 @@ async fn handle_switch_character(
     conn: &mut SWPConnection,
     name: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Query the daemon for available characters.
-    conn.send_command("list_characters", serde_json::json!({}))
-        .await?;
-    let data = recv_command_data(conn).await?;
-
-    let characters = data["characters"]
-        .as_array()
-        .ok_or("invalid list_characters response")?;
-
-    let valid = characters.iter().any(|c| c["name"].as_str() == Some(name));
-
-    if !valid {
-        let available: Vec<&str> = characters
-            .iter()
-            .filter_map(|c| c["name"].as_str())
-            .collect();
-        return Err(format!(
-            "character '{}' not found (available: {})",
-            name,
-            available.join(", ")
-        )
-        .into());
-    }
-
     info!(character = name, "Switching active character");
+    conn.send_command("switch_character", serde_json::json!({ "name": name }))
+        .await?;
+    let _ = recv_command_data(conn).await?;
     state::write_active_character(name)?;
     println!("Switched to character: {name}");
     println!("To override per-terminal: export SHORE_CHARACTER={name}");

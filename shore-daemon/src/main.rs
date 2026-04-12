@@ -95,7 +95,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ── Create server and message handler ─────────────────────────────
     let server = Server::new(server_config);
-    let push_tx = server.push_sender();
+    let push_tx = server.event_sender();
+    let session_router = server.session_router();
     let route_rx = server.take_route_rx();
 
     // Create character registry for multi-character management.
@@ -169,15 +170,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         memory_shell_sessions: std::collections::HashMap::new(),
     };
 
-    let mut msg_handler = MessageHandler {
-        registry: char_registry,
+    let mut msg_handler = MessageHandler::new(
+        char_registry,
         cmd_ctx,
         llm_client,
         push_tx,
-        autonomy: autonomy.clone(),
+        session_router,
+        autonomy.clone(),
         notifier,
-        generation_handle: None,
-    };
+    );
 
     // Spawn message handler as a background task.
     let handler_handle = tokio::spawn(async move {

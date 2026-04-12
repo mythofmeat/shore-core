@@ -96,7 +96,8 @@ impl TestHarness {
             server_name: "shore-test-harness".into(),
         };
         let server = Server::new(server_config);
-        let push_tx = server.push_sender();
+        let push_tx = server.event_sender();
+        let session_router = server.session_router();
         let route_rx = server.take_route_rx();
 
         // ── Character Registry ────────────────────────────────────────
@@ -151,15 +152,15 @@ impl TestHarness {
         let stored_notifier = notifier.clone();
 
         // ── Message Handler ──────────────────────────────────────────
-        let mut msg_handler = MessageHandler {
-            registry: char_registry,
+        let mut msg_handler = MessageHandler::new(
+            char_registry,
             cmd_ctx,
             llm_client,
-            push_tx: push_tx.clone(),
+            push_tx.clone(),
+            session_router,
             autonomy,
             notifier,
-            generation_handle: None,
-        };
+        );
 
         // Spawn handler loop.
         let handler_handle = tokio::spawn(async move {

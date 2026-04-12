@@ -18,6 +18,7 @@ pub(crate) use images::{build_content, embed_image_data, encode_image_block};
 use persistence::persist_and_notify;
 pub(crate) use resize::warm_image_cache;
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
@@ -27,13 +28,13 @@ use shore_protocol::client_msg::{ClientMessage, ClientMessageBody};
 use shore_protocol::error::ErrorCode;
 use shore_protocol::server_msg::{Error as SwpError, ServerMessage};
 use shore_protocol::types::{ContentBlock, Message, Role};
-use tokio::sync::{broadcast, Mutex};
+use tokio::sync::{broadcast, mpsc, Mutex};
 use tracing::{debug, error, info, instrument};
 
 use crate::autonomy::manager::AutonomyManager;
 use crate::autonomy::parse_cache_ttl_secs;
 use crate::characters::CharacterRegistry;
-use crate::commands::{self, CommandContext, SessionTokens};
+use crate::commands::{self, CommandContext, MemoryShellSession, SessionTokens};
 use crate::engine::prompt::{self, CapabilitiesConfig, PromptParams};
 use crate::memory::agent::{AgentSearchContext, MemoryAgent};
 use crate::memory::agent_llm::AgentLlm;
@@ -46,7 +47,7 @@ use crate::tools::{self as tool_system, ToolContext};
 use shore_config::app::SearchConfig;
 use shore_config::models::Sdk;
 use shore_config::LoadedConfig;
-use shore_daemon_server::RoutedMessage;
+use shore_daemon_server::{RequestMeta, RoutedMessage, SessionId, SessionRouter};
 use shore_ledger::LedgerClient;
 
 // ── Per-request tool context (wraps SharedToolContext + autonomy) ────
@@ -117,7 +118,8 @@ impl ToolContext for HandlerToolContext {
 struct GenContext {
     registry: Arc<Mutex<CharacterRegistry>>,
     llm_client: LedgerClient,
-    push_tx: broadcast::Sender<ServerMessage>,
+    event_tx: broadcast::Sender<ServerMessage>,
+    direct_tx: mpsc::Sender<ServerMessage>,
     autonomy: AutonomyManager,
     /// Accumulated token counts (shared with CommandContext for status display).
     session_tokens: Arc<std::sync::Mutex<SessionTokens>>,
@@ -129,6 +131,7 @@ struct GenContext {
 
 /// Per-generation parameters that vary with each request.
 struct GenerationParams {
+    request: RequestMeta,
     body: ClientMessageBody,
     regen: bool,
     char_name: String,
@@ -136,6 +139,25 @@ struct GenerationParams {
     effective_config: LoadedConfig,
     data_dir: PathBuf,
     active_model: Option<String>,
+}
+
+#[derive(Default)]
+struct SessionState {
+    active_model: Option<String>,
+    session_tokens: Arc<std::sync::Mutex<SessionTokens>>,
+    memory_shell_sessions: HashMap<String, MemoryShellSession>,
+    generation_handle: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl SessionState {
+    fn new() -> Self {
+        Self {
+            active_model: None,
+            session_tokens: Arc::new(std::sync::Mutex::new(SessionTokens::default())),
+            memory_shell_sessions: HashMap::new(),
+            generation_handle: None,
+        }
+    }
 }
 
 // ── MessageHandler ────────────────────────────────────────────────────
@@ -149,13 +171,40 @@ pub struct MessageHandler {
     pub cmd_ctx: CommandContext,
     pub llm_client: LedgerClient,
     pub push_tx: broadcast::Sender<ServerMessage>,
+    pub session_router: SessionRouter,
     pub autonomy: AutonomyManager,
     pub notifier: NotificationService,
-    /// Handle to the active generation task, if any. Used for cancellation.
-    pub generation_handle: Option<tokio::task::JoinHandle<()>>,
+    sessions: HashMap<SessionId, SessionState>,
 }
 
 impl MessageHandler {
+    pub fn new(
+        registry: Arc<Mutex<CharacterRegistry>>,
+        cmd_ctx: CommandContext,
+        llm_client: LedgerClient,
+        push_tx: broadcast::Sender<ServerMessage>,
+        session_router: SessionRouter,
+        autonomy: AutonomyManager,
+        notifier: NotificationService,
+    ) -> Self {
+        Self {
+            registry,
+            cmd_ctx,
+            llm_client,
+            push_tx,
+            session_router,
+            autonomy,
+            notifier,
+            sessions: HashMap::new(),
+        }
+    }
+
+    fn session_state_mut(&mut self, session_id: SessionId) -> &mut SessionState {
+        self.sessions
+            .entry(session_id)
+            .or_insert_with(SessionState::new)
+    }
+
     /// Run the message processing loop. Blocks until the route channel closes.
     ///
     /// Commands are processed inline (no LLM I/O, always fast).
@@ -166,22 +215,47 @@ impl MessageHandler {
         let mut rx = route_rx.lock().await;
         while let Some(msg) = rx.recv().await {
             match msg {
-                RoutedMessage::Command { cmd, character } => {
-                    debug!(character = ?character, "handling command");
-                    let result = self.dispatch_command(&cmd, character.as_deref()).await;
-                    let _ = self.push_tx.send(result);
+                RoutedMessage::Command { cmd, meta } => {
+                    debug!(
+                        client_id = meta.session.client_id.0,
+                        session_id = meta.session.session_id.0,
+                        client_type = %meta.session.client_type,
+                        rid = meta.rid.as_deref().unwrap_or("-"),
+                        character = ?meta.session.selected_character,
+                        "handling command"
+                    );
+                    let result = self.dispatch_command(&cmd, &meta).await;
+                    let _ = self
+                        .session_router
+                        .send_to_session(meta.session.session_id, result)
+                        .await;
                 }
-                RoutedMessage::Engine { msg, character } => {
+                RoutedMessage::Engine { msg, meta } => {
                     let msg_kind = match &msg {
                         ClientMessage::Message(_) => "message",
                         ClientMessage::Regen(_) => "regen",
                         ClientMessage::Cancel(_) => "cancel",
                         _ => "other",
                     };
-                    debug!(character = ?character, kind = msg_kind, "handling engine message");
+                    debug!(
+                        client_id = meta.session.client_id.0,
+                        session_id = meta.session.session_id.0,
+                        client_type = %meta.session.client_type,
+                        rid = meta.rid.as_deref().unwrap_or("-"),
+                        character = ?meta.session.selected_character,
+                        kind = msg_kind,
+                        "handling engine message"
+                    );
                     // Handle cancellation: abort the active generation task.
                     if matches!(msg, ClientMessage::Cancel(_)) {
-                        self.cancel_generation("user cancelled");
+                        info!(
+                            client_id = meta.session.client_id.0,
+                            session_id = meta.session.session_id.0,
+                            rid = meta.rid.as_deref().unwrap_or("-"),
+                            "cancelling generation from routed cancel request"
+                        );
+                        self.cancel_generation(meta.session.session_id, "user cancelled")
+                            .await;
                         continue;
                     }
 
@@ -190,13 +264,21 @@ impl MessageHandler {
                     // errors synchronously and the task has an owned config snapshot.
                     let (char_name, effective_config) = {
                         let mut registry = self.registry.lock().await;
-                        let char_name = match registry.resolve_character(character.as_deref()) {
+                        let char_name = match registry
+                            .resolve_character(meta.session.selected_character.as_deref())
+                        {
                             Ok(name) => name,
                             Err(e) => {
-                                let _ = self.push_tx.send(ServerMessage::Error(SwpError {
-                                    code: ErrorCode::InvalidRequest,
-                                    message: e.to_string(),
-                                }));
+                                let _ = self
+                                    .session_router
+                                    .send_to_session(
+                                        meta.session.session_id,
+                                        ServerMessage::Error(SwpError {
+                                            code: ErrorCode::InvalidRequest,
+                                            message: e.to_string(),
+                                        }),
+                                    )
+                                    .await;
                                 continue;
                             }
                         };
@@ -226,32 +308,47 @@ impl MessageHandler {
                         .rid
                         .clone()
                         .filter(|r| r.is_ascii() && !r.contains('\0'));
-                    let gen = self.gen_context();
-                    let push_tx = self.push_tx.clone();
+                    let direct_tx = match self
+                        .session_router
+                        .sender_for(meta.session.session_id)
+                        .await
+                    {
+                        Some(tx) => tx,
+                        None => continue,
+                    };
+                    let active_model = {
+                        let session = self.session_state_mut(meta.session.session_id);
+                        session.active_model.clone()
+                    };
+                    let gen = self.gen_context(meta.session.session_id, direct_tx.clone());
                     let notifier = self.notifier.clone();
                     let params = GenerationParams {
+                        request: meta.clone(),
                         body,
                         regen,
                         char_name,
                         rid,
                         effective_config,
                         data_dir: self.cmd_ctx.data_dir.clone(),
-                        active_model: self.cmd_ctx.active_model.clone(),
+                        active_model,
                     };
 
-                    if let Some(prev) = self.generation_handle.take() {
+                    let session = self.session_state_mut(meta.session.session_id);
+                    if let Some(prev) = session.generation_handle.take() {
                         info!("Aborting previous generation (superseded by new request)");
                         prev.abort();
                     }
-                    self.generation_handle = Some(tokio::spawn(async move {
+                    session.generation_handle = Some(tokio::spawn(async move {
                         let notify_name = params.char_name.clone();
                         if let Err(e) = handle_generation(gen, params).await {
                             error!(error = %e, "Error processing engine message");
                             let err_msg = e.to_string();
-                            let _ = push_tx.send(ServerMessage::Error(SwpError {
-                                code: ErrorCode::InternalError,
-                                message: err_msg.clone(),
-                            }));
+                            let _ = direct_tx
+                                .send(ServerMessage::Error(SwpError {
+                                    code: ErrorCode::InternalError,
+                                    message: err_msg.clone(),
+                                }))
+                                .await;
                             notifier.notify(
                                 NotificationEvent::Error,
                                 &format!("Shore — {notify_name}"),
@@ -261,7 +358,11 @@ impl MessageHandler {
                     }));
                 }
                 RoutedMessage::AllClientsDisconnected => {
-                    self.cancel_generation("all clients disconnected");
+                    let session_ids: Vec<SessionId> = self.sessions.keys().copied().collect();
+                    for session_id in session_ids {
+                        self.cancel_generation(session_id, "all clients disconnected")
+                            .await;
+                    }
                 }
             }
         }
@@ -269,40 +370,50 @@ impl MessageHandler {
     }
 
     /// Cancel any active generation task and send a minimal StreamEnd.
-    fn cancel_generation(&mut self, reason: &str) {
-        if let Some(handle) = self.generation_handle.take() {
+    async fn cancel_generation(&mut self, session_id: SessionId, reason: &str) {
+        if let Some(handle) = self.session_state_mut(session_id).generation_handle.take() {
             info!(reason, "Cancelling active generation");
             handle.abort();
-            let _ = self.push_tx.send(ServerMessage::StreamEnd(
-                shore_protocol::server_msg::StreamEnd {
-                    content: String::new(),
-                    metadata: shore_protocol::types::StreamMetadata {
-                        tokens: shore_protocol::types::TokenCounts {
-                            input: 0,
-                            output: 0,
-                            cache_read: 0,
-                            cache_write: 0,
+            let _ = self
+                .session_router
+                .send_to_session(
+                    session_id,
+                    ServerMessage::StreamEnd(shore_protocol::server_msg::StreamEnd {
+                        content: String::new(),
+                        metadata: shore_protocol::types::StreamMetadata {
+                            tokens: shore_protocol::types::TokenCounts {
+                                input: 0,
+                                output: 0,
+                                cache_read: 0,
+                                cache_write: 0,
+                            },
+                            timing: shore_protocol::types::TimingInfo {
+                                total_ms: 0,
+                                ttft_ms: 0,
+                            },
+                            model: String::new(),
                         },
-                        timing: shore_protocol::types::TimingInfo {
-                            total_ms: 0,
-                            ttft_ms: 0,
-                        },
-                        model: String::new(),
-                    },
-                    finish_reason: "cancelled".into(),
-                },
-            ));
+                        finish_reason: "cancelled".into(),
+                    }),
+                )
+                .await;
         }
     }
 
     /// Build a GenContext from the current handler state.
-    fn gen_context(&self) -> GenContext {
+    fn gen_context(
+        &mut self,
+        session_id: SessionId,
+        direct_tx: mpsc::Sender<ServerMessage>,
+    ) -> GenContext {
+        let session_tokens = self.session_state_mut(session_id).session_tokens.clone();
         GenContext {
             registry: self.registry.clone(),
             llm_client: self.llm_client.clone(),
-            push_tx: self.push_tx.clone(),
+            event_tx: self.push_tx.clone(),
+            direct_tx,
             autonomy: self.autonomy.clone(),
-            session_tokens: self.cmd_ctx.session_tokens.clone(),
+            session_tokens,
             diagnostics: self.cmd_ctx.diagnostics.clone(),
             notifier: self.notifier.clone(),
         }
@@ -312,14 +423,48 @@ impl MessageHandler {
     async fn dispatch_command(
         &mut self,
         cmd: &shore_protocol::client_msg::Command,
-        character: Option<&str>,
+        meta: &RequestMeta,
     ) -> ServerMessage {
-        debug!(command = %cmd.name, character = ?character, "dispatching command");
+        debug!(
+            command = %cmd.name,
+            client_id = meta.session.client_id.0,
+            session_id = meta.session.session_id.0,
+            client_type = %meta.session.client_type,
+            rid = meta.rid.as_deref().unwrap_or("-"),
+            character = ?meta.session.selected_character,
+            "dispatching command"
+        );
+        let session_id = meta.session.session_id;
         // list_characters doesn't need a resolved character — handle it
         // before character resolution so it works when multiple characters
         // are available and none is explicitly selected.
         if cmd.name == "list_characters" {
-            return match commands::dispatch_characterless(&self.cmd_ctx, cmd) {
+            let (active_model, session_tokens, memory_shell_sessions) = {
+                let session = self.session_state_mut(session_id);
+                (
+                    session.active_model.clone(),
+                    session.session_tokens.clone(),
+                    std::mem::take(&mut session.memory_shell_sessions),
+                )
+            };
+            let ctx = CommandContext {
+                config: self.cmd_ctx.config.clone(),
+                push_tx: self.push_tx.clone(),
+                data_dir: self.cmd_ctx.data_dir.clone(),
+                active_model,
+                session_tokens,
+                autonomy: self.cmd_ctx.autonomy.clone(),
+                llm_client: self.cmd_ctx.llm_client.clone(),
+                diagnostics: self.cmd_ctx.diagnostics.clone(),
+                memory_shell_sessions,
+            };
+            let result = commands::dispatch_characterless(&ctx, cmd);
+            {
+                let session = self.session_state_mut(session_id);
+                session.memory_shell_sessions = ctx.memory_shell_sessions;
+                session.active_model = ctx.active_model.clone();
+            }
+            return match result {
                 Ok(data) => {
                     ServerMessage::CommandOutput(shore_protocol::server_msg::CommandOutput {
                         name: cmd.name.clone(),
@@ -334,15 +479,16 @@ impl MessageHandler {
         let (engine_arc, effective_config) = {
             let mut registry = self.registry.lock().await;
 
-            let char_name = match registry.resolve_character(character) {
-                Ok(name) => name,
-                Err(e) => {
-                    return ServerMessage::Error(SwpError {
-                        code: ErrorCode::InvalidRequest,
-                        message: e.to_string(),
-                    });
-                }
-            };
+            let char_name =
+                match registry.resolve_character(meta.session.selected_character.as_deref()) {
+                    Ok(name) => name,
+                    Err(e) => {
+                        return ServerMessage::Error(SwpError {
+                            code: ErrorCode::InvalidRequest,
+                            message: e.to_string(),
+                        });
+                    }
+                };
 
             let effective_config = registry.effective_config(&char_name).clone();
 
@@ -359,18 +505,57 @@ impl MessageHandler {
             (engine_arc, effective_config)
         };
 
-        // Swap in per-character effective config for the duration of this dispatch.
-        let original = std::mem::replace(&mut self.cmd_ctx.config, effective_config);
+        let (active_model, session_tokens, memory_shell_sessions) = {
+            let session = self.session_state_mut(session_id);
+            (
+                session.active_model.clone(),
+                session.session_tokens.clone(),
+                std::mem::take(&mut session.memory_shell_sessions),
+            )
+        };
 
-        let result = commands::dispatch(engine_arc, &mut self.cmd_ctx, cmd).await;
+        let mut cmd_ctx = CommandContext {
+            config: effective_config,
+            push_tx: self.push_tx.clone(),
+            data_dir: self.cmd_ctx.data_dir.clone(),
+            active_model,
+            session_tokens,
+            autonomy: self.cmd_ctx.autonomy.clone(),
+            llm_client: self.cmd_ctx.llm_client.clone(),
+            diagnostics: self.cmd_ctx.diagnostics.clone(),
+            memory_shell_sessions,
+        };
 
-        // config_reset reloads the global config — keep the new value and
+        let result = commands::dispatch(engine_arc.clone(), &mut cmd_ctx, cmd).await;
+
+        {
+            let session = self.session_state_mut(session_id);
+            session.active_model = cmd_ctx.active_model.clone();
+            session.memory_shell_sessions = cmd_ctx.memory_shell_sessions;
+        }
+
+        // config_reset reloads the global config — keep the new global value and
         // invalidate the per-character cache so future lookups re-merge.
         if cmd.name == "config_reset" {
+            self.cmd_ctx.config = cmd_ctx.config.clone();
             let mut registry = self.registry.lock().await;
-            registry.set_global_config(self.cmd_ctx.config.clone());
-        } else {
-            self.cmd_ctx.config = original;
+            registry.set_global_config(cmd_ctx.config.clone());
+        }
+
+        if cmd.name == "switch_character" {
+            if let ServerMessage::CommandOutput(output) = &result {
+                let selected = output
+                    .data
+                    .get("character")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string);
+                if let Some(selected) = selected {
+                    let _ = self
+                        .session_router
+                        .set_selected_character(session_id, Some(selected))
+                        .await;
+                }
+            }
         }
 
         result
@@ -381,12 +566,22 @@ impl MessageHandler {
 // Generation task (free async fn, runs in spawned tokio task)
 // ---------------------------------------------------------------------------
 
-#[instrument(skip(ctx, params), fields(char = %params.char_name, rid = params.rid.as_deref().unwrap_or("-")))]
+#[instrument(
+    skip(ctx, params),
+    fields(
+        client_id = params.request.session.client_id.0,
+        session_id = params.request.session.session_id.0,
+        client_type = %params.request.session.client_type,
+        char = %params.char_name,
+        rid = params.rid.as_deref().unwrap_or("-")
+    )
+)]
 async fn handle_generation(
     ctx: GenContext,
     params: GenerationParams,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let GenerationParams {
+        request: _request,
         body,
         regen,
         char_name,
@@ -441,7 +636,7 @@ async fn handle_generation(
             // without filesystem access to the server's paths.
             let mut wire_msg = user_msg;
             embed_image_data(&mut wire_msg.images);
-            let _ = ctx.push_tx.send(ServerMessage::NewMessage(
+            let _ = ctx.event_tx.send(ServerMessage::NewMessage(
                 shore_protocol::server_msg::NewMessage { message: wire_msg },
             ));
         }
@@ -723,18 +918,19 @@ async fn handle_generation(
         if ctx.autonomy.should_compact_now(&char_name, turn_count) {
             info!(character = %char_name, turn_count, "Running inline compaction");
             let _ = ctx
-                .push_tx
+                .direct_tx
                 .send(ServerMessage::Phase(shore_protocol::server_msg::Phase {
                     phase: "compacting".into(),
                     model: None,
-                }));
+                }))
+                .await;
 
             match crate::memory::compaction::run_compaction(
                 &char_name,
                 &effective_config,
                 &ctx.llm_client,
                 &data_dir,
-                &ctx.push_tx,
+                &ctx.event_tx,
                 &ctx.notifier,
             )
             .await
@@ -848,10 +1044,14 @@ mod tests {
     use tempfile::TempDir;
 
     /// Build a `MessageHandler` backed by a tempdir with the given characters.
-    fn make_handler(
+    async fn make_handler(
         tmp: &TempDir,
         chars: &[&str],
-    ) -> (MessageHandler, broadcast::Receiver<ServerMessage>) {
+    ) -> (
+        MessageHandler,
+        broadcast::Receiver<ServerMessage>,
+        tokio::sync::mpsc::Receiver<ServerMessage>,
+    ) {
         let config_dir = tmp.path().join("config");
         let data_dir = tmp.path().join("data");
         std::fs::create_dir_all(&data_dir).unwrap();
@@ -867,6 +1067,25 @@ mod tests {
         }
 
         let (push_tx, push_rx) = broadcast::channel(16);
+        let (direct_tx, direct_rx) = tokio::sync::mpsc::channel(16);
+        let server = shore_daemon_server::Server::new(shore_daemon_server::ServerConfig {
+            addr: "127.0.0.1:0".into(),
+            allowed_hosts: vec![],
+            server_name: "handler-test".into(),
+        });
+        let session_router = server.session_router();
+        session_router
+            .register_session(
+                shore_daemon_server::ClientInfo {
+                    id: 1,
+                    client_type: "test-client".into(),
+                    client_name: "test".into(),
+                    capabilities: vec!["streaming".into()],
+                    character: None,
+                },
+                direct_tx,
+            )
+            .await;
 
         let loaded_config = shore_config::LoadedConfig::new_for_test(
             shore_config::app::AppConfig::default(),
@@ -914,18 +1133,32 @@ mod tests {
             memory_shell_sessions: std::collections::HashMap::new(),
         };
 
-        let handler = MessageHandler {
-            registry: Arc::new(Mutex::new(registry)),
+        let handler = MessageHandler::new(
+            Arc::new(Mutex::new(registry)),
             cmd_ctx,
-            llm_client: ledger_client,
-            push_tx: push_tx.clone(),
-
+            ledger_client,
+            push_tx.clone(),
+            session_router,
             autonomy,
-            notifier: NotificationService::new(Default::default()),
-            generation_handle: None,
-        };
+            NotificationService::new(Default::default()),
+        );
 
-        (handler, push_rx)
+        (handler, push_rx, direct_rx)
+    }
+
+    fn test_request_meta(character: Option<&str>, rid: Option<&str>) -> RequestMeta {
+        RequestMeta {
+            session: shore_daemon_server::SessionMeta {
+                client_id: shore_daemon_server::ClientId(1),
+                session_id: shore_daemon_server::SessionId(1),
+                client_type: "test-client".into(),
+                client_name: "test".into(),
+                capabilities: vec!["streaming".into()],
+                selected_character: character.map(str::to_string),
+            },
+            rid: rid.map(str::to_string),
+            kind: shore_daemon_server::RequestKind::Command,
+        }
     }
 
     // ── dispatch_command ────────────────────────────────────────────
@@ -933,7 +1166,7 @@ mod tests {
     #[tokio::test]
     async fn dispatch_command_valid_character() {
         let tmp = TempDir::new().unwrap();
-        let (mut handler, _rx) = make_handler(&tmp, &["Alice"]);
+        let (mut handler, _rx, _direct_rx) = make_handler(&tmp, &["Alice"]).await;
 
         let cmd = Command {
             rid: None,
@@ -941,7 +1174,8 @@ mod tests {
             args: serde_json::json!({}),
         };
 
-        let result = handler.dispatch_command(&cmd, Some("Alice")).await;
+        let meta = test_request_meta(Some("Alice"), None);
+        let result = handler.dispatch_command(&cmd, &meta).await;
         assert!(
             matches!(result, ServerMessage::CommandOutput(_)),
             "Expected CommandOutput, got {:?}",
@@ -952,7 +1186,7 @@ mod tests {
     #[tokio::test]
     async fn dispatch_command_invalid_character() {
         let tmp = TempDir::new().unwrap();
-        let (mut handler, _rx) = make_handler(&tmp, &["Alice"]);
+        let (mut handler, _rx, _direct_rx) = make_handler(&tmp, &["Alice"]).await;
 
         let cmd = Command {
             rid: None,
@@ -960,7 +1194,8 @@ mod tests {
             args: serde_json::json!({}),
         };
 
-        let result = handler.dispatch_command(&cmd, Some("Bob")).await;
+        let meta = test_request_meta(Some("Bob"), None);
+        let result = handler.dispatch_command(&cmd, &meta).await;
         match result {
             ServerMessage::Error(e) => {
                 assert_eq!(e.code, ErrorCode::InvalidRequest);
@@ -973,7 +1208,7 @@ mod tests {
     #[tokio::test]
     async fn dispatch_command_auto_select() {
         let tmp = TempDir::new().unwrap();
-        let (mut handler, _rx) = make_handler(&tmp, &["Alice"]);
+        let (mut handler, _rx, _direct_rx) = make_handler(&tmp, &["Alice"]).await;
 
         let cmd = Command {
             rid: None,
@@ -981,7 +1216,8 @@ mod tests {
             args: serde_json::json!({}),
         };
 
-        let result = handler.dispatch_command(&cmd, None).await;
+        let meta = test_request_meta(None, None);
+        let result = handler.dispatch_command(&cmd, &meta).await;
         assert!(
             matches!(result, ServerMessage::CommandOutput(_)),
             "Expected auto-select to succeed, got {:?}",
@@ -992,7 +1228,7 @@ mod tests {
     #[tokio::test]
     async fn dispatch_command_ambiguous_character() {
         let tmp = TempDir::new().unwrap();
-        let (mut handler, _rx) = make_handler(&tmp, &["Alice", "Bob"]);
+        let (mut handler, _rx, _direct_rx) = make_handler(&tmp, &["Alice", "Bob"]).await;
 
         let cmd = Command {
             rid: None,
@@ -1000,7 +1236,8 @@ mod tests {
             args: serde_json::json!({}),
         };
 
-        let result = handler.dispatch_command(&cmd, None).await;
+        let meta = test_request_meta(None, None);
+        let result = handler.dispatch_command(&cmd, &meta).await;
         match result {
             ServerMessage::Error(e) => {
                 assert_eq!(e.code, ErrorCode::InvalidRequest);
@@ -1014,7 +1251,7 @@ mod tests {
     #[tokio::test]
     async fn handle_engine_message_regen_builds_empty_body() {
         let tmp = TempDir::new().unwrap();
-        let (handler, _rx) = make_handler(&tmp, &["Alice"]);
+        let (mut handler, _rx, _direct_rx) = make_handler(&tmp, &["Alice"]).await;
 
         // Regen without a model configured will fail at model resolution,
         // but the important thing is it doesn't fail at message routing.
@@ -1049,13 +1286,22 @@ mod tests {
             _ => unreachable!(),
         };
 
-        let gen = handler.gen_context();
+        let direct_tx = handler
+            .session_router
+            .sender_for(shore_daemon_server::SessionId(1))
+            .await
+            .unwrap();
+        let gen = handler.gen_context(shore_daemon_server::SessionId(1), direct_tx);
         let data_dir = handler.cmd_ctx.data_dir.clone();
 
         // This will return an Err (no model configured) — that's expected.
         let result = handle_generation(
             gen,
             GenerationParams {
+                request: RequestMeta {
+                    kind: shore_daemon_server::RequestKind::Regen,
+                    ..test_request_meta(Some("Alice"), Some("r1"))
+                },
                 body,
                 regen: is_regen,
                 char_name,
@@ -1068,6 +1314,44 @@ mod tests {
         .await;
 
         assert!(result.is_err(), "Expected error due to no model configured");
+    }
+
+    #[tokio::test]
+    async fn run_cancel_route_aborts_active_generation() {
+        let tmp = TempDir::new().unwrap();
+        let (mut handler, _push_rx, mut direct_rx) = make_handler(&tmp, &["Alice"]).await;
+        let (route_tx, route_rx) = tokio::sync::mpsc::channel(4);
+        let route_rx = Arc::new(Mutex::new(route_rx));
+
+        handler
+            .session_state_mut(shore_daemon_server::SessionId(1))
+            .generation_handle = Some(tokio::spawn(async {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        }));
+
+        let handler_task = tokio::spawn(async move {
+            handler.run(route_rx).await;
+        });
+
+        route_tx
+            .send(RoutedMessage::Engine {
+                msg: ClientMessage::Cancel(shore_protocol::client_msg::Cancel {}),
+                meta: RequestMeta {
+                    kind: shore_daemon_server::RequestKind::Cancel,
+                    ..test_request_meta(Some("Alice"), None)
+                },
+            })
+            .await
+            .unwrap();
+        drop(route_tx);
+
+        let msg = direct_rx.recv().await.unwrap();
+        match msg {
+            ServerMessage::StreamEnd(end) => assert_eq!(end.finish_reason, "cancelled"),
+            other => panic!("Expected StreamEnd, got {:?}", other),
+        }
+
+        handler_task.await.unwrap();
     }
 
     // ── image helpers ────────────────────────────────────────────────────
@@ -1239,11 +1523,15 @@ mod tests {
     }
 
     /// Build a `MessageHandler` with a model catalog pointing at a mock server.
-    fn make_handler_with_models(
+    async fn make_handler_with_models(
         tmp: &TempDir,
         chars: &[&str],
         models: shore_config::models::ModelCatalog,
-    ) -> (MessageHandler, broadcast::Receiver<ServerMessage>) {
+    ) -> (
+        MessageHandler,
+        broadcast::Receiver<ServerMessage>,
+        tokio::sync::mpsc::Receiver<ServerMessage>,
+    ) {
         let config_dir = tmp.path().join("config");
         let data_dir = tmp.path().join("data");
         std::fs::create_dir_all(&data_dir).unwrap();
@@ -1259,6 +1547,25 @@ mod tests {
         }
 
         let (push_tx, push_rx) = broadcast::channel(64);
+        let (direct_tx, direct_rx) = tokio::sync::mpsc::channel(64);
+        let server = shore_daemon_server::Server::new(shore_daemon_server::ServerConfig {
+            addr: "127.0.0.1:0".into(),
+            allowed_hosts: vec![],
+            server_name: "handler-test".into(),
+        });
+        let session_router = server.session_router();
+        session_router
+            .register_session(
+                shore_daemon_server::ClientInfo {
+                    id: 1,
+                    client_type: "test-client".into(),
+                    client_name: "test".into(),
+                    capabilities: vec!["streaming".into()],
+                    character: None,
+                },
+                direct_tx,
+            )
+            .await;
 
         let mut app_config = shore_config::app::AppConfig::default();
         app_config.defaults.model = Some("test".into());
@@ -1311,18 +1618,17 @@ mod tests {
             memory_shell_sessions: std::collections::HashMap::new(),
         };
 
-        let handler = MessageHandler {
-            registry: Arc::new(Mutex::new(registry)),
+        let handler = MessageHandler::new(
+            Arc::new(Mutex::new(registry)),
             cmd_ctx,
-            llm_client: ledger_client,
-            push_tx: push_tx.clone(),
-
+            ledger_client,
+            push_tx.clone(),
+            session_router,
             autonomy,
-            notifier: NotificationService::new(Default::default()),
-            generation_handle: None,
-        };
+            NotificationService::new(Default::default()),
+        );
 
-        (handler, push_rx)
+        (handler, push_rx, direct_rx)
     }
 
     /// End-to-end pipeline: user message → prompt → LLM stream → persist.
@@ -1341,7 +1647,8 @@ mod tests {
         let models = mock_model_catalog(&base_url);
 
         let tmp = TempDir::new().unwrap();
-        let (handler, mut push_rx) = make_handler_with_models(&tmp, &["Alice"], models);
+        let (mut handler, mut push_rx, _direct_rx) =
+            make_handler_with_models(&tmp, &["Alice"], models).await;
 
         // Resolve character and config (same steps the handler loop takes).
         let (char_name, effective_config) = {
@@ -1361,13 +1668,22 @@ mod tests {
             overrides: None,
         };
 
-        let gen = handler.gen_context();
+        let direct_tx = handler
+            .session_router
+            .sender_for(shore_daemon_server::SessionId(1))
+            .await
+            .unwrap();
+        let gen = handler.gen_context(shore_daemon_server::SessionId(1), direct_tx);
         let data_dir = handler.cmd_ctx.data_dir.clone();
 
         // Run the full pipeline.
         let result = handle_generation(
             gen,
             GenerationParams {
+                request: RequestMeta {
+                    kind: shore_daemon_server::RequestKind::Message,
+                    ..test_request_meta(Some("Alice"), Some("test-rid"))
+                },
                 body,
                 regen: false,
                 char_name: char_name.clone(),

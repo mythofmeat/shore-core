@@ -44,7 +44,7 @@ pub(super) async fn stream_with_retry(
     let mut attempt: u32 = 0;
 
     loop {
-        let consumer = StreamConsumer::new(ctx.push_tx.clone());
+        let consumer = StreamConsumer::new(ctx.direct_tx.clone());
 
         let stream_result = async {
             let mut ledger_stream = ctx
@@ -229,7 +229,7 @@ pub(super) async fn run_tool_phase(
 
     let tool_loop_result = tools::run_tool_loop(
         &ctx.llm_client,
-        &ctx.push_tx,
+        &ctx.direct_tx,
         request,
         result,
         &tool_ctx,
