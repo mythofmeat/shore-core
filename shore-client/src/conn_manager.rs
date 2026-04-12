@@ -67,9 +67,9 @@ fn next_backoff(current: Duration, max: Duration) -> Duration {
     (current * 2).min(max)
 }
 
-fn resolve_addr(addr: &Option<String>, config: &Option<String>) -> ServerAddr {
+fn resolve_addr(addr: &Option<String>, config: &Option<String>) -> crate::Result<ServerAddr> {
     if let Some(addr) = addr {
-        return ServerAddr(addr.clone());
+        return Ok(ServerAddr(addr.clone()));
     }
     discover_or_default(config.as_deref())
 }
@@ -87,7 +87,20 @@ async fn connection_loop(
     let max_backoff = Duration::from_secs(15);
 
     loop {
-        let addr = resolve_addr(&addr, &config);
+        let addr = match resolve_addr(&addr, &config) {
+            Ok(addr) => addr,
+            Err(e) => {
+                error!(error = %e, "failed to resolve daemon address");
+                let _ = event_tx
+                    .send(ConnEvent::Disconnected(format!(
+                        "address resolution failed: {e}"
+                    )))
+                    .await;
+                sleep(backoff).await;
+                backoff = next_backoff(backoff, max_backoff);
+                continue;
+            }
+        };
         info!(addr = ?addr, client = %app_name, "attempting connection");
 
         match SWPConnection::connect(&addr, &client_id, &app_name, character.clone()).await {
@@ -233,7 +246,7 @@ mod tests {
 
     #[test]
     fn test_resolve_addr_explicit_tcp() {
-        let addr = resolve_addr(&Some("127.0.0.1:9090".into()), &None);
+        let addr = resolve_addr(&Some("127.0.0.1:9090".into()), &None).unwrap();
         assert_eq!(addr.0, "127.0.0.1:9090");
     }
 }

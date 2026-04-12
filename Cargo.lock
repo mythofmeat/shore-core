@@ -4867,6 +4867,7 @@ dependencies = [
  "serde_json",
  "shore-config",
  "shore-protocol",
+ "tempfile",
  "thiserror",
  "tokio",
  "toml",
@@ -4928,6 +4929,7 @@ name = "shore-daemon-server"
 version = "0.1.0"
 dependencies = [
  "fs2",
+ "libc",
  "serde",
  "serde_json",
  "shore-config",

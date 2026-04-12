@@ -276,17 +276,14 @@ fn extract_bind_host(addr: &str) -> Option<&str> {
     Some(host)
 }
 
-/// Simple epoch-seconds timestamp without pulling in chrono.
+/// Registry timestamps use RFC3339 for human-readable diagnostics.
 fn epoch_timestamp() -> String {
-    let duration = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    format!("{}s-since-epoch", duration.as_secs())
+    chrono::Local::now().to_rfc3339()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::validate_remote_access_policy;
+    use super::{epoch_timestamp, validate_remote_access_policy};
 
     #[test]
     fn loopback_bind_does_not_require_remote_opt_in() {
@@ -330,5 +327,14 @@ mod tests {
         let err = validate_remote_access_policy("not-an-address", false, &[])
             .expect_err("invalid address should fail validation");
         assert!(err.contains("Invalid daemon listen address"));
+    }
+
+    #[test]
+    fn registry_timestamp_uses_rfc3339() {
+        let timestamp = epoch_timestamp();
+        assert!(
+            chrono::DateTime::parse_from_rfc3339(&timestamp).is_ok(),
+            "registry timestamps should use RFC3339, got: {timestamp}"
+        );
     }
 }

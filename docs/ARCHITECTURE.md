@@ -771,6 +771,13 @@ $XDG_RUNTIME_DIR/shore/            (/run/user/{uid}/shore/)
 └── instances.lock                 # File lock for concurrent access
 ```
 
+`instances.json` stores daemon registry metadata, including `started_at` in
+RFC3339 format. Registry updates lock `instances.lock`, rewrite the JSON via
+atomic replace, and preserve corrupt payloads as `instances.corrupt-*.json`
+instead of silently treating them as empty state. PID-based liveness pruning is
+best-effort: Unix builds probe process existence directly; non-Unix builds keep
+PID-tagged entries until explicit unregister or overwrite.
+
 ---
 
 ## 8. Configuration
@@ -822,6 +829,11 @@ default_address = "100.64.0.1:7320"
 The file is optional. If missing or unparseable, resolution falls through to
 instance discovery. On the daemon machine, omit `client.toml` (or leave
 `default_address` unset) to use instance discovery as before.
+
+If the instance registry is missing or empty, Shore falls back to the default
+`127.0.0.1:7320` address when no explicit daemon ID was requested. Corrupt
+registry JSON is surfaced as an error instead of being flattened into the
+default address.
 
 **Remote security model:**
 

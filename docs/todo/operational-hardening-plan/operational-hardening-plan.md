@@ -11,7 +11,7 @@ debug, and trust, but are not themselves the main protocol/session problem.
 
 ## Status Snapshot
 
-Updated 2026-04-12 after the client-framing-hardening pass.
+Updated 2026-04-12 after the registry-and-discovery-hardening pass.
 
 - Workstream A is complete enough to treat as landed. Shore is now documented
   as localhost-only by default, non-loopback daemon binds require explicit
@@ -21,7 +21,12 @@ Updated 2026-04-12 after the client-framing-hardening pass.
   applies the same bounded newline framing limit as the server, using a shared
   `MAX_WIRE_MESSAGE_SIZE` constant and explicit oversized-frame errors during
   both handshake and steady-state reads.
-- The next pickup point is Workstream C: registry and discovery hardening.
+- Workstream C is complete enough to treat as landed. Registry writes now use
+  a stable sidecar lock file plus atomic replace, corrupt registry JSON is
+  preserved and surfaced instead of being treated as empty state, discovery
+  distinguishes missing registries from corrupt ones, and registry metadata now
+  uses RFC3339 timestamps.
+- The next pickup point is Workstream D: runtime invalidation rules.
 
 ## 1. Why This Is Separate
 

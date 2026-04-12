@@ -27,7 +27,7 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         return handle_matrix_command(subcommand, &cli).await;
     }
 
-    let addr = resolve_addr(&cli);
+    let addr = resolve_addr(&cli)?;
 
     // Character resolution: --character flag > SHORE_CHARACTER env > state file > None (daemon auto-selects).
     let character = cli.character.clone().or_else(state::read_active_character);
@@ -472,7 +472,7 @@ fn config_dir() -> std::path::PathBuf {
 /// Print the config directory path by querying the daemon.
 /// Falls back to local resolution if the daemon is unreachable.
 async fn print_config_path(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
-    let addr = resolve_addr(cli);
+    let addr = resolve_addr(cli)?;
     let character = cli.character.clone().or_else(state::read_active_character);
 
     match SWPConnection::connect(&addr, "cli", "shore-cli", character).await {
@@ -530,9 +530,9 @@ fn edit_message_in_editor() -> Result<String, Box<dyn std::error::Error>> {
 }
 
 /// Resolve the daemon address from CLI flags or discovery.
-fn resolve_addr(cli: &Cli) -> ServerAddr {
+fn resolve_addr(cli: &Cli) -> Result<ServerAddr, shore_client::ClientError> {
     if let Some(addr) = &cli.addr {
-        return ServerAddr(addr.clone());
+        return Ok(ServerAddr(addr.clone()));
     }
     shore_client::discover_or_default(cli.config.as_deref())
 }

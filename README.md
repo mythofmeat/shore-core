@@ -169,6 +169,8 @@ default_address = "100.64.0.1:7320"
 
 Address resolution order: `--addr` CLI flag → `client.toml` → instance discovery → default `127.0.0.1:7320`. On the daemon machine, omit this file to use instance discovery. See `examples/client.toml` for a full example.
 
+If the instance registry is missing or empty, Shore falls back to `127.0.0.1:7320` as before. If the registry JSON is corrupt, discovery now fails explicitly and the daemon preserves an `instances.corrupt-*.json` copy beside the registry for diagnosis instead of silently treating corruption as "no daemons found."
+
 The client address file does not make the daemon "remote-ready" by itself. Shore is localhost-only by default. To bind the daemon on a non-loopback address you must opt in explicitly:
 
 ```toml
