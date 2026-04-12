@@ -11,7 +11,7 @@ Updated 2026-04-12:
 - the checklist now distinguishes still-open mismatches from items that were
   resolved or materially narrowed by the first implementation pass
 - the execution tracker for future work is
-  [`6-architecture-realignment-implementation-plan.md`](./6-architecture-realignment-implementation-plan.md)
+  [`architecture-realignment-implementation-plan.md`](./architecture-realignment-implementation-plan.md)
 
 ## Still Open
 

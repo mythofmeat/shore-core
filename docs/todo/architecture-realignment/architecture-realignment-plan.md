@@ -1,7 +1,7 @@
 # Shore Architecture Realignment Plan
 
-This plan is for a deeper refactor than the existing [`refactor-plan.md`](./refactor-plan.md).
-That earlier document is mostly about hardening specific implementation risks.
+This plan is for a deeper refactor than the earlier hardening pass that focused
+on specific implementation risks.
 This one is about restoring Shore's original architectural intent so the codebase
 becomes easier to reason about, iterate on, and extend.
 

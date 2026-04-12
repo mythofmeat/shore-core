@@ -1,7 +1,7 @@
 # Daemon Lock Hardening Plan
 
-Focused follow-up to [`refactor-plan.md`](./refactor-plan.md) for the four
-remaining runtime `lock().unwrap()` sites we called out in the daemon.
+Focused follow-up to Shore's earlier hardening pass for the four remaining
+runtime `lock().unwrap()` sites we called out in the daemon.
 
 ## 1. Goal
 

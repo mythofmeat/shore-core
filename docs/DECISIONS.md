@@ -589,3 +589,29 @@ workspace crate. The server module had zero internal dependencies on other daemo
 making it the cleanest extraction candidate. `RoutedMessage` enum stays in the server crate
 because it's a server routing concern (not a wire protocol type) and handler already depends
 on the server crate. Registry stays as a submodule (221 LOC, not worth its own crate).
+
+## Refactor Hardening Closeout (2026-04-12)
+
+**Decision:** Close the targeted refactor hardening pass without reopening larger
+concurrency redesign work. Shore keeps the current single-process architecture
+and only revisits deeper executor or async changes if new measurements justify it.
+
+**What landed:**
+- Added maintenance-path timing around compaction, vector-store open/reindex,
+  ledger operations, and pricing cache lookups so blocking work is observable.
+- Hardened `shore-ledger` shared-state locking with `lock_or_recover()` and
+  poison-recovery tests instead of panic-on-poison behavior in production paths.
+- Centralized vector-store entry-ID predicate construction and validation in one
+  helper, with consistent invalid-ID tests across index/delete/get paths.
+- Moved compaction archive/retain file mutation behind an explicit
+  `spawn_blocking` boundary and added a regression test proving sibling tasks
+  stay responsive while that work runs.
+- Promoted the panic classification note to `docs/specs/panic-policy.md` and
+  codified the remaining production panic sites as startup-fatal or
+  invariant-protecting.
+
+**What we are not doing now:**
+- No dedicated maintenance executor or job queue.
+- No blanket `tokio::fs` or `tokio::sync::Mutex` rewrite.
+- No `parking_lot` migration.
+- No further async/concurrency churn unless new timings show an actual hotspot.

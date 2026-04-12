@@ -1,7 +1,7 @@
 # Shore Architecture Realignment Implementation Plan
 
 Companion to
-[`1-architecture-realignment-plan.md`](./1-architecture-realignment-plan.md)
+[`architecture-realignment-plan.md`](./architecture-realignment-plan.md)
 and the current
 [`protocol-mismatch-checklist.md`](./protocol-mismatch-checklist.md).
 
