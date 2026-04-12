@@ -11,7 +11,7 @@ debug, and trust, but are not themselves the main protocol/session problem.
 
 ## Status Snapshot
 
-Updated 2026-04-13 after the runtime-invalidation pass.
+Updated 2026-04-13 after the operability review pass.
 
 - Workstream A is complete enough to treat as landed. Shore is now documented
   as localhost-only by default, non-loopback daemon binds require explicit
@@ -37,7 +37,14 @@ Updated 2026-04-13 after the runtime-invalidation pass.
   (`--addr` → `SHORE_ADDR` → `[daemon].addr`), explicit `--config` paths fail
   fast when invalid, and startup diagnostics now report clearer config, remote
   access, and bind failures.
-- The next pickup point is Workstream F: add a small operability review pass.
+- Workstream F is complete enough to treat as landed. Cache forensics is now a
+  deliberate operator option instead of an always-on log sink, daemon
+  register/unregister lifecycle logs now include the registry path and instance
+  context, and the docs now state Shore's Linux-first/runtime-fallback posture
+  explicitly instead of implying full cross-platform symmetry.
+- This operational hardening plan is now landed enough to treat as complete on
+  this branch. Follow-on operability tweaks should be tracked as concrete bugs,
+  decisions, or focused plans rather than reopening this document.
 
 ## 1. Why This Is Separate
 

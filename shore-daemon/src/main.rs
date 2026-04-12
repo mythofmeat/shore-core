@@ -171,7 +171,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             path: registry.path().to_path_buf(),
             source,
         })?;
-    info!(instance_id = %instance_id, "Registered daemon instance");
+    info!(
+        instance_id = %instance_id,
+        registry_path = %registry.path().display(),
+        addr = %addr,
+        data_dir = %loaded.dirs.data.display(),
+        "Registered daemon instance"
+    );
 
     // ── Shutdown signal (SIGINT / SIGTERM) ──────────────────────────
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
@@ -232,14 +238,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    // Always-on cache forensics — writes to {data_dir}/cache_forensics.jsonl.
-    // Logs every Anthropic cache placement + response so cache misses are
-    // diagnosable after the fact without needing to reproduce.
-    shore_llm_client::cache_forensics::enable(loaded.dirs.data.clone());
-    info!(
-        "Cache forensics enabled → {}/cache_forensics.jsonl",
-        loaded.dirs.data.display()
-    );
+    let cache_forensics_path = loaded.dirs.data.join("cache_forensics.jsonl");
+    if loaded.app.advanced.cache_forensics {
+        shore_llm_client::cache_forensics::enable(loaded.dirs.data.clone());
+        info!(
+            path = %cache_forensics_path.display(),
+            "Cache forensics enabled"
+        );
+    } else {
+        info!(
+            path = %cache_forensics_path.display(),
+            "Cache forensics disabled; set [advanced].cache_forensics = true to enable"
+        );
+    }
 
     let llm_client = LedgerClient::new(raw_llm_client, &loaded.dirs.data.join("ledger.db"))?;
 
@@ -301,6 +312,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             addr: addr.clone(),
             source,
         });
+    if let Err(error) = &result {
+        error!(addr = %addr, error = %error, "Daemon server exited with error");
+    }
 
     // Drop the server so its route_tx is released, unblocking the handler.
     drop(server);
@@ -313,7 +327,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ── Cleanup ──────────────────────────────────────────────────────
     if let Err(e) = registry.unregister(&instance_id) {
-        error!(error = %e, "Failed to unregister instance");
+        error!(
+            instance_id = %instance_id,
+            registry_path = %registry.path().display(),
+            error = %e,
+            "Failed to unregister daemon instance"
+        );
+    } else {
+        info!(
+            instance_id = %instance_id,
+            registry_path = %registry.path().display(),
+            "Unregistered daemon instance"
+        );
     }
     info!("Daemon shut down cleanly");
 

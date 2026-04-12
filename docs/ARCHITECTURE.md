@@ -804,6 +804,11 @@ instead of silently treating them as empty state. PID-based liveness pruning is
 best-effort: Unix builds probe process existence directly; non-Unix builds keep
 PID-tagged entries until explicit unregister or overwrite.
 
+Operationally, Shore is still Linux-first: XDG paths and Unix shutdown signals
+are the primary path. Non-Unix builds use the same config/data model, but the
+runtime registry intentionally falls back to best-effort cleanup instead of
+pretending `/proc`-style liveness semantics exist everywhere.
+
 ---
 
 ## 8. Configuration
@@ -831,6 +836,8 @@ Daemon startup precedence is explicit:
    CLI/env overrides cannot bypass `[daemon].unsafe_allow_remote_access`.
 4. Long-lived daemon settings stay config-owned; CLI/env overrides are limited
    to startup-scoped operator concerns.
+5. Prompt-cache forensics is an explicit operator toggle via
+   `[advanced].cache_forensics = true` rather than an always-on log sink.
 
 ### 8.2 models.toml (Daemon)
 

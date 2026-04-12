@@ -687,6 +687,13 @@ pub struct AdvancedConfig {
     #[serde(default)]
     pub api_payload_logging: bool,
 
+    /// Log prompt-cache forensic data to cache_forensics.jsonl.
+    ///
+    /// Disabled by default so operators opt in deliberately when diagnosing
+    /// cache behavior or prompt-cost anomalies.
+    #[serde(default)]
+    pub cache_forensics: bool,
+
     /// Editor command override. Checked before $VISUAL / $EDITOR env vars.
     pub editor: Option<String>,
 
@@ -707,6 +714,7 @@ impl Default for AdvancedConfig {
     fn default() -> Self {
         Self {
             api_payload_logging: false,
+            cache_forensics: false,
             editor: None,
             max_retries: None,
             retry_backoff: None,
@@ -1126,5 +1134,18 @@ max_image_size = 0
 "#;
         let config: AppConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.advanced.max_image_size, 0);
+    }
+
+    #[test]
+    fn cache_forensics_defaults_and_overrides() {
+        let config = AppConfig::default();
+        assert!(!config.advanced.cache_forensics);
+
+        let toml_str = r#"
+[advanced]
+cache_forensics = true
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert!(config.advanced.cache_forensics);
     }
 }

@@ -203,6 +203,16 @@ Daemon startup precedence:
   notifications, and autonomy settings remains config-file owned rather than
   being spread across additional env vars.
 
+Platform notes:
+
+- Shore is Linux-first operationally. It follows XDG directories and Unix
+  signal behavior by default.
+- Non-Unix builds still work with the same config/data layout, but daemon
+  registry liveness pruning is best-effort there because Shore only probes PIDs
+  directly on Unix.
+- Prompt-cache forensic logging is opt-in via `[advanced].cache_forensics = true`
+  when you need per-request cache diagnostics in `{data_dir}/cache_forensics.jsonl`.
+
 ### CLI reference
 
 ```
