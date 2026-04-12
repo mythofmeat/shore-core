@@ -67,6 +67,7 @@ mod tests {
     fn drops_stale_history_snapshots() {
         let mut sync = SyncState::new(5);
         let stale = ServerMessage::History(History {
+            rid: None,
             messages: vec![message("m1")],
             config: serde_json::json!({}),
             selected_character: Some("alice".into()),
@@ -81,6 +82,7 @@ mod tests {
     fn accepts_newer_history_snapshots() {
         let mut sync = SyncState::new(5);
         let newer = ServerMessage::History(History {
+            rid: None,
             messages: vec![message("m1")],
             config: serde_json::json!({}),
             selected_character: Some("alice".into()),

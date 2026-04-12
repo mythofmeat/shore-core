@@ -44,7 +44,7 @@ pub(super) async fn stream_with_retry(
     let mut attempt: u32 = 0;
 
     loop {
-        let consumer = StreamConsumer::new(ctx.direct_tx.clone());
+        let consumer = StreamConsumer::new(ctx.direct_tx.clone(), request.rid.clone());
 
         let stream_result = async {
             let mut ledger_stream = ctx

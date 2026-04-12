@@ -56,7 +56,7 @@ pub async fn run_tool_loop(
     character: &str,
     thinking_enabled: bool,
 ) -> Result<ToolLoopResult, ToolLoopError> {
-    let consumer = StreamConsumer::new(direct_tx.clone());
+    let consumer = StreamConsumer::new(direct_tx.clone(), request.rid.clone());
     let mut intermediate_messages: Vec<Message> = Vec::new();
 
     for iteration in 0..max_iterations {
@@ -135,6 +135,7 @@ pub async fn run_tool_loop(
             // Push ToolCall event to SWP clients.
             let _ = direct_tx
                 .send(ServerMessage::ToolCall(ToolCall {
+                    rid: request.rid.clone(),
                     tool_id: tool_use.id.clone(),
                     tool_name: tool_use.name.clone(),
                     input: tool_use.input.clone(),
@@ -187,6 +188,7 @@ pub async fn run_tool_loop(
                         }
                         let _ = direct_tx
                             .send(ServerMessage::SendImage(SendImage {
+                                rid: request.rid.clone(),
                                 path: path.to_string(),
                                 caption,
                                 data: None,
@@ -217,6 +219,7 @@ pub async fn run_tool_loop(
             // Push ToolResult event to SWP clients.
             let _ = direct_tx
                 .send(ServerMessage::ToolResult(SwpToolResult {
+                    rid: request.rid.clone(),
                     tool_id: tool_use.id.clone(),
                     tool_name: tool_use.name.clone(),
                     output: output_str.clone(),

@@ -129,7 +129,7 @@ Client                          Server
 | Topic | Current truth in this branch | Planned follow-on |
 |------|------|------|
 | Handshake payloads | `hello` now carries the real character list, and the initial `history` carries real messages, `selected_character`, a truthful minimal session/config snapshot, and the current revision. | None. |
-| `rid` propagation | Client request messages carry `rid`, but SWP V1 server messages do not yet echo it on the wire. | Future SWP wire revision or capability negotiation. |
+| `rid` propagation | Client request messages carry `rid`, and request-scoped SWP V1 server responses now echo it on the wire. Handshake and unsolicited push messages intentionally omit `rid`. | None. |
 | Direct responses vs events | Request-scoped command/stream/tool/cancel traffic routes directly to the requesting session. Authoritative conversation state sync travels via revisioned `history` snapshots. | None. |
 | `switch_character` | Character switching is a session mutation, not a reconnect flow. Successful switches update session state and push an authoritative direct `history` snapshot for the new selection. | None. |
 | Snapshot vs event authority | `History` is revisioned and authoritative. `NewMessage` remains revisioned advisory metadata; shared client code drops stale snapshot/event traffic instead of repairing with blind fetches. | None for SWP V1; future work is only if the wire contract changes again. |
@@ -150,7 +150,7 @@ Client request example:
 }
 ```
 
-Server message example:
+Server handshake example:
 
 ```json
 {
@@ -162,11 +162,22 @@ Server message example:
 }
 ```
 
+Server request-scoped example:
+
+```json
+{
+  "type": "command_output",
+  "rid": "cmd_01",
+  "name": "status",
+  "data": { "ok": true }
+}
+```
+
 - `type` — required on every message.
 - `v` — currently carried by `hello`, not by every message.
-- `rid` — client-generated opaque request ID on request messages. SWP V1 keeps
-  request correlation internally, but server messages do not yet echo `rid` on
-  the wire.
+- `rid` — client-generated opaque request ID. Client request messages carry it,
+  and request-scoped server responses echo it. Handshake and unsolicited push
+  messages intentionally omit `rid`.
 
 Any future SWP wire change must update the docs, protocol types, golden JSON
 tests, and at least one end-to-end or routing test in the same change. CI runs
@@ -233,7 +244,7 @@ this single envelope. See §3.7 for the complete command reference.
 | Type | When | Key Fields |
 |------|------|------------|
 | `hello` | After client connects | `v`, `server_name`, `characters[]` |
-| `history` | After handshake; after authoritative state changes | `messages[]`, `config`, `selected_character`, `revision` |
+| `history` | After handshake; after authoritative state changes | `messages[]`, `config`, `selected_character`, `revision`, `rid?` |
 | `shutdown` | Server stopping | — |
 | `ping` | Periodic keepalive (TCP) | — |
 
@@ -243,6 +254,10 @@ snapshots/events in the shared `shore-client` layer instead of issuing blind
 repair fetches after normal operations. Request-scoped streaming/tool/command
 responses still travel on their own direct-response paths, and `new_message`
 remains advisory.
+
+When a `history` snapshot is emitted as the direct result of a request such as
+`switch_character`, it also echoes that request's `rid`. Handshake snapshots do
+not carry `rid`.
 
 #### Message Object
 
@@ -284,8 +299,8 @@ and `delete` commands — never parse or construct IDs.
 
 | Type | When | Key Fields |
 |------|------|------------|
-| `command_output` | Command result | `name`, `data` |
-| `error` | Any error | `code`, `message` |
+| `command_output` | Command result | `rid`, `name`, `data` |
+| `error` | Any error | `rid?`, `code`, `message` |
 
 #### Streaming
 
@@ -296,9 +311,9 @@ for clients.
 
 | Type | When | Key Fields |
 |------|------|------------|
-| `stream_start` | Begin streaming | `regen` (bool) |
-| `stream_chunk` | Partial content | `text`, `content_type` |
-| `stream_end` | Done streaming | `content`, `metadata` |
+| `stream_start` | Begin streaming | `rid`, `regen` (bool) |
+| `stream_chunk` | Partial content | `rid`, `text`, `content_type` |
+| `stream_end` | Done streaming | `rid`, `content`, `metadata` |
 
 `stream_chunk.content_type` is `"text"` (default) or `"thinking"`. Clients
 that don't support thinking display can ignore chunks where
@@ -325,15 +340,20 @@ that don't support thinking display can ignore chunks where
 All fields are integers except `model` (string). Provider-specific token fields
 (`cache_read`, `cache_write`) are `0` for providers that don't support caching.
 
+#### Request-Scoped Direct Events
+
+| Type | When | Key Fields |
+|------|------|------------|
+| `phase` | Generation phase change | `rid`, `phase`, `model` |
+| `tool_call` | Tool invoked during generation | `rid`, `tool_id`, `tool_name`, `input` (JSON object) |
+| `tool_result` | Tool completed | `rid`, `tool_id`, `tool_name`, `output`, `is_error` |
+| `send_image` | Server-generated image ready | `rid`, `path`, `caption?`, `data?` (base64) |
+
 #### Push (unsolicited)
 
 | Type | When | Key Fields |
 |------|------|------------|
-| `phase` | Generation phase change | `phase`, `model` |
 | `new_message` | Advisory message event | `revision`, full `Message` object |
-| `tool_call` | Tool invoked during generation | `tool_id`, `tool_name`, `input` (JSON object) |
-| `tool_result` | Tool completed | `tool_id`, `tool_name`, `output`, `is_error` |
-| `send_image` | Server-generated image ready | `path`, `caption?`, `data?` (base64) |
 | `cache_warning` | Unexpected cache invalidation | `expected_tokens`, `message` |
 
 `phase` values: `"thinking"`, `"text_generation"`, `"tool_use"`. Clients use

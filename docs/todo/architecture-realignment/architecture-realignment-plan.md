@@ -7,7 +7,7 @@ becomes easier to reason about, iterate on, and extend.
 
 ## Status Snapshot
 
-Updated 2026-04-12 after the guardrails-and-drift-prevention pass.
+Updated 2026-04-13 after the request-correlation closeout pass.
 
 - Workstream A is complete enough to treat as landed. `docs/ARCHITECTURE.md`,
   the mismatch checklist, and the implementation plan now describe the current
@@ -33,7 +33,9 @@ Updated 2026-04-12 after the guardrails-and-drift-prevention pass.
 - Workstream H is complete enough to treat as landed. Shore now documents state
   ownership directly, scopes `docs/QUIRKS.md` to real external quirks, and runs
   protocol/routing guardrail suites in CI.
-- The remaining explicitly open wire debt is server `rid` echo in SWP V1.
+- The last explicitly open wire debt from the earlier passes is now closed:
+  request-scoped SWP V1 server responses echo `rid`, while handshake and
+  unsolicited push messages intentionally omit it.
 - For the exact pickup point and phase-by-phase execution status, use
   [`architecture-realignment-implementation-plan.md`](./architecture-realignment-implementation-plan.md).
 

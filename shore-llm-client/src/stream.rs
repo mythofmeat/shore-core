@@ -15,12 +15,13 @@ use super::LlmError;
 /// `StreamResult`.
 pub struct StreamConsumer {
     direct_tx: mpsc::Sender<ServerMessage>,
+    rid: Option<String>,
 }
 
 impl StreamConsumer {
     /// Create a new stream consumer that emits to the given session sender.
-    pub fn new(direct_tx: mpsc::Sender<ServerMessage>) -> Self {
-        Self { direct_tx }
+    pub fn new(direct_tx: mpsc::Sender<ServerMessage>, rid: Option<String>) -> Self {
+        Self { direct_tx, rid }
     }
 
     /// Consume a streaming response from shore-llm.
@@ -90,7 +91,10 @@ impl StreamConsumer {
                     // Emit stream_start to the requesting SWP session.
                     let _ = self
                         .direct_tx
-                        .send(ServerMessage::StreamStart(StreamStart { regen }))
+                        .send(ServerMessage::StreamStart(StreamStart {
+                            rid: self.rid.clone(),
+                            regen,
+                        }))
                         .await;
 
                     debug!(model = %model, "Stream started");
@@ -109,6 +113,7 @@ impl StreamConsumer {
                     let _ = self
                         .direct_tx
                         .send(ServerMessage::StreamChunk(StreamChunk {
+                            rid: self.rid.clone(),
                             text,
                             content_type: "text".into(),
                         }))
@@ -124,6 +129,7 @@ impl StreamConsumer {
                     let _ = self
                         .direct_tx
                         .send(ServerMessage::StreamChunk(StreamChunk {
+                            rid: self.rid.clone(),
                             text,
                             content_type: "thinking".into(),
                         }))
@@ -206,6 +212,7 @@ impl StreamConsumer {
                     let _ = self
                         .direct_tx
                         .send(ServerMessage::StreamEnd(StreamEnd {
+                            rid: self.rid.clone(),
                             content: content.clone(),
                             metadata,
                             finish_reason: finish_reason.clone(),
@@ -248,7 +255,7 @@ mod tests {
     #[tokio::test]
     async fn consume_simple_stream() {
         let (mut writer, mut reader, direct_tx, mut direct_rx) = setup_stream_pair();
-        let consumer = StreamConsumer::new(direct_tx);
+        let consumer = StreamConsumer::new(direct_tx, None);
 
         // Write stream events from "server".
         let events = [
@@ -282,7 +289,10 @@ mod tests {
         let msg1 = direct_rx.recv().await.unwrap();
         assert!(matches!(
             msg1,
-            ServerMessage::StreamStart(StreamStart { regen: false })
+            ServerMessage::StreamStart(StreamStart {
+                rid: None,
+                regen: false
+            })
         ));
 
         let msg2 = direct_rx.recv().await.unwrap();
@@ -321,7 +331,7 @@ mod tests {
     #[tokio::test]
     async fn consume_stream_with_thinking_and_tools() {
         let (mut writer, mut reader, direct_tx, mut direct_rx) = setup_stream_pair();
-        let consumer = StreamConsumer::new(direct_tx);
+        let consumer = StreamConsumer::new(direct_tx, None);
 
         let events = [
             r#"{"type":"start","model":"claude-test"}"#,
@@ -380,7 +390,7 @@ mod tests {
     #[tokio::test]
     async fn consume_stream_with_thinking_signature() {
         let (mut writer, mut reader, push_tx, _push_rx) = setup_stream_pair();
-        let consumer = StreamConsumer::new(push_tx);
+        let consumer = StreamConsumer::new(push_tx, None);
 
         let events = [
             r#"{"type":"start","model":"claude-test"}"#,
@@ -422,7 +432,7 @@ mod tests {
     #[tokio::test]
     async fn consume_stream_with_redacted_thinking() {
         let (mut writer, mut reader, push_tx, _push_rx) = setup_stream_pair();
-        let consumer = StreamConsumer::new(push_tx);
+        let consumer = StreamConsumer::new(push_tx, None);
 
         let events = [
             r#"{"type":"start","model":"claude-test"}"#,
@@ -470,7 +480,7 @@ mod tests {
     #[tokio::test]
     async fn consume_regen_sets_flag() {
         let (mut writer, mut reader, push_tx, mut push_rx) = setup_stream_pair();
-        let consumer = StreamConsumer::new(push_tx);
+        let consumer = StreamConsumer::new(push_tx, None);
 
         let server_handle = tokio::spawn(async move {
             writer
@@ -498,7 +508,7 @@ mod tests {
     #[tokio::test]
     async fn incomplete_stream_returns_error() {
         let (mut writer, mut reader, push_tx, _push_rx) = setup_stream_pair();
-        let consumer = StreamConsumer::new(push_tx);
+        let consumer = StreamConsumer::new(push_tx, None);
 
         // Server sends start but closes connection without "done".
         let server_handle = tokio::spawn(async move {
@@ -520,7 +530,7 @@ mod tests {
     #[tokio::test]
     async fn content_blocks_merge_consecutive_text() {
         let (mut writer, mut reader, push_tx, _push_rx) = setup_stream_pair();
-        let consumer = StreamConsumer::new(push_tx);
+        let consumer = StreamConsumer::new(push_tx, None);
 
         let events = [
             r#"{"type":"start","model":"test"}"#,
@@ -552,7 +562,7 @@ mod tests {
     #[tokio::test]
     async fn content_blocks_merge_consecutive_thinking() {
         let (mut writer, mut reader, push_tx, _push_rx) = setup_stream_pair();
-        let consumer = StreamConsumer::new(push_tx);
+        let consumer = StreamConsumer::new(push_tx, None);
 
         let events = [
             r#"{"type":"start","model":"test"}"#,
@@ -587,7 +597,7 @@ mod tests {
     #[tokio::test]
     async fn content_blocks_type_change_flushes_buffer() {
         let (mut writer, mut reader, push_tx, _push_rx) = setup_stream_pair();
-        let consumer = StreamConsumer::new(push_tx);
+        let consumer = StreamConsumer::new(push_tx, None);
 
         // Interleaved: text → thinking → text
         let events = [
@@ -626,7 +636,7 @@ mod tests {
     #[tokio::test]
     async fn content_blocks_text_only_stream() {
         let (mut writer, mut reader, push_tx, _push_rx) = setup_stream_pair();
-        let consumer = StreamConsumer::new(push_tx);
+        let consumer = StreamConsumer::new(push_tx, None);
 
         let events = [
             r#"{"type":"start","model":"test"}"#,
@@ -655,7 +665,7 @@ mod tests {
     #[tokio::test]
     async fn content_blocks_empty_on_no_content() {
         let (mut writer, mut reader, push_tx, _push_rx) = setup_stream_pair();
-        let consumer = StreamConsumer::new(push_tx);
+        let consumer = StreamConsumer::new(push_tx, None);
 
         // Start → Done with empty content (edge case).
         let events = [
@@ -681,7 +691,7 @@ mod tests {
     #[tokio::test]
     async fn malformed_json_mid_stream() {
         let (mut writer, mut reader, push_tx, mut push_rx) = setup_stream_pair();
-        let consumer = StreamConsumer::new(push_tx);
+        let consumer = StreamConsumer::new(push_tx, None);
 
         let server_handle = tokio::spawn(async move {
             writer
@@ -709,7 +719,7 @@ mod tests {
     #[tokio::test]
     async fn thinking_signature_without_thinking_text() {
         let (mut writer, mut reader, push_tx, _push_rx) = setup_stream_pair();
-        let consumer = StreamConsumer::new(push_tx);
+        let consumer = StreamConsumer::new(push_tx, None);
 
         let events = [
             r#"{"type":"start","model":"claude-test"}"#,
@@ -744,7 +754,7 @@ mod tests {
         // Drop the only receiver — sends will silently fail.
         drop(push_rx);
 
-        let consumer = StreamConsumer::new(push_tx);
+        let consumer = StreamConsumer::new(push_tx, None);
 
         let events = [
             r#"{"type":"start","model":"claude-test"}"#,
@@ -767,6 +777,49 @@ mod tests {
         assert!(
             matches!(&result.content_blocks[0], ContentBlock::Text { text } if text == "Hello world")
         );
+
+        server_handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn consume_stream_echoes_request_id() {
+        let (mut writer, mut reader, direct_tx, mut direct_rx) = setup_stream_pair();
+        let consumer = StreamConsumer::new(direct_tx, Some("req_stream_01".into()));
+
+        let server_handle = tokio::spawn(async move {
+            writer
+                .write_all(b"{\"type\":\"start\",\"model\":\"claude-test\"}\n")
+                .await
+                .unwrap();
+            writer
+                .write_all(b"{\"type\":\"text\",\"text\":\"Hello\"}\n")
+                .await
+                .unwrap();
+            writer
+                .write_all(b"{\"type\":\"done\",\"content\":\"Hello\",\"finish_reason\":\"end_turn\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1},\"timing\":{\"total_ms\":10}}\n")
+                .await
+                .unwrap();
+            writer.shutdown().await.unwrap();
+        });
+
+        consumer.consume(&mut reader, false).await.unwrap();
+
+        match direct_rx.recv().await.unwrap() {
+            ServerMessage::StreamStart(msg) => {
+                assert_eq!(msg.rid.as_deref(), Some("req_stream_01"))
+            }
+            other => panic!("Expected StreamStart, got {:?}", other),
+        }
+        match direct_rx.recv().await.unwrap() {
+            ServerMessage::StreamChunk(msg) => {
+                assert_eq!(msg.rid.as_deref(), Some("req_stream_01"))
+            }
+            other => panic!("Expected StreamChunk, got {:?}", other),
+        }
+        match direct_rx.recv().await.unwrap() {
+            ServerMessage::StreamEnd(msg) => assert_eq!(msg.rid.as_deref(), Some("req_stream_01")),
+            other => panic!("Expected StreamEnd, got {:?}", other),
+        }
 
         server_handle.await.unwrap();
     }

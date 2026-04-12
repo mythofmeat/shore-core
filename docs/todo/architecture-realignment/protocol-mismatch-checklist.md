@@ -3,10 +3,10 @@
 This checklist records protocol and architecture mismatches that remain
 intentional after Architecture Realignment PR 1.
 
-The purpose of the first PR is to preserve client/session/request identity
+The purpose of the first PR was to preserve client/session/request identity
 internally without changing the public SWP contract yet.
 
-Updated 2026-04-12:
+Updated 2026-04-13:
 
 - the checklist now distinguishes still-open mismatches from items that were
   resolved or materially narrowed by the first implementation pass
@@ -22,20 +22,29 @@ Updated 2026-04-12:
   repair fetches
 - the guardrails pass added committed direct-response routing tests, explicit
   state-ownership notes, and a CI workflow for protocol conformance surfaces
+- the `rid` closeout pass made request-scoped server responses echo `rid`,
+  while handshake and unsolicited push messages intentionally continue to omit
+  it
 
-## Still Open
+## Open Items On This Branch
 
-### 1. No Server `rid` Echo
-
-- Current code behavior:
-  - client requests carry `rid`, but server response messages do not echo it on
-    the wire.
-- Current docs claim:
-  - request IDs are end-to-end correlation identifiers.
-- Later owner:
-  - `docs/todo/architecture-realignment/architecture-realignment-plan.md`, Phases 2-4.
+None on this branch. The previously open SWP V1 `rid`-echo gap is now closed.
 
 ## Resolved Or Materially Narrowed On This Branch
+
+### 1. Request-Scoped Server Messages Now Echo `rid`
+
+- Current code behavior:
+  - request-scoped `history`, command output, request-scoped errors,
+    stream/tool/image traffic, and phase updates now echo the originating
+    client `rid` on the wire.
+  - handshake and unsolicited push messages still omit `rid` intentionally.
+- What remains:
+  - no open mismatch remains for request correlation in SWP V1 on this branch.
+  - preservation now lives in docs, golden JSON tests, direct-routing tests,
+    and crate-level stream/client coverage.
+- Later owner:
+  - `docs/ARCHITECTURE.md` and `.gitea/workflows/protocol-guardrails.yml`.
 
 ### 3. Handshake State Is No Longer Placeholder Data
 
@@ -94,8 +103,7 @@ Updated 2026-04-12:
     timestamp-based `NewMessage` dedupe for normal correctness.
 - What remains:
   - the open wire-contract mismatch is no longer snapshot/event authority.
-  - the remaining open protocol debt is request correlation on server messages
-    (`rid` echo). The guardrail work itself is now landed.
+  - request correlation on server messages is now landed as well. The remaining
+    job is preservation rather than follow-up protocol debt.
 - Later owner:
-  - future SWP wire revision or capability negotiation, not the current
-    architecture realignment phases.
+  - `docs/ARCHITECTURE.md` and `.gitea/workflows/protocol-guardrails.yml`.

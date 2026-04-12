@@ -66,6 +66,7 @@ pub async fn build_session_history_snapshot(
                 config: _,
                 selected_character,
                 revision,
+                ..
             } = engine.history_snapshot(serde_json::json!({}));
             HistorySnapshot {
                 messages,

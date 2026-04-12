@@ -13,7 +13,12 @@ use super::{GenContext, MessageHandler};
 
 impl MessageHandler {
     /// Cancel any active generation task and send a minimal StreamEnd.
-    pub(super) async fn cancel_generation(&mut self, session_id: SessionId, reason: &str) {
+    pub(super) async fn cancel_generation(
+        &mut self,
+        session_id: SessionId,
+        rid: Option<String>,
+        reason: &str,
+    ) {
         if let Some(handle) = self.session_state_mut(session_id).generation_handle.take() {
             info!(reason, "Cancelling active generation");
             handle.abort();
@@ -22,6 +27,7 @@ impl MessageHandler {
                 .send_to_session(
                     session_id,
                     ServerMessage::StreamEnd(shore_protocol::server_msg::StreamEnd {
+                        rid: None,
                         content: String::new(),
                         metadata: shore_protocol::types::StreamMetadata {
                             tokens: shore_protocol::types::TokenCounts {
@@ -37,7 +43,8 @@ impl MessageHandler {
                             model: String::new(),
                         },
                         finish_reason: "cancelled".into(),
-                    }),
+                    })
+                    .with_rid(rid),
                 )
                 .await;
         }
@@ -107,11 +114,16 @@ impl MessageHandler {
             return match result {
                 Ok(data) => {
                     ServerMessage::CommandOutput(shore_protocol::server_msg::CommandOutput {
+                        rid: None,
                         name: cmd.name.clone(),
                         data,
                     })
                 }
-                Err((code, msg)) => ServerMessage::Error(SwpError { code, message: msg }),
+                Err((code, msg)) => ServerMessage::Error(SwpError {
+                    rid: None,
+                    code,
+                    message: msg,
+                }),
             };
         }
 
@@ -123,9 +135,11 @@ impl MessageHandler {
                     Ok(name) => name,
                     Err(e) => {
                         return ServerMessage::Error(SwpError {
+                            rid: None,
                             code: ErrorCode::InvalidRequest,
                             message: e.to_string(),
-                        });
+                        })
+                        .with_rid(meta.rid.clone());
                     }
                 };
 
@@ -135,9 +149,11 @@ impl MessageHandler {
                 Ok(arc) => arc,
                 Err(e) => {
                     return ServerMessage::Error(SwpError {
+                        rid: None,
                         code: ErrorCode::InternalError,
                         message: e.to_string(),
-                    });
+                    })
+                    .with_rid(meta.rid.clone());
                 }
             };
 
@@ -165,7 +181,9 @@ impl MessageHandler {
             memory_shell_sessions,
         };
 
-        let mut result = commands::dispatch(engine_arc.clone(), &mut cmd_ctx, cmd).await;
+        let mut result = commands::dispatch(engine_arc.clone(), &mut cmd_ctx, cmd)
+            .await
+            .with_rid(meta.rid.clone());
         let active_model_after_command = cmd_ctx.active_model.clone();
 
         {
@@ -244,11 +262,13 @@ impl MessageHandler {
                         .send_to_session(
                             session_id,
                             ServerMessage::History(shore_protocol::server_msg::History {
+                                rid: None,
                                 messages: snapshot.messages,
                                 config: snapshot.config,
                                 selected_character: snapshot.selected_character,
                                 revision: snapshot.revision,
-                            }),
+                            })
+                            .with_rid(meta.rid.clone()),
                         )
                         .await;
                 }

@@ -239,8 +239,12 @@ impl MessageHandler {
                             rid = meta.rid.as_deref().unwrap_or("-"),
                             "cancelling generation from routed cancel request"
                         );
-                        self.cancel_generation(meta.session.session_id, "user cancelled")
-                            .await;
+                        self.cancel_generation(
+                            meta.session.session_id,
+                            meta.rid.clone(),
+                            "user cancelled",
+                        )
+                        .await;
                         continue;
                     }
 
@@ -256,9 +260,11 @@ impl MessageHandler {
                                     .send_to_session(
                                         meta.session.session_id,
                                         ServerMessage::Error(SwpError {
+                                            rid: None,
                                             code: ErrorCode::InvalidRequest,
                                             message: e.to_string(),
-                                        }),
+                                        })
+                                        .with_rid(meta.rid.clone()),
                                     )
                                     .await;
                                 continue;
@@ -321,14 +327,19 @@ impl MessageHandler {
                     }
                     session.generation_handle = Some(tokio::spawn(async move {
                         let notify_name = params.char_name.clone();
+                        let request_rid = params.rid.clone();
                         if let Err(e) = handle_generation(gen, params).await {
                             error!(error = %e, "Error processing engine message");
                             let err_msg = e.to_string();
                             let _ = direct_tx
-                                .send(ServerMessage::Error(SwpError {
-                                    code: ErrorCode::InternalError,
-                                    message: err_msg.clone(),
-                                }))
+                                .send(
+                                    ServerMessage::Error(SwpError {
+                                        rid: None,
+                                        code: ErrorCode::InternalError,
+                                        message: err_msg.clone(),
+                                    })
+                                    .with_rid(request_rid),
+                                )
                                 .await;
                             notifier.notify(
                                 NotificationEvent::Error,
@@ -341,7 +352,7 @@ impl MessageHandler {
                 RoutedMessage::AllClientsDisconnected => {
                     let session_ids: Vec<SessionId> = self.sessions.keys().copied().collect();
                     for session_id in session_ids {
-                        self.cancel_generation(session_id, "all clients disconnected")
+                        self.cancel_generation(session_id, None, "all clients disconnected")
                             .await;
                     }
                 }

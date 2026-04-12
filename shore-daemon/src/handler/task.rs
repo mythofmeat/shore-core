@@ -339,12 +339,16 @@ pub(super) async fn handle_generation(
             info!(character = %char_name, turn_count, "Running inline compaction");
             let _ = ctx
                 .direct_tx
-                .send(shore_protocol::server_msg::ServerMessage::Phase(
-                    shore_protocol::server_msg::Phase {
-                        phase: "compacting".into(),
-                        model: None,
-                    },
-                ))
+                .send(
+                    shore_protocol::server_msg::ServerMessage::Phase(
+                        shore_protocol::server_msg::Phase {
+                            rid: None,
+                            phase: "compacting".into(),
+                            model: None,
+                        },
+                    )
+                    .with_rid(request.rid.clone()),
+                )
                 .await;
 
             match crate::memory::compaction::run_compaction(

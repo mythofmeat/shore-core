@@ -404,6 +404,7 @@ where
         }
         Some(other) => {
             let err = ServerMessage::Error(Error {
+                rid: None,
                 code: ErrorCode::ProtocolError,
                 message: format!("Expected hello, got {:?}", msg_type_name(&other)),
             });
@@ -437,6 +438,7 @@ where
 
     // ── Step 3: Send History ─────────────────────────────────────────
     let history = ServerMessage::History(History {
+        rid: None,
         messages: history_snapshot.messages,
         config: history_snapshot.config,
         selected_character: history_snapshot.selected_character,
@@ -632,6 +634,7 @@ where
         ClientMessage::Hello(_) => {
             // Second hello is a protocol error.
             let err = ServerMessage::Error(Error {
+                rid: None,
                 code: ErrorCode::ProtocolError,
                 message: "Duplicate hello".into(),
             });
@@ -1180,10 +1183,12 @@ mod tests {
 
         let push_msgs: Vec<ServerMessage> = vec![
             ServerMessage::StreamChunk(StreamChunk {
+                rid: None,
                 text: "hello".into(),
                 content_type: "text".into(),
             }),
             ServerMessage::Phase(Phase {
+                rid: None,
                 phase: "thinking".into(),
                 model: Some("test-model".into()),
             }),
@@ -1201,17 +1206,20 @@ mod tests {
                 },
             }),
             ServerMessage::ToolCall(ToolCall {
+                rid: None,
                 tool_id: "t1".into(),
                 tool_name: "search".into(),
                 input: serde_json::json!({"q": "test"}),
             }),
             ServerMessage::ToolResult(ToolResult {
+                rid: None,
                 tool_id: "t1".into(),
                 tool_name: "search".into(),
                 output: "found it".into(),
                 is_error: false,
             }),
             ServerMessage::SendImage(SendImage {
+                rid: None,
                 path: "/tmp/img.png".into(),
                 caption: None,
                 data: None,
@@ -1379,6 +1387,7 @@ mod tests {
 
         // Send a broadcast.
         let chunk = ServerMessage::StreamChunk(shore_protocol::server_msg::StreamChunk {
+            rid: None,
             text: "hello both".into(),
             content_type: "text".into(),
         });
@@ -1442,6 +1451,7 @@ mod tests {
             .await;
 
         let direct = ServerMessage::StreamChunk(shore_protocol::server_msg::StreamChunk {
+            rid: None,
             text: "only one".into(),
             content_type: "text".into(),
         });

@@ -143,6 +143,7 @@ fn ping_golden() {
 
 const COMMAND_OUTPUT_FIXTURE: &str = r#"{
     "type": "command_output",
+    "rid": "cmd_01",
     "name": "list_conversations",
     "data": {"conversations": [{"id": "c1", "title": "Chat"}]}
 }"#;
@@ -152,6 +153,7 @@ fn command_output_golden() {
     let msg: ServerMessage = assert_golden(COMMAND_OUTPUT_FIXTURE);
     match msg {
         ServerMessage::CommandOutput(co) => {
+            assert_eq!(co.rid.as_deref(), Some("cmd_01"));
             assert_eq!(co.name, "list_conversations");
             assert_eq!(co.data["conversations"][0]["id"], "c1");
         }
@@ -163,6 +165,7 @@ fn command_output_golden() {
 
 const ERROR_FIXTURE: &str = r#"{
     "type": "error",
+    "rid": "msg_01",
     "code": "busy",
     "message": "Engine is currently processing another request"
 }"#;
@@ -172,6 +175,7 @@ fn error_golden() {
     let msg: ServerMessage = assert_golden(ERROR_FIXTURE);
     match msg {
         ServerMessage::Error(e) => {
+            assert_eq!(e.rid.as_deref(), Some("msg_01"));
             assert_eq!(e.code, ErrorCode::Busy);
             assert_eq!(e.message, "Engine is currently processing another request");
         }
@@ -181,13 +185,14 @@ fn error_golden() {
 
 // ── StreamStart ──────────────────────────────────────────────────────────
 
-const STREAM_START_FIXTURE: &str = r#"{"type": "stream_start", "regen": false}"#;
+const STREAM_START_FIXTURE: &str = r#"{"type": "stream_start", "rid": "msg_01", "regen": false}"#;
 
 #[test]
 fn stream_start_golden() {
     let msg: ServerMessage = assert_golden(STREAM_START_FIXTURE);
     match msg {
         ServerMessage::StreamStart(s) => {
+            assert_eq!(s.rid.as_deref(), Some("msg_01"));
             assert!(!s.regen);
         }
         other => panic!("expected StreamStart, got {:?}", other),
@@ -198,6 +203,7 @@ fn stream_start_golden() {
 
 const STREAM_CHUNK_FIXTURE: &str = r#"{
     "type": "stream_chunk",
+    "rid": "msg_01",
     "text": "Hello, how can I ",
     "content_type": "text"
 }"#;
@@ -207,6 +213,7 @@ fn stream_chunk_golden() {
     let msg: ServerMessage = assert_golden(STREAM_CHUNK_FIXTURE);
     match msg {
         ServerMessage::StreamChunk(c) => {
+            assert_eq!(c.rid.as_deref(), Some("msg_01"));
             assert_eq!(c.text, "Hello, how can I ");
             assert_eq!(c.content_type, "text");
         }
@@ -216,6 +223,7 @@ fn stream_chunk_golden() {
 
 const STREAM_CHUNK_THINKING_FIXTURE: &str = r#"{
     "type": "stream_chunk",
+    "rid": "msg_01",
     "text": "Let me think about this...",
     "content_type": "thinking"
 }"#;
@@ -225,6 +233,7 @@ fn stream_chunk_thinking_golden() {
     let msg: ServerMessage = assert_golden(STREAM_CHUNK_THINKING_FIXTURE);
     match msg {
         ServerMessage::StreamChunk(c) => {
+            assert_eq!(c.rid.as_deref(), Some("msg_01"));
             assert_eq!(c.content_type, "thinking");
         }
         other => panic!("expected StreamChunk, got {:?}", other),
@@ -235,6 +244,7 @@ fn stream_chunk_thinking_golden() {
 
 const STREAM_END_FIXTURE: &str = r#"{
     "type": "stream_end",
+    "rid": "msg_01",
     "content": "Hello, how can I help you today?",
     "metadata": {
         "tokens": {
@@ -256,6 +266,7 @@ fn stream_end_golden() {
     let msg: ServerMessage = assert_golden(STREAM_END_FIXTURE);
     match msg {
         ServerMessage::StreamEnd(se) => {
+            assert_eq!(se.rid.as_deref(), Some("msg_01"));
             assert_eq!(se.content, "Hello, how can I help you today?");
             assert_eq!(se.metadata.tokens.input, 1234);
             assert_eq!(se.metadata.tokens.output, 567);
@@ -273,6 +284,7 @@ fn stream_end_golden() {
 
 const PHASE_FIXTURE: &str = r#"{
     "type": "phase",
+    "rid": "msg_01",
     "phase": "thinking",
     "model": "claude-haiku-4-5-20251001"
 }"#;
@@ -282,6 +294,7 @@ fn phase_golden() {
     let msg: ServerMessage = assert_golden(PHASE_FIXTURE);
     match msg {
         ServerMessage::Phase(p) => {
+            assert_eq!(p.rid.as_deref(), Some("msg_01"));
             assert_eq!(p.phase, "thinking");
             assert_eq!(p.model.as_deref(), Some("claude-haiku-4-5-20251001"));
         }
@@ -352,6 +365,7 @@ fn new_message_with_alts_golden() {
 
 const TOOL_CALL_FIXTURE: &str = r#"{
     "type": "tool_call",
+    "rid": "msg_01",
     "tool_id": "tc_001",
     "tool_name": "web_search",
     "input": {"query": "rust serde tutorial", "max_results": 5}
@@ -362,6 +376,7 @@ fn tool_call_golden() {
     let msg: ServerMessage = assert_golden(TOOL_CALL_FIXTURE);
     match msg {
         ServerMessage::ToolCall(tc) => {
+            assert_eq!(tc.rid.as_deref(), Some("msg_01"));
             assert_eq!(tc.tool_id, "tc_001");
             assert_eq!(tc.tool_name, "web_search");
             // input must be a JSON object, not a string
@@ -377,6 +392,7 @@ fn tool_call_golden() {
 
 const TOOL_RESULT_FIXTURE: &str = r#"{
     "type": "tool_result",
+    "rid": "msg_01",
     "tool_id": "tc_001",
     "tool_name": "web_search",
     "output": "Found 5 results for 'rust serde tutorial'",
@@ -388,6 +404,7 @@ fn tool_result_golden() {
     let msg: ServerMessage = assert_golden(TOOL_RESULT_FIXTURE);
     match msg {
         ServerMessage::ToolResult(tr) => {
+            assert_eq!(tr.rid.as_deref(), Some("msg_01"));
             assert_eq!(tr.tool_id, "tc_001");
             assert_eq!(tr.tool_name, "web_search");
             assert_eq!(tr.output, "Found 5 results for 'rust serde tutorial'");
@@ -401,6 +418,7 @@ fn tool_result_golden() {
 
 const SEND_IMAGE_FIXTURE: &str = r#"{
     "type": "send_image",
+    "rid": "msg_01",
     "path": "/tmp/chart.png",
     "caption": "Monthly revenue chart"
 }"#;
@@ -410,6 +428,7 @@ fn send_image_golden() {
     let msg: ServerMessage = assert_golden(SEND_IMAGE_FIXTURE);
     match msg {
         ServerMessage::SendImage(si) => {
+            assert_eq!(si.rid.as_deref(), Some("msg_01"));
             assert_eq!(si.path, "/tmp/chart.png");
             assert_eq!(si.caption.as_deref(), Some("Monthly revenue chart"));
         }
@@ -849,6 +868,7 @@ fn send_image_missing_caption() {
     let msg: ServerMessage = serde_json::from_str(fixture).expect("missing caption");
     match msg {
         ServerMessage::SendImage(si) => {
+            assert_eq!(si.rid, None);
             assert_eq!(si.path, "/tmp/img.png");
             assert_eq!(si.caption, None);
         }
@@ -867,9 +887,41 @@ fn tool_result_missing_is_error_defaults_to_false() {
     let msg: ServerMessage = serde_json::from_str(fixture).expect("missing is_error");
     match msg {
         ServerMessage::ToolResult(tr) => {
+            assert_eq!(tr.rid, None);
             assert!(!tr.is_error);
         }
         other => panic!("expected ToolResult, got {:?}", other),
+    }
+}
+
+#[test]
+fn request_scoped_server_messages_missing_rid_default_to_none() {
+    let cases = [
+        r#"{"type":"command_output","name":"status","data":{"ok":true}}"#,
+        r#"{"type":"error","code":"busy","message":"still working"}"#,
+        r#"{"type":"stream_start","regen":false}"#,
+        r#"{"type":"stream_chunk","text":"partial","content_type":"text"}"#,
+        r#"{"type":"stream_end","content":"done","metadata":{"tokens":{"input":1,"output":1,"cache_read":0,"cache_write":0},"timing":{"total_ms":10,"ttft_ms":1},"model":"test"}}"#,
+        r#"{"type":"phase","phase":"thinking"}"#,
+        r#"{"type":"tool_call","tool_id":"t1","tool_name":"search","input":{"q":"rust"}}"#,
+        r#"{"type":"tool_result","tool_id":"t1","tool_name":"search","output":"done"}"#,
+        r#"{"type":"send_image","path":"/tmp/img.png"}"#,
+    ];
+
+    for fixture in cases {
+        let msg: ServerMessage = serde_json::from_str(fixture).expect("missing rid");
+        match msg {
+            ServerMessage::CommandOutput(msg) => assert_eq!(msg.rid, None),
+            ServerMessage::Error(msg) => assert_eq!(msg.rid, None),
+            ServerMessage::StreamStart(msg) => assert_eq!(msg.rid, None),
+            ServerMessage::StreamChunk(msg) => assert_eq!(msg.rid, None),
+            ServerMessage::StreamEnd(msg) => assert_eq!(msg.rid, None),
+            ServerMessage::Phase(msg) => assert_eq!(msg.rid, None),
+            ServerMessage::ToolCall(msg) => assert_eq!(msg.rid, None),
+            ServerMessage::ToolResult(msg) => assert_eq!(msg.rid, None),
+            ServerMessage::SendImage(msg) => assert_eq!(msg.rid, None),
+            other => panic!("unexpected message for missing rid test: {:?}", other),
+        }
     }
 }
 
@@ -893,6 +945,7 @@ fn protocol_version_mismatch_produces_error() {
             // In a real client, this mismatch would produce a ProtocolError.
             // Verify the error type serializes correctly.
             let err = ServerMessage::Error(Error {
+                rid: None,
                 code: ErrorCode::ProtocolError,
                 message: format!(
                     "protocol version mismatch: expected {}, got {}",

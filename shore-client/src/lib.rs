@@ -90,6 +90,7 @@ mod tests {
 
             // Server sends history
             let history = ServerMessage::History(History {
+                rid: None,
                 messages: vec![Message {
                     msg_id: "m1".into(),
                     role: Role::User,
@@ -255,6 +256,7 @@ mod tests {
         let server_handle = tokio::spawn(async move {
             let (_r, mut w) = tokio::io::split(server_stream);
             let oversized = ServerMessage::Error(Error {
+                rid: None,
                 code: shore_protocol::error::ErrorCode::InternalError,
                 message: "x".repeat(MAX_WIRE_MESSAGE_SIZE + 1),
             });
@@ -305,18 +307,23 @@ mod tests {
     fn stream_handler_assembles_chunks() {
         let mut handler = StreamHandler::new();
 
-        let start = ServerMessage::StreamStart(StreamStart { regen: false });
+        let start = ServerMessage::StreamStart(StreamStart {
+            rid: None,
+            regen: false,
+        });
         assert!(handler.feed(&start, None).unwrap());
         assert!(handler.is_active());
         assert!(!handler.is_regen());
 
         let chunk1 = ServerMessage::StreamChunk(StreamChunk {
+            rid: None,
             text: "Hello ".into(),
             content_type: "text".into(),
         });
         assert!(handler.feed(&chunk1, None).unwrap());
 
         let chunk2 = ServerMessage::StreamChunk(StreamChunk {
+            rid: None,
             text: "world!".into(),
             content_type: "text".into(),
         });
@@ -325,6 +332,7 @@ mod tests {
         assert_eq!(handler.assembled_text(), "Hello world!");
 
         let end = ServerMessage::StreamEnd(StreamEnd {
+            rid: None,
             content: "Hello world!".into(),
             metadata: StreamMetadata {
                 tokens: TokenCounts {
@@ -351,7 +359,10 @@ mod tests {
     fn stream_handler_regen_flag() {
         let mut handler = StreamHandler::new();
 
-        let start = ServerMessage::StreamStart(StreamStart { regen: true });
+        let start = ServerMessage::StreamStart(StreamStart {
+            rid: None,
+            regen: true,
+        });
         handler.feed(&start, None).unwrap();
         assert!(handler.is_regen());
     }
@@ -367,6 +378,7 @@ mod tests {
     fn stream_handler_error_on_chunk_without_start() {
         let mut handler = StreamHandler::new();
         let chunk = ServerMessage::StreamChunk(StreamChunk {
+            rid: None,
             text: "oops".into(),
             content_type: "text".into(),
         });
@@ -378,6 +390,7 @@ mod tests {
     fn stream_handler_error_on_end_without_start() {
         let mut handler = StreamHandler::new();
         let end = ServerMessage::StreamEnd(StreamEnd {
+            rid: None,
             content: "".into(),
             metadata: StreamMetadata {
                 tokens: TokenCounts {
@@ -401,10 +414,16 @@ mod tests {
     #[test]
     fn stream_handler_error_on_double_start() {
         let mut handler = StreamHandler::new();
-        let start = ServerMessage::StreamStart(StreamStart { regen: false });
+        let start = ServerMessage::StreamStart(StreamStart {
+            rid: None,
+            regen: false,
+        });
         handler.feed(&start, None).unwrap();
 
-        let start2 = ServerMessage::StreamStart(StreamStart { regen: false });
+        let start2 = ServerMessage::StreamStart(StreamStart {
+            rid: None,
+            regen: false,
+        });
         let result = handler.feed(&start2, None);
         assert!(result.is_err());
     }
@@ -443,11 +462,15 @@ mod tests {
 
         let mut handler = StreamHandler::new();
 
-        let start = ServerMessage::StreamStart(StreamStart { regen: false });
+        let start = ServerMessage::StreamStart(StreamStart {
+            rid: None,
+            regen: false,
+        });
         handler.feed(&start, Some(&mut cb)).unwrap();
         assert!(*started.lock().unwrap());
 
         let chunk = ServerMessage::StreamChunk(StreamChunk {
+            rid: None,
             text: "hi".into(),
             content_type: "text".into(),
         });
@@ -456,6 +479,7 @@ mod tests {
         assert_eq!(*chunk_count.lock().unwrap(), 2);
 
         let end = ServerMessage::StreamEnd(StreamEnd {
+            rid: None,
             content: "hihi".into(),
             metadata: StreamMetadata {
                 tokens: TokenCounts {
@@ -481,14 +505,19 @@ mod tests {
         let mut handler = StreamHandler::new();
 
         // First stream
-        let start = ServerMessage::StreamStart(StreamStart { regen: false });
+        let start = ServerMessage::StreamStart(StreamStart {
+            rid: None,
+            regen: false,
+        });
         handler.feed(&start, None).unwrap();
         let chunk = ServerMessage::StreamChunk(StreamChunk {
+            rid: None,
             text: "first".into(),
             content_type: "text".into(),
         });
         handler.feed(&chunk, None).unwrap();
         let end = ServerMessage::StreamEnd(StreamEnd {
+            rid: None,
             content: "first".into(),
             metadata: StreamMetadata {
                 tokens: TokenCounts {
@@ -508,7 +537,10 @@ mod tests {
         handler.feed(&end, None).unwrap();
 
         // Second stream — feed automatically resets on stream_start
-        let start2 = ServerMessage::StreamStart(StreamStart { regen: true });
+        let start2 = ServerMessage::StreamStart(StreamStart {
+            rid: None,
+            regen: true,
+        });
         handler.feed(&start2, None).unwrap();
         assert!(handler.is_active());
         assert!(handler.is_regen());

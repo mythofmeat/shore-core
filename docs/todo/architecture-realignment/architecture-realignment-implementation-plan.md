@@ -18,7 +18,7 @@ It is intentionally more concrete than the architecture plan:
 
 ## Status Snapshot
 
-Updated 2026-04-12 after the guardrails-and-drift-prevention pass.
+Updated 2026-04-13 after the request-correlation closeout pass.
 
 Current program state:
 
@@ -51,6 +51,9 @@ Current program state:
 - Phase 7 is complete enough to treat as landed. Shore now has explicit
   state-ownership guidance, a committed direct-response guardrail test suite,
   and a CI workflow that runs the core SWP conformance surfaces together.
+- The last open wire-contract follow-up is now landed as well:
+  request-scoped SWP V1 server messages echo `rid`, while handshake and
+  unsolicited push messages intentionally omit it.
 
 What landed on this branch:
 
@@ -87,14 +90,18 @@ What landed on this branch:
 - `.gitea/workflows/protocol-guardrails.yml` now runs protocol golden tests,
   handshake/routing tests, shared-client sync tests, committed multi-client
   direct-response tests, daemon library tests, and TUI protocol tests together.
+- request-scoped `history`, command/error, stream/tool/image, and phase
+  messages now echo the originating client `rid` on the wire, with protocol
+  fixtures and stream/client tests updated to preserve that contract.
 
 Next pickup point:
 
 1. treat the architecture realignment program as landed enough for normal
-   feature work, with the remaining open wire debt tracked explicitly instead
-   of hidden in implementation drift
-2. if Shore chooses to tackle the remaining SWP `rid` echo gap, treat it as a
-   deliberate new wire-contract change rather than a follow-up cleanup
+   feature work, with no remaining open architecture-realignment wire debt on
+   this branch
+2. preserve the request-scoped `rid` echo rule, revisioned `history`
+   authority, and direct-response routing semantics together whenever the SWP
+   contract evolves again
 3. keep any future UI fetches categorized as explicit UX requests rather than
    silent correctness repair logic
 

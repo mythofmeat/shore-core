@@ -695,6 +695,7 @@ mod tests {
 
         // Send empty history
         let history = ServerMessage::History(History {
+            rid: None,
             messages: vec![],
             config: serde_json::json!({}),
             selected_character: None,
@@ -767,12 +768,17 @@ mod tests {
 
     fn streaming_response(text: &str) -> Vec<ServerMessage> {
         vec![
-            ServerMessage::StreamStart(StreamStart { regen: false }),
+            ServerMessage::StreamStart(StreamStart {
+                rid: None,
+                regen: false,
+            }),
             ServerMessage::StreamChunk(StreamChunk {
+                rid: None,
                 text: text.into(),
                 content_type: "text".into(),
             }),
             ServerMessage::StreamEnd(StreamEnd {
+                rid: None,
                 content: text.into(),
                 metadata: StreamMetadata {
                     tokens: TokenCounts {
@@ -794,6 +800,7 @@ mod tests {
 
     fn command_response(name: &str) -> Vec<ServerMessage> {
         vec![ServerMessage::CommandOutput(CommandOutput {
+            rid: None,
             name: name.into(),
             data: serde_json::json!({"ok": true}),
         })]
@@ -965,16 +972,22 @@ mod tests {
     #[tokio::test]
     async fn streaming_with_thinking_chunks() {
         let responses = vec![
-            ServerMessage::StreamStart(StreamStart { regen: false }),
+            ServerMessage::StreamStart(StreamStart {
+                rid: None,
+                regen: false,
+            }),
             ServerMessage::StreamChunk(StreamChunk {
+                rid: None,
                 text: "Let me think...".into(),
                 content_type: "thinking".into(),
             }),
             ServerMessage::StreamChunk(StreamChunk {
+                rid: None,
                 text: "Here's the answer.".into(),
                 content_type: "text".into(),
             }),
             ServerMessage::StreamEnd(StreamEnd {
+                rid: None,
                 content: "Here's the answer.".into(),
                 metadata: StreamMetadata {
                     tokens: TokenCounts {

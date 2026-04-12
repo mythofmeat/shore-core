@@ -231,6 +231,7 @@ impl ConversationEngine {
     pub fn history_snapshot(&self, config: serde_json::Value) -> History {
         let merged = shore_protocol::merge::merge_tool_loop_messages(self.messages.messages());
         History {
+            rid: None,
             messages: merged,
             config,
             selected_character: Some(self.character_name.clone()),

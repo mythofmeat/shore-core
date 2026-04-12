@@ -212,12 +212,17 @@ pub async fn dispatch(
 
     match result {
         Ok(data) => ServerMessage::CommandOutput(CommandOutput {
+            rid: None,
             name: cmd.name.clone(),
             data,
         }),
         Err((code, message)) => {
             warn!(command = %cmd.name, ?code, %message, "Command failed");
-            ServerMessage::Error(Error { code, message })
+            ServerMessage::Error(Error {
+                rid: None,
+                code,
+                message,
+            })
         }
     }
 }
