@@ -2,6 +2,14 @@
 
 Unexpected behavior, kludges, and idiosyncrasies that aren't obvious from reading the code. If you assumed something would work one way and it didn't, document it here.
 
+Scope guardrails:
+
+- Put external/provider/platform oddities here.
+- Do not use this file for protocol debt, architecture mismatches, or planned
+  cleanup work.
+- If the issue changes Shore's intended wire contract or state ownership, put
+  it in `docs/ARCHITECTURE.md` or the relevant `docs/todo/*` plan instead.
+
 ## Provider Integrations
 
 - **OpenRouter defaults to `Sdk::Openai`** but can be overridden to `Sdk::Anthropic` per model (e.g. `sdk = "anthropic"` for Claude models). The `base_url` in hardcoded defaults routes requests to OpenRouter's API. If the base_url is missing or wrong, requests go to OpenAI instead — silently.

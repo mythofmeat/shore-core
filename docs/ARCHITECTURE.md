@@ -60,6 +60,38 @@
 Telegram and Discord bridges are **deferred** — Matrix is the only required
 platform integration for V2 launch.
 
+### 2.1 State Ownership
+
+Shore's architecture depends on each mutable fact having one obvious owner.
+When a value does not clearly belong to one scope, clients and handlers start
+repairing each other and protocol drift follows.
+
+| Scope | Owns |
+|------|------|
+| Daemon-global state | transport/server wiring, loaded global config baseline, diagnostics services, notification services, and other long-lived process services shared by every session |
+| Session state | selected character, active model override, session token counters, in-flight generation handle, and session-local memory shell sessions |
+| Character state | conversation engine, persisted conversation files, character definitions, character-scoped memory DB/vector-store handles, and autonomy state keyed by character |
+| Request-local state | `rid`, selected-character snapshot at dispatch time, request kind, effective config snapshot, direct response sender, and per-request generation parameters |
+
+Ownership rule:
+if a change introduces new mutable state, it should be obvious which row above
+owns it. If that is not obvious, the design is not ready yet.
+
+### 2.2 Architecture Guardrails
+
+- Future SWP changes must ship as one bundle:
+  `docs/ARCHITECTURE.md`, `shore-protocol` types, protocol golden tests, and
+  at least one server/client integration or routing test.
+- `docs/QUIRKS.md` is only for unavoidable external/provider/platform
+  oddities. Protocol debt, TODOs, and undocumented behavior mismatches belong
+  in architecture docs or todo plans instead.
+- If a daemon module mixes daemon-global, session, character, and request-local
+  concerns in one place, split it or document the boundary before adding more
+  behavior.
+- The design goal remains roughly `~500 LOC` per daemon module. Exceeding that
+  is not automatically wrong, but it should trigger review rather than happen
+  silently.
+
 ---
 
 ## 3. Shore Wire Protocol (SWP)
@@ -135,6 +167,10 @@ Server message example:
 - `rid` — client-generated opaque request ID on request messages. SWP V1 keeps
   request correlation internally, but server messages do not yet echo `rid` on
   the wire.
+
+Any future SWP wire change must update the docs, protocol types, golden JSON
+tests, and at least one end-to-end or routing test in the same change. CI runs
+that guardrail suite in [`../.gitea/workflows/protocol-guardrails.yml`](../.gitea/workflows/protocol-guardrails.yml).
 
 ### 3.4 Client → Server Messages
 

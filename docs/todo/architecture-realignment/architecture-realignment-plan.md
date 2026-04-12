@@ -7,7 +7,7 @@ becomes easier to reason about, iterate on, and extend.
 
 ## Status Snapshot
 
-Updated 2026-04-12 after the daemon-module-decomposition pass.
+Updated 2026-04-12 after the guardrails-and-drift-prevention pass.
 
 - Workstream A is complete enough to treat as landed. `docs/ARCHITECTURE.md`,
   the mismatch checklist, and the implementation plan now describe the current
@@ -30,7 +30,10 @@ Updated 2026-04-12 after the daemon-module-decomposition pass.
 - Workstream F is complete enough to treat as landed. The main daemon
   orchestration surfaces now split session/request routing and state-command
   families into focused modules instead of one large handler/state file pair.
-- Workstream H is still open.
+- Workstream H is complete enough to treat as landed. Shore now documents state
+  ownership directly, scopes `docs/QUIRKS.md` to real external quirks, and runs
+  protocol/routing guardrail suites in CI.
+- The remaining explicitly open wire debt is server `rid` echo in SWP V1.
 - For the exact pickup point and phase-by-phase execution status, use
   [`architecture-realignment-implementation-plan.md`](./architecture-realignment-implementation-plan.md).
 

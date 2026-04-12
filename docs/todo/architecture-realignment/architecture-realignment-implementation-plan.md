@@ -18,7 +18,7 @@ It is intentionally more concrete than the architecture plan:
 
 ## Status Snapshot
 
-Updated 2026-04-12 after the daemon-module-decomposition pass.
+Updated 2026-04-12 after the guardrails-and-drift-prevention pass.
 
 Current program state:
 
@@ -48,7 +48,9 @@ Current program state:
   orchestration surfaces are now split along clearer session/request/command
   boundaries instead of living in monolithic `handler/mod.rs` and
   `commands/state.rs` files.
-- Phase 7 is still ahead of us in structural/process terms.
+- Phase 7 is complete enough to treat as landed. Shore now has explicit
+  state-ownership guidance, a committed direct-response guardrail test suite,
+  and a CI workflow that runs the core SWP conformance surfaces together.
 
 What landed on this branch:
 
@@ -77,15 +79,24 @@ What landed on this branch:
 - `shore-daemon/src/commands/state.rs` is now split into command-family
   modules for status/diagnostics, model selection, config handling, and memory
   workflows, with tests moved alongside the new boundary.
+- `docs/ARCHITECTURE.md` now carries explicit daemon/session/character/request
+  ownership notes plus review guardrails for future SWP and module-boundary
+  changes.
+- `docs/QUIRKS.md` now explicitly forbids using quirks notes as a dumping
+  ground for protocol debt or architecture mismatches.
+- `.gitea/workflows/protocol-guardrails.yml` now runs protocol golden tests,
+  handshake/routing tests, shared-client sync tests, committed multi-client
+  direct-response tests, daemon library tests, and TUI protocol tests together.
 
 Next pickup point:
 
-1. start Phase 7 by turning the current protocol/state-ownership rules into
-   durable guardrails in docs, tests, and workflow policy
-2. keep any remaining UI fetches categorized as explicit UX requests rather
-   than silent correctness repair logic
-3. treat any future SWP wire change as a docs/types/tests/integration bundle,
-   not as an implementation-only patch
+1. treat the architecture realignment program as landed enough for normal
+   feature work, with the remaining open wire debt tracked explicitly instead
+   of hidden in implementation drift
+2. if Shore chooses to tackle the remaining SWP `rid` echo gap, treat it as a
+   deliberate new wire-contract change rather than a follow-up cleanup
+3. keep any future UI fetches categorized as explicit UX requests rather than
+   silent correctness repair logic
 
 ## 1. Scope
 
@@ -736,6 +747,27 @@ Exit criteria:
 
 ### Phase 7: Guardrails And Drift Prevention
 
+Status:
+
+- Complete enough to treat as landed on 2026-04-12.
+- Landed on this branch:
+  - `docs/ARCHITECTURE.md` now defines daemon-global, session, character, and
+    request-local state ownership explicitly.
+  - the architecture docs now include review guardrails and a required bundle
+    rule for any future SWP change.
+  - `docs/QUIRKS.md` now clearly scopes quirks notes to external/provider
+    oddities rather than architecture debt.
+  - `.gitea/workflows/protocol-guardrails.yml` now runs the protocol golden,
+    handshake/routing, shared-client sync, daemon direct-response, daemon lib,
+    and TUI protocol suites together.
+  - `shore-daemon/tests/direct_response_guardrails.rs` now gives the routing
+    split an explicit committed integration target separate from incidental
+    concurrency testing.
+- Remaining intentional boundary:
+  - SWP V1 still does not echo `rid` on server messages. That is now an
+    explicit future wire-contract decision, not silent drift inside the
+    existing architecture program.
+
 Purpose:
 
 - make the realigned architecture self-reinforcing instead of aspirational
@@ -943,10 +975,9 @@ This program is complete when all of the following are true:
 
 ## 12. Suggested Immediate Next Step
 
-The next implementation PR after the current branch should pick up in Phase 7,
-not Phase 1:
+The next implementation PR after the current branch should not pick up in an
+earlier architecture phase.
 
-1. add explicit guardrails for protocol drift, state ownership, and large
-   mixed-responsibility files
-2. keep future SWP changes bundled with docs, golden tests, and integration
-   coverage from the start
+1. preserve the landed guardrails as the default workflow
+2. treat any future SWP `rid` echo work as a fresh wire-contract decision with
+   docs/types/tests/integration bundled from the start
