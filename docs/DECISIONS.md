@@ -559,9 +559,11 @@ format-aware, cached, async pipeline in a new `resize.rs` module.
 
 **Rationale:** Unix sockets added complexity (socket path management, stale file cleanup, dual-listener code) with no real benefit over TCP on localhost. For remote clients, identifying an instance by Unix socket path on another machine is meaningless. TCP was already a core feature, so making it the only transport simplifies the codebase and makes instance identity uniform (`host:port`).
 
-**Default:** `127.0.0.1:7320` (localhost-only). `allowed_hosts` whitelist for remote access.
+**Default:** `127.0.0.1:7320` (localhost-only). Non-loopback binds require explicit
+`[daemon].unsafe_allow_remote_access = true`. `allowed_hosts` remains a peer IP
+allowlist, not authentication or TLS.
 
-**Trade-offs:** Marginally higher per-message overhead vs Unix sockets on localhost (negligible for JSON-Lines messages). Lost the ability to enforce filesystem-level permissions on the socket file — mitigated by `allowed_hosts` ACL and localhost-only default.
+**Trade-offs:** Marginally higher per-message overhead vs Unix sockets on localhost (negligible for JSON-Lines messages). Lost the ability to enforce filesystem-level permissions on the socket file. Shore mitigates this with a localhost-only default and an explicit unsafe remote-access opt-in, but remote TCP is still only appropriate on trusted private or overlay networks.
 
 
 ## Extract shore-daemon-server crate (2026-04-10)
@@ -589,3 +591,29 @@ workspace crate. The server module had zero internal dependencies on other daemo
 making it the cleanest extraction candidate. `RoutedMessage` enum stays in the server crate
 because it's a server routing concern (not a wire protocol type) and handler already depends
 on the server crate. Registry stays as a submodule (221 LOC, not worth its own crate).
+
+## Refactor Hardening Closeout (2026-04-12)
+
+**Decision:** Close the targeted refactor hardening pass without reopening larger
+concurrency redesign work. Shore keeps the current single-process architecture
+and only revisits deeper executor or async changes if new measurements justify it.
+
+**What landed:**
+- Added maintenance-path timing around compaction, vector-store open/reindex,
+  ledger operations, and pricing cache lookups so blocking work is observable.
+- Hardened `shore-ledger` shared-state locking with `lock_or_recover()` and
+  poison-recovery tests instead of panic-on-poison behavior in production paths.
+- Centralized vector-store entry-ID predicate construction and validation in one
+  helper, with consistent invalid-ID tests across index/delete/get paths.
+- Moved compaction archive/retain file mutation behind an explicit
+  `spawn_blocking` boundary and added a regression test proving sibling tasks
+  stay responsive while that work runs.
+- Promoted the panic classification note to `docs/specs/panic-policy.md` and
+  codified the remaining production panic sites as startup-fatal or
+  invariant-protecting.
+
+**What we are not doing now:**
+- No dedicated maintenance executor or job queue.
+- No blanket `tokio::fs` or `tokio::sync::Mutex` rewrite.
+- No `parking_lot` migration.
+- No further async/concurrency churn unless new timings show an actual hotspot.

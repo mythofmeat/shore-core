@@ -53,6 +53,7 @@ pub struct ConversationEngine {
     character_dir: PathBuf,
     messages: MessageStore,
     segments: SegmentReader,
+    revision: u64,
     push_tx: broadcast::Sender<ServerMessage>,
 }
 
@@ -87,6 +88,7 @@ impl ConversationEngine {
             character_dir,
             messages,
             segments,
+            revision: 0,
             push_tx,
         })
     }
@@ -123,6 +125,14 @@ impl ConversationEngine {
         &self.segments
     }
 
+    pub fn current_revision(&self) -> u64 {
+        self.revision
+    }
+
+    fn advance_revision(&mut self) {
+        self.revision = self.revision.saturating_add(1);
+    }
+
     // ── Message CRUD ────────────────────────────────────────────────────
 
     /// Append a message to the active conversation and broadcast a `History`
@@ -130,6 +140,7 @@ impl ConversationEngine {
     pub fn append_message(&mut self, msg: Message) -> Result<(), EngineError> {
         debug!(character = %self.character_name, msg_id = %msg.msg_id, role = ?msg.role, "appending message");
         self.messages.append(msg)?;
+        self.advance_revision();
         self.broadcast_history();
         Ok(())
     }
@@ -138,6 +149,7 @@ impl ConversationEngine {
     pub fn edit_message(&mut self, msg_id: &str, new_content: &str) -> Result<(), EngineError> {
         debug!(character = %self.character_name, msg_id, "editing message");
         self.messages.edit(msg_id, new_content)?;
+        self.advance_revision();
         self.broadcast_history();
         Ok(())
     }
@@ -146,6 +158,7 @@ impl ConversationEngine {
     pub fn delete_message(&mut self, msg_id: &str) -> Result<(), EngineError> {
         debug!(character = %self.character_name, msg_id, "deleting message");
         self.messages.delete(msg_id)?;
+        self.advance_revision();
         self.broadcast_history();
         Ok(())
     }
@@ -155,6 +168,7 @@ impl ConversationEngine {
         let removed = self.messages.truncate_after_last_user_turn()?;
         if removed > 0 {
             debug!(character = %self.character_name, removed, "truncated after last user turn");
+            self.advance_revision();
             self.broadcast_history();
         }
         Ok(removed)
@@ -163,6 +177,7 @@ impl ConversationEngine {
     /// Set swipe state on a message.
     pub fn set_swipe(&mut self, msg_id: &str, index: u32, count: u32) -> Result<(), EngineError> {
         self.messages.set_swipe(msg_id, index, count)?;
+        self.advance_revision();
         self.broadcast_history();
         Ok(())
     }
@@ -170,6 +185,7 @@ impl ConversationEngine {
     /// Add a swipe candidate to a message.
     pub fn add_swipe_candidate(&mut self, msg_id: &str) -> Result<u32, EngineError> {
         let count = self.messages.add_swipe_candidate(msg_id)?;
+        self.advance_revision();
         self.broadcast_history();
         Ok(count)
     }
@@ -178,6 +194,7 @@ impl ConversationEngine {
     pub fn reset(&mut self) -> Result<(), EngineError> {
         info!(character = %self.character_name, "resetting conversation");
         self.messages.clear()?;
+        self.advance_revision();
         self.broadcast_history();
         Ok(())
     }
@@ -193,6 +210,7 @@ impl ConversationEngine {
             segments = self.segments.segment_count(),
             "engine reloaded"
         );
+        self.advance_revision();
         self.broadcast_history();
         Ok(())
     }
@@ -204,14 +222,21 @@ impl ConversationEngine {
     /// Tool-loop messages are merged into single assistant turns so clients
     /// receive clean, logical messages rather than raw protocol intermediates.
     pub fn broadcast_history(&self) {
-        let merged = shore_protocol::merge::merge_tool_loop_messages(self.messages.messages());
-        let history = ServerMessage::History(History {
-            messages: merged,
-            config: serde_json::json!({}),
-        });
+        let history = ServerMessage::History(self.history_snapshot(serde_json::json!({})));
 
         // Ignore send errors — means no receivers are listening.
         let _ = self.push_tx.send(history);
+    }
+
+    pub fn history_snapshot(&self, config: serde_json::Value) -> History {
+        let merged = shore_protocol::merge::merge_tool_loop_messages(self.messages.messages());
+        History {
+            rid: None,
+            messages: merged,
+            config,
+            selected_character: Some(self.character_name.clone()),
+            revision: self.revision,
+        }
     }
 }
 
@@ -282,6 +307,7 @@ mod tests {
         let msg = rx.try_recv().unwrap();
         match msg {
             ServerMessage::History(h) => {
+                assert_eq!(h.revision, 1);
                 assert_eq!(h.messages.len(), 1);
                 assert_eq!(h.messages[0].content, "Hi");
             }
@@ -293,6 +319,7 @@ mod tests {
         let msg = rx.try_recv().unwrap();
         match msg {
             ServerMessage::History(h) => {
+                assert_eq!(h.revision, 2);
                 assert_eq!(h.messages[0].content, "Hello");
             }
             other => panic!("Expected History, got {:?}", other),
@@ -302,7 +329,10 @@ mod tests {
         engine.delete_message("m1").unwrap();
         let msg = rx.try_recv().unwrap();
         match msg {
-            ServerMessage::History(h) => assert!(h.messages.is_empty()),
+            ServerMessage::History(h) => {
+                assert_eq!(h.revision, 3);
+                assert!(h.messages.is_empty());
+            }
             other => panic!("Expected History, got {:?}", other),
         }
     }
@@ -322,7 +352,10 @@ mod tests {
 
         let msg = rx.try_recv().unwrap();
         match msg {
-            ServerMessage::History(h) => assert!(h.messages.is_empty()),
+            ServerMessage::History(h) => {
+                assert_eq!(h.revision, 2);
+                assert!(h.messages.is_empty());
+            }
             other => panic!("Expected History, got {:?}", other),
         }
     }

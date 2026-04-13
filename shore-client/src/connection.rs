@@ -4,7 +4,7 @@ use tracing::{debug, error, trace, warn};
 
 use shore_protocol::client_msg::{ClientHello, ClientMessage};
 use shore_protocol::server_msg::{History, ServerHello, ServerMessage};
-use shore_protocol::SWP_V1;
+use shore_protocol::{MAX_WIRE_MESSAGE_SIZE, SWP_V1};
 
 use crate::error::{ClientError, Result};
 
@@ -159,21 +159,12 @@ impl SWPConnection {
     ///
     /// Returns `Err(ClientError::Disconnected)` on EOF.
     pub async fn recv(&mut self) -> Result<ServerMessage> {
-        let mut line = String::new();
-        let n = self
-            .reader
-            .read_line(&mut line)
-            .await
-            .map_err(ClientError::Io)?;
-        if n == 0 {
-            debug!("EOF on connection — disconnected");
-            return Err(ClientError::Disconnected);
-        }
+        let line = read_json_line_bounded(&mut self.reader).await?;
         let msg: ServerMessage = serde_json::from_str(line.trim()).map_err(|e| {
             warn!(error = %e, raw_len = line.len(), "failed to deserialize server message");
             ClientError::Deserialize(e)
         })?;
-        trace!(bytes = n, "received message");
+        trace!(bytes = line.len(), "received message");
         Ok(msg)
     }
 
@@ -305,6 +296,45 @@ impl SWPConnection {
             .await?;
         Ok((conn, server_hello, history))
     }
+}
+
+async fn read_json_line_bounded<R>(reader: &mut BufReader<R>) -> Result<String>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let mut line = String::new();
+    loop {
+        let buf = reader.fill_buf().await.map_err(ClientError::Io)?;
+        if buf.is_empty() {
+            if line.is_empty() {
+                debug!("EOF on connection — disconnected");
+                return Err(ClientError::Disconnected);
+            }
+            break;
+        }
+
+        let (consume, done) = match buf.iter().position(|&b| b == b'\n') {
+            Some(pos) => (pos + 1, true),
+            None => (buf.len(), false),
+        };
+
+        if line.len() + consume > MAX_WIRE_MESSAGE_SIZE {
+            return Err(ClientError::Protocol(format!(
+                "server message exceeds maximum size of {MAX_WIRE_MESSAGE_SIZE} bytes"
+            )));
+        }
+
+        let chunk = std::str::from_utf8(&buf[..consume]).map_err(|e| {
+            ClientError::Protocol(format!("server sent invalid UTF-8 framing: {e}"))
+        })?;
+        line.push_str(chunk);
+        reader.consume(consume);
+        if done {
+            break;
+        }
+    }
+
+    Ok(line)
 }
 
 /// Generate a unique request ID using timestamp + atomic counter.

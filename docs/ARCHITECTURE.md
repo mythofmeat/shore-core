@@ -60,6 +60,38 @@
 Telegram and Discord bridges are **deferred** — Matrix is the only required
 platform integration for V2 launch.
 
+### 2.1 State Ownership
+
+Shore's architecture depends on each mutable fact having one obvious owner.
+When a value does not clearly belong to one scope, clients and handlers start
+repairing each other and protocol drift follows.
+
+| Scope | Owns |
+|------|------|
+| Daemon-global state | transport/server wiring, loaded global config baseline, diagnostics services, notification services, and other long-lived process services shared by every session |
+| Session state | selected character, active model override, session token counters, in-flight generation handle, and session-local memory shell sessions |
+| Character state | conversation engine, persisted conversation files, character definitions, character-scoped memory DB/vector-store handles, and autonomy state keyed by character |
+| Request-local state | `rid`, selected-character snapshot at dispatch time, request kind, effective config snapshot, direct response sender, and per-request generation parameters |
+
+Ownership rule:
+if a change introduces new mutable state, it should be obvious which row above
+owns it. If that is not obvious, the design is not ready yet.
+
+### 2.2 Architecture Guardrails
+
+- Future SWP changes must ship as one bundle:
+  `docs/ARCHITECTURE.md`, `shore-protocol` types, protocol golden tests, and
+  at least one server/client integration or routing test.
+- `docs/QUIRKS.md` is only for unavoidable external/provider/platform
+  oddities. Protocol debt, TODOs, and undocumented behavior mismatches belong
+  in architecture docs or todo plans instead.
+- If a daemon module mixes daemon-global, session, character, and request-local
+  concerns in one place, split it or document the boundary before adding more
+  behavior.
+- The design goal remains roughly `~500 LOC` per daemon module. Exceeding that
+  is not automatically wrong, but it should trigger review rather than happen
+  silently.
+
 ---
 
 ## 3. Shore Wire Protocol (SWP)
@@ -84,7 +116,7 @@ Client                          Server
   │                               │
   │──── hello ──────────────────▶│  (client info, capabilities)
   │                               │
-  │◀──── history ────────────────│  (active messages + config snapshot)
+  │◀──── history ────────────────│  (authoritative startup snapshot)
   │                               │
   │     ... normal operation ...  │
   │                               │
@@ -92,27 +124,64 @@ Client                          Server
   │                               │
 ```
 
+#### Protocol Status
+
+| Topic | Current truth in this branch | Planned follow-on |
+|------|------|------|
+| Handshake payloads | `hello` now carries the real character list, and the initial `history` carries real messages, `selected_character`, a truthful minimal session/config snapshot, and the current revision. | None. |
+| `rid` propagation | Client request messages carry `rid`, and request-scoped SWP V1 server responses now echo it on the wire. Handshake and unsolicited push messages intentionally omit `rid`. | None. |
+| Direct responses vs events | Request-scoped command/stream/tool/cancel traffic routes directly to the requesting session. Authoritative conversation state sync travels via revisioned `history` snapshots. | None. |
+| `switch_character` | Character switching is a session mutation, not a reconnect flow. Successful switches update session state and push an authoritative direct `history` snapshot for the new selection. | None. |
+| Snapshot vs event authority | `History` is revisioned and authoritative. `NewMessage` remains revisioned advisory metadata; shared client code drops stale snapshot/event traffic instead of repairing with blind fetches. | None for SWP V1; future work is only if the wire contract changes again. |
+| TCP `ping` | Implemented. The server emits `ping` every 30 seconds on TCP connections. | None. |
+
 ### 3.3 Message Envelope
 
-Every message has this shape:
+SWP V1 is a tagged-message protocol, not a fully uniform top-level envelope.
+
+Client request example:
 
 ```json
 {
-  "type": "<message_type>",
-  "v": 1,
-  "rid": "optional-request-id",
-  ...fields specific to type
+  "type": "message",
+  "rid": "msg_01",
+  "text": "hello",
+  "stream": true
 }
 ```
 
-- `v` — protocol version. Clients and servers must reject unsupported versions.
-- `rid` — request ID. Client-generated, opaque string. The server echoes `rid`
-  on every response message (including streaming chunks and push messages)
-  that was triggered by that request. Push messages not tied to a request
-  (interiority, status_change) have `rid: null`. This enables:
-  - **Multiplexing** — TUI can send a status command while a message streams
-  - **Tracing** — follow a request through structured logs across all services
-  - **Debugging** — correlate "which request caused this error?"
+Server handshake example:
+
+```json
+{
+  "type": "history",
+  "messages": [],
+  "config": {},
+  "selected_character": "alice",
+  "revision": 12
+}
+```
+
+Server request-scoped example:
+
+```json
+{
+  "type": "command_output",
+  "rid": "cmd_01",
+  "name": "status",
+  "data": { "ok": true }
+}
+```
+
+- `type` — required on every message.
+- `v` — currently carried by `hello`, not by every message.
+- `rid` — client-generated opaque request ID. Client request messages carry it,
+  and request-scoped server responses echo it. Handshake and unsolicited push
+  messages intentionally omit `rid`.
+
+Any future SWP wire change must update the docs, protocol types, golden JSON
+tests, and at least one end-to-end or routing test in the same change. CI runs
+that guardrail suite in [`../.gitea/workflows/protocol-guardrails.yml`](../.gitea/workflows/protocol-guardrails.yml).
 
 ### 3.4 Client → Server Messages
 
@@ -175,35 +244,51 @@ this single envelope. See §3.7 for the complete command reference.
 | Type | When | Key Fields |
 |------|------|------------|
 | `hello` | After client connects | `v`, `server_name`, `characters[]` |
-| `history` | After handshake; after any state change (switch, new chat, toggle, edit, delete) | `messages[]`, `config` |
+| `history` | After handshake; after authoritative state changes | `messages[]`, `config`, `selected_character`, `revision`, `rid?` |
 | `shutdown` | Server stopping | — |
 | `ping` | Periodic keepalive (TCP) | — |
 
-`history` is the workhorse — any time the client's view of the world should
-change, the server re-sends full state. Simple to implement, impossible to
-desync.
+`history` is the authoritative snapshot for startup and conversation-state
+resynchronization. Clients track the latest `revision` and drop stale
+snapshots/events in the shared `shore-client` layer instead of issuing blind
+repair fetches after normal operations. Request-scoped streaming/tool/command
+responses still travel on their own direct-response paths, and `new_message`
+remains advisory.
+
+When a `history` snapshot is emitted as the direct result of a request such as
+`switch_character`, it also echoes that request's `rid`. Handshake snapshots do
+not carry `rid`.
 
 #### Message Object
 
 Every message in `history.messages[]`, `stream_end`, and `new_message` uses
-this flat struct. One shape everywhere — no polymorphism, no optional subtype
-variants.
+the shared `Message` type from `shore-protocol`, including structured
+`content_blocks` for tool-loop fidelity.
 
 ```rust
 struct Message {
-    msg_id:    String,                // stable ID for edit/delete/swipe refs
-    role:      Role,                  // "user" | "assistant" | "system"
-    content:   String,                // rendered text content
-    images:    Vec<ImageRef>,         // empty vec when none
-    alt_index: Option<u32>,           // swipe: current variant (0-based), null if no alternatives
-    alt_count: Option<u32>,           // swipe: total variants, null if no alternatives
-    timestamp: String,                // ISO 8601
+    msg_id:         String,                // stable ID for edit/delete/swipe refs
+    role:           Role,                  // "user" | "assistant" | "system"
+    content:        String,                // derived/rendered convenience text
+    images:         Vec<ImageRef>,         // empty vec when none
+    content_blocks: Vec<ContentBlock>,     // canonical structured content
+    alt_index:      Option<u32>,           // swipe: current variant (0-based), null if no alternatives
+    alt_count:      Option<u32>,           // swipe: total variants, null if no alternatives
+    timestamp:      String,                // ISO 8601
 }
 
 struct ImageRef {
     path:    String,                  // filesystem path to image
     caption: Option<String>,
     data:    Option<String>,          // base64-encoded bytes (wire only, stripped on disk)
+}
+
+enum ContentBlock {
+    Text { text: String },
+    Thinking { thinking: String, signature: Option<String> },
+    ToolUse { id: String, name: String, input: serde_json::Value },
+    ToolResult { tool_use_id: String, content: String, is_error: bool },
+    RedactedThinking { data: String },
 }
 ```
 
@@ -214,8 +299,8 @@ and `delete` commands — never parse or construct IDs.
 
 | Type | When | Key Fields |
 |------|------|------------|
-| `command_output` | Command result | `name`, `data` |
-| `error` | Any error | `code`, `message` |
+| `command_output` | Command result | `rid`, `name`, `data` |
+| `error` | Any error | `rid?`, `code`, `message` |
 
 #### Streaming
 
@@ -226,9 +311,9 @@ for clients.
 
 | Type | When | Key Fields |
 |------|------|------------|
-| `stream_start` | Begin streaming | `regen` (bool) |
-| `stream_chunk` | Partial content | `text`, `content_type` |
-| `stream_end` | Done streaming | `content`, `metadata` |
+| `stream_start` | Begin streaming | `rid`, `regen` (bool) |
+| `stream_chunk` | Partial content | `rid`, `text`, `content_type` |
+| `stream_end` | Done streaming | `rid`, `content`, `metadata` |
 
 `stream_chunk.content_type` is `"text"` (default) or `"thinking"`. Clients
 that don't support thinking display can ignore chunks where
@@ -255,15 +340,20 @@ that don't support thinking display can ignore chunks where
 All fields are integers except `model` (string). Provider-specific token fields
 (`cache_read`, `cache_write`) are `0` for providers that don't support caching.
 
-#### Push (unsolicited, `rid: null`)
+#### Request-Scoped Direct Events
 
 | Type | When | Key Fields |
 |------|------|------------|
-| `phase` | Generation phase change | `phase`, `model` |
-| `new_message` | Autonomous message arrived | full `Message` object |
-| `tool_call` | Tool invoked during generation | `tool_id`, `tool_name`, `input` (JSON object) |
-| `tool_result` | Tool completed | `tool_id`, `tool_name`, `output`, `is_error` |
-| `send_image` | Server-generated image ready | `path`, `caption?`, `data?` (base64) |
+| `phase` | Generation phase change | `rid`, `phase`, `model` |
+| `tool_call` | Tool invoked during generation | `rid`, `tool_id`, `tool_name`, `input` (JSON object) |
+| `tool_result` | Tool completed | `rid`, `tool_id`, `tool_name`, `output`, `is_error` |
+| `send_image` | Server-generated image ready | `rid`, `path`, `caption?`, `data?` (base64) |
+
+#### Push (unsolicited)
+
+| Type | When | Key Fields |
+|------|------|------------|
+| `new_message` | Advisory message event | `revision`, full `Message` object |
 | `cache_warning` | Unexpected cache invalidation | `expected_tokens`, `message` |
 
 `phase` values: `"thinking"`, `"text_generation"`, `"tool_use"`. Clients use
@@ -305,7 +395,7 @@ thing, bare verb/noun when unambiguous.
 | Command | Args | Description |
 |---------|------|-------------|
 | `list_characters` | — | List all characters |
-| `switch_character` | `name` | Switch active character → server re-sends `history` |
+| `switch_character` | `name` | Switch the active character for this session → server pushes an authoritative `history` snapshot; reconnect is not required |
 | `list_chats` | — | List conversations (shows `[private]` badge) |
 | `switch_chat` | `id` | Open a conversation → server re-sends `history` |
 | `new_chat` | `title?` | Start a new conversation |
@@ -353,6 +443,18 @@ A shared Rust crate (`shore-protocol`) defines all message types as
 serde-serializable structs and enums. This crate is a dependency of every
 binary in the workspace.
 
+### 3.10 SWP Versioning Rule
+
+- Internal-only refactors do not require an SWP version bump.
+- User-visible wire-shape or wire-behavior changes require either:
+  - an explicit SWP version bump, or
+  - explicit capability negotiation documented alongside the change.
+- Any such change must update, in the same change set:
+  - `docs/ARCHITECTURE.md`
+  - `shore-protocol` types and serde behavior
+  - protocol golden tests
+  - at least one integration test proving the behavior
+
 ---
 
 ## 4. Service Specifications
@@ -385,6 +487,32 @@ binary in the workspace.
 The daemon's LLM provider integrations live in the `shore-llm-client` crate,
 which implements direct HTTP calls to each provider's API using `reqwest`.
 There is no separate LLM proxy process.
+
+#### Runtime Refresh Model
+
+Shore does not run filesystem watchers for config or character directories.
+Runtime refresh is explicit rather than ambient.
+
+- Character definitions (`character.md`) and user definitions (`user.md`) are
+  read from disk on demand, so edits to those files are visible on the next
+  request that reads them.
+- The daemon caches discovered character names, merged per-character configs,
+  and opened `MemoryDB` / `VectorStore` handles in the process.
+- `config_reset` is the explicit invalidation boundary for those process caches.
+  A successful reset reloads `config.toml` from the daemon's current config
+  directory, clears session runtime overrides and memory-shell sessions, rescans
+  `characters/`, drops the merged per-character config cache, and closes cached
+  DB/vector-store handles so they reopen from disk on demand.
+- Character engines are retained for characters that still exist so live
+  in-memory conversation state is preserved. Engines for deleted characters are
+  dropped during `config_reset`; the next request for that character fails until
+  the client switches to a valid one.
+- A newly added or deleted character directory is therefore not visible to the
+  daemon until `config_reset`.
+- Already-running autonomy tick tasks keep the config snapshot they were spawned
+  with. `config_reset` updates manager-held autonomy settings for future state
+  creation and commands, but a daemon restart is still required for a full live
+  scheduler reconfiguration.
 
 #### Internal Module Layout
 
@@ -444,7 +572,7 @@ shore-daemon/
 │   │   ├── mod.rs              # Command dispatch table (18 flat commands, see §3.7)
 │   │   ├── navigation.rs       # list_characters, switch_character, list_chats, switch_chat, new_chat
 │   │   ├── conversation.rs     # swipe, log, edit, delete
-│   │   └── state.rs            # status, list_models, switch_model, memory, toggle_private, compact, collate, toggle_autonomy, config
+│   │   └── state.rs            # status, list_models, switch_model, memory, toggle_private, compact, collate, toggle_autonomy, config, config_reset
 │   │
 │   └── types.rs                # Shared daemon-internal types
 ```
@@ -689,6 +817,18 @@ $XDG_RUNTIME_DIR/shore/            (/run/user/{uid}/shore/)
 └── instances.lock                 # File lock for concurrent access
 ```
 
+`instances.json` stores daemon registry metadata, including `started_at` in
+RFC3339 format. Registry updates lock `instances.lock`, rewrite the JSON via
+atomic replace, and preserve corrupt payloads as `instances.corrupt-*.json`
+instead of silently treating them as empty state. PID-based liveness pruning is
+best-effort: Unix builds probe process existence directly; non-Unix builds keep
+PID-tagged entries until explicit unregister or overwrite.
+
+Operationally, Shore is still Linux-first: XDG paths and Unix shutdown signals
+are the primary path. Non-Unix builds use the same config/data model, but the
+runtime registry intentionally falls back to best-effort cleanup instead of
+pretending `/proc`-style liveness semantics exist everywhere.
+
 ---
 
 ## 8. Configuration
@@ -705,6 +845,19 @@ Loaded by daemon on startup. Key changes from V1:
 - `[connections.matrix]` — replaces `matrix_external` and `matrix_embedded`
   (single section, mode determined by config present)
 - `[connections.telegram]` and `[connections.discord]` — reserved for future use
+
+Daemon startup precedence is explicit:
+
+1. `--config <path>` selects which `config.toml` file to load. Explicit paths
+   must exist and point to a file; invalid operator-supplied paths fail fast.
+2. Daemon bind address resolution is `--addr` CLI flag → `SHORE_ADDR` env var
+   → `[daemon].addr` from the loaded config.
+3. Remote-access policy validation runs against that final resolved address, so
+   CLI/env overrides cannot bypass `[daemon].unsafe_allow_remote_access`.
+4. Long-lived daemon settings stay config-owned; CLI/env overrides are limited
+   to startup-scoped operator concerns.
+5. Prompt-cache forensics is an explicit operator toggle via
+   `[advanced].cache_forensics = true` rather than an always-on log sink.
 
 ### 8.2 models.toml (Daemon)
 
@@ -740,6 +893,32 @@ default_address = "100.64.0.1:7320"
 The file is optional. If missing or unparseable, resolution falls through to
 instance discovery. On the daemon machine, omit `client.toml` (or leave
 `default_address` unset) to use instance discovery as before.
+
+If the instance registry is missing or empty, Shore falls back to the default
+`127.0.0.1:7320` address when no explicit daemon ID was requested. Corrupt
+registry JSON is surfaced as an error instead of being flattened into the
+default address.
+
+**Remote security model:**
+
+- Shore is localhost-only by default via `[daemon].addr = "127.0.0.1:7320"`.
+- Non-loopback daemon binds require explicit operator opt-in with
+  `[daemon].unsafe_allow_remote_access = true`.
+- Remote TCP use is currently supported only for trusted private or overlay
+  networks.
+- `[daemon].allowed_hosts` is a peer IP allowlist, not authentication and not
+  transport encryption.
+- Authenticated/TLS remote access is deferred rather than implied by the
+  current transport.
+
+Example remote daemon config:
+
+```toml
+[daemon]
+addr = "100.64.0.1:7320"
+unsafe_allow_remote_access = true
+allowed_hosts = ["100.64.0.2"]
+```
 
 ---
 

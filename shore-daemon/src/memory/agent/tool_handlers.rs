@@ -9,10 +9,13 @@
 use chrono::Local;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
+use std::sync::Mutex;
 use tracing::{debug, info, warn};
 
 use crate::memory::db::{Entry, MemoryDB};
 use crate::memory::rag::{EntryMeta, RagPipeline, SourceResult};
+use crate::memory::search::Bm25Index;
+use crate::sync::lock_or_recover;
 
 use super::types::{AgentIndexer, AgentSearchContext};
 
@@ -181,15 +184,9 @@ pub async fn handle_semantic_search(
         .collect();
 
     // 4. BM25 search.
-    let bm25_hits = ctx.bm25.lock().unwrap().search(query, fetch_k);
+    let bm25_hits = search_bm25_hits(&ctx.bm25, query, fetch_k);
     debug!(bm25_hits = bm25_hits.len(), "BM25 search complete");
-    let bm25_source: Vec<SourceResult> = bm25_hits
-        .iter()
-        .map(|r| SourceResult {
-            entry_id: r.entry_id.clone(),
-            score: r.score,
-        })
-        .collect();
+    let bm25_source = bm25_hits;
 
     // 5. Collect entry IDs from both sources.
     let all_ids: HashSet<&str> = vector_source
@@ -263,6 +260,18 @@ pub async fn handle_semantic_search(
 
     debug!(results = results.len(), "Semantic search complete");
     serde_json::to_string_pretty(&results).map_err(|e| format!("Error: JSON serialization: {e}"))
+}
+
+fn search_bm25_hits(index: &Mutex<Bm25Index>, query: &str, top_k: usize) -> Vec<SourceResult> {
+    let index = lock_or_recover("memory agent BM25 index", index);
+    index
+        .search(query, top_k)
+        .into_iter()
+        .map(|r| SourceResult {
+            entry_id: r.entry_id,
+            score: r.score,
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -703,6 +712,8 @@ mod tests {
     use super::*;
     use crate::memory::db::MemoryDB;
     use serde_json::json;
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+    use std::sync::Mutex;
 
     fn test_db() -> MemoryDB {
         MemoryDB::open_in_memory().unwrap()
@@ -804,6 +815,25 @@ mod tests {
     #[test]
     fn sanitize_handles_punctuation() {
         assert_eq!(sanitize_fts_query("hello, world!"), "hello OR world");
+    }
+
+    #[test]
+    fn bm25_search_recovers_from_poisoned_mutex() {
+        let index = Mutex::new(Bm25Index::new());
+        {
+            let mut guard = index.lock().unwrap();
+            guard.add_document("entry-1", "Alice likes chocolate");
+        }
+
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let _guard = index.lock().unwrap();
+            panic!("poison memory agent BM25 search");
+        }));
+        assert!(result.is_err());
+
+        let hits = search_bm25_hits(&index, "Alice", 5);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].entry_id, "entry-1");
     }
 
     // -- query_db -------------------------------------------------------------

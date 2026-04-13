@@ -40,6 +40,8 @@ use shore_diagnostics::truncate_summary;
 use shore_ledger::{CallType, LedgerClient};
 use shore_llm_client::types::LlmRequest;
 
+use crate::sync::lock_or_recover;
+
 // ---------------------------------------------------------------------------
 // Tick context — shared state for the per-character autonomy loop
 // ---------------------------------------------------------------------------
@@ -204,6 +206,33 @@ fn restore_from_persisted(persisted: &PersistedState, interiority: &mut Interior
     interiority.restore(persisted.ticks_without_user, next_wake, last_user);
 }
 
+fn sanitize_compaction_config(mut compaction: CompactionConfig) -> CompactionConfig {
+    // Validate: turns thresholds must exceed keep_recent_turns, otherwise
+    // there would never be anything to actually compact.
+    if compaction.enabled {
+        let k = compaction.keep_recent_turns;
+        if compaction.min_turns <= k || compaction.max_turns <= k {
+            tracing::error!(
+                min_turns = compaction.min_turns,
+                max_turns = compaction.max_turns,
+                keep_recent_turns = k,
+                "Compaction disabled: min_turns and max_turns must be greater than keep_recent_turns"
+            );
+            compaction.enabled = false;
+        }
+        if compaction.enabled && compaction.max_turns < compaction.min_turns {
+            tracing::error!(
+                min_turns = compaction.min_turns,
+                max_turns = compaction.max_turns,
+                "Compaction disabled: max_turns must be >= min_turns"
+            );
+            compaction.enabled = false;
+        }
+    }
+
+    compaction
+}
+
 // ---------------------------------------------------------------------------
 // AutonomyManager
 // ---------------------------------------------------------------------------
@@ -235,38 +264,15 @@ pub struct AutonomyManager {
 impl AutonomyManager {
     pub fn new(
         config: AutonomyConfig,
-        mut compaction: CompactionConfig,
+        compaction: CompactionConfig,
         data_dir: PathBuf,
         shutdown_rx: tokio::sync::watch::Receiver<()>,
     ) -> Self {
-        // Validate: turns thresholds must exceed keep_recent_turns, otherwise
-        // there would never be anything to actually compact.
-        if compaction.enabled {
-            let k = compaction.keep_recent_turns;
-            if compaction.min_turns <= k || compaction.max_turns <= k {
-                tracing::error!(
-                    min_turns = compaction.min_turns,
-                    max_turns = compaction.max_turns,
-                    keep_recent_turns = k,
-                    "Compaction disabled: min_turns and max_turns must be greater than keep_recent_turns"
-                );
-                compaction.enabled = false;
-            }
-            if compaction.enabled && compaction.max_turns < compaction.min_turns {
-                tracing::error!(
-                    min_turns = compaction.min_turns,
-                    max_turns = compaction.max_turns,
-                    "Compaction disabled: max_turns must be >= min_turns"
-                );
-                compaction.enabled = false;
-            }
-        }
-
         Self {
             states: Arc::new(DashMap::new()),
             handles: Arc::new(Mutex::new(Vec::new())),
             config: Arc::new(config),
-            compaction: Arc::new(compaction),
+            compaction: Arc::new(sanitize_compaction_config(compaction)),
             data_dir,
             shutdown_rx,
             llm_client: None,
@@ -290,6 +296,23 @@ impl AutonomyManager {
         self.push_tx = Some(push_tx);
         self.loaded_config = Some(Arc::new(loaded_config));
         self.notifier = Some(notifier);
+    }
+
+    /// Reload runtime autonomy and compaction configuration after `config_reset`.
+    ///
+    /// This updates the manager-held config used for future status checks,
+    /// future `ensure_state*` calls, and fresh command contexts. Already-running
+    /// per-character tick tasks keep the config snapshot they were spawned with
+    /// until the daemon is restarted.
+    pub fn reload_runtime_config(&mut self, loaded_config: LoadedConfig) {
+        let autonomy = loaded_config.app.behavior.autonomy.clone();
+        let compaction = sanitize_compaction_config(loaded_config.app.memory.compaction.clone());
+
+        self.config = Arc::new(autonomy);
+        self.compaction = Arc::new(compaction);
+        self.loaded_config = Some(Arc::new(loaded_config));
+
+        info!("Reloaded autonomy runtime configuration");
     }
 
     /// Set the character engine registry for safe autonomous message persistence.
@@ -389,7 +412,7 @@ impl AutonomyManager {
             character_tick_loop(name, tick_ctx, shutdown_rx).await;
         });
 
-        self.handles.lock().unwrap().push(handle);
+        lock_or_recover("autonomy task handle list", &self.handles).push(handle);
 
         true
     }
@@ -636,7 +659,7 @@ impl AutonomyManager {
     /// Wait for all per-character tick tasks to finish.
     pub async fn shutdown(&self) {
         let handles: Vec<JoinHandle<()>> = {
-            let mut h = self.handles.lock().unwrap();
+            let mut h = lock_or_recover("autonomy task handle list", &self.handles);
             h.drain(..).collect()
         };
         let count = handles.len();
@@ -668,10 +691,7 @@ const INTERIORITY_TIMEOUT: Duration = Duration::from_secs(300); // 5 minutes
 /// but the state inside is still usable — letting the tick loop die would be
 /// worse (no more keepalive, no more interiority, permanent silent failure).
 fn lock_state(m: &Mutex<AutonomyState>) -> std::sync::MutexGuard<'_, AutonomyState> {
-    m.lock().unwrap_or_else(|poisoned| {
-        error!("Autonomy state mutex was poisoned, recovering");
-        poisoned.into_inner()
-    })
+    lock_or_recover("autonomy state mutex", m)
 }
 
 async fn character_tick_loop(
@@ -1620,6 +1640,7 @@ async fn execute_dormant_ping(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::panic::{catch_unwind, AssertUnwindSafe};
 
     fn test_config() -> AutonomyConfig {
         AutonomyConfig::default()
@@ -1665,6 +1686,38 @@ mod tests {
             mgr.ensure_state("alice", None);
             mgr.ensure_state("alice", None);
             assert_eq!(mgr.states.len(), 1);
+        });
+    }
+
+    #[test]
+    fn ensure_state_recovers_from_poisoned_handles_mutex() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let (tx, rx) = tokio::sync::watch::channel(());
+        let mgr = AutonomyManager::new(
+            test_config(),
+            Default::default(),
+            tmp.path().to_path_buf(),
+            rx,
+        );
+
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let _guard = mgr.handles.lock().unwrap();
+            panic!("poison autonomy handles");
+        }));
+        assert!(result.is_err());
+
+        rt.block_on(async {
+            assert!(mgr.ensure_state("alice", None));
+        });
+        assert!(mgr.states.contains_key("alice"));
+
+        drop(tx);
+        rt.block_on(async {
+            mgr.shutdown().await;
         });
     }
 
@@ -1903,6 +1956,32 @@ mod tests {
             registry: None,
         };
         tick_character("alice", &tick_ctx).await;
+    }
+
+    #[tokio::test]
+    async fn shutdown_recovers_from_poisoned_handles_mutex() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_tx, rx) = tokio::sync::watch::channel(());
+        let mgr = AutonomyManager::new(
+            test_config(),
+            Default::default(),
+            tmp.path().to_path_buf(),
+            rx,
+        );
+
+        {
+            let mut handles = mgr.handles.lock().unwrap();
+            handles.push(tokio::spawn(async {}));
+        }
+
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let _guard = mgr.handles.lock().unwrap();
+            panic!("poison autonomy shutdown handles");
+        }));
+        assert!(result.is_err());
+
+        mgr.shutdown().await;
+        assert!(lock_or_recover("autonomy task handle list", &mgr.handles).is_empty());
     }
 
     #[test]

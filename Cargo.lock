@@ -4867,6 +4867,7 @@ dependencies = [
  "serde_json",
  "shore-config",
  "shore-protocol",
+ "tempfile",
  "thiserror",
  "tokio",
  "toml",
@@ -4895,6 +4896,7 @@ dependencies = [
  "arrow-schema",
  "base64",
  "chrono",
+ "clap",
  "dashmap",
  "fast_image_resize",
  "futures",
@@ -4928,6 +4930,7 @@ name = "shore-daemon-server"
 version = "0.1.0"
 dependencies = [
  "fs2",
+ "libc",
  "serde",
  "serde_json",
  "shore-config",

@@ -169,6 +169,19 @@ default_address = "100.64.0.1:7320"
 
 Address resolution order: `--addr` CLI flag → `client.toml` → instance discovery → default `127.0.0.1:7320`. On the daemon machine, omit this file to use instance discovery. See `examples/client.toml` for a full example.
 
+If the instance registry is missing or empty, Shore falls back to `127.0.0.1:7320` as before. If the registry JSON is corrupt, discovery now fails explicitly and the daemon preserves an `instances.corrupt-*.json` copy beside the registry for diagnosis instead of silently treating corruption as "no daemons found."
+
+The client address file does not make the daemon "remote-ready" by itself. Shore is localhost-only by default. To bind the daemon on a non-loopback address you must opt in explicitly:
+
+```toml
+[daemon]
+addr = "100.64.0.1:7320"
+unsafe_allow_remote_access = true
+allowed_hosts = ["100.64.0.2"]
+```
+
+This mode is still unauthenticated TCP. Use it only on trusted private or overlay networks such as Tailscale or WireGuard. `allowed_hosts` is only a source-IP allowlist; it is not authentication or TLS. Authenticated/TLS remote access is deferred for now and not part of the current Shore deployment model.
+
 ## Usage
 
 Start the daemon:
@@ -176,6 +189,29 @@ Start the daemon:
 ```sh
 shore-daemon
 ```
+
+Daemon startup precedence:
+
+- `--config <path>` selects an explicit config file. Explicit paths must exist;
+  Shore no longer silently creates a default config at an arbitrary operator-supplied path.
+- Bind address resolution is `--addr` CLI flag → `SHORE_ADDR` env var →
+  `[daemon].addr` in `config.toml`.
+- Remote-access safety is enforced against the final resolved address, so a CLI
+  or env override still requires `[daemon].unsafe_allow_remote_access = true`
+  for non-loopback binds.
+- Long-lived daemon behavior such as remote-access policy, allowlists,
+  notifications, and autonomy settings remains config-file owned rather than
+  being spread across additional env vars.
+
+Platform notes:
+
+- Shore is Linux-first operationally. It follows XDG directories and Unix
+  signal behavior by default.
+- Non-Unix builds still work with the same config/data layout, but daemon
+  registry liveness pruning is best-effort there because Shore only probes PIDs
+  directly on Unix.
+- Prompt-cache forensic logging is opt-in via `[advanced].cache_forensics = true`
+  when you need per-request cache diagnostics in `{data_dir}/cache_forensics.jsonl`.
 
 ### CLI reference
 

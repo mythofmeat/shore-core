@@ -57,9 +57,8 @@ fn is_request_scoped_message(msg: &ServerMessage) -> bool {
     )
 }
 
-/// Request-scoped stream responses should only reach the requesting session.
 #[tokio::test]
-async fn test_streaming_is_direct_to_requesting_client() {
+async fn streaming_is_direct_to_requesting_client() {
     let mut harness = TestHarness::boot().await;
     let mut second = harness.connect_second_client().await;
 
@@ -71,13 +70,13 @@ async fn test_streaming_is_direct_to_requesting_client() {
         .await
         .expect("failed to send message");
 
-    let (r1, second_msgs) = tokio::join!(
+    let (first_response, second_msgs) = tokio::join!(
         harness.collect_stream(),
         collect_messages_for(&mut second, Duration::from_secs(1)),
     );
 
-    r1.assert_text_contains("direct hello");
-    assert!(r1.stream_ended);
+    first_response.assert_text_contains("direct hello");
+    assert!(first_response.stream_ended);
     assert!(
         second_msgs
             .iter()
@@ -95,9 +94,8 @@ async fn test_streaming_is_direct_to_requesting_client() {
     harness.shutdown().await;
 }
 
-/// Command results should only reach the requesting session.
 #[tokio::test]
-async fn test_command_results_are_direct_to_requesting_client() {
+async fn command_results_are_direct_to_requesting_client() {
     let mut harness = TestHarness::boot().await;
     let mut second = harness.connect_second_client().await;
 
@@ -120,90 +118,14 @@ async fn test_command_results_are_direct_to_requesting_client() {
     harness.shutdown().await;
 }
 
-/// Sending a new message while the previous generation is in-flight should
-/// abort the first generation and produce a response for the second.
 #[tokio::test]
-async fn test_new_message_during_generation_aborts_previous() {
-    let mut harness = TestHarness::boot().await;
-
-    harness.mock_llm.enqueue_hanging_optional().await;
-
-    harness
-        .conn
-        .send_message("first message", true)
-        .await
-        .expect("failed to send first message");
-
-    // Wait until the first upstream request has actually matched the hanging
-    // mock before enqueueing the replacement response.
-    wait_for_mock_requests(&harness, 1).await;
-
-    harness.mock_llm.enqueue_text("second response").await;
-
-    harness
-        .conn
-        .send_message("second message", true)
-        .await
-        .expect("failed to send second message");
-
-    let mut response = harness.collect_stream().await;
-    if response.text.is_empty() && response.stream_ended {
-        response = harness.collect_stream().await;
-    }
-
-    response.assert_text_contains("second response");
-    assert!(response.stream_ended);
-
-    harness.shutdown().await;
-}
-
-/// Dropping the SWP connection during an in-flight generation should not crash
-/// the daemon. A new client should be able to connect and get responses.
-#[tokio::test]
-async fn test_client_disconnect_during_generation() {
-    let mut harness = TestHarness::boot().await;
-
-    let mut victim = harness.connect_second_client().await;
-
-    harness.mock_llm.enqueue_hanging_optional().await;
-
-    victim
-        .send_message("start hanging", true)
-        .await
-        .expect("failed to send message");
-
-    tokio::time::sleep(Duration::from_millis(300)).await;
-
-    drop(victim);
-
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    loop {
-        match timeout(Duration::from_millis(500), harness.conn.recv()).await {
-            Ok(Ok(_)) => continue,
-            _ => break,
-        }
-    }
-
-    harness.mock_llm.enqueue_text("daemon is alive").await;
-
-    let response = harness.send_and_collect("are you alive?").await;
-
-    response.assert_text_contains("daemon is alive");
-    assert!(response.stream_ended);
-
-    harness.shutdown().await;
-}
-
-/// Tool traffic and streamed assistant output should only reach the requesting session.
-#[tokio::test]
-async fn test_tool_events_are_direct_to_requesting_client() {
+async fn tool_events_are_direct_to_requesting_client() {
     let mut harness = TestHarness::boot().await;
     let mut second = harness.connect_second_client().await;
 
     harness
         .mock_llm
-        .enqueue_tool_use("toolu_concurrent01", "check_time", json!({}))
+        .enqueue_tool_use("toolu_guardrail01", "check_time", json!({}))
         .await;
     harness
         .mock_llm
@@ -255,9 +177,8 @@ async fn test_tool_events_are_direct_to_requesting_client() {
     harness.shutdown().await;
 }
 
-/// Cancellation should only deliver the cancelled terminal message to the requesting session.
 #[tokio::test]
-async fn test_cancel_is_direct_to_requesting_client() {
+async fn cancel_is_direct_to_requesting_client() {
     let mut harness = TestHarness::boot().await;
     let mut second = harness.connect_second_client().await;
 

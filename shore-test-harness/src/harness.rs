@@ -10,6 +10,7 @@ use shore_daemon::autonomy::manager::AutonomyManager;
 use shore_daemon::characters::CharacterRegistry;
 use shore_daemon::commands::{CommandContext, SessionTokens};
 use shore_daemon::handler::MessageHandler;
+use shore_daemon::handshake::build_handshake_provider;
 use shore_daemon_server::{Server, ServerConfig};
 use shore_ledger::LedgerClient;
 use shore_llm_client::LlmClient;
@@ -94,9 +95,11 @@ impl TestHarness {
             addr: addr.clone(),
             allowed_hosts: vec![],
             server_name: "shore-test-harness".into(),
+            handshake: None,
         };
-        let server = Server::new(server_config);
-        let push_tx = server.push_sender();
+        let mut server = Server::new(server_config);
+        let push_tx = server.event_sender();
+        let session_router = server.session_router();
         let route_rx = server.take_route_rx();
 
         // ── Character Registry ────────────────────────────────────────
@@ -106,6 +109,7 @@ impl TestHarness {
             push_tx.clone(),
             config.clone(),
         )));
+        server.set_handshake_provider(build_handshake_provider(char_registry.clone()));
 
         // ── Autonomy Manager ──────────────────────────────────────────
         let mut autonomy = AutonomyManager::new(
@@ -151,15 +155,15 @@ impl TestHarness {
         let stored_notifier = notifier.clone();
 
         // ── Message Handler ──────────────────────────────────────────
-        let mut msg_handler = MessageHandler {
-            registry: char_registry,
+        let mut msg_handler = MessageHandler::new(
+            char_registry,
             cmd_ctx,
             llm_client,
-            push_tx: push_tx.clone(),
+            push_tx.clone(),
+            session_router,
             autonomy,
             notifier,
-            generation_handle: None,
-        };
+        );
 
         // Spawn handler loop.
         let handler_handle = tokio::spawn(async move {

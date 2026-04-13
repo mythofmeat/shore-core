@@ -11,7 +11,8 @@
 
 # [daemon]
 # addr = "127.0.0.1:7320"       # Default listen address
-# allowed_hosts = []              # Empty = allow all; list IPs to restrict
+# unsafe_allow_remote_access = false  # Required for non-loopback binds
+# allowed_hosts = []                  # IP allowlist only; not auth/TLS
 
 # ── Defaults ─────────────────────────────────────────────────────────────
 
@@ -136,6 +137,7 @@ model = "claude-sonnet"            # Must match a key in [chat.*.*] below
 
 # [advanced]
 # api_payload_logging = false
+# cache_forensics = false          # Write prompt-cache diagnostics to cache_forensics.jsonl when debugging cache behavior
 # editor = "nvim"                   # Override $VISUAL / $EDITOR
 # max_retries = 2
 # retry_backoff = "500ms"           # Base delay; doubles on each retry

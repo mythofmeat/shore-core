@@ -487,27 +487,12 @@ fn parse_command(app: &mut App, input: &str) -> Action {
                     args: serde_json::json!({}),
                 })))
             } else {
-                // Switch character, then re-fetch log and status
-                Action::SendMulti(vec![
-                    ConnCommand::Send(ClientMessage::Command(Command {
-                        rid: None,
+                Action::Send(ConnCommand::Send(ClientMessage::Command(Command {
+                    rid: None,
 
-                        name: "switch_character".into(),
-                        args: serde_json::json!({ "name": arg }),
-                    })),
-                    ConnCommand::Send(ClientMessage::Command(Command {
-                        rid: None,
-
-                        name: "log".into(),
-                        args: serde_json::json!({}),
-                    })),
-                    ConnCommand::Send(ClientMessage::Command(Command {
-                        rid: None,
-
-                        name: "status".into(),
-                        args: serde_json::json!({}),
-                    })),
-                ])
+                    name: "switch_character".into(),
+                    args: serde_json::json!({ "name": arg }),
+                })))
             }
         }
 
@@ -585,20 +570,12 @@ fn parse_command(app: &mut App, input: &str) -> Action {
                 } else {
                     serde_json::json!({ "refs": refs })
                 };
-                Action::SendMulti(vec![
-                    ConnCommand::Send(ClientMessage::Command(Command {
-                        rid: None,
+                Action::Send(ConnCommand::Send(ClientMessage::Command(Command {
+                    rid: None,
 
-                        name: "delete".into(),
-                        args,
-                    })),
-                    ConnCommand::Send(ClientMessage::Command(Command {
-                        rid: None,
-
-                        name: "log".into(),
-                        args: serde_json::json!({}),
-                    })),
-                ])
+                    name: "delete".into(),
+                    args,
+                })))
             }
         }
 
@@ -793,5 +770,29 @@ mod tests {
         }
         handle_key(&mut app, make_key(KeyModifiers::SHIFT, KeyCode::Enter));
         assert!(app.input.text.contains('\n'));
+    }
+
+    #[test]
+    fn character_command_sends_single_switch_request() {
+        let mut app = App::default();
+        match parse_command(&mut app, "character Bob") {
+            Action::Send(ConnCommand::Send(ClientMessage::Command(cmd))) => {
+                assert_eq!(cmd.name, "switch_character");
+                assert_eq!(cmd.args["name"], "Bob");
+            }
+            _ => panic!("expected single switch_character send"),
+        }
+    }
+
+    #[test]
+    fn delete_command_sends_single_delete_request() {
+        let mut app = App::default();
+        match parse_command(&mut app, "delete last") {
+            Action::Send(ConnCommand::Send(ClientMessage::Command(cmd))) => {
+                assert_eq!(cmd.name, "delete");
+                assert_eq!(cmd.args["refs"], "last");
+            }
+            _ => panic!("expected single delete send"),
+        }
     }
 }

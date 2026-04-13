@@ -424,10 +424,10 @@ fn create_default_config(config_dir: &Path) {
 # [chat.anthropic.sonnet]
 # model_id = "claude-sonnet-4-6"
 
-# [connections.tcp]
-# enabled = false
+# [daemon]
 # addr = "127.0.0.1:7320"
-# allowed_hosts = []           # empty = allow all
+# unsafe_allow_remote_access = false  # required for non-loopback binds
+# allowed_hosts = []                  # IP allowlist only; not auth/TLS
 
 # [services.llm]
 # command = "node /path/to/shore-llm/dist/index.js"
@@ -642,6 +642,7 @@ model_id = "claude-opus-4-6"
         assert!(!loaded.app.behavior.tool_use.tools.roll_dice());
         assert!(loaded.app.behavior.tool_use.tools.memory());
         assert_eq!(loaded.app.advanced.max_retries, Some(5));
+        assert!(!loaded.app.daemon.unsafe_allow_remote_access);
 
         assert_eq!(loaded.models.chat.len(), 2);
         assert!(loaded.models.find_model("sonnet").is_ok());
@@ -672,6 +673,7 @@ model_id = "claude-opus-4-6"
         assert!(loaded.app.memory.compaction.enabled);
         assert!(loaded.app.memory.collation.enabled);
         assert_eq!(loaded.app.daemon.addr, "127.0.0.1:7320"); // default
+        assert!(!loaded.app.daemon.unsafe_allow_remote_access);
         assert!(loaded.app.advanced.editor.is_none());
         assert!(loaded.app.advanced.max_retries.is_none());
         assert!(loaded.app.advanced.retry_backoff.is_none());

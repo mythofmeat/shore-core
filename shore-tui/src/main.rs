@@ -16,7 +16,6 @@ use crossterm::terminal::{
 use crossterm::ExecutableCommand;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
-use shore_protocol::client_msg::{ClientMessage, Command};
 use shore_protocol::server_msg::ServerMessage;
 use shore_protocol::types::{ContentBlock, Message, Role};
 use tracing::{info, instrument};
@@ -381,19 +380,26 @@ fn handle_conn_event(app: &mut App, event: ConnEvent) -> Vec<ConnCommand> {
             characters,
             history,
             config,
+            selected_character,
             ..
         } => {
             app.connection_status = ConnectionStatus::Connected;
             app.characters = characters.clone();
 
-            // Set character name from first character
-            if let Some(ch) = characters.first() {
+            if let Some(selected) = selected_character {
+                app.character_name = selected;
+            } else if let Some(ch) = characters.first() {
                 app.character_name = ch.name.clone();
             }
 
             // Check private flag from config
             if let Some(private) = config.get("private").and_then(|v| v.as_bool()) {
                 app.is_private = private;
+            }
+            if let Some(model) = config.get("active_model").and_then(|v| v.as_str()) {
+                app.model = model.to_string();
+            } else {
+                app.model.clear();
             }
 
             // Load any history from the handshake
@@ -404,28 +410,7 @@ fn handle_conn_event(app: &mut App, event: ConnEvent) -> Vec<ConnCommand> {
             transmit_entry_images(app);
 
             app.set_status("connected");
-
-            // Request full history, status, and model list from daemon
-            vec![
-                ConnCommand::Send(ClientMessage::Command(Command {
-                    rid: None,
-
-                    name: "log".into(),
-                    args: serde_json::json!({}),
-                })),
-                ConnCommand::Send(ClientMessage::Command(Command {
-                    rid: None,
-
-                    name: "status".into(),
-                    args: serde_json::json!({}),
-                })),
-                ConnCommand::Send(ClientMessage::Command(Command {
-                    rid: None,
-
-                    name: "list_models".into(),
-                    args: serde_json::json!({}),
-                })),
-            ]
+            vec![]
         }
 
         ConnEvent::Disconnected(reason) => {
@@ -612,12 +597,7 @@ fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<ConnCommand> 
             if end.finish_reason == "cancelled" {
                 app.stream.reset();
                 app.set_status("generation cancelled");
-                return vec![ConnCommand::Send(ClientMessage::Command(Command {
-                    rid: None,
-
-                    name: "log".into(),
-                    args: serde_json::json!({}),
-                }))];
+                return vec![];
             }
 
             app.model = end.metadata.model.clone();
@@ -638,15 +618,6 @@ fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<ConnCommand> 
             } else {
                 app.stream.reset();
             }
-
-            // Re-request log to guard against stale History broadcasts
-            // (e.g. from background compaction) overwriting this response.
-            return vec![ConnCommand::Send(ClientMessage::Command(Command {
-                rid: None,
-
-                name: "log".into(),
-                args: serde_json::json!({}),
-            }))];
         }
 
         ServerMessage::Phase(phase) => {
@@ -656,65 +627,7 @@ fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<ConnCommand> 
             }
         }
 
-        ServerMessage::NewMessage(new_msg) => {
-            // Deduplicate: engine.append_message broadcasts History (which
-            // clears + rebuilds entries) AND the handler broadcasts NewMessage
-            // for the same user message.  Skip if the last entry already
-            // matches this timestamp (placed there by the preceding History).
-            let dominated = app.entries.last().is_some_and(|last| {
-                let ts = match last {
-                    ConversationEntry::User { timestamp, .. }
-                    | ConversationEntry::Assistant { timestamp, .. }
-                    | ConversationEntry::System { timestamp, .. } => timestamp.as_str(),
-                    _ => "",
-                };
-                !ts.is_empty() && ts == new_msg.message.timestamp
-            });
-
-            if !dominated {
-                // Check if the last entry is an optimistic user echo (empty
-                // timestamp) that matches this incoming NewMessage.  If so,
-                // replace it with the server-authoritative version instead of
-                // pushing a duplicate.
-                let is_optimistic_echo = new_msg.message.role == Role::User
-                    && app.entries.last().is_some_and(|last| {
-                        matches!(last, ConversationEntry::User { timestamp, content, .. }
-                            if timestamp.is_empty() && *content == new_msg.message.content)
-                    });
-
-                let (max_cols, max_rows) = image_max_cells();
-                for img in &new_msg.message.images {
-                    transmit_image_ref(&mut app.image_cache, img, max_cols, max_rows);
-                }
-                let entry = match new_msg.message.role {
-                    Role::User => ConversationEntry::User {
-                        content: new_msg.message.content,
-                        images: new_msg.message.images,
-                        timestamp: new_msg.message.timestamp,
-                    },
-                    Role::Assistant => ConversationEntry::Assistant {
-                        content: new_msg.message.content,
-                        images: new_msg.message.images,
-                        timestamp: new_msg.message.timestamp,
-                        metadata: None,
-                    },
-                    Role::System => ConversationEntry::System {
-                        content: new_msg.message.content,
-                        timestamp: new_msg.message.timestamp,
-                    },
-                };
-                if is_optimistic_echo {
-                    // Replace optimistic entry with authoritative version
-                    let last = app.entries.len() - 1;
-                    app.entries[last] = entry;
-                } else {
-                    app.entries.push(entry);
-                }
-            }
-            if app.auto_scroll {
-                app.scroll_to_bottom();
-            }
-        }
+        ServerMessage::NewMessage(_) => {}
 
         ServerMessage::ToolCall(tc) => {
             app.stream.active = true;
@@ -806,6 +719,16 @@ fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<ConnCommand> 
                 "switch_character" => {
                     if let Some(name) = co.data.get("character").and_then(|v| v.as_str()) {
                         app.character_name = name.to_string();
+                    }
+                    if let Some(model) = co.data.get("active_model").and_then(|v| v.as_str()) {
+                        app.model = model.to_string();
+                    } else if co.data.get("active_model").is_some_and(|v| v.is_null()) {
+                        app.model.clear();
+                    }
+                    if let Some(private) = co.data.get("private").and_then(|v| v.as_bool()) {
+                        app.is_private = private;
+                    }
+                    if let Some(name) = co.data.get("character").and_then(|v| v.as_str()) {
                         app.set_status(format!("switched to {name}"));
                     }
                 }
@@ -868,7 +791,6 @@ fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<ConnCommand> 
                         let count = deleted.len();
                         app.set_status(format!("deleted {count} message(s)"));
                     }
-                    // Log re-fetch follows automatically (sent as SendMulti)
                 }
                 "compact" | "collate" => {
                     let status = co
@@ -893,6 +815,15 @@ fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<ConnCommand> 
         }
 
         ServerMessage::History(hist) => {
+            if let Some(private) = hist.config.get("private").and_then(|v| v.as_bool()) {
+                app.is_private = private;
+            }
+            if let Some(model) = hist.config.get("active_model").and_then(|v| v.as_str()) {
+                app.model = model.to_string();
+            }
+            if let Some(selected) = hist.selected_character {
+                app.character_name = selected;
+            }
             // Re-sync history
             app.image_cache.clear();
             app.entries.clear();

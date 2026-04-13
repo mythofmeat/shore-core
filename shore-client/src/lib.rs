@@ -5,6 +5,7 @@ pub mod discovery;
 pub mod error;
 pub mod image_protocol;
 pub mod stream;
+pub mod sync;
 
 pub use client_config::{load_client_config, ClientConfig};
 pub use conn_manager::{spawn_connection, ConnCommand, ConnEvent};
@@ -13,6 +14,7 @@ pub use discovery::{discover, discover_data_dir, discover_or_default};
 pub use error::{ClientError, Result};
 pub use image_protocol::{detect_protocol, ImageProtocol};
 pub use stream::{StreamCallbacks, StreamHandler};
+pub use sync::{SyncDecision, SyncState};
 
 #[cfg(test)]
 mod tests {
@@ -21,7 +23,7 @@ mod tests {
     use shore_protocol::client_msg::ClientMessage;
     use shore_protocol::server_msg::*;
     use shore_protocol::types::*;
-    use shore_protocol::SWP_V1;
+    use shore_protocol::{MAX_WIRE_MESSAGE_SIZE, SWP_V1};
 
     use crate::connection::SWPConnection;
     use crate::stream::StreamHandler;
@@ -47,6 +49,12 @@ mod tests {
         let mut line = String::new();
         r.read_line(&mut line).await.unwrap();
         serde_json::from_str(line.trim()).unwrap()
+    }
+
+    async fn write_raw_line<W: tokio::io::AsyncWriteExt + Unpin>(w: &mut W, line: &str) {
+        w.write_all(line.as_bytes()).await.unwrap();
+        w.write_all(b"\n").await.unwrap();
+        w.flush().await.unwrap();
     }
 
     // ── Handshake tests ──────────────────────────────────────────────
@@ -82,6 +90,7 @@ mod tests {
 
             // Server sends history
             let history = ServerMessage::History(History {
+                rid: None,
                 messages: vec![Message {
                     msg_id: "m1".into(),
                     role: Role::User,
@@ -93,6 +102,8 @@ mod tests {
                     timestamp: "2026-01-01T00:00:00Z".into(),
                 }],
                 config: serde_json::json!({}),
+                selected_character: Some("alice".into()),
+                revision: 4,
             });
             write_json_line(&mut w, &history).await;
         });
@@ -107,6 +118,8 @@ mod tests {
         assert_eq!(server_hello.characters.len(), 1);
         assert_eq!(history.messages.len(), 1);
         assert_eq!(history.messages[0].content, "hello");
+        assert_eq!(history.selected_character.as_deref(), Some("alice"));
+        assert_eq!(history.revision, 4);
 
         drop(conn);
         server_handle.await.unwrap();
@@ -236,24 +249,81 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn recv_rejects_oversized_server_message() {
+        let (client_stream, server_stream) = duplex(MAX_WIRE_MESSAGE_SIZE + 4096);
+
+        let server_handle = tokio::spawn(async move {
+            let (_r, mut w) = tokio::io::split(server_stream);
+            let oversized = ServerMessage::Error(Error {
+                rid: None,
+                code: shore_protocol::error::ErrorCode::InternalError,
+                message: "x".repeat(MAX_WIRE_MESSAGE_SIZE + 1),
+            });
+            let line = serde_json::to_string(&oversized).unwrap();
+            write_raw_line(&mut w, &line).await;
+        });
+
+        let mut conn = SWPConnection::from_raw_stream(client_stream);
+        let result = conn.recv().await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            format!("{err}").contains("maximum size"),
+            "expected explicit framing limit error, got: {err}"
+        );
+
+        drop(conn);
+        server_handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn handshake_rejects_oversized_server_hello() {
+        let (client_stream, server_stream) = duplex(MAX_WIRE_MESSAGE_SIZE + 4096);
+
+        tokio::spawn(async move {
+            let (_r, mut w) = tokio::io::split(server_stream);
+            let oversized = serde_json::json!({
+                "type": "hello",
+                "v": SWP_V1,
+                "server_name": "x".repeat(MAX_WIRE_MESSAGE_SIZE + 1),
+                "characters": [],
+            });
+            write_raw_line(&mut w, &serde_json::to_string(&oversized).unwrap()).await;
+        });
+
+        let result = SWPConnection::connect_raw(client_stream, "tui", "test-client", None).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            format!("{err}").contains("maximum size"),
+            "expected explicit framing limit error, got: {err}"
+        );
+    }
+
     // ── StreamHandler tests ──────────────────────────────────────────
 
     #[test]
     fn stream_handler_assembles_chunks() {
         let mut handler = StreamHandler::new();
 
-        let start = ServerMessage::StreamStart(StreamStart { regen: false });
+        let start = ServerMessage::StreamStart(StreamStart {
+            rid: None,
+            regen: false,
+        });
         assert!(handler.feed(&start, None).unwrap());
         assert!(handler.is_active());
         assert!(!handler.is_regen());
 
         let chunk1 = ServerMessage::StreamChunk(StreamChunk {
+            rid: None,
             text: "Hello ".into(),
             content_type: "text".into(),
         });
         assert!(handler.feed(&chunk1, None).unwrap());
 
         let chunk2 = ServerMessage::StreamChunk(StreamChunk {
+            rid: None,
             text: "world!".into(),
             content_type: "text".into(),
         });
@@ -262,6 +332,7 @@ mod tests {
         assert_eq!(handler.assembled_text(), "Hello world!");
 
         let end = ServerMessage::StreamEnd(StreamEnd {
+            rid: None,
             content: "Hello world!".into(),
             metadata: StreamMetadata {
                 tokens: TokenCounts {
@@ -288,7 +359,10 @@ mod tests {
     fn stream_handler_regen_flag() {
         let mut handler = StreamHandler::new();
 
-        let start = ServerMessage::StreamStart(StreamStart { regen: true });
+        let start = ServerMessage::StreamStart(StreamStart {
+            rid: None,
+            regen: true,
+        });
         handler.feed(&start, None).unwrap();
         assert!(handler.is_regen());
     }
@@ -304,6 +378,7 @@ mod tests {
     fn stream_handler_error_on_chunk_without_start() {
         let mut handler = StreamHandler::new();
         let chunk = ServerMessage::StreamChunk(StreamChunk {
+            rid: None,
             text: "oops".into(),
             content_type: "text".into(),
         });
@@ -315,6 +390,7 @@ mod tests {
     fn stream_handler_error_on_end_without_start() {
         let mut handler = StreamHandler::new();
         let end = ServerMessage::StreamEnd(StreamEnd {
+            rid: None,
             content: "".into(),
             metadata: StreamMetadata {
                 tokens: TokenCounts {
@@ -338,10 +414,16 @@ mod tests {
     #[test]
     fn stream_handler_error_on_double_start() {
         let mut handler = StreamHandler::new();
-        let start = ServerMessage::StreamStart(StreamStart { regen: false });
+        let start = ServerMessage::StreamStart(StreamStart {
+            rid: None,
+            regen: false,
+        });
         handler.feed(&start, None).unwrap();
 
-        let start2 = ServerMessage::StreamStart(StreamStart { regen: false });
+        let start2 = ServerMessage::StreamStart(StreamStart {
+            rid: None,
+            regen: false,
+        });
         let result = handler.feed(&start2, None);
         assert!(result.is_err());
     }
@@ -380,11 +462,15 @@ mod tests {
 
         let mut handler = StreamHandler::new();
 
-        let start = ServerMessage::StreamStart(StreamStart { regen: false });
+        let start = ServerMessage::StreamStart(StreamStart {
+            rid: None,
+            regen: false,
+        });
         handler.feed(&start, Some(&mut cb)).unwrap();
         assert!(*started.lock().unwrap());
 
         let chunk = ServerMessage::StreamChunk(StreamChunk {
+            rid: None,
             text: "hi".into(),
             content_type: "text".into(),
         });
@@ -393,6 +479,7 @@ mod tests {
         assert_eq!(*chunk_count.lock().unwrap(), 2);
 
         let end = ServerMessage::StreamEnd(StreamEnd {
+            rid: None,
             content: "hihi".into(),
             metadata: StreamMetadata {
                 tokens: TokenCounts {
@@ -418,14 +505,19 @@ mod tests {
         let mut handler = StreamHandler::new();
 
         // First stream
-        let start = ServerMessage::StreamStart(StreamStart { regen: false });
+        let start = ServerMessage::StreamStart(StreamStart {
+            rid: None,
+            regen: false,
+        });
         handler.feed(&start, None).unwrap();
         let chunk = ServerMessage::StreamChunk(StreamChunk {
+            rid: None,
             text: "first".into(),
             content_type: "text".into(),
         });
         handler.feed(&chunk, None).unwrap();
         let end = ServerMessage::StreamEnd(StreamEnd {
+            rid: None,
             content: "first".into(),
             metadata: StreamMetadata {
                 tokens: TokenCounts {
@@ -445,7 +537,10 @@ mod tests {
         handler.feed(&end, None).unwrap();
 
         // Second stream — feed automatically resets on stream_start
-        let start2 = ServerMessage::StreamStart(StreamStart { regen: true });
+        let start2 = ServerMessage::StreamStart(StreamStart {
+            rid: None,
+            regen: true,
+        });
         handler.feed(&start2, None).unwrap();
         assert!(handler.is_active());
         assert!(handler.is_regen());

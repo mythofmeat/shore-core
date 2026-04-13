@@ -27,7 +27,7 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         return handle_matrix_command(subcommand, &cli).await;
     }
 
-    let addr = resolve_addr(&cli);
+    let addr = resolve_addr(&cli)?;
 
     // Character resolution: --character flag > SHORE_CHARACTER env > state file > None (daemon auto-selects).
     let character = cli.character.clone().or_else(state::read_active_character);
@@ -289,31 +289,10 @@ async fn handle_switch_character(
     conn: &mut SWPConnection,
     name: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Query the daemon for available characters.
-    conn.send_command("list_characters", serde_json::json!({}))
-        .await?;
-    let data = recv_command_data(conn).await?;
-
-    let characters = data["characters"]
-        .as_array()
-        .ok_or("invalid list_characters response")?;
-
-    let valid = characters.iter().any(|c| c["name"].as_str() == Some(name));
-
-    if !valid {
-        let available: Vec<&str> = characters
-            .iter()
-            .filter_map(|c| c["name"].as_str())
-            .collect();
-        return Err(format!(
-            "character '{}' not found (available: {})",
-            name,
-            available.join(", ")
-        )
-        .into());
-    }
-
     info!(character = name, "Switching active character");
+    conn.send_command("switch_character", serde_json::json!({ "name": name }))
+        .await?;
+    let _ = recv_command_data(conn).await?;
     state::write_active_character(name)?;
     println!("Switched to character: {name}");
     println!("To override per-terminal: export SHORE_CHARACTER={name}");
@@ -493,7 +472,7 @@ fn config_dir() -> std::path::PathBuf {
 /// Print the config directory path by querying the daemon.
 /// Falls back to local resolution if the daemon is unreachable.
 async fn print_config_path(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
-    let addr = resolve_addr(cli);
+    let addr = resolve_addr(cli)?;
     let character = cli.character.clone().or_else(state::read_active_character);
 
     match SWPConnection::connect(&addr, "cli", "shore-cli", character).await {
@@ -551,9 +530,9 @@ fn edit_message_in_editor() -> Result<String, Box<dyn std::error::Error>> {
 }
 
 /// Resolve the daemon address from CLI flags or discovery.
-fn resolve_addr(cli: &Cli) -> ServerAddr {
+fn resolve_addr(cli: &Cli) -> Result<ServerAddr, shore_client::ClientError> {
     if let Some(addr) = &cli.addr {
-        return ServerAddr(addr.clone());
+        return Ok(ServerAddr(addr.clone()));
     }
     shore_client::discover_or_default(cli.config.as_deref())
 }
@@ -716,8 +695,11 @@ mod tests {
 
         // Send empty history
         let history = ServerMessage::History(History {
+            rid: None,
             messages: vec![],
             config: serde_json::json!({}),
+            selected_character: None,
+            revision: 0,
         });
         write_json_line(&mut w, &history).await;
 
@@ -786,12 +768,17 @@ mod tests {
 
     fn streaming_response(text: &str) -> Vec<ServerMessage> {
         vec![
-            ServerMessage::StreamStart(StreamStart { regen: false }),
+            ServerMessage::StreamStart(StreamStart {
+                rid: None,
+                regen: false,
+            }),
             ServerMessage::StreamChunk(StreamChunk {
+                rid: None,
                 text: text.into(),
                 content_type: "text".into(),
             }),
             ServerMessage::StreamEnd(StreamEnd {
+                rid: None,
                 content: text.into(),
                 metadata: StreamMetadata {
                     tokens: TokenCounts {
@@ -813,6 +800,7 @@ mod tests {
 
     fn command_response(name: &str) -> Vec<ServerMessage> {
         vec![ServerMessage::CommandOutput(CommandOutput {
+            rid: None,
             name: name.into(),
             data: serde_json::json!({"ok": true}),
         })]
@@ -984,16 +972,22 @@ mod tests {
     #[tokio::test]
     async fn streaming_with_thinking_chunks() {
         let responses = vec![
-            ServerMessage::StreamStart(StreamStart { regen: false }),
+            ServerMessage::StreamStart(StreamStart {
+                rid: None,
+                regen: false,
+            }),
             ServerMessage::StreamChunk(StreamChunk {
+                rid: None,
                 text: "Let me think...".into(),
                 content_type: "thinking".into(),
             }),
             ServerMessage::StreamChunk(StreamChunk {
+                rid: None,
                 text: "Here's the answer.".into(),
                 content_type: "text".into(),
             }),
             ServerMessage::StreamEnd(StreamEnd {
+                rid: None,
                 content: "Here's the answer.".into(),
                 metadata: StreamMetadata {
                     tokens: TokenCounts {

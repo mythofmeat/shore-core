@@ -4,7 +4,7 @@
 //! managing the daemon connection with automatic reconnect and exponential
 //! backoff. Used by shore-tui and shore-matrix.
 
-use crate::{discover_or_default, SWPConnection, ServerAddr};
+use crate::{discover_or_default, SWPConnection, ServerAddr, SyncDecision, SyncState};
 use shore_protocol::client_msg::ClientMessage;
 use shore_protocol::server_msg::ServerMessage;
 use tokio::sync::mpsc;
@@ -19,6 +19,7 @@ pub enum ConnEvent {
         characters: Vec<shore_protocol::types::CharacterInfo>,
         history: Vec<shore_protocol::types::Message>,
         config: serde_json::Value,
+        selected_character: Option<String>,
     },
     Message(ServerMessage),
     Disconnected(String),
@@ -66,9 +67,9 @@ fn next_backoff(current: Duration, max: Duration) -> Duration {
     (current * 2).min(max)
 }
 
-fn resolve_addr(addr: &Option<String>, config: &Option<String>) -> ServerAddr {
+fn resolve_addr(addr: &Option<String>, config: &Option<String>) -> crate::Result<ServerAddr> {
     if let Some(addr) = addr {
-        return ServerAddr(addr.clone());
+        return Ok(ServerAddr(addr.clone()));
     }
     discover_or_default(config.as_deref())
 }
@@ -86,7 +87,20 @@ async fn connection_loop(
     let max_backoff = Duration::from_secs(15);
 
     loop {
-        let addr = resolve_addr(&addr, &config);
+        let addr = match resolve_addr(&addr, &config) {
+            Ok(addr) => addr,
+            Err(e) => {
+                error!(error = %e, "failed to resolve daemon address");
+                let _ = event_tx
+                    .send(ConnEvent::Disconnected(format!(
+                        "address resolution failed: {e}"
+                    )))
+                    .await;
+                sleep(backoff).await;
+                backoff = next_backoff(backoff, max_backoff);
+                continue;
+            }
+        };
         info!(addr = ?addr, client = %app_name, "attempting connection");
 
         match SWPConnection::connect(&addr, &client_id, &app_name, character.clone()).await {
@@ -98,6 +112,7 @@ async fn connection_loop(
                     "connected to daemon"
                 );
                 backoff = Duration::from_millis(500);
+                let mut sync_state = SyncState::new(history.revision);
 
                 let _ = event_tx
                     .send(ConnEvent::Connected {
@@ -105,6 +120,7 @@ async fn connection_loop(
                         characters: hello.characters,
                         history: history.messages,
                         config: history.config,
+                        selected_character: history.selected_character,
                     })
                     .await;
 
@@ -146,6 +162,13 @@ async fn connection_loop(
                                     // Keepalive — ignore
                                 }
                                 Ok(msg) => {
+                                    if matches!(sync_state.observe(&msg), SyncDecision::DropStale) {
+                                        debug!(
+                                            latest_revision = sync_state.latest_revision(),
+                                            "dropping stale sync message"
+                                        );
+                                        continue;
+                                    }
                                     if event_tx.send(ConnEvent::Message(msg)).await.is_err() {
                                         debug!("event receiver dropped, exiting connection loop");
                                         return;
@@ -223,7 +246,7 @@ mod tests {
 
     #[test]
     fn test_resolve_addr_explicit_tcp() {
-        let addr = resolve_addr(&Some("127.0.0.1:9090".into()), &None);
+        let addr = resolve_addr(&Some("127.0.0.1:9090".into()), &None).unwrap();
         assert_eq!(addr.0, "127.0.0.1:9090");
     }
 }
