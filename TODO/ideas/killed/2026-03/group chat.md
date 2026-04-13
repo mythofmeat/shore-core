@@ -1,0 +1,4 @@
+- what if characters could choose to message another character as a part of their potential options on what to do when they receive a heartbeat prompt
+- could create groups of characters that are allowed to interact with one another. and have the messages work kind of like an inbox/outbox text message sort of system, where the response from the other character would happen during *their* heartbeat (because the heartbeat probe told them they had an unanswered message from the other character)
+- important: let's not go overboard. this is a small flavor thing. we don't want runaway costs here. but a couple cents every couple of days is a reasonable price to pay for a more alive-seeming companion.
+- the user can check in on the group chats and send messages in the group chat that can be optionally responded to when the character's heartbeat probe comes in
