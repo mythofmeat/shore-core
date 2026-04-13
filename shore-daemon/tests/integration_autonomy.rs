@@ -10,7 +10,7 @@
 
 use std::time::Duration;
 
-use shore_test_harness::{TestConfigBuilder, TestHarness};
+use shore_test_harness::TestHarness;
 
 /// Helper: yield the runtime multiple times so spawned tasks (especially the
 /// autonomy tick loop) have a chance to process after a time advance.
@@ -201,8 +201,6 @@ async fn test_user_message_resets_keepalive_timer() {
     harness.mock_llm.enqueue_text("Hello!").await;
     let _r = harness.send_and_collect("Initial message").await;
     tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let baseline = harness.mock_llm.received_requests().await.len();
 
     tokio::time::pause();
 
