@@ -4,6 +4,41 @@ All notable changes to Shore are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.0] — 2026-04-13
+
+### Added
+- Session-scoped response routing: server routes responses back to the originating session rather than broadcasting, preventing cross-session leakage
+- Truthful SWP handshake snapshots: clients receive authoritative state on connect instead of reconstructing from subsequent events
+- Revisioned authoritative history sync: clients reconcile divergent local history against server revision numbers
+- Request ID echoing in SWP server responses so clients can correlate requests with responses
+- Direct-response guardrails test suite and CI workflow (`protocol-guardrails.yml`) to prevent protocol regressions
+- Explicit remote access model: opt-in network binding with configurable `remote_access` policy (defaults to loopback-only)
+- Explicit runtime invalidation boundary for character/config reloads, with covering tests in command dispatch and handler layers
+- Operability pass: startup logging, README deployment notes, example config coverage for new options
+
+### Fixed
+- Daemon mutex poison recovery across autonomy, state, memory agent, and sync paths
+- Registry and discovery robustness: stale-socket cleanup, connection-manager retries, and discovery path safety
+- Client-side wire framing: length-prefix validation, partial-read handling, and boundary errors
+
+### Changed
+- Split monolithic `shore-daemon/src/commands/state.rs` (~2k LOC) into focused submodules (`config`, `memory`, `models`, `status`, `tests`)
+- Split `shore-daemon/src/handler/mod.rs` into `command_dispatch`, `task`, and per-concern test files
+- Rework daemon startup surface: cleaner main entrypoint, structured logging of bound address and mode
+- Expand concurrency integration test coverage
+- Reorganize `docs/todo/` plans, close out completed refactor/hardening tracks, and retire stale plan files
+
+## [0.13.1] — 2026-04-13
+
+### Added
+- Panic policy (`docs/panic-policy.md`) and compaction responsiveness test coverage
+
+### Fixed
+- Harden compaction paths across daemon and ledger; clean remaining clippy warnings
+
+### Changed
+- Workspace-wide `cargo fmt` pass
+
 ## [0.13.0] — 2026-04-11
 
 ### Added
@@ -301,6 +336,9 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Command dispatch (US-017)
 - End-to-end conversation milestone (US-018)
 
+[0.14.0]: https://github.com/eshen/silvershore/compare/v0.13.2...v0.14.0
+[0.13.2]: https://github.com/eshen/silvershore/compare/v0.13.1...v0.13.2
+[0.13.1]: https://github.com/eshen/silvershore/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/eshen/silvershore/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/eshen/silvershore/compare/v0.11.1...v0.12.0
 [0.11.1]: https://github.com/eshen/silvershore/compare/v0.11.0...v0.11.1
