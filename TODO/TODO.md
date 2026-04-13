@@ -1,0 +1,1 @@
+- [ ] regression: we have somehow lost a previous interiority integration step, where when the user messaged the assistant after the assistant had any amount of interiority ticks, the interiority ticks would be included as a system message (or prepended to the user message when using anthropic sdk). the interiority integration was placed after the time-gap-awareness section.
