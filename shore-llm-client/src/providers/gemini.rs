@@ -376,9 +376,7 @@ pub async fn stream(
         request.api_key,
     );
 
-    let mut req_builder = client
-        .post(&url)
-        .header("Content-Type", "application/json");
+    let mut req_builder = client.post(&url).header("Content-Type", "application/json");
     if let Some(ref rid) = request.rid {
         req_builder = req_builder.header("X-Request-ID", rid);
     }
@@ -535,9 +533,7 @@ pub async fn generate(
 
     let start = Instant::now();
 
-    let mut req_builder = client
-        .post(&url)
-        .header("Content-Type", "application/json");
+    let mut req_builder = client.post(&url).header("Content-Type", "application/json");
     if let Some(ref rid) = request.rid {
         req_builder = req_builder.header("X-Request-ID", rid);
     }

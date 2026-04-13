@@ -237,7 +237,11 @@ pub struct RealCompactionLlm {
 
 impl RealCompactionLlm {
     pub fn new(client: LedgerClient, model: ResolvedModel, character: String) -> Self {
-        Self { client, model, character }
+        Self {
+            client,
+            model,
+            character,
+        }
     }
 }
 
@@ -330,10 +334,7 @@ impl VectorIndexer for RealVectorIndexer {
         })
     }
 
-    fn remove_entry(
-        &self,
-        entry_id: &str,
-    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+    fn remove_entry(&self, entry_id: &str) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
         let entry_id = entry_id.to_string();
         Box::pin(async move {
             if let Err(e) = self.store.delete_entry(&entry_id).await {
@@ -359,14 +360,13 @@ impl RealConversationManager {
             character_dir: character_dir.to_path_buf(),
         }
     }
-}
 
-impl ConversationManager for RealConversationManager {
-    fn archive_and_retain(
+    pub fn archive_and_retain(
         &self,
         _conversation_id: &str,
         params: RetentionParams,
     ) -> Result<String, CompactionError> {
+        let started = std::time::Instant::now();
         let active_path = self.character_dir.join("active.jsonl");
 
         // Use pre-read content from params to avoid TOCTOU race — the file
@@ -438,12 +438,13 @@ impl ConversationManager for RealConversationManager {
         } else {
             retained_lines.join("\n") + "\n"
         };
-        crate::engine::atomic::atomic_write(&active_path, retained_content.as_bytes())
-            .map_err(|e| {
+        crate::engine::atomic::atomic_write(&active_path, retained_content.as_bytes()).map_err(
+            |e| {
                 CompactionError::ConversationManager(format!(
                     "failed to write retained messages: {e}"
                 ))
-            })?;
+            },
+        )?;
 
         // Write recap if provided.
         if let Some(recap) = &params.recap {
@@ -456,7 +457,37 @@ impl ConversationManager for RealConversationManager {
             )?;
         }
 
+        debug!(
+            archived = archive_lines.len(),
+            retained = retained_lines.len(),
+            elapsed = ?started.elapsed(),
+            "compaction: archive/retain file mutation complete"
+        );
         Ok(Uuid::new_v4().to_string())
+    }
+}
+
+impl ConversationManager for RealConversationManager {
+    fn archive_and_retain(
+        &self,
+        conversation_id: &str,
+        params: RetentionParams,
+    ) -> Pin<Box<dyn Future<Output = Result<String, CompactionError>> + Send + '_>> {
+        let character_dir = self.character_dir.clone();
+        let conversation_id = conversation_id.to_string();
+
+        Box::pin(async move {
+            tokio::task::spawn_blocking(move || {
+                let mgr = RealConversationManager { character_dir };
+                mgr.archive_and_retain(&conversation_id, params)
+            })
+            .await
+            .map_err(|e| {
+                CompactionError::ConversationManager(format!(
+                    "archive_and_retain task failed to join: {e}"
+                ))
+            })?
+        })
     }
 }
 

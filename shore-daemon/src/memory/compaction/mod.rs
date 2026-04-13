@@ -170,6 +170,7 @@ impl CompactionManager {
         conversation_mgr: &dyn ConversationManager,
         dry_run: bool,
     ) -> Result<CompactionOutcome, CompactionError> {
+        let compaction_started = std::time::Instant::now();
         info!(
             conversation_id,
             messages = messages.len(),
@@ -248,6 +249,8 @@ impl CompactionManager {
         // Each element: (entry_id, changelog_id, indexed_in_vector_store).
         // changelog_id is None until the changelog row is successfully written.
         let mut created: Vec<(String, Option<i64>, bool)> = Vec::new();
+        let mut db_entry_elapsed = std::time::Duration::ZERO;
+        let mut vector_index_elapsed = std::time::Duration::ZERO;
 
         for (i, ce) in compacted.iter().enumerate() {
             let entry_id = Self::generate_entry_id(i);
@@ -275,18 +278,26 @@ impl CompactionManager {
                 collated_at: String::new(),
             };
 
+            let db_entry_started = std::time::Instant::now();
             if let Err(e) = db.create_entry(&entry) {
                 Self::rollback_compaction(&created, db, indexer).await;
                 return Err(CompactionError::Db(e.to_string()));
             }
+            let db_elapsed = db_entry_started.elapsed();
+            db_entry_elapsed += db_elapsed;
+            debug!(entry_id, elapsed = ?db_elapsed, "compaction: DB entry created");
 
             // Entry now exists in SQLite. Track it (changelog_id=None, not yet indexed).
             created.push((entry_id.clone(), None, false));
 
+            let vector_index_started = std::time::Instant::now();
             if let Err(e) = indexer.index_entry(&entry_id, &ce.summary_text).await {
                 Self::rollback_compaction(&created, db, indexer).await;
                 return Err(e);
             }
+            let index_elapsed = vector_index_started.elapsed();
+            vector_index_elapsed += index_elapsed;
+            debug!(entry_id, elapsed = ?index_elapsed, "compaction: vector entry indexed");
             // Mark as indexed so rollback will remove it from the vector store.
             created.last_mut().unwrap().2 = true;
 
@@ -313,24 +324,43 @@ impl CompactionManager {
                 return Err(CompactionError::Db(e.to_string()));
             }
         }
+        debug!(
+            entries = compacted.len(),
+            elapsed = ?db_entry_elapsed,
+            "compaction: DB entry loop complete"
+        );
+        debug!(
+            entries = compacted.len(),
+            elapsed = ?vector_index_elapsed,
+            "compaction: vector indexing loop complete"
+        );
 
         // Archive compacted messages, retain recent, write recap.
         // This is the final step — if it fails, roll back all SQLite and vector store writes.
         let retained = messages.len() - split_at;
-        let new_conversation_id = match conversation_mgr.archive_and_retain(
-            conversation_id,
-            RetentionParams {
-                keep_last_n: retained,
-                recap: recap.clone(),
-                active_content: active_content.to_string(),
-            },
-        ) {
+        let archive_started = std::time::Instant::now();
+        let new_conversation_id = match conversation_mgr
+            .archive_and_retain(
+                conversation_id,
+                RetentionParams {
+                    keep_last_n: retained,
+                    recap: recap.clone(),
+                    active_content: active_content.to_string(),
+                },
+            )
+            .await
+        {
             Ok(id) => id,
             Err(e) => {
                 Self::rollback_compaction(&created, db, indexer).await;
                 return Err(e);
             }
         };
+        debug!(
+            retained,
+            elapsed = ?archive_started.elapsed(),
+            "compaction: archive/retain done"
+        );
 
         let entry_ids: Vec<String> = created.into_iter().map(|(id, _, _)| id).collect();
 
@@ -338,6 +368,7 @@ impl CompactionManager {
             entries_created = entry_ids.len(),
             conversation_id,
             retained,
+            elapsed = ?compaction_started.elapsed(),
             "Compaction complete"
         );
         Ok(CompactionOutcome::Compacted(CompactionResult {
@@ -431,7 +462,9 @@ mod tests {
     use std::future::Future;
     use std::pin::Pin;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::mpsc;
     use std::sync::Mutex as StdMutex;
+    use tokio::sync::oneshot;
 
     // -- Mock implementations ------------------------------------------------
 
@@ -502,12 +535,72 @@ mod tests {
             &self,
             conversation_id: &str,
             params: RetentionParams,
-        ) -> Result<String, CompactionError> {
+        ) -> Pin<Box<dyn Future<Output = Result<String, CompactionError>> + Send + '_>> {
             self.archived
                 .lock()
                 .unwrap()
                 .push((conversation_id.to_string(), params.keep_last_n));
-            Ok(self.next_id.clone())
+            let next_id = self.next_id.clone();
+            Box::pin(async move { Ok(next_id) })
+        }
+    }
+
+    struct BlockingConversationMgr {
+        entered_tx: StdMutex<Option<oneshot::Sender<()>>>,
+        release_rx: StdMutex<Option<mpsc::Receiver<()>>>,
+        next_id: String,
+    }
+
+    impl BlockingConversationMgr {
+        fn new(next_id: &str) -> (Self, oneshot::Receiver<()>, mpsc::Sender<()>) {
+            let (entered_tx, entered_rx) = oneshot::channel();
+            let (release_tx, release_rx) = mpsc::channel();
+            (
+                Self {
+                    entered_tx: StdMutex::new(Some(entered_tx)),
+                    release_rx: StdMutex::new(Some(release_rx)),
+                    next_id: next_id.to_string(),
+                },
+                entered_rx,
+                release_tx,
+            )
+        }
+    }
+
+    impl ConversationManager for BlockingConversationMgr {
+        fn archive_and_retain(
+            &self,
+            _conversation_id: &str,
+            _params: RetentionParams,
+        ) -> Pin<Box<dyn Future<Output = Result<String, CompactionError>> + Send + '_>> {
+            let entered_tx = self.entered_tx.lock().unwrap().take();
+            let release_rx = self
+                .release_rx
+                .lock()
+                .unwrap()
+                .take()
+                .expect("test setup should install a release receiver");
+            let next_id = self.next_id.clone();
+
+            Box::pin(async move {
+                tokio::task::spawn_blocking(move || {
+                    if let Some(tx) = entered_tx {
+                        let _ = tx.send(());
+                    }
+                    release_rx.recv().map_err(|_| {
+                        CompactionError::ConversationManager(
+                            "test release signal dropped before archive completed".to_string(),
+                        )
+                    })?;
+                    Ok(next_id)
+                })
+                .await
+                .map_err(|err| {
+                    CompactionError::ConversationManager(format!(
+                        "blocking archive task failed: {err}"
+                    ))
+                })?
+            })
         }
     }
 
@@ -518,10 +611,12 @@ mod tests {
             &self,
             _conversation_id: &str,
             _params: RetentionParams,
-        ) -> Result<String, CompactionError> {
-            Err(CompactionError::ConversationManager(
-                "simulated archive failure".to_string(),
-            ))
+        ) -> Pin<Box<dyn Future<Output = Result<String, CompactionError>> + Send + '_>> {
+            Box::pin(async {
+                Err(CompactionError::ConversationManager(
+                    "simulated archive failure".to_string(),
+                ))
+            })
         }
     }
 
@@ -558,17 +653,16 @@ mod tests {
             let _entry_id = entry_id;
             Box::pin(async move {
                 if should_fail {
-                    Err(CompactionError::Indexing("simulated index failure".to_string()))
+                    Err(CompactionError::Indexing(
+                        "simulated index failure".to_string(),
+                    ))
                 } else {
                     Ok(())
                 }
             })
         }
 
-        fn remove_entry(
-            &self,
-            entry_id: &str,
-        ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        fn remove_entry(&self, entry_id: &str) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
             self.removed.lock().unwrap().push(entry_id.to_string());
             Box::pin(async {})
         }
@@ -954,6 +1048,70 @@ They discussed daily activities and the user's beverage preferences.
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0, "old-conv");
         assert_eq!(calls[0].1, 6);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_compaction_archive_boundary_keeps_executor_responsive() {
+        let db = MemoryDB::open_in_memory().unwrap();
+        let llm = MockLlm {
+            response: make_xml_response(),
+        };
+        let indexer = MockIndexer::new();
+        let (conv_mgr, entered_rx, release_tx) = BlockingConversationMgr::new("new-conv-3");
+        let mgr = CompactionManager::new(make_config_with_keep(2));
+
+        let compaction = tokio::spawn(async move {
+            mgr.compact(
+                "conv-1",
+                &make_messages(10),
+                "",
+                false,
+                DEFAULT_COMPACT_PROMPT,
+                None,
+                "TestChar",
+                "TestUser",
+                &llm,
+                &db,
+                &indexer,
+                &conv_mgr,
+                false,
+            )
+            .await
+        });
+
+        tokio::time::timeout(Duration::from_millis(250), entered_rx)
+            .await
+            .expect("blocking archive boundary should start promptly")
+            .expect("blocking archive boundary should signal entry");
+
+        let sibling_ran = Arc::new(AtomicBool::new(false));
+        let sibling_ran_clone = Arc::clone(&sibling_ran);
+        let sibling_task = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            sibling_ran_clone.store(true, Ordering::SeqCst);
+        });
+
+        // This is a regression harness for the spawn_blocking boundary around
+        // archive/retain. On a current-thread runtime, a future that blocked the
+        // executor inline would starve this sibling task until release.
+        tokio::time::timeout(Duration::from_millis(250), sibling_task)
+            .await
+            .expect("sibling task should stay responsive during compaction")
+            .unwrap();
+        assert!(sibling_ran.load(Ordering::SeqCst));
+
+        release_tx
+            .send(())
+            .expect("test release signal should still be connected");
+
+        let result = compaction.await.unwrap().unwrap();
+        match result {
+            CompactionOutcome::Compacted(r) => {
+                assert_eq!(r.new_conversation_id, "new-conv-3");
+                assert_eq!(r.entries_created.len(), 2);
+            }
+            _ => panic!("Expected Compacted outcome"),
+        }
     }
 
     #[tokio::test]

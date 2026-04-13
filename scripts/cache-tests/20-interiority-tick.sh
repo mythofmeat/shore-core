@@ -4,7 +4,7 @@
 #
 # Sequence:
 #   1. Send 3 messages (warm up cache, establish baseline)
-#   2. Force an interiority tick via `shore debug force-tick`
+#   2. Force an interiority tick via `shore debug interiority_tick_now`
 #   3. Wait for the tick to complete (~15s)
 #   4. Send 2 more messages
 #   5. Check that cache_r never dropped to 0 after the cold start
@@ -138,7 +138,7 @@ echo -e "${CYAN}[$TEST_NAME]${NC} pre-tick cache_r=$PRE_TICK_CACHE_R"
 
 # ── Phase 2: Force interiority tick ───────────────────────────────
 echo -e "${CYAN}[$TEST_NAME]${NC} === PHASE 2: Force interiority tick ==="
-send_cmd "force-tick"
+send_cmd "interiority_tick_now"
 wait_for_tick || harness_fail "interiority tick did not fire"
 
 # ── Phase 3: Verify tick didn't bust cache ────────────────────────

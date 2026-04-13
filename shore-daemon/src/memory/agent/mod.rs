@@ -202,7 +202,11 @@ impl MemoryAgent {
         )
         .await?;
 
-        debug!(mutations = mutations.len(), response_len = text.len(), "Memory agent run_query complete");
+        debug!(
+            mutations = mutations.len(),
+            response_len = text.len(),
+            "Memory agent run_query complete"
+        );
         history.push(json!({"role": "assistant", "content": text}));
 
         if mutations.is_empty() {
@@ -249,7 +253,11 @@ impl MemoryAgent {
             }
         }
 
-        debug!(hits = hits.len(), entries = entries.len(), "Legacy RAG query complete");
+        debug!(
+            hits = hits.len(),
+            entries = entries.len(),
+            "Legacy RAG query complete"
+        );
         Ok(MemoryQueryResult {
             entries,
             query_text: request.to_string(),

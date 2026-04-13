@@ -2,6 +2,14 @@
 
 Unexpected behavior, kludges, and idiosyncrasies that aren't obvious from reading the code. If you assumed something would work one way and it didn't, document it here.
 
+Scope guardrails:
+
+- Put external/provider/platform oddities here.
+- Do not use this file for protocol debt, architecture mismatches, or planned
+  cleanup work.
+- If the issue changes Shore's intended wire contract or state ownership, put
+  it in `docs/ARCHITECTURE.md` or a focused design document instead.
+
 ## Provider Integrations
 
 - **OpenRouter defaults to `Sdk::Openai`** but can be overridden to `Sdk::Anthropic` per model (e.g. `sdk = "anthropic"` for Claude models). The `base_url` in hardcoded defaults routes requests to OpenRouter's API. If the base_url is missing or wrong, requests go to OpenAI instead — silently.
@@ -37,5 +45,9 @@ Unexpected behavior, kludges, and idiosyncrasies that aren't obvious from readin
 - **Anthropic 1h cache TTL pricing differs from OpenRouter's reported 5m prices.** OpenRouter reports cache_write prices for the 5-minute TTL. Shore uses 1-hour TTL, where cache_write costs are 2x input price (5-minute price is 1.25x input). Hardcoded as `ANTHROPIC_1H_CACHE_WRITE_MULTIPLIER = 1.6`.
 
 ## Image Handling
+
+- **Autonomy path lacks image cache warm-up.** The `rebuild_request_from_disk` call in `autonomy/manager.rs` is synchronous, so it cannot call `warm_image_cache()` (which is async). Images sent during autonomous turns still get resized and cached via the synchronous `cached_resize()` fallback inside `build_content`, but the first encounter of each image pays the full resize cost inline rather than pre-warming in parallel. This only matters if the character has images in its conversation history when an autonomous turn fires.
+
+- **Retry may return over-limit images for transparent PNGs.** The resize pipeline retries once with more aggressive parameters if the first attempt exceeds the byte limit. For transparent images (which must stay PNG), if the retried result still exceeds the limit, it is sent anyway with a warn log. This is a deliberate trade-off: sending a slightly-too-large image that might work is better than dropping it entirely. The API may reject it, but the alternative (converting to JPEG and losing transparency) was deemed worse.
 
 - **User messages always have `content_blocks` populated.** This means the `build_content(text, images)` fallback in the LLM message builder is dead code for user messages — it only fires when `content_blocks` is empty. Prior to the fix, `m.images` was silently dropped for all user messages because the `content_blocks` branch didn't encode them. Image encoding must happen in both branches.

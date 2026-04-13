@@ -1,9 +1,5 @@
 //! Stream retry and tool-phase execution for the generation pipeline.
 
-use std::sync::atomic::Ordering;
-use std::sync::Arc;
-
-use tokio::sync::Mutex;
 use tracing::{debug, error, instrument, warn};
 
 use crate::engine::tools;
@@ -12,21 +8,19 @@ use crate::memory::agent_llm::RealAgentLlm;
 use crate::memory::compaction_impls::resolve_embed_config;
 use crate::memory::researcher::MemoryResearcher;
 use crate::tools::context::{NoopRag, SharedToolContext};
-use shore_config::models::Sdk;
 use shore_config::LoadedConfig;
 use shore_ledger::CallType;
 use shore_llm_client::retry::{self, RetryDecision, RetryPolicy};
-use shore_llm_client::stream::{CacheContext, StreamConsumer};
+use shore_llm_client::stream::StreamConsumer;
 
 use super::{GenContext, HandlerToolContext};
 
 /// Phase 10: Stream the LLM response with exponential backoff retry.
-#[instrument(skip(ctx, request, engine_arc, effective_config), fields(char = char_name, model = %resolved.qualified_name))]
+#[instrument(skip(ctx, request, effective_config), fields(char = char_name, model = %resolved.qualified_name))]
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn stream_with_retry(
     ctx: &GenContext,
     request: &shore_llm_client::types::LlmRequest,
-    engine_arc: &Arc<Mutex<crate::engine::ConversationEngine>>,
     resolved: &shore_config::models::ResolvedModel,
     effective_config: &LoadedConfig,
     regen: bool,
@@ -50,7 +44,7 @@ pub(super) async fn stream_with_retry(
     let mut attempt: u32 = 0;
 
     loop {
-        let consumer = StreamConsumer::new(ctx.push_tx.clone());
+        let consumer = StreamConsumer::new(ctx.direct_tx.clone(), request.rid.clone());
 
         let stream_result = async {
             let mut ledger_stream = ctx
@@ -58,22 +52,7 @@ pub(super) async fn stream_with_retry(
                 .stream_raw(request, CallType::Message, char_name, thinking_enabled)
                 .await?;
 
-            let turn_count = engine_arc.lock().await.messages().len();
-            let cache_warnings = matches!(resolved.sdk, Sdk::Anthropic)
-                && effective_config.app.advanced.cache_invalidation_warnings;
-            let is_first_after_compaction = ctx.compaction_occurred.swap(false, Ordering::AcqRel);
-            let cache_ctx = CacheContext {
-                conversation_turn_count: turn_count,
-                is_first_after_restart: ctx.is_first_after_restart.load(Ordering::Acquire),
-                is_first_after_compaction,
-                cache_invalidation_warnings: cache_warnings,
-                has_seen_cache_read: ctx.has_seen_cache_read.load(Ordering::Acquire),
-            };
-
-            match consumer
-                .consume(ledger_stream.reader_mut(), regen, &cache_ctx)
-                .await
-            {
+            match consumer.consume(ledger_stream.reader_mut(), regen).await {
                 Ok(result) => {
                     ledger_stream.finalize(&result);
                     Ok(result)
@@ -88,9 +67,6 @@ pub(super) async fn stream_with_retry(
 
         match stream_result {
             Ok(r) => {
-                if r.usage.cache_read_tokens > 0 {
-                    ctx.has_seen_cache_read.store(true, Ordering::Release);
-                }
                 debug!(
                     attempts = attempt + 1,
                     finish_reason = %r.finish_reason,
@@ -132,7 +108,7 @@ pub(super) async fn stream_with_retry(
 }
 
 /// Phase 11: Set up tool context and run the tool loop.
-#[instrument(skip(ctx, effective_config, agent_model, researcher_model, character_definition, user_definition, request, result, cache_ctx), fields(char = char_name))]
+#[instrument(skip(ctx, effective_config, agent_model, researcher_model, character_definition, user_definition, request, result), fields(char = char_name))]
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn run_tool_phase(
     ctx: &GenContext,
@@ -145,7 +121,6 @@ pub(super) async fn run_tool_phase(
     user_definition: &Option<String>,
     request: &mut shore_llm_client::types::LlmRequest,
     result: shore_llm_client::types::StreamResult,
-    cache_ctx: &CacheContext,
 ) -> Result<tools::ToolLoopResult, Box<dyn std::error::Error + Send + Sync>> {
     debug!(character = char_name, "run_tool_phase starting");
     let memory_db = {
@@ -182,7 +157,10 @@ pub(super) async fn run_tool_phase(
     ) {
         Ok(embed_config) => {
             let mut registry = ctx.registry.lock().await;
-            match registry.get_or_open_vs(char_name, embed_config.dimensions).await {
+            match registry
+                .get_or_open_vs(char_name, embed_config.dimensions)
+                .await
+            {
                 Ok(vs) => Some(AgentSearchContext::new(
                     vs,
                     ctx.llm_client.inner().clone(),
@@ -205,14 +183,22 @@ pub(super) async fn run_tool_phase(
                 char_name,
                 &effective_config.app.defaults.resolve_display_name(),
             ),
-            agent_llm: RealAgentLlm::new(ctx.llm_client.clone(), char_name.to_owned(), CallType::MemoryAgent),
+            agent_llm: RealAgentLlm::new(
+                ctx.llm_client.clone(),
+                char_name.to_owned(),
+                CallType::MemoryAgent,
+            ),
             agent_model_val: agent_model.clone(),
             researcher: researcher_model
                 .as_ref()
                 .map(|_| MemoryResearcher::new(char_def, user_def)),
-            researcher_llm_val: researcher_model
-                .as_ref()
-                .map(|_| RealAgentLlm::new(ctx.llm_client.clone(), char_name.to_owned(), CallType::Researcher)),
+            researcher_llm_val: researcher_model.as_ref().map(|_| {
+                RealAgentLlm::new(
+                    ctx.llm_client.clone(),
+                    char_name.to_owned(),
+                    CallType::Researcher,
+                )
+            }),
             researcher_model_val: researcher_model.clone(),
             rag: NoopRag,
             search_ctx,
@@ -239,16 +225,15 @@ pub(super) async fn run_tool_phase(
         .as_ref()
         .and_then(|opts| opts.get("budget_tokens"))
         .and_then(|v| v.as_u64())
-        .map_or(false, |b| b > 0);
+        .is_some_and(|b| b > 0);
 
     let tool_loop_result = tools::run_tool_loop(
         &ctx.llm_client,
-        &ctx.push_tx,
+        &ctx.direct_tx,
         request,
         result,
         &tool_ctx,
         effective_config.app.behavior.tool_use.max_iterations,
-        cache_ctx,
         &ctx.diagnostics,
         char_name,
         thinking_enabled,

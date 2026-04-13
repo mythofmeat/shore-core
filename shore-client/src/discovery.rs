@@ -12,14 +12,11 @@ pub struct InstanceEntry {
     /// Instance ID.
     #[serde(default)]
     pub id: Option<String>,
-    /// Socket path (Unix) or `host:port` (TCP) where the daemon listens.
-    pub socket_path: String,
+    /// TCP address where the daemon listens.
+    pub addr: String,
     /// PID of the daemon process.
     #[serde(default)]
     pub pid: Option<u32>,
-    /// Optional TCP address.
-    #[serde(default)]
-    pub tcp_addr: Option<String>,
     /// Resolved data directory (written by daemon at registration).
     #[serde(default)]
     pub data_dir: Option<String>,
@@ -38,12 +35,33 @@ pub fn instances_path() -> PathBuf {
 
 /// Read the instances file and return all live entries (dead PIDs are skipped).
 pub fn read_instances() -> Result<Vec<InstanceEntry>> {
-    let path = instances_path();
+    read_instances_from_path(&instances_path())
+}
+
+fn read_instances_from_path(path: &Path) -> Result<Vec<InstanceEntry>> {
     debug!(path = %path.display(), "reading instances file");
-    let data = std::fs::read_to_string(&path)
-        .map_err(|e| ClientError::Discovery(format!("cannot read {}: {e}", path.display())))?;
-    let entries: InstancesFile = serde_json::from_str(&data)
-        .map_err(|e| ClientError::Discovery(format!("invalid JSON in {}: {e}", path.display())))?;
+    let data = std::fs::read_to_string(path).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            ClientError::Discovery(format!(
+                "instances registry not found at {}",
+                path.display()
+            ))
+        } else {
+            ClientError::Discovery(format!(
+                "cannot read instances registry {}: {e}",
+                path.display()
+            ))
+        }
+    })?;
+    if data.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let entries: InstancesFile = serde_json::from_str(&data).map_err(|e| {
+        ClientError::Discovery(format!(
+            "corrupt instances registry {}: {e}",
+            path.display()
+        ))
+    })?;
     let total = entries.len();
     let live: Vec<_> = entries.into_iter().filter(entry_alive).collect();
     debug!(total, live = live.len(), "discovered daemon instances");
@@ -53,16 +71,46 @@ pub fn read_instances() -> Result<Vec<InstanceEntry>> {
 /// Check whether an instance entry's PID is still running.
 fn entry_alive(entry: &InstanceEntry) -> bool {
     match entry.pid {
-        Some(pid) => Path::new(&format!("/proc/{pid}")).exists(),
+        Some(pid) => !matches!(pid_state(pid), ProcessState::Dead),
         None => true, // no PID recorded — can't prune, assume alive
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProcessState {
+    Alive,
+    Dead,
+    Unknown,
+}
+
+#[cfg(unix)]
+fn pid_state(pid: u32) -> ProcessState {
+    let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    if rc == 0 {
+        return ProcessState::Alive;
+    }
+
+    match std::io::Error::last_os_error().raw_os_error() {
+        Some(libc::ESRCH) => ProcessState::Dead,
+        Some(libc::EPERM) => ProcessState::Alive,
+        _ => ProcessState::Unknown,
+    }
+}
+
+#[cfg(not(unix))]
+fn pid_state(_pid: u32) -> ProcessState {
+    ProcessState::Unknown
 }
 
 /// Find the `ServerAddr` for a daemon whose config matches `config_path`.
 ///
 /// If `config_path` is `None`, returns the first (default) entry.
 pub fn discover(config_path: Option<&str>) -> Result<ServerAddr> {
-    let entries = read_instances()?;
+    discover_from_path(&instances_path(), config_path)
+}
+
+fn discover_from_path(path: &Path, config_path: Option<&str>) -> Result<ServerAddr> {
+    let entries = read_instances_from_path(path)?;
 
     let entry = match config_path {
         Some(wanted) => entries
@@ -74,60 +122,62 @@ pub fn discover(config_path: Option<&str>) -> Result<ServerAddr> {
             .ok_or_else(|| ClientError::Discovery("instances file is empty".into()))?,
     };
 
-    Ok(addr_from_socket(&entry.socket_path))
-}
-
-/// Convert a socket string to a `ServerAddr`.
-///
-/// Strings that look like file paths become `Unix`, everything else becomes `Tcp`.
-fn addr_from_socket(socket: &str) -> ServerAddr {
-    if crate::connection::is_unix_path(socket) {
-        ServerAddr::Unix(socket.to_string())
-    } else {
-        ServerAddr::Tcp(socket.to_string())
-    }
+    Ok(ServerAddr(entry.addr.clone()))
 }
 
 /// Discover the data directory from the first live daemon instance.
 ///
-/// Returns `None` if no instance is registered or the entry lacks `data_dir`.
-pub fn discover_data_dir() -> Option<PathBuf> {
-    read_instances()
-        .ok()?
+/// Returns `Ok(None)` if no instance is registered or the entry lacks `data_dir`.
+pub fn discover_data_dir() -> Result<Option<PathBuf>> {
+    Ok(read_instances()?
         .first()
         .and_then(|e| e.data_dir.as_deref())
-        .map(PathBuf::from)
+        .map(PathBuf::from))
 }
 
-/// Return the default socket path used when no instances file is present.
-pub fn default_socket_path() -> PathBuf {
-    shore_config::runtime_dir().join("shore.sock")
-}
+pub const DEFAULT_ADDR: &str = "127.0.0.1:7320";
 
 /// Convenience: check client.toml, then discover, then fall back to the
-/// default Unix socket.
-pub fn discover_or_default(config_path: Option<&str>) -> ServerAddr {
-    // 1. Check client.toml for a default_address.
-    if let Some(cfg) = crate::client_config::load_client_config() {
-        if let Some(addr) = &cfg.default_address {
-            debug!(addr = %addr, "using address from client.toml");
-            return addr_from_socket(addr);
-        }
+/// default TCP address when discovery is simply absent.
+///
+/// Corrupt or unreadable registry state is returned as an error instead of
+/// being flattened into the default address.
+pub fn discover_or_default(config_path: Option<&str>) -> Result<ServerAddr> {
+    let client_default =
+        crate::client_config::load_client_config().and_then(|cfg| cfg.default_address);
+    discover_or_default_from_path(instances_path(), config_path, client_default)
+}
+
+fn discover_or_default_from_path(
+    path: PathBuf,
+    config_path: Option<&str>,
+    client_default_address: Option<String>,
+) -> Result<ServerAddr> {
+    if let Some(addr) = client_default_address {
+        debug!(addr = %addr, "using address from client.toml");
+        return Ok(ServerAddr(addr));
     }
 
-    // 2. Instance discovery (optionally filtered by --config ID).
-    match discover(config_path) {
+    match discover_from_path(&path, config_path) {
         Ok(addr) => {
             debug!(addr = ?addr, "resolved daemon via instance discovery");
-            addr
+            Ok(addr)
         }
-        Err(e) => {
-            // 3. Fall back to default Unix socket.
-            let sock = default_socket_path();
-            warn!(error = %e, fallback = %sock.display(), "instance discovery failed, using default socket");
-            ServerAddr::Unix(sock.to_string_lossy().into_owned())
+        Err(e) if config_path.is_none() && should_fallback_to_default(&e) => {
+            warn!(error = %e, fallback = DEFAULT_ADDR, "instance discovery failed, using default address");
+            Ok(ServerAddr(DEFAULT_ADDR.to_string()))
         }
+        Err(e) => Err(e),
     }
+}
+
+fn should_fallback_to_default(err: &ClientError) -> bool {
+    matches!(
+        err,
+        ClientError::Discovery(message)
+            if message.starts_with("instances registry not found at ")
+                || message == "instances registry is empty"
+    )
 }
 
 #[cfg(test)]
@@ -140,9 +190,8 @@ mod tests {
     fn entry_alive_no_pid_assumes_alive() {
         let entry = InstanceEntry {
             id: None,
-            socket_path: "/tmp/shore.sock".into(),
+            addr: "127.0.0.1:7320".into(),
             pid: None,
-            tcp_addr: None,
             data_dir: None,
         };
         assert!(entry_alive(&entry));
@@ -152,9 +201,8 @@ mod tests {
     fn entry_alive_current_process() {
         let entry = InstanceEntry {
             id: None,
-            socket_path: "/tmp/shore.sock".into(),
+            addr: "127.0.0.1:7320".into(),
             pid: Some(std::process::id()),
-            tcp_addr: None,
             data_dir: None,
         };
         assert!(entry_alive(&entry));
@@ -164,38 +212,11 @@ mod tests {
     fn entry_alive_bogus_pid() {
         let entry = InstanceEntry {
             id: None,
-            socket_path: "/tmp/shore.sock".into(),
+            addr: "127.0.0.1:7320".into(),
             pid: Some(u32::MAX - 1),
-            tcp_addr: None,
             data_dir: None,
         };
         assert!(!entry_alive(&entry));
-    }
-
-    // ── addr_from_socket ─────────────────────────────────────────────
-
-    #[test]
-    fn addr_from_socket_absolute_path() {
-        match addr_from_socket("/run/shore/shore.sock") {
-            ServerAddr::Unix(p) => assert_eq!(p, "/run/shore/shore.sock"),
-            other => panic!("expected Unix, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn addr_from_socket_tcp_address() {
-        match addr_from_socket("localhost:7320") {
-            ServerAddr::Tcp(a) => assert_eq!(a, "localhost:7320"),
-            other => panic!("expected Tcp, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn addr_from_socket_relative_path() {
-        match addr_from_socket("./shore.sock") {
-            ServerAddr::Unix(p) => assert_eq!(p, "./shore.sock"),
-            other => panic!("expected Unix, got {other:?}"),
-        }
     }
 
     // ── InstanceEntry deserialization ─────────────────────────────────
@@ -204,28 +225,60 @@ mod tests {
     fn instance_entry_full_fields() {
         let json = r#"[{
             "id": "default",
-            "socket_path": "/run/user/1000/shore/shore.sock",
+            "addr": "127.0.0.1:7320",
             "pid": 12345,
-            "tcp_addr": "127.0.0.1:7320",
             "data_dir": "/home/user/data"
         }]"#;
         let entries: Vec<InstanceEntry> = serde_json::from_str(json).unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].id.as_deref(), Some("default"));
-        assert_eq!(entries[0].socket_path, "/run/user/1000/shore/shore.sock");
+        assert_eq!(entries[0].addr, "127.0.0.1:7320");
         assert_eq!(entries[0].pid, Some(12345));
-        assert_eq!(entries[0].tcp_addr.as_deref(), Some("127.0.0.1:7320"));
         assert_eq!(entries[0].data_dir.as_deref(), Some("/home/user/data"));
     }
 
     #[test]
     fn instance_entry_minimal_fields_use_defaults() {
-        let json = r#"[{"socket_path": "/tmp/shore.sock"}]"#;
+        let json = r#"[{"addr": "127.0.0.1:7320"}]"#;
         let entries: Vec<InstanceEntry> = serde_json::from_str(json).unwrap();
         assert_eq!(entries.len(), 1);
         assert!(entries[0].id.is_none());
         assert!(entries[0].pid.is_none());
-        assert!(entries[0].tcp_addr.is_none());
-        assert_eq!(entries[0].socket_path, "/tmp/shore.sock");
+        assert_eq!(entries[0].addr, "127.0.0.1:7320");
+    }
+
+    #[test]
+    fn read_instances_rejects_corrupt_registry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("instances.json");
+        std::fs::write(&path, "{ invalid json").unwrap();
+
+        let err = read_instances_from_path(&path).expect_err("corrupt registry should fail");
+        assert!(
+            format!("{err}").contains("corrupt instances registry"),
+            "expected explicit corruption error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn discover_or_default_falls_back_when_registry_is_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let addr = discover_or_default_from_path(tmp.path().join("missing.json"), None, None)
+            .expect("missing registry should fall back to the default address");
+        assert_eq!(addr.0, DEFAULT_ADDR);
+    }
+
+    #[test]
+    fn discover_or_default_rejects_corrupt_registry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("instances.json");
+        std::fs::write(&path, "{ invalid json").unwrap();
+
+        let err = discover_or_default_from_path(path, None, None)
+            .expect_err("corrupt registry should not silently fall back");
+        assert!(
+            format!("{err}").contains("corrupt instances registry"),
+            "expected explicit corruption error, got: {err}"
+        );
     }
 }

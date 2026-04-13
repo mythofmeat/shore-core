@@ -2,8 +2,8 @@ use std::fs;
 use std::io::{self, Write};
 
 use base64::Engine;
-use tracing::{debug, warn};
 pub use shore_client::image_protocol::{detect_protocol, ImageProtocol};
+use tracing::{debug, warn};
 
 /// Render an image inline using the detected protocol, or fall back to text.
 ///

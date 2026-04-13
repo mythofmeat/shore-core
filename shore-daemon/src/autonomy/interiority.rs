@@ -52,7 +52,6 @@ pub struct InteriorityClock {
     last_anchor: Instant,
 
     // -- abandonment guard --------------------------------------------------
-
     /// Consecutive interiority ticks that fired without a user message.
     ticks_without_user: u32,
 
@@ -61,7 +60,6 @@ pub struct InteriorityClock {
     last_user_at: Option<Instant>,
 
     // -- config -------------------------------------------------------------
-
     /// Fallback interval when the character doesn't call set_next_wake.
     default_interval: Duration,
 
@@ -96,8 +94,24 @@ impl InteriorityClock {
         self.next_wake_at
     }
 
-    /// Force the next tick to fire immediately by setting the deadline to now.
+    /// Force the next tick to fire immediately. Does not reset abandonment counters.
     pub fn force_wake(&mut self) {
+        self.next_wake_at = Some(Instant::now());
+    }
+
+    /// Force the clock into dormant state. Stays dormant until a user message
+    /// resets it via reset_on_user_message().
+    pub fn force_dormant(&mut self) {
+        self.ticks_without_user = self.max_idle_ticks;
+        self.next_wake_at = None;
+    }
+
+    /// Force the clock into active state. Resets abandonment counters and
+    /// schedules an immediate tick. Guard will re-trip naturally if user
+    /// doesn't respond.
+    pub fn force_active(&mut self) {
+        self.ticks_without_user = 0;
+        self.last_user_at = Some(Instant::now());
         self.next_wake_at = Some(Instant::now());
     }
 
@@ -117,10 +131,26 @@ impl InteriorityClock {
         self.default_interval
     }
 
+    fn is_abandoned(&self, now: Instant) -> bool {
+        if self.ticks_without_user >= self.max_idle_ticks {
+            return true;
+        }
+        if let Some(last_user) = self.last_user_at {
+            if now.duration_since(last_user) >= self.max_silent_duration {
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn is_dormant(&self, now: Instant) -> bool {
+        self.is_abandoned(now)
+    }
+
     /// Human-readable state label for status display and logging.
-    pub fn state(&self) -> &str {
-        if self.next_wake_at.is_none() && self.ticks_without_user >= self.max_idle_ticks {
-            "Abandoned"
+    pub fn state_at(&self, now: Instant) -> &str {
+        if self.is_dormant(now) {
+            "Dormant"
         } else {
             "Active"
         }
@@ -138,8 +168,13 @@ impl InteriorityClock {
     /// 4. Guard passes → increment counter, clear deadline, update anchor,
     ///    return RunTick.
     pub fn tick(&mut self, now: Instant) -> InteriorityAction {
-        // Step 1: bootstrap if no deadline set.
+        // Step 1: bootstrap if no deadline set — but only if the guard hasn't
+        // already tripped. Once abandoned, we stay dormant until reset by a
+        // user message.
         if self.next_wake_at.is_none() {
+            if self.is_abandoned(now) {
+                return InteriorityAction::None;
+            }
             let target = self.last_anchor + self.default_interval;
             self.next_wake_at = Some(target);
             debug!(
@@ -553,16 +588,16 @@ mod tests {
         assert_eq!(c.tick(now), InteriorityAction::RunTick);
     }
 
-    // -- state() label ------------------------------------------------------
+    // -- state_at() label ---------------------------------------------------
 
     #[test]
     fn state_label_active_when_healthy() {
         let c = clock(3600, 3);
-        assert_eq!(c.state(), "Active");
+        assert_eq!(c.state_at(Instant::now()), "Active");
     }
 
     #[test]
-    fn state_label_abandoned_when_guard_tripped() {
+    fn state_label_dormant_when_tick_guard_tripped() {
         let mut c = clock(60, 1);
         let mut now = Instant::now();
         c.tick(now); // bootstrap
@@ -572,6 +607,32 @@ mod tests {
         c.tick(now); // bootstrap
         now += secs(61);
         c.tick(now); // guard trips
-        assert_eq!(c.state(), "Abandoned");
+        assert_eq!(c.state_at(now), "Dormant");
+    }
+
+    #[test]
+    fn state_label_dormant_when_silent_duration_tripped() {
+        let mut c = clock(3600, 100);
+        c.max_silent_duration = secs(7200);
+        let now = Instant::now();
+
+        c.on_user_message(now);
+
+        let t1 = now + secs(3601);
+        assert_eq!(c.tick(t1), InteriorityAction::RunTick);
+
+        let t2 = t1 + secs(1);
+        c.tick(t2);
+
+        let t3 = now + secs(7201);
+        assert_eq!(c.tick(t3), InteriorityAction::None);
+        assert_eq!(c.state_at(t3), "Dormant");
+    }
+
+    #[test]
+    fn state_label_dormant_when_forced_dormant() {
+        let mut c = clock(3600, 3);
+        c.force_dormant();
+        assert_eq!(c.state_at(Instant::now()), "Dormant");
     }
 }

@@ -4,6 +4,71 @@ All notable changes to Shore are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.0] — 2026-04-11
+
+### Added
+- Replace hidden `force-tick` with three explicit debug commands: `interiority_tick_now`, `interiority_status_dormant`, and `interiority_status_active`
+
+### Fixed
+- Prevent the interiority abandonment guard from immediately re-tripping on every tick after going dormant
+- Align dormant status reporting and cache-test debug scripts with the new explicit interiority debug commands
+
+## [0.12.0] — 2026-04-11
+
+### Added
+- Per-operation model selectors: `defaults.compaction` and `defaults.interiority` config fields allow using separate models (and API keys) for background operations, enabling budget isolation from the primary chat model
+
+## [0.11.1] — 2026-04-11
+
+### Fixed
+- Eliminate compaction race condition by adding `CallType::Collation` to distinguish collation calls from regular compaction
+
+## [0.11.0] — 2026-04-10
+
+### Added
+- Smart image resize pipeline: automatic resizing of oversized LLM image uploads with alpha detection, format-aware encoding, XDG disk cache, and async warm-up (default 2MB limit)
+- Inline streaming thinking display, replacing the thinking popup
+- `--plain` and `--content` flags for `shore log`
+- `SHORE_ADDR` environment variable for daemon address override
+
+### Fixed
+- Ledger: transition `Cold→Warm` on unexpected cache read
+- Downgrade cache anomaly notification urgency to normal
+
+### Changed
+- TCP-only transport: remove Unix socket support, consolidate `socket_path` + `tcp_addr` into single `addr` field, rename `--socket` to `--addr` across all clients
+- Extract `shore-daemon-server` crate from `shore-daemon`
+- Remove `CacheContext` plumbing from daemon handler, generation, stream, and tool loop
+- Remove `cache_invalidation_warnings` config key and `Anomaly::UnexpectedRead` variant
+
+## [0.10.1] — 2026-04-10
+
+### Fixed
+- Remove stale `forensic_character` references and fix 6 broken tests
+
+## [0.10.0] — 2026-04-10
+
+### Added
+- `shore-test-harness` crate: `TestHarness` with daemon boot and SWP client, `MockLlmServer` with Anthropic SSE stream builder, `TestConfigBuilder`, `CollectedResponse`, and `CrashedHarness` with crash/reboot/corrupt helpers
+- Comprehensive integration test suite: message roundtrip, persistence, recovery, concurrency, compaction, ledger, autonomy, tool execution, provider edge cases, and protocol validation
+- Configurable cache breakpoints for debugging cache stability
+- Cache forensics logging with stale request-ID fix and desktop anomaly alerts
+
+### Fixed
+- First streaming token dropped in OpenAI and Zai providers
+- Protocol, config, and state-machine bugs across multiple crates
+- Memory subsystem: ID collisions, timezone comparison, and error messages
+- Security hardening: shell escape in notifications, symlink escape in scratchpad
+- UTF-8 boundary safety for string truncation
+- Cache keepalive: phantom pings, startup priming, 55min interval with 10s tick granularity, user message appended for valid API request
+- Skip cache anomaly detection for interiority and tool-loop calls
+- Move `set_next_wake` to base tool set to prevent interiority cache busting
+- Ledger: run cache tracker for OpenRouter-routed Anthropic calls
+- Daemon: create data/runtime dirs on startup
+
+### Changed
+- Migrate autonomy to `tokio::time::Instant` for deterministic test time control
+
 ## [0.9.0] — 2026-04-08
 
 ### Added
@@ -236,6 +301,12 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Command dispatch (US-017)
 - End-to-end conversation milestone (US-018)
 
+[0.13.0]: https://github.com/eshen/silvershore/compare/v0.12.0...v0.13.0
+[0.12.0]: https://github.com/eshen/silvershore/compare/v0.11.1...v0.12.0
+[0.11.1]: https://github.com/eshen/silvershore/compare/v0.11.0...v0.11.1
+[0.11.0]: https://github.com/eshen/silvershore/compare/v0.10.1...v0.11.0
+[0.10.1]: https://github.com/eshen/silvershore/compare/v0.10.0...v0.10.1
+[0.10.0]: https://github.com/eshen/silvershore/compare/v0.9.1...v0.10.0
 [0.9.0]: https://github.com/eshen/silvershore/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/eshen/silvershore/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/eshen/silvershore/compare/v0.6.0...v0.7.0

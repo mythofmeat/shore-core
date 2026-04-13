@@ -25,7 +25,8 @@ use shore_config::{LoadedConfig, ShoreDirs};
 use shore_daemon::characters::CharacterRegistry;
 use shore_daemon::commands::{CommandContext, SessionTokens};
 use shore_daemon::handler::MessageHandler;
-use shore_daemon::server::{Server, ServerConfig};
+use shore_daemon::handshake::build_handshake_provider;
+use shore_daemon_server::{Server, ServerConfig};
 use shore_ledger::LedgerClient;
 use shore_llm_client::LlmClient;
 use shore_protocol::server_msg::ServerMessage;
@@ -164,6 +165,7 @@ temperature = 0.0
             config: config_dir,
             data: data_dir,
             runtime: runtime_dir,
+            cache: tmp.path().join("cache"),
         },
     )
 }
@@ -177,20 +179,27 @@ async fn e2e_conversation_milestone() {
     }
 
     let tmp = tempfile::tempdir().unwrap();
-    let socket_path = tmp.path().join("runtime").join("daemon.sock");
     let llm_socket = tmp.path().join("runtime").join("llm.sock");
     let loaded = build_test_config(&tmp, &llm_socket);
+
+    let addr = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        format!("127.0.0.1:{port}")
+    };
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
 
     // ── Start SWP server ───────────────────────────────────────────────
     let server_config = ServerConfig {
-        socket_path: socket_path.clone(),
-        tcp: None,
+        addr: addr.clone(),
+        allowed_hosts: vec![],
         server_name: "shore-daemon-test".into(),
+        handshake: None,
     };
-    let server = Server::new(server_config);
-    let push_tx = server.push_sender();
+    let mut server = Server::new(server_config);
+    let push_tx = server.event_sender();
+    let session_router = server.session_router();
     let route_rx = server.take_route_rx();
 
     // Create character registry.
@@ -200,15 +209,17 @@ async fn e2e_conversation_milestone() {
         push_tx.clone(),
         loaded.clone(),
     )));
+    server.set_handshake_provider(build_handshake_provider(char_registry.clone()));
 
-    let (autonomy, _compaction_rx) = shore_daemon::autonomy::manager::AutonomyManager::new(
+    let autonomy = shore_daemon::autonomy::manager::AutonomyManager::new(
         Default::default(),
         Default::default(),
         loaded.dirs.data.clone(),
         shutdown_rx.clone(),
     );
 
-    let llm_client = LedgerClient::new(LlmClient::new(), &loaded.dirs.data.join("ledger.db")).unwrap();
+    let llm_client =
+        LedgerClient::new(LlmClient::new(), &loaded.dirs.data.join("ledger.db")).unwrap();
 
     let cmd_ctx = CommandContext {
         config: loaded.clone(),
@@ -224,18 +235,15 @@ async fn e2e_conversation_milestone() {
         memory_shell_sessions: std::collections::HashMap::new(),
     };
 
-    let mut msg_handler = MessageHandler {
-        registry: char_registry,
+    let mut msg_handler = MessageHandler::new(
+        char_registry,
         cmd_ctx,
         llm_client,
-        push_tx: push_tx.clone(),
-        is_first_after_restart: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
-        has_seen_cache_read: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        compaction_occurred: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        push_tx.clone(),
+        session_router,
         autonomy,
-        notifier: shore_daemon::notifications::NotificationService::new(Default::default()),
-        generation_handle: None,
-    };
+        shore_daemon::notifications::NotificationService::new(Default::default()),
+    );
 
     // Spawn message handler.
     let handler_handle = tokio::spawn(async move {
@@ -253,21 +261,23 @@ async fn e2e_conversation_milestone() {
 
     // ── AC 1: Connect and verify SWP handshake ────────────────────────
     eprintln!("=== AC 1: SWP Handshake ===");
-    let (mut conn, server_hello, history) = SWPConnection::connect(
-        &ServerAddr::Unix(socket_path.display().to_string()),
-        "test",
-        "e2e-test",
-        None,
-    )
-    .await
-    .expect("Failed to connect to daemon");
+    let (mut conn, server_hello, history) =
+        SWPConnection::connect(&ServerAddr(addr.clone()), "test", "e2e-test", None)
+            .await
+            .expect("Failed to connect to daemon");
 
     assert_eq!(server_hello.v, shore_protocol::SWP_V1);
     assert_eq!(server_hello.server_name, "shore-daemon-test");
+    assert_eq!(server_hello.characters.len(), 1);
+    assert_eq!(server_hello.characters[0].name, "TestChar");
     assert!(
         history.messages.is_empty(),
         "Initial history should be empty"
     );
+    assert_eq!(history.selected_character.as_deref(), Some("TestChar"));
+    assert_eq!(history.config["active_model"], "haiku");
+    assert_eq!(history.config["private"], false);
+    assert_eq!(history.revision, 0);
     eprintln!(
         "  Handshake OK: v={}, server={}",
         server_hello.v, server_hello.server_name
@@ -658,17 +668,23 @@ struct E2EHarness {
 
 impl E2EHarness {
     async fn start(loaded: LoadedConfig, tmp: tempfile::TempDir) -> Self {
-        let socket_path = tmp.path().join("runtime").join("daemon.sock");
+        let addr = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            format!("127.0.0.1:{port}")
+        };
 
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(());
 
         let server_config = ServerConfig {
-            socket_path: socket_path.clone(),
-            tcp: None,
+            addr: addr.clone(),
+            allowed_hosts: vec![],
             server_name: "shore-daemon-test".into(),
+            handshake: None,
         };
-        let server = Server::new(server_config);
-        let push_tx = server.push_sender();
+        let mut server = Server::new(server_config);
+        let push_tx = server.event_sender();
+        let session_router = server.session_router();
         let route_rx = server.take_route_rx();
 
         let data_dir = loaded.dirs.data.clone();
@@ -679,15 +695,17 @@ impl E2EHarness {
             push_tx.clone(),
             loaded.clone(),
         )));
+        server.set_handshake_provider(build_handshake_provider(char_registry.clone()));
 
-        let (autonomy, _compaction_rx) = shore_daemon::autonomy::manager::AutonomyManager::new(
+        let autonomy = shore_daemon::autonomy::manager::AutonomyManager::new(
             Default::default(),
             Default::default(),
             loaded.dirs.data.clone(),
             shutdown_rx.clone(),
         );
 
-        let llm_client = LedgerClient::new(LlmClient::new(), &loaded.dirs.data.join("ledger.db")).unwrap();
+        let llm_client =
+            LedgerClient::new(LlmClient::new(), &loaded.dirs.data.join("ledger.db")).unwrap();
 
         let cmd_ctx = CommandContext {
             config: loaded.clone(),
@@ -703,18 +721,15 @@ impl E2EHarness {
             memory_shell_sessions: std::collections::HashMap::new(),
         };
 
-        let mut msg_handler = MessageHandler {
-            registry: char_registry,
+        let mut msg_handler = MessageHandler::new(
+            char_registry,
             cmd_ctx,
             llm_client,
-            push_tx: push_tx.clone(),
-            is_first_after_restart: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
-            has_seen_cache_read: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            compaction_occurred: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            push_tx.clone(),
+            session_router,
             autonomy,
-            notifier: shore_daemon::notifications::NotificationService::new(Default::default()),
-            generation_handle: None,
-        };
+            shore_daemon::notifications::NotificationService::new(Default::default()),
+        );
 
         let handler_handle = tokio::spawn(async move {
             msg_handler.run(route_rx).await;
@@ -727,14 +742,10 @@ impl E2EHarness {
 
         tokio::time::sleep(Duration::from_millis(200)).await;
 
-        let (conn, server_hello, _history) = SWPConnection::connect(
-            &ServerAddr::Unix(socket_path.display().to_string()),
-            "test",
-            "e2e-test",
-            None,
-        )
-        .await
-        .expect("Failed to connect to daemon");
+        let (conn, server_hello, _history) =
+            SWPConnection::connect(&ServerAddr(addr.clone()), "test", "e2e-test", None)
+                .await
+                .expect("Failed to connect to daemon");
 
         assert_eq!(server_hello.v, shore_protocol::SWP_V1);
 

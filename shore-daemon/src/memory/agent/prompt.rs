@@ -234,6 +234,9 @@ mod tests {
     fn render_system_prompt_is_deterministic() {
         let a = render_system_prompt("Alice", "Bob");
         let b = render_system_prompt("Alice", "Bob");
-        assert_eq!(a, b, "System prompt must be deterministic for cache stability");
+        assert_eq!(
+            a, b,
+            "System prompt must be deterministic for cache stability"
+        );
     }
 }

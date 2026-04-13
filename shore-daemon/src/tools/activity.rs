@@ -139,7 +139,7 @@ mod tests {
     async fn test_activity_heatmap_with_autonomy_data() {
         let tmp = tempfile::tempdir().unwrap();
         let (_tx, rx) = tokio::sync::watch::channel(());
-        let (mgr, _compaction_rx) = AutonomyManager::new(
+        let mgr = AutonomyManager::new(
             Default::default(),
             Default::default(),
             tmp.path().to_path_buf(),
@@ -171,7 +171,7 @@ mod tests {
     async fn test_activity_heatmap_wrong_character_returns_empty() {
         let tmp = tempfile::tempdir().unwrap();
         let (_tx, rx) = tokio::sync::watch::channel(());
-        let (mgr, _compaction_rx) = AutonomyManager::new(
+        let mgr = AutonomyManager::new(
             Default::default(),
             Default::default(),
             tmp.path().to_path_buf(),

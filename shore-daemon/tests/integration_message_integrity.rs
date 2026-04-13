@@ -10,7 +10,10 @@ async fn test_multi_turn_tool_conversation_valid() {
     let mut harness = TestHarness::boot().await;
 
     // Round 1: plain text exchange
-    harness.mock_llm.enqueue_text("Hello! How can I help you?").await;
+    harness
+        .mock_llm
+        .enqueue_text("Hello! How can I help you?")
+        .await;
     let r1 = harness.send_and_collect("Hi there").await;
     r1.assert_text_contains("Hello");
 
@@ -19,10 +22,7 @@ async fn test_multi_turn_tool_conversation_valid() {
         .mock_llm
         .enqueue_tool_use("toolu_r2_01", "check_time", json!({}))
         .await;
-    harness
-        .mock_llm
-        .enqueue_text("The time is noon.")
-        .await;
+    harness.mock_llm.enqueue_text("The time is noon.").await;
     harness
         .conn
         .send_message("What time is it?", true)
@@ -37,10 +37,7 @@ async fn test_multi_turn_tool_conversation_valid() {
         .mock_llm
         .enqueue_tool_use("toolu_r3_01", "check_time", json!({}))
         .await;
-    harness
-        .mock_llm
-        .enqueue_text("Time checked again.")
-        .await;
+    harness.mock_llm.enqueue_text("Time checked again.").await;
     harness
         .conn
         .send_message("And now what time is it?", true)
@@ -51,10 +48,7 @@ async fn test_multi_turn_tool_conversation_valid() {
     r3_phase2.assert_text_contains("Time checked again");
 
     // Round 4: plain text final response
-    harness
-        .mock_llm
-        .enqueue_text("All done!")
-        .await;
+    harness.mock_llm.enqueue_text("All done!").await;
     let r4 = harness.send_and_collect("Thanks!").await;
     r4.assert_text_contains("All done");
 
@@ -279,10 +273,7 @@ async fn test_multiple_tool_calls_have_unique_ids() {
     harness.mock_llm.enqueue_raw_sse(two_tools_sse).await;
 
     // Follow-up text response after both tools execute.
-    harness
-        .mock_llm
-        .enqueue_text("Both tools executed.")
-        .await;
+    harness.mock_llm.enqueue_text("Both tools executed.").await;
 
     harness
         .conn

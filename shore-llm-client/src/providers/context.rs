@@ -55,8 +55,7 @@ pub(crate) fn build_provider_context(request: &LlmRequest) -> ProviderContext {
         }
     }
 
-    let supports_reasoning_effort =
-        matches!(pk, "deepseek" | "openrouter" | "xai" | "openai");
+    let supports_reasoning_effort = matches!(pk, "deepseek" | "openrouter" | "xai" | "openai");
 
     let routing_config = if pk == "openrouter" {
         build_routing_config(request)
@@ -154,8 +153,14 @@ mod tests {
         }));
         let ctx = build_provider_context(&req);
         assert_eq!(ctx.extra_headers.len(), 2);
-        assert_eq!(ctx.extra_headers[0], ("HTTP-Referer".to_string(), "https://shore.ai".to_string()));
-        assert_eq!(ctx.extra_headers[1], ("X-Title".to_string(), "Shore".to_string()));
+        assert_eq!(
+            ctx.extra_headers[0],
+            ("HTTP-Referer".to_string(), "https://shore.ai".to_string())
+        );
+        assert_eq!(
+            ctx.extra_headers[1],
+            ("X-Title".to_string(), "Shore".to_string())
+        );
     }
 
     #[test]
@@ -170,7 +175,10 @@ mod tests {
         for pk in &["deepseek", "openrouter", "xai", "openai"] {
             let req = make_request(Sdk::Openai, Some(pk));
             let ctx = build_provider_context(&req);
-            assert!(ctx.supports_reasoning_effort, "{pk} should support reasoning_effort");
+            assert!(
+                ctx.supports_reasoning_effort,
+                "{pk} should support reasoning_effort"
+            );
         }
     }
 
@@ -179,7 +187,10 @@ mod tests {
         for pk in &["nanogpt", "custom-provider"] {
             let req = make_request(Sdk::Openai, Some(pk));
             let ctx = build_provider_context(&req);
-            assert!(!ctx.supports_reasoning_effort, "{pk} should not support reasoning_effort");
+            assert!(
+                !ctx.supports_reasoning_effort,
+                "{pk} should not support reasoning_effort"
+            );
         }
     }
 

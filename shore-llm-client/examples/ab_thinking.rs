@@ -266,7 +266,11 @@ Your thoughts and tool use are logged, so you can pick up where you left off nex
 
 // ── Conversation builders ───────────────────────────────────────────────
 
-fn simple_conversation() -> (serde_json::Value, Vec<serde_json::Value>, Option<Vec<serde_json::Value>>) {
+fn simple_conversation() -> (
+    serde_json::Value,
+    Vec<serde_json::Value>,
+    Option<Vec<serde_json::Value>>,
+) {
     let system = json!([{
         "type": "text",
         "text": "You are a helpful assistant. Think carefully before responding."
@@ -278,7 +282,11 @@ fn simple_conversation() -> (serde_json::Value, Vec<serde_json::Value>, Option<V
     (system, messages, None)
 }
 
-fn realistic_conversation() -> (serde_json::Value, Vec<serde_json::Value>, Option<Vec<serde_json::Value>>) {
+fn realistic_conversation() -> (
+    serde_json::Value,
+    Vec<serde_json::Value>,
+    Option<Vec<serde_json::Value>>,
+) {
     let system = json!([
         { "type": "text", "text": "You are Qifei, an AI character with a rich inner life. You have a warm, thoughtful personality. You remember things, form opinions, and have preferences." },
         { "type": "text", "text": "## Memory context\nRen is a software developer. They enjoy physics, math, and creative writing. They have a cat named Mochi." }
@@ -297,7 +305,13 @@ fn realistic_conversation() -> (serde_json::Value, Vec<serde_json::Value>, Optio
 /// a short conversation history, then the interiority prompt injected as system msg.
 /// If `with_rut` is true, appends a fake journal showing several ticks of scratchpad-only
 /// activity, simulating the rut the user observed in production.
-fn interiority_conversation(with_rut: bool) -> (serde_json::Value, Vec<serde_json::Value>, Option<Vec<serde_json::Value>>) {
+fn interiority_conversation(
+    with_rut: bool,
+) -> (
+    serde_json::Value,
+    Vec<serde_json::Value>,
+    Option<Vec<serde_json::Value>>,
+) {
     let system = json!([
         {
             "type": "text",
@@ -371,28 +385,46 @@ fn print_result(label: &str, resp: &shore_llm_client::types::GenerateResponse) -
     println!("  {label}");
     println!("{}", "=".repeat(72));
 
-    let thinking_blocks: Vec<_> = resp.content_blocks.iter().filter_map(|b| match b {
-        ContentBlock::Thinking { thinking, signature } => Some((thinking.as_str(), signature.is_some())),
-        _ => None,
-    }).collect();
+    let thinking_blocks: Vec<_> = resp
+        .content_blocks
+        .iter()
+        .filter_map(|b| match b {
+            ContentBlock::Thinking {
+                thinking,
+                signature,
+            } => Some((thinking.as_str(), signature.is_some())),
+            _ => None,
+        })
+        .collect();
 
     println!("\n--- Thinking ---");
     if thinking_blocks.is_empty() {
         println!("  (no thinking blocks)");
     } else {
         for (i, (text, has_sig)) in thinking_blocks.iter().enumerate() {
-            println!("  Block {}: {} chars, signed={}", i + 1, text.len(), has_sig);
+            println!(
+                "  Block {}: {} chars, signed={}",
+                i + 1,
+                text.len(),
+                has_sig
+            );
             let preview: String = text.chars().take(500).collect();
             println!("  {preview}");
-            if text.len() > 500 { println!("  ... ({} more chars)", text.len() - 500); }
+            if text.len() > 500 {
+                println!("  ... ({} more chars)", text.len() - 500);
+            }
         }
     }
 
     let mut tools_used = Vec::new();
-    let tool_uses: Vec<_> = resp.content_blocks.iter().filter_map(|b| match b {
-        ContentBlock::ToolUse { name, input, .. } => Some((name.as_str(), input.clone())),
-        _ => None,
-    }).collect();
+    let tool_uses: Vec<_> = resp
+        .content_blocks
+        .iter()
+        .filter_map(|b| match b {
+            ContentBlock::ToolUse { name, input, .. } => Some((name.as_str(), input.clone())),
+            _ => None,
+        })
+        .collect();
 
     if !tool_uses.is_empty() {
         println!("\n--- Tool calls ---");
@@ -404,27 +436,37 @@ fn print_result(label: &str, resp: &shore_llm_client::types::GenerateResponse) -
         }
     }
 
-    let text_blocks: Vec<_> = resp.content_blocks.iter().filter_map(|b| match b {
-        ContentBlock::Text { text } => Some(text.as_str()),
-        _ => None,
-    }).collect();
+    let text_blocks: Vec<_> = resp
+        .content_blocks
+        .iter()
+        .filter_map(|b| match b {
+            ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
 
     if !text_blocks.is_empty() {
         println!("\n--- Response text ---");
         for text in &text_blocks {
             let preview: String = text.chars().take(400).collect();
             println!("  {preview}");
-            if text.len() > 400 { println!("  ... ({} more chars)", text.len() - 400); }
+            if text.len() > 400 {
+                println!("  ... ({} more chars)", text.len() - 400);
+            }
         }
     }
 
     let u = &resp.usage;
     let t = &resp.timing;
     println!("\n--- Usage ---");
-    println!("  input={} output={} cache_read={} cache_write={}",
-        u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_creation_tokens);
-    println!("  total_ms={} ttft_ms={} finish_reason={}",
-        t.total_ms, t.time_to_first_token_ms, resp.finish_reason);
+    println!(
+        "  input={} output={} cache_read={} cache_write={}",
+        u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_creation_tokens
+    );
+    println!(
+        "  total_ms={} ttft_ms={} finish_reason={}",
+        t.total_ms, t.time_to_first_token_ms, resp.finish_reason
+    );
 
     tools_used
 }
@@ -435,7 +477,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::path::Path::new(env_path).exists() {
         for line in std::fs::read_to_string(env_path)?.lines() {
             let line = line.trim();
-            if line.is_empty() || line.starts_with('#') { continue; }
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
             if let Some((k, v)) = line.split_once('=') {
                 std::env::set_var(k.trim(), v.trim());
             }
@@ -447,12 +491,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let rut = args.iter().any(|a| a == "--rut");
     let realistic = args.iter().any(|a| a == "--realistic");
 
-    let runs: u32 = args.iter().position(|a| a == "--runs")
+    let runs: u32 = args
+        .iter()
+        .position(|a| a == "--runs")
         .and_then(|i| args.get(i + 1))
         .and_then(|s| s.parse().ok())
         .unwrap_or(if interiority || rut { 20 } else { 1 });
 
-    let effort = args.iter().position(|a| a == "--effort")
+    let effort = args
+        .iter()
+        .position(|a| a == "--effort")
         .and_then(|i| args.get(i + 1).cloned())
         .unwrap_or_else(|| "max".into());
 
@@ -475,8 +523,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let scratchpad_names: std::collections::HashSet<&str> = [
-        "scratchpad_list", "scratchpad_read", "scratchpad_write", "scratchpad_delete"
-    ].into_iter().collect();
+        "scratchpad_list",
+        "scratchpad_read",
+        "scratchpad_write",
+        "scratchpad_delete",
+    ]
+    .into_iter()
+    .collect();
 
     for run in 1..=runs {
         println!("\n>>> Run {run}/{runs} — effort={effort}");
@@ -491,16 +544,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )?;
 
         if run == 1 {
-            println!("  messages: {} | tools: {}",
+            println!(
+                "  messages: {} | tools: {}",
                 request.messages.len(),
-                request.tools.as_ref().map(|t| t.len()).unwrap_or(0));
+                request.tools.as_ref().map(|t| t.len()).unwrap_or(0)
+            );
         }
 
         let resp = client.generate(&request).await?;
         let tools_used = print_result(&format!("Run {run} — effort={effort}"), &resp);
 
         if interiority || rut {
-            let has_non_scratchpad = tools_used.iter().any(|t| !scratchpad_names.contains(t.as_str()));
+            let has_non_scratchpad = tools_used
+                .iter()
+                .any(|t| !scratchpad_names.contains(t.as_str()));
             if has_non_scratchpad {
                 println!("\n>>> NON-SCRATCHPAD TOOL USED: {:?}", tools_used);
                 println!(">>> Stopping after {run} runs.");

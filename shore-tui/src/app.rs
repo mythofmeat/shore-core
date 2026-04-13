@@ -38,14 +38,19 @@ pub enum ConversationEntry {
     },
 }
 
+/// A segment of streaming content, preserving interleaving order.
+#[derive(Clone, Debug)]
+pub enum StreamBlock {
+    Thinking(String),
+    Text(String),
+}
+
 /// Streaming state for in-progress responses.
 #[derive(Default)]
 pub struct StreamState {
     pub active: bool,
     pub regen: bool,
-    pub text: String,
-    pub thinking: String,
-    pub thinking_collapsed: bool,
+    pub blocks: Vec<StreamBlock>,
     pub phase: String,
     /// Name of the tool currently being called/executed.
     pub tool_name: Option<String>,
@@ -55,9 +60,7 @@ impl StreamState {
     pub fn reset(&mut self) {
         self.active = false;
         self.regen = false;
-        self.text.clear();
-        self.thinking.clear();
-        self.thinking_collapsed = false;
+        self.blocks.clear();
         self.phase.clear();
         self.tool_name = None;
     }

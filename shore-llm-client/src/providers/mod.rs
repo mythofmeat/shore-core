@@ -102,7 +102,9 @@ pub async fn generate(
             total_ms = resp.timing.total_ms,
             "non-streaming request completed"
         ),
-        Err(e) => warn!(sdk = ?request.sdk, model = %request.model, error = %e, "non-streaming request failed"),
+        Err(e) => {
+            warn!(sdk = ?request.sdk, model = %request.model, error = %e, "non-streaming request failed")
+        }
     }
     result
 }
@@ -173,7 +175,10 @@ mod tests {
             let request = make_request(sdk);
             let result = stream(&client, &request).await;
             // Any error is fine (HTTP, connection) — we just confirm dispatch works.
-            assert!(result.is_err(), "expected connection error for unreachable host");
+            assert!(
+                result.is_err(),
+                "expected connection error for unreachable host"
+            );
         }
     }
 }

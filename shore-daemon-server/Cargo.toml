@@ -1,0 +1,20 @@
+[package]
+name = "shore-daemon-server"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+shore-protocol = { path = "../shore-protocol" }
+shore-config = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+fs2 = "0.4"
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
+tempfile = { workspace = true }

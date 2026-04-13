@@ -23,8 +23,14 @@ pub(crate) fn media_type_for_path(path: &str) -> Option<&'static str> {
 /// Build a `content` value for an LLM message.
 ///
 /// If `images` is non-empty, returns a JSON array containing image blocks
-/// (base64-encoded) followed by a text block. Otherwise returns a plain string.
-pub(crate) fn build_content(text: &str, images: &[ImageRef]) -> Value {
+/// (base64-encoded, resized if over `max_image_size`) followed by a text block.
+/// Otherwise returns a plain string. Pass `0` for `max_image_size` to disable resizing.
+pub(crate) fn build_content(
+    text: &str,
+    images: &[ImageRef],
+    max_image_size: u64,
+    cache_dir: &std::path::Path,
+) -> Value {
     if images.is_empty() {
         return json!(text);
     }
@@ -41,12 +47,24 @@ pub(crate) fn build_content(text: &str, images: &[ImageRef]) -> Value {
         };
         match std::fs::read(&img.path) {
             Ok(bytes) => {
-                let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                let (final_bytes, final_media_type) = if let Some((resized, mt)) =
+                    super::resize::cached_resize(
+                        &img.path,
+                        &bytes,
+                        media_type,
+                        max_image_size,
+                        cache_dir,
+                    ) {
+                    (resized, mt)
+                } else {
+                    (bytes, media_type)
+                };
+                let encoded = base64::engine::general_purpose::STANDARD.encode(&final_bytes);
                 blocks.push(json!({
                     "type": "image",
                     "source": {
                         "type": "base64",
-                        "media_type": media_type,
+                        "media_type": final_media_type,
                         "data": encoded,
                     }
                 }));
@@ -182,5 +200,232 @@ pub(crate) fn embed_image_data(images: &mut [ImageRef]) {
                 warn!(path = %img.path, error = %e, "Failed to read image for wire embedding");
             }
         }
+    }
+}
+
+/// Encode a single image to a JSON block for the LLM API, resizing if needed.
+pub(crate) fn encode_image_block(
+    img: &ImageRef,
+    max_image_size: u64,
+    cache_dir: &std::path::Path,
+) -> Option<Value> {
+    let media_type = media_type_for_path(&img.path)?;
+    match std::fs::read(&img.path) {
+        Ok(bytes) => {
+            let (final_bytes, final_media_type) = if let Some((resized, mt)) =
+                super::resize::cached_resize(
+                    &img.path,
+                    &bytes,
+                    media_type,
+                    max_image_size,
+                    cache_dir,
+                ) {
+                (resized, mt)
+            } else {
+                (bytes, media_type)
+            };
+            let encoded = base64::engine::general_purpose::STANDARD.encode(&final_bytes);
+            Some(json!({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": final_media_type,
+                    "data": encoded,
+                }
+            }))
+        }
+        Err(e) => {
+            warn!(path = %img.path, error = %e, "Failed to read image file for LLM");
+            None
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Create a valid JPEG image with pseudo-random pixels (high entropy, resists compression).
+    ///
+    /// Pseudo-random pixels prevent JPEG/PNG from compressing the image to near-zero,
+    /// ensuring the resulting file is large enough for the resize tests to be meaningful.
+    fn make_noisy_jpeg(width: u32, height: u32) -> Vec<u8> {
+        let mut pixels = vec![0u8; (width * height * 3) as usize];
+        // Simple LCG to fill with pseudo-random values without pulling in rand.
+        let mut state: u64 = 0xdeadbeef_cafebabe;
+        for byte in &mut pixels {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            *byte = (state >> 33) as u8;
+        }
+        let img = image::RgbImage::from_raw(width, height, pixels).unwrap();
+        let mut buf = Vec::new();
+        let mut cursor = std::io::Cursor::new(&mut buf);
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(&mut cursor, image::ImageFormat::Jpeg)
+            .unwrap();
+        buf
+    }
+
+    /// Create a valid JPEG image of the given dimensions filled with a solid color.
+    fn make_jpeg(width: u32, height: u32) -> Vec<u8> {
+        let img = image::RgbImage::from_pixel(width, height, image::Rgb([128, 64, 200]));
+        let mut buf = Vec::new();
+        let mut cursor = std::io::Cursor::new(&mut buf);
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(&mut cursor, image::ImageFormat::Jpeg)
+            .unwrap();
+        buf
+    }
+
+    /// Create a valid PNG image with pseudo-random pixels (high entropy).
+    fn make_noisy_png(width: u32, height: u32) -> Vec<u8> {
+        let mut pixels = vec![0u8; (width * height * 3) as usize];
+        let mut state: u64 = 0xcafe_f00d_1234_5678;
+        for byte in &mut pixels {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            *byte = (state >> 33) as u8;
+        }
+        let img = image::RgbImage::from_raw(width, height, pixels).unwrap();
+        let mut buf = Vec::new();
+        let mut cursor = std::io::Cursor::new(&mut buf);
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(&mut cursor, image::ImageFormat::Png)
+            .unwrap();
+        buf
+    }
+
+    // ── build_content integration ──────────────────────────────────────
+
+    #[test]
+    fn build_content_resizes_oversized_image_on_disk() {
+        use base64::Engine;
+        use shore_protocol::types::ImageRef;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        // Write a large noisy JPEG to disk (~3-4 MB at 4000x3000).
+        let big_jpeg = make_noisy_jpeg(4000, 3000);
+        let img_path = tmp.path().join("big.jpg");
+        std::fs::write(&img_path, &big_jpeg).unwrap();
+        let original_size = big_jpeg.len();
+        assert!(
+            original_size > 2_000_000,
+            "Test image should exceed 2MB, got {} bytes",
+            original_size
+        );
+
+        let images = vec![ImageRef {
+            path: img_path.to_str().unwrap().to_string(),
+            caption: None,
+            data: None,
+        }];
+
+        // Call build_content with a 2MB limit.
+        let result = build_content("describe this", &images, 2_000_000, tmp.path());
+        let blocks = result.as_array().expect("Should be a JSON array");
+        assert_eq!(blocks.len(), 2, "image block + text block");
+
+        // Image block should be resized JPEG.
+        assert_eq!(blocks[0]["type"], "image");
+        assert_eq!(blocks[0]["source"]["type"], "base64");
+        assert_eq!(blocks[0]["source"]["media_type"], "image/jpeg");
+
+        // Decode the base64 and verify the raw bytes are under 2MB.
+        let b64_data = blocks[0]["source"]["data"].as_str().unwrap();
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(b64_data)
+            .unwrap();
+        assert!(
+            decoded.len() < 2_000_000,
+            "Resized image should be under 2MB, got {} bytes (original was {})",
+            decoded.len(),
+            original_size
+        );
+
+        // Verify it's valid JPEG (starts with FFD8).
+        assert_eq!(&decoded[..2], &[0xFF, 0xD8], "Should be valid JPEG");
+    }
+
+    #[test]
+    fn build_content_does_not_resize_small_image() {
+        use base64::Engine;
+        use shore_protocol::types::ImageRef;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        // Write a small JPEG to disk.
+        let small_jpeg = make_jpeg(200, 200);
+        let img_path = tmp.path().join("small.jpg");
+        std::fs::write(&img_path, &small_jpeg).unwrap();
+        assert!(small_jpeg.len() < 2_000_000);
+
+        let images = vec![ImageRef {
+            path: img_path.to_str().unwrap().to_string(),
+            caption: None,
+            data: None,
+        }];
+
+        let result = build_content("test", &images, 2_000_000, tmp.path());
+        let blocks = result.as_array().unwrap();
+
+        // Should still be image/jpeg (not re-encoded).
+        assert_eq!(blocks[0]["source"]["media_type"], "image/jpeg");
+
+        // Base64 should decode to the exact original bytes (no resize).
+        let b64_data = blocks[0]["source"]["data"].as_str().unwrap();
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(b64_data)
+            .unwrap();
+        assert_eq!(
+            decoded.len(),
+            small_jpeg.len(),
+            "Small image should pass through unchanged"
+        );
+    }
+
+    #[test]
+    fn build_content_resizes_oversized_png_to_jpeg() {
+        use base64::Engine;
+        use shore_protocol::types::ImageRef;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        // Write a large noisy PNG to disk.
+        let big_png = make_noisy_png(3000, 2000);
+        let img_path = tmp.path().join("big.png");
+        std::fs::write(&img_path, &big_png).unwrap();
+        let original_size = big_png.len();
+        assert!(
+            original_size > 2_000_000,
+            "Test PNG should exceed 2MB, got {} bytes",
+            original_size
+        );
+
+        let images = vec![ImageRef {
+            path: img_path.to_str().unwrap().to_string(),
+            caption: None,
+            data: None,
+        }];
+
+        let result = build_content("describe", &images, 2_000_000, tmp.path());
+        let blocks = result.as_array().unwrap();
+
+        // Should be converted to JPEG.
+        assert_eq!(blocks[0]["source"]["media_type"], "image/jpeg");
+
+        let b64_data = blocks[0]["source"]["data"].as_str().unwrap();
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(b64_data)
+            .unwrap();
+        assert!(
+            decoded.len() < 2_000_000,
+            "Resized PNG→JPEG should be under 2MB, got {} bytes",
+            decoded.len()
+        );
+        assert_eq!(&decoded[..2], &[0xFF, 0xD8], "Should be valid JPEG");
     }
 }

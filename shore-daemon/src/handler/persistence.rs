@@ -56,7 +56,11 @@ pub(super) async fn persist_and_notify(
                 finish_reason: result.finish_reason.clone(),
                 error: None,
             };
-            ctx.diagnostics.lock().unwrap_or_else(|e| e.into_inner()).api_calls.push(entry);
+            ctx.diagnostics
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .api_calls
+                .push(entry);
         }
 
         info!(

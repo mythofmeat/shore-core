@@ -35,7 +35,10 @@ impl SseParser {
 
         while let Some(newline_pos) = self.buf.find('\n') {
             let raw: String = self.buf.drain(..=newline_pos).collect();
-            let line = raw.trim_end_matches('\n').trim_end_matches('\r').to_string();
+            let line = raw
+                .trim_end_matches('\n')
+                .trim_end_matches('\r')
+                .to_string();
 
             if line.is_empty() {
                 // Empty line = end of event.  Dispatch if we have data.

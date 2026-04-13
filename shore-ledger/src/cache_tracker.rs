@@ -11,7 +11,6 @@ pub enum CacheState {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Anomaly {
-    UnexpectedRead,
     UnexpectedWrite,
     /// The cache was Warm, TTL expired (→ Cold), and the next call was NOT a
     /// keepalive — meaning the keepalive system failed to bridge the gap.
@@ -46,6 +45,12 @@ pub struct CacheTracker {
     /// `KeepaliveMiss` anomaly — the keepalive system should have prevented
     /// the cold start.
     ttl_expired_since_warm: bool,
+}
+
+impl Default for CacheTracker {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl CacheTracker {
@@ -83,8 +88,7 @@ impl CacheTracker {
         last_cache_read: u32,
         ttl_secs: u64,
     ) -> Self {
-        let parsed = DateTime::parse_from_rfc3339(last_ts_str)
-            .map(|dt| dt.with_timezone(&Utc));
+        let parsed = DateTime::parse_from_rfc3339(last_ts_str).map(|dt| dt.with_timezone(&Utc));
 
         let state = match &parsed {
             Ok(ts) => {
@@ -172,9 +176,7 @@ impl CacheTracker {
         // 5. Evaluate against expected behavior
         let mut anomaly = match self.state {
             CacheState::Warm => {
-                if skip_cache_read_comparison {
-                    None // Interiority/tool_loop — different prefix, can't compare
-                } else if obs.cache_read_tokens >= self.last_cache_read {
+                if skip_cache_read_comparison || obs.cache_read_tokens >= self.last_cache_read {
                     None // OK, stay Warm
                 } else {
                     self.state = CacheState::Cold;
@@ -183,14 +185,10 @@ impl CacheTracker {
                 }
             }
             CacheState::Cold => {
-                if obs.cache_read_tokens > 0 {
-                    Some(Anomaly::UnexpectedRead)
-                } else if obs.cache_write_tokens > 0 {
+                if obs.cache_read_tokens > 0 || obs.cache_write_tokens > 0 {
                     self.state = CacheState::Warm;
-                    None
-                } else {
-                    None // Cold, no read, no write — stay Cold
                 }
+                None
             }
         };
 
@@ -232,12 +230,7 @@ impl CacheTracker {
         }
     }
 
-    fn update_metadata(
-        &mut self,
-        ts: Option<DateTime<Utc>>,
-        model: &str,
-        thinking: bool,
-    ) {
+    fn update_metadata(&mut self, ts: Option<DateTime<Utc>>, model: &str, thinking: bool) {
         self.last_ts = ts;
         self.last_model = Some(model.to_string());
         self.last_thinking = Some(thinking);
@@ -323,7 +316,7 @@ mod tests {
     }
 
     #[test]
-    fn cold_anomaly_on_unexpected_cache_read() {
+    fn cold_to_warm_on_cache_read() {
         let mut tracker = CacheTracker::new();
         let result = tracker.observe(&Observation {
             ts: "2026-04-05T12:00:00Z".into(),
@@ -333,7 +326,38 @@ mod tests {
             cache_write_tokens: 0,
             call_type: "message".into(),
         });
-        assert_eq!(result.anomaly, Some(Anomaly::UnexpectedRead));
+        assert!(result.anomaly.is_none());
+        assert_eq!(
+            tracker.state(),
+            CacheState::Warm,
+            "Cold + cache_read > 0 must transition to Warm"
+        );
+    }
+
+    #[test]
+    fn cold_to_warm_no_anomaly_on_subsequent_calls() {
+        let mut tracker = CacheTracker::new();
+        let r1 = tracker.observe(&Observation {
+            ts: "2026-04-05T12:00:00Z".into(),
+            model: "claude-opus-4-6".into(),
+            thinking_enabled: true,
+            cache_read_tokens: 500,
+            cache_write_tokens: 100,
+            call_type: "message".into(),
+        });
+        assert!(r1.anomaly.is_none());
+        assert_eq!(tracker.state(), CacheState::Warm);
+
+        let r2 = tracker.observe(&Observation {
+            ts: "2026-04-05T12:00:30Z".into(),
+            model: "claude-opus-4-6".into(),
+            thinking_enabled: true,
+            cache_read_tokens: 600,
+            cache_write_tokens: 50,
+            call_type: "message".into(),
+        });
+        assert!(r2.anomaly.is_none());
+        assert_eq!(tracker.state(), CacheState::Warm);
     }
 
     #[test]
@@ -433,44 +457,23 @@ mod tests {
 
     #[test]
     fn reconstruct_warm_within_ttl() {
-        let recent_ts = Utc::now()
-            .format("%Y-%m-%dT%H:%M:%SZ")
-            .to_string();
-        let tracker = CacheTracker::reconstruct(
-            &recent_ts,
-            "claude-opus-4-6",
-            true,
-            500,
-            3600,
-        );
+        let recent_ts = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        let tracker = CacheTracker::reconstruct(&recent_ts, "claude-opus-4-6", true, 500, 3600);
         assert_eq!(tracker.state(), CacheState::Warm);
         assert_eq!(tracker.last_cache_read(), 500);
     }
 
     #[test]
     fn reconstruct_cold_when_no_cache_read() {
-        let recent_ts = Utc::now()
-            .format("%Y-%m-%dT%H:%M:%SZ")
-            .to_string();
-        let tracker = CacheTracker::reconstruct(
-            &recent_ts,
-            "claude-opus-4-6",
-            true,
-            0,
-            3600,
-        );
+        let recent_ts = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        let tracker = CacheTracker::reconstruct(&recent_ts, "claude-opus-4-6", true, 0, 3600);
         assert_eq!(tracker.state(), CacheState::Cold);
     }
 
     #[test]
     fn reconstruct_cold_when_ttl_expired() {
-        let tracker = CacheTracker::reconstruct(
-            "2020-01-01T00:00:00Z",
-            "claude-opus-4-6",
-            true,
-            500,
-            3600,
-        );
+        let tracker =
+            CacheTracker::reconstruct("2020-01-01T00:00:00Z", "claude-opus-4-6", true, 500, 3600);
         assert_eq!(tracker.state(), CacheState::Cold);
     }
 

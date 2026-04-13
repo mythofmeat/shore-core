@@ -69,7 +69,10 @@ impl CollectedResponse {
             "Expected {} tool call(s), but got {}: {:?}",
             n,
             self.tool_calls.len(),
-            self.tool_calls.iter().map(|tc| &tc.name).collect::<Vec<_>>(),
+            self.tool_calls
+                .iter()
+                .map(|tc| &tc.name)
+                .collect::<Vec<_>>(),
         );
     }
 }

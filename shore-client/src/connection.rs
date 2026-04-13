@@ -1,25 +1,16 @@
-use std::path::Path;
-
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::net::TcpStream;
-#[cfg(unix)]
-use tokio::net::UnixStream;
 use tracing::{debug, error, trace, warn};
 
 use shore_protocol::client_msg::{ClientHello, ClientMessage};
 use shore_protocol::server_msg::{History, ServerHello, ServerMessage};
-use shore_protocol::SWP_V1;
+use shore_protocol::{MAX_WIRE_MESSAGE_SIZE, SWP_V1};
 
 use crate::error::{ClientError, Result};
 
-/// Address to connect to — either a Unix socket path or a TCP host:port.
+/// Address to connect to — a TCP host:port.
 #[derive(Debug, Clone)]
-pub enum ServerAddr {
-    /// Path to a Unix domain socket.
-    Unix(String),
-    /// TCP address in `host:port` form.
-    Tcp(String),
-}
+pub struct ServerAddr(pub String);
 
 /// Internal trait to unify read/write halves across transport types.
 trait AsyncReadWrite: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin {}
@@ -43,39 +34,17 @@ impl std::fmt::Debug for SWPConnection {
 impl SWPConnection {
     /// Open a raw transport to `addr` without performing the handshake.
     async fn open(addr: &ServerAddr) -> Result<Self> {
-        match addr {
-            #[cfg(unix)]
-            ServerAddr::Unix(path) => {
-                debug!(path = %path, "connecting via unix socket");
-                let stream = UnixStream::connect(path).await.map_err(|e| {
-                    error!(path = %path, error = %e, "unix socket connect failed");
-                    ClientError::Connect(format!("unix:{path}: {e}"))
-                })?;
-                let (r, w) = stream.into_split();
-                debug!(path = %path, "unix socket connected");
-                Ok(Self {
-                    reader: BufReader::new(Box::new(tokio::io::join(r, tokio::io::sink()))),
-                    writer: BufWriter::new(Box::new(tokio::io::join(tokio::io::empty(), w))),
-                })
-            }
-            #[cfg(not(unix))]
-            ServerAddr::Unix(_) => Err(ClientError::Connect(
-                "Unix sockets are not supported on this platform".into(),
-            )),
-            ServerAddr::Tcp(addr) => {
-                debug!(addr = %addr, "connecting via tcp");
-                let stream = TcpStream::connect(addr).await.map_err(|e| {
-                    error!(addr = %addr, error = %e, "tcp connect failed");
-                    ClientError::Connect(format!("tcp:{addr}: {e}"))
-                })?;
-                let (r, w) = stream.into_split();
-                debug!(addr = %addr, "tcp connected");
-                Ok(Self {
-                    reader: BufReader::new(Box::new(tokio::io::join(r, tokio::io::sink()))),
-                    writer: BufWriter::new(Box::new(tokio::io::join(tokio::io::empty(), w))),
-                })
-            }
-        }
+        debug!(addr = %addr.0, "connecting via tcp");
+        let stream = TcpStream::connect(&addr.0).await.map_err(|e| {
+            error!(addr = %addr.0, error = %e, "tcp connect failed");
+            ClientError::Connect(format!("tcp:{}: {e}", addr.0))
+        })?;
+        let (r, w) = stream.into_split();
+        debug!(addr = %addr.0, "tcp connected");
+        Ok(Self {
+            reader: BufReader::new(Box::new(tokio::io::join(r, tokio::io::sink()))),
+            writer: BufWriter::new(Box::new(tokio::io::join(tokio::io::empty(), w))),
+        })
     }
 
     /// Connect to the daemon and perform the SWP handshake.
@@ -113,7 +82,11 @@ impl SWPConnection {
         let server_hello = match first_msg {
             ServerMessage::Hello(h) => {
                 if h.v != SWP_V1 {
-                    error!(server_version = h.v, expected = SWP_V1, "protocol version mismatch");
+                    error!(
+                        server_version = h.v,
+                        expected = SWP_V1,
+                        "protocol version mismatch"
+                    );
                     return Err(ClientError::Protocol(format!(
                         "unsupported protocol version: {} (expected {})",
                         h.v, SWP_V1
@@ -186,21 +159,12 @@ impl SWPConnection {
     ///
     /// Returns `Err(ClientError::Disconnected)` on EOF.
     pub async fn recv(&mut self) -> Result<ServerMessage> {
-        let mut line = String::new();
-        let n = self
-            .reader
-            .read_line(&mut line)
-            .await
-            .map_err(ClientError::Io)?;
-        if n == 0 {
-            debug!("EOF on connection — disconnected");
-            return Err(ClientError::Disconnected);
-        }
+        let line = read_json_line_bounded(&mut self.reader).await?;
         let msg: ServerMessage = serde_json::from_str(line.trim()).map_err(|e| {
             warn!(error = %e, raw_len = line.len(), "failed to deserialize server message");
             ClientError::Deserialize(e)
         })?;
-        trace!(bytes = n, "received message");
+        trace!(bytes = line.len(), "received message");
         Ok(msg)
     }
 
@@ -334,6 +298,45 @@ impl SWPConnection {
     }
 }
 
+async fn read_json_line_bounded<R>(reader: &mut BufReader<R>) -> Result<String>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let mut line = String::new();
+    loop {
+        let buf = reader.fill_buf().await.map_err(ClientError::Io)?;
+        if buf.is_empty() {
+            if line.is_empty() {
+                debug!("EOF on connection — disconnected");
+                return Err(ClientError::Disconnected);
+            }
+            break;
+        }
+
+        let (consume, done) = match buf.iter().position(|&b| b == b'\n') {
+            Some(pos) => (pos + 1, true),
+            None => (buf.len(), false),
+        };
+
+        if line.len() + consume > MAX_WIRE_MESSAGE_SIZE {
+            return Err(ClientError::Protocol(format!(
+                "server message exceeds maximum size of {MAX_WIRE_MESSAGE_SIZE} bytes"
+            )));
+        }
+
+        let chunk = std::str::from_utf8(&buf[..consume]).map_err(|e| {
+            ClientError::Protocol(format!("server sent invalid UTF-8 framing: {e}"))
+        })?;
+        line.push_str(chunk);
+        reader.consume(consume);
+        if done {
+            break;
+        }
+    }
+
+    Ok(line)
+}
+
 /// Generate a unique request ID using timestamp + atomic counter.
 ///
 /// The counter ensures uniqueness even when multiple IDs are generated
@@ -360,14 +363,10 @@ mod tests {
     /// nanosecond timestamps produce duplicate IDs.
     #[test]
     fn uuid_v4_unique_under_concurrent_calls() {
-        use std::sync::{Arc, Mutex};
-
-        let ids = Arc::new(Mutex::new(std::collections::HashSet::<String>::new()));
         let mut handles = Vec::new();
 
         // Spawn 8 threads each generating 100 IDs concurrently.
         for _ in 0..8 {
-            let ids = Arc::clone(&ids);
             handles.push(std::thread::spawn(move || {
                 let mut local = Vec::with_capacity(100);
                 for _ in 0..100 {
@@ -388,12 +387,4 @@ mod tests {
         }
         assert_eq!(all_ids.len(), 800);
     }
-}
-
-/// Check whether a path looks like it could be a Unix socket path.
-pub fn is_unix_path(s: &str) -> bool {
-    Path::new(s).is_absolute()
-        || s.starts_with("./")
-        || s.starts_with("../")
-        || s.ends_with(".sock")
 }

@@ -16,6 +16,31 @@ use serde_json::json;
 static FORENSIC_DIR: OnceLock<PathBuf> = OnceLock::new();
 static CALL_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+pub struct RequestLog<'a> {
+    pub call_id: u64,
+    pub character: Option<&'a str>,
+    pub model: &'a str,
+    pub msg_count: usize,
+    pub msg_breakpoints: &'a [usize],
+    pub sys_breakpoints: &'a [usize],
+    pub sys_blocks: usize,
+    pub prefix_hash: u64,
+    pub has_existing_markers: bool,
+    pub cache_enabled: bool,
+    pub rid: Option<&'a str>,
+}
+
+pub struct ResponseLog<'a> {
+    pub call_id: u64,
+    pub model: &'a str,
+    pub character: &'a str,
+    pub call_type: &'a str,
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+    pub cache_read_tokens: u32,
+    pub cache_creation_tokens: u32,
+}
+
 /// Enable cache forensics.  Call once at startup with the data directory.
 pub fn enable(dir: PathBuf) {
     let _ = FORENSIC_DIR.set(dir);
@@ -50,72 +75,45 @@ pub fn write_entry(entry: &serde_json::Value) {
 }
 
 /// Log the request-side cache placement for an Anthropic call.
-pub fn log_request(
-    call_id: u64,
-    character: Option<&str>,
-    model: &str,
-    msg_count: usize,
-    msg_breakpoints: &[usize],
-    sys_breakpoints: &[usize],
-    sys_blocks: usize,
-    prefix_hash: u64,
-    has_existing_markers: bool,
-    cache_enabled: bool,
-    rid: Option<&str>,
-) {
+pub fn log_request(entry: RequestLog<'_>) {
     let ts = chrono::Local::now().to_rfc3339();
     write_entry(&json!({
         "ts": ts,
         "type": "request",
-        "call_id": call_id,
-        "character": character,
-        "model": model,
-        "msg_count": msg_count,
-        "msg_breakpoints": msg_breakpoints,
-        "sys_breakpoints": sys_breakpoints,
-        "sys_blocks": sys_blocks,
-        "prefix_hash": format!("{prefix_hash:016x}"),
-        "has_existing_markers": has_existing_markers,
-        "cache_enabled": cache_enabled,
-        "rid": rid,
+        "call_id": entry.call_id,
+        "character": entry.character,
+        "model": entry.model,
+        "msg_count": entry.msg_count,
+        "msg_breakpoints": entry.msg_breakpoints,
+        "sys_breakpoints": entry.sys_breakpoints,
+        "sys_blocks": entry.sys_blocks,
+        "prefix_hash": format!("{:016x}", entry.prefix_hash),
+        "has_existing_markers": entry.has_existing_markers,
+        "cache_enabled": entry.cache_enabled,
+        "rid": entry.rid,
     }));
 }
 
 /// Log the response-side cache event.
-pub fn log_response(
-    call_id: u64,
-    model: &str,
-    character: &str,
-    call_type: &str,
-    input_tokens: u32,
-    output_tokens: u32,
-    cache_read_tokens: u32,
-    cache_creation_tokens: u32,
-) {
+pub fn log_response(entry: ResponseLog<'_>) {
     let ts = chrono::Local::now().to_rfc3339();
     write_entry(&json!({
         "ts": ts,
         "type": "response",
-        "call_id": call_id,
-        "model": model,
-        "character": character,
-        "call_type": call_type,
-        "input_tokens": input_tokens,
-        "output_tokens": output_tokens,
-        "cache_read_tokens": cache_read_tokens,
-        "cache_creation_tokens": cache_creation_tokens,
+        "call_id": entry.call_id,
+        "model": entry.model,
+        "character": entry.character,
+        "call_type": entry.call_type,
+        "input_tokens": entry.input_tokens,
+        "output_tokens": entry.output_tokens,
+        "cache_read_tokens": entry.cache_read_tokens,
+        "cache_creation_tokens": entry.cache_creation_tokens,
     }));
 }
 
 /// Log a failed API call (error from generate/stream) so keepalive and
 /// other failures are visible in the forensic log, not just journald.
-pub fn log_error(
-    call_id: u64,
-    model: &str,
-    character: &str,
-    call_type: &str,
-    error: &str,
-) {
+pub fn log_error(call_id: u64, model: &str, character: &str, call_type: &str, error: &str) {
     let ts = chrono::Local::now().to_rfc3339();
     write_entry(&json!({
         "ts": ts,
@@ -142,11 +140,9 @@ pub fn notify_anomaly(
         return;
     }
     let summary = format!("shore: cache {anomaly}");
-    let body = format!(
-        "{character} ({call_type})\nread={cache_read} write={cache_write}"
-    );
+    let body = format!("{character} ({call_type})\nread={cache_read} write={cache_write}");
     let _ = std::process::Command::new("notify-send")
-        .args(["--urgency=critical", "--app-name=shore", &summary, &body])
+        .args(["--urgency=normal", "--app-name=shore", &summary, &body])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

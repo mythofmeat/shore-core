@@ -7,6 +7,7 @@ edition = "2021"
 shore-config = { path = "../shore-config" }
 shore-client = { path = "../shore-client" }
 shore-daemon = { path = "../shore-daemon" }
+shore-daemon-server = { path = "../shore-daemon-server" }
 shore-protocol = { path = "../shore-protocol" }
 shore-llm-client = { path = "../shore-llm-client" }
 shore-ledger = { path = "../shore-ledger" }

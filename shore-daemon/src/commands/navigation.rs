@@ -159,9 +159,7 @@ pub fn switch_character(
 
     info!(character = name, "Character switch requested");
 
-    // In multi-character mode, the client should reconnect with the new character.
-    // For now, acknowledge the request.
-    Ok(json!({ "character": name, "changed": true, "reconnect_required": true }))
+    Ok(json!({ "character": name, "changed": true }))
 }
 
 #[cfg(test)]
@@ -192,11 +190,12 @@ mod tests {
                 config: tmp.path().join("config"),
                 data: data_dir.clone(),
                 runtime: tmp.path().join("runtime"),
+                cache: tmp.path().join("cache"),
             },
         );
 
         let (_tx, rx) = tokio::sync::watch::channel(());
-        let (autonomy, _compaction_rx) = crate::autonomy::manager::AutonomyManager::new(
+        let autonomy = crate::autonomy::manager::AutonomyManager::new(
             Default::default(),
             Default::default(),
             data_dir.clone(),
@@ -210,7 +209,11 @@ mod tests {
             active_model: None,
             session_tokens: std::sync::Arc::new(std::sync::Mutex::new(SessionTokens::default())),
             autonomy,
-            llm_client: shore_ledger::LedgerClient::new(shore_llm_client::LlmClient::new(), &data_dir.join("ledger.db")).unwrap(),
+            llm_client: shore_ledger::LedgerClient::new(
+                shore_llm_client::LlmClient::new(),
+                &data_dir.join("ledger.db"),
+            )
+            .unwrap(),
             diagnostics: std::sync::Arc::new(std::sync::Mutex::new(
                 shore_diagnostics::Diagnostics::default(),
             )),

@@ -9,10 +9,13 @@
 use chrono::Local;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
+use std::sync::Mutex;
 use tracing::{debug, info, warn};
 
 use crate::memory::db::{Entry, MemoryDB};
 use crate::memory::rag::{EntryMeta, RagPipeline, SourceResult};
+use crate::memory::search::Bm25Index;
+use crate::sync::lock_or_recover;
 
 use super::types::{AgentIndexer, AgentSearchContext};
 
@@ -121,7 +124,8 @@ pub fn handle_search_entries(db: &MemoryDB, input: &Value) -> Result<String, Str
                         m
                     })
                     .collect();
-                serde_json::to_string_pretty(&results).map_err(|e| format!("Error: JSON serialization: {e}"))
+                serde_json::to_string_pretty(&results)
+                    .map_err(|e| format!("Error: JSON serialization: {e}"))
             }
         }
         Err(e) => {
@@ -180,15 +184,9 @@ pub async fn handle_semantic_search(
         .collect();
 
     // 4. BM25 search.
-    let bm25_hits = ctx.bm25.lock().unwrap().search(query, fetch_k);
+    let bm25_hits = search_bm25_hits(&ctx.bm25, query, fetch_k);
     debug!(bm25_hits = bm25_hits.len(), "BM25 search complete");
-    let bm25_source: Vec<SourceResult> = bm25_hits
-        .iter()
-        .map(|r| SourceResult {
-            entry_id: r.entry_id.clone(),
-            score: r.score,
-        })
-        .collect();
+    let bm25_source = bm25_hits;
 
     // 5. Collect entry IDs from both sources.
     let all_ids: HashSet<&str> = vector_source
@@ -203,13 +201,9 @@ pub async fn handle_semantic_search(
 
     // 6. Batch-fetch all entries once, build a lookup map.
     let id_slice: Vec<&str> = all_ids.iter().copied().collect();
-    let fetched = db
-        .get_entries_by_ids(&id_slice)
-        .unwrap_or_default();
-    let entry_map: HashMap<String, Entry> = fetched
-        .into_iter()
-        .map(|e| (e.id.clone(), e))
-        .collect();
+    let fetched = db.get_entries_by_ids(&id_slice).unwrap_or_default();
+    let entry_map: HashMap<String, Entry> =
+        fetched.into_iter().map(|e| (e.id.clone(), e)).collect();
 
     // 7. Build metadata for lifecycle scoring from the map.
     let metadata: Vec<EntryMeta> = entry_map
@@ -268,6 +262,18 @@ pub async fn handle_semantic_search(
     serde_json::to_string_pretty(&results).map_err(|e| format!("Error: JSON serialization: {e}"))
 }
 
+fn search_bm25_hits(index: &Mutex<Bm25Index>, query: &str, top_k: usize) -> Vec<SourceResult> {
+    let index = lock_or_recover("memory agent BM25 index", index);
+    index
+        .search(query, top_k)
+        .into_iter()
+        .map(|r| SourceResult {
+            entry_id: r.entry_id,
+            score: r.score,
+        })
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // query_db
 // ---------------------------------------------------------------------------
@@ -285,7 +291,8 @@ pub fn handle_query_db(db: &MemoryDB, input: &Value) -> Result<String, String> {
             if rows.is_empty() {
                 Ok("No results.".into())
             } else {
-                serde_json::to_string_pretty(&rows).map_err(|e| format!("Error: JSON serialization: {e}"))
+                serde_json::to_string_pretty(&rows)
+                    .map_err(|e| format!("Error: JSON serialization: {e}"))
             }
         }
         Err(e) => {
@@ -572,7 +579,9 @@ pub fn handle_resolve_flag(db: &MemoryDB, input: &Value) -> Result<String, Strin
     debug!(flag_id, "Resolving flag");
 
     // Get the flag first so we can boost confidence
-    let flag = db.get_flag(flag_id).map_err(|e| format!("Error: DB: {e}"))?;
+    let flag = db
+        .get_flag(flag_id)
+        .map_err(|e| format!("Error: DB: {e}"))?;
 
     db.resolve_flag(flag_id, &resolution)
         .map_err(|e| format!("Error: DB: {e}"))?;
@@ -703,6 +712,8 @@ mod tests {
     use super::*;
     use crate::memory::db::MemoryDB;
     use serde_json::json;
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+    use std::sync::Mutex;
 
     fn test_db() -> MemoryDB {
         MemoryDB::open_in_memory().unwrap()
@@ -804,6 +815,25 @@ mod tests {
     #[test]
     fn sanitize_handles_punctuation() {
         assert_eq!(sanitize_fts_query("hello, world!"), "hello OR world");
+    }
+
+    #[test]
+    fn bm25_search_recovers_from_poisoned_mutex() {
+        let index = Mutex::new(Bm25Index::new());
+        {
+            let mut guard = index.lock().unwrap();
+            guard.add_document("entry-1", "Alice likes chocolate");
+        }
+
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let _guard = index.lock().unwrap();
+            panic!("poison memory agent BM25 search");
+        }));
+        assert!(result.is_err());
+
+        let hits = search_bm25_hits(&index, "Alice", 5);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].entry_id, "entry-1");
     }
 
     // -- query_db -------------------------------------------------------------

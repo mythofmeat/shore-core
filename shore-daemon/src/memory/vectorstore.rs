@@ -5,7 +5,7 @@ use lancedb::arrow::SendableRecordBatchStream;
 use lancedb::query::{ExecutableQuery, QueryBase};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tracing::{debug, instrument, warn};
+use tracing::{debug, instrument};
 
 const TABLE_NAME: &str = "vectors";
 
@@ -21,6 +21,8 @@ pub enum VectorStoreError {
     Arrow(#[from] arrow_schema::ArrowError),
     #[error("embed: {0}")]
     Embed(String),
+    #[error("invalid entry id '{0}': only ASCII letters, digits, '_' and '-' are allowed")]
+    InvalidEntryId(String),
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -57,6 +59,7 @@ impl VectorStore {
     /// Open or create the vector store at the given directory.
     #[instrument(skip(path), fields(path = %path.display(), dimension))]
     pub async fn open(path: &Path, dimension: i32) -> Result<Self, VectorStoreError> {
+        let started = std::time::Instant::now();
         debug!(path = %path.display(), dimension, "opening vector store");
         std::fs::create_dir_all(path).map_err(VectorStoreError::Io)?;
         let uri = path.to_str().ok_or_else(|| {
@@ -66,7 +69,7 @@ impl VectorStore {
             ))
         })?;
         let db = lancedb::connect(uri).execute().await?;
-        debug!(path = %path.display(), "vector store opened");
+        debug!(path = %path.display(), elapsed = ?started.elapsed(), "vector store opened");
         Ok(Self { db, dimension })
     }
 
@@ -77,18 +80,18 @@ impl VectorStore {
         entry_id: &str,
         embedding: &[f32],
     ) -> Result<(), VectorStoreError> {
-        debug!(entry_id, dims = embedding.len(), "indexing entry in vector store");
+        debug!(
+            entry_id,
+            dims = embedding.len(),
+            "indexing entry in vector store"
+        );
+        let predicate = Self::entry_id_predicate(&[entry_id])?;
         let batch = self.make_batch(&[(entry_id, embedding)])?;
 
         match self.db.open_table(TABLE_NAME).execute().await {
             Ok(table) => {
                 // Remove stale vector for this entry, then insert new one.
-                // Validate entry_id to prevent SQL injection in LanceDB predicate.
-                if entry_id.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
-                    let _ = table.delete(&format!("entry_id = '{entry_id}'")).await;
-                } else {
-                    warn!(entry_id, "Refusing to delete stale entry with unsafe ID characters");
-                }
+                let _ = table.delete(&predicate).await;
                 table.add(vec![batch]).execute().await?;
             }
             Err(_) => {
@@ -129,18 +132,20 @@ impl VectorStore {
 
         let mut results = Vec::new();
         while let Some(rb) = stream.try_next().await? {
+            // The vector-store module owns this table schema. A mismatch here means
+            // index corruption or an internal invariant break, so we fail loudly.
             let ids: &StringArray = rb
                 .column_by_name("entry_id")
-                .expect("missing entry_id column")
+                .expect("vector-store invariant violated: missing entry_id column")
                 .as_any()
                 .downcast_ref()
-                .expect("entry_id not StringArray");
+                .expect("vector-store invariant violated: entry_id not StringArray");
             let dists: &Float32Array = rb
                 .column_by_name("_distance")
-                .expect("missing _distance column")
+                .expect("vector-store invariant violated: missing _distance column")
                 .as_any()
                 .downcast_ref()
-                .expect("_distance not Float32Array");
+                .expect("vector-store invariant violated: _distance not Float32Array");
 
             for i in 0..rb.num_rows() {
                 let distance = dists.value(i);
@@ -160,13 +165,9 @@ impl VectorStore {
     /// If the entry does not exist or the table does not exist, this is a no-op.
     pub async fn delete_entry(&self, entry_id: &str) -> Result<(), VectorStoreError> {
         debug!(entry_id, "removing entry from vector store");
+        let predicate = Self::entry_id_predicate(&[entry_id])?;
         if let Ok(table) = self.db.open_table(TABLE_NAME).execute().await {
-            // Validate entry_id to prevent SQL injection in LanceDB predicate.
-            if entry_id.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
-                let _ = table.delete(&format!("entry_id = '{entry_id}'")).await;
-            } else {
-                warn!(entry_id, "Refusing to delete entry with unsafe ID characters");
-            }
+            let _ = table.delete(&predicate).await;
         }
         Ok(())
     }
@@ -174,10 +175,12 @@ impl VectorStore {
     /// Rebuild the entire index from the given entries.
     /// Drops the existing table and creates a fresh one.
     pub async fn reindex(&self, entries: &[(&str, &[f32])]) -> Result<(), VectorStoreError> {
+        let started = std::time::Instant::now();
         debug!(entry_count = entries.len(), "reindexing vector store");
         let _ = self.db.drop_table(TABLE_NAME, &[]).await;
 
         if entries.is_empty() {
+            debug!(elapsed = ?started.elapsed(), "vector store reindex complete");
             return Ok(());
         }
 
@@ -187,6 +190,7 @@ impl VectorStore {
             .execute()
             .await?;
 
+        debug!(entry_count = entries.len(), elapsed = ?started.elapsed(), "vector store reindex complete");
         Ok(())
     }
 
@@ -201,31 +205,31 @@ impl VectorStore {
         if entry_ids.is_empty() {
             return Ok(result);
         }
+        let filter = Self::entry_id_predicate(entry_ids)?;
 
         let table = match self.db.open_table(TABLE_NAME).execute().await {
             Ok(t) => t,
             Err(_) => return Ok(result),
         };
 
-        // Build a SQL filter for the entry IDs.
-        let id_list: Vec<String> = entry_ids.iter().map(|id| format!("'{id}'")).collect();
-        let filter = format!("entry_id IN ({})", id_list.join(", "));
-
         let mut stream: SendableRecordBatchStream = table.query().only_if(filter).execute().await?;
 
         while let Some(rb) = stream.try_next().await? {
+            // These columns are produced from the schema this module creates.
+            // Treat shape drift as an invariant break until we make corruption
+            // handling a recoverable vector-store error.
             let ids: &StringArray = rb
                 .column_by_name("entry_id")
-                .expect("missing entry_id column")
+                .expect("vector-store invariant violated: missing entry_id column")
                 .as_any()
                 .downcast_ref()
-                .expect("entry_id not StringArray");
+                .expect("vector-store invariant violated: entry_id not StringArray");
             let vectors: &FixedSizeListArray = rb
                 .column_by_name("vector")
-                .expect("missing vector column")
+                .expect("vector-store invariant violated: missing vector column")
                 .as_any()
                 .downcast_ref()
-                .expect("vector not FixedSizeListArray");
+                .expect("vector-store invariant violated: vector not FixedSizeListArray");
 
             for i in 0..rb.num_rows() {
                 let entry_id = ids.value(i).to_string();
@@ -233,7 +237,7 @@ impl VectorStore {
                 let float_array: &Float32Array = vec_array
                     .as_any()
                     .downcast_ref()
-                    .expect("vector values not Float32Array");
+                    .expect("vector-store invariant violated: vector values not Float32Array");
                 let embedding: Vec<f32> = (0..float_array.len())
                     .map(|j| float_array.value(j))
                     .collect();
@@ -266,6 +270,7 @@ impl VectorStore {
         // Validate embedding dimensions before building the arrow batch.
         // Mismatched dimensions cause a panic in FixedSizeListBuilder.
         for (id, vec) in entries {
+            Self::validate_entry_id(id)?;
             if vec.len() != self.dimension as usize {
                 return Err(VectorStoreError::Embed(format!(
                     "embedding for '{}' has {} dimensions, expected {}",
@@ -289,6 +294,40 @@ impl VectorStore {
         ) as _;
 
         RecordBatch::try_new(schema, vec![id_array, vector_array]).map_err(Into::into)
+    }
+
+    fn entry_id_predicate(entry_ids: &[&str]) -> Result<String, VectorStoreError> {
+        if entry_ids.is_empty() {
+            return Err(VectorStoreError::Embed(
+                "cannot build vector-store predicate for an empty entry id set".to_string(),
+            ));
+        }
+
+        let quoted_ids = entry_ids
+            .iter()
+            .map(|entry_id| {
+                Self::validate_entry_id(entry_id)?;
+                Ok(format!("'{entry_id}'"))
+            })
+            .collect::<Result<Vec<_>, VectorStoreError>>()?;
+
+        Ok(if quoted_ids.len() == 1 {
+            format!("entry_id = {}", quoted_ids[0])
+        } else {
+            format!("entry_id IN ({})", quoted_ids.join(", "))
+        })
+    }
+
+    fn validate_entry_id(entry_id: &str) -> Result<(), VectorStoreError> {
+        if !entry_id.is_empty()
+            && entry_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+        {
+            Ok(())
+        } else {
+            Err(VectorStoreError::InvalidEntryId(entry_id.to_string()))
+        }
     }
 }
 
@@ -483,4 +522,30 @@ mod tests {
         assert!(result.is_empty());
     }
 
+    #[test]
+    fn test_entry_id_predicate_builds_expected_filters() {
+        assert_eq!(
+            VectorStore::entry_id_predicate(&["e1"]).unwrap(),
+            "entry_id = 'e1'"
+        );
+        assert_eq!(
+            VectorStore::entry_id_predicate(&["e1", "e2"]).unwrap(),
+            "entry_id IN ('e1', 'e2')"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_invalid_entry_ids_fail_consistently() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = open_temp_store(tmp.path(), 4).await;
+
+        let index_err = store.index_entry("bad'id", &[1.0, 0.0, 0.0, 0.0]).await;
+        assert!(matches!(index_err, Err(VectorStoreError::InvalidEntryId(id)) if id == "bad'id"));
+
+        let delete_err = store.delete_entry("bad'id").await;
+        assert!(matches!(delete_err, Err(VectorStoreError::InvalidEntryId(id)) if id == "bad'id"));
+
+        let get_err = store.get_embeddings(&["bad'id"]).await;
+        assert!(matches!(get_err, Err(VectorStoreError::InvalidEntryId(id)) if id == "bad'id"));
+    }
 }

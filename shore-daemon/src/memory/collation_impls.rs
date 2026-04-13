@@ -68,7 +68,11 @@ pub struct RealCollationLlm {
 
 impl RealCollationLlm {
     pub fn new(client: LedgerClient, model: ResolvedModel, character: String) -> Self {
-        Self { client, model, character }
+        Self {
+            client,
+            model,
+            character,
+        }
     }
 
     /// Send a prompt to the LLM and return the raw text response.
@@ -80,7 +84,7 @@ impl RealCollationLlm {
 
         let resp = self
             .client
-            .generate(&request, CallType::MemoryAgent, &self.character, false)
+            .generate(&request, CallType::Collation, &self.character, false)
             .await
             .map_err(|e| CollationError::Llm(e.to_string()))?;
 

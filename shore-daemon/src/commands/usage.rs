@@ -138,21 +138,14 @@ pub async fn usage(ctx: &CommandContext, args: &serde_json::Value) -> CommandRes
         for row in &rows {
             let key = format!("{}/{}", row.provider, row.model);
             if models_fetched.insert(key.clone()) {
-                let model_id =
-                    shore_ledger::pricing::to_openrouter_id(&row.provider, &row.model);
+                let model_id = shore_ledger::pricing::to_openrouter_id(&row.provider, &row.model);
                 match pricing.get_or_fetch(&row.provider, &row.model).await {
                     Some(_) => {
                         fetch_results.insert(key, None);
                     }
                     None => {
-                        tracing::warn!(
-                            model_id,
-                            "Pricing fetch returned no data for model"
-                        );
-                        fetch_results.insert(
-                            key,
-                            Some(format!("no pricing data for {model_id}")),
-                        );
+                        tracing::warn!(model_id, "Pricing fetch returned no data for model");
+                        fetch_results.insert(key, Some(format!("no pricing data for {model_id}")));
                     }
                 }
             }
@@ -160,15 +153,15 @@ pub async fn usage(ctx: &CommandContext, args: &serde_json::Value) -> CommandRes
 
         let mut updated = 0u32;
         for row in &rows {
-            if let Ok(Some(cost)) = pricing.calculate_cost(
-                &row.provider,
-                &row.model,
-                row.input_tokens,
-                row.output_tokens,
-                row.cache_read_tokens,
-                row.cache_write_tokens,
-                row.cache_ttl.as_deref(),
-            ) {
+            if let Ok(Some(cost)) = pricing.calculate_cost(shore_ledger::pricing::CostRequest {
+                provider: &row.provider,
+                model: &row.model,
+                input_tokens: row.input_tokens,
+                output_tokens: row.output_tokens,
+                cache_read_tokens: row.cache_read_tokens,
+                cache_write_tokens: row.cache_write_tokens,
+                cache_ttl: row.cache_ttl.as_deref(),
+            }) {
                 if shore_ledger::query::update_costs(ledger, row.id, &cost).is_ok() {
                     updated += 1;
                 }
@@ -178,13 +171,18 @@ pub async fn usage(ctx: &CommandContext, args: &serde_json::Value) -> CommandRes
         let failures: Vec<serde_json::Value> = fetch_results
             .iter()
             .filter_map(|(key, reason)| {
-                reason.as_ref().map(|r| {
-                    json!({ "model": key, "reason": r })
-                })
+                reason
+                    .as_ref()
+                    .map(|r| json!({ "model": key, "reason": r }))
             })
             .collect();
 
-        debug!(updated, total = rows.len(), failures = failures.len(), "Recalculation complete");
+        debug!(
+            updated,
+            total = rows.len(),
+            failures = failures.len(),
+            "Recalculation complete"
+        );
         return Ok(json!({
             "mode": "recalculate",
             "updated": updated,

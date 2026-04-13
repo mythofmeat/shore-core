@@ -2,13 +2,13 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use serde_json::{json, Value};
-use tokio::sync::broadcast;
+use tokio::sync::mpsc;
 use tracing::{debug, info, instrument, warn};
 
 use crate::tools::{self as tool_system, ToolContext};
 use shore_diagnostics::{self as diagnostics, Diagnostics};
-use shore_llm_client::stream::{CacheContext, StreamConsumer};
 use shore_ledger::{CallType, LedgerClient};
+use shore_llm_client::stream::StreamConsumer;
 use shore_llm_client::types::{LlmRequest, StreamResult};
 use shore_llm_client::LlmError;
 use shore_protocol::server_msg::{SendImage, ServerMessage, ToolCall, ToolResult as SwpToolResult};
@@ -43,21 +43,20 @@ pub struct ToolLoopResult {
 /// `finish_reason != "tool_use"` or `max_iterations` is reached.
 ///
 /// Returns both the final result and any intermediate messages for persistence.
-#[instrument(skip(client, push_tx, request, result, ctx, cache_ctx, diag), fields(char = character, max_iterations))]
+#[instrument(skip(client, direct_tx, request, result, ctx, diag), fields(char = character, max_iterations))]
 #[allow(clippy::too_many_arguments)]
 pub async fn run_tool_loop(
     client: &LedgerClient,
-    push_tx: &broadcast::Sender<ServerMessage>,
+    direct_tx: &mpsc::Sender<ServerMessage>,
     request: &mut LlmRequest,
     mut result: StreamResult,
     ctx: &dyn ToolContext,
     max_iterations: u32,
-    cache_ctx: &CacheContext,
     diag: &Arc<Mutex<Diagnostics>>,
     character: &str,
     thinking_enabled: bool,
 ) -> Result<ToolLoopResult, ToolLoopError> {
-    let consumer = StreamConsumer::new(push_tx.clone());
+    let consumer = StreamConsumer::new(direct_tx.clone(), request.rid.clone());
     let mut intermediate_messages: Vec<Message> = Vec::new();
 
     for iteration in 0..max_iterations {
@@ -134,11 +133,14 @@ pub async fn run_tool_loop(
 
         for tool_use in &result.tool_uses {
             // Push ToolCall event to SWP clients.
-            let _ = push_tx.send(ServerMessage::ToolCall(ToolCall {
-                tool_id: tool_use.id.clone(),
-                tool_name: tool_use.name.clone(),
-                input: tool_use.input.clone(),
-            }));
+            let _ = direct_tx
+                .send(ServerMessage::ToolCall(ToolCall {
+                    rid: request.rid.clone(),
+                    tool_id: tool_use.id.clone(),
+                    tool_name: tool_use.name.clone(),
+                    input: tool_use.input.clone(),
+                }))
+                .await;
 
             debug!(
                 tool_id = %tool_use.id,
@@ -184,11 +186,14 @@ pub async fn run_tool_loop(
                         if let Some(last) = intermediate_messages.last_mut() {
                             last.images.push(image_ref);
                         }
-                        let _ = push_tx.send(ServerMessage::SendImage(SendImage {
-                            path: path.to_string(),
-                            caption,
-                            data: None,
-                        }));
+                        let _ = direct_tx
+                            .send(ServerMessage::SendImage(SendImage {
+                                rid: request.rid.clone(),
+                                path: path.to_string(),
+                                caption,
+                                data: None,
+                            }))
+                            .await;
                     }
                 }
             }
@@ -205,16 +210,22 @@ pub async fn run_tool_loop(
                     input_summary: diagnostics::truncate_summary(&input_str, 200),
                     output_summary: diagnostics::truncate_summary(&output_str, 200),
                 };
-                diag.lock().unwrap_or_else(|e| e.into_inner()).tool_calls.push(entry);
+                diag.lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .tool_calls
+                    .push(entry);
             }
 
             // Push ToolResult event to SWP clients.
-            let _ = push_tx.send(ServerMessage::ToolResult(SwpToolResult {
-                tool_id: tool_use.id.clone(),
-                tool_name: tool_use.name.clone(),
-                output: output_str.clone(),
-                is_error,
-            }));
+            let _ = direct_tx
+                .send(ServerMessage::ToolResult(SwpToolResult {
+                    rid: request.rid.clone(),
+                    tool_id: tool_use.id.clone(),
+                    tool_name: tool_use.name.clone(),
+                    output: output_str.clone(),
+                    is_error,
+                }))
+                .await;
 
             debug!(
                 tool_id = %tool_use.id,
@@ -262,10 +273,7 @@ pub async fn run_tool_loop(
         let mut ledger_stream = client
             .stream_raw(request, CallType::ToolLoop, character, thinking_enabled)
             .await?;
-        match consumer
-            .consume(ledger_stream.reader_mut(), false, cache_ctx)
-            .await
-        {
+        match consumer.consume(ledger_stream.reader_mut(), false).await {
             Ok(r) => {
                 ledger_stream.finalize(&r);
                 result = r;
@@ -297,6 +305,7 @@ mod tests {
     use shore_llm_client::LlmClient;
     use tokio::io::AsyncWriteExt;
     use tokio::net::TcpListener;
+    use tokio::sync::mpsc;
 
     fn test_ledger_client(tmp: &tempfile::TempDir) -> LedgerClient {
         LedgerClient::new(LlmClient::new(), &tmp.path().join("ledger.db")).unwrap()
@@ -403,9 +412,8 @@ mod tests {
         rt.block_on(async {
             let tmp = tempfile::tempdir().unwrap();
             let client = test_ledger_client(&tmp);
-            let (push_tx, _rx) = broadcast::channel(16);
+            let (push_tx, _rx) = mpsc::channel(16);
             let ctx = TestToolContext::new();
-            let cache_ctx = CacheContext::default();
 
             let mut request = test_request("http://unused", vec![]);
 
@@ -426,7 +434,6 @@ mod tests {
                 result,
                 &ctx,
                 10,
-                &cache_ctx,
                 &test_diag(),
                 "test",
                 false,
@@ -446,9 +453,8 @@ mod tests {
 
         let tmp = tempfile::tempdir().unwrap();
         let client = test_ledger_client(&tmp);
-        let (push_tx, mut push_rx) = broadcast::channel(64);
+        let (push_tx, mut push_rx) = mpsc::channel(64);
         let ctx = TestToolContext::new();
-        let cache_ctx = CacheContext::default();
 
         let mut request = test_request(
             &base_url,
@@ -476,7 +482,6 @@ mod tests {
             initial,
             &ctx,
             10,
-            &cache_ctx,
             &test_diag(),
             "test",
             false,
@@ -539,9 +544,8 @@ mod tests {
 
         let tmp = tempfile::tempdir().unwrap();
         let client = test_ledger_client(&tmp);
-        let (push_tx, _rx) = broadcast::channel(64);
+        let (push_tx, _rx) = mpsc::channel(64);
         let ctx = TestToolContext::new();
-        let cache_ctx = CacheContext::default();
 
         let mut request = test_request(&base_url, vec![]);
 
@@ -566,7 +570,6 @@ mod tests {
             initial,
             &ctx,
             3,
-            &cache_ctx,
             &test_diag(),
             "test",
             false,
@@ -586,9 +589,8 @@ mod tests {
 
         let tmp = tempfile::tempdir().unwrap();
         let client = test_ledger_client(&tmp);
-        let (push_tx, mut push_rx) = broadcast::channel(64);
+        let (push_tx, mut push_rx) = mpsc::channel(64);
         let ctx = TestToolContext::new();
-        let cache_ctx = CacheContext::default();
 
         let mut request = test_request(&base_url, vec![]);
 
@@ -613,7 +615,6 @@ mod tests {
             initial,
             &ctx,
             10,
-            &cache_ctx,
             &test_diag(),
             "test",
             false,
@@ -653,9 +654,8 @@ mod tests {
         rt.block_on(async {
             let tmp = tempfile::tempdir().unwrap();
             let client = test_ledger_client(&tmp);
-            let (push_tx, _rx) = broadcast::channel(16);
+            let (push_tx, _rx) = mpsc::channel(16);
             let ctx = TestToolContext::new();
-            let cache_ctx = CacheContext::default();
 
             let mut request = test_request("http://unused", vec![]);
 
@@ -678,7 +678,6 @@ mod tests {
                 result,
                 &ctx,
                 10,
-                &cache_ctx,
                 &test_diag(),
                 "test",
                 false,
@@ -697,9 +696,8 @@ mod tests {
 
         let tmp = tempfile::tempdir().unwrap();
         let client = test_ledger_client(&tmp);
-        let (push_tx, mut push_rx) = broadcast::channel(64);
+        let (push_tx, mut push_rx) = mpsc::channel(64);
         let ctx = TestToolContext::new();
-        let cache_ctx = CacheContext::default();
 
         let mut request = test_request(&base_url, vec![]);
 
@@ -732,7 +730,6 @@ mod tests {
             initial,
             &ctx,
             10,
-            &cache_ctx,
             &test_diag(),
             "test",
             false,

@@ -9,9 +9,9 @@ use clap_complete::Shell;
     disable_help_subcommand = true
 )]
 pub struct Cli {
-    /// Path to daemon Unix socket (overrides discovery)
+    /// TCP address of the daemon (overrides discovery)
     #[arg(long, global = true)]
-    pub socket: Option<String>,
+    pub addr: Option<String>,
 
     /// Path to config file (selects daemon instance)
     #[arg(long, global = true)]
@@ -90,6 +90,10 @@ pub enum CliCommand {
         #[arg(long)]
         content: bool,
 
+        /// Plain text output (no colors or decoration), pipe-friendly
+        #[arg(long)]
+        plain: bool,
+
         /// Show heartbeat probe decisions and timing history
         #[arg(long)]
         heartbeat: bool,
@@ -132,8 +136,7 @@ pub enum CliCommand {
         json: bool,
     },
 
-    /// Internal debug utilities (not for normal use)
-    #[command(hide = true)]
+    /// Advanced debugging utilities
     Debug {
         #[command(subcommand)]
         subcommand: DebugCommand,
@@ -334,9 +337,17 @@ pub enum MemoryCommand {
 }
 
 #[derive(Subcommand, Debug)]
+#[command(rename_all = "snake_case")]
 pub enum DebugCommand {
-    /// Force an interiority tick to fire within ~10 seconds
-    ForceTick,
+    /// Schedule an interiority tick to fire immediately
+    #[command(name = "interiority_tick_now")]
+    TickNow,
+    /// Force interiority into dormant state (reverts on next user message)
+    #[command(name = "interiority_status_dormant")]
+    StatusDormant,
+    /// Force interiority into active state (reverts naturally via abandonment guard)
+    #[command(name = "interiority_status_active")]
+    StatusActive,
 }
 
 /// Generate and print shell completions to stdout.
@@ -412,7 +423,9 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
         CliCommand::Status { .. } => Some(("status", json!({}))),
 
         CliCommand::Debug { subcommand } => match subcommand {
-            DebugCommand::ForceTick => Some(("force_tick", json!({}))),
+            DebugCommand::TickNow => Some(("interiority_tick_now", json!({}))),
+            DebugCommand::StatusDormant => Some(("interiority_set_dormant", json!({}))),
+            DebugCommand::StatusActive => Some(("interiority_set_active", json!({}))),
         },
 
         CliCommand::Model {
@@ -599,6 +612,7 @@ mod tests {
                 follow,
                 json,
                 content,
+                plain,
                 heartbeat,
             } => {
                 assert!(subcommand.is_none());
@@ -607,6 +621,7 @@ mod tests {
                 assert!(!follow);
                 assert!(!json);
                 assert!(!content);
+                assert!(!plain);
                 assert!(!heartbeat);
             }
             other => panic!("expected Log, got: {other:?}"),
@@ -813,6 +828,41 @@ mod tests {
         }
     }
 
+    // ── Debug ────────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_debug_tick_now() {
+        let cli = parse(&["debug", "interiority_tick_now"]);
+        match &cli.command {
+            CliCommand::Debug {
+                subcommand: DebugCommand::TickNow,
+            } => {}
+            other => panic!("expected Debug TickNow, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_debug_status_dormant() {
+        let cli = parse(&["debug", "interiority_status_dormant"]);
+        match &cli.command {
+            CliCommand::Debug {
+                subcommand: DebugCommand::StatusDormant,
+            } => {}
+            other => panic!("expected Debug StatusDormant, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_debug_status_active() {
+        let cli = parse(&["debug", "interiority_status_active"]);
+        match &cli.command {
+            CliCommand::Debug {
+                subcommand: DebugCommand::StatusActive,
+            } => {}
+            other => panic!("expected Debug StatusActive, got: {other:?}"),
+        }
+    }
+
     // ── Model ────────────────────────────────────────────────────────
 
     #[test]
@@ -995,9 +1045,9 @@ mod tests {
     // ── Global flags ─────────────────────────────────────────────────
 
     #[test]
-    fn parse_global_socket_flag() {
-        let cli = parse(&["--socket", "/tmp/shore.sock", "status"]);
-        assert_eq!(cli.socket.as_deref(), Some("/tmp/shore.sock"));
+    fn parse_global_addr_flag() {
+        let cli = parse(&["--addr", "127.0.0.1:7320", "status"]);
+        assert_eq!(cli.addr.as_deref(), Some("127.0.0.1:7320"));
         assert!(matches!(cli.command, CliCommand::Status { .. }));
     }
 
@@ -1061,6 +1111,36 @@ mod tests {
         let (name, args) = to_swp_command(&cmd).unwrap();
         assert_eq!(name, "diagnostics");
         assert_eq!(args["count"], 15);
+    }
+
+    #[test]
+    fn debug_tick_now_maps_to_command() {
+        let cmd = CliCommand::Debug {
+            subcommand: DebugCommand::TickNow,
+        };
+        let (name, args) = to_swp_command(&cmd).unwrap();
+        assert_eq!(name, "interiority_tick_now");
+        assert_eq!(args, serde_json::json!({}));
+    }
+
+    #[test]
+    fn debug_status_dormant_maps_to_command() {
+        let cmd = CliCommand::Debug {
+            subcommand: DebugCommand::StatusDormant,
+        };
+        let (name, args) = to_swp_command(&cmd).unwrap();
+        assert_eq!(name, "interiority_set_dormant");
+        assert_eq!(args, serde_json::json!({}));
+    }
+
+    #[test]
+    fn debug_status_active_maps_to_command() {
+        let cmd = CliCommand::Debug {
+            subcommand: DebugCommand::StatusActive,
+        };
+        let (name, args) = to_swp_command(&cmd).unwrap();
+        assert_eq!(name, "interiority_set_active");
+        assert_eq!(args, serde_json::json!({}));
     }
 
     #[test]
@@ -1132,6 +1212,7 @@ mod tests {
             follow: false,
             json: false,
             content: false,
+            plain: false,
             heartbeat: false,
         };
         let (name, args) = to_swp_command(&cmd).unwrap();
@@ -1151,6 +1232,7 @@ mod tests {
             follow: false,
             json: false,
             content: false,
+            plain: false,
             heartbeat: false,
         };
         let (name, args) = to_swp_command(&cmd).unwrap();
@@ -1167,6 +1249,7 @@ mod tests {
             follow: false,
             json: false,
             content: false,
+            plain: false,
             heartbeat: false,
         };
         let (name, args) = to_swp_command(&cmd).unwrap();
@@ -1183,6 +1266,7 @@ mod tests {
             follow: false,
             json: false,
             content: false,
+            plain: false,
             heartbeat: false,
         };
         let (name, args) = to_swp_command(&cmd).unwrap();
@@ -1239,6 +1323,7 @@ mod tests {
                 follow: false,
                 json: false,
                 content: false,
+                plain: false,
                 heartbeat: false,
             },
             CliCommand::Log {
@@ -1251,6 +1336,7 @@ mod tests {
                 follow: false,
                 json: false,
                 content: false,
+                plain: false,
                 heartbeat: false,
             },
             CliCommand::Log {
@@ -1262,6 +1348,7 @@ mod tests {
                 follow: false,
                 json: false,
                 content: false,
+                plain: false,
                 heartbeat: false,
             },
             CliCommand::Log {
@@ -1271,6 +1358,7 @@ mod tests {
                 follow: false,
                 json: false,
                 content: false,
+                plain: false,
                 heartbeat: false,
             },
             CliCommand::Status {
@@ -1284,6 +1372,15 @@ mod tests {
                 diagnostics: true,
                 count: 10,
                 json: false,
+            },
+            CliCommand::Debug {
+                subcommand: DebugCommand::TickNow,
+            },
+            CliCommand::Debug {
+                subcommand: DebugCommand::StatusDormant,
+            },
+            CliCommand::Debug {
+                subcommand: DebugCommand::StatusActive,
             },
             CliCommand::Model {
                 name: None,

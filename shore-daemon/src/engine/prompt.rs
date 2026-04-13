@@ -327,7 +327,10 @@ pub fn assemble_prompt(params: &PromptParams<'_>) -> AssembledPrompt {
     debug!(
         system_blocks = system.len(),
         has_capabilities = params.capabilities.is_some(),
-        has_char_def = params.character_definition.filter(|s| !s.is_empty()).is_some(),
+        has_char_def = params
+            .character_definition
+            .filter(|s| !s.is_empty())
+            .is_some(),
         has_user_def = params.user_definition.filter(|s| !s.is_empty()).is_some(),
         has_recap = !params.is_private,
         "system blocks assembled"
@@ -618,17 +621,26 @@ fn trim_messages(
                     None
                 };
 
-                let prefix = match (time_marker, recap_marker) {
-                    (Some(t), Some(r)) => Some(format!("{t}\n{r}")),
-                    (Some(t), None) => Some(t),
-                    (None, _) => None,
-                };
-
-                if let Some(prefix) = prefix {
-                    pm.content = format!("{prefix}\n\n{}", pm.content);
+                // Inject the time-gap marker into the user message (it's
+                // deterministic — same timestamps always produce the same
+                // marker, so the cache prefix stays stable).
+                if let Some(t) = time_marker {
+                    pm.content = format!("{t}\n\n{}", pm.content);
                     if let Some(ContentBlock::Text { text }) = pm.content_blocks.first_mut() {
-                        *text = format!("{prefix}\n\n{text}");
+                        *text = format!("{t}\n\n{text}");
                     }
+                }
+
+                // Recap entries are injected as a separate user message
+                // so that existing message content is never modified between
+                // calls (which would bust the Anthropic cache prefix).
+                if let Some(r) = recap_marker {
+                    result.push(PromptMessage {
+                        role: Role::User,
+                        content: r.clone(),
+                        images: vec![],
+                        content_blocks: vec![ContentBlock::Text { text: r }],
+                    });
                 }
             }
         }
@@ -1628,12 +1640,18 @@ mod tests {
         use chrono::TimeZone;
         let offset = chrono::FixedOffset::west_opt(7 * 3600).unwrap();
         let e1 = RecapEntry {
-            timestamp: offset.with_ymd_and_hms(2026, 4, 7, 10, 0, 0).single().unwrap(),
+            timestamp: offset
+                .with_ymd_and_hms(2026, 4, 7, 10, 0, 0)
+                .single()
+                .unwrap(),
             tick_id: "t1".into(),
             recap: "first thing".into(),
         };
         let e2 = RecapEntry {
-            timestamp: offset.with_ymd_and_hms(2026, 4, 7, 14, 0, 0).single().unwrap(),
+            timestamp: offset
+                .with_ymd_and_hms(2026, 4, 7, 14, 0, 0)
+                .single()
+                .unwrap(),
             tick_id: "t2".into(),
             recap: "second thing".into(),
         };
@@ -1667,7 +1685,11 @@ mod tests {
             make_msg_at(Role::User, "Good morning", "2026-04-04T09:00:00-07:00"),
             make_msg_at(Role::Assistant, "Morning!", "2026-04-04T09:01:00-07:00"),
             make_msg_at(Role::User, "I'm back", "2026-04-04T11:00:00-07:00"),
-            make_msg_at(Role::Assistant, "Welcome back!", "2026-04-04T11:01:00-07:00"),
+            make_msg_at(
+                Role::Assistant,
+                "Welcome back!",
+                "2026-04-04T11:01:00-07:00",
+            ),
             make_msg_at(Role::User, "Thanks", "2026-04-04T11:05:00-07:00"),
         ];
 
@@ -1695,18 +1717,37 @@ mod tests {
         // Call 2: same messages, but now recaps.jsonl has an entry.
         let result_after = trim_messages(&msgs, 100_000, Some(&recap_path));
 
-        // The messages from Call 1 that also appear in Call 2 must be
-        // byte-identical.  If the recap marker is injected into an existing
-        // message, the cache prefix changes and we bust the cache.
-        assert_eq!(result_before.len(), result_after.len());
-        for (i, (before, after)) in result_before.iter().zip(result_after.iter()).enumerate() {
+        // The recap is injected as a separate message, so `result_after`
+        // has one more entry.  But every message from Call 1 must appear
+        // byte-identical in Call 2 (preserving the cache prefix).
+        assert_eq!(
+            result_after.len(),
+            result_before.len() + 1,
+            "Recap should be injected as a separate message"
+        );
+
+        // Walk result_after, skipping the injected recap message, and
+        // verify all original messages are byte-identical.
+        let mut before_iter = result_before.iter();
+        for msg in &result_after {
+            if msg.content.contains("Your notes") {
+                // This is the injected recap — skip it.
+                continue;
+            }
+            let before_msg = before_iter
+                .next()
+                .expect("more messages in after than before");
             assert_eq!(
-                before.content, after.content,
-                "Message {} content changed between calls (cache prefix would change).\n\
+                before_msg.content, msg.content,
+                "Original message content changed (cache prefix would change).\n\
                  Before: {:?}\n\
                  After:  {:?}",
-                i, before.content, after.content,
+                before_msg.content, msg.content,
             );
         }
+        assert!(
+            before_iter.next().is_none(),
+            "all before messages accounted for"
+        );
     }
 }

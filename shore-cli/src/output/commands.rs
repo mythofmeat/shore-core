@@ -186,7 +186,9 @@ pub fn print_status(data: &serde_json::Value, character_name: &str) {
 
             let int_state = autonomy["interiority_state"].as_str().unwrap_or("Active");
             let ticks = autonomy["ticks_without_user"].as_u64().unwrap_or(0);
-            let max_ticks = autonomy["dormant_after_interiority_turns"].as_u64().unwrap_or(3);
+            let max_ticks = autonomy["dormant_after_interiority_turns"]
+                .as_u64()
+                .unwrap_or(3);
             let description = interiority_description(int_state, ticks, max_ticks);
 
             // Interiority row: description + state label.
@@ -261,6 +263,9 @@ pub fn format_command(name: &str, data: &serde_json::Value) {
         "inject_system" => println!("System instruction injected."),
         "diagnostics" => print_diagnostics(data),
         "usage" => print_usage(data),
+        "interiority_tick_now" => print_interiority_tick_now(data),
+        "interiority_set_dormant" => print_interiority_status_change(data, "dormant"),
+        "interiority_set_active" => print_interiority_status_change(data, "active"),
         _ => print_command_output_fallback(name, data),
     }
 }
@@ -279,6 +284,22 @@ fn print_command_output_fallback(name: &str, data: &serde_json::Value) {
     if let Ok(pretty) = serde_json::to_string_pretty(data) {
         let _ = writeln!(out, "{pretty}");
     }
+}
+
+fn print_interiority_tick_now(data: &serde_json::Value) {
+    let character = data["character"].as_str().unwrap_or("?");
+    println!("Tick scheduled for {character}.");
+    if let Some(warning) = data["warning"].as_str() {
+        let stdout = io::stdout();
+        let mut out = stdout.lock();
+        write_fg(&mut out, Color::Yellow, warning);
+        let _ = writeln!(out);
+    }
+}
+
+fn print_interiority_status_change(data: &serde_json::Value, status: &str) {
+    let character = data["character"].as_str().unwrap_or("?");
+    println!("Interiority forced {status} for {character}.");
 }
 
 /// Print edit confirmation.

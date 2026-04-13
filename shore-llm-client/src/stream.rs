@@ -1,74 +1,38 @@
-use shore_protocol::server_msg::{
-    CacheWarning, ServerMessage, StreamChunk, StreamEnd, StreamStart,
-};
+use shore_protocol::server_msg::{ServerMessage, StreamChunk, StreamEnd, StreamStart};
 use shore_protocol::types::{StreamMetadata, TimingInfo, TokenCounts};
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
-use tokio::sync::broadcast;
-use tracing::{debug, error, info};
+use tokio::sync::mpsc;
+use tracing::{debug, info};
 
 use shore_protocol::types::ContentBlock;
 
 use super::types::{StreamEvent, StreamResult, ToolUseEvent};
 use super::LlmError;
 
-/// Context for cache invalidation detection per section 13.3.
-#[derive(Debug, Clone)]
-pub struct CacheContext {
-    /// Number of turns in the conversation before this request.
-    pub conversation_turn_count: usize,
-
-    /// Whether this is the first message after a daemon restart.
-    pub is_first_after_restart: bool,
-
-    /// Whether this is the first message after a compaction.
-    pub is_first_after_compaction: bool,
-
-    /// Whether cache invalidation warnings are enabled ([advanced] config).
-    pub cache_invalidation_warnings: bool,
-
-    /// Whether a cache read has been observed this session.  When false, a
-    /// cache_write with no read is expected (first-time cache creation).
-    pub has_seen_cache_read: bool,
-}
-
-impl Default for CacheContext {
-    fn default() -> Self {
-        Self {
-            conversation_turn_count: 0,
-            is_first_after_restart: true,
-            is_first_after_compaction: false,
-            cache_invalidation_warnings: true,
-            has_seen_cache_read: false,
-        }
-    }
-}
-
 /// Consumes a newline-delimited JSON stream from shore-llm's /v1/stream
-/// endpoint, relaying `StreamChunk` events (with content_type) to SWP clients
-/// via the broadcast sender, and accumulating the final `StreamResult`.
+/// endpoint, relaying `StreamChunk` events (with content_type) to the
+/// requesting SWP session via a direct sender, and accumulating the final
+/// `StreamResult`.
 pub struct StreamConsumer {
-    push_tx: broadcast::Sender<ServerMessage>,
+    direct_tx: mpsc::Sender<ServerMessage>,
+    rid: Option<String>,
 }
 
 impl StreamConsumer {
-    /// Create a new stream consumer that broadcasts to the given sender.
-    pub fn new(push_tx: broadcast::Sender<ServerMessage>) -> Self {
-        Self { push_tx }
+    /// Create a new stream consumer that emits to the given session sender.
+    pub fn new(direct_tx: mpsc::Sender<ServerMessage>, rid: Option<String>) -> Self {
+        Self { direct_tx, rid }
     }
 
     /// Consume a streaming response from shore-llm.
     ///
-    /// Reads newline-delimited JSON events, broadcasts `StreamStart`,
-    /// `StreamChunk`, and `StreamEnd` to connected SWP clients, and returns
+    /// Reads newline-delimited JSON events, emits `StreamStart`,
+    /// `StreamChunk`, and `StreamEnd` to the requesting SWP session, and returns
     /// the accumulated `StreamResult` with metadata.
-    ///
-    /// Cache invalidation is checked after the stream completes according to
-    /// the rules in section 13.3.
     pub async fn consume(
         &self,
         reader: &mut BufReader<impl AsyncRead + Unpin>,
         regen: bool,
-        cache_ctx: &CacheContext,
     ) -> Result<StreamResult, LlmError> {
         let mut model = String::new();
         let mut tool_uses = Vec::new();
@@ -124,10 +88,14 @@ impl StreamConsumer {
                     model = start_model;
                     started = true;
 
-                    // Broadcast stream_start to SWP clients.
+                    // Emit stream_start to the requesting SWP session.
                     let _ = self
-                        .push_tx
-                        .send(ServerMessage::StreamStart(StreamStart { regen }));
+                        .direct_tx
+                        .send(ServerMessage::StreamStart(StreamStart {
+                            rid: self.rid.clone(),
+                            regen,
+                        }))
+                        .await;
 
                     debug!(model = %model, "Stream started");
                 }
@@ -142,10 +110,14 @@ impl StreamConsumer {
                     text_buf.push_str(&text);
 
                     // Relay as StreamChunk with content_type "text".
-                    let _ = self.push_tx.send(ServerMessage::StreamChunk(StreamChunk {
-                        text,
-                        content_type: "text".into(),
-                    }));
+                    let _ = self
+                        .direct_tx
+                        .send(ServerMessage::StreamChunk(StreamChunk {
+                            rid: self.rid.clone(),
+                            text,
+                            content_type: "text".into(),
+                        }))
+                        .await;
                 }
 
                 StreamEvent::Thinking { text } => {
@@ -154,10 +126,14 @@ impl StreamConsumer {
                     thinking_buf.push_str(&text);
 
                     // Relay as StreamChunk with content_type "thinking".
-                    let _ = self.push_tx.send(ServerMessage::StreamChunk(StreamChunk {
-                        text,
-                        content_type: "thinking".into(),
-                    }));
+                    let _ = self
+                        .direct_tx
+                        .send(ServerMessage::StreamChunk(StreamChunk {
+                            rid: self.rid.clone(),
+                            text,
+                            content_type: "thinking".into(),
+                        }))
+                        .await;
                 }
 
                 StreamEvent::ThinkingSignature { signature } => {
@@ -232,15 +208,16 @@ impl StreamConsumer {
                         "Stream completed"
                     );
 
-                    // Broadcast stream_end to SWP clients.
-                    let _ = self.push_tx.send(ServerMessage::StreamEnd(StreamEnd {
-                        content: content.clone(),
-                        metadata,
-                        finish_reason: finish_reason.clone(),
-                    }));
-
-                    // Check for cache invalidation (section 13.3).
-                    check_cache_invalidation(&self.push_tx, cache_ctx, &usage);
+                    // Emit stream_end to the requesting SWP session.
+                    let _ = self
+                        .direct_tx
+                        .send(ServerMessage::StreamEnd(StreamEnd {
+                            rid: self.rid.clone(),
+                            content: content.clone(),
+                            metadata,
+                            finish_reason: finish_reason.clone(),
+                        }))
+                        .await;
 
                     return Ok(StreamResult {
                         content,
@@ -257,88 +234,28 @@ impl StreamConsumer {
     }
 }
 
-/// Check for unexpected cache invalidation per section 13.3.
-///
-/// After each response, if `cache_read_tokens == 0` and the conversation has >1
-/// turn and this is not the first message after compaction/restart, push a
-/// `CacheWarning` event to connected clients and log as ERROR.
-fn check_cache_invalidation(
-    push_tx: &broadcast::Sender<ServerMessage>,
-    ctx: &CacheContext,
-    usage: &super::types::Usage,
-) {
-    if !ctx.cache_invalidation_warnings {
-        return;
-    }
-
-    // Cache read of zero is expected in these cases:
-    // 1. First turn of a conversation (nothing to cache)
-    // 2. First message after daemon restart
-    // 3. First message after compaction
-    if ctx.conversation_turn_count <= 1 {
-        return;
-    }
-    if ctx.is_first_after_restart {
-        return;
-    }
-    if ctx.is_first_after_compaction {
-        return;
-    }
-
-    // Only warn when a cache was CREATED but nothing was READ — that means
-    // the previous cache was invalidated and had to be rebuilt.  When both
-    // are zero (e.g. OpenRouter doesn't report cache metrics) there is
-    // nothing actionable to warn about.
-    //
-    // Also suppress when no cache read has been observed this session — the
-    // first cache creation is always a cold start, not an invalidation.
-    if usage.cache_creation_tokens > 0 && usage.cache_read_tokens == 0 && ctx.has_seen_cache_read {
-        let expected = usage.input_tokens;
-        let message = format!(
-            "Unexpected cache invalidation: cache_read=0 cache_write={} with {} input tokens \
-             on turn {}. The prompt cache may have been evicted.",
-            usage.cache_creation_tokens, expected, ctx.conversation_turn_count
-        );
-
-        error!("{}", message);
-
-        let _ = push_tx.send(ServerMessage::CacheWarning(CacheWarning {
-            expected_tokens: expected,
-            message,
-        }));
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use tokio::io::{AsyncWriteExt, DuplexStream};
 
-    /// Helper: set up a duplex stream pair and return (writer, reader, push_tx, push_rx).
+    /// Helper: set up a duplex stream pair and return (writer, reader, direct_tx, direct_rx).
     fn setup_stream_pair() -> (
         DuplexStream,
         BufReader<DuplexStream>,
-        broadcast::Sender<ServerMessage>,
-        broadcast::Receiver<ServerMessage>,
+        mpsc::Sender<ServerMessage>,
+        mpsc::Receiver<ServerMessage>,
     ) {
         let (client_half, server_half) = tokio::io::duplex(64 * 1024);
         let client_reader = BufReader::new(client_half);
-        let (push_tx, push_rx) = broadcast::channel(64);
-        (server_half, client_reader, push_tx, push_rx)
+        let (direct_tx, direct_rx) = mpsc::channel(64);
+        (server_half, client_reader, direct_tx, direct_rx)
     }
 
     #[tokio::test]
     async fn consume_simple_stream() {
-        let (mut writer, mut reader, push_tx, mut push_rx) = setup_stream_pair();
-        let consumer = StreamConsumer::new(push_tx);
-
-        let ctx = CacheContext {
-            conversation_turn_count: 1,
-            is_first_after_restart: false,
-            is_first_after_compaction: false,
-            cache_invalidation_warnings: true,
-            has_seen_cache_read: false,
-        };
+        let (mut writer, mut reader, direct_tx, mut direct_rx) = setup_stream_pair();
+        let consumer = StreamConsumer::new(direct_tx, None);
 
         // Write stream events from "server".
         let events = [
@@ -356,7 +273,7 @@ mod tests {
             writer.shutdown().await.unwrap();
         });
 
-        let result = consumer.consume(&mut reader, false, &ctx).await.unwrap();
+        let result = consumer.consume(&mut reader, false).await.unwrap();
 
         assert_eq!(result.content, "Hello world");
         assert_eq!(result.model, "claude-test");
@@ -368,14 +285,17 @@ mod tests {
         assert_eq!(result.timing.time_to_first_token_ms, 50);
         assert!(result.tool_uses.is_empty());
 
-        // Verify broadcast messages.
-        let msg1 = push_rx.try_recv().unwrap();
+        // Verify direct messages.
+        let msg1 = direct_rx.recv().await.unwrap();
         assert!(matches!(
             msg1,
-            ServerMessage::StreamStart(StreamStart { regen: false })
+            ServerMessage::StreamStart(StreamStart {
+                rid: None,
+                regen: false
+            })
         ));
 
-        let msg2 = push_rx.try_recv().unwrap();
+        let msg2 = direct_rx.recv().await.unwrap();
         match msg2 {
             ServerMessage::StreamChunk(chunk) => {
                 assert_eq!(chunk.text, "Hello ");
@@ -384,7 +304,7 @@ mod tests {
             other => panic!("Expected StreamChunk, got {:?}", other),
         }
 
-        let msg3 = push_rx.try_recv().unwrap();
+        let msg3 = direct_rx.recv().await.unwrap();
         match msg3 {
             ServerMessage::StreamChunk(chunk) => {
                 assert_eq!(chunk.text, "world");
@@ -393,7 +313,7 @@ mod tests {
             other => panic!("Expected StreamChunk, got {:?}", other),
         }
 
-        let msg4 = push_rx.try_recv().unwrap();
+        let msg4 = direct_rx.recv().await.unwrap();
         match msg4 {
             ServerMessage::StreamEnd(end) => {
                 assert_eq!(end.content, "Hello world");
@@ -410,10 +330,8 @@ mod tests {
 
     #[tokio::test]
     async fn consume_stream_with_thinking_and_tools() {
-        let (mut writer, mut reader, push_tx, mut push_rx) = setup_stream_pair();
-        let consumer = StreamConsumer::new(push_tx);
-
-        let ctx = CacheContext::default();
+        let (mut writer, mut reader, direct_tx, mut direct_rx) = setup_stream_pair();
+        let consumer = StreamConsumer::new(direct_tx, None);
 
         let events = [
             r#"{"type":"start","model":"claude-test"}"#,
@@ -431,7 +349,7 @@ mod tests {
             writer.shutdown().await.unwrap();
         });
 
-        let result = consumer.consume(&mut reader, false, &ctx).await.unwrap();
+        let result = consumer.consume(&mut reader, false).await.unwrap();
 
         assert_eq!(result.content, "Found it");
         assert_eq!(result.tool_uses.len(), 1);
@@ -455,9 +373,9 @@ mod tests {
             matches!(&result.content_blocks[2], ContentBlock::Text { text } if text == "Found it")
         );
 
-        // Verify thinking chunk was broadcast with correct content_type.
-        let _ = push_rx.try_recv().unwrap(); // StreamStart
-        let thinking_msg = push_rx.try_recv().unwrap();
+        // Verify thinking chunk was emitted with correct content_type.
+        let _ = direct_rx.recv().await.unwrap(); // StreamStart
+        let thinking_msg = direct_rx.recv().await.unwrap();
         match thinking_msg {
             ServerMessage::StreamChunk(chunk) => {
                 assert_eq!(chunk.text, "Let me think...");
@@ -472,8 +390,7 @@ mod tests {
     #[tokio::test]
     async fn consume_stream_with_thinking_signature() {
         let (mut writer, mut reader, push_tx, _push_rx) = setup_stream_pair();
-        let consumer = StreamConsumer::new(push_tx);
-        let ctx = CacheContext::default();
+        let consumer = StreamConsumer::new(push_tx, None);
 
         let events = [
             r#"{"type":"start","model":"claude-test"}"#,
@@ -492,7 +409,7 @@ mod tests {
             writer.shutdown().await.unwrap();
         });
 
-        let result = consumer.consume(&mut reader, false, &ctx).await.unwrap();
+        let result = consumer.consume(&mut reader, false).await.unwrap();
 
         assert_eq!(result.content_blocks.len(), 2);
         match &result.content_blocks[0] {
@@ -515,8 +432,7 @@ mod tests {
     #[tokio::test]
     async fn consume_stream_with_redacted_thinking() {
         let (mut writer, mut reader, push_tx, _push_rx) = setup_stream_pair();
-        let consumer = StreamConsumer::new(push_tx);
-        let ctx = CacheContext::default();
+        let consumer = StreamConsumer::new(push_tx, None);
 
         let events = [
             r#"{"type":"start","model":"claude-test"}"#,
@@ -535,7 +451,7 @@ mod tests {
             writer.shutdown().await.unwrap();
         });
 
-        let result = consumer.consume(&mut reader, false, &ctx).await.unwrap();
+        let result = consumer.consume(&mut reader, false).await.unwrap();
 
         assert_eq!(result.content_blocks.len(), 3);
         match &result.content_blocks[0] {
@@ -564,8 +480,7 @@ mod tests {
     #[tokio::test]
     async fn consume_regen_sets_flag() {
         let (mut writer, mut reader, push_tx, mut push_rx) = setup_stream_pair();
-        let consumer = StreamConsumer::new(push_tx);
-        let ctx = CacheContext::default();
+        let consumer = StreamConsumer::new(push_tx, None);
 
         let server_handle = tokio::spawn(async move {
             writer
@@ -579,7 +494,7 @@ mod tests {
             writer.shutdown().await.unwrap();
         });
 
-        consumer.consume(&mut reader, true, &ctx).await.unwrap();
+        consumer.consume(&mut reader, true).await.unwrap();
 
         let msg = push_rx.try_recv().unwrap();
         match msg {
@@ -593,8 +508,7 @@ mod tests {
     #[tokio::test]
     async fn incomplete_stream_returns_error() {
         let (mut writer, mut reader, push_tx, _push_rx) = setup_stream_pair();
-        let consumer = StreamConsumer::new(push_tx);
-        let ctx = CacheContext::default();
+        let consumer = StreamConsumer::new(push_tx, None);
 
         // Server sends start but closes connection without "done".
         let server_handle = tokio::spawn(async move {
@@ -605,10 +519,7 @@ mod tests {
             writer.shutdown().await.unwrap();
         });
 
-        let err = consumer
-            .consume(&mut reader, false, &ctx)
-            .await
-            .unwrap_err();
+        let err = consumer.consume(&mut reader, false).await.unwrap_err();
         assert!(matches!(err, LlmError::IncompleteStream));
 
         server_handle.await.unwrap();
@@ -619,8 +530,7 @@ mod tests {
     #[tokio::test]
     async fn content_blocks_merge_consecutive_text() {
         let (mut writer, mut reader, push_tx, _push_rx) = setup_stream_pair();
-        let consumer = StreamConsumer::new(push_tx);
-        let ctx = CacheContext::default();
+        let consumer = StreamConsumer::new(push_tx, None);
 
         let events = [
             r#"{"type":"start","model":"test"}"#,
@@ -638,7 +548,7 @@ mod tests {
             writer.shutdown().await.unwrap();
         });
 
-        let result = consumer.consume(&mut reader, false, &ctx).await.unwrap();
+        let result = consumer.consume(&mut reader, false).await.unwrap();
 
         // Consecutive text chunks should be merged into a single Text block.
         assert_eq!(result.content_blocks.len(), 1);
@@ -652,8 +562,7 @@ mod tests {
     #[tokio::test]
     async fn content_blocks_merge_consecutive_thinking() {
         let (mut writer, mut reader, push_tx, _push_rx) = setup_stream_pair();
-        let consumer = StreamConsumer::new(push_tx);
-        let ctx = CacheContext::default();
+        let consumer = StreamConsumer::new(push_tx, None);
 
         let events = [
             r#"{"type":"start","model":"test"}"#,
@@ -671,7 +580,7 @@ mod tests {
             writer.shutdown().await.unwrap();
         });
 
-        let result = consumer.consume(&mut reader, false, &ctx).await.unwrap();
+        let result = consumer.consume(&mut reader, false).await.unwrap();
 
         // Consecutive thinking chunks merged, then text block.
         assert_eq!(result.content_blocks.len(), 2);
@@ -688,8 +597,7 @@ mod tests {
     #[tokio::test]
     async fn content_blocks_type_change_flushes_buffer() {
         let (mut writer, mut reader, push_tx, _push_rx) = setup_stream_pair();
-        let consumer = StreamConsumer::new(push_tx);
-        let ctx = CacheContext::default();
+        let consumer = StreamConsumer::new(push_tx, None);
 
         // Interleaved: text → thinking → text
         let events = [
@@ -708,7 +616,7 @@ mod tests {
             writer.shutdown().await.unwrap();
         });
 
-        let result = consumer.consume(&mut reader, false, &ctx).await.unwrap();
+        let result = consumer.consume(&mut reader, false).await.unwrap();
 
         // Type change should flush: text, thinking, text → 3 blocks.
         assert_eq!(result.content_blocks.len(), 3);
@@ -728,8 +636,7 @@ mod tests {
     #[tokio::test]
     async fn content_blocks_text_only_stream() {
         let (mut writer, mut reader, push_tx, _push_rx) = setup_stream_pair();
-        let consumer = StreamConsumer::new(push_tx);
-        let ctx = CacheContext::default();
+        let consumer = StreamConsumer::new(push_tx, None);
 
         let events = [
             r#"{"type":"start","model":"test"}"#,
@@ -745,7 +652,7 @@ mod tests {
             writer.shutdown().await.unwrap();
         });
 
-        let result = consumer.consume(&mut reader, false, &ctx).await.unwrap();
+        let result = consumer.consume(&mut reader, false).await.unwrap();
 
         assert_eq!(result.content_blocks.len(), 1);
         assert!(
@@ -758,8 +665,7 @@ mod tests {
     #[tokio::test]
     async fn content_blocks_empty_on_no_content() {
         let (mut writer, mut reader, push_tx, _push_rx) = setup_stream_pair();
-        let consumer = StreamConsumer::new(push_tx);
-        let ctx = CacheContext::default();
+        let consumer = StreamConsumer::new(push_tx, None);
 
         // Start → Done with empty content (edge case).
         let events = [
@@ -775,171 +681,17 @@ mod tests {
             writer.shutdown().await.unwrap();
         });
 
-        let result = consumer.consume(&mut reader, false, &ctx).await.unwrap();
+        let result = consumer.consume(&mut reader, false).await.unwrap();
 
         assert!(result.content_blocks.is_empty());
 
         server_handle.await.unwrap();
     }
 
-    // ── Cache invalidation tests ──────────────────────────────────────
-
-    #[test]
-    fn cache_invalidation_triggers_warning() {
-        let (push_tx, mut push_rx) = broadcast::channel(16);
-
-        let ctx = CacheContext {
-            conversation_turn_count: 5, // Multi-turn conversation.
-            is_first_after_restart: false,
-            is_first_after_compaction: false,
-            cache_invalidation_warnings: true,
-            has_seen_cache_read: true, // Previous cache reads existed.
-        };
-
-        // Warning fires when cache was CREATED (write>0) but nothing READ (read=0)
-        // — the previous cache was invalidated and rebuilt from scratch.
-        let usage = crate::types::Usage {
-            input_tokens: 5000,
-            output_tokens: 100,
-            cache_read_tokens: 0,
-            cache_creation_tokens: 4000, // Cache was recreated — old one invalidated.
-        };
-
-        check_cache_invalidation(&push_tx, &ctx, &usage);
-
-        let msg = push_rx.try_recv().unwrap();
-        match msg {
-            ServerMessage::CacheWarning(warning) => {
-                assert_eq!(warning.expected_tokens, 5000);
-                assert!(warning.message.contains("cache_read=0"));
-                assert!(warning.message.contains("turn 5"));
-            }
-            other => panic!("Expected CacheWarning, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn cache_invalidation_skips_first_turn() {
-        let (push_tx, mut push_rx) = broadcast::channel(16);
-
-        let ctx = CacheContext {
-            conversation_turn_count: 1, // First turn — no cache expected.
-            is_first_after_restart: false,
-            is_first_after_compaction: false,
-            cache_invalidation_warnings: true,
-            has_seen_cache_read: false,
-        };
-
-        let usage = crate::types::Usage {
-            input_tokens: 100,
-            output_tokens: 10,
-            cache_read_tokens: 0,
-            cache_creation_tokens: 0,
-        };
-
-        check_cache_invalidation(&push_tx, &ctx, &usage);
-
-        // Should NOT have sent a warning.
-        assert!(push_rx.try_recv().is_err());
-    }
-
-    #[test]
-    fn cache_invalidation_skips_after_restart() {
-        let (push_tx, mut push_rx) = broadcast::channel(16);
-
-        let ctx = CacheContext {
-            conversation_turn_count: 10,
-            is_first_after_restart: true, // First message after restart.
-            is_first_after_compaction: false,
-            cache_invalidation_warnings: true,
-            has_seen_cache_read: false,
-        };
-
-        let usage = crate::types::Usage {
-            input_tokens: 5000,
-            output_tokens: 100,
-            cache_read_tokens: 0,
-            cache_creation_tokens: 0,
-        };
-
-        check_cache_invalidation(&push_tx, &ctx, &usage);
-        assert!(push_rx.try_recv().is_err());
-    }
-
-    #[test]
-    fn cache_invalidation_skips_after_compaction() {
-        let (push_tx, mut push_rx) = broadcast::channel(16);
-
-        let ctx = CacheContext {
-            conversation_turn_count: 10,
-            is_first_after_restart: false,
-            is_first_after_compaction: true,
-            cache_invalidation_warnings: true,
-            has_seen_cache_read: false,
-        };
-
-        let usage = crate::types::Usage {
-            input_tokens: 3000,
-            output_tokens: 50,
-            cache_read_tokens: 0,
-            cache_creation_tokens: 0,
-        };
-
-        check_cache_invalidation(&push_tx, &ctx, &usage);
-        assert!(push_rx.try_recv().is_err());
-    }
-
-    #[test]
-    fn cache_invalidation_respects_config_disabled() {
-        let (push_tx, mut push_rx) = broadcast::channel(16);
-
-        let ctx = CacheContext {
-            conversation_turn_count: 5,
-            is_first_after_restart: false,
-            is_first_after_compaction: false,
-            cache_invalidation_warnings: false, // Disabled!
-            has_seen_cache_read: false,
-        };
-
-        let usage = crate::types::Usage {
-            input_tokens: 5000,
-            output_tokens: 100,
-            cache_read_tokens: 0,
-            cache_creation_tokens: 0,
-        };
-
-        check_cache_invalidation(&push_tx, &ctx, &usage);
-        assert!(push_rx.try_recv().is_err());
-    }
-
-    #[test]
-    fn cache_invalidation_no_warning_when_cache_hit() {
-        let (push_tx, mut push_rx) = broadcast::channel(16);
-
-        let ctx = CacheContext {
-            conversation_turn_count: 5,
-            is_first_after_restart: false,
-            is_first_after_compaction: false,
-            cache_invalidation_warnings: true,
-            has_seen_cache_read: false,
-        };
-
-        let usage = crate::types::Usage {
-            input_tokens: 5000,
-            output_tokens: 100,
-            cache_read_tokens: 4500, // Cache hit — no warning.
-            cache_creation_tokens: 0,
-        };
-
-        check_cache_invalidation(&push_tx, &ctx, &usage);
-        assert!(push_rx.try_recv().is_err());
-    }
-
     #[tokio::test]
     async fn malformed_json_mid_stream() {
         let (mut writer, mut reader, push_tx, mut push_rx) = setup_stream_pair();
-        let consumer = StreamConsumer::new(push_tx);
-        let ctx = CacheContext::default();
+        let consumer = StreamConsumer::new(push_tx, None);
 
         let server_handle = tokio::spawn(async move {
             writer
@@ -950,7 +702,7 @@ mod tests {
             writer.shutdown().await.unwrap();
         });
 
-        let result = consumer.consume(&mut reader, false, &ctx).await;
+        let result = consumer.consume(&mut reader, false).await;
         assert!(result.is_err());
         assert!(
             matches!(&result.unwrap_err(), LlmError::Deserialize(_)),
@@ -967,8 +719,7 @@ mod tests {
     #[tokio::test]
     async fn thinking_signature_without_thinking_text() {
         let (mut writer, mut reader, push_tx, _push_rx) = setup_stream_pair();
-        let consumer = StreamConsumer::new(push_tx);
-        let ctx = CacheContext::default();
+        let consumer = StreamConsumer::new(push_tx, None);
 
         let events = [
             r#"{"type":"start","model":"claude-test"}"#,
@@ -985,7 +736,7 @@ mod tests {
             writer.shutdown().await.unwrap();
         });
 
-        let result = consumer.consume(&mut reader, false, &ctx).await.unwrap();
+        let result = consumer.consume(&mut reader, false).await.unwrap();
 
         // Only a text block — the orphaned signature is discarded.
         assert_eq!(result.content_blocks.len(), 1);
@@ -1003,8 +754,7 @@ mod tests {
         // Drop the only receiver — sends will silently fail.
         drop(push_rx);
 
-        let consumer = StreamConsumer::new(push_tx);
-        let ctx = CacheContext::default();
+        let consumer = StreamConsumer::new(push_tx, None);
 
         let events = [
             r#"{"type":"start","model":"claude-test"}"#,
@@ -1021,12 +771,55 @@ mod tests {
             writer.shutdown().await.unwrap();
         });
 
-        let result = consumer.consume(&mut reader, false, &ctx).await.unwrap();
+        let result = consumer.consume(&mut reader, false).await.unwrap();
         assert_eq!(result.content, "Hello world");
         assert_eq!(result.content_blocks.len(), 1);
         assert!(
             matches!(&result.content_blocks[0], ContentBlock::Text { text } if text == "Hello world")
         );
+
+        server_handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn consume_stream_echoes_request_id() {
+        let (mut writer, mut reader, direct_tx, mut direct_rx) = setup_stream_pair();
+        let consumer = StreamConsumer::new(direct_tx, Some("req_stream_01".into()));
+
+        let server_handle = tokio::spawn(async move {
+            writer
+                .write_all(b"{\"type\":\"start\",\"model\":\"claude-test\"}\n")
+                .await
+                .unwrap();
+            writer
+                .write_all(b"{\"type\":\"text\",\"text\":\"Hello\"}\n")
+                .await
+                .unwrap();
+            writer
+                .write_all(b"{\"type\":\"done\",\"content\":\"Hello\",\"finish_reason\":\"end_turn\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1},\"timing\":{\"total_ms\":10}}\n")
+                .await
+                .unwrap();
+            writer.shutdown().await.unwrap();
+        });
+
+        consumer.consume(&mut reader, false).await.unwrap();
+
+        match direct_rx.recv().await.unwrap() {
+            ServerMessage::StreamStart(msg) => {
+                assert_eq!(msg.rid.as_deref(), Some("req_stream_01"))
+            }
+            other => panic!("Expected StreamStart, got {:?}", other),
+        }
+        match direct_rx.recv().await.unwrap() {
+            ServerMessage::StreamChunk(msg) => {
+                assert_eq!(msg.rid.as_deref(), Some("req_stream_01"))
+            }
+            other => panic!("Expected StreamChunk, got {:?}", other),
+        }
+        match direct_rx.recv().await.unwrap() {
+            ServerMessage::StreamEnd(msg) => assert_eq!(msg.rid.as_deref(), Some("req_stream_01")),
+            other => panic!("Expected StreamEnd, got {:?}", other),
+        }
 
         server_handle.await.unwrap();
     }

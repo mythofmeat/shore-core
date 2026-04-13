@@ -7,6 +7,7 @@ members = [
     "shore-config",
     "shore-llm-client",
     "shore-daemon",
+    "shore-daemon-server",
     "shore-cli",
     "shore-tui",
     "shore-ledger",

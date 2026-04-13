@@ -4,7 +4,7 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 
-use crate::app::{App, ConversationEntry, InputMode};
+use crate::app::{App, ConversationEntry, InputMode, StreamBlock};
 use crate::images;
 use crate::markdown;
 
@@ -12,36 +12,25 @@ use crate::markdown;
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let size = frame.area();
 
-    // Main layout: conversation | thinking (optional) | input
+    // Main layout: conversation | input
     let input_content_width = size.width as usize;
     let input_height = (app.input.visual_line_count(input_content_width) as u16 + 1).min(8);
-    let has_thinking = app.stream.active && !app.stream.thinking.is_empty();
-    let thinking_height = if has_thinking && !app.stream.thinking_collapsed {
-        6
-    } else {
-        0
-    };
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(3),                  // conversation
-            Constraint::Length(thinking_height), // thinking panel
-            Constraint::Length(input_height),    // input
+            Constraint::Min(3),               // conversation
+            Constraint::Length(input_height), // input
         ])
         .split(size);
 
     draw_conversation(frame, &mut *app, chunks[0]);
 
-    if thinking_height > 0 {
-        draw_thinking(frame, app, chunks[1]);
-    }
-
-    draw_input(frame, app, chunks[2]);
+    draw_input(frame, app, chunks[1]);
 
     // Draw completion popup over conversation area when in command mode
     if app.input.mode == InputMode::Command && !app.completion.candidates.is_empty() {
-        draw_completions(frame, app, chunks[2]);
+        draw_completions(frame, app, chunks[1]);
     }
 
     if app.show_help {
@@ -272,82 +261,93 @@ fn pre_wrap_text(text: &str, max_width: usize) -> String {
     result
 }
 
-/// Render in-progress streaming text or a phase-aware typing indicator.
+/// Render in-progress streaming content inline with a compact spinner.
 fn render_streaming_state(lines: &mut Vec<Line<'static>>, app: &App, content_width: u16) {
     let name = if app.character_name.is_empty() {
         "Assistant"
     } else {
         &app.character_name
     };
-    if !app.stream.text.is_empty() {
-        if app.stream.regen {
-            lines.push(Line::from(Span::styled(
-                format!("{name} (regenerating)"),
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD | Modifier::ITALIC),
-            )));
-        } else {
-            lines.push(Line::from(Span::styled(
-                name.to_string(),
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD),
-            )));
-        }
-        lines.push(Line::from(""));
-        let wrap_w = content_width.saturating_sub(2) as usize;
-        lines.extend(indent_lines(markdown::render_markdown(&pre_wrap_text(
-            &app.stream.text,
-            wrap_w,
-        ))));
-        lines.push(Line::from("")); // match trailing blank of finalized entries
+
+    // Name header
+    if app.stream.regen {
+        lines.push(Line::from(Span::styled(
+            format!("{name} (regenerating)"),
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD | Modifier::ITALIC),
+        )));
     } else {
-        // Typing indicator — stream started but no text yet
         lines.push(Line::from(Span::styled(
             name.to_string(),
             Style::default()
                 .fg(Color::Green)
                 .add_modifier(Modifier::BOLD),
         )));
-        lines.push(Line::from(""));
+    }
+    lines.push(Line::from(""));
 
-        // Phase-aware indicator
-        let indicator_style = Style::default()
-            .fg(Color::DarkGray)
-            .add_modifier(Modifier::ITALIC);
-        let indicator = if !app.stream.thinking.is_empty() {
-            "thinking ···"
-        } else if let Some(ref tool) = app.stream.tool_name {
-            // Tool call/execution in progress — show inline below
-            lines.push(Line::from(vec![
-                Span::raw("  "),
-                Span::styled("▶ ", Style::default().fg(Color::Magenta)),
-                Span::styled(
-                    tool.clone(),
-                    Style::default()
-                        .fg(Color::Magenta)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(" ···", indicator_style),
-            ]));
-            lines.push(Line::from(""));
-            // Skip the default indicator push below
-            ""
-        } else if app.stream.phase == "tool_use" {
-            "waiting for tool ···"
-        } else {
-            "···"
-        };
+    // Render interleaved blocks inline
+    let wrap_w = content_width.saturating_sub(2) as usize;
+    let thinking_style = Style::default()
+        .fg(Color::DarkGray)
+        .add_modifier(Modifier::ITALIC);
+    let bar_style = Style::default().fg(Color::DarkGray);
+    let header_style = Style::default()
+        .fg(Color::Magenta)
+        .add_modifier(Modifier::BOLD);
+    let text_width = content_width.saturating_sub(4) as usize;
 
-        if !indicator.is_empty() {
-            lines.push(Line::from(vec![
-                Span::raw("  "),
-                Span::styled(indicator.to_string(), indicator_style),
-            ]));
-            lines.push(Line::from(""));
+    for block in &app.stream.blocks {
+        match block {
+            StreamBlock::Thinking(s) => {
+                if app.show_thinking && !s.is_empty() {
+                    lines.push(Line::from(Span::styled("  ◆ thinking", header_style)));
+                    push_bar_wrapped(lines, s, bar_style, thinking_style, text_width);
+                    lines.push(Line::from(""));
+                }
+            }
+            StreamBlock::Text(s) => {
+                if !s.is_empty() {
+                    lines.extend(indent_lines(markdown::render_markdown(&pre_wrap_text(
+                        s, wrap_w,
+                    ))));
+                    lines.push(Line::from(""));
+                }
+            }
         }
     }
+
+    // Compact spinner — always visible during streaming
+    let indicator_style = Style::default()
+        .fg(Color::DarkGray)
+        .add_modifier(Modifier::ITALIC);
+
+    if let Some(ref tool) = app.stream.tool_name {
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled("▶ ", Style::default().fg(Color::Magenta)),
+            Span::styled(
+                tool.clone(),
+                Style::default()
+                    .fg(Color::Magenta)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" ···", indicator_style),
+        ]));
+    } else {
+        let label = match app.stream.phase.as_str() {
+            "thinking" => "thinking ···",
+            "tool_use" => "waiting for tool ···",
+            "responding" => "···",
+            _ => "···",
+        };
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(label.to_string(), indicator_style),
+        ]));
+    }
+    lines.push(Line::from(""));
 }
 
 /// Render the scrollable conversation log.
@@ -356,8 +356,8 @@ fn draw_conversation(frame: &mut Frame, app: &mut App, area: Rect) {
     let mut image_index: Vec<crate::app::ImageEntry> = Vec::new();
     let content_width = area.width;
 
-    // When streaming, skip trailing Thinking entries — they're already shown
-    // in the dedicated thinking panel below the conversation.
+    // During streaming, skip trailing Thinking entries — they duplicate
+    // what's already being shown from the live stream blocks.
     let entry_count = if app.stream.active {
         let trailing_thinking = app
             .entries
@@ -709,37 +709,6 @@ fn render_images(
     }
 }
 
-/// Render the collapsible thinking panel.
-fn draw_thinking(frame: &mut Frame, app: &App, area: Rect) {
-    let thinking_lines: Vec<Line<'static>> = app
-        .stream
-        .thinking
-        .lines()
-        .map(|l| {
-            Line::from(Span::styled(
-                l.to_string(),
-                Style::default().fg(Color::DarkGray),
-            ))
-        })
-        .collect();
-
-    let total = thinking_lines.len() as u16;
-    let visible = area.height.saturating_sub(2);
-    let scroll = total.saturating_sub(visible);
-
-    let paragraph = Paragraph::new(Text::from(thinking_lines))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Thinking (Tab to toggle) ")
-                .border_style(Style::default().fg(Color::DarkGray)),
-        )
-        .wrap(Wrap { trim: false })
-        .scroll((scroll, 0));
-
-    frame.render_widget(paragraph, area);
-}
-
 /// Render the input area.
 fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
     if app.input.mode == InputMode::Command {
@@ -909,10 +878,6 @@ fn draw_help(frame: &mut Frame, area: Rect) {
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
         )]),
-        Line::from(Span::styled(
-            "    Tab             toggle live thinking panel",
-            Style::default().fg(Color::White),
-        )),
         Line::from(Span::styled(
             "    t               toggle thinking blocks",
             Style::default().fg(Color::White),
@@ -1150,7 +1115,15 @@ mod scenario_tests {
 
         /// Simulate a text StreamChunk.
         fn stream_chunk(&mut self, text: &str) {
-            self.app.stream.text.push_str(text);
+            match self.app.stream.blocks.last_mut() {
+                Some(StreamBlock::Text(ref mut s)) => s.push_str(text),
+                _ => self
+                    .app
+                    .stream
+                    .blocks
+                    .push(StreamBlock::Text(text.to_string())),
+            }
+            self.app.stream.phase = "responding".into();
             if self.app.auto_scroll {
                 self.app.scroll_to_bottom();
             }
@@ -1158,7 +1131,15 @@ mod scenario_tests {
 
         /// Simulate a thinking StreamChunk.
         fn thinking_chunk(&mut self, text: &str) {
-            self.app.stream.thinking.push_str(text);
+            match self.app.stream.blocks.last_mut() {
+                Some(StreamBlock::Thinking(ref mut s)) => s.push_str(text),
+                _ => self
+                    .app
+                    .stream
+                    .blocks
+                    .push(StreamBlock::Thinking(text.to_string())),
+            }
+            self.app.stream.phase = "thinking".into();
         }
 
         /// Simulate StreamEnd (finalise response into entries).
@@ -1290,14 +1271,14 @@ mod scenario_tests {
         );
     }
 
-    // ── Scenario: thinking panel toggle ─────────────────────────────────────
+    // ── Scenario: inline thinking toggle ────────────────────────────────────
 
     #[test]
     fn scenario_thinking_toggle() {
         let mut h = Harness::new();
         h.app.connection_status = ConnectionStatus::Connected;
 
-        // Start a stream with thinking
+        // Start a stream with thinking then text
         h.app.entries.push(ConversationEntry::User {
             content: "Think about this".into(),
             images: vec![],
@@ -1307,34 +1288,29 @@ mod scenario_tests {
         h.thinking_chunk("Let me consider...\nFirst, I need to...\nThen...");
         h.stream_chunk("Here's my answer");
 
-        // Render with thinking visible
-        let f1 = h.render("thinking visible");
-        assert!(f1.contains("Thinking"), "thinking panel header visible");
+        // Render with thinking visible (show_thinking defaults to true)
+        let f1 = h.render("thinking visible inline");
+        assert!(f1.contains("thinking"), "inline thinking header visible");
+        assert!(f1.contains("Here's my answer"), "streaming text visible");
 
-        // Toggle thinking off (Tab)
-        h.press(KeyCode::Tab);
-        let f2 = h.render("thinking collapsed");
+        // Toggle thinking off via show_thinking (t key in normal mode)
+        h.app.show_thinking = false;
+        let f2 = h.render("thinking hidden");
         assert!(
-            !f2.contains("Thinking (Tab to toggle)"),
-            "thinking panel hidden after toggle"
+            !f2.contains("Let me consider"),
+            "thinking content hidden after toggle"
         );
-
-        // Check: conversation content should still be visible (not pushed off screen)
         assert!(
             f2.contains("Here's my answer"),
-            "streaming text still visible after collapse"
-        );
-        assert!(
-            f2.contains("You"),
-            "user message still visible after collapse"
+            "streaming text still visible after toggle"
         );
 
         // Toggle back
-        h.press(KeyCode::Tab);
-        let f3 = h.render("thinking re-expanded");
+        h.app.show_thinking = true;
+        let f3 = h.render("thinking re-enabled");
         assert!(
-            f3.contains("Thinking"),
-            "thinking panel back after re-toggle"
+            f3.contains("thinking"),
+            "inline thinking back after re-toggle"
         );
     }
 

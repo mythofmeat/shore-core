@@ -47,11 +47,32 @@ pub struct AppConfig {
 
 // ── [daemon] ────────────────────────────────────────────────────────────
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
+serde_default!(default_daemon_addr -> String { "127.0.0.1:7320".to_string() });
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct DaemonConfig {
-    /// Override the Unix socket path. Auto-generated if omitted.
-    pub socket_path: Option<String>,
+    /// TCP address to listen on (default: "127.0.0.1:7320").
+    #[serde(default = "default_daemon_addr")]
+    pub addr: String,
+
+    /// Explicit opt-in for unauthenticated remote TCP exposure.
+    #[serde(default)]
+    pub unsafe_allow_remote_access: bool,
+
+    /// Allowed client hosts. Empty list means allow all.
+    #[serde(default)]
+    pub allowed_hosts: Vec<String>,
+}
+
+impl Default for DaemonConfig {
+    fn default() -> Self {
+        Self {
+            addr: default_daemon_addr(),
+            unsafe_allow_remote_access: false,
+            allowed_hosts: vec![],
+        }
+    }
 }
 
 // ── [defaults] ──────────────────────────────────────────────────────────
@@ -70,6 +91,12 @@ pub struct DefaultsConfig {
 
     /// Default collation model name (for merge/split/normalize decisions).
     pub collation: Option<String>,
+
+    /// Default compaction model name (for conversation summarization).
+    pub compaction: Option<String>,
+
+    /// Default interiority model name (for autonomous interiority ticks).
+    pub interiority: Option<String>,
 
     /// Default embedding profile name.
     pub embedding: Option<String>,
@@ -103,6 +130,8 @@ impl Default for DefaultsConfig {
             tool_model: None,
             memory_agent: None,
             collation: None,
+            compaction: None,
+            interiority: None,
             embedding: None,
             image_generation: None,
             display_name: None,
@@ -390,7 +419,7 @@ impl Default for SearchConfig {
 
 // ── [memory] ────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct MemoryConfig {
     #[serde(default)]
@@ -399,24 +428,11 @@ pub struct MemoryConfig {
     #[serde(default)]
     pub collation: CollationConfig,
 }
-
-impl Default for MemoryConfig {
-    fn default() -> Self {
-        Self {
-            compaction: CompactionConfig::default(),
-            collation: CollationConfig::default(),
-        }
-    }
-}
-
 // ── [connections] ───────────────────────────────────────────────────────
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ConnectionsConfig {
-    #[serde(default)]
-    pub tcp: Option<TcpConfig>,
-
     #[serde(default)]
     pub matrix: Option<MatrixConfig>,
 
@@ -425,21 +441,6 @@ pub struct ConnectionsConfig {
 
     #[serde(default)]
     pub discord: Option<DiscordConfig>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct TcpConfig {
-    /// Whether TCP listening is enabled.
-    #[serde(default)]
-    pub enabled: bool,
-
-    /// TCP address to listen on (e.g. "127.0.0.1:7320").
-    pub addr: Option<String>,
-
-    /// Allowed client hosts. Empty list means allow all.
-    #[serde(default)]
-    pub allowed_hosts: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -682,13 +683,16 @@ impl Default for NotificationEventsConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct AdvancedConfig {
-    /// Warn when prompt cache is unexpectedly invalidated (§13.3).
-    #[serde(default = "default_true")]
-    pub cache_invalidation_warnings: bool,
-
     /// Log full API request/response payloads to api_payloads.jsonl per character.
     #[serde(default)]
     pub api_payload_logging: bool,
+
+    /// Log prompt-cache forensic data to cache_forensics.jsonl.
+    ///
+    /// Disabled by default so operators opt in deliberately when diagnosing
+    /// cache behavior or prompt-cost anomalies.
+    #[serde(default)]
+    pub cache_forensics: bool,
 
     /// Editor command override. Checked before $VISUAL / $EDITOR env vars.
     pub editor: Option<String>,
@@ -698,16 +702,23 @@ pub struct AdvancedConfig {
 
     /// Time to wait between retry attempts. Overrides the default (no backoff).
     pub retry_backoff: Option<ConfigDuration>,
+
+    /// Maximum image file size (bytes) before resizing for LLM upload.
+    /// Images larger than this are scaled down and re-encoded as JPEG.
+    /// Set to 0 to disable resizing. Default: 2,000,000 (2 MB).
+    #[serde(default = "default_max_image_size")]
+    pub max_image_size: u64,
 }
 
 impl Default for AdvancedConfig {
     fn default() -> Self {
         Self {
-            cache_invalidation_warnings: true,
             api_payload_logging: false,
+            cache_forensics: false,
             editor: None,
             max_retries: None,
             retry_backoff: None,
+            max_image_size: default_max_image_size(),
         }
     }
 }
@@ -715,6 +726,7 @@ impl Default for AdvancedConfig {
 // ── Shared defaults ─────────────────────────────────────────────────────
 
 serde_default!(default_true -> bool { true });
+serde_default!(default_max_image_size -> u64 { 2_000_000 });
 
 #[cfg(test)]
 mod tests {
@@ -726,12 +738,35 @@ mod tests {
         assert!(config.defaults.stream);
         assert!(!config.behavior.autonomy.enabled);
         assert!(config.behavior.autonomy.interiority.enabled);
-        assert_eq!(config.behavior.autonomy.interiority.fallback_interiority_interval, ConfigDuration::from_secs(3600));
-        assert_eq!(config.behavior.autonomy.interiority.dormant_after_interiority_turns, 3);
-        assert_eq!(config.behavior.autonomy.interiority.dormant_after_idle_time, ConfigDuration::from_secs(172800));
-        assert_eq!(config.behavior.autonomy.interiority.minimum_interiority_latency, ConfigDuration::from_secs(3600));
+        assert_eq!(
+            config
+                .behavior
+                .autonomy
+                .interiority
+                .fallback_interiority_interval,
+            ConfigDuration::from_secs(3600)
+        );
+        assert_eq!(
+            config
+                .behavior
+                .autonomy
+                .interiority
+                .dormant_after_interiority_turns,
+            3
+        );
+        assert_eq!(
+            config.behavior.autonomy.interiority.dormant_after_idle_time,
+            ConfigDuration::from_secs(172800)
+        );
+        assert_eq!(
+            config
+                .behavior
+                .autonomy
+                .interiority
+                .minimum_interiority_latency,
+            ConfigDuration::from_secs(3600)
+        );
         assert_eq!(config.behavior.autonomy.interiority.max_tool_rounds, 12);
-        assert!(config.advanced.cache_invalidation_warnings);
         assert!(config.behavior.tool_use.enabled);
         assert!(config.memory.compaction.enabled);
         assert!(config.memory.collation.enabled);
@@ -788,18 +823,25 @@ include_answer = false
     }
 
     #[test]
-    fn tcp_config_parses() {
+    fn daemon_config_parses() {
         let toml_str = r#"
-[connections.tcp]
-enabled = true
-addr = "127.0.0.1:7320"
-allowed_hosts = ["127.0.0.1", "192.168.1.0/24"]
+[daemon]
+addr = "0.0.0.0:9999"
+unsafe_allow_remote_access = true
+allowed_hosts = ["127.0.0.1", "192.168.1.100"]
 "#;
         let config: AppConfig = toml::from_str(toml_str).unwrap();
-        let tcp = config.connections.tcp.unwrap();
-        assert!(tcp.enabled);
-        assert_eq!(tcp.addr.as_deref(), Some("127.0.0.1:7320"));
-        assert_eq!(tcp.allowed_hosts.len(), 2);
+        assert_eq!(config.daemon.addr, "0.0.0.0:9999");
+        assert!(config.daemon.unsafe_allow_remote_access);
+        assert_eq!(config.daemon.allowed_hosts.len(), 2);
+    }
+
+    #[test]
+    fn daemon_config_defaults_to_local_only() {
+        let config = AppConfig::default();
+        assert_eq!(config.daemon.addr, "127.0.0.1:7320");
+        assert!(!config.daemon.unsafe_allow_remote_access);
+        assert!(config.daemon.allowed_hosts.is_empty());
     }
 
     #[test]
@@ -1069,5 +1111,41 @@ homeserver = "https://matrix.example.com"
 
         toggles.set("custom_tool", false);
         assert!(!toggles.is_enabled("custom_tool"));
+    }
+
+    #[test]
+    fn max_image_size_defaults_and_overrides() {
+        // Default: 2 MB.
+        let config = AppConfig::default();
+        assert_eq!(config.advanced.max_image_size, 2_000_000);
+
+        // Override via TOML.
+        let toml_str = r#"
+[advanced]
+max_image_size = 5000000
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.advanced.max_image_size, 5_000_000);
+
+        // Disable via 0.
+        let toml_str = r#"
+[advanced]
+max_image_size = 0
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.advanced.max_image_size, 0);
+    }
+
+    #[test]
+    fn cache_forensics_defaults_and_overrides() {
+        let config = AppConfig::default();
+        assert!(!config.advanced.cache_forensics);
+
+        let toml_str = r#"
+[advanced]
+cache_forensics = true
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert!(config.advanced.cache_forensics);
     }
 }

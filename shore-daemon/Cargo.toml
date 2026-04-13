@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 shore-protocol = { path = "../shore-protocol" }
+shore-daemon-server = { path = "../shore-daemon-server" }
 shore-config = { workspace = true }
 shore-diagnostics = { workspace = true }
 shore-llm-client = { workspace = true }
@@ -16,7 +17,7 @@ toml = "0.8"
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
-fs2 = "0.4"
+clap = { version = "4", features = ["derive"] }
 uuid = { version = "1", features = ["v4"] }
 chrono = "0.4"
 rand = "0.8"
@@ -30,6 +31,8 @@ reqwest = { version = "0.12", features = ["json"] }
 sha2 = "0.10"
 base64 = "0.22.1"
 tempfile = "3"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+fast_image_resize = { version = "6", features = ["image"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }

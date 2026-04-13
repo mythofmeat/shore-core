@@ -199,7 +199,9 @@ pub async fn dispatch(
         "config_reset" => state::config_reset(ctx),
         "diagnostics" => state::diagnostics(ctx, &cmd.args),
         "heartbeat_log" => state::heartbeat_log(engine, ctx, &cmd.args),
-        "force_tick" => state::force_tick(engine, ctx),
+        "interiority_tick_now" => state::interiority_tick_now(engine, ctx),
+        "interiority_set_dormant" => state::interiority_set_dormant(engine, ctx),
+        "interiority_set_active" => state::interiority_set_active(engine, ctx),
         "usage" => usage::usage(ctx, &cmd.args).await,
 
         _ => Err((
@@ -210,12 +212,17 @@ pub async fn dispatch(
 
     match result {
         Ok(data) => ServerMessage::CommandOutput(CommandOutput {
+            rid: None,
             name: cmd.name.clone(),
             data,
         }),
         Err((code, message)) => {
             warn!(command = %cmd.name, ?code, %message, "Command failed");
-            ServerMessage::Error(Error { code, message })
+            ServerMessage::Error(Error {
+                rid: None,
+                code,
+                message,
+            })
         }
     }
 }
@@ -267,11 +274,12 @@ mod tests {
                 config: tmp.path().join("config"),
                 data: data_dir.clone(),
                 runtime: tmp.path().join("runtime"),
+                cache: tmp.path().join("cache"),
             },
         );
 
         let (_tx, rx) = tokio::sync::watch::channel(());
-        let (autonomy, _compaction_rx) =
+        let autonomy =
             AutonomyManager::new(Default::default(), Default::default(), data_dir.clone(), rx);
 
         let ctx = CommandContext {
@@ -281,7 +289,11 @@ mod tests {
             active_model: None,
             session_tokens: Arc::new(Mutex::new(SessionTokens::default())),
             autonomy,
-            llm_client: LedgerClient::new(shore_llm_client::LlmClient::new(), &data_dir.join("ledger.db")).unwrap(),
+            llm_client: LedgerClient::new(
+                shore_llm_client::LlmClient::new(),
+                &data_dir.join("ledger.db"),
+            )
+            .unwrap(),
             diagnostics: Arc::new(Mutex::new(Diagnostics::default())),
             memory_shell_sessions: HashMap::new(),
         };
@@ -296,7 +308,6 @@ mod tests {
 
         let cmd = Command {
             rid: None,
-            forensic_character: None,
             name: "bogus_command".into(),
             args: serde_json::json!({}),
         };
@@ -319,7 +330,6 @@ mod tests {
 
         let cmd = Command {
             rid: None,
-            forensic_character: None,
             name: "status".into(),
             args: serde_json::json!({}),
         };
@@ -353,7 +363,6 @@ mod tests {
 
         let cmd = Command {
             rid: None,
-            forensic_character: None,
             name: "list_characters".into(),
             args: serde_json::json!({}),
         };
@@ -371,7 +380,6 @@ mod tests {
 
         let cmd = Command {
             rid: None,
-            forensic_character: None,
             name: "status".into(),
             args: serde_json::json!({}),
         };

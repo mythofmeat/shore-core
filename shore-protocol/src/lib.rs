@@ -7,6 +7,9 @@ pub mod types;
 /// SWP protocol version.
 pub const SWP_V1: u32 = 1;
 
+/// Maximum newline-delimited SWP frame size in bytes.
+pub const MAX_WIRE_MESSAGE_SIZE: usize = 16 * 1024 * 1024;
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -15,7 +18,7 @@ mod tests {
     use crate::error::*;
     use crate::server_msg::*;
     use crate::types::*;
-    use crate::SWP_V1;
+    use crate::{MAX_WIRE_MESSAGE_SIZE, SWP_V1};
 
     /// Helper: serialize then deserialize, return the intermediate JSON.
     fn round_trip<T: serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug>(
@@ -31,6 +34,11 @@ mod tests {
     #[test]
     fn protocol_version_constant() {
         assert_eq!(SWP_V1, 1);
+    }
+
+    #[test]
+    fn wire_message_size_constant() {
+        assert_eq!(MAX_WIRE_MESSAGE_SIZE, 16 * 1024 * 1024);
     }
 
     // ── Client messages ───────────────────────────────────────────────
@@ -108,6 +116,7 @@ mod tests {
     #[test]
     fn server_history_round_trip() {
         let msg = ServerMessage::History(History {
+            rid: None,
             messages: vec![Message {
                 msg_id: "m1".into(),
                 role: Role::User,
@@ -119,10 +128,29 @@ mod tests {
                 timestamp: "2026-01-01T00:00:00Z".into(),
             }],
             config: json!({}),
+            selected_character: Some("alice".into()),
+            revision: 7,
         });
         let (json, _back) = round_trip(&msg);
         assert_eq!(json["type"], "history");
         assert_eq!(json["messages"][0]["role"], "user");
+        assert_eq!(json["selected_character"], "alice");
+        assert_eq!(json["revision"], 7);
+    }
+
+    #[test]
+    fn server_request_history_round_trip() {
+        let msg = ServerMessage::History(History {
+            rid: Some("cmd_switch_01".into()),
+            messages: vec![],
+            config: json!({}),
+            selected_character: Some("alice".into()),
+            revision: 8,
+        });
+        let (json, _back) = round_trip(&msg);
+        assert_eq!(json["type"], "history");
+        assert_eq!(json["rid"], "cmd_switch_01");
+        assert_eq!(json["revision"], 8);
     }
 
     #[test]
@@ -142,57 +170,70 @@ mod tests {
     #[test]
     fn server_command_output_round_trip() {
         let msg = ServerMessage::CommandOutput(CommandOutput {
+            rid: Some("cmd_01".into()),
             name: "status".into(),
             data: json!({"ok": true}),
         });
         let (json, _back) = round_trip(&msg);
         assert_eq!(json["type"], "command_output");
+        assert_eq!(json["rid"], "cmd_01");
         assert_eq!(json["name"], "status");
     }
 
     #[test]
     fn server_error_round_trip() {
         let msg = ServerMessage::Error(Error {
+            rid: Some("msg_01".into()),
             code: ErrorCode::Busy,
             message: "engine busy".into(),
         });
         let (json, _back) = round_trip(&msg);
         assert_eq!(json["type"], "error");
+        assert_eq!(json["rid"], "msg_01");
         assert_eq!(json["code"], "busy");
     }
 
     #[test]
     fn server_stream_start_round_trip() {
-        let msg = ServerMessage::StreamStart(StreamStart { regen: false });
+        let msg = ServerMessage::StreamStart(StreamStart {
+            rid: Some("msg_01".into()),
+            regen: false,
+        });
         let (json, _back) = round_trip(&msg);
         assert_eq!(json["type"], "stream_start");
+        assert_eq!(json["rid"], "msg_01");
         assert_eq!(json["regen"], false);
     }
 
     #[test]
     fn server_stream_chunk_round_trip() {
         let msg = ServerMessage::StreamChunk(StreamChunk {
+            rid: Some("msg_01".into()),
             text: "partial".into(),
             content_type: "text".into(),
         });
         let (json, _back) = round_trip(&msg);
         assert_eq!(json["type"], "stream_chunk");
+        assert_eq!(json["rid"], "msg_01");
         assert_eq!(json["content_type"], "text");
     }
 
     #[test]
     fn server_stream_chunk_thinking() {
         let msg = ServerMessage::StreamChunk(StreamChunk {
+            rid: Some("msg_01".into()),
             text: "hmm...".into(),
             content_type: "thinking".into(),
         });
         let (json, _back) = round_trip(&msg);
+        assert_eq!(json["rid"], "msg_01");
         assert_eq!(json["content_type"], "thinking");
     }
 
     #[test]
     fn server_stream_end_round_trip() {
         let msg = ServerMessage::StreamEnd(StreamEnd {
+            rid: Some("msg_01".into()),
             content: "full response".into(),
             metadata: StreamMetadata {
                 tokens: TokenCounts {
@@ -211,6 +252,7 @@ mod tests {
         });
         let (json, _back) = round_trip(&msg);
         assert_eq!(json["type"], "stream_end");
+        assert_eq!(json["rid"], "msg_01");
         assert_eq!(json["metadata"]["tokens"]["input"], 1234);
         assert_eq!(json["metadata"]["tokens"]["cache_read"], 890);
         assert_eq!(json["metadata"]["timing"]["total_ms"], 2340);
@@ -222,11 +264,13 @@ mod tests {
     fn server_phase_round_trip() {
         for phase_val in &["thinking", "text_generation", "tool_use"] {
             let msg = ServerMessage::Phase(Phase {
+                rid: Some("msg_01".into()),
                 phase: phase_val.to_string(),
                 model: Some("test-model".into()),
             });
             let (json, _back) = round_trip(&msg);
             assert_eq!(json["type"], "phase");
+            assert_eq!(json["rid"], "msg_01");
             assert_eq!(json["phase"], *phase_val);
         }
     }
@@ -234,6 +278,7 @@ mod tests {
     #[test]
     fn server_new_message_round_trip() {
         let msg = ServerMessage::NewMessage(NewMessage {
+            revision: 3,
             message: Message {
                 msg_id: "m2".into(),
                 role: Role::Assistant,
@@ -248,17 +293,20 @@ mod tests {
         let (json, _back) = round_trip(&msg);
         assert_eq!(json["type"], "new_message");
         assert_eq!(json["msg_id"], "m2");
+        assert_eq!(json["revision"], 3);
     }
 
     #[test]
     fn server_tool_call_round_trip() {
         let msg = ServerMessage::ToolCall(ToolCall {
+            rid: Some("msg_01".into()),
             tool_id: "t1".into(),
             tool_name: "search".into(),
             input: json!({"query": "rust serde"}),
         });
         let (json, _back) = round_trip(&msg);
         assert_eq!(json["type"], "tool_call");
+        assert_eq!(json["rid"], "msg_01");
         assert_eq!(json["input"]["query"], "rust serde");
         // Verify input is a JSON object, not a string
         assert!(json["input"].is_object());
@@ -267,6 +315,7 @@ mod tests {
     #[test]
     fn server_tool_result_round_trip() {
         let msg = ServerMessage::ToolResult(ToolResult {
+            rid: Some("msg_01".into()),
             tool_id: "t1".into(),
             tool_name: "search".into(),
             output: "found 5 results".into(),
@@ -274,17 +323,20 @@ mod tests {
         });
         let (json, _back) = round_trip(&msg);
         assert_eq!(json["type"], "tool_result");
+        assert_eq!(json["rid"], "msg_01");
     }
 
     #[test]
     fn server_send_image_round_trip() {
         let msg = ServerMessage::SendImage(SendImage {
+            rid: Some("msg_01".into()),
             path: "/tmp/img.png".into(),
             caption: Some("generated chart".into()),
             data: None,
         });
         let (json, _back) = round_trip(&msg);
         assert_eq!(json["type"], "send_image");
+        assert_eq!(json["rid"], "msg_01");
         assert_eq!(json["path"], "/tmp/img.png");
         assert_eq!(json["caption"], "generated chart");
     }

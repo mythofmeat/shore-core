@@ -1,0 +1,38 @@
+name: Protocol Guardrails
+
+on:
+  push:
+    branches:
+      - main
+      - staging
+  pull_request:
+
+jobs:
+  protocol-guardrails:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Protocol golden tests
+        run: cargo test -p shore-protocol
+
+      - name: Server handshake and routing tests
+        run: cargo test -p shore-daemon-server --lib
+
+      - name: Shared client sync tests
+        run: cargo test -p shore-client --lib
+
+      - name: Daemon direct-response guardrails
+        run: cargo test -p shore-daemon --test direct_response_guardrails -- --nocapture
+
+      - name: Daemon library suite
+        run: cargo test -p shore-daemon --lib
+
+      - name: TUI protocol integration tests
+        run: cargo test -p shore-tui

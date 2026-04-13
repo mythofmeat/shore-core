@@ -10,7 +10,7 @@
 
 use std::time::Duration;
 
-use shore_test_harness::{TestHarness, TestConfigBuilder};
+use shore_test_harness::{TestConfigBuilder, TestHarness};
 
 /// Helper: yield the runtime multiple times so spawned tasks (especially the
 /// autonomy tick loop) have a chance to process after a time advance.
@@ -43,13 +43,13 @@ async fn test_keepalive_ping_fires_after_59_minutes() {
 
     // Record how many requests the mock has received so far.
     let baseline = harness.mock_llm.received_requests().await.len();
-    assert!(baseline >= 1, "Expected at least 1 request from user message");
+    assert!(
+        baseline >= 1,
+        "Expected at least 1 request from user message"
+    );
 
     // Enqueue a JSON response for the keepalive ping (non-streaming generate).
-    harness
-        .mock_llm
-        .enqueue_json_text_optional("ping")
-        .await;
+    harness.mock_llm.enqueue_json_text_optional("ping").await;
 
     // Now pause time and advance past the 55-minute ping interval.
     tokio::time::pause();
@@ -75,11 +75,13 @@ async fn test_keepalive_ping_fires_after_59_minutes() {
     // it with "conversation must end with a user message" — silently
     // failing every single keepalive ping ever sent.
     let ping_request = &requests[after - 1];
-    let messages = ping_request["messages"].as_array()
+    let messages = ping_request["messages"]
+        .as_array()
         .expect("ping request should have messages array");
     let last_msg = messages.last().expect("messages should not be empty");
     assert_eq!(
-        last_msg["role"].as_str().unwrap(), "user",
+        last_msg["role"].as_str().unwrap(),
+        "user",
         "Keepalive ping must end with a user message, got: {}",
         last_msg["role"]
     );
@@ -210,7 +212,10 @@ async fn test_user_message_resets_keepalive_timer() {
 
     // Resume to send a real user message (network I/O needs real time).
     tokio::time::resume();
-    harness.mock_llm.enqueue_text("Mid-conversation response.").await;
+    harness
+        .mock_llm
+        .enqueue_text("Mid-conversation response.")
+        .await;
     let _r = harness.send_and_collect("Message at minute 50").await;
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -231,7 +236,10 @@ async fn test_user_message_resets_keepalive_timer() {
     );
 
     // Advance to 50 + 55 = 105 minutes from start (55 more min from msg).
-    harness.mock_llm.enqueue_json_text_optional("deferred ping").await;
+    harness
+        .mock_llm
+        .enqueue_json_text_optional("deferred ping")
+        .await;
     tokio::time::advance(Duration::from_secs(50 * 60)).await;
     yield_many(20).await;
 
@@ -306,7 +314,9 @@ async fn test_burst_messages_single_deferred_ping() {
     // Burst of 5 messages in quick succession.
     for i in 0..5 {
         harness.mock_llm.enqueue_text(&format!("Reply {i}")).await;
-        let _r = harness.send_and_collect(&format!("Burst message {i}")).await;
+        let _r = harness
+            .send_and_collect(&format!("Burst message {i}"))
+            .await;
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -326,7 +336,10 @@ async fn test_burst_messages_single_deferred_ping() {
     );
 
     // Advance past the 55min mark with plenty of headroom.
-    harness.mock_llm.enqueue_json_text_optional("deferred").await;
+    harness
+        .mock_llm
+        .enqueue_json_text_optional("deferred")
+        .await;
     tokio::time::advance(Duration::from_secs(7 * 60)).await;
     yield_many(30).await;
     tokio::time::advance(Duration::from_secs(60)).await;
@@ -365,7 +378,10 @@ async fn test_triple_failure_then_recovery() {
     tokio::time::pause();
 
     // Advance past the 55min interval to trigger first attempt.
-    harness.mock_llm.enqueue_error_optional(503, "Service Unavailable").await;
+    harness
+        .mock_llm
+        .enqueue_error_optional(503, "Service Unavailable")
+        .await;
     tokio::time::advance(Duration::from_secs(55 * 60 + 30)).await;
     yield_many(30).await;
 
@@ -376,9 +392,18 @@ async fn test_triple_failure_then_recovery() {
     );
 
     // Enqueue more failures + final success for retry attempts.
-    harness.mock_llm.enqueue_error_optional(503, "Service Unavailable").await;
-    harness.mock_llm.enqueue_error_optional(503, "Service Unavailable").await;
-    harness.mock_llm.enqueue_json_text_optional("recovered").await;
+    harness
+        .mock_llm
+        .enqueue_error_optional(503, "Service Unavailable")
+        .await;
+    harness
+        .mock_llm
+        .enqueue_error_optional(503, "Service Unavailable")
+        .await;
+    harness
+        .mock_llm
+        .enqueue_json_text_optional("recovered")
+        .await;
 
     // Give many tick cycles for retries (10s each, need 3 more attempts).
     for _ in 0..20 {
@@ -426,7 +451,10 @@ async fn test_keepalive_survives_crash() {
 
     let baseline = harness.mock_llm.received_requests().await.len();
 
-    harness.mock_llm.enqueue_json_text_optional("keepalive").await;
+    harness
+        .mock_llm
+        .enqueue_json_text_optional("keepalive")
+        .await;
 
     tokio::time::pause();
     tokio::time::advance(Duration::from_secs(55 * 60 + 30)).await;

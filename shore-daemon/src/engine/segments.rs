@@ -49,10 +49,11 @@ impl SegmentReader {
                 path: manifest_path.clone(),
                 source: e,
             })?;
-            let m: CompactionManifest = serde_json::from_str(&content).map_err(|e| EngineError::JsonParse {
-                path: manifest_path,
-                source: e,
-            })?;
+            let m: CompactionManifest =
+                serde_json::from_str(&content).map_err(|e| EngineError::JsonParse {
+                    path: manifest_path,
+                    source: e,
+                })?;
             debug!(
                 segments = m.segments.len(),
                 total_compacted = m.total_compacted_messages,

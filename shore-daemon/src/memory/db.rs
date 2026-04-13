@@ -413,8 +413,10 @@ impl MemoryDB {
             placeholders.join(", ")
         );
         let mut stmt = self.conn.prepare(&sql)?;
-        let params: Vec<&dyn rusqlite::types::ToSql> =
-            ids.iter().map(|id| id as &dyn rusqlite::types::ToSql).collect();
+        let params: Vec<&dyn rusqlite::types::ToSql> = ids
+            .iter()
+            .map(|id| id as &dyn rusqlite::types::ToSql)
+            .collect();
         let rows = stmt.query_map(rusqlite::params_from_iter(params), row_to_entry)?;
         rows.collect()
     }

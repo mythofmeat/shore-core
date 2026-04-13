@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -11,11 +10,12 @@ use shore_daemon::autonomy::manager::AutonomyManager;
 use shore_daemon::characters::CharacterRegistry;
 use shore_daemon::commands::{CommandContext, SessionTokens};
 use shore_daemon::handler::MessageHandler;
-use shore_daemon::server::{Server, ServerConfig};
+use shore_daemon::handshake::build_handshake_provider;
+use shore_daemon_server::{Server, ServerConfig};
 use shore_ledger::LedgerClient;
 use shore_llm_client::LlmClient;
 use shore_protocol::server_msg::ServerMessage;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use tracing::info;
@@ -37,12 +37,10 @@ pub struct TestHarness {
     pub mock_llm: MockLlmServer,
     pub tmp_dir: tempfile::TempDir,
     pub data_dir: PathBuf,
-    pub socket_path: PathBuf,
+    pub addr: String,
     shutdown_tx: watch::Sender<()>,
     server_handle: JoinHandle<()>,
     handler_handle: JoinHandle<()>,
-    compaction_handle: Option<JoinHandle<()>>,
-    pub compaction_occurred: Arc<AtomicBool>,
     pub config: LoadedConfig,
     // Stored for `trigger_compaction_now`.
     llm_client: LedgerClient,
@@ -69,10 +67,14 @@ impl TestHarness {
         let tmp_dir = tempfile::tempdir().expect("failed to create temp dir");
         let config = builder.build(tmp_dir.path(), &mock_llm.base_url());
 
-        let socket_path = tmp_dir.path().join("runtime").join("daemon.sock");
+        let addr = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            format!("127.0.0.1:{port}")
+        };
         let data_dir = config.dirs.data.clone();
 
-        Self::wire_daemon(config, mock_llm, tmp_dir, data_dir, socket_path).await
+        Self::wire_daemon(config, mock_llm, tmp_dir, data_dir, addr).await
     }
 
     /// Internal: wire up daemon components and connect a SWP client.
@@ -84,18 +86,20 @@ impl TestHarness {
         mock_llm: MockLlmServer,
         tmp_dir: tempfile::TempDir,
         data_dir: PathBuf,
-        socket_path: PathBuf,
+        addr: String,
     ) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(());
 
         // ── SWP Server ────────────────────────────────────────────────
         let server_config = ServerConfig {
-            socket_path: socket_path.clone(),
-            tcp: None,
+            addr: addr.clone(),
+            allowed_hosts: vec![],
             server_name: "shore-test-harness".into(),
+            handshake: None,
         };
-        let server = Server::new(server_config);
-        let push_tx = server.push_sender();
+        let mut server = Server::new(server_config);
+        let push_tx = server.event_sender();
+        let session_router = server.session_router();
         let route_rx = server.take_route_rx();
 
         // ── Character Registry ────────────────────────────────────────
@@ -105,9 +109,10 @@ impl TestHarness {
             push_tx.clone(),
             config.clone(),
         )));
+        server.set_handshake_provider(build_handshake_provider(char_registry.clone()));
 
         // ── Autonomy Manager ──────────────────────────────────────────
-        let (mut autonomy, compaction_rx) = AutonomyManager::new(
+        let mut autonomy = AutonomyManager::new(
             config.app.behavior.autonomy.clone(),
             config.app.memory.compaction.clone(),
             config.dirs.data.clone(),
@@ -115,9 +120,8 @@ impl TestHarness {
         );
 
         // ── Ledger-wrapped LLM Client ────────────────────────────────
-        let llm_client =
-            LedgerClient::new(LlmClient::new(), &config.dirs.data.join("ledger.db"))
-                .expect("failed to create LedgerClient");
+        let llm_client = LedgerClient::new(LlmClient::new(), &config.dirs.data.join("ledger.db"))
+            .expect("failed to create LedgerClient");
 
         let notifier = shore_daemon::notifications::NotificationService::new(Default::default());
 
@@ -129,22 +133,6 @@ impl TestHarness {
             notifier.clone(),
         );
         autonomy.set_registry(char_registry.clone());
-
-        // ── Compaction Task ───────────────────────────────────────────
-        // Mirrors the background compaction task from shore-daemon/src/main.rs.
-        let compaction_occurred_flag = Arc::new(AtomicBool::new(false));
-        let compaction_handle = {
-            let cfg = config.clone();
-            let llm = llm_client.clone();
-            let data = config.dirs.data.clone();
-            let push = push_tx.clone();
-            let notif = notifier.clone();
-            let flag = compaction_occurred_flag.clone();
-            let aut = autonomy.clone();
-            tokio::spawn(async move {
-                run_compaction_task(compaction_rx, cfg, llm, data, push, notif, flag, aut).await;
-            })
-        };
 
         // ── Command Context ──────────────────────────────────────────
         let cmd_ctx = CommandContext {
@@ -167,18 +155,15 @@ impl TestHarness {
         let stored_notifier = notifier.clone();
 
         // ── Message Handler ──────────────────────────────────────────
-        let mut msg_handler = MessageHandler {
-            registry: char_registry,
+        let mut msg_handler = MessageHandler::new(
+            char_registry,
             cmd_ctx,
             llm_client,
-            push_tx: push_tx.clone(),
-            is_first_after_restart: Arc::new(AtomicBool::new(true)),
-            has_seen_cache_read: Arc::new(AtomicBool::new(false)),
-            compaction_occurred: compaction_occurred_flag.clone(),
+            push_tx.clone(),
+            session_router,
             autonomy,
             notifier,
-            generation_handle: None,
-        };
+        );
 
         // Spawn handler loop.
         let handler_handle = tokio::spawn(async move {
@@ -195,14 +180,10 @@ impl TestHarness {
         tokio::time::sleep(Duration::from_millis(200)).await;
 
         // ── SWP Client Connection ────────────────────────────────────
-        let (conn, server_hello, _history) = SWPConnection::connect(
-            &ServerAddr::Unix(socket_path.display().to_string()),
-            "test",
-            "harness",
-            None,
-        )
-        .await
-        .expect("failed to connect to daemon");
+        let (conn, server_hello, _history) =
+            SWPConnection::connect(&ServerAddr(addr.clone()), "test", "harness", None)
+                .await
+                .expect("failed to connect to daemon");
 
         assert_eq!(
             server_hello.v,
@@ -219,12 +200,10 @@ impl TestHarness {
             mock_llm,
             tmp_dir,
             data_dir,
-            socket_path,
+            addr,
             shutdown_tx,
             server_handle,
             handler_handle,
-            compaction_handle: Some(compaction_handle),
-            compaction_occurred: compaction_occurred_flag,
             config,
             llm_client: stored_llm_client,
             push_tx: stored_push_tx,
@@ -249,8 +228,10 @@ impl TestHarness {
         .await
         {
             Ok(retained) => {
-                self.compaction_occurred.store(true, Ordering::Release);
-                info!(character, retained, "trigger_compaction_now: compaction complete");
+                info!(
+                    character,
+                    retained, "trigger_compaction_now: compaction complete"
+                );
             }
             Err(e) => {
                 info!(character, error = %e, "trigger_compaction_now: compaction failed");
@@ -259,7 +240,7 @@ impl TestHarness {
     }
 
     /// Simulate a crash: abort server and handler tasks without graceful shutdown,
-    /// remove the stale socket file, and return a `CrashedHarness` for rebooting.
+    /// and return a `CrashedHarness` for rebooting.
     pub async fn crash(self) -> crate::chaos::CrashedHarness {
         // Drop shutdown_tx without sending — no graceful shutdown signal.
         drop(self.shutdown_tx);
@@ -268,17 +249,14 @@ impl TestHarness {
         self.server_handle.abort();
         self.handler_handle.abort();
 
-        // Wait briefly so the socket FD is released before we remove it.
+        // Wait briefly so the port is released before the next bind.
         tokio::time::sleep(Duration::from_millis(50)).await;
-
-        // Remove stale socket so the next bind succeeds.
-        let _ = std::fs::remove_file(&self.socket_path);
 
         crate::chaos::CrashedHarness {
             tmp_dir: self.tmp_dir,
             mock_llm: self.mock_llm,
             data_dir: self.data_dir,
-            socket_path: self.socket_path,
+            addr: self.addr,
         }
     }
 
@@ -452,7 +430,7 @@ impl TestHarness {
     /// Connect an additional SWP client to the same daemon.
     pub async fn connect_second_client(&self) -> SWPConnection {
         let (conn, _hello, _history) = SWPConnection::connect(
-            &ServerAddr::Unix(self.socket_path.display().to_string()),
+            &ServerAddr(self.addr.clone()),
             "test",
             "second-client",
             None,
@@ -467,48 +445,5 @@ impl TestHarness {
         let _ = self.shutdown_tx.send(());
         let _ = self.server_handle.await;
         let _ = self.handler_handle.await;
-        // Abort the compaction task rather than awaiting it — the task holds an
-        // AutonomyManager clone which keeps compaction_tx alive, preventing the
-        // channel from closing and the task from ever exiting on its own.
-        if let Some(h) = self.compaction_handle {
-            h.abort();
-        }
-    }
-}
-
-// ── Background compaction task (mirrors shore-daemon/src/main.rs) ────────────
-
-async fn run_compaction_task(
-    mut rx: mpsc::Receiver<String>,
-    config: LoadedConfig,
-    llm_client: LedgerClient,
-    data_dir: std::path::PathBuf,
-    push_tx: tokio::sync::broadcast::Sender<ServerMessage>,
-    notifier: shore_daemon::notifications::NotificationService,
-    compaction_occurred: Arc<AtomicBool>,
-    autonomy: AutonomyManager,
-) {
-    while let Some(character) = rx.recv().await {
-        info!(character = %character, "TestHarness: background compaction triggered");
-        match shore_daemon::memory::compaction::run_compaction(
-            &character,
-            &config,
-            &llm_client,
-            &data_dir,
-            &push_tx,
-            &notifier,
-        )
-        .await
-        {
-            Ok(retained_count) => {
-                compaction_occurred.store(true, Ordering::Release);
-                autonomy.notify_compaction_complete(&character, retained_count);
-                info!(character = %character, retained = retained_count, "TestHarness: compaction complete");
-            }
-            Err(e) => {
-                tracing::warn!(character = %character, error = %e, "TestHarness: compaction failed");
-                autonomy.notify_compaction_failed(&character);
-            }
-        }
     }
 }

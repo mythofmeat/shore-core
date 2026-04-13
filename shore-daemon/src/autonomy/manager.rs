@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use shore_protocol::server_msg::ServerMessage;
 use shore_protocol::types::{derive_content_from_blocks, ContentBlock, Message, Role};
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 
@@ -24,13 +24,13 @@ use super::cache_keepalive::{CacheKeepalive, CacheKeepaliveAction};
 use super::interiority::{InteriorityAction, InteriorityClock};
 use super::recap_store::{RecapEntry, RecapStore};
 use super::{AutonomyStatus, InteriorityEventKind, InteriorityLog};
+use crate::characters::CharacterRegistry;
 use crate::memory::agent::{AgentSearchContext, CallerIdentity};
 use crate::memory::agent_llm::RealAgentLlm;
 use crate::memory::compaction_impls::{resolve_embed_config, resolve_image_gen_config};
 use crate::memory::db::MemoryDB;
 use crate::memory::researcher::MemoryResearcher;
 use crate::memory::vectorstore::VectorStore;
-use crate::characters::CharacterRegistry;
 use crate::notifications::{NotificationEvent, NotificationService};
 use crate::tools as tool_system;
 use crate::tools::context::{NoopRag, SharedToolContext};
@@ -39,6 +39,8 @@ use shore_config::LoadedConfig;
 use shore_diagnostics::truncate_summary;
 use shore_ledger::{CallType, LedgerClient};
 use shore_llm_client::types::LlmRequest;
+
+use crate::sync::lock_or_recover;
 
 // ---------------------------------------------------------------------------
 // Tick context — shared state for the per-character autonomy loop
@@ -50,7 +52,6 @@ struct TickContext {
     config: Arc<AutonomyConfig>,
     compaction: Arc<CompactionConfig>,
     data_dir: PathBuf,
-    compaction_tx: mpsc::Sender<String>,
     llm_client: Option<LedgerClient>,
     loaded_config: Option<Arc<LoadedConfig>>,
     notifier: Option<NotificationService>,
@@ -78,8 +79,9 @@ pub struct AutonomyState {
     compaction_triggered: bool,
     /// Current number of messages in active.jsonl (updated on each message notification).
     active_turn_count: usize,
-    /// Set after compaction completes — signals the handler to reload the engine.
-    needs_engine_reload: bool,
+    /// Set by the idle trigger tick — the handler checks and clears this after
+    /// each generation to run compaction inline (synchronously with the handler).
+    compaction_pending: bool,
     /// Cached last LLM request for interiority tick reuse.
     last_request: Option<LlmRequest>,
 }
@@ -193,9 +195,42 @@ fn load_state(data_dir: &Path, character: &str) -> Option<PersistedState> {
 }
 
 fn restore_from_persisted(persisted: &PersistedState, interiority: &mut InteriorityClock) {
-    let next_wake = persisted.next_wake_at.as_deref().and_then(rfc3339_to_instant);
-    let last_user = persisted.last_user_at.as_deref().and_then(rfc3339_to_instant);
+    let next_wake = persisted
+        .next_wake_at
+        .as_deref()
+        .and_then(rfc3339_to_instant);
+    let last_user = persisted
+        .last_user_at
+        .as_deref()
+        .and_then(rfc3339_to_instant);
     interiority.restore(persisted.ticks_without_user, next_wake, last_user);
+}
+
+fn sanitize_compaction_config(mut compaction: CompactionConfig) -> CompactionConfig {
+    // Validate: turns thresholds must exceed keep_recent_turns, otherwise
+    // there would never be anything to actually compact.
+    if compaction.enabled {
+        let k = compaction.keep_recent_turns;
+        if compaction.min_turns <= k || compaction.max_turns <= k {
+            tracing::error!(
+                min_turns = compaction.min_turns,
+                max_turns = compaction.max_turns,
+                keep_recent_turns = k,
+                "Compaction disabled: min_turns and max_turns must be greater than keep_recent_turns"
+            );
+            compaction.enabled = false;
+        }
+        if compaction.enabled && compaction.max_turns < compaction.min_turns {
+            tracing::error!(
+                min_turns = compaction.min_turns,
+                max_turns = compaction.max_turns,
+                "Compaction disabled: max_turns must be >= min_turns"
+            );
+            compaction.enabled = false;
+        }
+    }
+
+    compaction
 }
 
 // ---------------------------------------------------------------------------
@@ -214,8 +249,6 @@ pub struct AutonomyManager {
     compaction: Arc<CompactionConfig>,
     data_dir: PathBuf,
     shutdown_rx: tokio::sync::watch::Receiver<()>,
-    /// Channel for sending compaction trigger signals (character name).
-    compaction_tx: mpsc::Sender<String>,
     /// LLM client for interiority ticks and cache keepalive pings.
     llm_client: Option<LedgerClient>,
     /// Broadcast sender for pushing autonomous messages to SWP clients.
@@ -231,49 +264,23 @@ pub struct AutonomyManager {
 impl AutonomyManager {
     pub fn new(
         config: AutonomyConfig,
-        mut compaction: CompactionConfig,
+        compaction: CompactionConfig,
         data_dir: PathBuf,
         shutdown_rx: tokio::sync::watch::Receiver<()>,
-    ) -> (Self, mpsc::Receiver<String>) {
-        // Validate: turns thresholds must exceed keep_recent_turns, otherwise
-        // there would never be anything to actually compact.
-        if compaction.enabled {
-            let k = compaction.keep_recent_turns;
-            if compaction.min_turns <= k || compaction.max_turns <= k {
-                tracing::error!(
-                    min_turns = compaction.min_turns,
-                    max_turns = compaction.max_turns,
-                    keep_recent_turns = k,
-                    "Compaction disabled: min_turns and max_turns must be greater than keep_recent_turns"
-                );
-                compaction.enabled = false;
-            }
-            if compaction.enabled && compaction.max_turns < compaction.min_turns {
-                tracing::error!(
-                    min_turns = compaction.min_turns,
-                    max_turns = compaction.max_turns,
-                    "Compaction disabled: max_turns must be >= min_turns"
-                );
-                compaction.enabled = false;
-            }
-        }
-
-        let (compaction_tx, compaction_rx) = mpsc::channel(16);
-        let mgr = Self {
+    ) -> Self {
+        Self {
             states: Arc::new(DashMap::new()),
             handles: Arc::new(Mutex::new(Vec::new())),
             config: Arc::new(config),
-            compaction: Arc::new(compaction),
+            compaction: Arc::new(sanitize_compaction_config(compaction)),
             data_dir,
             shutdown_rx,
-            compaction_tx,
             llm_client: None,
             push_tx: None,
             loaded_config: None,
             notifier: None,
             registry: None,
-        };
-        (mgr, compaction_rx)
+        }
     }
 
     /// Set the LLM client and push channel for autonomous actions.
@@ -289,6 +296,23 @@ impl AutonomyManager {
         self.push_tx = Some(push_tx);
         self.loaded_config = Some(Arc::new(loaded_config));
         self.notifier = Some(notifier);
+    }
+
+    /// Reload runtime autonomy and compaction configuration after `config_reset`.
+    ///
+    /// This updates the manager-held config used for future status checks,
+    /// future `ensure_state*` calls, and fresh command contexts. Already-running
+    /// per-character tick tasks keep the config snapshot they were spawned with
+    /// until the daemon is restarted.
+    pub fn reload_runtime_config(&mut self, loaded_config: LoadedConfig) {
+        let autonomy = loaded_config.app.behavior.autonomy.clone();
+        let compaction = sanitize_compaction_config(loaded_config.app.memory.compaction.clone());
+
+        self.config = Arc::new(autonomy);
+        self.compaction = Arc::new(compaction);
+        self.loaded_config = Some(Arc::new(loaded_config));
+
+        info!("Reloaded autonomy runtime configuration");
     }
 
     /// Set the character engine registry for safe autonomous message persistence.
@@ -355,7 +379,7 @@ impl AutonomyManager {
             last_compaction_activity: Instant::now(),
             compaction_triggered: false,
             active_turn_count: 0,
-            needs_engine_reload: false,
+            compaction_pending: false,
             last_request: None,
         }));
 
@@ -367,7 +391,6 @@ impl AutonomyManager {
         let compaction = self.compaction.clone();
         let data_dir = self.data_dir.clone();
         let shutdown_rx = self.shutdown_rx.clone();
-        let compaction_tx = self.compaction_tx.clone();
         let llm_client = self.llm_client.clone();
         let loaded_config = effective_config
             .map(|c| Arc::new(c.clone()))
@@ -380,7 +403,6 @@ impl AutonomyManager {
             config,
             compaction,
             data_dir,
-            compaction_tx,
             llm_client,
             loaded_config,
             notifier,
@@ -390,7 +412,7 @@ impl AutonomyManager {
             character_tick_loop(name, tick_ctx, shutdown_rx).await;
         });
 
-        self.handles.lock().unwrap().push(handle);
+        lock_or_recover("autonomy task handle list", &self.handles).push(handle);
 
         true
     }
@@ -471,23 +493,28 @@ impl AutonomyManager {
     }
 
     /// Call after compaction completes successfully. Updates the turn count
-    /// and signals the handler to reload the engine on the next message.
+    /// and resets compaction state so future triggers can fire.
+    ///
+    /// The handler calls this inline after running compaction and reloading the
+    /// engine — no deferred reload flag is needed.
     pub fn notify_compaction_complete(&self, character: &str, new_turn_count: usize) {
         self.with_state(character, |s| {
             s.active_turn_count = new_turn_count;
-            s.needs_engine_reload = true;
             // Invalidate the cached request — it contains the pre-compaction
             // conversation. The next interiority tick will rebuild from disk.
             s.last_request = None;
             // Stop keepalive pings — the cached prompt prefix is stale.
             // on_cache_warmed() will re-enable pings on the next real LLM call.
             s.cache_keepalive.on_cache_invalidated();
-            // Keep compaction_triggered = true until engine reload acknowledges it.
+            // Compaction cycle complete — allow future triggers.
+            s.compaction_triggered = false;
+            s.compaction_pending = false;
+            s.last_compaction_activity = Instant::now();
             s.mark_dirty();
             info!(
                 character = %character,
                 new_turn_count,
-                "Compaction complete — engine reload pending, last_request invalidated"
+                "Compaction complete — last_request invalidated"
             );
         });
     }
@@ -502,16 +529,43 @@ impl AutonomyManager {
         });
     }
 
-    /// Check if a character's engine needs reloading after compaction.
-    /// Returns true (and clears the flag) if a reload is needed.
-    pub fn take_needs_reload(&self, character: &str) -> bool {
+    /// Check if compaction should run for this character: either the max_turns
+    /// threshold was reached, or an idle trigger set the pending flag.
+    /// Returns true (and clears the pending flag) if compaction should run.
+    /// Called by the handler inline after persist_and_notify.
+    pub fn should_compact_now(&self, character: &str, turn_count: usize) -> bool {
+        let compaction = &self.compaction;
+        if !compaction.enabled {
+            return false;
+        }
+        // Max-turns trigger: immediate, checked every generation.
+        if compaction.max_turns > 0
+            && turn_count >= compaction.max_turns
+            && turn_count >= compaction.min_turns
+        {
+            // Mark compaction_triggered so the tick doesn't also fire.
+            self.with_state(character, |s| {
+                s.compaction_triggered = true;
+                s.mark_dirty();
+            });
+            return true;
+        }
+        // Idle trigger: set by the tick loop, consumed here.
+        self.take_compaction_pending(character)
+    }
+
+    /// Check if the idle trigger has requested compaction for this character.
+    /// Returns true (and clears the pending flag) if compaction should run.
+    /// The handler calls this after each generation to decide whether to run
+    /// inline compaction.
+    fn take_compaction_pending(&self, character: &str) -> bool {
         self.with_state(character, |s| {
-            if s.needs_engine_reload {
-                s.needs_engine_reload = false;
-                // Compaction cycle complete — allow future compaction triggers.
-                s.compaction_triggered = false;
-                s.last_compaction_activity = Instant::now();
-                info!(character, "Engine reload taken after compaction");
+            if s.compaction_pending {
+                s.compaction_pending = false;
+                info!(
+                    character,
+                    "Idle-triggered compaction pending taken by handler"
+                );
                 return true;
             }
             false
@@ -519,14 +573,34 @@ impl AutonomyManager {
         .unwrap_or(false)
     }
 
-    /// Explicitly set the paused state for a character. Returns the new state,
-    /// or None if the character has no autonomy state.
-    /// Force the interiority clock to fire on the next tick poll (~10s).
-    /// Returns true if the character state was found and updated.
-    pub fn force_tick(&self, character: &str) -> bool {
-        info!(character, "Forcing interiority tick");
+    /// Schedule an immediate interiority tick. Returns Some(dormant) where
+    /// dormant indicates whether the clock is currently in abandoned state
+    /// (meaning the tick will be suppressed). Returns None if no state found.
+    pub fn interiority_tick_now(&self, character: &str) -> Option<bool> {
+        info!(character, "Debug: scheduling immediate interiority tick");
         self.with_state(character, |s| {
+            let dormant = s.interiority.is_dormant(Instant::now());
             s.interiority.force_wake();
+            s.mark_dirty();
+            dormant
+        })
+    }
+
+    /// Force interiority into dormant state. Returns true if state was found.
+    pub fn interiority_set_dormant(&self, character: &str) -> bool {
+        info!(character, "Debug: forcing interiority dormant");
+        self.with_state(character, |s| {
+            s.interiority.force_dormant();
+            s.mark_dirty();
+        })
+        .is_some()
+    }
+
+    /// Force interiority into active state. Returns true if state was found.
+    pub fn interiority_set_active(&self, character: &str) -> bool {
+        info!(character, "Debug: forcing interiority active");
+        self.with_state(character, |s| {
+            s.interiority.force_active();
             s.mark_dirty();
         })
         .is_some()
@@ -561,7 +635,7 @@ impl AutonomyManager {
     pub fn status(&self, character: &str) -> Option<AutonomyStatus> {
         self.with_state(character, |s| AutonomyStatus {
             paused: s.paused,
-            interiority_state: s.interiority.state().to_string(),
+            interiority_state: s.interiority.state_at(Instant::now()).to_string(),
             ticks_without_user: s.interiority.ticks_without_user(),
             dormant_after_interiority_turns: s.interiority.max_idle_ticks(),
             effective_interval_secs: s.interiority.default_interval().as_secs(),
@@ -585,7 +659,7 @@ impl AutonomyManager {
     /// Wait for all per-character tick tasks to finish.
     pub async fn shutdown(&self) {
         let handles: Vec<JoinHandle<()>> = {
-            let mut h = self.handles.lock().unwrap();
+            let mut h = lock_or_recover("autonomy task handle list", &self.handles);
             h.drain(..).collect()
         };
         let count = handles.len();
@@ -617,10 +691,7 @@ const INTERIORITY_TIMEOUT: Duration = Duration::from_secs(300); // 5 minutes
 /// but the state inside is still usable — letting the tick loop die would be
 /// worse (no more keepalive, no more interiority, permanent silent failure).
 fn lock_state(m: &Mutex<AutonomyState>) -> std::sync::MutexGuard<'_, AutonomyState> {
-    m.lock().unwrap_or_else(|poisoned| {
-        error!("Autonomy state mutex was poisoned, recovering");
-        poisoned.into_inner()
-    })
+    lock_or_recover("autonomy state mutex", m)
 }
 
 async fn character_tick_loop(
@@ -663,7 +734,7 @@ async fn tick_character(character: &str, ctx: &TickContext) {
         let mut s = lock_state(&ctx.state);
         debug!(
             character,
-            state = %s.interiority.state(),
+            state = %s.interiority.state_at(now),
             ticks_without_user = s.interiority.ticks_without_user(),
             turn_count = s.active_turn_count,
             "tick"
@@ -735,10 +806,13 @@ async fn tick_character(character: &str, ctx: &TickContext) {
         (int_action, keepalive_action, compaction_needed)
     };
 
+    // Idle-triggered compaction: set the pending flag so the handler picks
+    // it up after the next generation completes (inline, synchronous).
     if compaction_needed {
-        if ctx.compaction_tx.try_send(character.to_string()).is_err() {
-            warn!(character, "Compaction channel full, trigger dropped");
-        }
+        let mut s = lock_state(&ctx.state);
+        s.compaction_pending = true;
+        s.mark_dirty();
+        info!(character, "Compaction pending flag set for handler pickup");
     }
 
     // -- execute interiority action with timeout (async, outside lock) ----
@@ -915,12 +989,22 @@ fn rebuild_request_from_disk(
         return None;
     }
 
-    // Resolve model (same logic as handler: defaults.model → first_chat_model).
-    let model_name = config.app.defaults.model.as_deref();
-    let resolved = match model_name {
-        Some(name) => config.models.find_model(name).ok()?,
-        None => config.models.first_chat_model()?,
-    };
+    // Resolve model: defaults.interiority → defaults.model → first chat model.
+    let resolved = config
+        .app
+        .defaults
+        .interiority
+        .as_deref()
+        .and_then(|name| config.models.find_model(name).ok())
+        .or_else(|| {
+            config
+                .app
+                .defaults
+                .model
+                .as_deref()
+                .and_then(|name| config.models.find_model(name).ok())
+        })
+        .or_else(|| config.models.first_chat_model())?;
 
     let display_name = config.app.defaults.resolve_display_name();
     let character_definition =
@@ -958,7 +1042,13 @@ fn rebuild_request_from_disk(
         recap_store_path: Some(&recap_path),
     });
 
-    let (llm_messages, system) = crate::handler::build_llm_messages(&prompt_result, false);
+    let cache_dir = &config.dirs.cache;
+    let (llm_messages, system) = crate::handler::build_llm_messages(
+        &prompt_result,
+        false,
+        config.app.advanced.max_image_size,
+        cache_dir,
+    );
 
     let tool_defs = if config.app.behavior.tool_use.enabled {
         let defs: Vec<serde_json::Value> = tool_system::available_tools(false, tool_toggles)
@@ -1048,10 +1138,21 @@ async fn execute_unified_tick(
     let recap_path = data_dir.join(character).join("recaps.jsonl");
     let recap_store = RecapStore::load(&recap_path);
     let user_name = lc.app.defaults.resolve_display_name();
-    let default_interval_secs = lc.app.behavior.autonomy.interiority.fallback_interiority_interval.as_secs();
-    let default_interval_str = if default_interval_secs >= 3600 && default_interval_secs % 3600 == 0 {
+    let default_interval_secs = lc
+        .app
+        .behavior
+        .autonomy
+        .interiority
+        .fallback_interiority_interval
+        .as_secs();
+    let default_interval_str = if default_interval_secs >= 3600 && default_interval_secs % 3600 == 0
+    {
         let h = default_interval_secs / 3600;
-        if h == 1 { "1 hour".to_string() } else { format!("{h} hours") }
+        if h == 1 {
+            "1 hour".to_string()
+        } else {
+            format!("{h} hours")
+        }
     } else {
         format!("{} minutes", default_interval_secs / 60)
     };
@@ -1059,7 +1160,8 @@ async fn execute_unified_tick(
         let s = lock_state(state);
         build_recent_thread(&s.interiority_log, &recap_store)
     };
-    let interiority_prompt = build_interiority_prompt(&recent_thread, &user_name, &default_interval_str);
+    let interiority_prompt =
+        build_interiority_prompt(&recent_thread, &user_name, &default_interval_str);
 
     // Append the interiority prompt as a user message.
     request
@@ -1085,8 +1187,7 @@ async fn execute_unified_tick(
 
     info!(
         character,
-        max_iterations,
-        "Interiority: executing tool loop tick"
+        max_iterations, "Interiority: executing tool loop tick"
     );
 
     // Collect <sendMessage> and <recap> content across iterations (last-wins).
@@ -1189,7 +1290,10 @@ async fn execute_unified_tick(
                     );
                     s.mark_dirty();
                 }
-                (format!("Scheduled next moment in {clamped:.1} hours."), false)
+                (
+                    format!("Scheduled next moment in {clamped:.1} hours."),
+                    false,
+                )
             } else {
                 crate::content_util::dispatch_result_to_output(
                     tool_system::dispatch_tool(name, input.clone(), &tool_ctx).await,
@@ -1205,7 +1309,9 @@ async fn execute_unified_tick(
             );
 
             tool_results.push(crate::content_util::build_tool_result_json(
-                id, &output_str, is_error,
+                id,
+                &output_str,
+                is_error,
             ));
 
             // Log to ring buffer (skip set_next_wake — already logged above).
@@ -1291,7 +1397,10 @@ async fn execute_unified_tick(
                 }
             }
         } else {
-            error!(character, "No registry available, autonomous message not persisted");
+            error!(
+                character,
+                "No registry available, autonomous message not persisted"
+            );
         }
         if let Some(n) = notifier {
             n.notify(
@@ -1372,7 +1481,9 @@ async fn build_tool_context(
             VectorStore::open(&vs_path, embed_config.dimensions)
                 .await
                 .ok()
-                .map(|vs| AgentSearchContext::new(Arc::new(vs), client.inner().clone(), embed_config))
+                .map(|vs| {
+                    AgentSearchContext::new(Arc::new(vs), client.inner().clone(), embed_config)
+                })
         }
         Err(_) => None,
     };
@@ -1405,9 +1516,9 @@ async fn build_tool_context(
         researcher: researcher_model
             .as_ref()
             .map(|_| MemoryResearcher::new(String::new(), String::new())),
-        researcher_llm_val: researcher_model
-            .as_ref()
-            .map(|_| RealAgentLlm::new(client.clone(), character.to_string(), CallType::Researcher)),
+        researcher_llm_val: researcher_model.as_ref().map(|_| {
+            RealAgentLlm::new(client.clone(), character.to_string(), CallType::Researcher)
+        }),
         researcher_model_val: researcher_model,
         rag: NoopRag,
         search_ctx,
@@ -1463,7 +1574,9 @@ async fn execute_dormant_ping(
     state: &Arc<Mutex<AutonomyState>>,
     llm_client: Option<&LedgerClient>,
 ) -> bool {
-    let Some(client) = llm_client else { return false };
+    let Some(client) = llm_client else {
+        return false;
+    };
 
     let request = {
         let s = lock_state(state);
@@ -1491,7 +1604,10 @@ async fn execute_dormant_ping(
         }
     };
 
-    match client.generate(&request, CallType::Keepalive, character, false).await {
+    match client
+        .generate(&request, CallType::Keepalive, character, false)
+        .await
+    {
         Ok(resp) => {
             info!(
                 character,
@@ -1524,6 +1640,7 @@ async fn execute_dormant_ping(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::panic::{catch_unwind, AssertUnwindSafe};
 
     fn test_config() -> AutonomyConfig {
         AutonomyConfig::default()
@@ -1531,13 +1648,12 @@ mod tests {
 
     fn test_manager(data_dir: &Path) -> AutonomyManager {
         let (_tx, rx) = tokio::sync::watch::channel(());
-        let (mgr, _compaction_rx) = AutonomyManager::new(
+        AutonomyManager::new(
             test_config(),
             Default::default(),
             data_dir.to_path_buf(),
             rx,
-        );
-        mgr
+        )
     }
 
     // -- ensure_state ---------------------------------------------------------
@@ -1573,13 +1689,45 @@ mod tests {
         });
     }
 
+    #[test]
+    fn ensure_state_recovers_from_poisoned_handles_mutex() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let (tx, rx) = tokio::sync::watch::channel(());
+        let mgr = AutonomyManager::new(
+            test_config(),
+            Default::default(),
+            tmp.path().to_path_buf(),
+            rx,
+        );
+
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let _guard = mgr.handles.lock().unwrap();
+            panic!("poison autonomy handles");
+        }));
+        assert!(result.is_err());
+
+        rt.block_on(async {
+            assert!(mgr.ensure_state("alice", None));
+        });
+        assert!(mgr.states.contains_key("alice"));
+
+        drop(tx);
+        rt.block_on(async {
+            mgr.shutdown().await;
+        });
+    }
+
     // -- notify ---------------------------------------------------------------
 
     #[test]
     fn notify_without_state_is_noop() {
         let tmp = tempfile::tempdir().unwrap();
         let (_tx, rx) = tokio::sync::watch::channel(());
-        let (mgr, _compaction_rx) = AutonomyManager::new(
+        let mgr = AutonomyManager::new(
             test_config(),
             Default::default(),
             tmp.path().to_path_buf(),
@@ -1596,7 +1744,7 @@ mod tests {
     fn status_returns_none_for_unknown() {
         let tmp = tempfile::tempdir().unwrap();
         let (_tx, rx) = tokio::sync::watch::channel(());
-        let (mgr, _compaction_rx) = AutonomyManager::new(
+        let mgr = AutonomyManager::new(
             test_config(),
             Default::default(),
             tmp.path().to_path_buf(),
@@ -1619,6 +1767,46 @@ mod tests {
             let status = mgr.status("alice").unwrap();
             assert_eq!(status.interiority_state, "Active");
             assert_eq!(status.ticks_without_user, 0);
+        });
+    }
+
+    #[test]
+    fn status_reports_dormant_after_force_dormant() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+
+        rt.block_on(async {
+            let mgr = test_manager(tmp.path());
+            mgr.ensure_state("alice", None);
+            assert!(mgr.interiority_set_dormant("alice"));
+
+            let status = mgr.status("alice").unwrap();
+            assert_eq!(status.interiority_state, "Dormant");
+        });
+    }
+
+    #[test]
+    fn status_reports_dormant_after_silent_duration() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+
+        rt.block_on(async {
+            let mgr = test_manager(tmp.path());
+            mgr.ensure_state("alice", None);
+            mgr.with_state("alice", |s| {
+                let now = Instant::now();
+                s.interiority
+                    .on_user_message(now - Duration::from_secs(3 * 24 * 60 * 60));
+            });
+
+            let status = mgr.status("alice").unwrap();
+            assert_eq!(status.interiority_state, "Dormant");
         });
     }
 
@@ -1691,7 +1879,7 @@ mod tests {
             last_compaction_activity: Instant::now(),
             compaction_triggered: false,
             active_turn_count: 0,
-            needs_engine_reload: false,
+            compaction_pending: false,
             last_request: None,
         };
         save_state(data_dir, "alice", &mut state);
@@ -1737,7 +1925,6 @@ mod tests {
     async fn tick_character_runs_without_panic() {
         let tmp = tempfile::tempdir().unwrap();
         let config = test_config();
-        let (compaction_tx, _compaction_rx) = mpsc::channel(16);
         let state = Arc::new(Mutex::new(AutonomyState {
             interiority: InteriorityClock::with_config(&Default::default()),
             cache_keepalive: CacheKeepalive::new(),
@@ -1748,7 +1935,7 @@ mod tests {
             last_compaction_activity: Instant::now(),
             compaction_triggered: false,
             active_turn_count: 0,
-            needs_engine_reload: false,
+            compaction_pending: false,
             last_request: None,
         }));
 
@@ -1763,13 +1950,38 @@ mod tests {
             config: Arc::new(config),
             compaction: Arc::new(Default::default()),
             data_dir: tmp.path().to_path_buf(),
-            compaction_tx,
             llm_client: None,
             loaded_config: None,
             notifier: None,
             registry: None,
         };
         tick_character("alice", &tick_ctx).await;
+    }
+
+    #[tokio::test]
+    async fn shutdown_recovers_from_poisoned_handles_mutex() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_tx, rx) = tokio::sync::watch::channel(());
+        let mgr = AutonomyManager::new(
+            test_config(),
+            Default::default(),
+            tmp.path().to_path_buf(),
+            rx,
+        );
+
+        {
+            let mut handles = mgr.handles.lock().unwrap();
+            handles.push(tokio::spawn(async {}));
+        }
+
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let _guard = mgr.handles.lock().unwrap();
+            panic!("poison autonomy shutdown handles");
+        }));
+        assert!(result.is_err());
+
+        mgr.shutdown().await;
+        assert!(lock_or_recover("autonomy task handle list", &mgr.handles).is_empty());
     }
 
     #[test]
@@ -1870,23 +2082,17 @@ mod tests {
     // on_cache_warmed — the exact boundary where the phantom ping bug lived.
 
     /// Helper: build a TickContext with no LLM client (pings always fail).
-    fn tick_ctx_no_llm(
-        state: Arc<Mutex<AutonomyState>>,
-        data_dir: &Path,
-    ) -> (TickContext, mpsc::Receiver<String>) {
-        let (compaction_tx, compaction_rx) = mpsc::channel(16);
-        let ctx = TickContext {
+    fn tick_ctx_no_llm(state: Arc<Mutex<AutonomyState>>, data_dir: &Path) -> TickContext {
+        TickContext {
             state,
             config: Arc::new(test_config()),
             compaction: Arc::new(Default::default()),
             data_dir: data_dir.to_path_buf(),
-            compaction_tx,
             llm_client: None,
             loaded_config: None,
             notifier: None,
             registry: None,
-        };
-        (ctx, compaction_rx)
+        }
     }
 
     #[tokio::test]
@@ -1919,11 +2125,11 @@ mod tests {
             last_compaction_activity: now,
             compaction_triggered: false,
             active_turn_count: 0,
-            needs_engine_reload: false,
+            compaction_pending: false,
             last_request: None, // <-- no request → ping will be skipped
         }));
 
-        let (ctx, _rx) = tick_ctx_no_llm(state.clone(), tmp.path());
+        let ctx = tick_ctx_no_llm(state.clone(), tmp.path());
         tick_character("test", &ctx).await;
 
         // After the tick: the keepalive should STILL return Ping on the
@@ -1953,7 +2159,10 @@ mod tests {
         ka.on_cache_warmed(now);
 
         // Immediately after: should NOT be due (55 min away).
-        assert_eq!(ka.tick(now + Duration::from_secs(30)), CacheKeepaliveAction::None);
+        assert_eq!(
+            ka.tick(now + Duration::from_secs(30)),
+            CacheKeepaliveAction::None
+        );
         // 55 minutes later: should fire again.
         assert_eq!(
             ka.tick(now + Duration::from_secs(55 * 60)),
@@ -2022,7 +2231,7 @@ mod tests {
             json!({"name": "memory", "input_schema": {}}),
         ];
 
-        let mut request = LlmRequest {
+        let request = LlmRequest {
             sdk: shore_config::models::Sdk::Anthropic,
             model: "test".into(),
             api_key: "key".into(),
@@ -2039,25 +2248,11 @@ mod tests {
             forensic_character: None,
         };
 
-        // This is exactly what execute_unified_tick does at lines 1046-1069.
-        let set_next_wake_def = json!({
-            "name": "set_next_wake",
-            "description": "Schedule when you want to have your next private moment.",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "hours_from_now": { "type": "number" },
-                    "reason": { "type": "string" }
-                },
-                "required": ["hours_from_now", "reason"]
-            }
-        });
-        if let Some(tools) = request.tools.as_mut() {
-            tools.push(set_next_wake_def);
-        }
-
-        // The tools array must be identical to the original conversation's
-        // tools to preserve the cache prefix.
+        // set_next_wake is now in the base tool set (tools/basic.rs),
+        // so execute_unified_tick no longer pushes it at call time.
+        // This test documents the invariant: the tools array must be
+        // identical to the original conversation's tools to preserve
+        // the cache prefix.
         assert_eq!(
             request.tools.as_ref().unwrap().len(),
             original_tools.len(),
@@ -2084,7 +2279,7 @@ mod tests {
         };
         let tmp = tempfile::tempdir().unwrap();
         let (_tx, rx) = tokio::sync::watch::channel(());
-        let (mgr, _rx) = AutonomyManager::new(config, compaction, tmp.path().to_path_buf(), rx);
+        let mgr = AutonomyManager::new(config, compaction, tmp.path().to_path_buf(), rx);
 
         // Compaction should be disabled because max_turns < min_turns
         // makes the max_turns trigger dead code.
@@ -2092,6 +2287,205 @@ mod tests {
             !mgr.compaction.enabled,
             "Compaction should be disabled when max_turns ({}) < min_turns ({})",
             8, 12,
+        );
+    }
+
+    // -- inline compaction tests -----------------------------------------------
+
+    #[test]
+    fn should_compact_now_fires_on_max_turns() {
+        let compaction = CompactionConfig {
+            enabled: true,
+            min_turns: 8,
+            max_turns: 16,
+            keep_recent_turns: 2,
+            ..Default::default()
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let (_tx, rx) = tokio::sync::watch::channel(());
+        let mgr =
+            AutonomyManager::new(Default::default(), compaction, tmp.path().to_path_buf(), rx);
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async { mgr.ensure_state("alice", None::<u64>) });
+
+        // Below max_turns: should not compact.
+        assert!(!mgr.should_compact_now("alice", 15));
+        // At max_turns: should compact.
+        assert!(mgr.should_compact_now("alice", 16));
+        // After compaction, compaction_triggered is set so tick won't double-fire.
+        let triggered = mgr.with_state("alice", |s| s.compaction_triggered).unwrap();
+        assert!(
+            triggered,
+            "compaction_triggered should be set after should_compact_now"
+        );
+    }
+
+    #[test]
+    fn should_compact_now_respects_idle_pending_flag() {
+        let compaction = CompactionConfig {
+            enabled: true,
+            min_turns: 8,
+            max_turns: 34,
+            keep_recent_turns: 2,
+            ..Default::default()
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let (_tx, rx) = tokio::sync::watch::channel(());
+        let mgr =
+            AutonomyManager::new(Default::default(), compaction, tmp.path().to_path_buf(), rx);
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async { mgr.ensure_state("alice", None::<u64>) });
+
+        // Below max_turns and no pending flag: should not compact.
+        assert!(!mgr.should_compact_now("alice", 20));
+
+        // Simulate idle trigger setting the pending flag.
+        mgr.with_state("alice", |s| {
+            s.compaction_pending = true;
+        });
+
+        // Now should_compact_now should return true (and clear the flag).
+        assert!(mgr.should_compact_now("alice", 20));
+        // Flag should be cleared.
+        let pending = mgr.with_state("alice", |s| s.compaction_pending).unwrap();
+        assert!(!pending, "compaction_pending should be cleared after take");
+    }
+
+    #[test]
+    fn should_compact_now_disabled_when_config_disabled() {
+        let compaction = CompactionConfig {
+            enabled: false,
+            min_turns: 8,
+            max_turns: 16,
+            keep_recent_turns: 2,
+            ..Default::default()
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let (_tx, rx) = tokio::sync::watch::channel(());
+        let mgr =
+            AutonomyManager::new(Default::default(), compaction, tmp.path().to_path_buf(), rx);
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async { mgr.ensure_state("alice", None::<u64>) });
+
+        // Even above max_turns, disabled config means no compaction.
+        assert!(!mgr.should_compact_now("alice", 100));
+    }
+
+    #[test]
+    fn notify_compaction_complete_resets_flags() {
+        let compaction = CompactionConfig {
+            enabled: true,
+            min_turns: 8,
+            max_turns: 16,
+            keep_recent_turns: 2,
+            ..Default::default()
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let (_tx, rx) = tokio::sync::watch::channel(());
+        let mgr =
+            AutonomyManager::new(Default::default(), compaction, tmp.path().to_path_buf(), rx);
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async { mgr.ensure_state("alice", None::<u64>) });
+
+        // Trigger compaction.
+        assert!(mgr.should_compact_now("alice", 16));
+
+        // Simulate compaction complete.
+        mgr.notify_compaction_complete("alice", 4);
+
+        // Flags should be reset: compaction_triggered and compaction_pending cleared.
+        let (triggered, pending, turn_count) = mgr
+            .with_state("alice", |s| {
+                (
+                    s.compaction_triggered,
+                    s.compaction_pending,
+                    s.active_turn_count,
+                )
+            })
+            .unwrap();
+        assert!(
+            !triggered,
+            "compaction_triggered should be reset after completion"
+        );
+        assert!(
+            !pending,
+            "compaction_pending should be reset after completion"
+        );
+        assert_eq!(
+            turn_count, 4,
+            "active_turn_count should be updated to retained count"
+        );
+
+        // Should be able to trigger again.
+        assert!(mgr.should_compact_now("alice", 16));
+    }
+
+    #[tokio::test]
+    async fn tick_sets_compaction_pending_on_idle_trigger() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut config = test_config();
+        config.enabled = true;
+        let compaction = CompactionConfig {
+            enabled: true,
+            min_turns: 4,
+            max_turns: 20,
+            keep_recent_turns: 2,
+            idle_trigger: shore_config::ConfigDuration::from_secs(1),
+            ..Default::default()
+        };
+
+        let state = Arc::new(Mutex::new(AutonomyState {
+            interiority: InteriorityClock::with_config(&Default::default()),
+            cache_keepalive: CacheKeepalive::new(),
+            activity: ActivityTracker::new(),
+            interiority_log: InteriorityLog::new(),
+            paused: false,
+            dirty: false,
+            last_compaction_activity: Instant::now() - Duration::from_secs(10),
+            compaction_triggered: false,
+            active_turn_count: 8,
+            compaction_pending: false,
+            last_request: None,
+        }));
+
+        let tick_ctx = TickContext {
+            state: state.clone(),
+            config: Arc::new(config),
+            compaction: Arc::new(compaction),
+            data_dir: tmp.path().to_path_buf(),
+            llm_client: None,
+            loaded_config: None,
+            notifier: None,
+            registry: None,
+        };
+
+        tick_character("alice", &tick_ctx).await;
+
+        // After tick with idle_trigger=1s and 10s idle, the pending flag should be set.
+        let s = lock_state(&state);
+        assert!(
+            s.compaction_pending,
+            "compaction_pending should be set after idle trigger fires in tick"
+        );
+        assert!(
+            s.compaction_triggered,
+            "compaction_triggered should prevent double-fire"
         );
     }
 }

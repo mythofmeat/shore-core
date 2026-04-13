@@ -10,16 +10,21 @@
 # ── Daemon ───────────────────────────────────────────────────────────────
 
 # [daemon]
-# socket_path = "/tmp/shore.sock"   # Auto-generated if omitted
+# addr = "127.0.0.1:7320"       # Default listen address
+# unsafe_allow_remote_access = false  # Required for non-loopback binds
+# allowed_hosts = []                  # IP allowlist only; not auth/TLS
 
 # ── Defaults ─────────────────────────────────────────────────────────────
 
 [defaults]
 model = "claude-sonnet"            # Must match a key in [chat.*.*] below
-# tool_model = "mistral-small"      # Default model for tool-use calls
-# memory_agent = "mistral-small"    # Default model for memory agent calls
-# embedding = "text-large"          # Default embedding profile
-# image_generation = "gemini-flash" # Default image generation profile
+# tool_model = "mistral-small"      # Model for tool-use calls
+# memory_agent = "mistral-small"    # Model for memory agent queries
+# collation = "mistral-small"       # Model for memory collation (merge/split/normalize)
+# compaction = "mistral-small"      # Model for conversation compaction (summarization)
+# interiority = "claude-sonnet"     # Model for autonomous interiority ticks
+# embedding = "text-large"          # Embedding profile
+# image_generation = "gemini-flash" # Image generation profile
 # display_name = "Your Name"        # {{user}} in templates; falls back to $USER
 # stream = true
 
@@ -105,11 +110,6 @@ model = "claude-sonnet"            # Must match a key in [chat.*.*] below
 
 # ── Connections ──────────────────────────────────────────────────────────
 
-# [connections.tcp]
-# enabled = false
-# addr = "127.0.0.1:7320"
-# allowed_hosts = []  # Empty = allow all; otherwise list allowed IPs
-
 # ── Matrix: External mode (connect to an existing homeserver) ─────────────
 # [connections.matrix]
 # enabled = true
@@ -136,11 +136,12 @@ model = "claude-sonnet"            # Must match a key in [chat.*.*] below
 # ── Advanced ─────────────────────────────────────────────────────────────
 
 # [advanced]
-# cache_invalidation_warnings = true
 # api_payload_logging = false
+# cache_forensics = false          # Write prompt-cache diagnostics to cache_forensics.jsonl when debugging cache behavior
 # editor = "nvim"                   # Override $VISUAL / $EDITOR
 # max_retries = 2
 # retry_backoff = "500ms"           # Base delay; doubles on each retry
+# max_image_size = 2000000          # Resize images above this size (bytes) before LLM upload; 0 = disable
 # Data directory: override via $XDG_DATA_HOME (default: ~/.local/share/shore)
 
 # ── Chat models ──────────────────────────────────────────────────────────

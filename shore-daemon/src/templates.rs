@@ -1,7 +1,7 @@
 //! Prompt template upgrade manifest.
 //!
 //! Tracks SHA-256 hashes of default templates so the daemon can auto-update
-//! stock templates without clobbering user edits. See §11.1 of ARCHITECTURE.md.
+//! stock templates without clobbering user edits. See §11.1 of docs/ARCHITECTURE.md.
 //!
 //! Only the **global** prompts directory (`$XDG_CONFIG_HOME/shore/prompts/`) is
 //! tracked. Per-character overrides (`characters/{character}/prompts/`) are

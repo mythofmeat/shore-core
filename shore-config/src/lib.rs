@@ -56,6 +56,8 @@ pub struct ShoreDirs {
     pub data: PathBuf,
     /// Runtime directory: $XDG_RUNTIME_DIR/shore/
     pub runtime: PathBuf,
+    /// Cache directory: $XDG_CACHE_HOME/shore/
+    pub cache: PathBuf,
 }
 
 /// Resolve an XDG-style directory path with Shore-specific overrides.
@@ -113,6 +115,12 @@ impl ShoreDirs {
                 "XDG_RUNTIME_DIR",
                 dirs::runtime_dir,
                 "",
+            ),
+            cache: resolve_xdg_dir(
+                "SHORE_CACHE_DIR",
+                "XDG_CACHE_HOME",
+                dirs::cache_dir,
+                "~/.cache",
             ),
         }
     }
@@ -416,10 +424,10 @@ fn create_default_config(config_dir: &Path) {
 # [chat.anthropic.sonnet]
 # model_id = "claude-sonnet-4-6"
 
-# [connections.tcp]
-# enabled = false
+# [daemon]
 # addr = "127.0.0.1:7320"
-# allowed_hosts = []           # empty = allow all
+# unsafe_allow_remote_access = false  # required for non-loopback binds
+# allowed_hosts = []                  # IP allowlist only; not auth/TLS
 
 # [services.llm]
 # command = "node /path/to/shore-llm/dist/index.js"
@@ -588,7 +596,8 @@ mod tests {
             "config.toml",
             r#"
 [daemon]
-socket_path = "/tmp/shore.sock"
+addr = "127.0.0.1:9999"
+allowed_hosts = ["127.0.0.1"]
 
 [behavior.autonomy]
 enabled = true
@@ -600,13 +609,7 @@ fallback_interiority_interval = "30m"
 [behavior.tool_use.tools]
 roll_dice = false
 
-[connections.tcp]
-enabled = true
-addr = "127.0.0.1:7320"
-allowed_hosts = ["127.0.0.1"]
-
 [advanced]
-cache_invalidation_warnings = false
 max_retries = 5
 
 [chat.anthropic]
@@ -623,22 +626,23 @@ model_id = "claude-opus-4-6"
         let config_path = tmp.path().join("config.toml");
         let loaded = load_config(Some(&config_path)).unwrap();
 
-        assert_eq!(
-            loaded.app.daemon.socket_path.as_deref(),
-            Some("/tmp/shore.sock")
-        );
+        assert_eq!(loaded.app.daemon.addr, "127.0.0.1:9999");
+        assert_eq!(loaded.app.daemon.allowed_hosts, vec!["127.0.0.1"]);
         assert!(loaded.app.behavior.autonomy.enabled);
         assert!(!loaded.app.behavior.autonomy.interiority.enabled);
-        assert_eq!(loaded.app.behavior.autonomy.interiority.fallback_interiority_interval, ConfigDuration::from_secs(1800));
+        assert_eq!(
+            loaded
+                .app
+                .behavior
+                .autonomy
+                .interiority
+                .fallback_interiority_interval,
+            ConfigDuration::from_secs(1800)
+        );
         assert!(!loaded.app.behavior.tool_use.tools.roll_dice());
         assert!(loaded.app.behavior.tool_use.tools.memory());
-        assert!(!loaded.app.advanced.cache_invalidation_warnings);
         assert_eq!(loaded.app.advanced.max_retries, Some(5));
-
-        let tcp = loaded.app.connections.tcp.unwrap();
-        assert!(tcp.enabled);
-        assert_eq!(tcp.addr.as_deref(), Some("127.0.0.1:7320"));
-        assert_eq!(tcp.allowed_hosts, vec!["127.0.0.1"]);
+        assert!(!loaded.app.daemon.unsafe_allow_remote_access);
 
         assert_eq!(loaded.models.chat.len(), 2);
         assert!(loaded.models.find_model("sonnet").is_ok());
@@ -656,12 +660,20 @@ model_id = "claude-opus-4-6"
         assert!(loaded.app.defaults.stream);
         assert!(!loaded.app.behavior.autonomy.enabled);
         assert!(loaded.app.behavior.autonomy.interiority.enabled);
-        assert_eq!(loaded.app.behavior.autonomy.interiority.fallback_interiority_interval, ConfigDuration::from_secs(3600));
+        assert_eq!(
+            loaded
+                .app
+                .behavior
+                .autonomy
+                .interiority
+                .fallback_interiority_interval,
+            ConfigDuration::from_secs(3600)
+        );
         assert!(loaded.app.behavior.tool_use.enabled);
-        assert!(loaded.app.advanced.cache_invalidation_warnings);
         assert!(loaded.app.memory.compaction.enabled);
         assert!(loaded.app.memory.collation.enabled);
-        assert!(loaded.app.connections.tcp.is_none());
+        assert_eq!(loaded.app.daemon.addr, "127.0.0.1:7320"); // default
+        assert!(!loaded.app.daemon.unsafe_allow_remote_access);
         assert!(loaded.app.advanced.editor.is_none());
         assert!(loaded.app.advanced.max_retries.is_none());
         assert!(loaded.app.advanced.retry_backoff.is_none());
@@ -1053,13 +1065,29 @@ fallback_interiority_interval = "30m"
         // Global config should be unchanged.
         assert_eq!(global.app.defaults.model.as_deref(), Some("sonnet"));
         assert!(!global.app.behavior.autonomy.enabled);
-        assert_eq!(global.app.behavior.autonomy.interiority.fallback_interiority_interval, ConfigDuration::from_secs(3600));
+        assert_eq!(
+            global
+                .app
+                .behavior
+                .autonomy
+                .interiority
+                .fallback_interiority_interval,
+            ConfigDuration::from_secs(3600)
+        );
 
         // Character config should override specific keys.
         let alice = load_character_config(&global, "Alice").unwrap().unwrap();
         assert_eq!(alice.app.defaults.model.as_deref(), Some("opus"));
         assert!(alice.app.behavior.autonomy.enabled);
-        assert_eq!(alice.app.behavior.autonomy.interiority.fallback_interiority_interval, ConfigDuration::from_secs(1800));
+        assert_eq!(
+            alice
+                .app
+                .behavior
+                .autonomy
+                .interiority
+                .fallback_interiority_interval,
+            ConfigDuration::from_secs(1800)
+        );
 
         // Models should still be available (inherited from global).
         assert!(alice.models.find_model("sonnet").is_ok());

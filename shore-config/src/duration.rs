@@ -81,13 +81,13 @@ impl fmt::Display for ConfigDuration {
         if ms == 0 {
             return write!(f, "0s");
         }
-        if ms % (86400 * 1000) == 0 {
+        if ms.is_multiple_of(86400 * 1000) {
             write!(f, "{}d", ms / (86400 * 1000))
-        } else if ms % (3600 * 1000) == 0 {
+        } else if ms.is_multiple_of(3600 * 1000) {
             write!(f, "{}h", ms / (3600 * 1000))
-        } else if ms % (60 * 1000) == 0 {
+        } else if ms.is_multiple_of(60 * 1000) {
             write!(f, "{}m", ms / (60 * 1000))
-        } else if ms % 1000 == 0 {
+        } else if ms.is_multiple_of(1000) {
             write!(f, "{}s", ms / 1000)
         } else {
             write!(f, "{}ms", ms)
@@ -146,37 +146,58 @@ mod tests {
 
     #[test]
     fn parse_milliseconds() {
-        assert_eq!(ConfigDuration::parse("500ms").unwrap(), ConfigDuration::from_millis(500));
+        assert_eq!(
+            ConfigDuration::parse("500ms").unwrap(),
+            ConfigDuration::from_millis(500)
+        );
     }
 
     #[test]
     fn parse_seconds() {
-        assert_eq!(ConfigDuration::parse("30s").unwrap(), ConfigDuration::from_secs(30));
+        assert_eq!(
+            ConfigDuration::parse("30s").unwrap(),
+            ConfigDuration::from_secs(30)
+        );
     }
 
     #[test]
     fn parse_minutes() {
-        assert_eq!(ConfigDuration::parse("2m").unwrap(), ConfigDuration::from_millis(2 * 60 * 1000));
+        assert_eq!(
+            ConfigDuration::parse("2m").unwrap(),
+            ConfigDuration::from_millis(2 * 60 * 1000)
+        );
     }
 
     #[test]
     fn parse_hours() {
-        assert_eq!(ConfigDuration::parse("1h").unwrap(), ConfigDuration::from_millis(3600 * 1000));
+        assert_eq!(
+            ConfigDuration::parse("1h").unwrap(),
+            ConfigDuration::from_millis(3600 * 1000)
+        );
     }
 
     #[test]
     fn parse_days() {
-        assert_eq!(ConfigDuration::parse("2d").unwrap(), ConfigDuration::from_millis(2 * 86400 * 1000));
+        assert_eq!(
+            ConfigDuration::parse("2d").unwrap(),
+            ConfigDuration::from_millis(2 * 86400 * 1000)
+        );
     }
 
     #[test]
     fn parse_bare_number_is_seconds() {
-        assert_eq!(ConfigDuration::parse("30").unwrap(), ConfigDuration::from_secs(30));
+        assert_eq!(
+            ConfigDuration::parse("30").unwrap(),
+            ConfigDuration::from_secs(30)
+        );
     }
 
     #[test]
     fn parse_whitespace_trimmed() {
-        assert_eq!(ConfigDuration::parse("  30s  ").unwrap(), ConfigDuration::from_secs(30));
+        assert_eq!(
+            ConfigDuration::parse("  30s  ").unwrap(),
+            ConfigDuration::from_secs(30)
+        );
     }
 
     #[test]
@@ -201,7 +222,10 @@ mod tests {
         assert_eq!(ConfigDuration::from_millis(90 * 1000).to_string(), "90s");
         assert_eq!(ConfigDuration::from_millis(500).to_string(), "500ms");
         assert_eq!(ConfigDuration::from_millis(0).to_string(), "0s");
-        assert_eq!(ConfigDuration::from_millis(2 * 86400 * 1000).to_string(), "2d");
+        assert_eq!(
+            ConfigDuration::from_millis(2 * 86400 * 1000).to_string(),
+            "2d"
+        );
         assert_eq!(ConfigDuration::from_millis(120 * 1000).to_string(), "2m");
     }
 

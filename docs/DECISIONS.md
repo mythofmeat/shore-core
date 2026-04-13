@@ -266,12 +266,12 @@ A single holistic call lets the LLM see all candidates + nearby context and make
 
 **Changes made:**
 - New `shore-client/src/client_config.rs`: `ClientConfig` struct with `default_address` field, `load_client_config()` loader
-- Updated `discover_or_default()` to check `client.toml` between the `--socket` flag and instance discovery
+- Updated `discover_or_default()` to check `client.toml` between the `--addr` flag and instance discovery
 - Added `toml` dependency to shore-client
 
-**Why:** Remote clients (running on a different machine from the daemon) had to pass `--socket host:port` on every invocation. A persistent config eliminates the repetition. The file is intentionally separate from `config.toml` because: (a) the daemon config uses `deny_unknown_fields` and would reject a `[client]` section, and (b) the packages will eventually be split — client config must not depend on daemon config infrastructure.
+**Why:** Remote clients (running on a different machine from the daemon) had to pass `--addr host:port` on every invocation. A persistent config eliminates the repetition. The file is intentionally separate from `config.toml` because: (a) the daemon config uses `deny_unknown_fields` and would reject a `[client]` section, and (b) the packages will eventually be split — client config must not depend on daemon config infrastructure.
 
-**Resolution order:** `--socket` CLI flag → `client.toml` `default_address` → instance discovery → default Unix socket.
+**Resolution order:** `--addr` CLI flag → `client.toml` `default_address` → instance discovery → default `127.0.0.1:7320`.
 
 **Trade-off:** `load_client_config()` reads and parses the file on every invocation of `discover_or_default()`. This is acceptable because it is a single small file read, and caching would add complexity with no measurable benefit for a CLI tool.
 
@@ -525,3 +525,95 @@ plumbing (SWP, handler, persistence, autonomy, tools) runs for real.
   undocumented error formats). The existing `#[ignore]`-gated e2e tests cover that.
 - Autonomy tests use `tokio::time::pause()` which requires all autonomy code to use
   `tokio::time::Instant` instead of `std::time::Instant`.
+
+## Smart Image Resize Pipeline (2026-04-10)
+
+**Decision:** Replaced the MVP single-pass image resizer (`maybe_resize`) with a
+format-aware, cached, async pipeline in a new `resize.rs` module.
+
+**Key design choices:**
+- **Format preservation:** Transparent PNGs stay PNG; opaque images convert to JPEG.
+  Alpha detected by scanning decoded pixels — cheap since already decoded.
+- **Quality-first for small images:** Images ≤2048px try quality reduction (90→75)
+  before dimension reduction. Preserves resolution for screenshots/diagrams.
+- **`fast_image_resize` v6:** SIMD-optimized resize (~14x faster than `image` crate).
+  Pure Rust, no system library. `image` crate retained for decode/encode.
+- **XDG disk cache:** Resized images cached at `$XDG_CACHE_HOME/shore/resized/`.
+  Key = sha256(path + mtime + max_bytes). No eviction — images are ~1-2MB each.
+- **Pre-warm pattern:** Async `warm_image_cache()` via `spawn_blocking` before
+  sync `build_llm_messages()`. Cache is the communication channel.
+
+**Alternatives rejected:**
+- Making `build_llm_messages` async — large refactor for same result.
+- In-memory LRU cache — lost on restart, no persistence.
+- Iterative quality binary search — too many encodes for pathological images.
+
+**Compromises:**
+- Autonomy path is sync — `warm_image_cache` skipped, uses sync fallback.
+- Retry may return images slightly over the limit (warn log emitted).
+- bpp estimation is content-dependent; 0.85 safety margin handles most cases.
+
+## Unix Sockets Removed — TCP-Only Transport (2026-04-10)
+
+**Decision:** Remove Unix socket support entirely. TCP is the sole transport.
+
+**Rationale:** Unix sockets added complexity (socket path management, stale file cleanup, dual-listener code) with no real benefit over TCP on localhost. For remote clients, identifying an instance by Unix socket path on another machine is meaningless. TCP was already a core feature, so making it the only transport simplifies the codebase and makes instance identity uniform (`host:port`).
+
+**Default:** `127.0.0.1:7320` (localhost-only). Non-loopback binds require explicit
+`[daemon].unsafe_allow_remote_access = true`. `allowed_hosts` remains a peer IP
+allowlist, not authentication or TLS.
+
+**Trade-offs:** Marginally higher per-message overhead vs Unix sockets on localhost (negligible for JSON-Lines messages). Lost the ability to enforce filesystem-level permissions on the socket file. Shore mitigates this with a localhost-only default and an explicit unsafe remote-access opt-in, but remote TCP is still only appropriate on trusted private or overlay networks.
+
+
+## Extract shore-daemon-server crate (2026-04-10)
+
+## Abandonment Guard Fix & Debug Commands (2026-04-11)
+
+**Bug:** When the abandonment guard tripped, it cleared `next_wake_at`. On the next tick, step 1 unconditionally bootstrapped a new deadline from the stale `last_anchor`, causing it to immediately re-trip — infinite log-spam loop every tick.
+
+**Fix:** Added `is_abandoned(now)` check in step 1 of `InteriorityClock::tick()`. Once abandoned, the clock stays dormant until `reset_on_user_message()` clears the counter. Introduced `is_dormant()` as the public accessor, and made user-facing status/log output report the unified state label `Dormant` for tick-count dormancy, silent-duration dormancy, and forced dormancy.
+
+**Debug commands:** Replaced the single hidden `shore debug force-tick` with three explicit debug commands using snake_case naming (`#[command(rename_all = "snake_case")]`), and unhid the `debug` subcommand:
+
+- `shore debug interiority_tick_now` — schedules immediate tick, warns if dormant
+- `shore debug interiority_status_dormant` — forces dormant, reverts on user message
+- `shore debug interiority_status_active` — forces active, reverts naturally via guard
+
+Snake_case was chosen over kebab-case for debug commands to visually distinguish them from normal CLI commands and signal "direct internal access, use with care". This also simplifies the SWP mapping since CLI and wire names are identical under `rename_all = "snake_case"`.
+
+`InteriorityClock` methods split: `force_wake()` (deadline only, no counter reset), `force_dormant()` (sets counter to max, clears deadline), `force_active()` (resets counter + last_user_at + deadline). The old monolithic `force_wake` that did everything was replaced because each debug command maps to a single primitive.
+
+**Compromise:** `interiority_tick_now` on a dormant clock sets the deadline but the tick will be suppressed by the guard. This is intentional — it's a debug tool and the user gets a warning. Silently auto-activating would mask the state.
+
+Extracted `shore-daemon/src/server/` (~1.3K LOC) into a standalone `shore-daemon-server`
+workspace crate. The server module had zero internal dependencies on other daemon modules,
+making it the cleanest extraction candidate. `RoutedMessage` enum stays in the server crate
+because it's a server routing concern (not a wire protocol type) and handler already depends
+on the server crate. Registry stays as a submodule (221 LOC, not worth its own crate).
+
+## Refactor Hardening Closeout (2026-04-12)
+
+**Decision:** Close the targeted refactor hardening pass without reopening larger
+concurrency redesign work. Shore keeps the current single-process architecture
+and only revisits deeper executor or async changes if new measurements justify it.
+
+**What landed:**
+- Added maintenance-path timing around compaction, vector-store open/reindex,
+  ledger operations, and pricing cache lookups so blocking work is observable.
+- Hardened `shore-ledger` shared-state locking with `lock_or_recover()` and
+  poison-recovery tests instead of panic-on-poison behavior in production paths.
+- Centralized vector-store entry-ID predicate construction and validation in one
+  helper, with consistent invalid-ID tests across index/delete/get paths.
+- Moved compaction archive/retain file mutation behind an explicit
+  `spawn_blocking` boundary and added a regression test proving sibling tasks
+  stay responsive while that work runs.
+- Promoted the panic classification note to `docs/specs/panic-policy.md` and
+  codified the remaining production panic sites as startup-fatal or
+  invariant-protecting.
+
+**What we are not doing now:**
+- No dedicated maintenance executor or job queue.
+- No blanket `tokio::fs` or `tokio::sync::Mutex` rewrite.
+- No `parking_lot` migration.
+- No further async/concurrency churn unless new timings show an actual hotspot.

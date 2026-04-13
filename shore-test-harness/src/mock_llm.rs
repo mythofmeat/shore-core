@@ -432,12 +432,30 @@ mod tests {
             .build();
 
         // All required event types must appear
-        assert!(body.contains("event: message_start\n"), "missing message_start");
-        assert!(body.contains("event: content_block_start\n"), "missing content_block_start");
-        assert!(body.contains("event: content_block_delta\n"), "missing content_block_delta");
-        assert!(body.contains("event: content_block_stop\n"), "missing content_block_stop");
-        assert!(body.contains("event: message_delta\n"), "missing message_delta");
-        assert!(body.contains("event: message_stop\n"), "missing message_stop");
+        assert!(
+            body.contains("event: message_start\n"),
+            "missing message_start"
+        );
+        assert!(
+            body.contains("event: content_block_start\n"),
+            "missing content_block_start"
+        );
+        assert!(
+            body.contains("event: content_block_delta\n"),
+            "missing content_block_delta"
+        );
+        assert!(
+            body.contains("event: content_block_stop\n"),
+            "missing content_block_stop"
+        );
+        assert!(
+            body.contains("event: message_delta\n"),
+            "missing message_delta"
+        );
+        assert!(
+            body.contains("event: message_stop\n"),
+            "missing message_stop"
+        );
 
         // The text must be present
         assert!(body.contains("Hello, world!"), "missing text content");
@@ -449,8 +467,14 @@ mod tests {
         assert!(body.contains("end_turn"), "missing end_turn stop_reason");
 
         // Usage tokens
-        assert!(body.contains("\"input_tokens\":5"), "missing input token count");
-        assert!(body.contains("\"output_tokens\":10"), "missing output token count");
+        assert!(
+            body.contains("\"input_tokens\":5"),
+            "missing input token count"
+        );
+        assert!(
+            body.contains("\"output_tokens\":10"),
+            "missing output token count"
+        );
     }
 
     #[test]
@@ -461,24 +485,51 @@ mod tests {
             .build();
 
         // All required event types must appear
-        assert!(body.contains("event: message_start\n"), "missing message_start");
-        assert!(body.contains("event: content_block_start\n"), "missing content_block_start");
-        assert!(body.contains("event: content_block_delta\n"), "missing content_block_delta");
-        assert!(body.contains("event: content_block_stop\n"), "missing content_block_stop");
-        assert!(body.contains("event: message_delta\n"), "missing message_delta");
-        assert!(body.contains("event: message_stop\n"), "missing message_stop");
+        assert!(
+            body.contains("event: message_start\n"),
+            "missing message_start"
+        );
+        assert!(
+            body.contains("event: content_block_start\n"),
+            "missing content_block_start"
+        );
+        assert!(
+            body.contains("event: content_block_delta\n"),
+            "missing content_block_delta"
+        );
+        assert!(
+            body.contains("event: content_block_stop\n"),
+            "missing content_block_stop"
+        );
+        assert!(
+            body.contains("event: message_delta\n"),
+            "missing message_delta"
+        );
+        assert!(
+            body.contains("event: message_stop\n"),
+            "missing message_stop"
+        );
 
         // tool_use block must have the id and name
         assert!(body.contains("\"toolu_01\""), "missing tool id");
         assert!(body.contains("\"search\""), "missing tool name");
 
         // input_json_delta type
-        assert!(body.contains("input_json_delta"), "missing input_json_delta type");
+        assert!(
+            body.contains("input_json_delta"),
+            "missing input_json_delta type"
+        );
 
         // stop_reason must be tool_use
-        assert!(body.contains("\"tool_use\""), "missing tool_use stop_reason");
+        assert!(
+            body.contains("\"tool_use\""),
+            "missing tool_use stop_reason"
+        );
 
         // Input content must be present somewhere in the body
-        assert!(body.contains("weather in London"), "missing tool input content");
+        assert!(
+            body.contains("weather in London"),
+            "missing tool input content"
+        );
     }
 }

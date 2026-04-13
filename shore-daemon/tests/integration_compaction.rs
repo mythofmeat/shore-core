@@ -38,13 +38,8 @@ The user and assistant exchanged messages about {topic}. The conversation was br
 /// Compaction mocks must be enqueued AFTER this, to avoid mock ordering conflicts.
 async fn send_n_messages(harness: &mut TestHarness, n: usize) {
     for i in 1..=n {
-        harness
-            .mock_llm
-            .enqueue_text(&format!("Reply {i}"))
-            .await;
-        let _resp = harness
-            .send_and_collect(&format!("Message {i}"))
-            .await;
+        harness.mock_llm.enqueue_text(&format!("Reply {i}")).await;
+        let _resp = harness.send_and_collect(&format!("Message {i}")).await;
     }
 }
 
@@ -104,10 +99,7 @@ async fn test_compaction_keeps_recent_turns() {
 
     // Send 4 messages — last two should be preserved after compaction.
     for i in 1..=4 {
-        harness
-            .mock_llm
-            .enqueue_text(&format!("Reply {i}"))
-            .await;
+        harness.mock_llm.enqueue_text(&format!("Reply {i}")).await;
         let _resp = harness
             .send_and_collect(&format!("Unique message {i}"))
             .await;
@@ -169,13 +161,8 @@ async fn test_messages_still_work_after_compaction() {
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
     // Send one more message post-compaction.
-    harness
-        .mock_llm
-        .enqueue_text("Post-compaction reply")
-        .await;
-    let response = harness
-        .send_and_collect("Post-compaction message")
-        .await;
+    harness.mock_llm.enqueue_text("Post-compaction reply").await;
+    let response = harness.send_and_collect("Post-compaction message").await;
 
     response.assert_text_contains("Post-compaction reply");
     assert!(

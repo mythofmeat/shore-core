@@ -163,7 +163,7 @@ impl MemoryResearcher {
         let mut messages: Vec<Value> = vec![json!({"role": "user", "content": user_content})];
 
         let tools = vec![ask_memory_agent_tool()];
-        let system = Some(Value::String(RESEARCHER_SYSTEM_PROMPT.to_string()));
+        let system = Some(json!([{"type": "text", "text": RESEARCHER_SYSTEM_PROMPT}]));
         let mut all_tool_outputs: Vec<String> = Vec::new();
         let mut last_text = String::new();
 
