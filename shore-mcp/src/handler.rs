@@ -50,6 +50,7 @@ impl ShoreMcpHandler {
             + Self::model_router()
             + Self::memory_router()
             + Self::config_router()
+            + Self::debug_router()
     }
 
     /// Check gates, send an SWP command, drain to CommandOutput, return JSON.
