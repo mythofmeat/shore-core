@@ -232,6 +232,7 @@ pub fn dispatch_characterless(ctx: &CommandContext, cmd: &Command) -> CommandRes
     debug!(command = %cmd.name, "Dispatching characterless command");
     match cmd.name.as_str() {
         "list_characters" => navigation::list_characters_standalone(ctx),
+        "list_models" => state::list_models(ctx),
         _ => Err((
             ErrorCode::InvalidRequest,
             format!("Command '{}' requires a character", cmd.name),

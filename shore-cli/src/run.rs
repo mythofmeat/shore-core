@@ -1,4 +1,5 @@
 use std::io::{self, IsTerminal, Read as _, Write as _};
+use std::sync::OnceLock;
 
 use shore_client::{SWPConnection, ServerAddr};
 use shore_protocol::server_msg::ServerMessage;
@@ -7,6 +8,18 @@ use tracing::{debug, info, instrument};
 use crate::cli::{Cli, CliCommand};
 use crate::output;
 use crate::state;
+
+/// Display name for the character attached to this CLI session, set once
+/// after the handshake and read by any code that renders assistant output
+/// outside the main command dispatcher.
+static SESSION_DISPLAY_CHARACTER: OnceLock<String> = OnceLock::new();
+
+fn session_display_character() -> &'static str {
+    SESSION_DISPLAY_CHARACTER
+        .get()
+        .map(String::as_str)
+        .unwrap_or("Assistant")
+}
 
 /// Execute the CLI command by connecting to the daemon and dispatching.
 #[instrument(skip(cli))]
@@ -26,6 +39,12 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     if let CliCommand::Matrix { subcommand } = &cli.command {
         return handle_matrix_command(subcommand, &cli).await;
     }
+    if let CliCommand::Complete { kind } = &cli.command {
+        // Any failure (daemon down, parse error) ends with empty stdout
+        // and a zero exit code so fish falls back to no suggestions.
+        let _ = handle_complete_query(*kind, &cli).await;
+        return Ok(());
+    }
 
     let addr = resolve_addr(&cli)?;
 
@@ -34,8 +53,51 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 
     info!(character = ?character, "CLI executing command");
 
-    let (mut conn, _server_hello, _history) =
+    let (mut conn, _server_hello, history) =
         SWPConnection::connect(&addr, "cli", "shore-cli", character.clone()).await?;
+
+    // Prefer the daemon's authoritative answer over the local request.
+    let display_character =
+        state::resolve_display_character(history.selected_character.as_deref(), character.as_deref());
+    // Stash so incidental messages inside `recv_command_data` can label
+    // themselves correctly without threading the name through every call site.
+    let _ = SESSION_DISPLAY_CHARACTER.set(display_character.clone());
+
+    // Regression for #3: `switch_model` only mutates per-session state on
+    // the daemon, so a one-shot CLI invocation discards the choice on exit.
+    // Re-apply the persisted model here so every subsequent command sees it.
+    // Intentionally best-effort: a stale entry (model removed from config)
+    // shouldn't stop the user's actual command.
+    if let Some(model) = state::read_active_model() {
+        if let Err(e) = conn
+            .send_command("switch_model", serde_json::json!({ "name": &model }))
+            .await
+        {
+            debug!(error = %e, model = %model, "failed to pre-apply active model");
+        } else {
+            // Drain the response so it doesn't get mixed into the next
+            // command's stream. Errors (e.g. stale model) are ignored —
+            // the user's real command still runs.
+            match conn.recv().await {
+                Ok(ServerMessage::CommandOutput(_)) => {
+                    debug!(model = %model, "pre-applied active model");
+                }
+                Ok(ServerMessage::Error(err)) => {
+                    debug!(
+                        model = %model,
+                        error = %err.message,
+                        "stale active-model state file, ignoring",
+                    );
+                }
+                Ok(other) => {
+                    debug!(?other, "unexpected reply to pre-apply switch_model");
+                }
+                Err(e) => {
+                    debug!(error = %e, "error draining pre-apply switch_model reply");
+                }
+            }
+        }
+    }
 
     match &cli.command {
         CliCommand::Send {
@@ -126,10 +188,10 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             } else if *content {
                 output::print_message_content(&data);
             } else if *plain {
-                let char_name = character.as_deref().unwrap_or("Assistant");
+                let char_name = display_character.as_str();
                 output::print_log_plain(std::slice::from_ref(&data), char_name);
             } else {
-                let char_name = character.as_deref().unwrap_or("Assistant");
+                let char_name = display_character.as_str();
                 output::print_single_message(&data, char_name);
             }
         }
@@ -171,19 +233,19 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             } else if *plain {
-                let char_name = character.as_deref().unwrap_or("Assistant");
+                let char_name = display_character.as_str();
                 if let Some(messages) = data["messages"].as_array() {
                     output::print_log_plain(messages, char_name);
                 }
             } else {
-                let char_name = character.as_deref().unwrap_or("Assistant");
+                let char_name = display_character.as_str();
                 if let Some(messages) = data["messages"].as_array() {
                     output::print_log(messages, char_name);
                 }
             }
 
             if *follow {
-                let follow_char = character.as_deref().unwrap_or("Assistant");
+                let follow_char = display_character.as_str();
                 loop {
                     let msg = conn.recv().await?;
                     match &msg {
@@ -250,7 +312,7 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     println!("{}", serde_json::to_string_pretty(&data)?);
                 }
                 None => {
-                    let char_name = character.as_deref().unwrap_or("Assistant");
+                    let char_name = display_character.as_str();
                     output::print_status(&data, char_name);
                 }
             }
@@ -260,6 +322,42 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             ..
         } => {
             run_memory_shell(&mut conn).await?;
+        }
+        // Intercept model switch/reset so we can mirror the daemon's
+        // decision into the client state file. Without this the choice
+        // is lost as soon as the one-shot CLI session exits.
+        CliCommand::Model {
+            reset: true,
+            json,
+            ..
+        } => {
+            conn.send_command("reset_model", serde_json::json!({})).await?;
+            let data = recv_command_data(&mut conn).await?;
+            state::clear_active_model()?;
+            if *json {
+                println!("{}", serde_json::to_string_pretty(&data)?);
+            } else {
+                output::format_command("reset_model", &data);
+            }
+        }
+        CliCommand::Model {
+            name: Some(name),
+            info: false,
+            reset: false,
+            json,
+            ..
+        } => {
+            conn.send_command("switch_model", serde_json::json!({ "name": name }))
+                .await?;
+            let data = recv_command_data(&mut conn).await?;
+            // Persist only after the daemon accepts the name, so we
+            // never stash a value the daemon rejects.
+            state::write_active_model(name)?;
+            if *json {
+                println!("{}", serde_json::to_string_pretty(&data)?);
+            } else {
+                output::format_command("switch_model", &data);
+            }
         }
         other => {
             let json_mode = match other {
@@ -318,6 +416,38 @@ async fn handle_list_characters(
                 } else {
                     println!("    {name}");
                 }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Emit plain names (one per line) for shell completion helpers.
+///
+/// Errors are returned so the caller can swallow them — completion tooling
+/// must never print to stderr or exit non-zero on transient failures.
+async fn handle_complete_query(
+    kind: crate::cli::CompleteKind,
+    cli: &Cli,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::cli::CompleteKind;
+    let addr = resolve_addr(cli)?;
+    // Character selection doesn't matter for list_models/list_characters,
+    // so hand the daemon None and let it auto-attach.
+    let (mut conn, _hello, _history) =
+        SWPConnection::connect(&addr, "cli", "shore-cli", None).await?;
+
+    let (cmd, array_key) = match kind {
+        CompleteKind::Models => ("list_models", "models"),
+        CompleteKind::Characters => ("list_characters", "characters"),
+    };
+
+    conn.send_command(cmd, serde_json::json!({})).await?;
+    let data = recv_command_data(&mut conn).await?;
+    if let Some(items) = data[array_key].as_array() {
+        for item in items {
+            if let Some(name) = item["name"].as_str() {
+                println!("{name}");
             }
         }
     }
@@ -632,7 +762,7 @@ async fn recv_command_data(
                 output::print_send_image(img);
             }
             ServerMessage::NewMessage(msg) => {
-                output::print_new_message(msg, "Assistant");
+                output::print_new_message(msg, session_display_character());
             }
             _ => {}
         }
