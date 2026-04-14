@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use rmcp::handler::server::tool::ToolRouter;
-use rmcp::tool_router;
+use rmcp::{tool_handler, ServerHandler};
 use shore_client::SWPConnection;
 use tokio::sync::Mutex;
 
@@ -19,17 +19,23 @@ pub struct ShoreMcpHandler {
     pub(crate) tool_router: ToolRouter<Self>,
 }
 
-#[tool_router(server_handler)]
 impl ShoreMcpHandler {
     pub fn new(conn: SWPConnection, cli: &Cli, profile_is_test: bool) -> Self {
         let gate = GateContext {
             profile_is_test,
             allow_main_writes: cli.allow_main_writes,
         };
+        // Tool routers are declared per-category in `crate::tools::*` and
+        // merged here. Tasks 12-18 each add one category module and extend
+        // this expression with `+ crate::tools::<category>::router()`.
+        let tool_router = ToolRouter::new();
         Self {
             conn: Arc::new(Mutex::new(conn)),
             gate,
-            tool_router: Self::tool_router(),
+            tool_router,
         }
     }
 }
+
+#[tool_handler(router = self.tool_router)]
+impl ServerHandler for ShoreMcpHandler {}
