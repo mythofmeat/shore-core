@@ -16,5 +16,5 @@ pub mod handler;
 pub mod profile;
 #[cfg(all(debug_assertions, feature = "enabled"))]
 pub mod server;
-#[cfg(debug_assertions)]
+#[cfg(all(debug_assertions, feature = "enabled"))]
 pub mod tools;
