@@ -617,3 +617,26 @@ and only revisits deeper executor or async changes if new measurements justify i
 - No blanket `tokio::fs` or `tokio::sync::Mutex` rewrite.
 - No `parking_lot` migration.
 - No further async/concurrency churn unless new timings show an actual hotspot.
+
+### 2026-04-14 — shore-mcp crate added as a debug-only MCP server
+
+Added a new `shore-mcp` crate exposing Shore's CLI surface as MCP tools for AI clients (primarily Claude Code). The crate is gated behind a `feature = "enabled"` + `required-features` on the `[[bin]]`, plus a `cfg(debug_assertions)` stub in `main.rs`, so it is never built by `cargo build --workspace --release` in the default configuration. A custom release profile that deliberately enables both the feature and debug_assertions will produce the real binary — supported but not "default."
+
+**Why:** We wanted Claude Code (and other MCP clients) to drive Shore programmatically for debugging and automated workflows, without (a) bloating the shipped release binary set or (b) giving an AI client default access to the user's real Shore profile.
+
+**Hybrid daemon model:** By default, `shore-mcp` targets an isolated test profile (`$XDG_DATA_HOME/shore-mcp-test/...`) and spawns a dedicated `shore-daemon` child process with `--instance-id=shore-mcp-test` if one is not already running. `--attach-main` opts into the user's real profile via normal discovery. Mutation tools (send/regen/config-set/character-switch/etc.) refuse to execute on the main profile unless `--allow-main-writes` is also passed.
+
+**Sacrificed:** Zero-touch single-binary distribution. You can't `cargo install shore-mcp` from a release checkout without custom profile flags — that's intentional.
+
+### 2026-04-14 — Live-testing policy revised to a four-rule structure
+
+The original blanket rule "never mock `shore-llm`" was causing tests to be skipped entirely rather than rewritten to use real API calls. Revised policy (see `CLAUDE.md` for the authoritative version):
+
+1. Inside `shore-llm-client`: real API calls or recorded fixtures only, never hand-written HTTP responses.
+2. Upstream of `shore-llm-client`: trait-level doubles and HTTP-level wiremock (via existing `MockLlmServer` in `shore-test-harness`) are allowed.
+3. Live tests (`cargo test --test e2e -- --ignored`) remain mandatory for release verification.
+4. When standing in for an LLM response outside `shore-llm-client`, prefer recorded fixtures over hand-written stand-ins.
+
+**Why:** The policy was written to prevent fantasy-output tests — mocks that described the LLM as the author wished it behaved rather than how it actually did. That failure mode is specifically in the parsing/wire-protocol layer, which is confined to `shore-llm-client`. Code upstream of it doesn't benefit from real API calls at all; it benefits from deterministic inputs. The revision preserves the original intent for the layer where it matters and unblocks fast tests for everything else.
+
+**Sacrificed:** Nothing, in theory. In practice, it raises the discipline bar: upstream tests are now allowed to use doubles, but reviewers have to check that those doubles don't creep into `shore-llm-client` itself.
