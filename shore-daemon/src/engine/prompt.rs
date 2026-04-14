@@ -610,16 +610,19 @@ fn trim_messages(
                 let gap_secs = (cur - prev).num_seconds() as f64;
                 let time_marker = format_time_gap(gap_secs, &cur);
 
-                // Recap injection: only when there's a significant gap.
-                let recap_marker = if gap_secs >= TIME_GAP_THRESHOLD_SECS {
-                    recap_store
-                        .as_ref()
-                        .map(|store| store.entries_in_range(&prev, &cur))
-                        .filter(|entries| !entries.is_empty())
-                        .map(|entries| format_recap_marker(&entries))
-                } else {
-                    None
-                };
+                // Recap injection: whenever entries fall between the two
+                // consecutive message timestamps, independent of wall-clock
+                // gap. The interiority prompt promises the character that
+                // recaps surface on the next user message — gating this on
+                // the 30-min marker threshold silently dropped recaps during
+                // active conversations and trained the character to stop
+                // writing them. `entries_in_range` already filters strictly,
+                // so short gaps with no recaps naturally inject nothing.
+                let recap_marker = recap_store
+                    .as_ref()
+                    .map(|store| store.entries_in_range(&prev, &cur))
+                    .filter(|entries| !entries.is_empty())
+                    .map(|entries| format_recap_marker(&entries));
 
                 // Inject the time-gap marker into the user message (it's
                 // deterministic — same timestamps always produce the same
@@ -1183,6 +1186,68 @@ mod tests {
         } else {
             panic!("Expected Text content block");
         }
+    }
+
+    /// Recaps must be injected whenever they fall between two consecutive
+    /// messages, regardless of whether the wall-clock gap reaches the
+    /// time-gap-marker threshold. The interiority prompt promises the
+    /// character that recaps "surface when the user next messages" — if we
+    /// gate injection on a 30-minute gap, active conversations silently drop
+    /// every recap and train the character to stop writing them.
+    #[test]
+    fn trim_messages_injects_recap_even_for_short_gaps() {
+        use crate::autonomy::recap_store::{RecapEntry, RecapStore};
+        use chrono::TimeZone;
+
+        let tmp = TempDir::new().unwrap();
+        let recap_path = tmp.path().join("recaps.jsonl");
+
+        // Two user messages 10 minutes apart (well below 30-min threshold).
+        let msgs = vec![
+            make_msg_at(Role::User, "Hey", "2026-04-14T14:00:00-07:00"),
+            make_msg_at(Role::Assistant, "Hi there", "2026-04-14T14:01:00-07:00"),
+            make_msg_at(
+                Role::User,
+                "Quick follow-up",
+                "2026-04-14T14:10:00-07:00",
+            ),
+        ];
+
+        // Recap written during the tick that fired between 14:01 and 14:10.
+        let offset = chrono::FixedOffset::west_opt(7 * 3600).unwrap();
+        let mut store = RecapStore::load(&recap_path);
+        store
+            .append(RecapEntry {
+                timestamp: offset
+                    .with_ymd_and_hms(2026, 4, 14, 14, 5, 0)
+                    .single()
+                    .unwrap(),
+                tick_id: "tick_short_gap".into(),
+                recap: "was thinking about the ocean".into(),
+            })
+            .unwrap();
+
+        let result = trim_messages(&msgs, 100_000, Some(&recap_path));
+
+        // A recap entry should have been injected as its own message between
+        // the assistant reply and the second user message.
+        let recap_msg = result
+            .iter()
+            .find(|m| m.content.contains("Your notes from between conversations"));
+        assert!(
+            recap_msg.is_some(),
+            "recap should surface on short gaps too (prompt contract)"
+        );
+        assert!(recap_msg.unwrap().content.contains("ocean"));
+
+        // The 10-minute gap must NOT produce a time-gap marker on the
+        // follow-up user message — that gate stays threshold-based.
+        let followup = result.iter().find(|m| m.content.contains("Quick follow-up"));
+        assert!(followup.is_some());
+        assert!(
+            !followup.unwrap().content.contains("later"),
+            "time-gap marker should still be gated on the 30-min threshold"
+        );
     }
 
     #[test]
