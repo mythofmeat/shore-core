@@ -29,6 +29,7 @@ serde_json = { workspace = true }
 clap = { version = "4", features = ["derive"] }
 dirs = { workspace = true }
 tempfile = { workspace = true }
+which = "6"
 
 # MCP deps — optional, gated behind `enabled`.
 rmcp = { version = "1.4", optional = true, features = ["server", "transport-io"] }
