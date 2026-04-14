@@ -160,18 +160,50 @@ The following CLI commands are **not** exposed as MCP tools:
 - `complete` (hidden `__complete`) — internal completion helper.
 - `log_follow` is exposed but implemented as a bounded read (reads for N seconds or until M messages arrive, whichever comes first, then returns). This is a deliberate reinterpretation of the CLI semantics for request/response transport.
 
-### The `shore-cli` refactor implication
+### Relationship to `shore-cli` (minimal prep needed)
 
-Today, `shore-cli/src/run.rs` contains the per-subcommand handler logic: taking parsed CLI args, calling `shore-client`, and formatting output. MCP tool handlers need to call the same underlying logic but return structured data rather than human-formatted output.
+The CLI is already structured in a way that makes MCP a straightforward addition. `shore-cli/src/cli.rs:410` defines:
 
-**Anticipated preparatory refactor:** lift the per-command "core logic" (the part between arg parsing and output formatting) out of `shore-cli/src/run.rs` and into either:
+```rust
+pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Value)>;
+```
 
-1. A new module in `shore-client` (if the logic is generic enough to belong there), or
-2. A new crate `shore-commands` that both `shore-cli` and `shore-mcp` depend on.
+…which maps nearly every `CliCommand` variant to a `(swp_command_name, json_args)` tuple. The daemon already speaks JSON-in / JSON-out for these commands. `shore-cli/src/run.rs`'s catch-all branch is effectively `send_command(name, args)` → `recv_command_data` → format, meaning the "logic" of most CLI subcommands is just the command name plus its arguments. No extraction is required.
 
-The exact form depends on what `run.rs` actually looks like. This refactor is a **prerequisite** of the MCP server and must be completed (and verified with `cargo test --workspace`) before any MCP tool handlers are written. If the refactor turns out to be larger than roughly one day of work, it will be split into its own spec and the MCP spec will depend on it.
+**`shore-mcp` does not depend on `shore-cli`.** Each MCP tool owns its own parameter struct (with `schemars::JsonSchema` so `rmcp` can generate the schema) and constructs its own SWP command inline. This keeps the two clients independent: both are peers of `shore-daemon`, and the set of SWP command names is the shared contract. If a new daemon command is added in the future, both clients update independently.
 
-`shore-cli` retains its formatting/presentation layer unchanged; only the core "what does this command actually do" logic moves.
+The only shore-cli-adjacent logic that needs to be shared lives in `shore-client`, not `shore-cli`:
+
+**New helper: `shore-client::collect_stream()`**. Currently `shore-cli/src/run.rs` has a `recv_streaming_response` function that consumes a `send`/`regen` stream and renders chunks to stdout as they arrive. MCP can't render incrementally — tool responses are request/response. `shore-client` will get a new async helper that consumes the same stream and returns a structured aggregate:
+
+```rust
+pub struct StreamedResponse {
+    pub text: String,              // accumulated StreamChunk text
+    pub tool_calls: Vec<ToolCall>, // collected ToolCall frames
+    pub tool_results: Vec<ToolResult>,
+    pub end: StreamEndInfo,        // from StreamEnd (usage, finish_reason, etc.)
+}
+
+pub async fn collect_stream(conn: &mut SWPConnection) -> Result<StreamedResponse, ClientError>;
+```
+
+Both `shore-mcp` (for `send`/`regen` tool handlers) and potentially `shore-cli` (if refactored later to share the stream-handling logic, though this is explicitly out of scope for this spec) can use it. This is a ~50-line addition to `shore-client`, with unit tests using a mock SWP stream.
+
+**Explicitly out of scope:** restructuring `shore-cli/src/run.rs`, `shore-cli/src/output/`, or `shore-cli/src/state.rs`. The CLI keeps its current shape unchanged. The only file `shore-mcp` work touches in `shore-cli` is the existing `to_swp_command` in `cli.rs` — and even that only if we decide to make it `pub` beyond its current crate. Current plan: we don't; `shore-mcp` duplicates the command-name strings deliberately so the two clients can evolve independently.
+
+### Prerequisite: `shore-daemon --instance-id` flag
+
+Currently `shore-daemon/src/main.rs:141` generates `instance_id = uuid::Uuid::new_v4().to_string()` unconditionally. The `shore-daemon` binary has no flag to override this, so there is no way for `shore-mcp` to spawn a daemon with a predictable, stable ID that it can rediscover after an MCP server restart. The registry (`shore-daemon-server/src/registry.rs`) already accepts arbitrary string IDs; only the daemon's entry point needs updating.
+
+**Required daemon change (small):**
+
+1. Add `--instance-id <ID>` to `shore-daemon`'s `Cli` struct (`main.rs:22-30`).
+2. In `main()`, use the CLI value if set, otherwise fall back to `Uuid::new_v4().to_string()`. Default behavior is unchanged.
+3. Add a test alongside `cli_parses_startup_flags` verifying the flag parses.
+
+Estimated size: ~5 lines of code + 1 test. This is a **prerequisite** of the MCP implementation plan and should be the first commit in that plan, landing on its own before any `shore-mcp` crate work so it can be verified independently via `cargo test --workspace`.
+
+No changes are needed to `shore-daemon-server/src/registry.rs` — it already supports arbitrary string IDs.
 
 ## Debug-Only Build Enforcement
 
@@ -298,23 +330,43 @@ Under the revised policy:
 
 ## Open Questions (to be resolved in implementation plan)
 
-1. **Exact form of the `shore-cli` core-logic refactor.** New module in `shore-client`, new shared crate, or in-place restructure? Depends on reading `shore-cli/src/run.rs` carefully. The implementation plan must resolve this before writing any MCP tool handlers.
+1. **Per-variant audit of `DebugCommand`.** Each variant needs to be classified as read-only or mutating so `gating.rs` knows which to refuse on main. A quick read of `shore-cli/src/cli.rs` DebugCommand and the corresponding daemon handlers during plan writing will resolve this.
 
-2. **Per-variant audit of `DebugCommand`.** Each variant needs to be classified as read-only or mutating so `gating.rs` knows which to refuse on main.
+2. **`log_follow` bounded-read parameters.** Default timeout and message cap? Suggested: 5 seconds, 50 messages, both overridable via tool parameters.
 
-3. **`log_follow` bounded-read parameters.** Default timeout and message cap? Suggested: 5 seconds, 50 messages, both overridable via tool parameters.
+3. **Cleanup of orphaned test daemons.** If `shore-mcp` is killed uncleanly in persistent mode, the spawned daemon stays alive. Is that fine (next invocation re-attaches) or should there be a heartbeat/auto-shutdown mechanism? Leaning "fine" — `shore-mcp reset` handles intentional cleanup, and an orphaned test daemon is harmless because it's bound to loopback in a separate profile.
 
-4. **Test daemon spawn mechanism.** Does `shore-daemon` already accept a command-line flag to pin its registered instance ID? If not, a small daemon change is needed to support the hybrid model.
+4. **`shore-client::collect_stream()` edge cases.** What happens if the stream ends with no `StreamEnd` frame (protocol bug, connection drop)? The helper should return a partial `StreamedResponse` with an explicit `end: None` or return a `ClientError::StreamTruncated`. Plan will decide.
 
-5. **Cleanup of orphaned test daemons.** If `shore-mcp` is killed uncleanly in persistent mode, the spawned daemon stays alive. Is that fine (next invocation re-attaches) or should there be a heartbeat/auto-shutdown mechanism? Leaning "fine" — `shore-mcp reset` handles intentional cleanup.
+5. **rmcp version pinning.** The spec uses `version = "*"` as a placeholder in the Cargo.toml snippet. The plan's first shore-mcp commit will pin whatever rmcp version is current on crates.io at that point and record it in `Cargo.lock`.
 
 ## Deliverables
 
-1. `shore-cli` core-logic refactor (prerequisite, possibly its own spec).
-2. `CLAUDE.md` + `docs/DECISIONS.md` update reflecting the testing policy revision.
-3. New `shore-mcp` crate with the file layout above.
-4. `.cargo/config.toml` alias entries.
-5. Integration test using `shore-test-harness` + fixture-replaying LLM.
-6. `docs/ARCHITECTURE.md` update describing `shore-mcp` and its place in the crate graph.
-7. `docs/QUIRKS.md` entry for any rmcp-specific surprises encountered during implementation.
-8. Documented example `.mcp.json` fragment showing how to add `shore-mcp` to a Claude Code or other MCP host config, with both default and `--attach-main` variants.
+The implementation plan will sequence these into ordered phases.
+
+### Phase 1 — daemon prerequisite (lands independently, verifiable on its own)
+
+1. `shore-daemon --instance-id <ID>` CLI flag with default-preserving fallback to UUID. Includes tests. Can merge to `main` as a self-contained change; `cargo test --workspace` verifies.
+
+### Phase 2 — shared helper
+
+2. `shore-client::collect_stream()` + supporting types (`StreamedResponse`, `StreamEndInfo`, etc.). Unit tests using a mock `SWPConnection`-like stream. Self-contained, merges independently.
+
+### Phase 3 — policy + docs
+
+3. `CLAUDE.md` update reflecting the testing-policy revision from the "Testing Strategy" section above.
+4. `docs/DECISIONS.md` entry recording the testing policy revision and the rationale for the hybrid daemon model.
+
+### Phase 4 — shore-mcp crate (the main work)
+
+5. New `shore-mcp` crate with the file layout from the "Crate Layout" section.
+6. `.cargo/config.toml` alias entries (`cargo mcp`, `cargo mcp-test`, `cargo mcp-run`).
+7. Unit tests for `profile.rs` and `gating.rs` (no daemon, no LLM).
+8. Integration test `tests/mcp_integration.rs` using `shore-test-harness` + a fixture-replaying LLM double to exercise every tool in the surface over real MCP JSON-RPC on stdio.
+9. `docs/ARCHITECTURE.md` update describing `shore-mcp` and its place in the crate graph.
+10. Documented example `.mcp.json` fragment (in `shore-mcp/README.md` or in-tree docs) showing how to add `shore-mcp` to a Claude Code or other MCP host config, with both default and `--attach-main` variants.
+
+### Phase 5 — manual live verification (gating merge)
+
+11. Manual live-verification pass, documented in the PR: launch `shore-mcp` from Claude Code against the default test profile, run `send` / `log_tail` / `status`, confirm end-to-end behavior with real LLM calls. Per `CLAUDE.md`'s "verify with real binaries" priority, this is the load-bearing gate, not `cargo test`.
+12. `docs/QUIRKS.md` entry for any rmcp-specific or MCP-protocol surprises encountered during implementation (to be filled in during execution, not now).
