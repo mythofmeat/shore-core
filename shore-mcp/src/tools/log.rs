@@ -19,6 +19,22 @@ fn default_tail_count() -> u32 {
 }
 
 #[derive(Deserialize, JsonSchema, Debug)]
+pub struct LogFollowParams {
+    #[serde(default = "default_follow_seconds")]
+    pub seconds: u64,
+    #[serde(default = "default_follow_cap")]
+    pub cap: u32,
+}
+
+fn default_follow_seconds() -> u64 {
+    5
+}
+
+fn default_follow_cap() -> u32 {
+    50
+}
+
+#[derive(Deserialize, JsonSchema, Debug)]
 pub struct LogShowParams {
     /// Message reference (e.g. "last", "-1", "3").
     pub msg_ref: String,
@@ -116,5 +132,51 @@ impl ShoreMcpHandler {
             )
             .await?;
         Self::json_result(data)
+    }
+
+    #[tool(
+        name = "log_follow",
+        description = "Tail the log for new messages for a bounded duration. Returns whatever arrives before the timeout or message cap. Read-only."
+    )]
+    pub async fn tool_log_follow(
+        &self,
+        Parameters(p): Parameters<LogFollowParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        use shore_protocol::server_msg::ServerMessage;
+        use std::time::{Duration, Instant};
+
+        // Gate (read-only, but gate to keep consistency).
+        match crate::gating::check("log_follow", &self.gate) {
+            crate::gating::GateDecision::Allow => {}
+            crate::gating::GateDecision::Refuse(msg) => {
+                return Err(ErrorData::internal_error(msg, None));
+            }
+        }
+
+        let mut conn = self.conn.lock().await;
+        let deadline = Instant::now() + Duration::from_secs(p.seconds);
+        let mut collected: Vec<serde_json::Value> = Vec::new();
+
+        while Instant::now() < deadline && (collected.len() as u32) < p.cap {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let recv_fut = conn.recv();
+            let msg = match tokio::time::timeout(remaining, recv_fut).await {
+                Ok(Ok(m)) => m,
+                Ok(Err(e)) => {
+                    return Err(ErrorData::internal_error(format!("recv: {e}"), None));
+                }
+                Err(_elapsed) => break,
+            };
+            match msg {
+                ServerMessage::NewMessage(nm) => {
+                    collected.push(serde_json::to_value(nm).unwrap_or(serde_json::Value::Null));
+                }
+                ServerMessage::Ping(_) | ServerMessage::History(_) | ServerMessage::Phase(_) => {}
+                ServerMessage::Shutdown(_) => break,
+                _ => {}
+            }
+        }
+
+        Self::json_result(json!({ "messages": collected }))
     }
 }
