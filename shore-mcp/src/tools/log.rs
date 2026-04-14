@@ -1,9 +1,12 @@
+use std::time::{Duration, Instant};
+
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
 use rmcp::{tool, tool_router, ErrorData};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
+use shore_protocol::server_msg::ServerMessage;
 
 use crate::handler::ShoreMcpHandler;
 
@@ -136,15 +139,12 @@ impl ShoreMcpHandler {
 
     #[tool(
         name = "log_follow",
-        description = "Tail the log for new messages for a bounded duration. Returns whatever arrives before the timeout or message cap. Read-only."
+        description = "Tail the log for new messages for a bounded duration (max 60 seconds). Returns whatever arrives before the timeout or message cap. Read-only. While running, other MCP tool calls against this daemon will wait."
     )]
     pub async fn tool_log_follow(
         &self,
         Parameters(p): Parameters<LogFollowParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        use shore_protocol::server_msg::ServerMessage;
-        use std::time::{Duration, Instant};
-
         // Gate (read-only, but gate to keep consistency).
         match crate::gating::check("log_follow", &self.gate) {
             crate::gating::GateDecision::Allow => {}
@@ -153,11 +153,12 @@ impl ShoreMcpHandler {
             }
         }
 
+        let seconds = p.seconds.min(60);
         let mut conn = self.conn.lock().await;
-        let deadline = Instant::now() + Duration::from_secs(p.seconds);
+        let deadline = Instant::now() + Duration::from_secs(seconds);
         let mut collected: Vec<serde_json::Value> = Vec::new();
 
-        while Instant::now() < deadline && (collected.len() as u32) < p.cap {
+        while Instant::now() < deadline && collected.len() < p.cap as usize {
             let remaining = deadline.saturating_duration_since(Instant::now());
             let recv_fut = conn.recv();
             let msg = match tokio::time::timeout(remaining, recv_fut).await {
@@ -169,7 +170,10 @@ impl ShoreMcpHandler {
             };
             match msg {
                 ServerMessage::NewMessage(nm) => {
-                    collected.push(serde_json::to_value(nm).unwrap_or(serde_json::Value::Null));
+                    collected.push(
+                        serde_json::to_value(nm)
+                            .expect("NewMessage: Serialize derive is infallible"),
+                    );
                 }
                 ServerMessage::Ping(_) | ServerMessage::History(_) | ServerMessage::Phase(_) => {}
                 ServerMessage::Shutdown(_) => break,
