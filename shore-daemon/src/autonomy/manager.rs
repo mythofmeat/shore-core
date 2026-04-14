@@ -1081,6 +1081,59 @@ fn rebuild_request_from_disk(
     }
 }
 
+fn apply_interiority_model_override(
+    request: &mut LlmRequest,
+    config: &LoadedConfig,
+    character: &str,
+) -> bool {
+    let Some(interiority_name) = config.app.defaults.interiority.as_deref() else {
+        return false;
+    };
+    let resolved = match config.models.find_model(interiority_name) {
+        Ok(r) => r,
+        Err(e) => {
+            warn!(
+                character,
+                error = %e,
+                interiority_model = %interiority_name,
+                "Interiority: configured model not found in catalog"
+            );
+            return false;
+        }
+    };
+    if resolved.model_id == request.model {
+        return false;
+    }
+    match LedgerClient::build_request(
+        resolved,
+        request.messages.clone(),
+        request.system.clone(),
+        request.tools.clone(),
+        None,
+    ) {
+        Ok(mut new_req) => {
+            info!(
+                character,
+                interiority_model = %interiority_name,
+                model_id = %new_req.model,
+                "Interiority: using configured interiority model"
+            );
+            new_req.forensic_character = Some(character.to_owned());
+            *request = new_req;
+            true
+        }
+        Err(e) => {
+            warn!(
+                character,
+                error = %e,
+                interiority_model = %interiority_name,
+                "Interiority: failed to build override request, falling back to chat model"
+            );
+            false
+        }
+    }
+}
+
 /// Execute a unified interiority tick: a real tool loop using non-streaming
 /// generate() calls. Tool loop messages are ephemeral — only <sendMessage>
 /// output persists to active.jsonl. All activity is logged to the ring buffer
@@ -1133,6 +1186,8 @@ async fn execute_unified_tick(
     request.forensic_character = Some(character.to_owned());
 
     let Some(lc) = loaded_config else { return };
+
+    apply_interiority_model_override(&mut request, lc, character);
 
     // Build the dynamic interiority prompt.
     let recap_path = data_dir.join(character).join("recaps.jsonl");
@@ -2261,6 +2316,127 @@ mod tests {
              the ENTIRE Anthropic cache (tools → system → messages). \
              Use an XML tag like <sendMessage> instead."
         );
+    }
+
+    // -- interiority model override ------------------------------------------
+
+    fn minimal_request(model_id: &str) -> LlmRequest {
+        LlmRequest {
+            sdk: shore_config::models::Sdk::Anthropic,
+            model: model_id.into(),
+            api_key: "chat-key".into(),
+            base_url: None,
+            messages: vec![json!({"role": "user", "content": "hi"})],
+            system: Some(json!([{"type": "text", "text": "sys"}])),
+            tools: Some(vec![json!({"name": "check_time", "input_schema": {}})]),
+            max_tokens: 4096,
+            temperature: None,
+            top_p: None,
+            provider_options: None,
+            provider_key: None,
+            rid: None,
+            forensic_character: None,
+        }
+    }
+
+    fn loaded_config_with_two_chat_models(
+        interiority: Option<&str>,
+        chat_env: &str,
+        interiority_env: &str,
+    ) -> shore_config::LoadedConfig {
+        let chat_toml = format!(
+            r#"
+[anthropic.sonnet]
+model_id = "claude-sonnet-chat"
+api_key_env = "{chat_env}"
+
+[anthropic.slowthink]
+model_id = "claude-opus-slowthink"
+api_key_env = "{interiority_env}"
+"#
+        );
+        let chat: toml::Table = chat_toml.parse().unwrap();
+        let catalog =
+            shore_config::models::ModelCatalog::from_sections(Some(&chat), None, None, None)
+                .unwrap();
+
+        let mut app = shore_config::app::AppConfig::default();
+        app.defaults.interiority = interiority.map(str::to_string);
+
+        let tmp = tempfile::tempdir().unwrap();
+        shore_config::LoadedConfig::new_for_test(
+            app,
+            catalog,
+            shore_config::ShoreDirs {
+                config: tmp.path().to_path_buf(),
+                data: tmp.path().to_path_buf(),
+                runtime: tmp.path().to_path_buf(),
+                cache: tmp.path().to_path_buf(),
+            },
+        )
+    }
+
+    /// Regression: `defaults.interiority` was silently ignored on the warm
+    /// path because `execute_unified_tick` reused the cached chat-turn
+    /// request without rewriting the model.
+    /// Regression: `defaults.interiority` was silently ignored on the warm
+    /// path because `execute_unified_tick` reused the cached chat-turn
+    /// request without rewriting the model.
+    #[test]
+    fn interiority_override_swaps_model_when_set() {
+        let chat_env = "INTERIORITY_OVERRIDE_SWAP_CHAT";
+        let int_env = "INTERIORITY_OVERRIDE_SWAP_INT";
+        std::env::set_var(chat_env, "chat-secret");
+        std::env::set_var(int_env, "slowthink-secret");
+
+        let config = loaded_config_with_two_chat_models(Some("slowthink"), chat_env, int_env);
+        let mut request = minimal_request("claude-sonnet-chat");
+
+        let applied = apply_interiority_model_override(&mut request, &config, "alice");
+
+        assert!(applied, "override should have been applied");
+        assert_eq!(request.model, "claude-opus-slowthink");
+        assert_eq!(request.api_key, "slowthink-secret");
+        assert_eq!(request.messages.len(), 1);
+        assert!(request.system.is_some());
+        assert_eq!(request.tools.as_ref().unwrap().len(), 1);
+
+        std::env::remove_var(chat_env);
+        std::env::remove_var(int_env);
+    }
+
+    #[test]
+    fn interiority_override_is_noop_when_unset() {
+        let config = loaded_config_with_two_chat_models(
+            None,
+            "INTERIORITY_OVERRIDE_UNSET_CHAT",
+            "INTERIORITY_OVERRIDE_UNSET_INT",
+        );
+        let mut request = minimal_request("claude-sonnet-chat");
+
+        let applied = apply_interiority_model_override(&mut request, &config, "alice");
+
+        assert!(!applied);
+        assert_eq!(request.model, "claude-sonnet-chat");
+    }
+
+    #[test]
+    fn interiority_override_is_noop_when_model_matches() {
+        let chat_env = "INTERIORITY_OVERRIDE_MATCH_CHAT";
+        let int_env = "INTERIORITY_OVERRIDE_MATCH_INT";
+        std::env::set_var(chat_env, "chat-secret");
+        std::env::set_var(int_env, "slowthink-secret");
+
+        let config = loaded_config_with_two_chat_models(Some("slowthink"), chat_env, int_env);
+        let mut request = minimal_request("claude-opus-slowthink");
+
+        let applied = apply_interiority_model_override(&mut request, &config, "alice");
+
+        assert!(!applied);
+        assert_eq!(request.model, "claude-opus-slowthink");
+
+        std::env::remove_var(chat_env);
+        std::env::remove_var(int_env);
     }
 
     /// Configuring `max_turns < min_turns` should disable compaction or
