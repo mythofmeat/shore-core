@@ -81,6 +81,30 @@ pub async fn usage(ctx: &CommandContext, args: &serde_json::Value) -> CommandRes
         return Ok(json!({ "mode": "csv", "data": csv_lines.join("\n") }));
     }
 
+    if args.get("by_call_type").and_then(|v| v.as_bool()) == Some(true) {
+        let summary = shore_ledger::query::usage_summary_by_call_type(ledger, &filter)
+            .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
+        let rows: Vec<serde_json::Value> = summary
+            .iter()
+            .map(|s| {
+                json!({
+                    "call_type": s.call_type,
+                    "call_count": s.call_count,
+                    "total_input": s.total_input,
+                    "total_output": s.total_output,
+                    "total_cache_read": s.total_cache_read,
+                    "total_cache_write": s.total_cache_write,
+                    "total_cost": s.total_cost,
+                })
+            })
+            .collect();
+        return Ok(json!({
+            "mode": "summary_by_call_type",
+            "period": last,
+            "summary": rows,
+        }));
+    }
+
     if args.get("anomalies").and_then(|v| v.as_bool()) == Some(true) {
         let anomaly_filter = if last == "today" {
             QueryFilter {

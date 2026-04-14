@@ -227,29 +227,31 @@ impl Ledger {
 // ── Row deserializer ──────────────────────────────────────────────────────────
 
 pub(crate) fn row_from_sqlite(row: &rusqlite::Row) -> SqlResult<CallRow> {
+    // Use column names, not positions. Migrations (e.g. adding `cache_ttl`)
+    // append columns to the end of the table on existing databases, which
+    // makes positional indexing return the wrong column on migrated rows.
     Ok(CallRow {
-        // column 0 is the autoincrement id — skip it
-        ts: row.get(1)?,
-        character: row.get(2)?,
-        provider: row.get(3)?,
-        model: row.get(4)?,
-        call_type: row.get(5)?,
-        input_tokens: row.get::<_, i64>(6)? as u32,
-        output_tokens: row.get::<_, i64>(7)? as u32,
-        cache_read_tokens: row.get::<_, i64>(8)? as u32,
-        cache_write_tokens: row.get::<_, i64>(9)? as u32,
-        cache_ttl: row.get(10)?,
-        total_ms: row.get::<_, i64>(11)? as u32,
-        ttft_ms: row.get::<_, i64>(12)? as u32,
-        finish_reason: row.get(13)?,
-        thinking_enabled: row.get::<_, i64>(14)? != 0,
-        cache_state: row.get(15)?,
-        cache_anomaly: row.get(16)?,
-        input_cost: row.get(17)?,
-        output_cost: row.get(18)?,
-        cache_read_cost: row.get(19)?,
-        cache_write_cost: row.get(20)?,
-        total_cost: row.get(21)?,
+        ts: row.get("ts")?,
+        character: row.get("character")?,
+        provider: row.get("provider")?,
+        model: row.get("model")?,
+        call_type: row.get("call_type")?,
+        input_tokens: row.get::<_, i64>("input_tokens")? as u32,
+        output_tokens: row.get::<_, i64>("output_tokens")? as u32,
+        cache_read_tokens: row.get::<_, i64>("cache_read_tokens")? as u32,
+        cache_write_tokens: row.get::<_, i64>("cache_write_tokens")? as u32,
+        cache_ttl: row.get("cache_ttl")?,
+        total_ms: row.get::<_, i64>("total_ms")? as u32,
+        ttft_ms: row.get::<_, i64>("ttft_ms")? as u32,
+        finish_reason: row.get("finish_reason")?,
+        thinking_enabled: row.get::<_, i64>("thinking_enabled")? != 0,
+        cache_state: row.get("cache_state")?,
+        cache_anomaly: row.get("cache_anomaly")?,
+        input_cost: row.get("input_cost")?,
+        output_cost: row.get("output_cost")?,
+        cache_read_cost: row.get("cache_read_cost")?,
+        cache_write_cost: row.get("cache_write_cost")?,
+        total_cost: row.get("total_cost")?,
     })
 }
 
@@ -338,6 +340,80 @@ mod tests {
         ledger.insert(&row).unwrap();
         let rows = ledger.recent(1).unwrap();
         assert!(rows[0].total_cost.is_none());
+    }
+
+    #[test]
+    fn migrated_pre_v2_db_is_readable() {
+        // Regression: older databases predate the `cache_ttl` column. The
+        // migration appends it to the end of the table, which changes column
+        // ordering relative to a freshly-created schema. Reading those rows
+        // via positional indexes produces "Invalid column type Integer at
+        // index: 10, name: total_ms" errors in production. Names, not
+        // positions, must drive deserialization.
+        let conn = Connection::open_in_memory().unwrap();
+        // Pre-v2 schema: no cache_ttl column.
+        conn.execute_batch(
+            r#"
+            CREATE TABLE calls (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts                  TEXT    NOT NULL,
+                character           TEXT    NOT NULL,
+                provider            TEXT    NOT NULL,
+                model               TEXT    NOT NULL,
+                call_type           TEXT    NOT NULL,
+                input_tokens        INTEGER NOT NULL,
+                output_tokens       INTEGER NOT NULL,
+                cache_read_tokens   INTEGER NOT NULL,
+                cache_write_tokens  INTEGER NOT NULL,
+                total_ms            INTEGER NOT NULL,
+                ttft_ms             INTEGER NOT NULL,
+                finish_reason       TEXT    NOT NULL,
+                thinking_enabled    INTEGER NOT NULL,
+                cache_state         TEXT,
+                cache_anomaly       TEXT,
+                input_cost          REAL,
+                output_cost         REAL,
+                cache_read_cost     REAL,
+                cache_write_cost    REAL,
+                total_cost          REAL
+            );
+            INSERT INTO calls (
+                ts, character, provider, model, call_type,
+                input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+                total_ms, ttft_ms, finish_reason, thinking_enabled,
+                cache_state, cache_anomaly,
+                input_cost, output_cost, cache_read_cost, cache_write_cost, total_cost
+            ) VALUES (
+                '2026-04-05T12:00:00Z', 'aria', 'anthropic', 'claude-opus-4-6', 'message',
+                100, 50, 80, 20,
+                1500, 200, 'end_turn', 1,
+                'warm', 'unexpected_read',
+                0.0015, 0.00075, 0.0004, 0.0005, 0.00315
+            );
+            "#,
+        )
+        .unwrap();
+
+        // Run migrate to add the new column — appended at the end.
+        Ledger::migrate(&conn).unwrap();
+        let ledger = Ledger {
+            conn: Mutex::new(conn),
+        };
+
+        let rows = ledger.recent(1).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].character, "aria");
+        assert_eq!(rows[0].total_ms, 1500);
+        // Pre-v2 rows are backfilled with the column default.
+        assert_eq!(rows[0].cache_ttl.as_deref(), Some("1h"));
+        assert_eq!(rows[0].cache_anomaly.as_deref(), Some("unexpected_read"));
+
+        // And also check the anomaly query path (the one that surfaces the
+        // error in `shore usage --anomalies`).
+        let anomalies =
+            crate::query::query_anomalies(&ledger, &crate::query::QueryFilter::default()).unwrap();
+        assert_eq!(anomalies.len(), 1);
+        assert_eq!(anomalies[0].total_ms, 1500);
     }
 
     #[test]

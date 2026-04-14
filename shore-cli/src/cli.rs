@@ -221,9 +221,10 @@ pub enum CliCommand {
         #[arg(long)]
         model: Option<String>,
 
-        /// Filter by call type
-        #[arg(long)]
-        call_type: Option<String>,
+        /// Filter by call type. Pass without a value to see a breakdown
+        /// grouped by call type (useful for discovering what types exist).
+        #[arg(long, num_args = 0..=1)]
+        call_type: Option<Option<String>>,
 
         /// Show only cache anomalies
         #[arg(long)]
@@ -544,22 +545,34 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
             refresh_pricing,
             recalculate,
             force,
-        } => Some((
-            "usage",
-            json!({
-                "last": last,
-                "character": character,
-                "provider": provider,
-                "model": model,
-                "call_type": call_type,
-                "anomalies": anomalies,
-                "export_csv": export_csv,
-                "export_tsv": export_tsv,
-                "refresh_pricing": refresh_pricing,
-                "recalculate": recalculate,
-                "force": force,
-            }),
-        )),
+        } => {
+            // Three-state flag:
+            //   absent         → None,             no grouping, no filter
+            //   --call-type    → Some(None),       breakdown mode
+            //   --call-type X  → Some(Some("X")),  filter by X
+            let (by_call_type, call_type_filter) = match call_type {
+                None => (false, None),
+                Some(None) => (true, None),
+                Some(Some(v)) => (false, Some(v.clone())),
+            };
+            Some((
+                "usage",
+                json!({
+                    "last": last,
+                    "character": character,
+                    "provider": provider,
+                    "model": model,
+                    "call_type": call_type_filter,
+                    "by_call_type": by_call_type,
+                    "anomalies": anomalies,
+                    "export_csv": export_csv,
+                    "export_tsv": export_tsv,
+                    "refresh_pricing": refresh_pricing,
+                    "recalculate": recalculate,
+                    "force": force,
+                }),
+            ))
+        }
     }
 }
 
@@ -1530,6 +1543,66 @@ mod tests {
             }
             other => panic!("expected Completions, got: {other:?}"),
         }
+    }
+
+    // ── Usage ────────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_usage_no_call_type_flag() {
+        let cli = parse(&["usage"]);
+        match &cli.command {
+            CliCommand::Usage { call_type, .. } => {
+                assert!(call_type.is_none(), "flag absent → None");
+            }
+            other => panic!("expected Usage, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_usage_bare_call_type_flag() {
+        // Regression: `shore usage --call-type` previously errored because
+        // clap required a value. The bare flag should mean "break down by
+        // call type" (Some(None)).
+        let cli = parse(&["usage", "--call-type"]);
+        match &cli.command {
+            CliCommand::Usage { call_type, .. } => {
+                assert_eq!(*call_type, Some(None), "bare flag → Some(None)");
+            }
+            other => panic!("expected Usage, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_usage_call_type_with_value() {
+        let cli = parse(&["usage", "--call-type", "message"]);
+        match &cli.command {
+            CliCommand::Usage { call_type, .. } => {
+                assert_eq!(*call_type, Some(Some("message".into())));
+            }
+            other => panic!("expected Usage, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn usage_bare_call_type_sets_by_call_type_flag() {
+        // Wire-level: daemon should see `by_call_type: true` and no
+        // `call_type` filter when the user passed the bare flag.
+        let cli = parse(&["usage", "--call-type"]);
+        let (cmd, args) = to_swp_command(&cli.command).unwrap();
+        assert_eq!(cmd, "usage");
+        assert_eq!(args["by_call_type"], serde_json::Value::Bool(true));
+        assert!(args["call_type"].is_null());
+    }
+
+    #[test]
+    fn usage_call_type_value_sets_filter_not_flag() {
+        let cli = parse(&["usage", "--call-type", "message"]);
+        let (_cmd, args) = to_swp_command(&cli.command).unwrap();
+        assert_eq!(args["call_type"], "message");
+        assert!(
+            args["by_call_type"].is_null() || args["by_call_type"] == serde_json::Value::Bool(false),
+            "filter value should not imply breakdown flag",
+        );
     }
 
     #[test]
