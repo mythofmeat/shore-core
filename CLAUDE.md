@@ -70,14 +70,25 @@ cargo test --test e2e -- --ignored   # e2e (requires OPENROUTER_API_KEY)
 2. **Ease of debugging and testing.** Code must be straightforward to debug and test in isolation.
 3. **Small, discrete modules.** Keep each crate and module small with hard boundaries. ~2-5K LOC per crate, ~500 LOC per module.
 
-## Live Testing Policy
+## Testing Policy (revised 2026-04-14)
 
-**Live tests with real API calls are MANDATORY.** Never mock `shore-llm` or provider integrations. Use the test character in the config (`test_char` binary at project root) to perform real end-to-end tests. Claude is permitted and expected to use this test character to verify changes.
+The policy "never mock `shore-llm`" exists to prevent one specific failure mode: hand-written mock LLM responses that pass unit tests while the real integration is broken. It is load-bearing for that narrow concern and actively harmful for everything else. This revision distinguishes the two cases.
 
-When verifying a change:
-1. Build the affected crate(s)
-2. Run the compiled binary against real APIs
-3. Confirm the expected behavior in the actual output
+### Rule 1 — `shore-llm-client` internals: no hand-written mocks
+
+Response parsing, streaming, cache headers, error mapping, prompt cache behavior, and anything else inside `shore-llm-client` must be tested against real API responses — either via live tests gated behind `--ignored` (`cargo test --test e2e -- --ignored`, `./scripts/live-tests/live-test.sh`) or via **recorded fixtures** captured from real API responses. Hand-writing a fake HTTP response body for a unit test is forbidden in this crate, because that is exactly the failure mode the original policy exists to prevent.
+
+### Rule 2 — upstream code may use trait-level test doubles
+
+Code upstream of `shore-llm-client` — `shore-daemon` command routing, `shore-ledger` accounting, `shore-mcp` tool output shaping, `shore-cli` rendering, conversation state management, memory writes — is allowed to stand in a deterministic `LlmClient` implementation that returns pre-made `Message` values, or to use the existing wiremock-backed `MockLlmServer` in `shore-test-harness` (which mocks Anthropic's HTTP wire protocol with real-format SSE frames). These are not "mocking the LLM" in the sense the policy prohibits — they are not claiming to replicate API wire behavior. They are skipping past it to test the caller's own logic.
+
+### Rule 3 — live tests remain mandatory for release verification
+
+`cargo test --test e2e -- --ignored` and `./scripts/live-tests/live-test.sh` still exist and still hit real APIs with real credentials. Nothing in this revision weakens that gate. Recorded fixtures and trait doubles are for fast, deterministic CI-friendly tests — not a substitute for live verification before shipping.
+
+### Rule 4 — recorded fixtures over hand-written stand-ins
+
+When you do need to stand in for an LLM response in a test outside `shore-llm-client`, prefer recording the output of a real cheap model once and replaying it. Fixtures should be checked into the repo and re-recorded periodically (quarterly or whenever a provider behavior change is suspected).
 
 ## Mandatory Documentation
 
