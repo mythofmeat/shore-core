@@ -9,6 +9,7 @@ members = [
     "shore-daemon",
     "shore-daemon-server",
     "shore-cli",
+    "shore-mcp",
     "shore-tui",
     "shore-ledger",
     "shore-test-harness",
