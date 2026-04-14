@@ -198,22 +198,26 @@ pub async fn collect_stream(
     let mut handler = StreamHandler::new();
     let mut tool_calls: Vec<ToolCall> = Vec::new();
     let mut tool_results: Vec<ToolResult> = Vec::new();
-    let mut final_end: Option<StreamEnd> = None;
 
-    loop {
+    let end: StreamEnd = loop {
         let msg = conn.recv().await?;
 
         // Try feeding stream frames first.
         let consumed = handler.feed(&msg, None)?;
 
         if consumed {
-            // If the stream just ended, capture the end frame and break.
+            // If the stream just ended, capture the end frame and break out.
             if !handler.is_active() && handler.final_content().is_some() {
-                // Re-match the message to get the StreamEnd out. `feed`
-                // consumed the reference but we still own `msg`.
-                if let ServerMessage::StreamEnd(end) = msg {
-                    final_end = Some(end);
-                    break;
+                match msg {
+                    ServerMessage::StreamEnd(end) => break end,
+                    // Defensive: handler.feed() today only flips !is_active +
+                    // final_content().is_some() on StreamEnd. If that ever
+                    // changes, surface the anomaly instead of spinning.
+                    _ => {
+                        return Err(ClientError::Protocol(
+                            "collect_stream: stream ended on non-StreamEnd frame".into(),
+                        ));
+                    }
                 }
             }
             continue;
@@ -237,13 +241,7 @@ pub async fn collect_stream(
                 tracing::debug!(?other, "collect_stream: ignoring unexpected frame");
             }
         }
-    }
-
-    let end = final_end.ok_or_else(|| {
-        ClientError::Protocol(
-            "collect_stream: stream ended without StreamEnd frame".into(),
-        )
-    })?;
+    };
 
     Ok(StreamedResponse {
         text: end.content,
