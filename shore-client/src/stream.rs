@@ -189,16 +189,18 @@ impl Default for StreamHandler {
 /// - The server sends an `Error` frame.
 /// - The connection closes before `StreamEnd` arrives.
 /// - Any protocol-level stream assembly error occurs.
+///
+/// Unknown frame types are logged at `debug` level and skipped without
+/// raising an error — the stream continues until a terminal frame arrives.
 pub async fn collect_stream(
     conn: &mut crate::connection::SWPConnection,
 ) -> Result<StreamedResponse> {
-    use shore_protocol::server_msg::ServerMessage;
-
     let mut handler = StreamHandler::new();
     let mut tool_calls: Vec<ToolCall> = Vec::new();
     let mut tool_results: Vec<ToolResult> = Vec::new();
+    let mut final_end: Option<StreamEnd> = None;
 
-    let end = loop {
+    loop {
         let msg = conn.recv().await?;
 
         // Try feeding stream frames first.
@@ -210,7 +212,8 @@ pub async fn collect_stream(
                 // Re-match the message to get the StreamEnd out. `feed`
                 // consumed the reference but we still own `msg`.
                 if let ServerMessage::StreamEnd(end) = msg {
-                    break end;
+                    final_end = Some(end);
+                    break;
                 }
             }
             continue;
@@ -234,7 +237,13 @@ pub async fn collect_stream(
                 tracing::debug!(?other, "collect_stream: ignoring unexpected frame");
             }
         }
-    };
+    }
+
+    let end = final_end.ok_or_else(|| {
+        ClientError::Protocol(
+            "collect_stream: stream ended without StreamEnd frame".into(),
+        )
+    })?;
 
     Ok(StreamedResponse {
         text: end.content,

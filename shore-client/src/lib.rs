@@ -664,7 +664,6 @@ mod tests {
     #[tokio::test]
     async fn collect_stream_propagates_server_error() {
         use crate::stream::collect_stream;
-        use shore_protocol::error::ErrorCode;
         use shore_protocol::server_msg::*;
 
         let (client_stream, server_stream) = duplex(8192);
@@ -675,7 +674,7 @@ mod tests {
                 &mut w,
                 &ServerMessage::Error(Error {
                     rid: None,
-                    code: ErrorCode::InternalError,
+                    code: shore_protocol::error::ErrorCode::InternalError,
                     message: "llm blew up".into(),
                 }),
             )
