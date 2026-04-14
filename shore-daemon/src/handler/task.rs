@@ -356,7 +356,6 @@ pub(super) async fn handle_generation(
                 &effective_config,
                 &ctx.llm_client,
                 &data_dir,
-                &ctx.event_tx,
                 &ctx.notifier,
             )
             .await

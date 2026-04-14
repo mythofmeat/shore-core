@@ -806,13 +806,29 @@ async fn tick_character(character: &str, ctx: &TickContext) {
         (int_action, keepalive_action, compaction_needed)
     };
 
-    // Idle-triggered compaction: set the pending flag so the handler picks
-    // it up after the next generation completes (inline, synchronous).
+    // Idle-triggered compaction: when the tick has the dependencies it needs
+    // (LLM client, config, notifier, registry), run compaction + cascaded
+    // collation inline so idle periods actually produce the work. When any
+    // dependency is missing (unit-test contexts), fall back to setting the
+    // pending flag so the handler's post-generation path picks it up on the
+    // user's next message.
+    let mut run_compaction_now = false;
     if compaction_needed {
-        let mut s = lock_state(&ctx.state);
-        s.compaction_pending = true;
-        s.mark_dirty();
-        info!(character, "Compaction pending flag set for handler pickup");
+        let have_deps = ctx.llm_client.is_some()
+            && ctx.loaded_config.is_some()
+            && ctx.notifier.is_some()
+            && ctx.registry.is_some();
+        if have_deps {
+            run_compaction_now = true;
+        } else {
+            let mut s = lock_state(&ctx.state);
+            s.compaction_pending = true;
+            s.mark_dirty();
+            info!(
+                character,
+                "Compaction pending flag set for handler pickup (tick missing deps)"
+            );
+        }
     }
 
     // -- execute interiority action with timeout (async, outside lock) ----
@@ -874,10 +890,100 @@ async fn tick_character(character: &str, ctx: &TickContext) {
         }
     }
 
+    // -- idle-triggered compaction (async, outside lock) -------------------
+    if run_compaction_now {
+        execute_idle_compaction(character, ctx).await;
+    }
+
     // -- final persist (in case async actions dirtied state) ---------------
     {
         let mut s = lock_state(&ctx.state);
         save_state(&ctx.data_dir, character, &mut s);
+    }
+}
+
+/// Run compaction + cascaded collation for a character during an autonomy
+/// tick, without waiting for the user's next message. Resets the compaction
+/// state flags and reloads the engine's cached messages on success so the
+/// next turn (or interiority tick) sees the compacted `active.jsonl`.
+async fn execute_idle_compaction(character: &str, ctx: &TickContext) {
+    let llm_client = match ctx.llm_client.as_ref() {
+        Some(c) => c,
+        None => return,
+    };
+    let loaded_config = match ctx.loaded_config.as_deref() {
+        Some(c) => c,
+        None => return,
+    };
+    let notifier = match ctx.notifier.as_ref() {
+        Some(n) => n,
+        None => return,
+    };
+    let registry = match ctx.registry.as_ref() {
+        Some(r) => r,
+        None => return,
+    };
+
+    info!(character, "Autonomy tick: running idle-triggered compaction");
+
+    match crate::memory::compaction::run_compaction(
+        character,
+        loaded_config,
+        llm_client,
+        &ctx.data_dir,
+        notifier,
+    )
+    .await
+    {
+        Ok(retained_count) => {
+            let engine_arc = {
+                let mut r = registry.lock().await;
+                r.get_or_create(character)
+            };
+            match engine_arc {
+                Ok(engine_arc) => {
+                    let mut engine = engine_arc.lock().await;
+                    if let Err(e) = engine.reload() {
+                        warn!(
+                            character,
+                            error = %e,
+                            "Idle compaction: engine reload failed"
+                        );
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        character,
+                        error = %e,
+                        "Idle compaction: failed to fetch engine for reload"
+                    );
+                }
+            }
+
+            let mut s = lock_state(&ctx.state);
+            s.last_request = None;
+            s.active_turn_count = retained_count;
+            s.compaction_triggered = false;
+            s.compaction_pending = false;
+            s.last_compaction_activity = Instant::now();
+            s.mark_dirty();
+            info!(
+                character,
+                retained_count, "Idle compaction complete, state reset"
+            );
+        }
+        Err(e) => {
+            warn!(
+                character,
+                error = %e,
+                "Idle compaction failed, will retry on next idle tick"
+            );
+            let mut s = lock_state(&ctx.state);
+            s.compaction_triggered = false;
+            s.compaction_pending = false;
+            s.last_compaction_activity = Instant::now();
+            s.mark_dirty();
+        }
     }
 }
 

@@ -9,7 +9,6 @@ pub async fn run_compaction(
     config: &shore_config::LoadedConfig,
     llm_client: &shore_ledger::LedgerClient,
     data_dir: &std::path::Path,
-    _push_tx: &tokio::sync::broadcast::Sender<shore_protocol::server_msg::ServerMessage>,
     notifier: &crate::notifications::NotificationService,
 ) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
     use crate::memory::compaction_impls::{

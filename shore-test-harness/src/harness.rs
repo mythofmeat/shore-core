@@ -44,7 +44,6 @@ pub struct TestHarness {
     pub config: LoadedConfig,
     // Stored for `trigger_compaction_now`.
     llm_client: LedgerClient,
-    push_tx: tokio::sync::broadcast::Sender<ServerMessage>,
     notifier: shore_daemon::notifications::NotificationService,
 }
 
@@ -151,7 +150,6 @@ impl TestHarness {
 
         // Clone for storage in TestHarness (before ownership is moved into msg_handler).
         let stored_llm_client = llm_client.clone();
-        let stored_push_tx = push_tx.clone();
         let stored_notifier = notifier.clone();
 
         // ── Message Handler ──────────────────────────────────────────
@@ -206,7 +204,6 @@ impl TestHarness {
             handler_handle,
             config,
             llm_client: stored_llm_client,
-            push_tx: stored_push_tx,
             notifier: stored_notifier,
         }
     }
@@ -222,7 +219,6 @@ impl TestHarness {
             &self.config,
             &self.llm_client,
             &self.data_dir,
-            &self.push_tx,
             &self.notifier,
         )
         .await
