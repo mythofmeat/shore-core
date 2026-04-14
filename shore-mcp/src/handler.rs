@@ -43,7 +43,11 @@ impl ShoreMcpHandler {
     /// Composition of every per-category tool router. Each tool task
     /// (12-17) extends this chain by one summand.
     pub(crate) fn all_tools_router() -> ToolRouter<Self> {
-        Self::status_router() + Self::log_router() + Self::usage_router()
+        Self::status_router()
+            + Self::log_router()
+            + Self::usage_router()
+            + Self::character_router()
+            + Self::model_router()
     }
 
     /// Check gates, send an SWP command, drain to CommandOutput, return JSON.
