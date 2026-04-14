@@ -12,9 +12,8 @@ pub struct CharacterListParams {}
 
 #[derive(Deserialize, JsonSchema, Debug)]
 pub struct CharacterInfoParams {
-    /// Character name to query. Empty string (default) returns info for the current character.
-    #[serde(default)]
-    pub name: String,
+    /// Character name to query. Omit to return info for the current character.
+    pub name: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema, Debug)]
@@ -40,15 +39,17 @@ impl ShoreMcpHandler {
 
     #[tool(
         name = "character_info",
-        description = "Show details for a character. Pass an empty name to query the current character."
+        description = "Show details for a character. Omit `name` to query the current character."
     )]
     pub async fn tool_character_info(
         &self,
         Parameters(p): Parameters<CharacterInfoParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let data = self
-            .run_cmd("character_info", "character_info", json!({ "name": p.name }))
-            .await?;
+        let args = match p.name {
+            Some(n) => json!({ "name": n }),
+            None => json!({}),
+        };
+        let data = self.run_cmd("character_info", "character_info", args).await?;
         Self::json_result(data)
     }
 
