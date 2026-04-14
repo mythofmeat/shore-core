@@ -11,8 +11,9 @@ pub struct Cli {
     pub attach_main: bool,
 
     /// Use a fresh tempdir profile instead of the persistent test profile
-    /// at `$XDG_DATA_HOME/shore-mcp-test/`. Ignored if `--attach-main` is
-    /// set. The tempdir and its spawned daemon are torn down on exit.
+    /// at `$XDG_DATA_HOME/shore-mcp-test/`. Cannot be combined with
+    /// `--attach-main`. The tempdir and its spawned daemon are torn down
+    /// on exit.
     #[arg(long, conflicts_with = "attach_main")]
     pub ephemeral: bool,
 
