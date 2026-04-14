@@ -27,6 +27,14 @@ struct Cli {
     /// TCP listen address for this process (overrides SHORE_ADDR and config).
     #[arg(long, value_name = "ADDR")]
     addr: Option<String>,
+
+    /// Pin the registered instance ID in `instances.json`.
+    ///
+    /// When unset, a fresh UUID is generated on every startup. Set this
+    /// to give the daemon a stable, discoverable ID — used by `shore-mcp`
+    /// to rediscover a previously-spawned test daemon.
+    #[arg(long, value_name = "ID")]
+    instance_id: Option<String>,
 }
 
 #[derive(Debug)]
@@ -109,13 +117,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .without_time()
         .init();
 
+    let cli_parsed = Cli::parse();
+    let instance_id_override = cli_parsed.instance_id.clone();
     let StartupConfig {
         loaded,
         config_path,
         bind_addr: addr,
         bind_addr_source,
         remote_access_warnings,
-    } = resolve_startup(Cli::parse(), startup_env_addr())?;
+    } = resolve_startup(cli_parsed, startup_env_addr())?;
     info!(
         config_path = %config_path.display(),
         bind_addr = %addr,
@@ -138,7 +148,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── Notification service ──────────────────────────────────────────
     let notifier = NotificationService::new(loaded.app.notifications.clone());
 
-    let instance_id = uuid::Uuid::new_v4().to_string();
+    let instance_id = instance_id_override
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
     for warning in remote_access_warnings {
         warn!(
@@ -570,6 +581,23 @@ mod tests {
     }
 
     #[test]
+    fn cli_parses_instance_id_flag() {
+        let cli = Cli::try_parse_from([
+            "shore-daemon",
+            "--instance-id",
+            "shore-mcp-test",
+        ])
+        .unwrap();
+        assert_eq!(cli.instance_id.as_deref(), Some("shore-mcp-test"));
+    }
+
+    #[test]
+    fn cli_instance_id_defaults_to_none() {
+        let cli = Cli::try_parse_from(["shore-daemon"]).unwrap();
+        assert!(cli.instance_id.is_none());
+    }
+
+    #[test]
     fn explicit_config_path_must_exist() {
         let err = resolve_explicit_config_path(Some(Path::new("/definitely/missing.toml")))
             .expect_err("missing explicit config path should fail");
@@ -637,6 +665,7 @@ unsafe_allow_remote_access = true
             Cli {
                 config: Some(config_path.clone()),
                 addr: Some("0.0.0.0:9000".into()),
+                instance_id: None,
             },
             Some("127.0.0.1:8000".into()),
         )
@@ -660,6 +689,7 @@ unsafe_allow_remote_access = true
             Cli {
                 config: Some(config_path),
                 addr: None,
+                instance_id: None,
             },
             Some("0.0.0.0:9000".into()),
         )
