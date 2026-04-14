@@ -806,13 +806,29 @@ async fn tick_character(character: &str, ctx: &TickContext) {
         (int_action, keepalive_action, compaction_needed)
     };
 
-    // Idle-triggered compaction: set the pending flag so the handler picks
-    // it up after the next generation completes (inline, synchronous).
+    // Idle-triggered compaction: when the tick has the dependencies it needs
+    // (LLM client, config, notifier, registry), run compaction + cascaded
+    // collation inline so idle periods actually produce the work. When any
+    // dependency is missing (unit-test contexts), fall back to setting the
+    // pending flag so the handler's post-generation path picks it up on the
+    // user's next message.
+    let mut run_compaction_now = false;
     if compaction_needed {
-        let mut s = lock_state(&ctx.state);
-        s.compaction_pending = true;
-        s.mark_dirty();
-        info!(character, "Compaction pending flag set for handler pickup");
+        let have_deps = ctx.llm_client.is_some()
+            && ctx.loaded_config.is_some()
+            && ctx.notifier.is_some()
+            && ctx.registry.is_some();
+        if have_deps {
+            run_compaction_now = true;
+        } else {
+            let mut s = lock_state(&ctx.state);
+            s.compaction_pending = true;
+            s.mark_dirty();
+            info!(
+                character,
+                "Compaction pending flag set for handler pickup (tick missing deps)"
+            );
+        }
     }
 
     // -- execute interiority action with timeout (async, outside lock) ----
@@ -874,10 +890,100 @@ async fn tick_character(character: &str, ctx: &TickContext) {
         }
     }
 
+    // -- idle-triggered compaction (async, outside lock) -------------------
+    if run_compaction_now {
+        execute_idle_compaction(character, ctx).await;
+    }
+
     // -- final persist (in case async actions dirtied state) ---------------
     {
         let mut s = lock_state(&ctx.state);
         save_state(&ctx.data_dir, character, &mut s);
+    }
+}
+
+/// Run compaction + cascaded collation for a character during an autonomy
+/// tick, without waiting for the user's next message. Resets the compaction
+/// state flags and reloads the engine's cached messages on success so the
+/// next turn (or interiority tick) sees the compacted `active.jsonl`.
+async fn execute_idle_compaction(character: &str, ctx: &TickContext) {
+    let llm_client = match ctx.llm_client.as_ref() {
+        Some(c) => c,
+        None => return,
+    };
+    let loaded_config = match ctx.loaded_config.as_deref() {
+        Some(c) => c,
+        None => return,
+    };
+    let notifier = match ctx.notifier.as_ref() {
+        Some(n) => n,
+        None => return,
+    };
+    let registry = match ctx.registry.as_ref() {
+        Some(r) => r,
+        None => return,
+    };
+
+    info!(character, "Autonomy tick: running idle-triggered compaction");
+
+    match crate::memory::compaction::run_compaction(
+        character,
+        loaded_config,
+        llm_client,
+        &ctx.data_dir,
+        notifier,
+    )
+    .await
+    {
+        Ok(retained_count) => {
+            let engine_arc = {
+                let mut r = registry.lock().await;
+                r.get_or_create(character)
+            };
+            match engine_arc {
+                Ok(engine_arc) => {
+                    let mut engine = engine_arc.lock().await;
+                    if let Err(e) = engine.reload() {
+                        warn!(
+                            character,
+                            error = %e,
+                            "Idle compaction: engine reload failed"
+                        );
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        character,
+                        error = %e,
+                        "Idle compaction: failed to fetch engine for reload"
+                    );
+                }
+            }
+
+            let mut s = lock_state(&ctx.state);
+            s.last_request = None;
+            s.active_turn_count = retained_count;
+            s.compaction_triggered = false;
+            s.compaction_pending = false;
+            s.last_compaction_activity = Instant::now();
+            s.mark_dirty();
+            info!(
+                character,
+                retained_count, "Idle compaction complete, state reset"
+            );
+        }
+        Err(e) => {
+            warn!(
+                character,
+                error = %e,
+                "Idle compaction failed, will retry on next idle tick"
+            );
+            let mut s = lock_state(&ctx.state);
+            s.compaction_triggered = false;
+            s.compaction_pending = false;
+            s.last_compaction_activity = Instant::now();
+            s.mark_dirty();
+        }
     }
 }
 
@@ -1081,6 +1187,59 @@ fn rebuild_request_from_disk(
     }
 }
 
+fn apply_interiority_model_override(
+    request: &mut LlmRequest,
+    config: &LoadedConfig,
+    character: &str,
+) -> bool {
+    let Some(interiority_name) = config.app.defaults.interiority.as_deref() else {
+        return false;
+    };
+    let resolved = match config.models.find_model(interiority_name) {
+        Ok(r) => r,
+        Err(e) => {
+            warn!(
+                character,
+                error = %e,
+                interiority_model = %interiority_name,
+                "Interiority: configured model not found in catalog"
+            );
+            return false;
+        }
+    };
+    if resolved.model_id == request.model {
+        return false;
+    }
+    match LedgerClient::build_request(
+        resolved,
+        request.messages.clone(),
+        request.system.clone(),
+        request.tools.clone(),
+        None,
+    ) {
+        Ok(mut new_req) => {
+            info!(
+                character,
+                interiority_model = %interiority_name,
+                model_id = %new_req.model,
+                "Interiority: using configured interiority model"
+            );
+            new_req.forensic_character = Some(character.to_owned());
+            *request = new_req;
+            true
+        }
+        Err(e) => {
+            warn!(
+                character,
+                error = %e,
+                interiority_model = %interiority_name,
+                "Interiority: failed to build override request, falling back to chat model"
+            );
+            false
+        }
+    }
+}
+
 /// Execute a unified interiority tick: a real tool loop using non-streaming
 /// generate() calls. Tool loop messages are ephemeral — only <sendMessage>
 /// output persists to active.jsonl. All activity is logged to the ring buffer
@@ -1133,6 +1292,8 @@ async fn execute_unified_tick(
     request.forensic_character = Some(character.to_owned());
 
     let Some(lc) = loaded_config else { return };
+
+    apply_interiority_model_override(&mut request, lc, character);
 
     // Build the dynamic interiority prompt.
     let recap_path = data_dir.join(character).join("recaps.jsonl");
@@ -2261,6 +2422,127 @@ mod tests {
              the ENTIRE Anthropic cache (tools → system → messages). \
              Use an XML tag like <sendMessage> instead."
         );
+    }
+
+    // -- interiority model override ------------------------------------------
+
+    fn minimal_request(model_id: &str) -> LlmRequest {
+        LlmRequest {
+            sdk: shore_config::models::Sdk::Anthropic,
+            model: model_id.into(),
+            api_key: "chat-key".into(),
+            base_url: None,
+            messages: vec![json!({"role": "user", "content": "hi"})],
+            system: Some(json!([{"type": "text", "text": "sys"}])),
+            tools: Some(vec![json!({"name": "check_time", "input_schema": {}})]),
+            max_tokens: 4096,
+            temperature: None,
+            top_p: None,
+            provider_options: None,
+            provider_key: None,
+            rid: None,
+            forensic_character: None,
+        }
+    }
+
+    fn loaded_config_with_two_chat_models(
+        interiority: Option<&str>,
+        chat_env: &str,
+        interiority_env: &str,
+    ) -> shore_config::LoadedConfig {
+        let chat_toml = format!(
+            r#"
+[anthropic.sonnet]
+model_id = "claude-sonnet-chat"
+api_key_env = "{chat_env}"
+
+[anthropic.slowthink]
+model_id = "claude-opus-slowthink"
+api_key_env = "{interiority_env}"
+"#
+        );
+        let chat: toml::Table = chat_toml.parse().unwrap();
+        let catalog =
+            shore_config::models::ModelCatalog::from_sections(Some(&chat), None, None, None)
+                .unwrap();
+
+        let mut app = shore_config::app::AppConfig::default();
+        app.defaults.interiority = interiority.map(str::to_string);
+
+        let tmp = tempfile::tempdir().unwrap();
+        shore_config::LoadedConfig::new_for_test(
+            app,
+            catalog,
+            shore_config::ShoreDirs {
+                config: tmp.path().to_path_buf(),
+                data: tmp.path().to_path_buf(),
+                runtime: tmp.path().to_path_buf(),
+                cache: tmp.path().to_path_buf(),
+            },
+        )
+    }
+
+    /// Regression: `defaults.interiority` was silently ignored on the warm
+    /// path because `execute_unified_tick` reused the cached chat-turn
+    /// request without rewriting the model.
+    /// Regression: `defaults.interiority` was silently ignored on the warm
+    /// path because `execute_unified_tick` reused the cached chat-turn
+    /// request without rewriting the model.
+    #[test]
+    fn interiority_override_swaps_model_when_set() {
+        let chat_env = "INTERIORITY_OVERRIDE_SWAP_CHAT";
+        let int_env = "INTERIORITY_OVERRIDE_SWAP_INT";
+        std::env::set_var(chat_env, "chat-secret");
+        std::env::set_var(int_env, "slowthink-secret");
+
+        let config = loaded_config_with_two_chat_models(Some("slowthink"), chat_env, int_env);
+        let mut request = minimal_request("claude-sonnet-chat");
+
+        let applied = apply_interiority_model_override(&mut request, &config, "alice");
+
+        assert!(applied, "override should have been applied");
+        assert_eq!(request.model, "claude-opus-slowthink");
+        assert_eq!(request.api_key, "slowthink-secret");
+        assert_eq!(request.messages.len(), 1);
+        assert!(request.system.is_some());
+        assert_eq!(request.tools.as_ref().unwrap().len(), 1);
+
+        std::env::remove_var(chat_env);
+        std::env::remove_var(int_env);
+    }
+
+    #[test]
+    fn interiority_override_is_noop_when_unset() {
+        let config = loaded_config_with_two_chat_models(
+            None,
+            "INTERIORITY_OVERRIDE_UNSET_CHAT",
+            "INTERIORITY_OVERRIDE_UNSET_INT",
+        );
+        let mut request = minimal_request("claude-sonnet-chat");
+
+        let applied = apply_interiority_model_override(&mut request, &config, "alice");
+
+        assert!(!applied);
+        assert_eq!(request.model, "claude-sonnet-chat");
+    }
+
+    #[test]
+    fn interiority_override_is_noop_when_model_matches() {
+        let chat_env = "INTERIORITY_OVERRIDE_MATCH_CHAT";
+        let int_env = "INTERIORITY_OVERRIDE_MATCH_INT";
+        std::env::set_var(chat_env, "chat-secret");
+        std::env::set_var(int_env, "slowthink-secret");
+
+        let config = loaded_config_with_two_chat_models(Some("slowthink"), chat_env, int_env);
+        let mut request = minimal_request("claude-opus-slowthink");
+
+        let applied = apply_interiority_model_override(&mut request, &config, "alice");
+
+        assert!(!applied);
+        assert_eq!(request.model, "claude-opus-slowthink");
+
+        std::env::remove_var(chat_env);
+        std::env::remove_var(int_env);
     }
 
     /// Configuring `max_turns < min_turns` should disable compaction or

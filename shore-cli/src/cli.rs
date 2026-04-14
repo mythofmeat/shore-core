@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use clap_complete::Shell;
 
 #[derive(Parser, Debug)]
@@ -221,9 +221,10 @@ pub enum CliCommand {
         #[arg(long)]
         model: Option<String>,
 
-        /// Filter by call type
-        #[arg(long)]
-        call_type: Option<String>,
+        /// Filter by call type. Pass without a value to see a breakdown
+        /// grouped by call type (useful for discovering what types exist).
+        #[arg(long, num_args = 0..=1)]
+        call_type: Option<Option<String>>,
 
         /// Show only cache anomalies
         #[arg(long)]
@@ -261,6 +262,31 @@ pub enum CliCommand {
         /// Shell to generate completions for
         shell: Shell,
     },
+
+    /// Emit plain names for shell completion helpers (internal).
+    ///
+    /// Used by the dynamic completions appended to `shore completions fish`.
+    /// Any failure (daemon down, parse error) results in empty output and
+    /// a zero exit code so completions silently fall back to nothing.
+    ///
+    /// Name kept short (`complete`) rather than something like `__complete`
+    /// because clap_complete 4.6.0 panics with
+    /// `find_subcommand_with_path` when generating bash completions for
+    /// subcommands renamed via `#[command(name = …)]`.
+    #[command(hide = true)]
+    Complete {
+        /// What to enumerate
+        kind: CompleteKind,
+    },
+}
+
+/// Targets for the hidden `__complete` helper.
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompleteKind {
+    /// Chat model names from the daemon's catalog
+    Models,
+    /// Discovered character names
+    Characters,
 }
 
 #[derive(Subcommand, Debug)]
@@ -351,9 +377,30 @@ pub enum DebugCommand {
 }
 
 /// Generate and print shell completions to stdout.
+///
+/// For fish we append dynamic completion lines that shell out to the
+/// hidden `shore __complete` helper, so `shore model <TAB>` and
+/// `shore character <TAB>` expand to the daemon's live lists instead
+/// of leaving the positional argument uncompleted.
 pub fn print_completions(shell: Shell) {
     use clap::CommandFactory;
     clap_complete::generate(shell, &mut Cli::command(), "shore", &mut std::io::stdout());
+    if shell == Shell::Fish {
+        println!("{}", fish_dynamic_completions_footer());
+    }
+}
+
+/// Fish completions for the positional `name` arguments of `shore model`
+/// and `shore character`. Kept as a plain string so unit tests can assert
+/// exact content without depending on the clap-generated output above.
+pub fn fish_dynamic_completions_footer() -> &'static str {
+    // `shore complete <kind> 2>/dev/null` swallows daemon-down errors so
+    // fish silently falls back to no suggestions rather than printing a
+    // wall of error messages at every tab press.
+    "\n\
+# ── Dynamic completions (populated by the daemon) ────────────────────\n\
+complete -c shore -n \"__fish_shore_using_subcommand model\" -f -a \"(shore complete models 2>/dev/null)\"\n\
+complete -c shore -n \"__fish_shore_using_subcommand character\" -f -a \"(shore complete characters 2>/dev/null)\"\n"
 }
 
 /// Map a CLI command to its SWP command name and JSON args.
@@ -367,6 +414,7 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
         CliCommand::Send { system: false, .. }
         | CliCommand::Regen { .. }
         | CliCommand::Completions { .. }
+        | CliCommand::Complete { .. }
         | CliCommand::Matrix { .. }
         | CliCommand::Config {
             path: true,
@@ -497,22 +545,34 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
             refresh_pricing,
             recalculate,
             force,
-        } => Some((
-            "usage",
-            json!({
-                "last": last,
-                "character": character,
-                "provider": provider,
-                "model": model,
-                "call_type": call_type,
-                "anomalies": anomalies,
-                "export_csv": export_csv,
-                "export_tsv": export_tsv,
-                "refresh_pricing": refresh_pricing,
-                "recalculate": recalculate,
-                "force": force,
-            }),
-        )),
+        } => {
+            // Three-state flag:
+            //   absent         → None,             no grouping, no filter
+            //   --call-type    → Some(None),       breakdown mode
+            //   --call-type X  → Some(Some("X")),  filter by X
+            let (by_call_type, call_type_filter) = match call_type {
+                None => (false, None),
+                Some(None) => (true, None),
+                Some(Some(v)) => (false, Some(v.clone())),
+            };
+            Some((
+                "usage",
+                json!({
+                    "last": last,
+                    "character": character,
+                    "provider": provider,
+                    "model": model,
+                    "call_type": call_type_filter,
+                    "by_call_type": by_call_type,
+                    "anomalies": anomalies,
+                    "export_csv": export_csv,
+                    "export_tsv": export_tsv,
+                    "refresh_pricing": refresh_pricing,
+                    "recalculate": recalculate,
+                    "force": force,
+                }),
+            ))
+        }
     }
 }
 
@@ -1485,6 +1545,66 @@ mod tests {
         }
     }
 
+    // ── Usage ────────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_usage_no_call_type_flag() {
+        let cli = parse(&["usage"]);
+        match &cli.command {
+            CliCommand::Usage { call_type, .. } => {
+                assert!(call_type.is_none(), "flag absent → None");
+            }
+            other => panic!("expected Usage, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_usage_bare_call_type_flag() {
+        // Regression: `shore usage --call-type` previously errored because
+        // clap required a value. The bare flag should mean "break down by
+        // call type" (Some(None)).
+        let cli = parse(&["usage", "--call-type"]);
+        match &cli.command {
+            CliCommand::Usage { call_type, .. } => {
+                assert_eq!(*call_type, Some(None), "bare flag → Some(None)");
+            }
+            other => panic!("expected Usage, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_usage_call_type_with_value() {
+        let cli = parse(&["usage", "--call-type", "message"]);
+        match &cli.command {
+            CliCommand::Usage { call_type, .. } => {
+                assert_eq!(*call_type, Some(Some("message".into())));
+            }
+            other => panic!("expected Usage, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn usage_bare_call_type_sets_by_call_type_flag() {
+        // Wire-level: daemon should see `by_call_type: true` and no
+        // `call_type` filter when the user passed the bare flag.
+        let cli = parse(&["usage", "--call-type"]);
+        let (cmd, args) = to_swp_command(&cli.command).unwrap();
+        assert_eq!(cmd, "usage");
+        assert_eq!(args["by_call_type"], serde_json::Value::Bool(true));
+        assert!(args["call_type"].is_null());
+    }
+
+    #[test]
+    fn usage_call_type_value_sets_filter_not_flag() {
+        let cli = parse(&["usage", "--call-type", "message"]);
+        let (_cmd, args) = to_swp_command(&cli.command).unwrap();
+        assert_eq!(args["call_type"], "message");
+        assert!(
+            args["by_call_type"].is_null() || args["by_call_type"] == serde_json::Value::Bool(false),
+            "filter value should not imply breakdown flag",
+        );
+    }
+
     #[test]
     fn completions_generates_output() {
         // Verify that completion generation produces non-empty output for each shell.
@@ -1506,5 +1626,74 @@ mod tests {
                 "completions for {shell:?} should reference 'shore'"
             );
         }
+    }
+
+    // ── Dynamic completions (regression #3 followup) ────────────────
+
+    #[test]
+    fn fish_footer_has_dynamic_lines_for_model_and_character() {
+        let footer = fish_dynamic_completions_footer();
+        // Each line must bind the positional for its subcommand to
+        // the `complete` helper — anything else means fish will
+        // silently not expand `shore model <TAB>` again.
+        assert!(
+            footer.contains("__fish_shore_using_subcommand model"),
+            "footer must gate the model completion on the model subcommand",
+        );
+        assert!(
+            footer.contains("shore complete models"),
+            "footer must shell out to `shore complete models`",
+        );
+        assert!(
+            footer.contains("__fish_shore_using_subcommand character"),
+            "footer must gate the character completion on the character subcommand",
+        );
+        assert!(
+            footer.contains("shore complete characters"),
+            "footer must shell out to `shore complete characters`",
+        );
+        // Errors from `complete` (daemon down, stale registry) must
+        // not propagate to fish, or the user sees red at every tab.
+        assert!(
+            footer.contains("2>/dev/null"),
+            "footer must swallow stderr from the helper",
+        );
+    }
+
+    #[test]
+    fn parse_complete_models() {
+        // The `complete` helper must parse cleanly so fish can call
+        // it at completion time without triggering a clap error.
+        let cli = parse(&["complete", "models"]);
+        match &cli.command {
+            CliCommand::Complete { kind } => {
+                assert_eq!(*kind, CompleteKind::Models);
+            }
+            other => panic!("expected Complete, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_complete_characters() {
+        let cli = parse(&["complete", "characters"]);
+        match &cli.command {
+            CliCommand::Complete { kind } => {
+                assert_eq!(*kind, CompleteKind::Characters);
+            }
+            other => panic!("expected Complete, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn complete_maps_to_none_swp() {
+        // `complete` is handled entirely client-side; it must not leak
+        // into the generic SWP dispatch path.
+        let cmd = CliCommand::Complete {
+            kind: CompleteKind::Models,
+        };
+        assert!(
+            to_swp_command(&cmd).is_none(),
+            "complete is a client-side helper, not an SWP command",
+        );
     }
 }

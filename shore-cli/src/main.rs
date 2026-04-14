@@ -10,16 +10,25 @@ use cli::{Cli, CliCommand};
 use tracing_subscriber::EnvFilter;
 
 fn main() -> ExitCode {
+    let cli = <Cli as clap::Parser>::parse();
+
+    // Completion queries must never print to stderr — fish feeds both
+    // streams into the prompt, and any stray tracing line would be
+    // offered as a candidate. Silence everything for this one path.
+    let default_filter = if matches!(cli.command, CliCommand::Complete { .. }) {
+        "off"
+    } else {
+        "warn"
+    };
+
     // CLI logs to stderr so stdout stays clean for command output.
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn")),
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_filter)),
         )
         .with_target(true)
         .with_writer(std::io::stderr)
         .init();
-
-    let cli = <Cli as clap::Parser>::parse();
 
     // Initialize color control: --no-color flag or NO_COLOR env var disables color.
     let no_color = cli.no_color

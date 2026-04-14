@@ -164,6 +164,43 @@ fn list_models_empty() {
 }
 
 #[test]
+fn list_models_excludes_tool_models() {
+    // Regression: list_models previously merged chat AND tools into one
+    // flat list. Tool-only profiles (e.g. a function-calling sidecar model
+    // used for memory collation) are not meant to be user-selectable chat
+    // targets, and they pollute the UI in `shore models list` /
+    // auto-completions.
+    let tmp = TempDir::new().unwrap();
+    let toml_str = r#"
+[chat.anthropic.claude-sonnet]
+model_id = "claude-sonnet-4-20250514"
+
+[tools.openai.collator]
+model_id = "gpt-4o-mini"
+"#;
+    let table: toml::Table = toml_str.parse().unwrap();
+    let chat = table.get("chat").and_then(|v| v.as_table());
+    let tools = table.get("tools").and_then(|v| v.as_table());
+    let catalog = ModelCatalog::from_sections(chat, tools, None, None).unwrap();
+    assert_eq!(catalog.chat.len(), 1, "sanity: one chat model");
+    assert_eq!(catalog.tools.len(), 1, "sanity: one tool model");
+
+    let (_engine, ctx, _rx) = make_ctx_with_models(&tmp, catalog);
+    let result = list_models(&ctx).unwrap();
+    let models = result["models"].as_array().unwrap();
+    assert_eq!(
+        models.len(),
+        1,
+        "list_models must only return chat models; tool models are not user-selectable"
+    );
+    assert_eq!(models[0]["name"], "claude-sonnet");
+    assert!(
+        models.iter().all(|m| m["name"] != "collator"),
+        "tool model should not appear in list"
+    );
+}
+
+#[test]
 fn list_models_with_profiles() {
     let tmp = TempDir::new().unwrap();
     let (_engine, ctx, _rx) = make_ctx_with_models(&tmp, sample_models());

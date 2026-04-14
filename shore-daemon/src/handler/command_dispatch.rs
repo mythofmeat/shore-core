@@ -85,7 +85,12 @@ impl MessageHandler {
             "dispatching command"
         );
         let session_id = meta.session.session_id;
-        if cmd.name == "list_characters" {
+        // `list_characters` and `list_models` both read from the global
+        // config and never touch a character engine, so they bypass the
+        // character-resolution step below. This lets `shore complete
+        // models` succeed even on a multi-character config where no
+        // character has been selected yet.
+        if cmd.name == "list_characters" || cmd.name == "list_models" {
             let (active_model, session_tokens, memory_shell_sessions) = {
                 let session = self.session_state_mut(session_id);
                 (

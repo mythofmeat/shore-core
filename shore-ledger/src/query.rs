@@ -106,6 +106,56 @@ pub fn usage_summary(
     })
 }
 
+// ── Summary by call type ─────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct CallTypeSummary {
+    pub call_type: String,
+    pub call_count: u32,
+    pub total_input: u64,
+    pub total_output: u64,
+    pub total_cache_read: u64,
+    pub total_cache_write: u64,
+    pub total_cost: f64,
+}
+
+/// Groups calls by `call_type`. Ordered by total_cost DESC, then call_count DESC.
+pub fn usage_summary_by_call_type(
+    ledger: &Ledger,
+    filter: &QueryFilter,
+) -> Result<Vec<CallTypeSummary>, rusqlite::Error> {
+    let (where_clause, values) = build_where(filter);
+    let sql = format!(
+        r#"SELECT call_type,
+                  COUNT(*) as call_count,
+                  SUM(input_tokens) as total_input,
+                  SUM(output_tokens) as total_output,
+                  SUM(cache_read_tokens) as total_cache_read,
+                  SUM(cache_write_tokens) as total_cache_write,
+                  TOTAL(total_cost) as total_cost
+             FROM calls
+             {where_clause}
+            GROUP BY call_type
+            ORDER BY total_cost DESC, call_count DESC"#,
+    );
+
+    ledger.with_conn(|conn| {
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params_from_iter(values.iter()), |row| {
+            Ok(CallTypeSummary {
+                call_type: row.get(0)?,
+                call_count: row.get::<_, i64>(1)? as u32,
+                total_input: row.get::<_, i64>(2)? as u64,
+                total_output: row.get::<_, i64>(3)? as u64,
+                total_cache_read: row.get::<_, i64>(4)? as u64,
+                total_cache_write: row.get::<_, i64>(5)? as u64,
+                total_cost: row.get::<_, f64>(6)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()
+    })
+}
+
 // ── Anomalies ────────────────────────────────────────────────────────────────
 
 /// Returns rows where `cache_anomaly IS NOT NULL`, ordered by id DESC.
@@ -385,6 +435,21 @@ mod tests {
         ledger.insert(&row3).unwrap();
 
         ledger
+    }
+
+    #[test]
+    fn summary_groups_by_call_type() {
+        let ledger = populated_ledger();
+        let summary = usage_summary_by_call_type(&ledger, &QueryFilter::default()).unwrap();
+        // Populated ledger has two call types: "message" (2 rows) and
+        // "tool_loop" (1 row).
+        assert_eq!(summary.len(), 2);
+        let by_type: std::collections::HashMap<_, _> = summary
+            .iter()
+            .map(|s| (s.call_type.clone(), s.call_count))
+            .collect();
+        assert_eq!(by_type.get("message"), Some(&2));
+        assert_eq!(by_type.get("tool_loop"), Some(&1));
     }
 
     #[test]

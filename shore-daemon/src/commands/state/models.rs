@@ -4,9 +4,11 @@ use tracing::info;
 
 use crate::commands::{CommandContext, CommandResult};
 
-/// List available model profiles from the model catalog.
+/// List available chat model profiles. Tool-only profiles, embedding
+/// profiles, and image-generation profiles are intentionally excluded:
+/// they are not user-selectable chat targets.
 pub fn list_models(ctx: &CommandContext) -> CommandResult {
-    let mut models: Vec<_> = ctx
+    let models: Vec<_> = ctx
         .config
         .models
         .chat
@@ -21,17 +23,6 @@ pub fn list_models(ctx: &CommandContext) -> CommandResult {
             })
         })
         .collect();
-
-    // Also include tool models.
-    for m in ctx.config.models.tools.values() {
-        models.push(json!({
-            "name": m.name,
-            "qualified_name": m.qualified_name,
-            "sdk": m.sdk.as_str(),
-            "provider": m.provider_key,
-            "model_id": m.model_id,
-        }));
-    }
 
     Ok(json!({
         "models": models,

@@ -1033,6 +1033,44 @@ pub fn print_usage(data: &serde_json::Value) {
                 print!("{d}");
             }
         }
+        "summary_by_call_type" => {
+            let period = data["period"].as_str().unwrap_or("today");
+            let today = chrono::Utc::now().format("%Y-%m-%d");
+            println!("Shore Usage by Call Type \u{2014} {today} (period: {period})\n");
+            println!(
+                "{:<18} {:>5}  {:>9}  {:>9}  {:>9}  {:>9}  {:>8}",
+                "Call Type", "Calls", "Input", "Output", "Cache R", "Cache W", "Cost"
+            );
+            println!("{}", "-".repeat(78));
+            let summary = data["summary"].as_array();
+            let mut grand_total = 0.0f64;
+            if let Some(rows) = summary {
+                for s in rows {
+                    let cost_str = s["total_cost"]
+                        .as_f64()
+                        .map(|c| {
+                            grand_total += c;
+                            format!("${c:.2}")
+                        })
+                        .unwrap_or_else(|| "\u{2014}".into());
+                    println!(
+                        "{:<18} {:>5}  {:>9}  {:>9}  {:>9}  {:>9}  {:>8}",
+                        s["call_type"].as_str().unwrap_or(""),
+                        s["call_count"].as_u64().unwrap_or(0),
+                        format_k(s["total_input"].as_u64().unwrap_or(0)),
+                        format_k(s["total_output"].as_u64().unwrap_or(0)),
+                        format_k(s["total_cache_read"].as_u64().unwrap_or(0)),
+                        format_k(s["total_cache_write"].as_u64().unwrap_or(0)),
+                        cost_str,
+                    );
+                }
+                if !rows.is_empty() {
+                    println!("{:>70} ${grand_total:.2}", "Total:");
+                } else {
+                    println!("  No usage data for this period.");
+                }
+            }
+        }
         "anomalies" => {
             let anomalies = data["anomalies"].as_array();
             if anomalies.is_none() || anomalies.unwrap().is_empty() {
