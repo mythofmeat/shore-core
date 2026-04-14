@@ -13,7 +13,7 @@ pub use connection::{SWPConnection, ServerAddr};
 pub use discovery::{discover, discover_data_dir, discover_or_default};
 pub use error::{ClientError, Result};
 pub use image_protocol::{detect_protocol, ImageProtocol};
-pub use stream::{StreamCallbacks, StreamHandler};
+pub use stream::{collect_stream, StreamCallbacks, StreamHandler, StreamedResponse};
 pub use sync::{SyncDecision, SyncState};
 
 #[cfg(test)]
@@ -583,5 +583,124 @@ mod tests {
         let toml = r#"unknown_field = "oops""#;
         let result = toml::from_str::<crate::client_config::ClientConfig>(toml);
         assert!(result.is_err());
+    }
+
+    // ── collect_stream tests ─────────────────────────────────────────
+
+    #[tokio::test]
+    async fn collect_stream_aggregates_full_response() {
+        use crate::stream::{collect_stream, StreamedResponse};
+        use shore_protocol::server_msg::*;
+        use shore_protocol::types::*;
+
+        let (client_stream, server_stream) = duplex(8192);
+
+        let server_handle = tokio::spawn(async move {
+            let (_r, mut w) = tokio::io::split(server_stream);
+            // Send a complete stream sequence.
+            write_json_line(
+                &mut w,
+                &ServerMessage::StreamStart(StreamStart {
+                    rid: None,
+                    regen: false,
+                }),
+            )
+            .await;
+            write_json_line(
+                &mut w,
+                &ServerMessage::StreamChunk(StreamChunk {
+                    rid: None,
+                    text: "partial ".into(),
+                    content_type: "text".into(),
+                }),
+            )
+            .await;
+            write_json_line(
+                &mut w,
+                &ServerMessage::StreamChunk(StreamChunk {
+                    rid: None,
+                    text: "text".into(),
+                    content_type: "text".into(),
+                }),
+            )
+            .await;
+            write_json_line(
+                &mut w,
+                &ServerMessage::StreamEnd(StreamEnd {
+                    rid: None,
+                    content: "partial text".into(),
+                    metadata: StreamMetadata {
+                        tokens: TokenCounts {
+                            input: 10,
+                            output: 5,
+                            cache_read: 0,
+                            cache_write: 0,
+                        },
+                        timing: TimingInfo {
+                            total_ms: 100,
+                            ttft_ms: 20,
+                        },
+                        model: "test-model".into(),
+                    },
+                    finish_reason: "end_turn".into(),
+                }),
+            )
+            .await;
+        });
+
+        let mut conn = SWPConnection::from_raw_stream(client_stream);
+        let response: StreamedResponse = collect_stream(&mut conn).await.unwrap();
+
+        assert_eq!(response.text, "partial text");
+        assert!(response.tool_calls.is_empty());
+        assert!(response.tool_results.is_empty());
+        assert_eq!(response.metadata.model, "test-model");
+        assert_eq!(response.finish_reason, "end_turn");
+
+        drop(conn);
+        server_handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn collect_stream_propagates_server_error() {
+        use crate::stream::collect_stream;
+        use shore_protocol::error::ErrorCode;
+        use shore_protocol::server_msg::*;
+
+        let (client_stream, server_stream) = duplex(8192);
+
+        let server_handle = tokio::spawn(async move {
+            let (_r, mut w) = tokio::io::split(server_stream);
+            write_json_line(
+                &mut w,
+                &ServerMessage::Error(Error {
+                    rid: None,
+                    code: ErrorCode::InternalError,
+                    message: "llm blew up".into(),
+                }),
+            )
+            .await;
+        });
+
+        let mut conn = SWPConnection::from_raw_stream(client_stream);
+        let result = collect_stream(&mut conn).await;
+        assert!(result.is_err());
+        assert!(format!("{}", result.unwrap_err()).contains("llm blew up"));
+
+        drop(conn);
+        server_handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn collect_stream_propagates_eof_as_disconnected() {
+        use crate::stream::collect_stream;
+
+        let (client_stream, server_stream) = duplex(8192);
+        drop(server_stream);
+
+        let mut conn = SWPConnection::from_raw_stream(client_stream);
+        let result = collect_stream(&mut conn).await;
+        assert!(result.is_err());
+        assert!(format!("{}", result.unwrap_err()).contains("disconnected"));
     }
 }
