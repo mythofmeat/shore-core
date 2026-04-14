@@ -132,12 +132,22 @@ pub async fn attach(
                 SWPConnection::connect(&addr, "mcp", "shore-mcp", None).await?;
             Ok(conn)
         }
-        Err(ClientError::Discovery(_)) => {
+        Err(ClientError::Discovery(msg)) if is_spawnable_discovery_miss(&msg) => {
             // No live test daemon — spawn one.
             spawn_and_attach_test_daemon().await
         }
         Err(e) => Err(e.into()),
     }
+}
+
+/// Whether a `ClientError::Discovery` message represents a benign "no daemon
+/// registered yet" state that justifies spawning, as opposed to a corrupt or
+/// unreadable registry which should bubble up. Mirrors the message prefixes
+/// produced in `shore-client/src/discovery.rs`.
+fn is_spawnable_discovery_miss(msg: &str) -> bool {
+    msg.starts_with("instances registry not found at ")
+        || msg.starts_with("no daemon found for id: ")
+        || msg == "instances file is empty"
 }
 
 async fn spawn_and_attach_test_daemon() -> anyhow::Result<SWPConnection> {
