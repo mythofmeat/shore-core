@@ -13,9 +13,11 @@ use crate::gating::GateContext;
 
 /// Handler struct passed to rmcp as the server state.
 ///
-/// Holds the single `SWPConnection` to shore-daemon (wrapped in a Mutex
-/// because MCP tool calls may be concurrent and we need serial SWP access),
-/// plus the gate context for mutation-tool refusal.
+/// The `SWPConnection` is wrapped in a Mutex because SWP has no
+/// request-id multiplexing on a single stream: `run_cmd` must hold the
+/// lock across send AND the full recv loop so no other tool call
+/// interleaves and steals our `CommandOutput` frame. Shrinking that
+/// critical section would desync the stream, not just parallelise it.
 pub struct ShoreMcpHandler {
     pub conn: Arc<Mutex<SWPConnection>>,
     pub gate: GateContext,
@@ -28,9 +30,7 @@ impl ShoreMcpHandler {
             profile_is_test,
             allow_main_writes: cli.allow_main_writes,
         };
-        let tool_router = ShoreMcpHandler::status_router()
-            + ShoreMcpHandler::log_router()
-            + ShoreMcpHandler::usage_router();
+        let tool_router = Self::all_tools_router();
         Self {
             conn: Arc::new(Mutex::new(conn)),
             gate,
@@ -40,6 +40,12 @@ impl ShoreMcpHandler {
 }
 
 impl ShoreMcpHandler {
+    /// Composition of every per-category tool router. Each tool task
+    /// (12-17) extends this chain by one summand.
+    pub(crate) fn all_tools_router() -> ToolRouter<Self> {
+        Self::status_router() + Self::log_router() + Self::usage_router()
+    }
+
     /// Check gates, send an SWP command, drain to CommandOutput, return JSON.
     pub(crate) async fn run_cmd(
         &self,
@@ -50,7 +56,7 @@ impl ShoreMcpHandler {
         match crate::gating::check(tool_name, &self.gate) {
             crate::gating::GateDecision::Allow => {}
             crate::gating::GateDecision::Refuse(msg) => {
-                return Err(ErrorData::invalid_params(msg, None));
+                return Err(ErrorData::internal_error(msg, None));
             }
         }
 
@@ -69,13 +75,34 @@ impl ShoreMcpHandler {
                 ServerMessage::Error(err) => {
                     return Err(ErrorData::internal_error(err.message, None));
                 }
-                ServerMessage::Ping(_)
+                ServerMessage::Shutdown(_) => {
+                    return Err(ErrorData::internal_error(
+                        "daemon shut down before returning CommandOutput",
+                        None,
+                    ));
+                }
+                // Benign async-push frames: the daemon emits these outside
+                // of command/response scope. Keep waiting for our reply.
+                ServerMessage::Hello(_)
                 | ServerMessage::History(_)
+                | ServerMessage::Ping(_)
                 | ServerMessage::NewMessage(_)
                 | ServerMessage::SendImage(_)
-                | ServerMessage::Phase(_) => {}
-                other => {
-                    tracing::debug!(?other, "run_cmd: ignoring unexpected frame");
+                | ServerMessage::Phase(_)
+                | ServerMessage::CacheWarning(_) => {}
+                // Streaming frames are only legitimate for send/regen
+                // (Task 16), which owns its own helper. If we see them
+                // here the daemon sent a stream for a request we didn't
+                // make — warn but keep draining rather than hang.
+                ServerMessage::StreamStart(_)
+                | ServerMessage::StreamChunk(_)
+                | ServerMessage::StreamEnd(_)
+                | ServerMessage::ToolCall(_)
+                | ServerMessage::ToolResult(_) => {
+                    tracing::warn!(
+                        tool = tool_name,
+                        "run_cmd: unexpected stream frame for read-only command, ignoring"
+                    );
                 }
             }
         }

@@ -102,7 +102,7 @@ impl ShoreMcpHandler {
 
     #[tool(
         name = "log_edit",
-        description = "Edit the content of a single message in the conversation log. Mutating."
+        description = "Edit the content of a single message in the conversation log. Mutating — refused on main without --allow-main-writes."
     )]
     pub async fn tool_log_edit(
         &self,
