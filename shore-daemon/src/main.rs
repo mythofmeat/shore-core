@@ -160,8 +160,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    let server_config = ServerConfig {
+    // Pre-bind the TCP listener so we can resolve port-zero binds (e.g.
+    // `--addr 127.0.0.1:0`) before recording the addr in the instance
+    // registry. Without this, the registry holds the literal `:0` and any
+    // discovery client connects to a port that was never actually opened.
+    let pre_bind_config = ServerConfig {
         addr: addr.clone(),
+        allowed_hosts: loaded.app.daemon.allowed_hosts.clone(),
+        server_name: "shore-daemon".into(),
+        handshake: None,
+    };
+    let pre_bind_server = Server::new(pre_bind_config);
+    let listener = pre_bind_server
+        .bind()
+        .await
+        .map_err(|source| StartupError::ServerRun {
+            addr: addr.clone(),
+            source,
+        })?;
+    let resolved_addr = listener
+        .local_addr()
+        .map(|a| a.to_string())
+        .unwrap_or_else(|_| addr.clone());
+    drop(pre_bind_server);
+
+    let server_config = ServerConfig {
+        addr: resolved_addr.clone(),
         allowed_hosts: loaded.app.daemon.allowed_hosts.clone(),
         server_name: "shore-daemon".into(),
         handshake: None,
@@ -172,7 +196,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let instance_info = InstanceInfo {
         id: instance_id.clone(),
         pid: std::process::id(),
-        addr: addr.clone(),
+        addr: resolved_addr.clone(),
         started_at: epoch_timestamp(),
         data_dir: Some(loaded.dirs.data.display().to_string()),
     };
@@ -185,7 +209,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!(
         instance_id = %instance_id,
         registry_path = %registry.path().display(),
-        addr = %addr,
+        addr = %resolved_addr,
         data_dir = %loaded.dirs.data.display(),
         "Registered daemon instance"
     );
@@ -317,14 +341,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ── Run server ───────────────────────────────────────────────────
     let result = server
-        .run(shutdown_rx)
+        .run_with_listener(listener, shutdown_rx)
         .await
         .map_err(|source| StartupError::ServerRun {
-            addr: addr.clone(),
+            addr: resolved_addr.clone(),
             source,
         });
     if let Err(error) = &result {
-        error!(addr = %addr, error = %error, "Daemon server exited with error");
+        error!(addr = %resolved_addr, error = %error, "Daemon server exited with error");
     }
 
     // Drop the server so its route_tx is released, unblocking the handler.
