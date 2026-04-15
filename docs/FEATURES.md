@@ -310,7 +310,105 @@ See [`CONFIGURATION.md` — `[behavior.tool_use]`](CONFIGURATION.md#behaviortool
 
 ## Clients
 
-<!-- written in Task 14 -->
+Three clients ship with Shore: the CLI (`shore`), the TUI (`shore-tui`), and the Matrix bridge (`shore matrix`).
+
+### CLI
+
+```sh
+shore [--character <name>] <command>
+```
+
+Full command reference:
+
+#### Conversation
+
+| Command | Description |
+| ------- | ----------- |
+| `shore send <message>` | Send a message |
+| `shore send -i image.png <message>` | Attach an image |
+| `shore send --thinking <message>` | Send with extended thinking |
+| `shore regen` | Regenerate the last assistant response |
+| `shore regen --guidance "..."` | Regenerate with guidance |
+
+#### Log
+
+| Command | Description |
+| ------- | ----------- |
+| `shore log` | Last 20 messages |
+| `shore log -n 50` | Last N messages |
+| `shore log -f` | Follow mode — stream new messages |
+| `shore log --heartbeat` | Show the interiority / autonomy event log (wakeups, ticks, dormancy transitions) |
+| `shore log last` / `shore log -1` | Single most recent message |
+| `shore log edit <ref> <text>` | Edit a message |
+| `shore log delete <ref>` | Delete a message |
+
+#### Character
+
+| Command | Description |
+| ------- | ----------- |
+| `shore character` | List available characters |
+| `shore character <name>` | Switch to a character |
+| `shore character --info` | Detail on the active character |
+| `shore character --new` | Scaffold a new character directory |
+
+#### Model
+
+| Command | Description |
+| ------- | ----------- |
+| `shore model` | List available models |
+| `shore model <alias>` | Runtime model override |
+| `shore model --reset` | Clear the runtime override |
+
+#### Memory
+
+| Command | Description |
+| ------- | ----------- |
+| `shore memory <query>` | Free-text query |
+| `shore memory compact` | Compact conversation → memory; then collate |
+| `shore memory changelog` | Recent memory writes |
+| `shore memory reindex` | Rebuild FTS and vector indexes |
+| `shore memory purge` | Delete memory entries |
+| `shore memory shell` | Interactive memory shell |
+
+#### Status / config
+
+| Command | Description |
+| ------- | ----------- |
+| `shore status` | Daemon and session status |
+| `shore status --diagnostics` | Recent API calls, tool invocations, errors |
+| `shore config` | Show current configuration |
+| `shore config --path` | Print the config directory path |
+| `shore config --check` | Validate configuration |
+| `shore config --reset` | Reload config from disk (clear runtime overrides) |
+
+#### Completions
+
+| Command | Description |
+| ------- | ----------- |
+| `shore completions <shell>` | Generate shell completions for `bash`, `zsh`, `fish`, etc. |
+
+The `--character` flag (or `SHORE_CHARACTER` env var) selects which character to talk to. If only one character exists it's selected automatically.
+
+### TUI
+
+```sh
+shore-tui
+```
+
+`shore-tui` is a full-screen terminal client. It holds a persistent connection to the daemon, streams messages as they arrive, and gives you a richer editing surface than the CLI. Use the TUI when you want to *live in* a Shore conversation rather than send one-off commands.
+
+Everything the CLI does is reachable from the TUI. The CLI is useful for scripting; the TUI is useful for actually talking.
+
+### Matrix bridge
+
+The `shore matrix` subcommand bridges a Shore character into a Matrix homeserver. Shore includes an embedded Synapse homeserver manager, so you don't have to set Matrix up separately.
+
+```sh
+shore matrix setup                        # initialize the embedded homeserver and provision characters
+shore matrix register --username alice    # register a Matrix user account
+```
+
+After setup the character appears as a Matrix bot you can DM or invite into rooms. See [`examples/config.toml`](../examples/config.toml) for Matrix connection configuration.
 
 ## Prompt caching
 
