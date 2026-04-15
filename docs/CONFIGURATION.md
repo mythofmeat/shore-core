@@ -239,12 +239,67 @@ See [`examples/config.toml`](../examples/config.toml) for every memory option.
 
 ## `[chat]`
 
-<!-- written in Task 7 -->
+Where models are declared. An alias under `[chat.<provider>.<alias>]` is what you pass to `--model` or set in `[defaults] model`.
+
+### Providers
+
+| Provider key | SDK             | API key env var         |
+| ------------ | --------------- | ----------------------- |
+| `anthropic`  | anthropic       | `ANTHROPIC_API_KEY`     |
+| `openrouter` | openai-compat   | `OPENROUTER_API_KEY`    |
+| `deepseek`   | deepseek        | `DEEPSEEK_API_KEY`      |
+| `gemini`     | gemini          | `GEMINI_API_KEY`        |
+| `xai`        | openai-compat   | `XAI_API_KEY`           |
+| `zhipuai`    | zhipuai         | `ZAI_API_KEY`           |
+
+### Per-model options
+
+```toml
+[chat.anthropic.claude-sonnet]
+model_id = "claude-sonnet-4-6"
+# temperature = 0.7
+# max_tokens = 4096
+# max_context_tokens = 200000
+# cache_ttl = "5m"       # Anthropic prompt-cache TTL
+# reasoning_effort = "medium"   # provider-specific
+# budget_tokens = 16000         # extended thinking budget (Anthropic)
+```
+
+- `model_id` — the provider's canonical model ID. Required.
+- `temperature`, `max_tokens`, `max_context_tokens` — standard LLM knobs.
+- `cache_ttl` — how long prompt-cache entries live. Provider-specific (Anthropic only currently).
+- `reasoning_effort`, `budget_tokens` — extended thinking controls (Anthropic reasoning models).
+
+See [`examples/config.toml`](../examples/config.toml) for every per-model option and for embedding/image profiles.
 
 ## `[advanced]`
 
-<!-- written in Task 7 -->
+Opt-in diagnostic knobs you probably don't want on by default.
+
+```toml
+[advanced]
+cache_forensics = false   # opt-in per-request cache diagnostics
+```
+
+When `cache_forensics = true`, Shore writes a line per LLM request to `{data_dir}/cache_forensics.jsonl` with cache-hit / cache-miss / cache-create counts. Useful when debugging a suspected caching regression; noisy otherwise.
+
+See [`examples/config.toml`](../examples/config.toml) for every advanced option.
 
 ## `client.toml`
 
-<!-- written in Task 7 -->
+A separate file, `$XDG_CONFIG_HOME/shore/client.toml`, tells clients (CLI, TUI, bridges) where to reach a daemon. Useful when the daemon runs on another machine (e.g. over Tailscale).
+
+```toml
+default_address = "100.64.0.1:7320"
+```
+
+**Address resolution order** (highest wins):
+
+1. `--addr` CLI flag
+2. `default_address` in `client.toml`
+3. Instance discovery (local daemon registry)
+4. `127.0.0.1:7320` as a final fallback
+
+`client.toml` alone does **not** enable remote access. To accept non-loopback connections the daemon side must also set `[daemon].unsafe_allow_remote_access = true` and (optionally) `allowed_hosts` — see [`[daemon]`](#daemon).
+
+See [`examples/client.toml`](../examples/client.toml) for a full example.
