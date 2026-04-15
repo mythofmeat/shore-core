@@ -381,58 +381,45 @@ git commit -m "docs(config): write [daemon] and [defaults] sections"
 
 ---
 
-## Task 5: Write CONFIGURATION.md §5 `[behavior.autonomy]` (+ heartbeat + interiority)
+## Task 5: Write CONFIGURATION.md §5 `[behavior.autonomy]`
 
 **Files:**
 - Modify: `docs/CONFIGURATION.md`
 
 - [ ] **Step 1: Acceptance criteria**
 
-One grouped section (the three tables interact; explaining them separately hides that). Must cover:
+The real schema (from `shore-config/src/app.rs`, verified in Task 1) is:
 
-- `[behavior.autonomy]` top-level: `enabled`, `personality`, `max_unanswered`, `max_deferral_hours`
-- `[behavior.autonomy.heartbeat]`: `enabled`, `session_gap_secs`, `session_probe_floor_secs`, `dormant_threshold`
+- `[behavior.autonomy]`: `enabled` (master switch) + nested `interiority` sub-table
 - `[behavior.autonomy.interiority]`: `enabled`, `fallback_interiority_interval`, `dormant_after_interiority_turns`, `dormant_after_idle_time`, `minimum_interiority_latency`, `max_tool_rounds`
-- Plain-language explanation of **active** vs **dormant** phase
-- What `personality` actually tunes (probe frequency)
-- Explicit pointer to `FEATURES.md#autonomy` and `FEATURES.md#interiority` for the narrative
+
+Must cover:
+- The umbrella `[behavior.autonomy]` with only `enabled` as a top-level field
+- The `interiority` sub-table with every field named
+- Plain-language explanation of **active** vs **dormant** phase (dormant is reached via the `dormant_after_*` thresholds)
+- Explicit pointer to `FEATURES.md#autonomy` for the narrative
 
 - [ ] **Step 2: Write the section**
 
 Replace the placeholder under `## [behavior.autonomy]`:
 
 ```markdown
-Controls whether the character speaks on its own and how often. Disabled by default. Three related tables: the umbrella `[behavior.autonomy]` table, the `heartbeat` sub-table (reactive probes after idle gaps), and the `interiority` sub-table (self-scheduled private ticks).
+Controls whether the character speaks on its own. Disabled by default. Autonomy in Shore is implemented via **interiority** — self-scheduled private ticks where the character can think, use tools, and optionally send you a message. There is no separate heartbeat mechanism; `[behavior.autonomy]` is just an `enabled` switch plus the interiority sub-table.
 
-See [FEATURES.md — Autonomy](FEATURES.md#autonomy) and [FEATURES.md — Interiority](FEATURES.md#interiority) for the full story of *what these do*. This section is the config reference.
+See [FEATURES.md — Autonomy](FEATURES.md#autonomy) for what this actually does. This section is the config reference.
 
 ### Active vs dormant
 
-The character has two phases: **active** (responsive, may probe or tick) and **dormant** (silent; wakes on a user message). Both heartbeat and interiority have their own thresholds for entering the dormant phase.
+The character has two phases: **active** (responsive, may schedule interiority ticks) and **dormant** (silent; wakes on a user message). The character goes dormant after `dormant_after_interiority_turns` ticks with no user reply, or after `dormant_after_idle_time` of total silence.
 
 ### `[behavior.autonomy]` — the umbrella
 
 ```toml
 [behavior.autonomy]
-enabled = false             # master switch for autonomous speech
-personality = 0.5           # 0.0 (reserved) → 1.0 (proactive); shapes probe frequency
-max_unanswered = 1          # back off after this many unanswered autonomous messages
-max_deferral_hours = 24.0   # hard cap on how long the character will wait before sending
+enabled = false   # master switch for autonomous speech
 ` ``
 
-**When to change:** enable `enabled = true` once you're ready for unprompted messages. Raise `personality` for a more forward character; drop it for something restrained.
-
-### `[behavior.autonomy.heartbeat]` — reactive probes
-
-```toml
-[behavior.autonomy.heartbeat]
-enabled = true
-session_gap_secs = 1800           # 30 min idle marks a session boundary
-session_probe_floor_secs = 180    # minimum idle before a post-session probe fires
-dormant_threshold = 1             # consecutive unanswered probes before going dormant
-` ``
-
-Heartbeat fires probes *after a gap in conversation*. A probe is a chance for the character to check in. `session_gap_secs` defines what counts as a gap; `session_probe_floor_secs` prevents probes firing the second you stop typing.
+Only one top-level field. Everything else lives under `interiority`.
 
 ### `[behavior.autonomy.interiority]` — self-scheduled private ticks
 
@@ -446,9 +433,11 @@ minimum_interiority_latency = "1h"        # floor between a user message and the
 max_tool_rounds = 12                      # tool-use rounds per tick before forcing a wrap-up recap
 ` ``
 
-Interiority is different from heartbeat: it's the character thinking/acting on its own, not reacting to your silence. The character can schedule its own next tick; `fallback_interiority_interval` only applies when it doesn't.
+The character schedules its own next tick when it finishes one; `fallback_interiority_interval` only applies when it doesn't.
 
-`max_tool_rounds` is a safety limit — if a tick wanders, it gets wrapped up at this many tool rounds.
+`minimum_interiority_latency` prevents ticks from firing the second you stop typing — the character needs breathing room.
+
+`max_tool_rounds` is a safety limit — if a tick wanders, Shore forces a wrap-up recap at this many tool rounds.
 
 All time fields accept human durations (`"30s"`, `"15m"`, `"2h"`, `"48h"`).
 
@@ -459,7 +448,7 @@ See [`examples/config.toml`](../examples/config.toml) for every option.
 
 Run:
 ```sh
-rg -c 'enabled|personality|max_unanswered|max_deferral_hours|session_gap_secs|session_probe_floor_secs|dormant_threshold|fallback_interiority_interval|dormant_after_interiority_turns|dormant_after_idle_time|minimum_interiority_latency|max_tool_rounds' docs/CONFIGURATION.md
+rg -c 'enabled|fallback_interiority_interval|dormant_after_interiority_turns|dormant_after_idle_time|minimum_interiority_latency|max_tool_rounds' docs/CONFIGURATION.md
 ```
 
 Expected: every key named.
@@ -474,7 +463,7 @@ Expected: both phases mentioned.
 
 ```sh
 git add docs/CONFIGURATION.md
-git commit -m "docs(config): write [behavior.autonomy] section with heartbeat + interiority"
+git commit -m "docs(config): write [behavior.autonomy] section"
 ```
 
 ---
@@ -488,12 +477,12 @@ git commit -m "docs(config): write [behavior.autonomy] section with heartbeat + 
 
 **§6 `[behavior.tool_use]`** must cover:
 - `enabled`, `max_iterations`
-- `[behavior.tool_use.tools]` per-tool toggles: `memory`, `send_image`, `list_images`, `recall_image`, `generate_image`, `web_search`, `fetch_url`, `check_time`, `roll_dice`, `activity_heatmap`
+- `[behavior.tool_use.tools]` per-tool toggles: `memory`, `send_image`, `list_images`, `recall_image`, `remember_image`, `generate_image`, `web_search`, `fetch_url`, `check_time`, `roll_dice`, `activity_heatmap`, `scratchpad_list`, `scratchpad_read`, `scratchpad_write`, `scratchpad_delete`
 - `[behavior.tool_use.search]`: `api_key_env`, `max_results`, `search_depth`, `include_answer`
 
 **§7 `[memory]`** must cover:
-- `[memory.compaction]`: `enabled`, `idle_trigger_minutes`
-- `[memory.collation]` if present
+- `[memory.compaction]`: `enabled`, `idle_trigger`, `min_turns`, `max_turns`, `keep_recent_turns`
+- `[memory.collation]`: `enabled`, `auto_run`, `batch_limit`
 - Pointer to `FEATURES.md#memory` for what these *mean*
 
 - [ ] **Step 2: Write §6**
@@ -515,12 +504,17 @@ memory = true
 send_image = true
 list_images = true
 recall_image = true
+remember_image = true      # save user-shared images to memory with context
 generate_image = true
 web_search = true
 fetch_url = true
 check_time = true
 roll_dice = true
 activity_heatmap = true
+scratchpad_list = true     # browse the character's persistent scratchpad
+scratchpad_read = true
+scratchpad_write = true
+scratchpad_delete = true
 ` ``
 
 **When to change:**
@@ -557,19 +551,24 @@ See [FEATURES.md — Memory](FEATURES.md#memory) for what compaction and collati
 ```toml
 [memory.compaction]
 enabled = true
-idle_trigger_minutes = 30
+idle_trigger = "30m"       # trigger after this much inactivity
+min_turns = 8              # don't compact below this many user turns
+max_turns = 16             # force compaction at this many user turns
+keep_recent_turns = 2      # user turns retained verbatim after compaction
 ` ``
 
-Compaction condenses old conversation turns into durable memory entries. `idle_trigger_minutes` is how long the session must be idle before compaction kicks in.
+Compaction condenses old conversation turns into durable memory entries. `idle_trigger` is how long the session must be idle before compaction kicks in; `min_turns` / `max_turns` bracket when it's allowed to run; `keep_recent_turns` controls how much recent conversation stays verbatim.
 
 ### `[memory.collation]`
 
 ```toml
 [memory.collation]
 enabled = true
+auto_run = true     # run automatically after each compaction
+batch_limit = 10    # maximum memory entries processed per run
 ` ``
 
-Collation periodically merges, splits, and normalizes memory entries so related facts coalesce and contradictions get reconciled.
+Collation periodically merges, splits, and normalizes memory entries so related facts coalesce and contradictions get reconciled. `auto_run = true` chains a collation pass onto every compaction; `batch_limit` caps how much work a single pass does.
 
 See [`examples/config.toml`](../examples/config.toml) for every memory option.
 ```
@@ -584,7 +583,7 @@ rg -c 'memory|send_image|list_images|recall_image|generate_image|web_search|fetc
 Expected: every tool named.
 
 ```sh
-rg -c 'idle_trigger_minutes|Tavily|TAVILY_API_KEY' docs/CONFIGURATION.md
+rg -c 'idle_trigger|min_turns|max_turns|keep_recent_turns|auto_run|batch_limit|Tavily|TAVILY_API_KEY' docs/CONFIGURATION.md
 ```
 
 Expected: each phrase appears.
@@ -729,7 +728,7 @@ git commit -m "docs(config): write [chat], [advanced], and client.toml sections"
 
 - [ ] **Step 1: Coverage check against `examples/config.toml`**
 
-For each section heading in `examples/config.toml` (`[defaults]`, `[daemon]`, `[behavior.autonomy]`, `[behavior.autonomy.heartbeat]`, `[behavior.autonomy.interiority]`, `[behavior.tool_use]`, `[behavior.tool_use.tools]`, `[behavior.tool_use.search]`, `[memory.compaction]`, `[memory.collation]`, `[chat.*]`, `[advanced]`), verify at least one sentence in `CONFIGURATION.md` references that section path.
+For each section heading in `examples/config.toml` (`[defaults]`, `[daemon]`, `[behavior.autonomy]`, `[behavior.autonomy.interiority]`, `[behavior.tool_use]`, `[behavior.tool_use.tools]`, `[behavior.tool_use.search]`, `[memory.compaction]`, `[memory.collation]`, `[chat.*]`, `[advanced]`), verify at least one sentence in `CONFIGURATION.md` references that section path.
 
 Run:
 ```sh
@@ -772,13 +771,12 @@ Otherwise skip.
 File exists with:
 - Top-level title `# Features`
 - Short intro paragraph explaining the doc's purpose
-- All twelve section anchors present as empty headings:
+- All eleven section anchors present as empty headings:
   - `## Characters`
   - `## Models and providers`
   - `## Conversations`
   - `## Memory`
   - `## Autonomy`
-  - `## Interiority`
   - `## Tool use`
   - `## Clients`
   - `## Prompt caching`
@@ -811,11 +809,7 @@ Every user-visible feature in Shore: what it does, why it exists, and how to use
 
 ## Autonomy
 
-<!-- written in Task 12 -->
-
-## Interiority
-
-<!-- written in Task 12 -->
+<!-- written in Task 12 — covers both ambient presence and interiority ticks -->
 
 ## Tool use
 
@@ -849,7 +843,7 @@ Run:
 rg -c '^## ' docs/FEATURES.md
 ```
 
-Expected: `12`.
+Expected: `11`.
 
 - [ ] **Step 4: Commit**
 
@@ -1160,147 +1154,105 @@ git commit -m "docs(features): write memory section"
 
 ---
 
-## Task 12: FEATURES.md §5 Autonomy + §6 Interiority
+## Task 12: FEATURES.md §5 Autonomy
 
 **Files:**
 - Modify: `docs/FEATURES.md`
 
 - [ ] **Step 1: Acceptance criteria**
 
-**§5 Autonomy** covers:
-- Plain-language definition of "autonomy" in Shore
-- **Heartbeat** defined — probes fired after idle gaps
-- **Active** / **dormant** phases defined
-- `personality` dial explained in user terms
-- `max_unanswered`, `max_deferral_hours` mentioned
-- How to enable (`[behavior.autonomy] enabled = true`)
+Single merged **§5 Autonomy** section covers:
+- Plain-language definition of "autonomy" in Shore (character acts on its own)
+- **Active** / **dormant** phases defined (what each means from the user's perspective)
+- **Interiority tick** defined — one private moment where the character thinks, uses tools, maybe sends a message
+- **Recap** defined — what the character writes at the end of a tick to carry forward state
+- Self-scheduling of the next tick and the `fallback_interiority_interval` fallback
+- `minimum_interiority_latency` floor (breathing room after a user message)
+- `max_tool_rounds` wrap-up behavior
+- Dormancy pathways: `dormant_after_interiority_turns`, `dormant_after_idle_time`
+- How to enable (the two-level `[behavior.autonomy]` + `[behavior.autonomy.interiority]` opt-in)
 - Pointer to `CONFIGURATION.md#behaviorautonomy`
 
-**§6 Interiority** covers:
-- Plain-language definition: "the character thinking/acting on its own"
-- **Tick** defined — one private moment
-- **Recap** defined — what the character writes at the end of a tick to carry forward state
-- How interiority differs from heartbeat (not reactive, self-scheduled)
-- `max_tool_rounds` wrap-up behavior
-- Dormancy pathways (`dormant_after_interiority_turns`, `dormant_after_idle_time`)
-- Pointer to `CONFIGURATION.md#behaviorautonomy`
+Scope note: every config key named here must exist in `shore-config/src/app.rs::AutonomyConfig` / `InteriorityConfig`. No `personality`, `max_unanswered`, `max_deferral_hours`, or `[behavior.autonomy.heartbeat]` — those are gone from the schema.
 
 - [ ] **Step 2: Write §5**
 
 Replace the placeholder under `## Autonomy`:
 
 ```markdown
-**Autonomy** is the character speaking on its own, without you prompting. Disabled by default. You turn it on in config; Shore then decides when the character should check in.
+**Autonomy** is the character acting on its own, without you prompting — thinking things through, using tools, and optionally sending an unprompted message. Disabled by default. You turn it on in config; the character then decides for itself when to do something.
 
 ### Why it exists
 
-A character that only speaks when addressed feels like a vending machine. With autonomy on, the character can say "hey, I was thinking about what you said yesterday," reach out after a long silence, or surface a memory at a relevant moment.
+A character that only speaks when addressed feels like a vending machine. With autonomy on, the character can reflect on something you said hours ago, do its own research between your messages, consolidate memory, and decide on its own whether to reach out.
 
 ### Active vs dormant
 
 The character has two phases:
 
-- **Active** — responsive, may send unprompted messages
+- **Active** — may think on its own and send unprompted messages
 - **Dormant** — silent; wakes up when you send a message
 
-The character drifts from active to dormant based on your engagement, and back to active when you speak up again.
+The character drifts from active to dormant after stretches of no engagement, and back to active when you speak up again.
 
-### Heartbeat
+### Interiority ticks
 
-The simplest autonomy mechanism: after a conversation gap, Shore may fire a **probe** — a chance for the character to check in. Heartbeat tunables:
+The core autonomy primitive is an **interiority tick** — one private moment where the character thinks, may use tools (search memory, look things up on the web, read its scratchpad, schedule its own next tick), and may or may not produce a message to send you.
 
-- `session_gap_secs` — how long is "a gap" (default 30 min)
-- `session_probe_floor_secs` — minimum idle before a probe can fire (default 3 min)
-- `dormant_threshold` — consecutive unanswered probes before going dormant
+At the end of every tick the character writes a **recap** — a short note about what it thought about and what it plans to follow up on. Recaps carry state forward from tick to tick, giving the character narrative continuity across its private life.
 
-### The `personality` dial
+### Scheduling
 
-`[behavior.autonomy] personality` (0.0 to 1.0) shapes how often the character probes. At `0.0` the character is reserved — it probes rarely. At `1.0` it's forward — it probes often. `0.5` is balanced.
+The character self-schedules the next tick when it finishes one. If it doesn't pick a time, Shore falls back to `fallback_interiority_interval` (default `1h`).
 
-### Backoff
+A floor (`minimum_interiority_latency`, default `1h`) prevents ticks from piling up right after you send a message — the character needs breathing room.
 
-Two safety nets prevent runaway autonomous messaging:
+### Wrap-up
 
-- `max_unanswered` — if the character has this many unanswered messages in a row, it stops until you reply
-- `max_deferral_hours` — hard cap on how long the character will wait before sending a queued autonomous message
+If a tick goes long (many tool-use rounds), Shore caps it at `max_tool_rounds` (default `12`) and forces a wrap-up recap. This is a safety limit — the character can't spin forever inside a single tick.
+
+### Dormancy
+
+Two paths lead to the dormant phase:
+
+- `dormant_after_interiority_turns` — this many ticks in a row with no user reply → sleep (default `3`)
+- `dormant_after_idle_time` — this much total idle time → sleep until the user returns (default `48h`)
 
 ### How to enable
 
 ```toml
 [behavior.autonomy]
 enabled = true
-personality = 0.5
-` ``
 
-See [`CONFIGURATION.md` — `[behavior.autonomy]`](CONFIGURATION.md#behaviorautonomy) for every tunable.
-```
-
-- [ ] **Step 3: Write §6**
-
-Replace the placeholder under `## Interiority`:
-
-```markdown
-**Interiority** is the character having a private moment: thinking, remembering, looking things up, maybe acting. Separate from autonomy's heartbeat — interiority is proactive (self-scheduled), heartbeat is reactive (triggered by idle gaps).
-
-### Why it exists
-
-Real presence means the character has an inner life even when you're not there. Interiority lets the character reflect, do its own research, consolidate memory, and decide on its own whether to reach out.
-
-### Ticks and recaps
-
-A **tick** is one unit of interiority — the character's private moment. During a tick the character can use tools (search memory, look things up on the web, schedule its own next tick), and may or may not produce a message to send you.
-
-At the end of every tick the character writes a **recap** — a short note about what it thought about and what it plans to follow up on. Recaps carry state forward from tick to tick, giving the character narrative continuity across its private life.
-
-### Scheduling
-
-The character self-schedules the next tick when it finishes one. If it doesn't schedule, Shore falls back to `fallback_interiority_interval` (default 1h).
-
-A floor (`minimum_interiority_latency`, default 1h) prevents ticks from piling up right after you send a message — the character needs breathing room.
-
-### Wrap-up
-
-If a tick goes long (many tool-use rounds), Shore caps it at `max_tool_rounds` (default 12) and forces a wrap-up recap. This is a safety limit — the character can't spin forever inside a single tick.
-
-### Dormancy
-
-Two paths lead interiority into the dormant phase:
-
-- `dormant_after_interiority_turns` — this many ticks in a row with no user reply → sleep
-- `dormant_after_idle_time` — this much total idle time (default 48h) → sleep until the user returns
-
-### How to enable
-
-```toml
 [behavior.autonomy.interiority]
 enabled = true
 ` ``
 
-(Requires `[behavior.autonomy] enabled = true` as the master switch.)
+Both switches must be on. `[behavior.autonomy]` is the master gate; the `interiority` sub-table controls the tick behavior.
 
 See [`CONFIGURATION.md` — `[behavior.autonomy]`](CONFIGURATION.md#behaviorautonomy) for every tunable.
 ```
 
-- [ ] **Step 4: Verify**
+- [ ] **Step 3: Verify**
 
 Run:
 ```sh
-rg -c 'heartbeat|active|dormant|probe|personality|max_unanswered|max_deferral_hours' docs/FEATURES.md
+rg -c 'tick|recap|active|dormant|fallback_interiority_interval|minimum_interiority_latency|max_tool_rounds|dormant_after_interiority_turns|dormant_after_idle_time' docs/FEATURES.md
 ```
 
-Expected: every autonomy concept named.
+Expected: every real autonomy concept named.
 
 ```sh
-rg -c 'tick|recap|fallback_interiority_interval|minimum_interiority_latency|max_tool_rounds|dormant_after_interiority_turns|dormant_after_idle_time' docs/FEATURES.md
+rg -c 'personality|max_unanswered|max_deferral_hours|heartbeat' docs/FEATURES.md
 ```
 
-Expected: every interiority concept named.
+Expected: `0` (none of these exist in the schema — if any appear, the section is drifting from reality).
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 4: Commit**
 
 ```sh
 git add docs/FEATURES.md
-git commit -m "docs(features): write autonomy and interiority"
+git commit -m "docs(features): write merged autonomy section"
 ```
 
 ---
@@ -1321,7 +1273,8 @@ Must cover:
   - `check_time` — look up the current time / timezone
   - `roll_dice` — dice roller for rpg/game scenarios
   - `activity_heatmap` — produce a usage/activity visualization
-  - `send_image`, `list_images`, `recall_image`, `generate_image` — image tool family
+  - `send_image`, `list_images`, `recall_image`, `remember_image`, `generate_image` — image tool family
+  - `scratchpad_list`, `scratchpad_read`, `scratchpad_write`, `scratchpad_delete` — persistent notebook
 - `max_iterations` behavior
 - Pointer to `CONFIGURATION.md#behaviortool_use`
 
@@ -1360,6 +1313,16 @@ Every tool has an exact toggle under `[behavior.tool_use.tools]`. All are enable
 - `list_images` — list previously sent or generated images.
 - `recall_image` — re-send a previously generated image by reference.
 - `generate_image` — create a new image. Uses the model in `[defaults] image_generation`.
+- `remember_image` — save a user-shared image to memory with context the character can recall later.
+
+#### Scratchpad
+
+A persistent filesystem the character can read and write for notes that outlive any single conversation — think of it as the character's private notebook.
+
+- `scratchpad_list` — browse the scratchpad tree.
+- `scratchpad_read` — read a scratchpad file.
+- `scratchpad_write` — create or overwrite a scratchpad file.
+- `scratchpad_delete` — remove a scratchpad file.
 
 #### Activity
 
@@ -1376,7 +1339,7 @@ See [`CONFIGURATION.md` — `[behavior.tool_use]`](CONFIGURATION.md#behaviortool
 
 Run:
 ```sh
-rg -c 'memory|web_search|fetch_url|check_time|roll_dice|activity_heatmap|send_image|list_images|recall_image|generate_image' docs/FEATURES.md
+rg -c 'memory|web_search|fetch_url|check_time|roll_dice|activity_heatmap|send_image|list_images|recall_image|remember_image|generate_image|scratchpad_list|scratchpad_read|scratchpad_write|scratchpad_delete' docs/FEATURES.md
 ```
 
 Expected: every tool toggle named.
@@ -1443,6 +1406,7 @@ Full command reference:
 | `shore log` | Last 20 messages |
 | `shore log -n 50` | Last N messages |
 | `shore log -f` | Follow mode — stream new messages |
+| `shore log --heartbeat` | Show the interiority / autonomy event log (wakeups, ticks, dormancy transitions) |
 | `shore log last` / `shore log -1` | Single most recent message |
 | `shore log edit <ref> <text>` | Edit a message |
 | `shore log delete <ref>` | Delete a message |
@@ -1734,19 +1698,27 @@ Scan `FEATURES.md` top-to-bottom. These terms must be defined on (or before) the
 - compaction
 - collation
 - memory agent
-- heartbeat
-- probe
+- autonomy
+- interiority
 - active / dormant
 - tick
 - recap
 - tool use
+- scratchpad
 
 Run:
 ```sh
-rg -n 'compaction|collation|interiority|tick|recap|dormant|heartbeat|probe' docs/FEATURES.md | head
+rg -n 'compaction|collation|interiority|tick|recap|dormant|autonomy|scratchpad' docs/FEATURES.md | head
 ```
 
 Visually confirm the first occurrence of each is adjacent to a definition (bolded term, "**X** is …" pattern).
+
+Then run:
+```sh
+rg -c 'heartbeat|probe|personality|max_unanswered|max_deferral_hours' docs/FEATURES.md
+```
+
+Expected: `0` (these concepts were removed from the autonomy schema; any occurrence means the text is drifting from the code).
 
 - [ ] **Step 3: Commit (if fixes)**
 
@@ -1809,7 +1781,7 @@ With autonomy enabled, characters speak on their own: checking in after a silenc
 
 ## A day of use
 
-You say hi to your character in the morning. It replies with a thread it's been thinking about since yesterday (interiority tick overnight; it wrote a recap). Later you ask it about a Doom WAD you mentioned last week — it pulls the right memory, cached from a conversation three days ago. You go heads-down for the afternoon. Around dinner it probes you: *"hey, how'd that thing go?"* — because autonomy is on, heartbeat fired after the idle gap, and the character remembered you were working on something.
+You say hi to your character in the morning. It replies with a thread it's been thinking about since yesterday (an interiority tick overnight; it wrote a recap before going dormant). Later you ask it about a Doom WAD you mentioned last week — it pulls the right memory, cached from a conversation three days ago. You go heads-down for the afternoon. Around dinner, a scheduled tick fires and the character checks in on its own: *"hey, how'd that thing go?"* — because autonomy is on, and the character remembered you were working on something.
 
 ## Prerequisites
 
@@ -1986,7 +1958,7 @@ If you have a throwaway config dir, follow the README's Quick Start steps verbat
 For every section in `examples/config.toml`, confirm at least one reference appears in the three markdown files combined:
 
 ```sh
-for section in daemon defaults behavior.autonomy behavior.autonomy.heartbeat behavior.autonomy.interiority behavior.tool_use behavior.tool_use.tools behavior.tool_use.search memory.compaction memory.collation chat advanced; do
+for section in daemon defaults behavior.autonomy behavior.autonomy.interiority behavior.tool_use behavior.tool_use.tools behavior.tool_use.search memory.compaction memory.collation chat advanced; do
   hits=$(rg -c "$section" README.md docs/FEATURES.md docs/CONFIGURATION.md 2>/dev/null | wc -l)
   echo "$section -> $hits files"
 done
@@ -2000,8 +1972,8 @@ Read FEATURES.md for these terms in order of first appearance and confirm each i
 
 - character, model, provider, conversation
 - memory, compaction, collation, memory agent
-- autonomy, heartbeat, probe, active, dormant, personality
-- interiority, tick, recap
+- autonomy, active, dormant
+- interiority, tick, recap, scratchpad
 - tool use, tool
 - prompt caching
 
@@ -2013,13 +1985,22 @@ Sample spot-checks a user would do:
 
 ```sh
 rg -l 'max_tool_rounds' README.md docs/*.md examples/config.toml
-rg -l 'session_gap_secs' README.md docs/*.md examples/config.toml
+rg -l 'fallback_interiority_interval' README.md docs/*.md examples/config.toml
 rg -l 'cache_forensics' README.md docs/*.md examples/config.toml
 rg -l 'allowed_hosts' README.md docs/*.md examples/config.toml
 rg -l 'dormant_after_idle_time' README.md docs/*.md examples/config.toml
+rg -l 'scratchpad_write' README.md docs/*.md examples/config.toml
 ` ``
 
 Expected: every key returns at least one file.
+
+Then confirm nothing references removed keys:
+
+```sh
+rg -c 'personality|max_unanswered|max_deferral_hours|session_gap_secs|session_probe_floor_secs' README.md docs/*.md
+` ``
+
+Expected: every file returns `0`.
 
 - [ ] **Step 6: Final commit (if fixes)**
 
