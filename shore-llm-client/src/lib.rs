@@ -1,9 +1,11 @@
 pub mod cache_forensics;
 pub(crate) mod providers;
 pub mod retry;
+pub mod sanitize;
 pub mod stream;
 pub mod types;
 
+use std::borrow::Cow;
 use std::path::PathBuf;
 
 use chrono::Local;
@@ -167,7 +169,8 @@ impl LlmClient {
         &self,
         request: &LlmRequest,
     ) -> Result<BufReader<DuplexStream>, LlmError> {
-        let body = serde_json::to_string(request).map_err(LlmError::Serialize)?;
+        let request = maybe_sanitize_request(request);
+        let body = serde_json::to_string(&*request).map_err(LlmError::Serialize)?;
         self.log_payload("request", &body);
 
         debug!(
@@ -176,7 +179,7 @@ impl LlmClient {
             "Sending streaming request to provider"
         );
 
-        let read_half = providers::stream(&self.http_client, request).await?;
+        let read_half = providers::stream(&self.http_client, &request).await?;
         Ok(BufReader::new(read_half))
     }
 
@@ -185,10 +188,11 @@ impl LlmClient {
         &self,
         request: &LlmRequest,
     ) -> Result<types::GenerateResponse, LlmError> {
-        let body = serde_json::to_string(request).map_err(LlmError::Serialize)?;
+        let request = maybe_sanitize_request(request);
+        let body = serde_json::to_string(&*request).map_err(LlmError::Serialize)?;
         self.log_payload("request", &body);
 
-        let resp = providers::generate(&self.http_client, request).await?;
+        let resp = providers::generate(&self.http_client, &request).await?;
         Ok(resp)
     }
 
@@ -257,6 +261,28 @@ impl LlmClient {
 impl Default for LlmClient {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Defensively strip orphan `tool_use`/`tool_result` blocks from an outbound
+/// request. Orphans cause hard 400s from Anthropic and OpenAI-family APIs
+/// (and from translation proxies like OpenRouter). The healthy path allocates
+/// nothing; only when orphans are actually present do we clone and rewrite.
+fn maybe_sanitize_request(request: &LlmRequest) -> Cow<'_, LlmRequest> {
+    match sanitize::sanitize_tool_pairs(&request.messages) {
+        Some(cleaned) => {
+            warn!(
+                rid = request.rid.as_deref().unwrap_or("-"),
+                character = request.forensic_character.as_deref().unwrap_or("-"),
+                original_msgs = request.messages.len(),
+                cleaned_msgs = cleaned.len(),
+                "stripped orphan tool_use/tool_result blocks from outbound LLM request"
+            );
+            let mut owned = request.clone();
+            owned.messages = cleaned;
+            Cow::Owned(owned)
+        }
+        None => Cow::Borrowed(request),
     }
 }
 
