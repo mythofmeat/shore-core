@@ -810,6 +810,15 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
             Line::from(Span::styled(label, Style::default().fg(Color::Magenta))).right_aligned(),
         );
     }
+    if app.live_speak {
+        block = block.title(
+            Line::from(Span::styled(
+                " [TTS] ",
+                Style::default().fg(Color::Cyan),
+            ))
+            .right_aligned(),
+        );
+    }
     let paragraph = Paragraph::new(input_content)
         .block(block)
         .scroll((input_scroll, 0));

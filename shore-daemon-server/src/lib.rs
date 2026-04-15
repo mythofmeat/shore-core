@@ -88,6 +88,8 @@ pub enum RequestKind {
     Regen,
     Command,
     Cancel,
+    Speak,
+    SetLiveSpeak,
 }
 
 /// Session-scoped facts captured during the SWP handshake.
@@ -667,12 +669,18 @@ where
             });
             write_message(writer, &err).await?;
         }
-        ClientMessage::Message(_) | ClientMessage::Regen(_) | ClientMessage::Cancel(_) => {
+        ClientMessage::Message(_)
+        | ClientMessage::Regen(_)
+        | ClientMessage::Cancel(_)
+        | ClientMessage::Speak(_)
+        | ClientMessage::SetLiveSpeak(_) => {
             info!(client_id, msg_type = %msg_type_name(&msg), "Routing to engine");
             let (rid, kind) = match &msg {
                 ClientMessage::Message(body) => (body.rid.clone(), RequestKind::Message),
                 ClientMessage::Regen(regen) => (regen.rid.clone(), RequestKind::Regen),
                 ClientMessage::Cancel(_) => (None, RequestKind::Cancel),
+                ClientMessage::Speak(s) => (s.rid.clone(), RequestKind::Speak),
+                ClientMessage::SetLiveSpeak(s) => (s.rid.clone(), RequestKind::SetLiveSpeak),
                 ClientMessage::Hello(_) | ClientMessage::Command(_) => unreachable!(),
             };
             let meta = RequestMeta {
@@ -715,7 +723,11 @@ async fn event_matches_session(
         | ServerMessage::Phase(_)
         | ServerMessage::ToolCall(_)
         | ServerMessage::ToolResult(_)
-        | ServerMessage::SendImage(_) => clients.read().await.contains_key(&client_id),
+        | ServerMessage::SendImage(_)
+        | ServerMessage::AudioStart(_)
+        | ServerMessage::AudioChunk(_)
+        | ServerMessage::AudioEnd(_)
+        | ServerMessage::AudioError(_) => clients.read().await.contains_key(&client_id),
     }
 }
 
@@ -779,6 +791,8 @@ fn msg_type_name(msg: &ClientMessage) -> &'static str {
         ClientMessage::Regen(_) => "regen",
         ClientMessage::Command(_) => "command",
         ClientMessage::Cancel(_) => "cancel",
+        ClientMessage::Speak(_) => "speak",
+        ClientMessage::SetLiveSpeak(_) => "set_live_speak",
     }
 }
 

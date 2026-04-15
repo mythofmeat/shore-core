@@ -105,6 +105,8 @@ async fn make_handler(
         session_router,
         autonomy,
         NotificationService::new(Default::default()),
+        Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        None,
     );
 
     (handler, push_rx, direct_rx)
@@ -696,6 +698,8 @@ async fn make_handler_with_models(
         session_router,
         autonomy,
         NotificationService::new(Default::default()),
+        Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        None,
     );
 
     (handler, push_rx, direct_rx)

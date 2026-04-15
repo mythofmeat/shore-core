@@ -66,6 +66,8 @@ impl MessageHandler {
             session_tokens,
             diagnostics: self.cmd_ctx.diagnostics.clone(),
             notifier: self.notifier.clone(),
+            live_speak: self.live_speak.clone(),
+            tts_client: self.tts_client.clone(),
         }
     }
 

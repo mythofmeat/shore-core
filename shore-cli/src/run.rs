@@ -1,7 +1,9 @@
 use std::io::{self, IsTerminal, Read as _, Write as _};
 use std::sync::OnceLock;
 
+use shore_client::audio::AudioPlayer;
 use shore_client::{SWPConnection, ServerAddr};
+use shore_protocol::client_msg::{ClientMessage, SetLiveSpeak, Speak as SpeakMsg};
 use shore_protocol::server_msg::ServerMessage;
 use tracing::{debug, info, instrument};
 
@@ -141,6 +143,9 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         CliCommand::Regen { guidance } => {
             conn.send_regen(true, guidance.clone()).await?;
             recv_streaming_response(&mut conn).await?;
+        }
+        CliCommand::Speak { arg } => {
+            handle_speak(&mut conn, arg.as_deref()).await?;
         }
         CliCommand::Character {
             name,
@@ -695,6 +700,16 @@ async fn recv_streaming_response(
                     continue;
                 }
                 output::print_stream_end(end);
+                // If live-speak is enabled on the daemon, an AudioStart
+                // follows shortly. Wait briefly for it; otherwise return.
+                if let Ok(Ok(ServerMessage::AudioStart(start))) = tokio::time::timeout(
+                    std::time::Duration::from_millis(500),
+                    conn.recv(),
+                )
+                .await
+                {
+                    play_audio_stream(conn, start.sample_rate, start.channels).await;
+                }
                 return Ok(());
             }
             ServerMessage::ToolCall(call) => {
@@ -736,6 +751,120 @@ async fn recv_streaming_response(
             _ => {
                 // Other messages during streaming are unexpected but not fatal
             }
+        }
+    }
+}
+
+/// Handle `shore speak [ref|on|off]`: toggle live mode or request one-shot TTS.
+async fn handle_speak(
+    conn: &mut SWPConnection,
+    arg: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match arg {
+        Some("on") => {
+            conn.send(&ClientMessage::SetLiveSpeak(SetLiveSpeak {
+                rid: None,
+                enabled: true,
+            }))
+            .await?;
+            let _ = recv_command_data(conn).await?;
+            eprintln!("Live TTS enabled");
+            return Ok(());
+        }
+        Some("off") => {
+            conn.send(&ClientMessage::SetLiveSpeak(SetLiveSpeak {
+                rid: None,
+                enabled: false,
+            }))
+            .await?;
+            let _ = recv_command_data(conn).await?;
+            eprintln!("Live TTS disabled");
+            return Ok(());
+        }
+        _ => {}
+    }
+
+    let msg_id = match arg {
+        Some(msg_ref) => {
+            conn.send_command("get", serde_json::json!({ "ref": msg_ref }))
+                .await?;
+            let data = recv_command_data(conn).await?;
+            data["msg_id"].as_str().map(String::from)
+        }
+        None => None,
+    };
+
+    conn.send(&ClientMessage::Speak(SpeakMsg {
+        rid: None,
+        msg_id,
+    }))
+    .await?;
+
+    recv_audio_response(conn).await
+}
+
+/// Receive and play a TTS audio stream from the daemon.
+async fn recv_audio_response(
+    conn: &mut SWPConnection,
+) -> Result<(), Box<dyn std::error::Error>> {
+    loop {
+        let msg = conn.recv().await?;
+        match msg {
+            ServerMessage::AudioStart(start) => {
+                play_audio_stream(conn, start.sample_rate, start.channels).await;
+                return Ok(());
+            }
+            ServerMessage::AudioError(err) => {
+                eprintln!("TTS error: {}", err.message);
+                return Ok(());
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Drive an already-started audio stream: spin up a player and consume chunks
+/// until `AudioEnd`/`AudioError`.
+async fn play_audio_stream(conn: &mut SWPConnection, sample_rate: u32, channels: u16) {
+    let mut player = match AudioPlayer::new() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("Warning: could not open audio output: {e}");
+            // Drain until AudioEnd so we don't leave chunks in the buffer.
+            drain_until_audio_end(conn).await;
+            return;
+        }
+    };
+    player.start(sample_rate, channels);
+
+    loop {
+        match conn.recv().await {
+            Ok(ServerMessage::AudioChunk(chunk)) => player.feed(&chunk.data),
+            Ok(ServerMessage::AudioEnd(_)) => {
+                player.finish();
+                player.wait_until_done();
+                return;
+            }
+            Ok(ServerMessage::AudioError(err)) => {
+                eprintln!("TTS error: {}", err.message);
+                return;
+            }
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("Audio stream interrupted: {e}");
+                return;
+            }
+        }
+    }
+}
+
+async fn drain_until_audio_end(conn: &mut SWPConnection) {
+    while let Ok(msg) = conn.recv().await {
+        if matches!(
+            msg,
+            ServerMessage::AudioEnd(_) | ServerMessage::AudioError(_)
+        ) {
+            return;
         }
     }
 }

@@ -64,6 +64,13 @@ pub enum CliCommand {
         guidance: Option<String>,
     },
 
+    /// Speak a message aloud via TTS, or toggle live-speak mode (on/off)
+    Speak {
+        /// Message reference (last, -1, 3, etc.) or "on"/"off" for live mode
+        #[arg(allow_hyphen_values = true)]
+        arg: Option<String>,
+    },
+
     /// Show conversation log, get/edit/delete messages
     #[command(args_conflicts_with_subcommands = true)]
     Log {
@@ -413,6 +420,7 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
         // These use dedicated SWP message types or are handled locally.
         CliCommand::Send { system: false, .. }
         | CliCommand::Regen { .. }
+        | CliCommand::Speak { .. }
         | CliCommand::Completions { .. }
         | CliCommand::Complete { .. }
         | CliCommand::Matrix { .. }

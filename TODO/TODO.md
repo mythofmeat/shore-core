@@ -1,3 +1,2 @@
-- [x] update *ALL* documentation
-  - [x] the readme in particular is very out of date and not explanatory enough
-  - [x] explain what the features are, why they exist, and how to use them and configure them
+- [ ] tts integration [./features/2026-04-10-tts-integration.md]
+- [ ] image paste support [./features/2026-04-12-image-paste-support.md]

@@ -1,3 +1,5 @@
+use shore_client::audio::AudioPlayer;
+use shore_protocol::server_msg::ServerMessage;
 use shore_protocol::types::{CharacterInfo, ImageRef, StreamMetadata, TokenCounts};
 
 use crate::images::ImageCache;
@@ -405,6 +407,10 @@ pub struct App {
     pub image_index: Vec<ImageEntry>,
     /// When set, the fullscreen image viewer is active showing this image index.
     pub fullscreen: Option<usize>,
+    /// TTS audio player; opened lazily on first AudioStart.
+    pub audio_player: Option<AudioPlayer>,
+    /// Whether live-speak mode is enabled in this session.
+    pub live_speak: bool,
 }
 
 impl Default for App {
@@ -439,6 +445,8 @@ impl Default for App {
             editing_ref: None,
             image_index: Vec::new(),
             fullscreen: None,
+            audio_player: None,
+            live_speak: false,
         }
     }
 }
@@ -495,6 +503,40 @@ impl App {
         })
     }
 
+    /// Dispatch an audio-related server message into the TTS playback pipeline.
+    pub fn handle_audio_message(&mut self, msg: &ServerMessage) {
+        match msg {
+            ServerMessage::AudioStart(start) => {
+                if self.audio_player.is_none() {
+                    match AudioPlayer::new() {
+                        Ok(p) => self.audio_player = Some(p),
+                        Err(e) => {
+                            self.set_status(format!("audio unavailable: {e}"));
+                            return;
+                        }
+                    }
+                }
+                if let Some(ref mut player) = self.audio_player {
+                    player.start(start.sample_rate, start.channels);
+                }
+            }
+            ServerMessage::AudioChunk(chunk) => {
+                if let Some(ref player) = self.audio_player {
+                    player.feed(&chunk.data);
+                }
+            }
+            ServerMessage::AudioEnd(_) => {
+                if let Some(ref player) = self.audio_player {
+                    player.finish();
+                }
+            }
+            ServerMessage::AudioError(err) => {
+                self.set_status(format!("TTS error: {}", err.message));
+            }
+            _ => {}
+        }
+    }
+
     pub fn set_status(&mut self, msg: impl Into<String>) {
         self.entries.push(ConversationEntry::System {
             content: msg.into(),
@@ -517,6 +559,7 @@ impl App {
         "model",
         "quit",
         "regen",
+        "speak",
         "status",
         "sys",
     ];

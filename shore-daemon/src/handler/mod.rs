@@ -19,6 +19,7 @@ mod tests;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 pub(crate) use images::{build_content, embed_image_data};
@@ -27,7 +28,10 @@ use task::handle_generation;
 
 use shore_protocol::client_msg::{ClientMessage, ClientMessageBody};
 use shore_protocol::error::ErrorCode;
-use shore_protocol::server_msg::{Error as SwpError, ServerMessage};
+use shore_protocol::server_msg::{
+    AudioError as SwpAudioError, CommandOutput as SwpCommandOutput, Error as SwpError,
+    ServerMessage,
+};
 use tokio::sync::{broadcast, mpsc, Mutex};
 use tracing::{debug, error, info};
 
@@ -46,6 +50,8 @@ use shore_config::app::SearchConfig;
 use shore_config::LoadedConfig;
 use shore_daemon_server::{RequestMeta, RoutedMessage, SessionId, SessionRouter};
 use shore_ledger::LedgerClient;
+
+use crate::tts::TtsClient;
 
 pub(super) struct HandlerToolContext {
     inner: SharedToolContext,
@@ -116,6 +122,10 @@ struct GenContext {
     session_tokens: Arc<std::sync::Mutex<SessionTokens>>,
     diagnostics: Arc<std::sync::Mutex<shore_diagnostics::Diagnostics>>,
     notifier: NotificationService,
+    /// Daemon-wide live TTS flag.
+    live_speak: Arc<AtomicBool>,
+    /// TTS client (None if TTS is not configured).
+    tts_client: Option<TtsClient>,
 }
 
 struct GenerationParams {
@@ -160,6 +170,10 @@ pub struct MessageHandler {
     pub session_router: SessionRouter,
     pub autonomy: AutonomyManager,
     pub notifier: NotificationService,
+    /// Daemon-wide live TTS flag.
+    pub live_speak: Arc<AtomicBool>,
+    /// TTS client (None if TTS is not configured).
+    pub tts_client: Option<TtsClient>,
     sessions: HashMap<SessionId, SessionState>,
 }
 
@@ -172,6 +186,8 @@ impl MessageHandler {
         session_router: SessionRouter,
         autonomy: AutonomyManager,
         notifier: NotificationService,
+        live_speak: Arc<AtomicBool>,
+        tts_client: Option<TtsClient>,
     ) -> Self {
         Self {
             registry,
@@ -181,6 +197,8 @@ impl MessageHandler {
             session_router,
             autonomy,
             notifier,
+            live_speak,
+            tts_client,
             sessions: HashMap::new(),
         }
     }
@@ -221,6 +239,8 @@ impl MessageHandler {
                         ClientMessage::Message(_) => "message",
                         ClientMessage::Regen(_) => "regen",
                         ClientMessage::Cancel(_) => "cancel",
+                        ClientMessage::Speak(_) => "speak",
+                        ClientMessage::SetLiveSpeak(_) => "set_live_speak",
                         _ => "other",
                     };
                     debug!(
@@ -232,6 +252,63 @@ impl MessageHandler {
                         kind = msg_kind,
                         "handling engine message"
                     );
+                    if let ClientMessage::SetLiveSpeak(ref toggle) = msg {
+                        let prev = self.live_speak.swap(toggle.enabled, Ordering::Relaxed);
+                        info!(
+                            enabled = toggle.enabled,
+                            prev, "Live TTS toggled"
+                        );
+                        let _ = self
+                            .session_router
+                            .send_to_session(
+                                meta.session.session_id,
+                                ServerMessage::CommandOutput(SwpCommandOutput {
+                                    rid: meta.rid.clone(),
+                                    name: "set_live_speak".into(),
+                                    data: serde_json::json!({ "enabled": toggle.enabled }),
+                                }),
+                            )
+                            .await;
+                        continue;
+                    }
+
+                    if let ClientMessage::Speak(ref speak) = msg {
+                        let Some(tts_client) = self.tts_client.clone() else {
+                            let _ =
+                                self.push_tx.send(ServerMessage::AudioError(SwpAudioError {
+                                    rid: speak.rid.clone(),
+                                    message: "TTS not configured".into(),
+                                }));
+                            continue;
+                        };
+                        let push_tx = self.push_tx.clone();
+                        let registry = self.registry.clone();
+                        let rid = speak.rid.clone();
+                        let msg_id = speak.msg_id.clone();
+                        let character = meta.session.selected_character.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = handle_speak_request(
+                                &tts_client,
+                                &push_tx,
+                                &registry,
+                                rid.clone(),
+                                msg_id,
+                                character.as_deref(),
+                            )
+                            .await
+                            {
+                                error!(error = %e, "TTS speak failed");
+                                let _ = push_tx.send(ServerMessage::AudioError(
+                                    SwpAudioError {
+                                        rid,
+                                        message: e.to_string(),
+                                    },
+                                ));
+                            }
+                        });
+                        continue;
+                    }
+
                     if matches!(msg, ClientMessage::Cancel(_)) {
                         info!(
                             client_id = meta.session.client_id.0,
@@ -360,4 +437,65 @@ impl MessageHandler {
         }
         info!("Message handler shutting down (route channel closed)");
     }
+}
+
+/// Handle a client `Speak` request: resolve character + voice + message text,
+/// then call the TTS relay. All output goes through `push_tx` (broadcast).
+async fn handle_speak_request(
+    tts_client: &TtsClient,
+    push_tx: &broadcast::Sender<ServerMessage>,
+    registry: &Arc<Mutex<CharacterRegistry>>,
+    rid: Option<String>,
+    msg_id: Option<String>,
+    character: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use shore_protocol::types::Role;
+
+    let (char_name, voice, resolved_id, text) = {
+        let mut reg = registry.lock().await;
+        let char_name = reg.resolve_character(character)?;
+        let engine_arc = reg.get_or_create(&char_name)?;
+        let voice = reg
+            .effective_config(&char_name)
+            .app
+            .tts
+            .voice
+            .clone()
+            .unwrap_or_else(|| char_name.clone());
+        drop(reg);
+
+        let engine = engine_arc.lock().await;
+        let messages = engine.messages();
+        let (resolved_id, text) = match msg_id {
+            Some(ref id) => {
+                let msg = messages
+                    .iter()
+                    .find(|m| &m.msg_id == id)
+                    .ok_or_else(|| format!("message not found: {id}"))?;
+                (msg.msg_id.clone(), msg.content.clone())
+            }
+            None => {
+                let msg = messages
+                    .iter()
+                    .rev()
+                    .find(|m| m.role == Role::Assistant)
+                    .ok_or("no assistant messages to speak")?;
+                (msg.msg_id.clone(), msg.content.clone())
+            }
+        };
+
+        (char_name, voice, resolved_id, text)
+    };
+
+    if text.is_empty() {
+        let _ = push_tx.send(ServerMessage::AudioError(SwpAudioError {
+            rid,
+            message: "message has no text content".into(),
+        }));
+        return Ok(());
+    }
+
+    debug!(character = %char_name, voice = %voice, msg_id = %resolved_id, "handle_speak resolved");
+    crate::tts::relay_speech(tts_client, &text, &voice, &resolved_id, rid, push_tx).await;
+    Ok(())
 }
