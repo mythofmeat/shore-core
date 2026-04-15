@@ -24,6 +24,7 @@ pub struct ResolvedProfile {
     pub env_overrides: Vec<(String, String)>,
     /// Tempdir handle, only set for `Ephemeral`. Drop-on-exit keeps the
     /// profile directory alive for the lifetime of the MCP server.
+    #[allow(dead_code)]
     pub tempdir: Option<tempfile::TempDir>,
 }
 
