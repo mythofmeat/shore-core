@@ -1,3 +1,3 @@
-- [ ] update *ALL* documentation
-  - [ ] the readme in particular is very out of date and not explanatory enough
-  - [ ] explain what the features are, why they exist, and how to use them and configure them
+- [x] update *ALL* documentation
+  - [x] the readme in particular is very out of date and not explanatory enough
+  - [x] explain what the features are, why they exist, and how to use them and configure them
