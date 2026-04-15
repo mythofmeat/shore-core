@@ -14,3 +14,4 @@ pub mod notifications;
 mod sync;
 pub mod templates;
 pub mod tools;
+pub mod tts;
