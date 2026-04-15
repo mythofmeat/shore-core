@@ -1,12 +1,4 @@
-- [ ] followup: character has essentially stopped writing `<recap>` entries. As of 2026-04-14, exactly one recap exists in `recaps.jsonl`, timestamped `2026-04-08T17:08:57+10:00` — nothing since. The prompt contract fix (injection on short gaps) is in place, but the character needs to be prompted/rewarded for writing recaps again. Investigate whether the interiority prompt is landing correctly, whether recaps are being extracted on every tick, and whether there's cache/model drift (interiority model setter fix may be relevant here too).
-
-- [ ] bug: when trying to send a message with a chatgpt model
-```
-error: InternalError - HTTP 400: {"error":{"message":"Provider returned error","code":400,"metadata":{"raw":"{\n \"error\": {\n \"message\":
-  \"No tool call found for function call output with call_id tool_remember_image_C6qJvvjYhJ955ffYCXdw.\",\n \"type\":
-  \"invalid_request_error\",\n \"param\": \"input\",\n \"code\": null\n
-  }\n}","provider_name":"Azure","is_byok":false}},"user_id":"user_2lEcCR3C7yKCDzxeUclpcbk337W"}
-```
+- [ ] followup: character has essentially stopped writing `<recap>` entries. As of 2026-04-14, exactly one recap exists in `recaps.jsonl`, timestamped `2026-04-08T17:08:57+10:00` — nothing since. The prompt contract fix (injection on short gaps) is in place, but the character needs to be prompted/rewarded for writing recaps again. Investigate whether the interiority prompt is landing correctly, whether recaps are being extracted on every tick, and whether there's cache/model drift (interiority model setter fix may be relevant here too). Potential plan that require's claude's review (since it was drafted via a cheaper llm) is at `./interiority-wrap-up.md`
 
 - [ ] weird intermittent memory agent issues:
 ```
