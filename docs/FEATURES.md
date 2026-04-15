@@ -412,16 +412,99 @@ After setup the character appears as a Matrix bot you can DM or invite into room
 
 ## Prompt caching
 
-<!-- written in Task 15 -->
+Prompt caching lets providers re-use the same long prompt prefix across requests at a fraction of the cost. Shore uses it aggressively — system prompts, character definitions, and a growing fraction of the conversation history all cache.
+
+### Why it matters
+
+Most of the tokens Shore sends on any given request are the same as the last request: the same system prompt, the same character definition, the same earlier conversation. Without caching you pay full input price for every one of those tokens on every request. With caching, identical prefixes cost ~10% of normal input price (Anthropic) or are free (some providers).
+
+### Provider pinning caveat
+
+OpenRouter, by default, load-balances across providers. Two consecutive requests can hit two different backends, which each have their own cache state — cache hits plummet. When using caching through OpenRouter, pin a single provider in your OpenRouter settings (e.g. `provider = { order = ["Anthropic"] }`).
+
+### Tuning
+
+Anthropic exposes a `cache_ttl` per model — how long cached prefixes stick around.
+
+```toml
+[chat.anthropic.claude-sonnet]
+model_id = "claude-sonnet-4-6"
+cache_ttl = "5m"    # short TTL for active conversations
+# cache_ttl = "1h"  # longer for slow-moving characters
+```
+
+### Cache forensics
+
+If caching looks broken, opt in to per-request forensics:
+
+```toml
+[advanced]
+cache_forensics = true
+```
+
+Shore then writes each request's cache accounting (hits, misses, creates) to `{data_dir}/cache_forensics.jsonl`. Noisy — leave off in normal operation.
+
+See [`CONFIGURATION.md` — `[advanced]`](CONFIGURATION.md#advanced).
 
 ## Diagnostics
 
-<!-- written in Task 15 -->
+Shore keeps a rolling record of recent activity: LLM requests, tool invocations, errors, and token/cost accounting.
+
+```sh
+shore status                  # daemon + session summary
+shore status --diagnostics    # full diagnostics: API calls, tools, errors, tokens
+```
+
+The diagnostics output includes:
+
+- Recent API calls (model, tokens in/out, cached tokens, duration)
+- Recent tool invocations (name, duration, outcome)
+- Recent errors with context
+- Running token and cost totals for the current session
+
+Use this when something is slow, something failed silently, or you want to know how much the last hour cost you.
 
 ## Remote access
 
-<!-- written in Task 15 -->
+Shore is localhost-only by default. You can opt in to binding on a non-loopback address (for reaching your daemon from another machine over a trusted network), but the protocol is unauthenticated TCP.
+
+*No TLS yet — authenticated remote access is deferred. Only bind remotely on private overlays you already trust (Tailscale, WireGuard, VPN).*
+
+### Enabling
+
+```toml
+[daemon]
+addr = "100.64.0.1:7320"
+unsafe_allow_remote_access = true
+allowed_hosts = ["100.64.0.2"]   # optional source-IP allowlist
+```
+
+`unsafe_allow_remote_access = true` is required for any non-loopback bind. Without it Shore refuses to start.
+
+`allowed_hosts` is a source-IP allowlist *only* — it is not authentication, and it is not encryption. It stops unknown IPs from connecting; it doesn't stop anyone who can spoof an allowed IP or who's listening on the wire.
+
+### Tailscale
+
+The most ergonomic private overlay. Both machines join your tailnet, each gets a stable `100.x.x.x` address, and `allowed_hosts` can list the peer's tailnet IP.
+
+### Client side
+
+On the client machine, point `client.toml` at the remote daemon:
+
+```toml
+default_address = "100.64.0.1:7320"
+```
+
+See [`CONFIGURATION.md` — `client.toml`](CONFIGURATION.md#clienttoml) and [`CONFIGURATION.md` — `[daemon]`](CONFIGURATION.md#daemon).
 
 ## Shell completions
 
-<!-- written in Task 15 -->
+Generate shell completion scripts:
+
+```sh
+shore completions bash > ~/.local/share/bash-completion/completions/shore
+shore completions zsh > ~/.zfunc/_shore
+shore completions fish > ~/.config/fish/completions/shore.fish
+```
+
+Supports `bash`, `zsh`, `fish`, `elvish`, `powershell`.
