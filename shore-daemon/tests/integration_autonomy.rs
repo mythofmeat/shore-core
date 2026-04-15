@@ -10,16 +10,48 @@
 
 use std::time::Duration;
 
-use shore_test_harness::TestHarness;
+use shore_test_harness::{MockLlmServer, TestHarness};
 
 /// Helper: yield the runtime multiple times so spawned tasks (especially the
 /// autonomy tick loop) have a chance to process after a time advance.
+///
+/// Use this for "settle the runtime, no specific condition" — typically before
+/// asserting that a count did NOT change. For "wait until the count goes up",
+/// use [`wait_until_count_above`] instead, which is load-aware and exits as
+/// soon as the condition is satisfied.
 async fn yield_many(n: usize) {
     for _ in 0..n {
         tokio::task::yield_now().await;
         // Small sleep to let async tasks settle (instant under paused time).
         tokio::time::sleep(Duration::from_millis(1)).await;
     }
+}
+
+/// Poll `mock_llm.received_requests().len()` until it exceeds `baseline`, or
+/// until `max_iters` polling cycles have elapsed. Returns the final count.
+///
+/// Each cycle yields the runtime and sleeps 1ms, so under `tokio::time::pause`
+/// time auto-advances when the runtime is otherwise idle, giving the autonomy
+/// tick loop a chance to run. Bounds the work so a genuine bug still fails the
+/// assertion in O(max_iters) time instead of hanging.
+///
+/// Replaces the brittle `advance(D); yield_many(N); assert count > baseline`
+/// pattern, which fails under heavy parallel CPU load when N is too small for
+/// the scheduled tick to land.
+async fn wait_until_count_above(
+    mock_llm: &MockLlmServer,
+    baseline: usize,
+    max_iters: usize,
+) -> usize {
+    for _ in 0..max_iters {
+        let n = mock_llm.received_requests().await.len();
+        if n > baseline {
+            return n;
+        }
+        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    mock_llm.received_requests().await.len()
 }
 
 /// Test 1: After sending a user message (which primes last_request and warms
@@ -55,14 +87,11 @@ async fn test_keepalive_ping_fires_after_59_minutes() {
     tokio::time::pause();
 
     tokio::time::advance(Duration::from_secs(55 * 60 + 30)).await;
-    yield_many(20).await;
-
     // Advance a bit more to give the tick loop another cycle.
     tokio::time::advance(Duration::from_secs(60)).await;
-    yield_many(20).await;
+    let after = wait_until_count_above(&harness.mock_llm, baseline, 200).await;
 
     let requests = harness.mock_llm.received_requests().await;
-    let after = requests.len();
     assert!(
         after > baseline,
         "Expected keepalive ping request after 55+ minutes. \
@@ -151,12 +180,8 @@ async fn test_failed_ping_retries() {
     tokio::time::pause();
 
     tokio::time::advance(Duration::from_secs(55 * 60 + 30)).await;
-    yield_many(20).await;
-
     tokio::time::advance(Duration::from_secs(60)).await;
-    yield_many(20).await;
-
-    let after_error = harness.mock_llm.received_requests().await.len();
+    let after_error = wait_until_count_above(&harness.mock_llm, baseline, 200).await;
     assert!(
         after_error > baseline,
         "Expected at least one request attempt (even if it failed). \
@@ -171,12 +196,8 @@ async fn test_failed_ping_retries() {
 
     // Advance another full ping cycle for the retry.
     tokio::time::advance(Duration::from_secs(55 * 60 + 30)).await;
-    yield_many(20).await;
-
     tokio::time::advance(Duration::from_secs(60)).await;
-    yield_many(20).await;
-
-    let after_retry = harness.mock_llm.received_requests().await.len();
+    let after_retry = wait_until_count_above(&harness.mock_llm, after_error, 200).await;
     assert!(
         after_retry > after_error,
         "Expected a retry request after the failed ping. \
@@ -239,9 +260,7 @@ async fn test_user_message_resets_keepalive_timer() {
         .enqueue_json_text_optional("deferred ping")
         .await;
     tokio::time::advance(Duration::from_secs(50 * 60)).await;
-    yield_many(20).await;
-
-    let after_deferred = harness.mock_llm.received_requests().await.len();
+    let after_deferred = wait_until_count_above(&harness.mock_llm, after_msg, 200).await;
     assert!(
         after_deferred > after_msg,
         "Keepalive should fire at ~105min (50min + 55min interval). \
@@ -276,13 +295,9 @@ async fn test_sustained_keepalive_over_four_hours() {
 
         // Advance 56 minutes (past the 55min interval).
         tokio::time::advance(Duration::from_secs(56 * 60)).await;
-        yield_many(30).await;
-
         // Small extra advance to ensure tick fires.
         tokio::time::advance(Duration::from_secs(30)).await;
-        yield_many(10).await;
-
-        let current = harness.mock_llm.received_requests().await.len();
+        let current = wait_until_count_above(&harness.mock_llm, baseline + i, 200).await;
         assert!(
             current > baseline + i,
             "Expected ping #{} at ~{}min. Baseline: {baseline}, Current: {current}",
@@ -339,11 +354,8 @@ async fn test_burst_messages_single_deferred_ping() {
         .enqueue_json_text_optional("deferred")
         .await;
     tokio::time::advance(Duration::from_secs(7 * 60)).await;
-    yield_many(30).await;
     tokio::time::advance(Duration::from_secs(60)).await;
-    yield_many(20).await;
-
-    let after_deferred = harness.mock_llm.received_requests().await.len();
+    let after_deferred = wait_until_count_above(&harness.mock_llm, at_50, 200).await;
 
     // At least one additional request (the keepalive ping).
     assert!(
@@ -381,9 +393,7 @@ async fn test_triple_failure_then_recovery() {
         .enqueue_error_optional(503, "Service Unavailable")
         .await;
     tokio::time::advance(Duration::from_secs(55 * 60 + 30)).await;
-    yield_many(30).await;
-
-    let after_first = harness.mock_llm.received_requests().await.len();
+    let after_first = wait_until_count_above(&harness.mock_llm, baseline, 200).await;
     assert!(
         after_first > baseline,
         "First attempt should have been made. Baseline: {baseline}, After: {after_first}"
@@ -456,12 +466,8 @@ async fn test_keepalive_survives_crash() {
 
     tokio::time::pause();
     tokio::time::advance(Duration::from_secs(55 * 60 + 30)).await;
-    yield_many(30).await;
-
     tokio::time::advance(Duration::from_secs(60)).await;
-    yield_many(20).await;
-
-    let after = harness.mock_llm.received_requests().await.len();
+    let after = wait_until_count_above(&harness.mock_llm, baseline, 200).await;
     assert!(
         after > baseline,
         "Keepalive should fire after crash+reboot. Baseline: {baseline}, After: {after}"
