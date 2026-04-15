@@ -67,11 +67,54 @@ Individual providers may support additional env vars for per-model overrides —
 
 ## `[daemon]`
 
-<!-- written in Task 4 -->
+Controls how the daemon binds and who can reach it. By default the daemon is localhost-only; you have to opt in to remote binds explicitly.
+
+**When to change:** only when you want to reach the daemon from another machine on a trusted private network (Tailscale, WireGuard, a VPN).
+
+```toml
+[daemon]
+addr = "127.0.0.1:7320"
+# unsafe_allow_remote_access = true
+# allowed_hosts = ["100.64.0.2"]
+```
+
+- `addr` — listen address. `--addr` and `SHORE_ADDR` override this (see [Orientation](#orientation)).
+- `unsafe_allow_remote_access` — **required** for any non-loopback bind. Without it Shore refuses to start.
+- `allowed_hosts` — source-IP allowlist. An allowed host can connect without any further check.
+
+*This is unauthenticated TCP.* `allowed_hosts` is not authentication; there is no TLS. Use only on private/overlay networks you already trust. See [`examples/config.toml`](../examples/config.toml) for every daemon option.
 
 ## `[defaults]`
 
-<!-- written in Task 4 -->
+Defaults that apply when a command doesn't override them. Most users set `model` and `display_name` and leave the rest alone.
+
+```toml
+[defaults]
+model = "claude-sonnet"       # must match a key in [chat.*.*]
+display_name = "Your Name"    # fills `{{user}}` in templates
+# stream = true
+# tool_model = "mistral-small"
+# memory_agent = "mistral-small"
+# collation = "mistral-small"
+# compaction = "mistral-small"
+# interiority = "claude-sonnet"
+# embedding = "text-large"
+# image_generation = "gemini-flash"
+```
+
+**Per-operation model slots** let you run heavy work (the main conversation) on one model and cheap background work on another. Each slot, if omitted, falls back to `model`:
+
+- `tool_model` — used when the character is invoking tools (web search, memory, etc.)
+- `memory_agent` — the small model that drives the memory query/save loop
+- `collation` — memory entry merge/split/normalize
+- `compaction` — conversation summarization into memory
+- `interiority` — the "private moment" autonomous ticks
+- `embedding` — which embedding profile to use (see `[chat.<provider>.<alias>]` with an embedding model)
+- `image_generation` — which model handles `generate_image`
+
+Any value passed here must match an alias declared under `[chat.<provider>.<alias>]`.
+
+See [`examples/config.toml`](../examples/config.toml) for every default.
 
 ## `[behavior.autonomy]`
 
