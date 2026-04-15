@@ -141,7 +141,65 @@ shore log delete <ref>                                # delete a message
 
 ## Memory
 
-<!-- written in Task 11 -->
+The character remembers things. Not just recent messages — things you told it weeks ago, facts about you, preferences, ongoing threads. Memory persists across sessions and daemon restarts.
+
+### Why it exists
+
+A character without durable memory is a parrot. Shore characters accumulate context deliberately: important turns from your conversations get compacted into searchable memory entries, and those entries get folded together over time so related facts coalesce instead of accumulating as duplicates.
+
+### How it's stored
+
+Shore keeps memory in two parallel indexes (both SQLite-backed):
+
+- **Vector store** — semantic search. "That thing Ren said about the doom launcher" finds the right memory even if you don't remember the exact words.
+- **Full-text search (FTS)** — keyword search. Exact phrases, names, filenames.
+
+Every query runs against both; results merge.
+
+### Compaction
+
+**Compaction** is the process of turning old conversation turns into durable memory entries. After the session has been idle for `[memory.compaction].idle_trigger` (default `"30m"`), Shore summarizes older turns into entries and drops them from the hot conversation log.
+
+Run it manually:
+
+```sh
+shore memory compact
+```
+
+### Collation
+
+**Collation** reorganizes existing memory entries: merging duplicates, splitting overloaded entries, normalizing wording. It runs periodically in the background when `[memory.collation].enabled = true`, and can be triggered manually:
+
+```sh
+shore memory compact   # runs compaction, then collation
+```
+
+Without collation, memory grows into a slurry of near-duplicates. With it, related facts settle into coherent entries.
+
+### The memory agent
+
+Some operations (saving new memories, answering structured queries about memory) run through a small **memory agent** — a cheap model whose only job is to decide whether to save, and what to save. Configure which model it uses via `[defaults] memory_agent`.
+
+### Queries and changelog
+
+```sh
+shore memory "doom launcher"         # free-text query
+shore memory changelog               # recent memory writes
+shore memory reindex                 # rebuild FTS and vector indexes
+shore memory purge                   # delete memory entries (prompts for confirmation)
+```
+
+### Memory shell
+
+For exploring or debugging memory, drop into the interactive shell:
+
+```sh
+shore memory shell
+```
+
+Inside the shell you can query, save, and edit memory directly using the memory agent.
+
+See [`CONFIGURATION.md` — `[memory]`](CONFIGURATION.md#memory) for tunables.
 
 ## Autonomy
 
