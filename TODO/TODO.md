@@ -1,31 +1,4 @@
-- [x] regression: we have somehow lost a previous interiority integration step, where when the user messaged the assistant after the assistant had any amount of interiority ticks, the interiority ticks would be included as a system message (or prepended to the user message when using anthropic sdk). the interiority integration was placed after the time-gap-awareness section. (root cause: recap injection in `trim_messages` was gated on a 30-min time-gap threshold, so on active days recaps were silently dropped even though the interiority prompt promises the character they'll "surface when the user next messages". Dropped the gate — recap injection now fires whenever `entries_in_range(prev_ts, cur_ts)` returns anything, independent of wall-clock gap. Time-gap *marker* stays threshold-gated. Does not fix a character that has stopped writing `<recap>` entirely — that's downstream of the broken contract.)
-
-- [x] bug: setting an interiority model seems to not do anything at all. (warm-path interiority tick was cloning `last_request` from the main chat turn and never rewriting `model`/`api_key` — only the cold rebuild-from-disk fallback honored `defaults.interiority`. Added `apply_interiority_model_override` in `autonomy/manager.rs` that rebuilds the request via `LedgerClient::build_request` when a distinct interiority model is configured)
-
-- [x] regression: switching the model in the CLI appears to do literally nothing at all. (persisted via `$XDG_RUNTIME_DIR/shore/active_model`, reapplied on every connect — mirrors the active-character pattern)
-
-- [x] followup: restore dynamic completions for `shore model <TAB>` / `shore character <TAB>` (fish-first: `shore completions fish` now emits a `shore complete {models,characters}` footer; daemon routes list_models through the characterless dispatch path so completions work on multi-character configs)
-
-- [x] bug: the models list now includes tool models and other non-chat models for no reason
-
-- [x] bug: `shore log` does not show the character name. only `Assistant`
-
-- [x] bug: compaction and collation seem to wait for me to message before actually firing after idle (root cause: `tick_character` in `autonomy/manager.rs` only set `compaction_pending = true` on idle triggers, relying on the handler's post-generation path to actually run compaction — so idle detection fired, but no work happened until the user next messaged. Added `execute_idle_compaction` that calls `memory::compaction::run_compaction` directly from the tick when the tick context has its LLM/config/notifier/registry deps wired, reloads the character engine, and resets the trigger flags. Unit-test contexts without deps still fall back to the pending flag path.)
-
 - [ ] followup: character has essentially stopped writing `<recap>` entries. As of 2026-04-14, exactly one recap exists in `recaps.jsonl`, timestamped `2026-04-08T17:08:57+10:00` — nothing since. The prompt contract fix (injection on short gaps) is in place, but the character needs to be prompted/rewarded for writing recaps again. Investigate whether the interiority prompt is landing correctly, whether recaps are being extracted on every tick, and whether there's cache/model drift (interiority model setter fix may be relevant here too).
-
-- [x] bug: shore usage is broken
-```
-eshen@meat ~/D/silvershore (main) [2]> shore usage --anomalies 
-server error ["internal_error"]: Invalid column type Integer at index: 10, name: total_ms
-error: Invalid column type Integer at index: 10, name: total_ms
-```
-
-- [x] tweak: `shore usage --call-type` should filter by call type without any other options. how are users supposed to know what call types there even are?
-```
-eshen@meat ~/D/silvershore (main)> shore usage --call-type 
-error: a value is required for '--call-type <CALL_TYPE>' but none was supplied
-```
 
 - [ ] bug: when trying to send a message with a chatgpt model
 ```
@@ -35,7 +8,7 @@ error: InternalError - HTTP 400: {"error":{"message":"Provider returned error","
   }\n}","provider_name":"Azure","is_byok":false}},"user_id":"user_2lEcCR3C7yKCDzxeUclpcbk337W"}
 ```
 
-- [ ] feature: implement an MCP server for debugging and programmatic use purposes.
+- [ ] bug: `shore-mcp` auto-spawned daemon dies when `shore-mcp` exits. `spawn_and_attach_test_daemon` in `shore-mcp/src/profile.rs:154` spawns `shore-daemon` via `tokio::process::Command` and then `drop(child)` at line 178 — the comment claims this detaches the child, but the spawned daemon shares the MCP server's process group and gets killed when the MCP parent exits, leaving the `instances.json` entry stale. Reproduced during hotfix verification: each shore-mcp invocation required pre-spawning the daemon manually (`nohup … &; disown`) because the auto-spawn path consistently failed with "spawned shore-daemon did not register instance 'shore-mcp-test' within 5s" on subsequent calls. Needs a proper double-fork + `setsid` or an equivalent detach before the child reaches `exec`, so the daemon outlives the MCP server as intended.
 
 - [ ] weird intermittent memory agent issues:
 ```
@@ -70,3 +43,7 @@ qifei
   │ the same timeframe as Caco. This builds upon the prior successful implementation of local TTS for Qifei (ID: 20260329_210737_1) and the build
   │ artifacts located in `/home/eshen/go/` (ID: c_20260411_013527_6). (New entry: 20260415_002905_0)
 ```
+
+- [ ] update *ALL* documentation
+  - [ ] the readme in particular is very out of date and not explanatory enough
+  - [ ] explain what the features are, why they exist, and how to use them and configure them
