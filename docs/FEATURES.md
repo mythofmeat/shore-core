@@ -203,7 +203,57 @@ See [`CONFIGURATION.md` — `[memory]`](CONFIGURATION.md#memory) for tunables.
 
 ## Autonomy
 
-<!-- written in Task 12 — covers both ambient presence and interiority ticks -->
+**Autonomy** is the character acting on its own, without you prompting — thinking things through, using tools, and optionally sending an unprompted message. Disabled by default. You turn it on in config; the character then decides for itself when to do something.
+
+### Why it exists
+
+A character that only speaks when addressed feels like a vending machine. With autonomy on, the character can reflect on something you said hours ago, do its own research between your messages, consolidate memory, and decide on its own whether to reach out.
+
+### Active vs dormant
+
+The character has two phases:
+
+- **Active** — may think on its own and send unprompted messages
+- **Dormant** — silent; wakes up when you send a message
+
+The character drifts from active to dormant after stretches of no engagement, and back to active when you speak up again.
+
+### Interiority ticks
+
+The core autonomy primitive is an **interiority tick** — one private moment where the character thinks, may use tools (search memory, look things up on the web, read its scratchpad, schedule its own next tick), and may or may not produce a message to send you.
+
+At the end of every tick the character writes a **recap** — a short note about what it thought about and what it plans to follow up on. Recaps carry state forward from tick to tick, giving the character narrative continuity across its private life.
+
+### Scheduling
+
+The character self-schedules the next tick when it finishes one. If it doesn't pick a time, Shore falls back to `fallback_interiority_interval` (default `1h`).
+
+A floor (`minimum_interiority_latency`, default `1h`) prevents ticks from piling up right after you send a message — the character needs breathing room.
+
+### Wrap-up
+
+If a tick goes long (many tool-use rounds), Shore caps it at `max_tool_rounds` (default `12`) and forces a wrap-up recap. This is a safety limit — the character can't spin forever inside a single tick.
+
+### Dormancy
+
+Two paths lead to the dormant phase:
+
+- `dormant_after_interiority_turns` — this many ticks in a row with no user reply → sleep (default `3`)
+- `dormant_after_idle_time` — this much total idle time → sleep until the user returns (default `48h`)
+
+### How to enable
+
+```toml
+[behavior.autonomy]
+enabled = true
+
+[behavior.autonomy.interiority]
+enabled = true
+```
+
+Both switches must be on. `[behavior.autonomy]` is the master gate; the `interiority` sub-table controls the tick behavior.
+
+See [`CONFIGURATION.md` — `[behavior.autonomy]`](CONFIGURATION.md#behaviorautonomy) for every tunable.
 
 ## Tool use
 
