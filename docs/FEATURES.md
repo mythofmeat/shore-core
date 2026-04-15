@@ -257,7 +257,56 @@ See [`CONFIGURATION.md` — `[behavior.autonomy]`](CONFIGURATION.md#behaviorauto
 
 ## Tool use
 
-<!-- written in Task 13 -->
+Mid-response, the character can call **tools** — structured actions like searching memory, hitting the web, or generating an image. The character decides which tools to invoke; Shore runs them and feeds the result back.
+
+### Why it exists
+
+A character that only knows what's in its context window can't look things up, can't generate images, can't count dice for a tabletop session. Tools give the character the power to *do* things between "you asked" and "it answered."
+
+### The tool surface
+
+Every tool has an exact toggle under `[behavior.tool_use.tools]`. All are enabled by default.
+
+#### Memory
+
+- `memory` — search and save memory mid-response. The character can recall a past fact, or decide to save something you just told it.
+
+#### Web
+
+- `web_search` — Tavily-backed search. Requires `TAVILY_API_KEY` (see [`CONFIGURATION.md` — Environment variables](CONFIGURATION.md#environment-variables)).
+- `fetch_url` — fetch a URL and read it. Used when a specific page is worth reading in full.
+
+#### Time and chance
+
+- `check_time` — current time / day of the week / timezone. Useful for "what day is it" and for the character to time-stamp its own reasoning.
+- `roll_dice` — dice roller. Supports standard RPG notation (`3d6`, `d20+4`).
+
+#### Images
+
+- `send_image` — send an image back as part of the reply.
+- `list_images` — list previously sent or generated images.
+- `recall_image` — re-send a previously generated image by reference.
+- `generate_image` — create a new image. Uses the model in `[defaults] image_generation`.
+- `remember_image` — save a user-shared image to memory with context the character can recall later.
+
+#### Scratchpad
+
+A persistent filesystem the character can read and write for notes that outlive any single conversation — think of it as the character's private notebook.
+
+- `scratchpad_list` — browse the scratchpad tree.
+- `scratchpad_read` — read a scratchpad file.
+- `scratchpad_write` — create or overwrite a scratchpad file.
+- `scratchpad_delete` — remove a scratchpad file.
+
+#### Activity
+
+- `activity_heatmap` — generate a heatmap of recent usage activity.
+
+### Loop budget
+
+The character can invoke tools iteratively — use one, see the result, decide whether to use another. `[behavior.tool_use] max_iterations` (default 10) is the cap on how many rounds per turn. Hit the cap and Shore forces a final response.
+
+See [`CONFIGURATION.md` — `[behavior.tool_use]`](CONFIGURATION.md#behaviortool_use) for toggles and search tuning.
 
 ## Clients
 
