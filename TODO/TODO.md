@@ -1,5 +1,3 @@
-- [ ] followup: character has essentially stopped writing `<recap>` entries. As of 2026-04-14, exactly one recap exists in `recaps.jsonl`, timestamped `2026-04-08T17:08:57+10:00` — nothing since. The prompt contract fix (injection on short gaps) is in place, but the character needs to be prompted/rewarded for writing recaps again. Investigate whether the interiority prompt is landing correctly, whether recaps are being extracted on every tick, and whether there's cache/model drift (interiority model setter fix may be relevant here too). Potential plan that require's claude's review (since it was drafted via a cheaper llm) is at `./interiority-wrap-up.md`
-
 - [ ] weird intermittent memory agent issues:
 ```
 qifei
