@@ -34,15 +34,6 @@ model = "claude-sonnet"            # Must match a key in [chat.*.*] below
 
 # [behavior.autonomy]
 # enabled = false
-# personality = 0.5          # 0.0 (reserved) → 1.0 (proactive); shapes probe frequency
-# max_unanswered = 1         # Back off after this many unanswered autonomous messages
-# max_deferral_hours = 24.0  # Maximum hours the character will wait before sending
-
-# [behavior.autonomy.heartbeat]
-# enabled = true
-# session_gap_secs = 1800         # 30 min idle marks a session boundary
-# session_probe_floor_secs = 180  # Minimum idle before a post-session probe fires
-# dormant_threshold = 1           # Consecutive unanswered probes before going dormant
 
 # Interiority — autonomous "private moment" ticks where the character can reflect,
 # use tools (memory, web search, etc.), and optionally send an unprompted message.
@@ -66,12 +57,17 @@ model = "claude-sonnet"            # Must match a key in [chat.*.*] below
 # send_image = true
 # list_images = true
 # recall_image = true
+# remember_image = true      # Save user-shared images to memory with context
 # generate_image = true
 # web_search = true
 # fetch_url = true
 # check_time = true
 # roll_dice = true
 # activity_heatmap = true
+# scratchpad_list = true     # Browse character's persistent scratchpad filesystem
+# scratchpad_read = true     # Read a scratchpad file
+# scratchpad_write = true    # Write a scratchpad file
+# scratchpad_delete = true   # Delete a scratchpad file
 
 # [behavior.tool_use.search]
 # api_key_env = "TAVILY_API_KEY"  # Env var holding the Tavily API key
@@ -92,7 +88,8 @@ model = "claude-sonnet"            # Must match a key in [chat.*.*] below
 # Collation — periodically re-synthesises the memory store for quality.
 # [memory.collation]
 # enabled = true
-# auto_run = true  # Run automatically after each compaction
+# auto_run = true   # Run automatically after each compaction
+# batch_limit = 10  # Maximum memory entries processed per collation run
 
 # ── Notifications ────────────────────────────────────────────────────────
 
@@ -141,7 +138,19 @@ model = "claude-sonnet"            # Must match a key in [chat.*.*] below
 # # data_dir = "..."                   # Default: $XDG_DATA_HOME/shore/matrix-server/
 # # binary = "continuwuity"            # Default: auto-detect
 
+# ── Telegram (reserved for future use) ───────────────────────────────────
+# [connections.telegram]
+
+# ── Discord (reserved for future use) ────────────────────────────────────
+# [connections.discord]
+
 # ── Services ─────────────────────────────────────────────────────────────
+# Supervised helper processes that the daemon manages.
+# Currently only [services.llm] is used (reserved for an external LLM proxy).
+
+# [services.llm]
+# command = "node shore-llm/dist/index.js"  # Command to spawn the LLM service
+# socket = "/run/shore-llm.sock"            # Unix socket the service listens on
 
 # ── Advanced ─────────────────────────────────────────────────────────────
 
