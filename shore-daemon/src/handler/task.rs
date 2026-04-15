@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 use serde_json::{json, Value};
@@ -331,6 +332,36 @@ pub(super) async fn handle_generation(
         wall_clock_start,
     )
     .await?;
+
+    if ctx.live_speak.load(Ordering::Relaxed) {
+        if let Some(ref tts_client) = ctx.tts_client {
+            let text = result.content.clone();
+            if !text.is_empty() {
+                let msg_id = engine_arc
+                    .lock()
+                    .await
+                    .messages()
+                    .last()
+                    .map(|m| m.msg_id.clone())
+                    .unwrap_or_default();
+                let voice = effective_config
+                    .app
+                    .tts
+                    .voice
+                    .clone()
+                    .unwrap_or_else(|| char_name.clone());
+                crate::tts::relay_speech(
+                    tts_client,
+                    &text,
+                    &voice,
+                    &msg_id,
+                    request.rid.clone(),
+                    &ctx.event_tx,
+                )
+                .await;
+            }
+        }
+    }
 
     {
         let mut engine = engine_arc.lock().await;

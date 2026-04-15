@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -166,6 +167,8 @@ impl TestHarness {
             session_router,
             autonomy,
             notifier,
+            Arc::new(AtomicBool::new(false)),
+            None,
         );
 
         // Spawn handler loop.
