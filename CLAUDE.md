@@ -61,7 +61,10 @@ Shore is a modular AI character engine in Rust. Workspace crates: `shore-protoco
 cargo build --workspace --release    # full build
 cargo test --workspace               # unit tests
 cargo test --test e2e -- --ignored   # e2e (requires OPENROUTER_API_KEY)
-./scripts/live-tests/live-test.sh     # live integration tests
+./scripts/live-tests/live-test.sh    # live integration tests
+
+cargo mcp                            # build shore-mcp (alias, requires --features enabled)
+cargo mcp-itest                      # live MCP integration test (gated --ignored)
 ```
 
 ## Priority (highest first)
@@ -89,6 +92,26 @@ Code upstream of `shore-llm-client` — `shore-daemon` command routing, `shore-l
 ### Rule 4 — recorded fixtures over hand-written stand-ins
 
 When you do need to stand in for an LLM response in a test outside `shore-llm-client`, prefer recording the output of a real cheap model once and replaying it. Fixtures should be checked into the repo and re-recorded periodically (quarterly or whenever a provider behavior change is suspected).
+
+## Live MCP verification (added 2026-04-15)
+
+`shore-mcp` is a debug-only MCP server (`cargo build -p shore-mcp --features enabled`) that exposes the daemon over MCP JSON-RPC. It is the fastest way to drive a real daemon end-to-end and observe a real LLM round-trip, and is the canonical verification path for any change visible through the daemon's tool surface.
+
+### When to use it
+
+Any change that affects behavior visible through the SWP daemon — command routing, LLM round-trip, tool output shaping, memory/config writes, autonomy, log emission — must be exercised through shore-mcp (or the equivalent CLI/TUI path) before being declared done, not just through unit tests. This is the "verify with real binaries" rule applied to the MCP-facing surface. Bug fixes count: re-driving the broken path through MCP and confirming the failure is gone is a stronger signal than a green unit test.
+
+### How to use it
+
+Default mode (no flags) uses a persistent test profile at `$XDG_DATA_HOME/shore-mcp-test/`, isolated from your real Shore profile, with mutation tools (`send`, `regen`, `memory_*`, `config_*`, etc.) enabled. shore-mcp auto-spawns its own daemon on demand and reuses an already-registered one if present.
+
+- Drive it as a real MCP client by spawning the binary and speaking JSON-RPC over stdin/stdout. See `shore-mcp/tests/mcp_integration.rs` for a copy-pasteable example and `shore-mcp/README.md` for the full tool surface and profile-mode matrix.
+- If the test daemon gets into a bad state (`instances.json` empty/stale, registered port unreachable), `pkill -f 'shore-daemon.*shore-mcp-test'` and let shore-mcp respawn it.
+- Use `--ephemeral` for a tempdir profile that tears down on exit. Reserve `--attach-main --allow-main-writes` for verification that explicitly needs to run against the user's real profile — and confirm with the user first.
+
+### Model selection for live MCP verification
+
+The test profile defaults to `chat.openrouter.haiku-test` (`anthropic/claude-haiku-4-5`) keyed off the `OPENROUTER_SHORE_TEST` env var. Use Haiku unless explicitly told otherwise — it's the cheapest fast option for verification. Override per call via the `send` tool's `model` arg only when a specific test demands a larger model.
 
 ## Mandatory Documentation
 
