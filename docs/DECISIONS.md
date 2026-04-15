@@ -639,4 +639,41 @@ The original blanket rule "never mock `shore-llm`" was causing tests to be skipp
 
 **Why:** The policy was written to prevent fantasy-output tests — mocks that described the LLM as the author wished it behaved rather than how it actually did. That failure mode is specifically in the parsing/wire-protocol layer, which is confined to `shore-llm-client`. Code upstream of it doesn't benefit from real API calls at all; it benefits from deterministic inputs. The revision preserves the original intent for the layer where it matters and unblocks fast tests for everything else.
 
+### 2026-04-16 — TTS integration as a daemon-side relay to ttsd
+
+Added text-to-speech as a first-class SWP feature. The daemon proxies a
+`Speak` request to an external OpenAI-compatible TTS server (ttsd) at
+`[tts].host:port/v1/audio/speech`, parses the returned WAV, and streams
+`AudioStart` / `AudioChunk` (base64 int16 LE PCM) / `AudioEnd` messages to
+the requesting client. A daemon-global `SetLiveSpeak` flag causes any
+completed assistant response to trigger the same relay automatically.
+
+Clients (`shore` CLI and `shore-tui`) play audio via `rodio` with the
+`wav`-only feature set, feeding int16-decoded samples into an in-memory
+`Sink`. Clients without audio hardware silently drop chunks without
+erroring — the daemon does not know or care whether playback succeeded.
+
+**Why:** We want to hear characters speak without building a TTS stack into
+Shore itself. ttsd already exists, runs on `vegetable`, and exposes the
+OpenAI shape. Putting the relay in the daemon (not the client) means every
+client — CLI one-shots, TUI live-speak, future bridges — gets audio for
+free, and ttsd credentials stay on the daemon host.
+
+**Voice resolution — amendment to the original plan:** The plan assumed
+voice names would match character names by convention. They don't: the
+user's configured voice is `Nanachan` while the character is `cachetest`.
+Resolved by making `[tts].voice` a first-class config field (global with
+per-character override via `deep_merge`), falling back to the character
+name only when no voice is configured.
+
+**Sacrificed:** No local TTS (espeak/piper). No voice selection UI beyond
+config edits. No per-message speaker hinting — the character's configured
+voice always applies.
+
+**Live verified 2026-04-16** via shore-mcp test profile: daemon streamed
+24kHz mono WAV (166400 PCM bytes) from ttsd at `vegetable:8778`, framed
+as AudioStart/AudioChunk/AudioEnd to `shore-cli`. `speak on` / `speak
+off` toggled the live-speak flag cleanly (logs: `Live TTS toggled
+enabled=true prev=false` then back).
+
 **Sacrificed:** Nothing, in theory. In practice, it raises the discipline bar: upstream tests are now allowed to use doubles, but reviewers have to check that those doubles don't creep into `shore-llm-client` itself.

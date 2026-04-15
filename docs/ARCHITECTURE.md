@@ -1754,6 +1754,71 @@ shore-cli    ──▶ shore-ledger (query only)
 
 ---
 
+## 11. TTS Relay (2026-04-16)
+
+The daemon relays text-to-speech requests to an external OpenAI-compatible TTS
+server (ttsd) and streams decoded PCM chunks to clients over SWP. The daemon
+does not synthesize audio itself — it is a proxy plus framer.
+
+### Data Flow
+
+```
+                ┌────────────────┐        ┌───────────────┐
+  Speak msg ───▶│  shore-daemon  │──HTTP─▶│  ttsd         │
+  (rid,msg_id)  │  TTS relay     │        │  /v1/audio/   │
+                │                │◀──WAV──│   speech      │
+                └───────┬────────┘        └───────────────┘
+                        │
+                        │  AudioStart  { sample_rate, channels }
+                        │  AudioChunk  { data: base64 int16 LE PCM }
+                        │  AudioChunk  ...
+                        │  AudioEnd
+                        ▼
+                ┌────────────────┐
+                │  shore-cli /   │──rodio──▶ default output device
+                │  shore-tui     │         (cpal/alsa)
+                └────────────────┘
+```
+
+### Protocol Messages
+
+Client → server:
+- `Speak { rid, msg_id: Option<String> }` — speak a specific message; `None` =
+  last assistant message.
+- `SetLiveSpeak { rid, enabled: bool }` — toggle the daemon-global live-speak
+  flag. When enabled, the daemon automatically triggers a TTS relay for each
+  completed assistant response.
+
+Server → client:
+- `AudioStart { rid, msg_id, sample_rate: u32, channels: u16 }`
+- `AudioChunk { rid, data: String }` — base64-encoded int16 LE PCM
+- `AudioEnd { rid }`
+- `AudioError { rid, message: String }`
+
+### Voice Configuration
+
+Voice selection lives under `[tts].voice` (global) or per-character
+`[tts].voice` override via the standard `deep_merge` config path. The daemon
+falls back to the character name if no voice is set. The user's voice name
+(`Nanachan`) does not need to match the character name (`cachetest`), which
+the plan originally assumed by convention.
+
+### Live-speak State
+
+Live-speak is a single daemon-global `Arc<AtomicBool>` — not per-session. Any
+connected client can toggle it, and any completed assistant response triggers
+relay to every connected client. Clients that cannot play audio simply drop
+the chunks.
+
+### Failure Handling
+
+Audio framing is fire-and-forget from the daemon's perspective — a client
+disconnect mid-stream is not an error. TTS request failure (ttsd unreachable,
+non-200 response, malformed WAV) is reported via `AudioError`; the client
+surfaces it as a status-bar message.
+
+---
+
 ## Test Architecture
 
 ### shore-test-harness
