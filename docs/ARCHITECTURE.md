@@ -60,6 +60,12 @@
 Telegram and Discord bridges are **deferred** — Matrix is the only required
 platform integration for V2 launch.
 
+A fifth crate, `shore-mcp`, ships an MCP server that exposes the CLI surface
+to AI clients (Claude Code, etc.) for debugging and programmatic use. It is
+**debug-only** — the binary is gated behind a feature flag plus
+`cfg(debug_assertions)` and is never produced by the default release build.
+See §4.6.
+
 ### 2.1 State Ownership
 
 Shore's architecture depends on each mutable fact having one obvious owner.
@@ -681,6 +687,50 @@ all provider-specific options) in every call.
 
 These follow the same bridge pattern as shore-matrix. The SWP protocol is
 designed so adding a new bridge requires zero daemon changes.
+
+### 4.6 shore-mcp (debug-only MCP server)
+
+**Language:** Rust (`rmcp`)
+**Binary:** `shore-mcp` — debug-only, gated behind `feature = "enabled"` plus
+`cfg(debug_assertions)`. Not produced by `cargo build --workspace --release`.
+
+#### Purpose
+
+Expose Shore's CLI surface to MCP clients (primarily Claude Code) so an AI
+client can drive the daemon for debugging and automated workflows. The crate
+is not part of any user-facing release artifact set.
+
+#### Hybrid daemon model
+
+`shore-mcp` chooses its target Shore daemon at startup:
+
+| Mode | Profile | Daemon | Mutation tools |
+|------|---------|--------|----------------|
+| _(default)_ | persistent test profile (`$XDG_DATA_HOME/shore-mcp-test/`) | discovered or spawned with `--instance-id=shore-mcp-test` | allowed |
+| `--ephemeral` | fresh tempdir | spawned, torn down on exit | allowed |
+| `--attach-main` | user's real profile | discovered via normal `shore-client` discovery | **refused** unless `--allow-main-writes` |
+
+`--allow-main-writes` is a deliberate two-flag opt-in. Without it, mutation
+tools refuse with a gate-refuse message instead of touching the user's main
+profile.
+
+#### Tool surface
+
+Tools are categorized read-only or mutating in `gating.rs`. Categories cover
+status, logs, usage, config, character switching, model selection, memory
+operations, message send/regen, log follow (bounded read), and debug
+interiority controls. The full list is in `shore-mcp/README.md`.
+
+#### Boundary with shore-client
+
+`shore-mcp` is a thin shim: it speaks MCP JSON-RPC over stdio (via `rmcp`),
+translates each tool call into an SWP request via the existing
+`shore-client::SWPConnection`, and shapes the SWP response into MCP tool
+content. It does not duplicate any client logic and depends on
+`shore-client`, `shore-config`, and `shore-protocol` only.
+
+See `docs/DECISIONS.md` (entry "shore-mcp crate added as a debug-only MCP
+server") for the build-gate and hybrid-daemon-model rationale.
 
 ---
 
