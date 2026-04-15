@@ -78,6 +78,24 @@ pub struct Command {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Cancel {}
 
+/// Request TTS playback of a message.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Speak {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rid: Option<String>,
+    /// Message ID to speak. None = last assistant message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub msg_id: Option<String>,
+}
+
+/// Toggle live TTS mode.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct SetLiveSpeak {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rid: Option<String>,
+    pub enabled: bool,
+}
+
 /// All client → server message types, tagged by "type".
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -87,6 +105,8 @@ pub enum ClientMessage {
     Regen(Regen),
     Command(Command),
     Cancel(Cancel),
+    Speak(Speak),
+    SetLiveSpeak(SetLiveSpeak),
 }
 
 #[cfg(test)]
@@ -167,6 +187,48 @@ mod tests {
                 assert_eq!(o.thinking_budget, Some(2048));
                 assert_eq!(o.top_p, None);
             }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn speak_serialization_roundtrip() {
+        let msg = ClientMessage::Speak(Speak {
+            rid: Some("r1".into()),
+            msg_id: Some("msg-abc".into()),
+        });
+        let json = serde_json::to_value(&msg).unwrap();
+        assert_eq!(json["type"], "speak");
+        assert_eq!(json["rid"], "r1");
+        assert_eq!(json["msg_id"], "msg-abc");
+
+        let roundtrip: ClientMessage = serde_json::from_value(json).unwrap();
+        assert!(matches!(roundtrip, ClientMessage::Speak(_)));
+    }
+
+    #[test]
+    fn speak_no_msg_id_defaults_to_none() {
+        let json = serde_json::json!({"type": "speak"});
+        let msg: ClientMessage = serde_json::from_value(json).unwrap();
+        match msg {
+            ClientMessage::Speak(s) => assert!(s.msg_id.is_none()),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn set_live_speak_roundtrip() {
+        let msg = ClientMessage::SetLiveSpeak(SetLiveSpeak {
+            rid: None,
+            enabled: true,
+        });
+        let json = serde_json::to_value(&msg).unwrap();
+        assert_eq!(json["type"], "set_live_speak");
+        assert_eq!(json["enabled"], true);
+
+        let roundtrip: ClientMessage = serde_json::from_value(json).unwrap();
+        match roundtrip {
+            ClientMessage::SetLiveSpeak(s) => assert!(s.enabled),
             _ => panic!("wrong variant"),
         }
     }
