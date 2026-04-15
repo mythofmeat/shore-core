@@ -118,7 +118,44 @@ See [`examples/config.toml`](../examples/config.toml) for every default.
 
 ## `[behavior.autonomy]`
 
-<!-- written in Task 5 -->
+Controls whether the character speaks on its own. Disabled by default. Autonomy in Shore is implemented via **interiority** — self-scheduled private ticks where the character can think, use tools, and optionally send you a message. There is no separate heartbeat mechanism; `[behavior.autonomy]` is just an `enabled` switch plus the interiority sub-table.
+
+See [FEATURES.md — Autonomy](FEATURES.md#autonomy) for what this actually does. This section is the config reference.
+
+### Active vs dormant
+
+The character has two phases: **active** (responsive, may schedule interiority ticks) and **dormant** (silent; wakes on a user message). The character goes dormant after `dormant_after_interiority_turns` ticks with no user reply, or after `dormant_after_idle_time` of total silence.
+
+### `[behavior.autonomy]` — the umbrella
+
+```toml
+[behavior.autonomy]
+enabled = false   # master switch for autonomous speech
+```
+
+Only one top-level field. Everything else lives under `interiority`.
+
+### `[behavior.autonomy.interiority]` — self-scheduled private ticks
+
+```toml
+[behavior.autonomy.interiority]
+enabled = true
+fallback_interiority_interval = "1h"      # base cadence when the character doesn't self-schedule
+dormant_after_interiority_turns = 3       # consecutive ticks with no user reply before sleeping
+dormant_after_idle_time = "48h"           # hard idle ceiling before sleeping until user returns
+minimum_interiority_latency = "1h"        # floor between a user message and the next tick
+max_tool_rounds = 12                      # tool-use rounds per tick before forcing a wrap-up recap
+```
+
+The character schedules its own next tick when it finishes one; `fallback_interiority_interval` only applies when it doesn't.
+
+`minimum_interiority_latency` prevents ticks from firing the second you stop typing — the character needs breathing room.
+
+`max_tool_rounds` is a safety limit — if a tick wanders, Shore forces a wrap-up recap at this many tool rounds.
+
+All time fields accept human durations (`"30s"`, `"15m"`, `"2h"`, `"48h"`).
+
+See [`examples/config.toml`](../examples/config.toml) for every option.
 
 ## `[behavior.tool_use]`
 
