@@ -159,11 +159,83 @@ See [`examples/config.toml`](../examples/config.toml) for every option.
 
 ## `[behavior.tool_use]`
 
-<!-- written in Task 6 -->
+Controls which tools the character can call mid-response. Every tool is enabled by default; disable selectively if a tool is expensive or inappropriate for your character.
+
+See [FEATURES.md — Tool use](FEATURES.md#tool-use) for what each tool actually does.
+
+```toml
+[behavior.tool_use]
+enabled = true
+max_iterations = 10   # max tool-call rounds per turn before forcing a final response
+
+[behavior.tool_use.tools]
+memory = true
+send_image = true
+list_images = true
+recall_image = true
+remember_image = true      # save user-shared images to memory with context
+generate_image = true
+web_search = true
+fetch_url = true
+check_time = true
+roll_dice = true
+activity_heatmap = true
+scratchpad_list = true     # browse the character's persistent scratchpad
+scratchpad_read = true
+scratchpad_write = true
+scratchpad_delete = true
+```
+
+**When to change:**
+- Set `enabled = false` to disable tool use entirely.
+- Drop individual tool toggles to `false` when you want the character to not have access (e.g. `generate_image = false` if you don't have image-gen credits).
+- Lower `max_iterations` if the character is going in circles; raise it if complex tasks need more rounds.
+
+### `[behavior.tool_use.search]` — web search backend
+
+```toml
+[behavior.tool_use.search]
+api_key_env = "TAVILY_API_KEY"
+max_results = 5
+search_depth = "basic"       # "basic" or "advanced"
+include_answer = true
+```
+
+Shore uses [Tavily](https://tavily.com/) for web search. `api_key_env` names the environment variable holding the key (default `TAVILY_API_KEY`).
+
+See [`examples/config.toml`](../examples/config.toml) for every tool-use option.
 
 ## `[memory]`
 
-<!-- written in Task 6 -->
+Controls the memory subsystem's background work. Memory itself is always on — these tables tune *when compaction and collation run*, not whether memory exists.
+
+See [FEATURES.md — Memory](FEATURES.md#memory) for what compaction and collation are.
+
+### `[memory.compaction]`
+
+```toml
+[memory.compaction]
+enabled = true
+idle_trigger = "30m"       # trigger after this much inactivity
+min_turns = 8              # don't compact below this many user turns
+max_turns = 16             # force compaction at this many user turns
+keep_recent_turns = 2      # user turns retained verbatim after compaction
+```
+
+Compaction condenses old conversation turns into durable memory entries. `idle_trigger` is how long the session must be idle before compaction kicks in; `min_turns` / `max_turns` bracket when it's allowed to run; `keep_recent_turns` controls how much recent conversation stays verbatim.
+
+### `[memory.collation]`
+
+```toml
+[memory.collation]
+enabled = true
+auto_run = true     # run automatically after each compaction
+batch_limit = 10    # maximum memory entries processed per run
+```
+
+Collation periodically merges, splits, and normalizes memory entries so related facts coalesce and contradictions get reconciled. `auto_run = true` chains a collation pass onto every compaction; `batch_limit` caps how much work a single pass does.
+
+See [`examples/config.toml`](../examples/config.toml) for every memory option.
 
 ## `[chat]`
 
