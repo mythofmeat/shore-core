@@ -1,0 +1,11 @@
+[alias]
+# shore-mcp is a debug-only binary gated behind the `enabled` feature.
+# These aliases reduce the boilerplate of remembering both the package
+# selector and the feature flag.
+mcp        = "build   -p shore-mcp --features enabled"
+mcp-run    = "run     -p shore-mcp --features enabled --"
+mcp-test   = "test    -p shore-mcp --features enabled"
+mcp-check  = "check   -p shore-mcp --features enabled --tests"
+# Integration test that drives the binary as a subprocess against
+# a live in-process daemon. Gated behind --ignored.
+mcp-itest  = "test    -p shore-mcp --features enabled --test mcp_integration -- --ignored --nocapture"

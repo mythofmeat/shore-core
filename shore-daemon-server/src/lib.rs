@@ -262,10 +262,37 @@ impl Server {
         self.clients.clone()
     }
 
+    /// Bind a TCP listener using `self.config.addr`. Exposed so callers that
+    /// need the kernel-resolved port (e.g. `--addr 127.0.0.1:0`) can capture
+    /// `local_addr()` before any subsystem records it elsewhere.
+    pub async fn bind(&self) -> std::io::Result<TcpListener> {
+        TcpListener::bind(&self.config.addr).await
+    }
+
+    /// Run the server with an externally-bound listener. The caller is
+    /// responsible for producing the listener (typically via `bind` above).
+    /// Use this when the bind addr must be known before `run` starts (e.g.
+    /// to update an instance registry with the resolved port).
+    pub async fn run_with_listener(
+        &self,
+        listener: TcpListener,
+        shutdown: tokio::sync::watch::Receiver<()>,
+    ) -> std::io::Result<()> {
+        self.run_inner(listener, shutdown).await
+    }
+
     /// Run the server. Listens on TCP forever.
     #[instrument(skip(self), fields(server_name = %self.config.server_name))]
     pub async fn run(&self, shutdown: tokio::sync::watch::Receiver<()>) -> std::io::Result<()> {
         let listener = TcpListener::bind(&self.config.addr).await?;
+        self.run_inner(listener, shutdown).await
+    }
+
+    async fn run_inner(
+        &self,
+        listener: TcpListener,
+        shutdown: tokio::sync::watch::Receiver<()>,
+    ) -> std::io::Result<()> {
         info!(addr = %self.config.addr, "TCP listening");
 
         loop {

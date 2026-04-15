@@ -263,6 +263,16 @@ impl MemoryResearcher {
 
         // Fall back to raw tool outputs
         if all_tool_outputs.is_empty() {
+            // Empty text AND no tool outputs → LLM gave up without calling the agent.
+            // Even with retries in RealAgentLlm, persistent content_filter / connection
+            // issues can exhaust attempts. Log so these silent failures are distinguishable
+            // from real no-hits when post-hoc diagnosing reports of "no memories found".
+            warn!(
+                researcher_model = %researcher_model.qualified_name,
+                "Memory researcher produced no tool calls and no text — likely silent LLM \
+                 failure (content_filter or transient error). Returning NO_RESULTS; this is \
+                 indistinguishable to the caller from a genuine empty-DB result."
+            );
             return Ok(NO_RESULTS.to_string());
         }
 

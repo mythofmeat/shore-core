@@ -1,7 +1,28 @@
-use shore_protocol::server_msg::{ServerMessage, StreamChunk, StreamEnd, StreamStart};
+use shore_protocol::server_msg::{ServerMessage, StreamChunk, StreamEnd, StreamStart, ToolCall, ToolResult};
+use shore_protocol::types::StreamMetadata;
 use tracing::{debug, trace, warn};
 
 use crate::error::{ClientError, Result};
+
+/// Aggregate result of consuming a full stream from `send`/`regen`.
+///
+/// Unlike `StreamHandler`, which is a stateful frame-by-frame accumulator,
+/// this is the flattened end-state: everything a caller would want after
+/// the stream has ended, in one struct.
+#[derive(Debug, Clone)]
+pub struct StreamedResponse {
+    /// Final text content (from `StreamEnd.content`, which is the canonical
+    /// full text — not just concatenated chunks).
+    pub text: String,
+    /// Tool calls collected during the stream, in order of arrival.
+    pub tool_calls: Vec<ToolCall>,
+    /// Tool results collected during the stream, in order of arrival.
+    pub tool_results: Vec<ToolResult>,
+    /// Metadata from `StreamEnd` — tokens, timing, model.
+    pub metadata: StreamMetadata,
+    /// Finish reason from `StreamEnd`.
+    pub finish_reason: String,
+}
 
 /// Callbacks invoked during stream consumption.
 ///
@@ -153,4 +174,80 @@ impl Default for StreamHandler {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Consume a full streaming response from a connection and return the
+/// aggregated result.
+///
+/// This loops on `conn.recv()` until a `StreamEnd` arrives (or an error),
+/// collecting tool calls / tool results along the way. It is the
+/// request/response-shaped counterpart to `StreamHandler`'s frame-by-frame
+/// API, intended for callers (like `shore-mcp`) that cannot render chunks
+/// as they arrive and just want the final result.
+///
+/// Returns an error if:
+/// - The server sends an `Error` frame.
+/// - The connection closes before `StreamEnd` arrives.
+/// - Any protocol-level stream assembly error occurs.
+///
+/// Unknown frame types are logged at `debug` level and skipped without
+/// raising an error — the stream continues until a terminal frame arrives.
+pub async fn collect_stream(
+    conn: &mut crate::connection::SWPConnection,
+) -> Result<StreamedResponse> {
+    let mut handler = StreamHandler::new();
+    let mut tool_calls: Vec<ToolCall> = Vec::new();
+    let mut tool_results: Vec<ToolResult> = Vec::new();
+
+    let end: StreamEnd = loop {
+        let msg = conn.recv().await?;
+
+        // Try feeding stream frames first.
+        let consumed = handler.feed(&msg, None)?;
+
+        if consumed {
+            // If the stream just ended, capture the end frame and break out.
+            if !handler.is_active() && handler.final_content().is_some() {
+                match msg {
+                    ServerMessage::StreamEnd(end) => break end,
+                    // Defensive: handler.feed() today only flips !is_active +
+                    // final_content().is_some() on StreamEnd. If that ever
+                    // changes, surface the anomaly instead of spinning.
+                    _ => {
+                        return Err(ClientError::Protocol(
+                            "collect_stream: stream ended on non-StreamEnd frame".into(),
+                        ));
+                    }
+                }
+            }
+            continue;
+        }
+
+        // Not a stream frame — route to the collectors or error out.
+        match msg {
+            ServerMessage::ToolCall(tc) => tool_calls.push(tc),
+            ServerMessage::ToolResult(tr) => tool_results.push(tr),
+            ServerMessage::Error(err) => {
+                return Err(ClientError::Protocol(err.message));
+            }
+            // Benign frames we ignore mid-stream.
+            ServerMessage::Ping(_)
+            | ServerMessage::Phase(_)
+            | ServerMessage::NewMessage(_)
+            | ServerMessage::History(_)
+            | ServerMessage::SendImage(_) => {}
+            // Anything else is a protocol surprise — log and continue.
+            other => {
+                tracing::debug!(?other, "collect_stream: ignoring unexpected frame");
+            }
+        }
+    };
+
+    Ok(StreamedResponse {
+        text: end.content,
+        tool_calls,
+        tool_results,
+        metadata: end.metadata,
+        finish_reason: end.finish_reason,
+    })
 }

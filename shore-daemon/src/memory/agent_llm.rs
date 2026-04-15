@@ -9,8 +9,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use serde_json::Value;
+use tracing::warn;
 
 use shore_config::models::ResolvedModel;
+use shore_llm_client::retry::{should_retry_error, RetryDecision, RetryPolicy};
 use shore_llm_client::types::ContentBlock;
 
 // ---------------------------------------------------------------------------
@@ -67,6 +69,15 @@ pub trait AgentLlm: Send + Sync {
 
 use shore_ledger::{CallType, LedgerClient};
 
+/// Retry config for agent-tier LLM calls.
+///
+/// Gemini Flash (and occasionally other providers) returns `finish_reason=content_filter`
+/// with zero tokens on innocuous memory queries. Transport blips also manifest as empty
+/// responses or transient 5xx/429s. Retry covers both cases so the researcher's fallback
+/// path isn't triggered by a ~2% flake.
+const AGENT_MAX_RETRIES: u32 = 2;
+const AGENT_RETRY_BACKOFF_MS: u64 = 500;
+
 /// Production `AgentLlm` backed by `LedgerClient` (ledger-tracked LLM calls).
 pub struct RealAgentLlm {
     client: LedgerClient,
@@ -93,20 +104,79 @@ impl AgentLlm for RealAgentLlm {
         model: &'a ResolvedModel,
     ) -> Pin<Box<dyn Future<Output = Result<AgentLlmResponse, AgentLlmError>> + Send + 'a>> {
         Box::pin(async move {
-            let request = LedgerClient::build_request(model, messages, system, tools, None)
+            let policy = RetryPolicy {
+                max_retries: AGENT_MAX_RETRIES,
+                fallback_model: None,
+            };
+            let mut attempt: u32 = 0;
+
+            loop {
+                let request = LedgerClient::build_request(
+                    model,
+                    messages.clone(),
+                    system.clone(),
+                    tools.clone(),
+                    None,
+                )
                 .map_err(|e| AgentLlmError::Transport(e.to_string()))?;
 
-            let resp = self
-                .client
-                .generate(&request, self.call_type, &self.character, false)
-                .await
-                .map_err(|e| AgentLlmError::Transport(e.to_string()))?;
+                match self
+                    .client
+                    .generate(&request, self.call_type, &self.character, false)
+                    .await
+                {
+                    Ok(resp) => {
+                        let text = resp.extract_text();
+                        let empty_output =
+                            resp.content_blocks.is_empty() && text.trim().is_empty();
+                        let filtered = resp.finish_reason == "content_filter"
+                            || resp.finish_reason == "refusal";
 
-            Ok(AgentLlmResponse {
-                text: resp.extract_text(),
-                content_blocks: resp.content_blocks,
-                finish_reason: resp.finish_reason,
-            })
+                        if (empty_output || filtered) && attempt < AGENT_MAX_RETRIES {
+                            let delay = std::time::Duration::from_millis(
+                                AGENT_RETRY_BACKOFF_MS * 2u64.pow(attempt),
+                            );
+                            warn!(
+                                attempt,
+                                delay_ms = delay.as_millis() as u64,
+                                finish_reason = %resp.finish_reason,
+                                call_type = self.call_type.as_str(),
+                                model = %model.qualified_name,
+                                empty_output,
+                                "Agent LLM returned empty/filtered response, retrying"
+                            );
+                            tokio::time::sleep(delay).await;
+                            attempt += 1;
+                            continue;
+                        }
+
+                        return Ok(AgentLlmResponse {
+                            text,
+                            content_blocks: resp.content_blocks,
+                            finish_reason: resp.finish_reason,
+                        });
+                    }
+                    Err(e) => match should_retry_error(&e, attempt, &policy) {
+                        RetryDecision::Retry => {
+                            let delay = std::time::Duration::from_millis(
+                                AGENT_RETRY_BACKOFF_MS * 2u64.pow(attempt),
+                            );
+                            warn!(
+                                attempt,
+                                delay_ms = delay.as_millis() as u64,
+                                error = %e,
+                                call_type = self.call_type.as_str(),
+                                "Retrying transient agent LLM error"
+                            );
+                            tokio::time::sleep(delay).await;
+                            attempt += 1;
+                        }
+                        RetryDecision::FallbackModel(_) | RetryDecision::Fail => {
+                            return Err(AgentLlmError::Transport(e.to_string()));
+                        }
+                    },
+                }
+            }
         })
     }
 }

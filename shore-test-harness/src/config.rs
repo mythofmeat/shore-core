@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use shore_config::{
-    app::{AppConfig, BehaviorConfig, CompactionConfig, ToolUseConfig},
+    app::{AppConfig, BehaviorConfig, CompactionConfig, InteriorityConfig, ToolUseConfig},
     duration::ConfigDuration,
     models::ModelCatalog,
     LoadedConfig, ShoreDirs,
@@ -20,6 +20,7 @@ pub struct TestConfigBuilder {
     pub compaction_min_turns: Option<usize>,
     pub compaction_keep_recent: Option<usize>,
     pub autonomy_enabled: bool,
+    pub interiority_max_tool_rounds: Option<u32>,
 }
 
 impl Default for TestConfigBuilder {
@@ -45,6 +46,7 @@ impl TestConfigBuilder {
             compaction_min_turns: None,
             compaction_keep_recent: None,
             autonomy_enabled: false,
+            interiority_max_tool_rounds: None,
         }
     }
 
@@ -88,6 +90,13 @@ impl TestConfigBuilder {
         self
     }
 
+    /// Cap the number of tool-use rounds per interiority tick. A cap of 1 with
+    /// a queued tool_use response at iteration 0 forces `hit_cap` → wrap-up.
+    pub fn interiority_max_tool_rounds(mut self, n: u32) -> Self {
+        self.interiority_max_tool_rounds = Some(n);
+        self
+    }
+
     pub fn build(&self, tmp_dir: &Path, mock_base_url: &str) -> LoadedConfig {
         // Set a dummy API key so LlmClient::build_request succeeds.
         std::env::set_var("SHORE_TEST_API_KEY", "sk-test-dummy");
@@ -119,6 +128,18 @@ impl TestConfigBuilder {
             ..BehaviorConfig::default()
         };
         app.behavior.autonomy.enabled = self.autonomy_enabled;
+        if let Some(rounds) = self.interiority_max_tool_rounds {
+            app.behavior.autonomy.interiority = InteriorityConfig {
+                max_tool_rounds: rounds,
+                // Long intervals so spontaneous ticks don't fire during the
+                // test — the caller drives the tick manually with
+                // `AutonomyManager::interiority_tick_now` and advances virtual
+                // time to fire the per-character tick loop.
+                fallback_interiority_interval: ConfigDuration::from_secs(86400),
+                minimum_interiority_latency: ConfigDuration::from_secs(86400),
+                ..InteriorityConfig::default()
+            };
+        }
 
         if self.compaction_enabled {
             app.memory.compaction = CompactionConfig {

@@ -1,0 +1,42 @@
+[package]
+name = "shore-mcp"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "MCP server exposing Shore's CLI surface for debugging and programmatic use (debug-only)."
+
+[features]
+default = []
+# Turning on `enabled` pulls in MCP deps and makes the bin buildable.
+# Combined with `cfg(debug_assertions)` in main.rs, release builds
+# produce no binary unless explicitly opted into via a custom profile.
+enabled = ["dep:rmcp", "dep:schemars"]
+
+[[bin]]
+name = "shore-mcp"
+required-features = ["enabled"]
+
+[dependencies]
+shore-client = { path = "../shore-client" }
+shore-config = { path = "../shore-config" }
+shore-protocol = { path = "../shore-protocol" }
+tokio = { workspace = true }
+anyhow = "1"
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+dirs = { workspace = true }
+tempfile = { workspace = true }
+which = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+# MCP deps — optional, gated behind `enabled`.
+rmcp = { version = "1.4", optional = true, features = ["server", "transport-io"] }
+schemars = { version = "1", optional = true }
+
+[dev-dependencies]
+shore-test-harness = { path = "../shore-test-harness" }

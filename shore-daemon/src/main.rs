@@ -27,6 +27,14 @@ struct Cli {
     /// TCP listen address for this process (overrides SHORE_ADDR and config).
     #[arg(long, value_name = "ADDR")]
     addr: Option<String>,
+
+    /// Pin the registered instance ID in `instances.json`.
+    ///
+    /// When unset, a fresh UUID is generated on every startup. Set this
+    /// to give the daemon a stable, discoverable ID — used by `shore-mcp`
+    /// to rediscover a previously-spawned test daemon.
+    #[arg(long, value_name = "ID")]
+    instance_id: Option<String>,
 }
 
 #[derive(Debug)]
@@ -109,13 +117,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .without_time()
         .init();
 
+    let cli_parsed = Cli::parse();
+    let instance_id_override = cli_parsed.instance_id.clone();
     let StartupConfig {
         loaded,
         config_path,
         bind_addr: addr,
         bind_addr_source,
         remote_access_warnings,
-    } = resolve_startup(Cli::parse(), startup_env_addr())?;
+    } = resolve_startup(cli_parsed, startup_env_addr())?;
     info!(
         config_path = %config_path.display(),
         bind_addr = %addr,
@@ -138,7 +148,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── Notification service ──────────────────────────────────────────
     let notifier = NotificationService::new(loaded.app.notifications.clone());
 
-    let instance_id = uuid::Uuid::new_v4().to_string();
+    let instance_id = instance_id_override
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
     for warning in remote_access_warnings {
         warn!(
@@ -149,8 +160,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    let server_config = ServerConfig {
+    // Pre-bind the TCP listener so we can resolve port-zero binds (e.g.
+    // `--addr 127.0.0.1:0`) before recording the addr in the instance
+    // registry. Without this, the registry holds the literal `:0` and any
+    // discovery client connects to a port that was never actually opened.
+    let pre_bind_config = ServerConfig {
         addr: addr.clone(),
+        allowed_hosts: loaded.app.daemon.allowed_hosts.clone(),
+        server_name: "shore-daemon".into(),
+        handshake: None,
+    };
+    let pre_bind_server = Server::new(pre_bind_config);
+    let listener = pre_bind_server
+        .bind()
+        .await
+        .map_err(|source| StartupError::ServerRun {
+            addr: addr.clone(),
+            source,
+        })?;
+    let resolved_addr = listener
+        .local_addr()
+        .map(|a| a.to_string())
+        .unwrap_or_else(|_| addr.clone());
+    drop(pre_bind_server);
+
+    let server_config = ServerConfig {
+        addr: resolved_addr.clone(),
         allowed_hosts: loaded.app.daemon.allowed_hosts.clone(),
         server_name: "shore-daemon".into(),
         handshake: None,
@@ -161,7 +196,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let instance_info = InstanceInfo {
         id: instance_id.clone(),
         pid: std::process::id(),
-        addr: addr.clone(),
+        addr: resolved_addr.clone(),
         started_at: epoch_timestamp(),
         data_dir: Some(loaded.dirs.data.display().to_string()),
     };
@@ -174,7 +209,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!(
         instance_id = %instance_id,
         registry_path = %registry.path().display(),
-        addr = %addr,
+        addr = %resolved_addr,
         data_dir = %loaded.dirs.data.display(),
         "Registered daemon instance"
     );
@@ -306,14 +341,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ── Run server ───────────────────────────────────────────────────
     let result = server
-        .run(shutdown_rx)
+        .run_with_listener(listener, shutdown_rx)
         .await
         .map_err(|source| StartupError::ServerRun {
-            addr: addr.clone(),
+            addr: resolved_addr.clone(),
             source,
         });
     if let Err(error) = &result {
-        error!(addr = %addr, error = %error, "Daemon server exited with error");
+        error!(addr = %resolved_addr, error = %error, "Daemon server exited with error");
     }
 
     // Drop the server so its route_tx is released, unblocking the handler.
@@ -570,6 +605,23 @@ mod tests {
     }
 
     #[test]
+    fn cli_parses_instance_id_flag() {
+        let cli = Cli::try_parse_from([
+            "shore-daemon",
+            "--instance-id",
+            "shore-mcp-test",
+        ])
+        .unwrap();
+        assert_eq!(cli.instance_id.as_deref(), Some("shore-mcp-test"));
+    }
+
+    #[test]
+    fn cli_instance_id_defaults_to_none() {
+        let cli = Cli::try_parse_from(["shore-daemon"]).unwrap();
+        assert!(cli.instance_id.is_none());
+    }
+
+    #[test]
     fn explicit_config_path_must_exist() {
         let err = resolve_explicit_config_path(Some(Path::new("/definitely/missing.toml")))
             .expect_err("missing explicit config path should fail");
@@ -637,6 +689,7 @@ unsafe_allow_remote_access = true
             Cli {
                 config: Some(config_path.clone()),
                 addr: Some("0.0.0.0:9000".into()),
+                instance_id: None,
             },
             Some("127.0.0.1:8000".into()),
         )
@@ -660,6 +713,7 @@ unsafe_allow_remote_access = true
             Cli {
                 config: Some(config_path),
                 addr: None,
+                instance_id: None,
             },
             Some("0.0.0.0:9000".into()),
         )
