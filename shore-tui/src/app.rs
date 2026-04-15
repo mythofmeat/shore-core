@@ -8,16 +8,19 @@ pub enum ConversationEntry {
     User {
         content: String,
         images: Vec<ImageRef>,
+        #[allow(dead_code)] // captured from daemon; TUI does not render per-entry timestamps
         timestamp: String,
     },
     Assistant {
         content: String,
         images: Vec<ImageRef>,
+        #[allow(dead_code)] // captured from daemon; TUI does not render per-entry timestamps
         timestamp: String,
         metadata: Option<StreamMetadata>,
     },
     System {
         content: String,
+        #[allow(dead_code)] // captured from daemon; TUI does not render per-entry timestamps
         timestamp: String,
     },
     Thinking {
