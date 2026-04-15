@@ -556,6 +556,17 @@ fn transmit_image_ref(
 }
 
 fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<ConnCommand> {
+    match &msg {
+        ServerMessage::AudioStart(_)
+        | ServerMessage::AudioChunk(_)
+        | ServerMessage::AudioEnd(_)
+        | ServerMessage::AudioError(_) => {
+            app.handle_audio_message(&msg);
+            return vec![];
+        }
+        _ => {}
+    }
+
     match msg {
         ServerMessage::StreamStart(start) => {
             app.stream.reset();
