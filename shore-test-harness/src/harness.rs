@@ -42,6 +42,10 @@ pub struct TestHarness {
     server_handle: JoinHandle<()>,
     handler_handle: JoinHandle<()>,
     pub config: LoadedConfig,
+    /// Exposed so integration tests can drive interiority ticks deterministically
+    /// (e.g. `autonomy.interiority_tick_now(character)` followed by a virtual-time
+    /// advance to fire the tick loop).
+    pub autonomy: AutonomyManager,
     // Stored for `trigger_compaction_now`.
     llm_client: LedgerClient,
     notifier: shore_daemon::notifications::NotificationService,
@@ -151,6 +155,7 @@ impl TestHarness {
         // Clone for storage in TestHarness (before ownership is moved into msg_handler).
         let stored_llm_client = llm_client.clone();
         let stored_notifier = notifier.clone();
+        let stored_autonomy = autonomy.clone();
 
         // ── Message Handler ──────────────────────────────────────────
         let mut msg_handler = MessageHandler::new(
@@ -203,6 +208,7 @@ impl TestHarness {
             server_handle,
             handler_handle,
             config,
+            autonomy: stored_autonomy,
             llm_client: stored_llm_client,
             notifier: stored_notifier,
         }

@@ -44,6 +44,16 @@ model = "claude-sonnet"            # Must match a key in [chat.*.*] below
 # session_probe_floor_secs = 180  # Minimum idle before a post-session probe fires
 # dormant_threshold = 1           # Consecutive unanswered probes before going dormant
 
+# Interiority — autonomous "private moment" ticks where the character can reflect,
+# use tools (memory, web search, etc.), and optionally send an unprompted message.
+# [behavior.autonomy.interiority]
+# enabled = true
+# fallback_interiority_interval = "1h"      # Base cadence when the character doesn't self-schedule
+# dormant_after_interiority_turns = 3       # Consecutive ticks with no user reply before sleeping
+# dormant_after_idle_time = "48h"           # Hard idle ceiling before sleeping until user returns
+# minimum_interiority_latency = "1h"        # Floor between a user message and the next tick
+# max_tool_rounds = 12                      # Tool-use rounds per tick before a wrap-up recap is forced
+
 # ── Tool use ─────────────────────────────────────────────────────────────
 
 # [behavior.tool_use]

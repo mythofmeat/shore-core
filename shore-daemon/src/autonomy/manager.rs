@@ -1324,10 +1324,12 @@ async fn execute_unified_tick(
     let interiority_prompt =
         build_interiority_prompt(&recent_thread, &user_name, &default_interval_str);
 
-    // Append the interiority prompt as a user message.
+    // Append the interiority prompt as a system-role message. The Anthropic
+    // provider auto-wraps inline system messages in <system_instruction> tags
+    // and emits them as a user turn (see convert_inline_system_messages).
     request
         .messages
-        .push(json!({"role": "user", "content": interiority_prompt}));
+        .push(json!({"role": "system", "content": interiority_prompt}));
 
     // NOTE: set_next_wake is now in the base tool set (tools/basic.rs)
     // so the tools array is identical between normal messages and interiority
@@ -1344,7 +1346,7 @@ async fn execute_unified_tick(
             return;
         }
     };
-    let max_iterations = std::cmp::min(lc.app.behavior.tool_use.max_iterations, 6);
+    let max_iterations = lc.app.behavior.autonomy.interiority.max_tool_rounds;
 
     info!(
         character,
@@ -1354,6 +1356,9 @@ async fn execute_unified_tick(
     // Collect <sendMessage> and <recap> content across iterations (last-wins).
     let mut send_message_text: Option<String> = None;
     let mut recap_text: Option<String> = None;
+    // True only if the loop exhausted max_iterations with tool_use still
+    // outstanding — the signal to fire a wrap-up call asking for a recap.
+    let mut hit_cap = false;
 
     for iteration in 0..max_iterations {
         let call_type = if iteration == 0 {
@@ -1490,6 +1495,69 @@ async fn execute_unified_tick(
             "role": "user",
             "content": tool_results,
         }));
+
+        // Mark cap-hit only if this was the final iteration and the model
+        // still wanted more tool rounds. The wrap-up call below will then
+        // request a recap before the tick ends.
+        if iteration + 1 == max_iterations {
+            hit_cap = true;
+        }
+    }
+
+    // -- Wrap-up call on iteration cap -----------------------------------------
+    // If we exhausted max_tool_rounds with no <recap> captured, make one more
+    // generate() call with an explicit wrap-up instruction. The pending tool
+    // results are already on request.messages (appended in the last loop
+    // iteration); we only need to add the wrap-up system message. The system+
+    // tools prefix is unchanged, so cache reads on the prefix still hit.
+    if hit_cap && recap_text.is_none() {
+        info!(
+            character,
+            "Interiority: iteration cap hit with no recap, requesting wrap-up"
+        );
+
+        let wrap_up_prompt = "You've used all your tool rounds for this private moment. \
+             Write a <recap> summarising what you were doing and thinking so you can \
+             pick it up next time — this is required. You can also include a \
+             <sendMessage> if there's something you want to share with the user.";
+
+        request.messages.push(json!({
+            "role": "system",
+            "content": wrap_up_prompt,
+        }));
+
+        match client
+            .generate(&request, CallType::ToolLoop, character, false)
+            .await
+        {
+            Ok(resp) => {
+                info!(
+                    character,
+                    finish_reason = %resp.finish_reason,
+                    input_tokens = resp.usage.input_tokens,
+                    output_tokens = resp.usage.output_tokens,
+                    cache_read = resp.usage.cache_read_tokens,
+                    "Interiority: wrap-up response"
+                );
+                let text = resp.extract_text();
+                if let Some(msg) = extract_send_message(&text) {
+                    send_message_text = Some(msg);
+                }
+                if let Some(recap) = extract_recap(&text) {
+                    recap_text = Some(recap);
+                } else {
+                    let preview: String = text.chars().take(500).collect();
+                    warn!(
+                        character,
+                        response_preview = %preview,
+                        "Interiority: wrap-up produced no recap"
+                    );
+                }
+            }
+            Err(e) => {
+                error!(character, error = %e, "Interiority: wrap-up call failed");
+            }
+        }
     }
 
     // -- Persist <recap> if present -----------------------------------------------

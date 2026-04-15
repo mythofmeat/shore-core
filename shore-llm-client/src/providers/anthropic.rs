@@ -433,11 +433,22 @@ fn convert_inline_system_messages(messages: &[Value]) -> Vec<Value> {
             let wrapped = format!("<system_instruction>{text}</system_instruction>");
 
             // If the previous message is a user message, merge to avoid
-            // consecutive user roles (which the API rejects).
+            // consecutive user roles (which the API rejects). Preserve
+            // structured content (tool_result, image blocks, etc.) by
+            // appending a text block rather than stringifying — otherwise
+            // extract_text_content would silently drop non-text blocks and
+            // break tool_use/tool_result pairing.
             if let Some(prev) = out.last_mut() {
                 if prev.get("role").and_then(Value::as_str) == Some("user") {
-                    let prev_text = extract_text_content(prev);
-                    prev["content"] = json!(format!("{prev_text}\n\n{wrapped}"));
+                    match prev.get_mut("content") {
+                        Some(Value::Array(blocks)) => {
+                            blocks.push(json!({"type": "text", "text": wrapped}));
+                        }
+                        _ => {
+                            let prev_text = extract_text_content(prev);
+                            prev["content"] = json!(format!("{prev_text}\n\n{wrapped}"));
+                        }
+                    }
                     continue;
                 }
             }
@@ -1553,6 +1564,39 @@ mod tests {
         let content = result[0]["content"].as_str().unwrap();
         assert!(content.contains("hello"));
         assert!(content.contains("<system_instruction>be concise</system_instruction>"));
+    }
+
+    /// Regression: when a system message lands after a user message whose
+    /// content is a structured array (e.g. tool_result blocks from a tool
+    /// loop), the merge must preserve those blocks. Previously
+    /// `extract_text_content` stringified the content and silently dropped
+    /// non-text blocks, breaking tool_use/tool_result pairing.
+    #[test]
+    fn test_convert_inline_system_preserves_structured_prev_content() {
+        let messages = vec![
+            json!({"role": "assistant", "content": [
+                {"type": "tool_use", "id": "t1", "name": "memory", "input": {}},
+            ]}),
+            json!({"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": "ok"},
+            ]}),
+            json!({"role": "system", "content": "wrap up now"}),
+        ];
+        let result = convert_inline_system_messages(&messages);
+
+        assert_eq!(result.len(), 2, "system merges into preceding user turn");
+        assert_eq!(result[1]["role"], "user");
+        let blocks = result[1]["content"]
+            .as_array()
+            .expect("content must remain an array so tool_result is preserved");
+        assert_eq!(blocks.len(), 2, "tool_result + appended text block");
+        assert_eq!(blocks[0]["type"], "tool_result");
+        assert_eq!(blocks[0]["tool_use_id"], "t1");
+        assert_eq!(blocks[1]["type"], "text");
+        assert!(blocks[1]["text"]
+            .as_str()
+            .unwrap()
+            .contains("<system_instruction>wrap up now</system_instruction>"));
     }
 
     /// Regression: trailing system message (the interiority case) must

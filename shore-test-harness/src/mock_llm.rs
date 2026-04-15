@@ -277,6 +277,38 @@ impl MockLlmServer {
             .await;
     }
 
+    /// Enqueue a non-streaming JSON response containing a `tool_use` block
+    /// (used by `generate()` — e.g. the interiority tick loop).
+    pub async fn enqueue_json_tool_use(&self, id: &str, name: &str, input: Value) {
+        let body = json!({
+            "id": "msg_test_json_tool",
+            "type": "message",
+            "role": "assistant",
+            "model": "claude-3-5-sonnet-20241022",
+            "content": [{
+                "type": "tool_use",
+                "id": id,
+                "name": name,
+                "input": input,
+            }],
+            "stop_reason": "tool_use",
+            "stop_sequence": null,
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 8
+            }
+        });
+        Mock::given(method("POST"))
+            .and(path_regex("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&body))
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&self.server)
+            .await;
+    }
+
     /// Enqueue a non-streaming JSON response (used by `generate()`, e.g. keepalive pings).
     pub async fn enqueue_json_text(&self, text: &str) {
         let body = json!({
