@@ -163,18 +163,38 @@ async fn spawn_and_attach_test_daemon() -> anyhow::Result<SWPConnection> {
 
     // Bind port 0 trick: let the daemon pick a free port via --addr=127.0.0.1:0.
     // The daemon will register the resolved addr in instances.json for us to discover.
-    let child = Command::new(&binary)
-        .arg("--instance-id")
+    let mut cmd = Command::new(&binary);
+    cmd.arg("--instance-id")
         .arg(MCP_INSTANCE_ID)
         .arg("--addr")
         .arg("127.0.0.1:0")
+        .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::null());
+
+    // Detach the daemon into its own session before exec. Without setsid(),
+    // the child inherits our process group and controlling terminal — so a
+    // SIGHUP on terminal close, a process-group kill from the MCP client, or
+    // similar teardown signals would take the daemon with us and leave a
+    // stale instances.json entry. With setsid() the daemon is session leader
+    // of a fresh session with no controlling tty, immune to those signals.
+    #[cfg(unix)]
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+
+    let child = cmd
         .spawn()
         .map_err(|e| anyhow::anyhow!("failed to spawn {}: {e}", binary.display()))?;
 
-    // We intentionally DO NOT wait() on the child — in persistent mode the
-    // daemon outlives the MCP server. Dropping the Child handle detaches it.
+    // The daemon is now in a detached session and will survive our exit.
+    // Drop the Child to release our handle; tokio's default `kill_on_drop`
+    // is false, so no signal is sent.
     drop(child);
 
     // Poll instances.json for up to 5 seconds waiting for registration.

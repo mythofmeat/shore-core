@@ -5063,6 +5063,7 @@ dependencies = [
  "anyhow",
  "clap",
  "dirs",
+ "libc",
  "rmcp",
  "schemars 1.2.1",
  "serde",

@@ -8,8 +8,6 @@ error: InternalError - HTTP 400: {"error":{"message":"Provider returned error","
   }\n}","provider_name":"Azure","is_byok":false}},"user_id":"user_2lEcCR3C7yKCDzxeUclpcbk337W"}
 ```
 
-- [ ] bug: `shore-mcp` auto-spawned daemon dies when `shore-mcp` exits. `spawn_and_attach_test_daemon` in `shore-mcp/src/profile.rs:154` spawns `shore-daemon` via `tokio::process::Command` and then `drop(child)` at line 178 — the comment claims this detaches the child, but the spawned daemon shares the MCP server's process group and gets killed when the MCP parent exits, leaving the `instances.json` entry stale. Reproduced during hotfix verification: each shore-mcp invocation required pre-spawning the daemon manually (`nohup … &; disown`) because the auto-spawn path consistently failed with "spawned shore-daemon did not register instance 'shore-mcp-test' within 5s" on subsequent calls. Needs a proper double-fork + `setsid` or an equivalent detach before the child reaches `exec`, so the daemon outlives the MCP server as intended.
-
 - [ ] weird intermittent memory agent issues:
 ```
 qifei

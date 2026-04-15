@@ -31,6 +31,9 @@ dirs = { workspace = true }
 tempfile = { workspace = true }
 which = { workspace = true }
 
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
 # MCP deps — optional, gated behind `enabled`.
 rmcp = { version = "1.4", optional = true, features = ["server", "transport-io"] }
 schemars = { version = "1", optional = true }
