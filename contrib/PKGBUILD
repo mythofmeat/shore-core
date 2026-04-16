@@ -74,6 +74,7 @@ package_shore-cli() {
 package_shore-tui() {
     pkgdesc='Persistent AI character engine — TUI'
     depends=('gcc-libs')
+    optdepends=('wl-clipboard: ctrl+v image paste from clipboard (Wayland)')
     provides=('shore-tui')
     conflicts=('shore-tui' 'shore-git')
 
