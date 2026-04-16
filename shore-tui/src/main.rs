@@ -492,6 +492,7 @@ fn expand_msg(msg: Message, entries: &mut Vec<ConversationEntry>) {
             },
             Role::System => ConversationEntry::System {
                 content: msg.content,
+                count: 1,
                 timestamp: msg.timestamp,
             },
         });
@@ -757,6 +758,7 @@ fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<ConnCommand> 
                             .join("\n");
                         app.entries.push(ConversationEntry::System {
                             content: format!("Characters:\n{list}"),
+                            count: 1,
                             timestamp: String::new(),
                         });
                         if app.auto_scroll {
@@ -805,6 +807,7 @@ fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<ConnCommand> 
                                 .join("\n");
                             app.entries.push(ConversationEntry::System {
                                 content: format!("Models:\n{list}"),
+                                count: 1,
                                 timestamp: String::new(),
                             });
                             if app.auto_scroll {
@@ -828,6 +831,7 @@ fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<ConnCommand> 
                         .unwrap_or_else(|_| co.data.to_string());
                     app.entries.push(ConversationEntry::System {
                         content: summary,
+                        count: 1,
                         timestamp: String::new(),
                     });
                     if app.auto_scroll {

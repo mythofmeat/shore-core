@@ -325,6 +325,10 @@ fn handle_insert_mode(app: &mut App, key: KeyEvent) -> Action {
                     }
                 }
             }
+            // Fresh conversational turn — drop stale system notifications
+            // (reconnect chatter, command acknowledgments, etc.) from the
+            // previous turn before we show the new User entry.
+            app.clear_system_entries();
             // Optimistic: show user's message in conversation immediately
             app.entries.push(crate::app::ConversationEntry::User {
                 content: text.clone(),
@@ -491,6 +495,11 @@ fn parse_command(app: &mut App, input: &str) -> Action {
                 app.set_status("nothing to cancel");
                 Action::Redraw
             }
+        }
+
+        "clear" => {
+            app.clear_system_entries();
+            Action::Redraw
         }
 
         "help" => {
@@ -947,5 +956,50 @@ mod tests {
             make_key(KeyModifiers::CONTROL, KeyCode::Char('v')),
         );
         assert!(matches!(action, Action::PasteImage));
+    }
+
+    #[test]
+    fn clear_command_removes_system_entries() {
+        let mut app = App::default();
+        app.set_status("reconnecting");
+        app.set_status("cache warning");
+        assert!(app
+            .entries
+            .iter()
+            .any(|e| matches!(e, crate::app::ConversationEntry::System { .. })));
+        let action = parse_command(&mut app, "clear");
+        assert!(matches!(action, Action::Redraw));
+        assert!(!app
+            .entries
+            .iter()
+            .any(|e| matches!(e, crate::app::ConversationEntry::System { .. })));
+    }
+
+    #[test]
+    fn user_send_clears_system_entries() {
+        let mut app = App::default();
+        app.input.mode = InputMode::Insert;
+        app.set_status("reconnecting: connection lost");
+        app.set_status("connected");
+        assert_eq!(
+            app.entries
+                .iter()
+                .filter(|e| matches!(e, crate::app::ConversationEntry::System { .. }))
+                .count(),
+            2
+        );
+        for c in "hi".chars() {
+            app.input.insert_char(c);
+        }
+        let action = handle_key(&mut app, make_key(KeyModifiers::NONE, KeyCode::Enter));
+        assert!(matches!(action, Action::Send(_)));
+        assert!(!app
+            .entries
+            .iter()
+            .any(|e| matches!(e, crate::app::ConversationEntry::System { .. })));
+        assert!(app
+            .entries
+            .iter()
+            .any(|e| matches!(e, crate::app::ConversationEntry::User { .. })));
     }
 }

@@ -22,6 +22,10 @@ pub enum ConversationEntry {
     },
     System {
         content: String,
+        /// Count of consecutive identical entries collapsed into this one.
+        /// Starts at 1; incremented by `set_status` when the same message
+        /// arrives repeatedly (e.g. a reconnect storm).
+        count: u32,
         #[allow(dead_code)] // captured from daemon; TUI does not render per-entry timestamps
         timestamp: String,
     },
@@ -571,8 +575,28 @@ impl App {
     }
 
     pub fn set_status(&mut self, msg: impl Into<String>) {
+        let msg = msg.into();
+        // Dedupe consecutive identical system messages (e.g. a reconnect
+        // storm emitting the same reason over and over). If the tail entry
+        // is already a matching System, bump its count in place instead of
+        // appending a new entry.
+        if let Some(ConversationEntry::System {
+            content,
+            count,
+            ..
+        }) = self.entries.last_mut()
+        {
+            if *content == msg {
+                *count = count.saturating_add(1);
+                if self.auto_scroll {
+                    self.scroll_to_bottom();
+                }
+                return;
+            }
+        }
         self.entries.push(ConversationEntry::System {
-            content: msg.into(),
+            content: msg,
+            count: 1,
             timestamp: String::new(),
         });
         if self.auto_scroll {
@@ -580,10 +604,19 @@ impl App {
         }
     }
 
+    /// Remove every System entry from the conversation log. Invoked by
+    /// `:clear` and automatically at the moment the user sends a new
+    /// message (fresh turn = clean slate).
+    pub fn clear_system_entries(&mut self) {
+        self.entries
+            .retain(|e| !matches!(e, ConversationEntry::System { .. }));
+    }
+
     /// Static command names for completion.
     const COMMANDS: &'static [&'static str] = &[
         "cancel",
         "character",
+        "clear",
         "compact",
         "delete",
         "edit",
@@ -769,5 +802,74 @@ mod tests {
         app.scroll_down(10);
         assert_eq!(app.scroll_offset, 0);
         assert!(app.auto_scroll);
+    }
+
+    #[test]
+    fn set_status_dedupes_consecutive_identical() {
+        let mut app = App::default();
+        app.set_status("reconnecting: connection lost");
+        app.set_status("reconnecting: connection lost");
+        app.set_status("reconnecting: connection lost");
+        assert_eq!(app.entries.len(), 1);
+        match &app.entries[0] {
+            ConversationEntry::System { content, count, .. } => {
+                assert_eq!(content, "reconnecting: connection lost");
+                assert_eq!(*count, 3);
+            }
+            _ => panic!("expected a single System entry"),
+        }
+    }
+
+    #[test]
+    fn set_status_does_not_dedupe_when_interrupted() {
+        let mut app = App::default();
+        app.set_status("x");
+        app.entries.push(ConversationEntry::User {
+            content: "hi".into(),
+            images: vec![],
+            timestamp: String::new(),
+        });
+        app.set_status("x");
+        let system_entries: Vec<_> = app
+            .entries
+            .iter()
+            .filter(|e| matches!(e, ConversationEntry::System { .. }))
+            .collect();
+        assert_eq!(system_entries.len(), 2);
+        for e in system_entries {
+            if let ConversationEntry::System { count, .. } = e {
+                assert_eq!(*count, 1);
+            }
+        }
+    }
+
+    #[test]
+    fn set_status_does_not_dedupe_different_content() {
+        let mut app = App::default();
+        app.set_status("x");
+        app.set_status("y");
+        assert_eq!(app.entries.len(), 2);
+    }
+
+    #[test]
+    fn clear_system_entries_preserves_other_entries() {
+        let mut app = App::default();
+        app.entries.push(ConversationEntry::User {
+            content: "hello".into(),
+            images: vec![],
+            timestamp: String::new(),
+        });
+        app.set_status("reconnecting");
+        app.entries.push(ConversationEntry::Assistant {
+            content: "hi".into(),
+            images: vec![],
+            timestamp: String::new(),
+            metadata: None,
+        });
+        app.set_status("cache warning");
+        app.clear_system_entries();
+        assert_eq!(app.entries.len(), 2);
+        assert!(matches!(app.entries[0], ConversationEntry::User { .. }));
+        assert!(matches!(app.entries[1], ConversationEntry::Assistant { .. }));
     }
 }

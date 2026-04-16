@@ -481,7 +481,7 @@ fn draw_conversation(frame: &mut Frame, app: &mut App, area: Rect) {
                 }
                 lines.push(Line::from(""));
             }
-            ConversationEntry::System { content, .. } => {
+            ConversationEntry::System { content, count, .. } => {
                 flush_thinking(
                     &mut lines,
                     &mut pending_thinking,
@@ -494,8 +494,13 @@ fn draw_conversation(frame: &mut Frame, app: &mut App, area: Rect) {
                     app.show_tools,
                     content_width,
                 );
+                let header = if *count > 1 {
+                    format!("System (×{count})")
+                } else {
+                    "System".to_string()
+                };
                 lines.push(Line::from(Span::styled(
-                    "System",
+                    header,
                     Style::default()
                         .fg(Color::Yellow)
                         .add_modifier(Modifier::BOLD),
@@ -2212,6 +2217,7 @@ mod scenario_tests {
 
         h.app.entries.push(ConversationEntry::System {
             content: "Memory updated: user prefers dark themes".into(),
+            count: 1,
             timestamp: "t1".into(),
         });
         h.app.entries.push(ConversationEntry::User {
@@ -2224,6 +2230,27 @@ mod scenario_tests {
         assert!(f.contains("System"), "system label visible");
         assert!(f.contains("Memory updated"), "system content visible");
         assert!(f.contains("You"), "user message after system");
+    }
+
+    // ── Scenario: deduped system messages show (×N) in header ───────────────
+
+    #[test]
+    fn scenario_system_message_count_suffix() {
+        let mut h = Harness::new();
+        h.app.connection_status = ConnectionStatus::Connected;
+
+        h.app.entries.push(ConversationEntry::System {
+            content: "reconnecting: connection lost".into(),
+            count: 7,
+            timestamp: "t1".into(),
+        });
+
+        let f = h.render("deduped system");
+        assert!(f.contains("reconnecting"), "content still visible");
+        assert!(
+            f.contains("(×7)"),
+            "header should show count suffix for deduped messages"
+        );
     }
 
     // ── Scenario: error in streaming ────────────────────────────────────────
