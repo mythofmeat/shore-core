@@ -12,9 +12,7 @@
 //!
 //! Run with:
 //!   cargo build -p shore-daemon
-//!   cargo test -p shore-mcp --test autospawn_detach -- --ignored --nocapture
-
-#![cfg(unix)]
+//!   cargo test -p shore-mcp --test suite -- autospawn_detach --ignored --nocapture
 
 use std::path::PathBuf;
 use std::process::Stdio;

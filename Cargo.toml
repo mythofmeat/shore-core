@@ -40,6 +40,12 @@ shore-llm-client = { path = "shore-llm-client" }
 shore-ledger = { path = "shore-ledger" }
 rusqlite = { version = "0.37", features = ["bundled"] }
 
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.test]
+debug = "line-tables-only"
+
 # Pinned to an eshen-gitea fork of matrix-rust-sdk that adds
 # `#![recursion_limit = "512"]` to crates/matrix-sdk/src/lib.rs.
 # rustc 1.94+ hits "queries overflow the depth limit" computing
