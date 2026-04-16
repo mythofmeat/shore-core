@@ -56,14 +56,19 @@
 
 ### 4. STRUCTURAL / ARCHITECTURAL
 
-23. **Break up `shore-daemon` (~35K LOC, 7× the 2–5K crate budget)** — biggest drift from the project's own stated architecture.
-    - First cut: extract autonomy state-persistence layer out of `autonomy/manager.rs` (2,841 LOC) into `state.rs`. Lowest coupling, highest testability win. *(GOALS_AUDIT + STEELMAN 3.3)*
-    - Second: extract `interiority_executor.rs` and `tick.rs` once state-persistence is isolated.
-    - Treat the 2–5K/500 LOC targets as enforceable budgets, not aspirations.
-24. **Extract OpenAI-compatible helpers** (deferred) — only when a 3rd OpenAI-compat provider lands. Extract SSE parsing + message translation (excluding reasoning) into `stream_helpers.rs`; keep provider-specific wrappers thin. *(REVIEW 3.2, downgraded)*
-25. **Add mock-HTTP integration tests for at least one LLM provider** — per the revised testing policy (Rule 4: recorded fixtures over hand-written stand-ins), record a real Haiku response once and replay. *(REVIEW §7)*
-26. **Retry replayability contract** — `shore-llm-client/src/retry.rs`. Change the retry layer's signature from `Request` to `Fn() -> Request` so a non-replayable body becomes a compile error. *(STEELMAN N9)*
-27. **Tick shutdown via `JoinSet` with bounded timeout** — `shore-daemon/src/autonomy/manager.rs:327-437`. Spawned tick tasks need awaited shutdown so the process doesn't exit with an open HTTP connection mid-LLM-call. *(STEELMAN N12)*
+23. **Break up `shore-daemon` (~35K LOC, 7× the 2–5K crate budget)** — biggest drift from the project's own stated architecture. *(GOALS_AUDIT Partial #1 + STEELMAN 3.3)*
+    - **End state:** autonomy state-persistence and the autonomy orchestrator live in **their own crates**, not just their own modules inside `shore-daemon`. Crate-level extraction is what GOALS_AUDIT explicitly recommends and what actually shrinks `shore-daemon` against the 2–5K budget.
+    - First cut: extract autonomy state-persistence layer out of `autonomy/manager.rs` (2,841 LOC) into a new module; verify via live MCP; then lift to a crate once the seam is clean.
+    - Second: extract the autonomy orchestrator (`interiority_executor`, `tick`) the same way.
+    - Once autonomy is out, audit the remaining 1K+ handler files inside `shore-daemon` (see GOALS_AUDIT "multiple handler files in the 1K+ range") and apply the same extract-module-then-lift-crate pattern where a clean seam exists.
+24. **Address other over-budget crates** — `shore-llm-client` (8,871 LOC), `shore-cli` (6,204), `shore-tui` (6,669) all sit above the 2–5K crate budget per GOALS_AUDIT. Lower priority than `shore-daemon` (1.5–2× over vs. 7× over), but the same budget applies. *(GOALS_AUDIT Partial #1)*
+    - `shore-llm-client`: the natural seam is provider-specific subcrates; item 26 below (OpenAI/ZAI helper extraction) is a precondition for that.
+    - `shore-cli` / `shore-tui`: no structural recommendation yet; revisit after `shore-daemon` work lands.
+25. **Enforce the 2–5K crate / 500 LOC module budgets** — GOALS_AUDIT recommends treating these as enforceable budgets, not aspirations. Add a CI check (e.g., a `tokei`-based workflow step, or a pre-commit hook) that fails when a crate or module exceeds its budget without an explicit exception list. Prevents re-drift after the cleanup lands.
+26. **Extract OpenAI-compatible helpers** (deferred) — only when a 3rd OpenAI-compat provider lands. Extract SSE parsing + message translation (excluding reasoning) into `stream_helpers.rs`; keep provider-specific wrappers thin. *(REVIEW 3.2, downgraded)*
+27. **Add mock-HTTP integration tests for at least one LLM provider** — per the revised testing policy (Rule 4: recorded fixtures over hand-written stand-ins), record a real Haiku response once and replay. *(REVIEW §7)*
+28. **Retry replayability contract** — `shore-llm-client/src/retry.rs`. Change the retry layer's signature from `Request` to `Fn() -> Request` so a non-replayable body becomes a compile error. *(STEELMAN N9)*
+29. **Tick shutdown via `JoinSet` with bounded timeout** — `shore-daemon/src/autonomy/manager.rs:327-437`. Spawned tick tasks need awaited shutdown so the process doesn't exit with an open HTTP connection mid-LLM-call. *(STEELMAN N12)*
 
 ---
 
