@@ -352,7 +352,25 @@ async fn run_tui(cli: Cli) -> io::Result<()> {
                             }
                         }
                         Action::PasteImage => {
-                            // TODO: wire to read_image_to_temp orchestrator in Task 6
+                            let result = tokio::time::timeout(
+                                Duration::from_millis(1500),
+                                tokio::task::spawn_blocking(clipboard::read_image_to_temp),
+                            )
+                            .await;
+                            match result {
+                                Ok(Ok(Ok(path))) => {
+                                    let path_str = path.to_string_lossy().into_owned();
+                                    app.pending_images.push(path_str);
+                                    app.paste_temp_paths.push(path);
+                                    app.set_status(format!(
+                                        "pasted image ({} pending)",
+                                        app.pending_images.len()
+                                    ));
+                                }
+                                Ok(Ok(Err(e))) => app.set_status(e.to_string()),
+                                Ok(Err(_join)) => app.set_status("paste task panicked"),
+                                Err(_elapsed) => app.set_status("clipboard read timed out"),
+                            }
                         }
                         Action::Redraw | Action::None => {}
                     }
@@ -369,6 +387,11 @@ async fn run_tui(cli: Cli) -> io::Result<()> {
     // Save preferences and shutdown
     save_prefs(&app);
     let _ = cmd_tx.send(ConnCommand::Shutdown).await;
+
+    // Best-effort cleanup of paste-origin temp files.
+    for path in &app.paste_temp_paths {
+        let _ = std::fs::remove_file(path);
+    }
 
     // Restore terminal
     io::stdout().execute(DisableBracketedPaste)?;
