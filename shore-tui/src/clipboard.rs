@@ -60,6 +60,30 @@ fn fresh_temp_path() -> PathBuf {
     path
 }
 
+/// Read an image from the system clipboard, encode as PNG, and write to
+/// a temp file. Returns the path on success.
+///
+/// Synchronous and blocking — designed to be invoked via
+/// `tokio::task::spawn_blocking`. arboard's Wayland backend can briefly
+/// stall during the clipboard handoff; the caller is expected to wrap
+/// this in a timeout.
+pub fn read_image_to_temp() -> Result<PathBuf, ClipboardError> {
+    let mut clipboard = arboard::Clipboard::new()
+        .map_err(|e| ClipboardError::ClipboardUnavailable(e.to_string()))?;
+
+    let img = match clipboard.get_image() {
+        Ok(img) => img,
+        Err(arboard::Error::ContentNotAvailable) => return Err(ClipboardError::NoImage),
+        Err(e) => return Err(ClipboardError::ClipboardUnavailable(e.to_string())),
+    };
+
+    let png = encode_rgba_to_png(img.width as u32, img.height as u32, img.bytes.into_owned())?;
+
+    let path = fresh_temp_path();
+    std::fs::write(&path, &png).map_err(ClipboardError::WriteFailed)?;
+    Ok(path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
