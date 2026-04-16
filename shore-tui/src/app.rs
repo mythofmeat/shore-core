@@ -401,6 +401,8 @@ pub struct App {
     pub show_help: bool,
     /// Images queued for attachment to the next outgoing message.
     pub pending_images: Vec<String>,
+    /// Temp-file paths for paste-origin images, removed on TUI shutdown.
+    pub paste_temp_paths: Vec<std::path::PathBuf>,
     /// When editing a message, holds the ref (e.g. "last", "-1") being edited.
     pub editing_ref: Option<String>,
     /// Index of all rendered images with their line positions, rebuilt each frame.
@@ -442,6 +444,7 @@ impl Default for App {
             show_images: true,
             show_help: false,
             pending_images: Vec::new(),
+            paste_temp_paths: Vec::new(),
             editing_ref: None,
             image_index: Vec::new(),
             fullscreen: None,
