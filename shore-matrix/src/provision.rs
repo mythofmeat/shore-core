@@ -285,7 +285,7 @@ pub enum ProvisionError {
     Registration(String),
 }
 
-// ── Embedded Synapse state ──────────────────────────────────────────────
+// ── Embedded homeserver state ───────────────────────────────────────────
 
 /// Paths for the global embedded Matrix homeserver instance.
 #[derive(Debug, Clone)]

@@ -258,14 +258,19 @@ fn image_message_becomes_swp_message_with_image_path() {
 fn full_stream_response_lifecycle() {
     // Simulate what ResponseCollector does (tested via public protocol types)
     let messages: Vec<ServerMessage> = vec![
-        ServerMessage::StreamStart(StreamStart { regen: false }),
+        ServerMessage::StreamStart(StreamStart {
+            regen: false,
+            rid: None,
+        }),
         ServerMessage::StreamChunk(StreamChunk {
             text: "Hello".into(),
             content_type: "text".into(),
+            rid: None,
         }),
         ServerMessage::StreamChunk(StreamChunk {
             text: ", world!".into(),
             content_type: "text".into(),
+            rid: None,
         }),
         ServerMessage::StreamEnd(StreamEnd {
             content: "Hello, world!".into(),
@@ -283,6 +288,7 @@ fn full_stream_response_lifecycle() {
                 model: "claude-3-opus".into(),
             },
             finish_reason: "end_turn".into(),
+            rid: None,
         }),
     ];
 
@@ -304,16 +310,21 @@ fn full_stream_response_lifecycle() {
 #[test]
 fn stream_with_images_delivers_both() {
     let messages: Vec<ServerMessage> = vec![
-        ServerMessage::StreamStart(StreamStart { regen: false }),
+        ServerMessage::StreamStart(StreamStart {
+            regen: false,
+            rid: None,
+        }),
         ServerMessage::SendImage(SendImage {
             path: "/tmp/generated_art.png".into(),
             caption: Some("A sunset painting".into()),
             data: None,
+            rid: None,
         }),
         ServerMessage::SendImage(SendImage {
             path: "/tmp/chart.svg".into(),
             caption: None,
             data: None,
+            rid: None,
         }),
         ServerMessage::StreamEnd(StreamEnd {
             content: "Here are the images you requested.".into(),
@@ -331,6 +342,7 @@ fn stream_with_images_delivers_both() {
                 model: "claude-3-opus".into(),
             },
             finish_reason: "end_turn".into(),
+            rid: None,
         }),
     ];
 
@@ -362,6 +374,7 @@ fn command_output_renders_as_formatted_message() {
             "tokens": { "input": 1000, "output": 500 },
             "interiority": "Active"
         }),
+        rid: None,
     };
 
     // The bridge formats this as: **name**\n```\npretty_json\n```
@@ -379,6 +392,7 @@ fn error_response_includes_code_and_message() {
     let err = Error {
         code: shore_protocol::error::ErrorCode::NotFound,
         message: "character not found".into(),
+        rid: None,
     };
 
     // Bridge formats as: "Error: {code:?}: {message}"
@@ -391,6 +405,7 @@ fn error_response_includes_code_and_message() {
 #[test]
 fn push_message_delivers_content() {
     let new_msg = NewMessage {
+        revision: 0,
         message: Message {
             msg_id: "push_001".into(),
             role: Role::Assistant,
@@ -425,13 +440,19 @@ fn cross_room_isolation_with_independent_collectors() {
     room_states
         .entry("!alice-room:localhost".into())
         .or_default()
-        .push(ServerMessage::StreamStart(StreamStart { regen: false }));
+        .push(ServerMessage::StreamStart(StreamStart {
+            regen: false,
+            rid: None,
+        }));
 
     // Bob's room: independent stream
     room_states
         .entry("!bob-room:localhost".into())
         .or_default()
-        .push(ServerMessage::StreamStart(StreamStart { regen: false }));
+        .push(ServerMessage::StreamStart(StreamStart {
+            regen: false,
+            rid: None,
+        }));
 
     // Alice's room: receives image
     room_states
@@ -441,6 +462,7 @@ fn cross_room_isolation_with_independent_collectors() {
             path: "/tmp/alice_img.png".into(),
             caption: None,
             data: None,
+            rid: None,
         }));
 
     // Alice's room: stream ends
@@ -463,6 +485,7 @@ fn cross_room_isolation_with_independent_collectors() {
                 model: "test".into(),
             },
             finish_reason: "end_turn".into(),
+            rid: None,
         }));
 
     // Bob's room: stream ends (no images)
@@ -485,6 +508,7 @@ fn cross_room_isolation_with_independent_collectors() {
                 model: "test".into(),
             },
             finish_reason: "end_turn".into(),
+            rid: None,
         }));
 
     // Verify isolation: Alice's room has 3 messages (start + image + end)
@@ -669,7 +693,10 @@ fn full_bridge_message_flow() {
     // Stage 4: Daemon responses (what ResponseCollector processes)
     let response_sequence: Vec<ServerMessage> = vec![
         // Response to text message
-        ServerMessage::StreamStart(StreamStart { regen: false }),
+        ServerMessage::StreamStart(StreamStart {
+            regen: false,
+            rid: None,
+        }),
         ServerMessage::StreamEnd(StreamEnd {
             content: "Hello! How can I help you today?".into(),
             metadata: StreamMetadata {
@@ -686,6 +713,7 @@ fn full_bridge_message_flow() {
                 model: "claude-3-opus".into(),
             },
             finish_reason: "end_turn".into(),
+            rid: None,
         }),
         // Response to status command
         ServerMessage::CommandOutput(CommandOutput {
@@ -697,6 +725,7 @@ fn full_bridge_message_flow() {
                 "social_need": 0.7,
                 "tau": 3600.0,
             }),
+            rid: None,
         }),
     ];
 
@@ -747,6 +776,7 @@ fn e2e_encryption_verification_types() {
             model: "test".into(),
         },
         finish_reason: "end_turn".into(),
+        rid: None,
     });
 
     if let ServerMessage::StreamEnd(end) = &stream_end {

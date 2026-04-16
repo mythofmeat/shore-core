@@ -230,13 +230,17 @@ mod tests {
     fn collector_stream_lifecycle() {
         let mut c = ResponseCollector::new();
 
-        let action = c.feed(&ServerMessage::StreamStart(StreamStart { regen: false }));
+        let action = c.feed(&ServerMessage::StreamStart(StreamStart {
+            regen: false,
+            rid: None,
+        }));
         assert!(matches!(action, CollectorAction::StartTyping));
         assert!(c.is_streaming());
 
         let action = c.feed(&ServerMessage::StreamChunk(StreamChunk {
             text: "hello".into(),
             content_type: "text".into(),
+            rid: None,
         }));
         assert!(matches!(action, CollectorAction::None));
 
@@ -256,6 +260,7 @@ mod tests {
                 model: "test".into(),
             },
             finish_reason: "end_turn".into(),
+            rid: None,
         }));
         if let CollectorAction::SendMessage { text, images } = action {
             assert_eq!(text, "hello world");
@@ -270,17 +275,22 @@ mod tests {
     fn collector_buffers_images() {
         let mut c = ResponseCollector::new();
 
-        c.feed(&ServerMessage::StreamStart(StreamStart { regen: false }));
+        c.feed(&ServerMessage::StreamStart(StreamStart {
+            regen: false,
+            rid: None,
+        }));
 
         c.feed(&ServerMessage::SendImage(SendImage {
             path: "/tmp/img.png".into(),
             caption: Some("test image".into()),
             data: None,
+            rid: None,
         }));
         c.feed(&ServerMessage::SendImage(SendImage {
             path: "/tmp/img2.png".into(),
             caption: None,
             data: None,
+            rid: None,
         }));
 
         let action = c.feed(&ServerMessage::StreamEnd(StreamEnd {
@@ -299,6 +309,7 @@ mod tests {
                 model: "test".into(),
             },
             finish_reason: "end_turn".into(),
+            rid: None,
         }));
 
         if let CollectorAction::SendMessage { text, images } = action {
@@ -319,6 +330,7 @@ mod tests {
         let action = c.feed(&ServerMessage::CommandOutput(CommandOutput {
             name: "status".into(),
             data: serde_json::json!({"active": true}),
+            rid: None,
         }));
         if let CollectorAction::SendCommandOutput { name, data } = action {
             assert_eq!(name, "status");
@@ -334,6 +346,7 @@ mod tests {
         let action = c.feed(&ServerMessage::Error(Error {
             code: shore_protocol::error::ErrorCode::NotFound,
             message: "not found".into(),
+            rid: None,
         }));
         if let CollectorAction::SendError(err) = action {
             assert!(err.contains("NotFound"));
@@ -347,6 +360,7 @@ mod tests {
     fn collector_new_message() {
         let mut c = ResponseCollector::new();
         let action = c.feed(&ServerMessage::NewMessage(NewMessage {
+            revision: 0,
             message: Message {
                 msg_id: "1".into(),
                 role: Role::Assistant,
@@ -408,11 +422,15 @@ mod tests {
         let mut c = ResponseCollector::new();
 
         // First stream with images
-        c.feed(&ServerMessage::StreamStart(StreamStart { regen: false }));
+        c.feed(&ServerMessage::StreamStart(StreamStart {
+            regen: false,
+            rid: None,
+        }));
         c.feed(&ServerMessage::SendImage(SendImage {
             path: "/old.png".into(),
             caption: None,
             data: None,
+            rid: None,
         }));
         c.feed(&ServerMessage::StreamEnd(StreamEnd {
             content: "first".into(),
@@ -430,10 +448,14 @@ mod tests {
                 model: "test".into(),
             },
             finish_reason: "end_turn".into(),
+            rid: None,
         }));
 
         // Second stream should start clean
-        c.feed(&ServerMessage::StreamStart(StreamStart { regen: false }));
+        c.feed(&ServerMessage::StreamStart(StreamStart {
+            regen: false,
+            rid: None,
+        }));
         let action = c.feed(&ServerMessage::StreamEnd(StreamEnd {
             content: "second".into(),
             metadata: StreamMetadata {
@@ -450,6 +472,7 @@ mod tests {
                 model: "test".into(),
             },
             finish_reason: "end_turn".into(),
+            rid: None,
         }));
 
         if let CollectorAction::SendMessage { images, .. } = action {

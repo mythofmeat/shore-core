@@ -639,10 +639,12 @@ clients — they can be developed independently.
 - Room management, auto-join
 - Image buffering (collect images until next text message)
 - Command handling (`!` prefix)
-- Synapse subprocess management (optional, for embedded mode):
+- Homeserver subprocess management (optional, for embedded mode):
   - Config generation, health checking
   - Admin account creation
   - Character account provisioning (register, create room, avatar sync)
+  - Uses a conduwuit-compatible binary (`conduwuit`, `continuwuity`, `tuwunel`);
+    Synapse has been replaced in the embedded path.
 - Reconnection to daemon with backoff
 
 #### Configuration
@@ -650,7 +652,17 @@ clients — they can be developed independently.
 Receives most config from daemon via SWP `hello` exchange. Bridge only needs:
 - Daemon address (auto-discovered via registry, or `--addr` flag)
 - For external Matrix: access_token, homeserver_url, device_id (env/flags)
-- For embedded Synapse: admin credentials (env/flags)
+- For embedded homeserver: admin credentials (env/flags)
+- Optional `--character` / `SHORE_CHARACTER` in external mode to select which
+  character to speak as during the SWP handshake (embedded mode discovers the
+  character set from the daemon's handshake reply)
+
+#### Build notes
+
+`matrix-sdk` at 0.16.0 needs a `recursion_limit` bump to compile on rustc
+1.94+; silvershore carries a pinned git fork via `[patch.crates-io]` in the
+workspace `Cargo.toml`. See DECISIONS.md (2026-04-16) and QUIRKS.md for
+details.
 
 ### 4.4 shore-llm-client (LLM Provider Crate)
 

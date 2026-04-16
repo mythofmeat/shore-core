@@ -56,6 +56,10 @@ struct Args {
     #[arg(long)]
     addr: Option<String>,
 
+    /// Character to connect as on the daemon (external mode; ignored in embedded mode)
+    #[arg(long, env = "SHORE_CHARACTER")]
+    character: Option<String>,
+
     /// Shore config directory (for reading [connections.matrix] and daemon discovery)
     #[arg(long)]
     config: Option<String>,
@@ -216,7 +220,11 @@ async fn run_external(
 
     bot.start_sync();
 
-    let (daemon_tx, daemon_rx) = spawn_connection(args.addr.clone(), args.config.clone());
+    let (daemon_tx, daemon_rx) = spawn_connection(
+        args.addr.clone(),
+        args.config.clone(),
+        args.character.clone(),
+    );
     let room_manager = RoomManager::new();
 
     info!("shore-matrix bridge running (external mode)");
@@ -318,8 +326,12 @@ async fn run_embedded(
         return Ok(());
     }
 
-    // 7. Connect to daemon to discover characters
-    let (daemon_tx, mut daemon_rx) = spawn_connection(args.addr.clone(), args.config.clone());
+    // 7. Connect to daemon to discover characters (no character selected; we
+    //    want the full character list via the handshake). In embedded mode the
+    //    same connection is then reused for bridging, which means the daemon
+    //    will route all messages to its default character — multi-character
+    //    embedded bridging would need one connection per character.
+    let (daemon_tx, mut daemon_rx) = spawn_connection(args.addr.clone(), args.config.clone(), None);
 
     info!("waiting for daemon connection to discover characters...");
     let characters = wait_for_characters(&mut daemon_rx).await?;

@@ -1,4 +1,4 @@
-- [ ] shore matrix re-enable [./asap/shore-matrix.md]
+- [x] shore matrix re-enable (compile-verified; live-test pending conduwuit install)
 
 - [ ] shore-web? [./ideas/shore-web.md]
 
