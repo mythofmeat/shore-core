@@ -1,1 +1,2 @@
 - [ ] shore-web? [./ideas/shore-web.md]
+- [ ] shore memory client [./ideas/shore-memory-client.md]
