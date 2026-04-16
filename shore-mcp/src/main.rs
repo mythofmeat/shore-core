@@ -1,15 +1,13 @@
-// shore-mcp is a debug/testing-only binary. In release builds — even with
-// the `enabled` feature on — `debug_assertions` is off by default, so the
-// binary becomes a stub that refuses to run. Set a custom profile with
-// `debug-assertions = true` if you really want a release build.
+// shore-mcp is a debug/testing-only binary. In release builds `debug_assertions`
+// is off by default, so the binary becomes a stub that refuses to run. Set a
+// custom profile with `debug-assertions = true` if you really want a release build.
 
 #[cfg(not(debug_assertions))]
 fn main() {
     eprintln!(
         "shore-mcp is only available in debug builds. \
-         Rebuild with `cargo build -p shore-mcp --features enabled` \
-         (default dev profile) or a custom profile with \
-         `debug-assertions = true`."
+         Rebuild with `cargo build -p shore-mcp` (default dev profile) \
+         or a custom profile with `debug-assertions = true`."
     );
     std::process::exit(1);
 }

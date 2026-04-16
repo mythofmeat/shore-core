@@ -3,9 +3,10 @@
 //! exercise a small representative tool set (initialize / tools/list / status / send).
 //!
 //! Prerequisites:
-//!   - `shore-mcp` binary built with `--features enabled`.
+//!   - `shore-mcp` binary (cargo builds it automatically via
+//!     `CARGO_BIN_EXE_shore-mcp`).
 //!
-//! Run with: `cargo test -p shore-mcp --features enabled --test mcp_integration -- --ignored --nocapture`
+//! Run with: `cargo test -p shore-mcp --test mcp_integration -- --ignored --nocapture`
 
 use std::process::Stdio;
 use std::time::Duration;
@@ -70,7 +71,7 @@ async fn shore_mcp_initializes_and_calls_tools_against_real_daemon() {
 
     // Locate the binary built by this workspace.
     let bin = std::env::var("CARGO_BIN_EXE_shore-mcp")
-        .expect("CARGO_BIN_EXE_shore-mcp — run via `cargo test -p shore-mcp --features enabled --test mcp_integration -- --ignored`");
+        .expect("CARGO_BIN_EXE_shore-mcp — run via `cargo test -p shore-mcp --test mcp_integration -- --ignored`");
 
     // --attach-main treats this profile as main (gate closed); --allow-main-writes
     // opens the gate so `send` can fire. --daemon-addr bypasses discovery.

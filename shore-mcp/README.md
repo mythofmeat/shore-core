@@ -5,21 +5,20 @@ clients — primarily Claude Code — for debugging and programmatic use.
 
 ## Build gate
 
-`shore-mcp` is **debug-only by default**. Three layers prevent it from being
-built unintentionally:
+`shore-mcp` is **debug-only at runtime**. `main.rs` is `cfg(debug_assertions)`-
+gated, so release builds (`cargo build --workspace --release`) produce a stub
+binary that refuses to run. Dev builds (`cargo build --workspace`) produce a
+working binary — no feature flags required.
 
-1. The `[[bin]]` declares `required-features = ["enabled"]`.
-2. The `enabled` feature pulls in the optional `rmcp` and `schemars` deps.
-3. `main.rs` is `cfg(debug_assertions)`-gated, so even a `--release` build
-   without an opted-in custom profile produces no binary.
-
-`cargo build --workspace --release` will not produce `shore-mcp`. That is
-intentional. See [docs/DECISIONS.md](../docs/DECISIONS.md) entry
-"shore-mcp crate added as a debug-only MCP server" for the rationale.
+The crate is intentionally excluded from distribution: `contrib/PKGBUILD`
+installs each workspace binary by hand and does not list `shore-mcp`. See
+[docs/DECISIONS.md](../docs/DECISIONS.md) entries "shore-mcp crate added as a
+debug-only MCP server" and "shore-mcp Cargo feature gate removed" for history.
 
 ## Build & run
 
-Workspace aliases (defined in `.cargo/config.toml`):
+Workspace aliases (defined in `.cargo/config.toml`) are short-hands for the
+package selector:
 
 ```sh
 cargo mcp           # build
@@ -29,7 +28,7 @@ cargo mcp-itest     # integration test against shore-test-harness
 cargo mcp-check     # type-check including tests
 ```
 
-Manual equivalents are `cargo build -p shore-mcp --features enabled`, etc.
+Manual equivalents are `cargo build -p shore-mcp`, etc.
 
 ## Profile modes
 

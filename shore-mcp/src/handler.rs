@@ -97,7 +97,11 @@ impl ShoreMcpHandler {
                 | ServerMessage::NewMessage(_)
                 | ServerMessage::SendImage(_)
                 | ServerMessage::Phase(_)
-                | ServerMessage::CacheWarning(_) => {}
+                | ServerMessage::CacheWarning(_)
+                | ServerMessage::AudioStart(_)
+                | ServerMessage::AudioChunk(_)
+                | ServerMessage::AudioEnd(_)
+                | ServerMessage::AudioError(_) => {}
                 // Streaming frames are only legitimate for send/regen
                 // (Task 16), which owns its own helper. If we see them
                 // here the daemon sent a stream for a request we didn't

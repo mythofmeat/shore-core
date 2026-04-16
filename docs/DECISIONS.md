@@ -695,3 +695,13 @@ off` toggled the live-speak flag cleanly (logs: `Live TTS toggled
 enabled=true prev=false` then back).
 
 **Sacrificed:** Nothing, in theory. In practice, it raises the discipline bar: upstream tests are now allowed to use doubles, but reviewers have to check that those doubles don't creep into `shore-llm-client` itself.
+
+### 2026-04-16 — shore-mcp Cargo feature gate removed
+
+The `enabled` Cargo feature that gated `shore-mcp`'s bin target (and the optional `rmcp`/`schemars` deps) was removed. `cargo build --workspace` now compiles `shore-mcp` unconditionally. The `cfg(debug_assertions)` stub in `main.rs` stays — release builds still produce a binary that refuses to run.
+
+**Why:** The feature flag added friction without adding a real ship-gate. The actual ship-gate is `contrib/PKGBUILD`, which names each binary by hand (`install -Dm755 target/release/<name>`) and does not list `shore-mcp`. So building it in dev never had any chance of shipping it. Meanwhile, a fresh clone or a `cargo clean` would leave the MCP server registered in `.claude/` pointing at a non-existent binary, silently failing to connect until the user remembered the non-default build incantation. Since shore-mcp is the canonical live-verification path for daemon-surface changes (per project CLAUDE.md), that friction was hitting the workflow it's supposed to accelerate.
+
+**Mechanically:** Dropped `[features]` and `required-features` from `shore-mcp/Cargo.toml`, removed `feature = "enabled"` from `src/lib.rs` cfg gates, simplified `.cargo/config.toml` aliases, and stripped `--features enabled` from test-file docs and panic messages. Pre-existing: when the previously-gated modules started compiling under `cargo check --workspace`, a missing match arm in `handler.rs` for the new `ServerMessage::Audio*` variants surfaced and was filled in (drain silently alongside the other async-push frames).
+
+**Sacrificed:** A tiny amount of default workspace compile time (one extra crate + `rmcp` + `schemars`). The belt-and-suspenders of "double-gated release builds" is now single-gated at runtime via `debug_assertions`, which is sufficient because `contrib/PKGBUILD` is the real ship-gate.

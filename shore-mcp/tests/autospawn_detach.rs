@@ -5,15 +5,14 @@
 //! terminal — so tearing down shore-mcp would take the daemon with it.
 //!
 //! Prerequisites:
-//!   - `shore-mcp` binary built with `--features enabled` (cargo provides this
-//!     automatically via `CARGO_BIN_EXE_shore-mcp` when invoked correctly).
+//!   - `shore-mcp` binary (cargo provides this automatically via
+//!     `CARGO_BIN_EXE_shore-mcp` when invoked via `cargo test`).
 //!   - `shore-daemon` binary built in the same target dir (not automatic —
 //!     build it explicitly before running this test).
 //!
 //! Run with:
 //!   cargo build -p shore-daemon
-//!   cargo test -p shore-mcp --features enabled --test autospawn_detach \
-//!     -- --ignored --nocapture
+//!   cargo test -p shore-mcp --test autospawn_detach -- --ignored --nocapture
 
 #![cfg(unix)]
 
@@ -91,7 +90,7 @@ async fn autospawned_daemon_survives_mcp_shutdown() {
     // 2. Locate binaries. CARGO_BIN_EXE_shore-mcp is cargo-provided for this
     //    crate's own binary; shore-daemon lives in the same target dir.
     let mcp_bin = std::env::var("CARGO_BIN_EXE_shore-mcp")
-        .expect("CARGO_BIN_EXE_shore-mcp — run via `cargo test -p shore-mcp --features enabled`");
+        .expect("CARGO_BIN_EXE_shore-mcp — run via `cargo test -p shore-mcp`");
     let mcp_bin = PathBuf::from(mcp_bin);
     let target_dir = mcp_bin
         .parent()

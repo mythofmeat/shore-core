@@ -63,7 +63,7 @@ cargo test --workspace               # unit tests
 cargo test --test e2e -- --ignored   # e2e (requires OPENROUTER_API_KEY)
 ./scripts/live-tests/live-test.sh    # live integration tests
 
-cargo mcp                            # build shore-mcp (alias, requires --features enabled)
+cargo mcp                            # build shore-mcp (alias for cargo build -p shore-mcp)
 cargo mcp-itest                      # live MCP integration test (gated --ignored)
 ```
 
@@ -95,7 +95,7 @@ When you do need to stand in for an LLM response in a test outside `shore-llm-cl
 
 ## Live MCP verification (added 2026-04-15)
 
-`shore-mcp` is a debug-only MCP server (`cargo build -p shore-mcp --features enabled`) that exposes the daemon over MCP JSON-RPC. It is the fastest way to drive a real daemon end-to-end and observe a real LLM round-trip, and is the canonical verification path for any change visible through the daemon's tool surface.
+`shore-mcp` is a debug-only MCP server (`cargo build -p shore-mcp`, or built automatically by `cargo build --workspace`) that exposes the daemon over MCP JSON-RPC. It is the fastest way to drive a real daemon end-to-end and observe a real LLM round-trip, and is the canonical verification path for any change visible through the daemon's tool surface. Release builds produce a stub that refuses to run — use a dev build.
 
 ### When to use it
 
