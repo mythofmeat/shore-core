@@ -4,6 +4,38 @@ All notable changes to Shore are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.0] — 2026-04-16
+
+### Added
+- `shore-mcp` crate: debug-only MCP server exposing the daemon over JSON-RPC stdio, with status, log, usage, character, model, memory, config, debug (interiority), send, regen, and log_follow tools
+- `shore-mcp` profile resolution (main / persistent / ephemeral), daemon discover-or-spawn with `--daemon-addr` override, and write-op gating rules to prevent accidental writes to the main profile
+- TTS integration: SWP message types for audio streaming, `[tts]` config section, daemon TTS client with WAV relay, `AudioPlayer` using rodio, `shore speak` CLI subcommand with on-demand and live modes, TUI `:speak` command with live-TTS toggle and indicator
+- TUI clipboard image paste: `ctrl+v` binding, `:image` command completion, paste-temp cleanup on exit (implemented via `wl-paste` shell-out)
+- TUI system message lifecycle and disambiguated `Escape` / `Ctrl+C` / cancel bindings
+- TUI optimistic regen spinner and trailing user message preservation on regen
+- GUI polish: streaming indicator, input auto-grow, config panel sections, hauntings and shooting stars, emotional resonance, time sync, ghost typing, settings persistence, typing combo escalation, context reverb
+- `shore-matrix` re-enabled with a patched `matrix-sdk` fork
+- Daemon `--instance-id` flag for stable registry IDs
+- Daemon runs idle compaction inline during the autonomy tick
+- CLI persists active model across sessions, adds dynamic completions, and includes character name in the log
+- Autonomy: force a recap wrap-up when the interiority tool loop hits its cap
+- `collect_stream` client helper for request/response consumers
+- Ledger/CLI: usage breakdown by call type
+
+### Fixed
+- `shore-llm-client`: strip orphan `tool_use` / `tool_result` pairs from outbound requests
+- Memory agent retries on `content_filter` and transient errors
+- Daemon registers the kernel-resolved port when bound to `:0`, excludes tool models from `list_models`, applies the interiority model override on the warm path, and drops the time-gap gate on recap injection
+- Ledger/CLI usage deserialization by column name
+- `shore-mcp`: detach auto-spawned daemon via `setsid`, clamp `log_follow` seconds, exhaustive `run_cmd` match, unified `character_info` param shape, narrower spawn-on-discovery-miss, schemars alignment with rmcp
+
+### Changed
+- User-facing documentation overhaul: rewritten `README.md`, new `FEATURES.md` and `CONFIGURATION.md`, synced example config
+- Revised live-testing policy in `CLAUDE.md` with structured rules distinguishing `shore-llm-client` internals from upstream code
+- Drop the `enabled` Cargo feature gate on `shore-mcp` in favor of a debug-only build
+- Replace `arboard` with a `wl-paste` shell-out for clipboard image paste
+- Build: consolidate test binaries to reduce linker memory pressure
+
 ## [0.14.0] — 2026-04-13
 
 ### Added
@@ -336,6 +368,7 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Command dispatch (US-017)
 - End-to-end conversation milestone (US-018)
 
+[0.15.0]: https://github.com/eshen/silvershore/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/eshen/silvershore/compare/v0.13.2...v0.14.0
 [0.13.2]: https://github.com/eshen/silvershore/compare/v0.13.1...v0.13.2
 [0.13.1]: https://github.com/eshen/silvershore/compare/v0.13.0...v0.13.1
