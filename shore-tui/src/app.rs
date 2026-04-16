@@ -476,6 +476,13 @@ impl App {
     /// daemon's StreamStart arrives, so the spinner and (regenerating) label
     /// appear immediately. Mirrors what StreamStart does on receipt, so it is
     /// idempotent when the real StreamStart lands.
+    //
+    // Truncate everything *after* the last User entry — not from the last
+    // Assistant entry. When the user deletes the last assistant and then
+    // regenerates, there is a trailing User entry with no Assistant after it;
+    // a last-Assistant truncation would wipe that user message. Keeping up to
+    // and including the last User correctly scrubs prior assistant/tool/
+    // thinking output regardless of whether a trailing assistant exists.
     pub fn begin_regen_optimistic(&mut self) {
         self.stream.reset();
         self.stream.active = true;
@@ -483,9 +490,9 @@ impl App {
         if let Some(pos) = self
             .entries
             .iter()
-            .rposition(|e| matches!(e, ConversationEntry::Assistant { .. }))
+            .rposition(|e| matches!(e, ConversationEntry::User { .. }))
         {
-            self.entries.truncate(pos);
+            self.entries.truncate(pos + 1);
         }
         self.scroll_to_bottom();
     }

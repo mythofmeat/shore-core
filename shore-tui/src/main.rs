@@ -596,19 +596,11 @@ fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<ConnCommand> 
 
     match msg {
         ServerMessage::StreamStart(start) => {
-            app.stream.reset();
-            app.stream.active = true;
-            app.stream.regen = start.regen;
-
-            // If regenerating, remove last assistant entry
             if start.regen {
-                if let Some(pos) = app
-                    .entries
-                    .iter()
-                    .rposition(|e| matches!(e, ConversationEntry::Assistant { .. }))
-                {
-                    app.entries.truncate(pos);
-                }
+                app.begin_regen_optimistic();
+            } else {
+                app.stream.reset();
+                app.stream.active = true;
             }
         }
 
