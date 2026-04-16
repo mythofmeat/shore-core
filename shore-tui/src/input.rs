@@ -164,6 +164,7 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) -> Action {
 
         // Regen
         (KeyModifiers::NONE, KeyCode::Char('r')) => {
+            app.begin_regen_optimistic();
             let msg = ClientMessage::Regen(Regen {
                 rid: None,
 
@@ -612,6 +613,7 @@ fn parse_command(app: &mut App, input: &str) -> Action {
         }
 
         "regen" => {
+            app.begin_regen_optimistic();
             let msg = ClientMessage::Regen(Regen {
                 rid: None,
 

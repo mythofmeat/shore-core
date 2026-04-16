@@ -472,6 +472,24 @@ impl App {
         self.auto_scroll = true;
     }
 
+    /// Optimistically transition into the "regenerating" UI state before the
+    /// daemon's StreamStart arrives, so the spinner and (regenerating) label
+    /// appear immediately. Mirrors what StreamStart does on receipt, so it is
+    /// idempotent when the real StreamStart lands.
+    pub fn begin_regen_optimistic(&mut self) {
+        self.stream.reset();
+        self.stream.active = true;
+        self.stream.regen = true;
+        if let Some(pos) = self
+            .entries
+            .iter()
+            .rposition(|e| matches!(e, ConversationEntry::Assistant { .. }))
+        {
+            self.entries.truncate(pos);
+        }
+        self.scroll_to_bottom();
+    }
+
     /// Resolve a ref (e.g. "last", "-1", "-2") to the content of a
     /// User or Assistant entry for local editing preview.
     pub fn resolve_ref_content(&self, raw_ref: &str) -> Option<String> {
