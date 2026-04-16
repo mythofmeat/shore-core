@@ -393,6 +393,10 @@ pub struct App {
     pub tokens: TokenCounts,
     pub is_private: bool,
     pub should_quit: bool,
+    /// Set when quit was triggered by a SIGINT-equivalent (Ctrl+C keybind or
+    /// external SIGINT). The shutdown path exits with code 130 afterward so
+    /// supervisors see the conventional interrupt exit.
+    pub interrupt: bool,
     pub auto_scroll: bool,
     pub image_cache: ImageCache,
     pub show_thinking: bool,
@@ -437,6 +441,7 @@ impl Default for App {
             },
             is_private: false,
             should_quit: false,
+            interrupt: false,
             auto_scroll: true,
             image_cache: ImageCache::new(),
             show_thinking: true,
@@ -577,6 +582,7 @@ impl App {
 
     /// Static command names for completion.
     const COMMANDS: &'static [&'static str] = &[
+        "cancel",
         "character",
         "compact",
         "delete",

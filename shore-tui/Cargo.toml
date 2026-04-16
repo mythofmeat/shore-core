@@ -7,7 +7,7 @@ edition = "2021"
 shore-protocol = { path = "../shore-protocol" }
 shore-client = { path = "../shore-client" }
 clap = { version = "4", features = ["derive"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 ratatui = { version = "0.29", features = ["unstable-rendered-line-info"] }

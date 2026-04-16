@@ -297,6 +297,12 @@ async fn run_tui(cli: Cli) -> io::Result<()> {
         // Poll for events (crossterm keyboard or connection events)
         tokio::select! {
             biased;
+            // External SIGINT — safety net if the keyboard loop ever wedges
+            // and in case the user kills us with `kill -INT <pid>`.
+            _ = tokio::signal::ctrl_c() => {
+                app.interrupt = true;
+                app.should_quit = true;
+            }
             // Connection events
             conn_event = event_rx.recv() => {
                 match conn_event {
@@ -319,6 +325,11 @@ async fn run_tui(cli: Cli) -> io::Result<()> {
                     let ev = event::read()?;
                     match input::handle_event(&mut app, ev) {
                         Action::Quit => {
+                            app.should_quit = true;
+                            break;
+                        }
+                        Action::Interrupt => {
+                            app.interrupt = true;
                             app.should_quit = true;
                             break;
                         }
@@ -397,6 +408,13 @@ async fn run_tui(cli: Cli) -> io::Result<()> {
     io::stdout().execute(DisableBracketedPaste)?;
     disable_raw_mode()?;
     io::stdout().execute(LeaveAlternateScreen)?;
+
+    // If the user interrupted us (Ctrl+C or external SIGINT), exit with the
+    // conventional 128+SIGINT=130 code so supervisors see it as a real signal.
+    if app.interrupt {
+        result?;
+        std::process::exit(130);
+    }
 
     result
 }

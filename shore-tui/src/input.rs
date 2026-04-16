@@ -13,7 +13,10 @@ pub enum Action {
     Send(ConnCommand),
     /// Send multiple commands at once.
     SendMulti(Vec<ConnCommand>),
+    /// Graceful quit (Ctrl+Q, :q).
     Quit,
+    /// SIGINT-equivalent quit (Ctrl+C). Same graceful shutdown, but exits 130.
+    Interrupt,
     Redraw,
     OpenInEditor,
     /// Open external file picker to select an image.
@@ -55,15 +58,19 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
 
     // Global shortcuts (work in any mode)
     match (key.modifiers, key.code) {
-        (KeyModifiers::CONTROL, KeyCode::Char('c')) => {
+        // Ctrl+C is reserved for SIGINT-style termination; it never cancels
+        // a generation. Use Alt+C or :cancel for that.
+        (KeyModifiers::CONTROL, KeyCode::Char('c')) => return Action::Interrupt,
+        (KeyModifiers::CONTROL, KeyCode::Char('q')) => return Action::Quit,
+        (KeyModifiers::CONTROL, KeyCode::Char('v')) => return Action::PasteImage,
+        // Alt+C cancels an in-flight generation from any mode.
+        (KeyModifiers::ALT, KeyCode::Char('c')) => {
             if app.stream.active {
                 app.stream.reset();
                 return Action::Send(ConnCommand::Send(ClientMessage::Cancel(Cancel {})));
             }
-            return Action::Quit;
+            return Action::None;
         }
-        (KeyModifiers::CONTROL, KeyCode::Char('q')) => return Action::Quit,
-        (KeyModifiers::CONTROL, KeyCode::Char('v')) => return Action::PasteImage,
         _ => {}
     }
 
@@ -251,7 +258,8 @@ fn handle_fullscreen(app: &mut App, key: KeyEvent) -> Action {
 
 fn handle_insert_mode(app: &mut App, key: KeyEvent) -> Action {
     match (key.modifiers, key.code) {
-        // Exit insert mode (cancel edit or generation if active)
+        // Exit insert mode (cancels an in-progress edit, but never a generation;
+        // Ctrl+C terminates the program and Alt+C / :cancel stop a generation).
         (KeyModifiers::NONE, KeyCode::Esc) => {
             debug!("Input: Insert → Normal");
             app.input.mode = InputMode::Normal;
@@ -259,9 +267,6 @@ fn handle_insert_mode(app: &mut App, key: KeyEvent) -> Action {
                 app.input.text.clear();
                 app.input.cursor = 0;
                 app.set_status("edit cancelled");
-            } else if app.stream.active {
-                app.stream.reset();
-                return Action::Send(ConnCommand::Send(ClientMessage::Cancel(Cancel {})));
             }
             Action::Redraw
         }
@@ -476,6 +481,16 @@ fn parse_command(app: &mut App, input: &str) -> Action {
         "q" | "quit" => {
             app.should_quit = true;
             Action::Quit
+        }
+
+        "cancel" => {
+            if app.stream.active {
+                app.stream.reset();
+                Action::Send(ConnCommand::Send(ClientMessage::Cancel(Cancel {})))
+            } else {
+                app.set_status("nothing to cancel");
+                Action::Redraw
+            }
         }
 
         "help" => {
@@ -743,13 +758,72 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_c_quits() {
+    fn ctrl_c_interrupts() {
         let mut app = App::default();
         let action = handle_key(
             &mut app,
             make_key(KeyModifiers::CONTROL, KeyCode::Char('c')),
         );
-        assert!(matches!(action, Action::Quit));
+        assert!(matches!(action, Action::Interrupt));
+    }
+
+    #[test]
+    fn ctrl_c_still_interrupts_during_stream() {
+        let mut app = App::default();
+        app.stream.active = true;
+        let action = handle_key(
+            &mut app,
+            make_key(KeyModifiers::CONTROL, KeyCode::Char('c')),
+        );
+        assert!(
+            matches!(action, Action::Interrupt),
+            "Ctrl+C must not be overloaded with cancel"
+        );
+    }
+
+    #[test]
+    fn alt_c_cancels_active_stream() {
+        let mut app = App::default();
+        app.stream.active = true;
+        let action = handle_key(&mut app, make_key(KeyModifiers::ALT, KeyCode::Char('c')));
+        match action {
+            Action::Send(ConnCommand::Send(ClientMessage::Cancel(_))) => {}
+            _ => panic!("expected Cancel send"),
+        }
+        assert!(!app.stream.active, "stream state should be reset on cancel");
+    }
+
+    #[test]
+    fn alt_c_is_noop_without_stream() {
+        let mut app = App::default();
+        assert!(!app.stream.active);
+        let action = handle_key(&mut app, make_key(KeyModifiers::ALT, KeyCode::Char('c')));
+        assert!(matches!(action, Action::None));
+    }
+
+    #[test]
+    fn esc_in_insert_does_not_cancel_stream() {
+        let mut app = App::default();
+        app.input.mode = InputMode::Insert;
+        app.stream.active = true;
+        let action = handle_key(&mut app, make_key(KeyModifiers::NONE, KeyCode::Esc));
+        assert!(matches!(action, Action::Redraw));
+        assert_eq!(app.input.mode, InputMode::Normal);
+        assert!(
+            app.stream.active,
+            "Escape from insert must not cancel a generation"
+        );
+    }
+
+    #[test]
+    fn cancel_command_sends_cancel_when_streaming() {
+        let mut app = App::default();
+        app.stream.active = true;
+        match parse_command(&mut app, "cancel") {
+            Action::Send(ConnCommand::Send(ClientMessage::Cancel(_))) => {}
+            _ => panic!("expected Cancel send"),
+        }
+        assert!(!app.stream.active);
     }
 
     #[test]
