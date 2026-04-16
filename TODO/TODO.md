@@ -1,8 +1,6 @@
 - [ ] shore-web? [./ideas/shore-web.md]
-
 - [ ] refactor [./review/]
-
-
+- [ ] shore memory client [./ideas/shore-memory-client.md]
 # shore-tui
 - [ ] when sending a message, the way the output gets formatted while streaming makes very little sense:
 
