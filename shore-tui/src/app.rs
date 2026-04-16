@@ -618,6 +618,13 @@ impl App {
                     }
                     self.completion.candidates = candidates;
                 }
+                "image" => {
+                    self.completion.candidates = ["clear"]
+                        .iter()
+                        .filter(|s| s.starts_with(&arg.to_lowercase()))
+                        .map(|s| format!("image {s}"))
+                        .collect();
+                }
                 _ => {
                     self.completion.candidates.clear();
                 }
