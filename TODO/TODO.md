@@ -2,6 +2,4 @@
 
 - [ ] shore-web? [./ideas/shore-web.md]
 
-- [ ] mcp
-
 - [ ] refactor [./review/]
