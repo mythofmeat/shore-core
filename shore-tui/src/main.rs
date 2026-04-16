@@ -351,6 +351,9 @@ async fn run_tui(cli: Cli) -> io::Result<()> {
                                 }
                             }
                         }
+                        Action::PasteImage => {
+                            // TODO: wire to read_image_to_temp orchestrator in Task 6
+                        }
                         Action::Redraw | Action::None => {}
                     }
                 }

@@ -18,6 +18,8 @@ pub enum Action {
     OpenInEditor,
     /// Open external file picker to select an image.
     PickImage(Option<String>),
+    /// Read an image from the system clipboard and attach it.
+    PasteImage,
 }
 
 /// Handle a crossterm input event and return the resulting action.
@@ -61,6 +63,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
             return Action::Quit;
         }
         (KeyModifiers::CONTROL, KeyCode::Char('q')) => return Action::Quit,
+        (KeyModifiers::CONTROL, KeyCode::Char('v')) => return Action::PasteImage,
         _ => {}
     }
 
@@ -835,5 +838,38 @@ mod tests {
             }
             _ => panic!("expected single delete send"),
         }
+    }
+
+    #[test]
+    fn ctrl_v_returns_paste_image_in_insert_mode() {
+        let mut app = App::default();
+        app.input.mode = InputMode::Insert;
+        let action = handle_key(
+            &mut app,
+            make_key(KeyModifiers::CONTROL, KeyCode::Char('v')),
+        );
+        assert!(matches!(action, Action::PasteImage));
+    }
+
+    #[test]
+    fn ctrl_v_returns_paste_image_in_normal_mode() {
+        let mut app = App::default();
+        app.input.mode = InputMode::Normal;
+        let action = handle_key(
+            &mut app,
+            make_key(KeyModifiers::CONTROL, KeyCode::Char('v')),
+        );
+        assert!(matches!(action, Action::PasteImage));
+    }
+
+    #[test]
+    fn ctrl_v_returns_paste_image_in_command_mode() {
+        let mut app = App::default();
+        app.input.enter_command_mode();
+        let action = handle_key(
+            &mut app,
+            make_key(KeyModifiers::CONTROL, KeyCode::Char('v')),
+        );
+        assert!(matches!(action, Action::PasteImage));
     }
 }
