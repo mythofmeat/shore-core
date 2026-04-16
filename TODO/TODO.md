@@ -1,2 +1,1 @@
-- [ ] tts integration [./features/2026-04-10-tts-integration.md]
-- [ ] image paste support [./features/2026-04-12-image-paste-support.md]
+- [ ] shore matrix re-enable [./asap/shore-matrix.md]

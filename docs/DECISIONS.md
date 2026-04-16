@@ -42,6 +42,24 @@ Add items here as decisions are made.
 - **research_web** (4.8) — Removed in favor of the LLM orchestrating
   multi-step research via `web_search` + `fetch_url` through the existing tool loop.
 
+## TUI clipboard image paste via wl-paste (2026-04-16)
+
+`shore-tui` binds ctrl+v to read an image from the system clipboard and
+attach it to the next outgoing message, matching the existing `:image`
+file-picker flow. Implementation shells out to `wl-paste --type image/png`
+rather than using the `arboard` crate.
+
+arboard was tried first; it works on X11 and some Wayland compositors but
+fails on KDE/KWin because the compositor advertises Qt-flavored MIME types
+(`application/x-qt-image`) ahead of `image/png`, and arboard's Wayland
+backend doesn't walk the offered types to find a usable image format.
+`wl-paste` handles this case cleanly.
+
+Tradeoffs: Wayland-only (runtime check on `$WAYLAND_DISPLAY`). Requires
+`wl-clipboard` installed — declared as optdepends on the shore-tui Arch
+package. X11 and macOS paste are deferred; they can be added behind
+platform branches when there's real demand.
+
 ## Architecture Decisions
 
 - **Multi-conversation per character** — V1 had list/switch/new conversation

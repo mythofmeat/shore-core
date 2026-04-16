@@ -621,6 +621,7 @@ response, and exits. No daemon logic. Pure SWP client.
 | Status bar | Character, model, token count, private mode indicator |
 | Persistent connection | Long-lived SWP session with streaming + push handling |
 | Inline images | kitty/iTerm2 graphics protocol rendering |
+| Clipboard paste | ctrl+v shells out to `wl-paste --type image/png` (Wayland only) |
 
 Maintains a persistent SWP connection. Shares `shore-client` with the CLI but
 is a separate binary with its own UI layer. Both the CLI and TUI are pure SWP
