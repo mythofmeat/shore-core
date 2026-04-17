@@ -33,6 +33,8 @@ base64 = "0.22.1"
 tempfile = "3"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 fast_image_resize = { version = "6", features = ["image"] }
+which = { workspace = true }
+libc = { workspace = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }

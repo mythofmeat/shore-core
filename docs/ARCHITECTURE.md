@@ -749,33 +749,59 @@ server") for the build-gate and hybrid-daemon-model rationale.
 
 ## 5. Service Management
 
-The daemon can optionally manage companion services (e.g., the Matrix bridge)
-as child processes via the `[services]` config section.
+The daemon supervises `shore-matrix` as a child process when
+`[connections.matrix]` is enabled in the config. LLM provider calls are
+handled natively by the `shore-llm-client` crate inside the daemon —
+no external LLM service to manage.
 
-### 5.1 Config
+### 5.1 Trigger
 
-```toml
-[services]
-# Bridges are optional
-matrix = { command = "shore-matrix", socket = "matrix.sock", enabled = false }
-```
+The supervisor is only spawned when `config.connections.matrix` is
+present and `enabled = true` (the default). Absence of the section
+short-circuits to no-op — no child process, no supervisor task,
+nothing in the log. Other bridges (telegram, discord) have reserved
+config keys but no live supervisor yet.
 
-LLM provider calls are handled natively by the `shore-llm-client` crate
-within the daemon process — no external LLM service is needed.
+### 5.2 Binary lookup
 
-### 5.2 Behavior
+In order: `which::which("shore-matrix")` on PATH, then a
+sibling-of-daemon fallback (`current_exe().parent()/shore-matrix`).
+If neither resolves, the supervisor logs a single `warn!` and exits
+its task — the daemon continues normally.
 
-For each enabled service:
-1. **Spawn** the process as a child of the daemon
-2. **Health check** — poll the socket/health endpoint (1s interval, 30s timeout)
-3. **Mark ready** when health check passes
-4. **Monitor** — if the process exits unexpectedly:
-   - Log the exit code
-   - Wait 1s, then restart (exponential backoff up to 30s on repeated failures)
-   - Cap at 5 restart attempts, then log an error and mark the service as failed
-5. **Shutdown** — on daemon exit, send SIGTERM to all children, wait 10s, SIGKILL
+### 5.3 Restart policy
 
-Bridges are non-blocking — the daemon runs fine without them.
+On unexpected child exit, the supervisor sleeps with exponential
+backoff (1, 2, 4, 8, 16, 32s cap) and respawns. After 5 consecutive
+failures within a 5-minute window, it logs an error and gives up;
+the daemon continues running without the bridge. A child that stays
+alive for ≥5 minutes resets the failure counter, so transient crashes
+after long uptime don't count toward give-up.
+
+### 5.4 Shutdown
+
+The supervisor listens on the same `tokio::sync::watch` shutdown
+signal as the SWP server. On signal, it sends SIGTERM directly via
+`libc::kill` (tokio's `Child::start_kill` sends SIGKILL on Unix and
+would leave shore-matrix no chance to tear down its own tuwunel
+subprocess) and waits up to 5s for the child to exit. If the grace
+period expires, it escalates to SIGKILL via `child.start_kill()`
+and reaps. `kill_on_drop` is the ultimate fallback if the task
+itself is cancelled. The daemon main loop joins the supervisor
+before tearing down the message handler so the bridge has a chance
+to finish writing any pending state.
+
+### 5.5 Non-fatal failures
+
+Nothing in the supervision chain can kill the daemon. Missing
+binary, homeserver crash, failed provisioning, repeated exits — all
+log-and-continue. This matches the user-facing promise: "if Matrix
+breaks, the rest of Shore still works."
+
+The Matrix bridge runs first-run setup and re-provisioning
+idempotently inside `shore-matrix` itself (see `load_or_init_state`
+in `shore-matrix/src/main.rs`). The supervisor has no state of its
+own; it is purely a liveness manager.
 
 ---
 
