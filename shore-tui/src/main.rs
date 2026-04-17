@@ -601,7 +601,7 @@ fn transmit_image_ref(
     }
 }
 
-fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<ConnCommand> {
+pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<ConnCommand> {
     match &msg {
         ServerMessage::AudioStart(_)
         | ServerMessage::AudioChunk(_)
@@ -617,9 +617,15 @@ fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<ConnCommand> 
         ServerMessage::StreamStart(start) => {
             if start.regen {
                 app.begin_regen_optimistic();
-            } else {
+            } else if !app.stream.active {
                 app.stream.reset();
                 app.stream.active = true;
+            } else {
+                // Continuation within a multi-phase (tool-use) turn — preserve
+                // accumulators so the final Assistant entry reflects the whole turn.
+                app.stream.blocks.clear();
+                app.stream.phase = "responding".into();
+                app.stream.tool_name = None;
             }
         }
 
@@ -652,19 +658,41 @@ fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<ConnCommand> 
             app.model = end.metadata.model.clone();
             app.tokens = end.metadata.tokens.clone();
 
-            app.entries.push(ConversationEntry::Assistant {
-                content: end.content,
-                images: vec![],
-                timestamp: String::new(),
-                metadata: Some(end.metadata),
-            });
+            if !end.content.is_empty() {
+                if !app.stream.accumulated_text.is_empty() {
+                    app.stream.accumulated_text.push_str("\n\n");
+                }
+                app.stream.accumulated_text.push_str(&end.content);
+            }
+
+            match app.stream.accumulated_metadata.as_mut() {
+                Some(acc) => {
+                    acc.model = end.metadata.model.clone();
+                    acc.tokens.input += end.metadata.tokens.input;
+                    acc.tokens.output += end.metadata.tokens.output;
+                    acc.tokens.cache_read += end.metadata.tokens.cache_read;
+                    acc.tokens.cache_write += end.metadata.tokens.cache_write;
+                    acc.timing.total_ms += end.metadata.timing.total_ms;
+                    // Preserve ttft_ms from the first phase.
+                }
+                None => {
+                    app.stream.accumulated_metadata = Some(end.metadata.clone());
+                }
+            }
 
             if end.finish_reason == "tool_use" {
-                // Tool loop in progress — keep stream active, clear buffers
                 app.stream.blocks.clear();
                 app.stream.phase = "tool_use".into();
                 app.stream.tool_name = None;
             } else {
+                let content = std::mem::take(&mut app.stream.accumulated_text);
+                let metadata = app.stream.accumulated_metadata.take();
+                app.entries.push(ConversationEntry::Assistant {
+                    content,
+                    images: vec![],
+                    timestamp: String::new(),
+                    metadata,
+                });
                 app.stream.reset();
             }
         }
