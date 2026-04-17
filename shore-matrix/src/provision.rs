@@ -384,10 +384,10 @@ impl EmbeddedState {
 pub async fn create_character_room(
     homeserver_url: &str,
     admin_token: &str,
+    admin_user_id: &str,
     character_user_id: &str,
     trusted_user: Option<&str>,
     character_name: &str,
-    server_name: &str,
 ) -> Result<String, ProvisionError> {
     let client = reqwest::Client::new();
     let url = format!("{homeserver_url}/_matrix/client/v3/createRoom");
@@ -397,7 +397,6 @@ pub async fn create_character_room(
         invite.push(human.to_string());
     }
 
-    let admin_user_id = format!("@shore-admin:{server_name}");
     let body = serde_json::json!({
         "name": character_name,
         "topic": format!("Chat with {character_name} (Shore)"),

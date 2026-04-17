@@ -881,11 +881,14 @@ $XDG_RUNTIME_DIR/shore/            (/run/user/{uid}/shore/)
 ```
 
 `instances.json` stores daemon registry metadata, including `started_at` in
-RFC3339 format. Registry updates lock `instances.lock`, rewrite the JSON via
-atomic replace, and preserve corrupt payloads as `instances.corrupt-*.json`
-instead of silently treating them as empty state. PID-based liveness pruning is
-best-effort: Unix builds probe process existence directly; non-Unix builds keep
-PID-tagged entries until explicit unregister or overwrite.
+RFC3339 format plus the daemon's resolved `data_dir` and `config_dir` so
+clients can read the same ledger and config without requiring
+`SHORE_DATA_DIR`/`SHORE_CONFIG_DIR` in their own environment. Registry updates
+lock `instances.lock`, rewrite the JSON via atomic replace, and preserve
+corrupt payloads as `instances.corrupt-*.json` instead of silently treating
+them as empty state. PID-based liveness pruning is best-effort: Unix builds
+probe process existence directly; non-Unix builds keep PID-tagged entries
+until explicit unregister or overwrite.
 
 Operationally, Shore is still Linux-first: XDG paths and Unix shutdown signals
 are the primary path. Non-Unix builds use the same config/data model, but the

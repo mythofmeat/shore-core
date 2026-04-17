@@ -20,6 +20,9 @@ pub struct InstanceEntry {
     /// Resolved data directory (written by daemon at registration).
     #[serde(default)]
     pub data_dir: Option<String>,
+    /// Resolved config directory (written by daemon at registration).
+    #[serde(default)]
+    pub config_dir: Option<String>,
 }
 
 /// The instances file is a JSON array of `InstanceEntry`.
@@ -102,21 +105,31 @@ fn pid_state(_pid: u32) -> ProcessState {
     ProcessState::Unknown
 }
 
-/// Find the `ServerAddr` for a daemon whose config matches `config_path`.
+/// Find the `ServerAddr` for a daemon whose identity matches `selector`.
 ///
-/// If `config_path` is `None`, returns the first (default) entry.
-pub fn discover(config_path: Option<&str>) -> Result<ServerAddr> {
-    discover_from_path(&instances_path(), config_path)
+/// A selector is matched first against `InstanceEntry::id` (for callers
+/// that know the exact instance ID, e.g. `shore-mcp`) and then against
+/// `InstanceEntry::config_dir` (for callers that know the daemon by its
+/// config directory, e.g. `shore-matrix`). If `selector` is `None`,
+/// returns the first (default) entry.
+pub fn discover(selector: Option<&str>) -> Result<ServerAddr> {
+    discover_from_path(&instances_path(), selector)
 }
 
-fn discover_from_path(path: &Path, config_path: Option<&str>) -> Result<ServerAddr> {
+fn discover_from_path(path: &Path, selector: Option<&str>) -> Result<ServerAddr> {
     let entries = read_instances_from_path(path)?;
 
-    let entry = match config_path {
+    let entry = match selector {
         Some(wanted) => entries
             .iter()
-            .find(|e| e.id.as_deref() == Some(wanted))
-            .ok_or_else(|| ClientError::Discovery(format!("no daemon found for id: {wanted}")))?,
+            .find(|e| {
+                e.id.as_deref() == Some(wanted) || e.config_dir.as_deref() == Some(wanted)
+            })
+            .ok_or_else(|| {
+                ClientError::Discovery(format!(
+                    "no daemon found matching id or config_dir: {wanted}"
+                ))
+            })?,
         None => entries
             .first()
             .ok_or_else(|| ClientError::Discovery("instances file is empty".into()))?,
@@ -132,6 +145,19 @@ pub fn discover_data_dir() -> Result<Option<PathBuf>> {
     Ok(read_instances()?
         .first()
         .and_then(|e| e.data_dir.as_deref())
+        .map(PathBuf::from))
+}
+
+/// Discover the config directory from the first live daemon instance.
+///
+/// Lets clients read the same `config.toml` the daemon is using without
+/// requiring the caller to set `SHORE_CONFIG_DIR` in their environment.
+/// Returns `Ok(None)` if no instance is registered or the entry lacks
+/// `config_dir` (older daemons that predate the field).
+pub fn discover_config_dir() -> Result<Option<PathBuf>> {
+    Ok(read_instances()?
+        .first()
+        .and_then(|e| e.config_dir.as_deref())
         .map(PathBuf::from))
 }
 
@@ -193,6 +219,7 @@ mod tests {
             addr: "127.0.0.1:7320".into(),
             pid: None,
             data_dir: None,
+            config_dir: None,
         };
         assert!(entry_alive(&entry));
     }
@@ -204,6 +231,7 @@ mod tests {
             addr: "127.0.0.1:7320".into(),
             pid: Some(std::process::id()),
             data_dir: None,
+            config_dir: None,
         };
         assert!(entry_alive(&entry));
     }
@@ -215,6 +243,7 @@ mod tests {
             addr: "127.0.0.1:7320".into(),
             pid: Some(u32::MAX - 1),
             data_dir: None,
+            config_dir: None,
         };
         assert!(!entry_alive(&entry));
     }
@@ -227,7 +256,8 @@ mod tests {
             "id": "default",
             "addr": "127.0.0.1:7320",
             "pid": 12345,
-            "data_dir": "/home/user/data"
+            "data_dir": "/home/user/data",
+            "config_dir": "/home/user/config"
         }]"#;
         let entries: Vec<InstanceEntry> = serde_json::from_str(json).unwrap();
         assert_eq!(entries.len(), 1);
@@ -235,6 +265,7 @@ mod tests {
         assert_eq!(entries[0].addr, "127.0.0.1:7320");
         assert_eq!(entries[0].pid, Some(12345));
         assert_eq!(entries[0].data_dir.as_deref(), Some("/home/user/data"));
+        assert_eq!(entries[0].config_dir.as_deref(), Some("/home/user/config"));
     }
 
     #[test]

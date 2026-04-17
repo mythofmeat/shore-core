@@ -719,3 +719,21 @@ The `enabled` Cargo feature that gated `shore-mcp`'s bin target (and the optiona
 **Revisit trigger:** Drop the `[patch.crates-io]` entry once upstream ships a release that builds on rustc 1.94+. Until then, `cargo update -p matrix-sdk` will silently break — the patch must remain pinned. Documented in `docs/QUIRKS.md`.
 
 **Live verification deferred:** No Matrix homeserver is available on this machine (`conduwuit` is not installed and no external homeserver is configured), so no end-to-end message round-trip was performed. Phase is compile + unit + integration-test verified only. Before declaring this bridge production-ready, install `conduwuit`/`continuwuity`/`tuwunel` (or point at an existing homeserver in external mode) and drive a real message through `matrix client → shore-matrix → shore-daemon → LLM → matrix room`.
+
+### 2026-04-17 — shore-matrix PKGBUILD re-enable + config_dir in instance registry
+
+Two correlated fixes so `shore matrix setup` works out of the box for users whose daemon runs under systemd with a non-default `SHORE_CONFIG_DIR`.
+
+**PKGBUILD:** The Apr 5 disable commit (`a67db40`) stripped `shore-matrix` from the `pkgname` array in `contrib/PKGBUILD` and commented out `package_shore-matrix()`. The Apr 16 re-enable (`5f85fb6`) restored the Cargo workspace but not the PKGBUILD, so pacman still shipped the stale pre-disable `shore-matrix` binary (version `.r300.f65739c-1`) alongside fresh `0.15.0-1` packages of shore-daemon/shore-cli/shore-tui. Restored the package entry (with the homeserver binaries added as `optdepends`).
+
+**Config discovery:** The daemon's systemd unit can set `SHORE_CONFIG_DIR` to a non-XDG path, but that env var doesn't propagate to the user's interactive shell. `shore matrix setup` from the shell therefore couldn't find the same `config.toml` the daemon was reading and failed with `"homeserver required"` as it fell through to external mode.
+
+Added an optional `config_dir` field to `InstanceInfo` / `InstanceEntry` and populate it at daemon registration from `loaded.dirs.config`. Exposed `shore_client::discover_config_dir()` as a parallel to the existing `discover_data_dir()`. `shore-cli`'s `handle_matrix_command` now falls back to the registry when `--config` isn't passed, so `shore matrix setup` transparently reads the running daemon's config regardless of shell env.
+
+**Backwards compat:** `config_dir` is `#[serde(default, skip_serializing_if = "Option::is_none")]` — older `instances.json` files parse fine, and older clients ignore the new field. All 1,208 workspace unit tests pass.
+
+Also extended `discover()` to match a selector against **either** `entry.id` (how `shore-mcp` identifies its test daemon) **or** `entry.config_dir` (how `shore-matrix` identifies the daemon bound to its config). Previously the param was named `config_path` but only matched on `id`, so shore-matrix's daemon connection failed with "no daemon found for id: /path/to/config" even when a daemon with that exact config was registered. Backwards-compatible for callers passing instance IDs.
+
+Separately, fixed a hardcoded-admin bug in `shore-matrix/src/provision.rs:400` exposed by non-default `admin_user` configs: `create_character_room` was granting room power 100 to a literal `@shore-admin:{server_name}` user in its `power_level_content_override`, which only worked when `[connections.matrix.embedded].admin_user` matched the `"shore-admin"` default. Any override (e.g. `admin_user = "eshen"`) left the actual room creator with power 0, failing the subsequent `m.room.join_rules` event with `M_FORBIDDEN`. Now takes `admin_user_id` as an explicit parameter threaded from `EmbeddedState::admin_user_id`.
+
+**Not done yet:** `shore-tui`, `shore-mcp`, and other binaries still rely on `SHORE_CONFIG_DIR` / `--config` for config lookup. They could use the same registry fallback, but none of them have hit a reported issue and dragging them in now would creep this change. Follow-up if/when a user trips on the same friction.

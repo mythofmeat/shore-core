@@ -201,6 +201,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         addr: resolved_addr.clone(),
         started_at: epoch_timestamp(),
         data_dir: Some(loaded.dirs.data.display().to_string()),
+        config_dir: Some(loaded.dirs.config.display().to_string()),
     };
     registry
         .register(instance_info)

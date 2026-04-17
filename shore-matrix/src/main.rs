@@ -361,10 +361,10 @@ async fn run_embedded(
             let room_id = create_character_room(
                 &homeserver_url,
                 &embedded_state.admin_access_token,
+                &embedded_state.admin_user_id,
                 &state.user_id,
                 trusted_user,
                 &state.character,
-                &embedded.server_name,
             )
             .await
             .map_err(|e| format!("Failed to create room for {}: {e}", state.character))?;

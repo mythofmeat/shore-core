@@ -466,8 +466,17 @@ async fn handle_matrix_command(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut cmd = std::process::Command::new("shore-matrix");
 
-    // Pass through config path if set
-    if let Some(ref config) = cli.config {
+    // Config discovery: explicit --config wins, otherwise ask the running
+    // daemon via the instance registry so interactive invocations work
+    // even when the shell lacks SHORE_CONFIG_DIR.
+    let resolved_config = match cli.config.clone() {
+        Some(c) => Some(c),
+        None => shore_client::discover_config_dir()
+            .ok()
+            .flatten()
+            .map(|p| p.display().to_string()),
+    };
+    if let Some(ref config) = resolved_config {
         cmd.arg("--config").arg(config);
     }
     if let Some(ref addr) = cli.addr {

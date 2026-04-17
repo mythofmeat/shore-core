@@ -15,6 +15,10 @@ pub struct InstanceInfo {
     /// Resolved data directory so CLI commands can find the ledger.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data_dir: Option<String>,
+    /// Resolved config directory so clients can read the same config.toml
+    /// without requiring the caller to set SHORE_CONFIG_DIR.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_dir: Option<String>,
 }
 
 /// Handle to the instance registry file at a known path.
@@ -222,6 +226,7 @@ mod tests {
             addr: format!("127.0.0.1:{}", 7320 + id.len()),
             started_at: "2026-01-01T00:00:00Z".into(),
             data_dir: None,
+            config_dir: None,
         }
     }
 
