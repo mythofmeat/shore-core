@@ -51,7 +51,10 @@ fn homeserver_config_generates_valid_toml_with_all_fields() {
     assert!(toml.contains("server_name = \"shore-test.local\""));
     assert!(toml.contains("port = 18008"));
     assert!(toml.contains(&format!("registration_token = \"{token}\"")));
-    assert!(toml.contains("database_backend = \"rocksdb\""));
+    assert!(
+        !toml.contains("database_backend"),
+        "database_backend key must not be emitted (tuwunel rejects it)"
+    );
     assert!(toml.contains("allow_registration = true"));
     assert!(toml.contains("allow_federation = false"));
 
@@ -604,7 +607,10 @@ fn homeserver_embedded_config_pipeline() {
     let toml = config.generate_config();
     assert!(toml.contains("server_name = \"shore.local\""));
     assert!(toml.contains("port = 18448"));
-    assert!(toml.contains("database_backend = \"rocksdb\""));
+    assert!(
+        !toml.contains("database_backend"),
+        "database_backend key must not be emitted (tuwunel rejects it)"
+    );
     assert!(toml.contains(&format!("registration_token = \"{token}\"")));
     assert!(toml.contains("allow_registration = true"));
     assert!(toml.contains("allow_federation = false"));

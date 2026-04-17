@@ -20,8 +20,9 @@ use shore_matrix::homeserver::{
     generate_token, wait_for_healthy, HomeserverConfig, HomeserverManager,
 };
 use shore_matrix::provision::{
-    create_character_room, join_room, provision_admin, provision_character, CharacterPaths,
-    EmbeddedState, HomeserverPaths, ProvisionState,
+    check_room_exists, check_token, create_character_room, join_room, provision_admin,
+    provision_character, wipe_embedded_state_and_characters, CharacterPaths, EmbeddedState,
+    HomeserverPaths, ProvisionState, RoomStatus, TokenStatus,
 };
 use shore_matrix::rooms::RoomManager;
 
@@ -247,7 +248,8 @@ async fn run_embedded(
 
     // 2. Load or initialize embedded state
     let homeserver_url = format!("http://127.0.0.1:{}", embedded.port);
-    let (mut embedded_state, first_run) = load_or_init_state(&hs_paths, embedded, &homeserver_url)?;
+    let (mut embedded_state, mut first_run) =
+        load_or_init_state(&hs_paths, embedded, &homeserver_url)?;
 
     // 3. Build HomeserverConfig
     let hs_config = HomeserverConfig {
@@ -281,6 +283,40 @@ async fn run_embedded(
         return Err("homeserver failed to become healthy within 30s".into());
     }
     info!("homeserver is healthy at {homeserver_url}");
+
+    // 5b. If we loaded existing embedded state, verify the admin token is
+    //     still accepted. A 401 means the homeserver DB was wiped out from
+    //     under us; every character's provision.json is now invalid by
+    //     association. Preserve the registration_token (the running
+    //     homeserver is configured with it) and re-provision everything.
+    if !first_run {
+        match check_token(&homeserver_url, &embedded_state.admin_access_token).await {
+            TokenStatus::Valid { .. } => {}
+            TokenStatus::Invalid => {
+                warn!("admin token rejected (401) — homeserver DB appears wiped, re-provisioning");
+                let wiped = wipe_embedded_state_and_characters(&hs_paths)
+                    .await
+                    .map_err(|e| format!("failed to wipe stale state: {e}"))?;
+                if !wiped.is_empty() {
+                    warn!(
+                        "wiped stale provision state for characters: {}",
+                        wiped.join(", ")
+                    );
+                }
+                embedded_state.admin_user_id.clear();
+                embedded_state.admin_access_token.clear();
+                embedded_state.admin_device_id.clear();
+                embedded_state
+                    .save(&hs_paths.state_file)
+                    .map_err(|e| format!("failed to save reset embedded state: {e}"))?;
+                first_run = true;
+            }
+            TokenStatus::Unknown(err) => {
+                hs_manager.stop().await.ok();
+                return Err(format!("could not verify admin token: {err}").into());
+            }
+        }
+    }
 
     // 6. Provision admin (first run only)
     if first_run {
@@ -368,6 +404,38 @@ async fn run_embedded(
         .await
         .map_err(|e| format!("Failed to provision character {char_name}: {e}"))?;
         character_states.push(state);
+    }
+
+    // 8b. Verify saved room_ids still exist on the homeserver. A character
+    //     may have kept its token (still valid) but had its room manually
+    //     deleted (or forgotten via /forget). Clear stale room_ids so the
+    //     create-room branch below recreates them.
+    for state in &mut character_states {
+        let Some(room_id) = state.room_id.as_deref() else {
+            continue;
+        };
+        match check_room_exists(&homeserver_url, room_id, &embedded_state.admin_access_token).await
+        {
+            RoomStatus::Exists => {}
+            RoomStatus::Gone => {
+                warn!(
+                    "room {room_id} for character {} no longer exists, will recreate",
+                    state.character
+                );
+                state.room_id = None;
+                let paths = CharacterPaths::new(&state.character);
+                state
+                    .save_async(&paths.provision_file)
+                    .await
+                    .map_err(|e| format!("Failed to save provision state: {e}"))?;
+            }
+            RoomStatus::Unknown(err) => {
+                warn!(
+                    "could not verify room {room_id} for {}: {err} — assuming it exists",
+                    state.character
+                );
+            }
+        }
     }
 
     // 9. Create rooms for characters that don't have one

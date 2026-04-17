@@ -771,3 +771,29 @@ The daemon now auto-spawns and supervises `shore-matrix` as a child process when
 **Fallout:** one breaking change to `shore-client`'s public API (the `Discovery` variant shape). `DiscoveryKind` is re-exported from `shore-client` for downstream matchers.
 
 **Verification:** 39 shore-client unit tests + 18 shore-mcp unit/integration tests pass; live `cargo mcp-itest` against a real daemon passes; manual run of `target/debug/shore-mcp` with an empty `instances.json` now spawns the dev-repo daemon and registers it (previously exited with `discovery error: no daemon found matching id or config_dir: shore-mcp-test`).
+
+### 2026-04-18 — shore-matrix auto-heals orphaned provision state via whoami liveness check
+
+`shore-matrix` now verifies every saved access token against the live homeserver before trusting it, and wipes + re-provisions on `401 M_UNKNOWN_TOKEN`. Previously, `provision_character` reused any `provision.json` with a matching `homeserver_url` string, and `load_or_init_state` reused any `embedded_state.json` that was on disk — URL equality and file existence were treated as proof that the homeserver DB hadn't changed. They aren't.
+
+**Symptom (reported by user):** shore-matrix started cleanly, provisioned a fresh admin account, discovered one character, and immediately emitted `failed to set display name: M_UNKNOWN_TOKEN` → crypto recovery errors → fatal sync error. No rooms visible in the user's Matrix client; DMs to the character bot got no response. Root cause: the `matrix-server/` dir had been deleted between runs, so the RocksDB was freshly created — but the per-character `provision.json` at `<data_dir>/<character>/matrix/provision.json` survived, carrying the access token and device_id of a user the new DB had never heard of. Everything 401'd cascadingly; the sync loop died, so `on_room_message` never fired, so DMs silently dropped.
+
+**Fix:** three runtime liveness probes, in `shore_matrix::provision`:
+1. `check_token(url, token)` → `TokenStatus::{Valid, Invalid, Unknown}` via `GET /_matrix/client/v3/account/whoami`.
+2. `check_room_exists(url, room_id, token)` → `RoomStatus::{Exists, Gone, Unknown}` via `GET /rooms/{id}/state/m.room.create`.
+3. `wipe_character_state` / `wipe_embedded_state_and_characters` for recovery.
+
+Wired in at three points in `run_embedded`:
+- After `wait_for_healthy`: whoami the admin token. On `Invalid`, wipe `embedded_state.json` + every character's matrix/ subdir (preserving the `registration_token` so re-registration hits the already-running homeserver), force `first_run = true`.
+- Inside `provision_character`: whoami the character token. On `Invalid`, wipe that character's `provision.json` + `crypto_store` and fall through to fresh register.
+- Before the create-room loop: probe each surviving `state.room_id`. On `Gone` (404), clear it so the next branch recreates the room.
+
+On `Unknown` (network blip, 5xx), **no state is destroyed** — the error bubbles up. We never wipe on ambiguous signals; a transient blip must not trigger a reprovision cascade.
+
+**Why whoami and not an on-disk DB fingerprint:** Fingerprinting (writing a DB UUID into every `provision.json`) was the alternative. Rejected because (a) it would require every shore-matrix version to embed the fingerprint in `provision.json` before it was useful, meaning a DB wipe before the field existed is undetectable; (b) conduwuit/continuwuity/tuwunel don't expose a stable DB identifier via the client API; (c) the whoami round-trip is one cheap HTTP call per startup, amortized across session lifetime. Runtime probing is self-healing from arbitrary on-disk drift — not just the DB-wipe case we've seen, but also token revocation, server-side account deletion, etc.
+
+**Sacrificed:** First-run-after-fix is not instant: for each existing character the bridge pays ~3 round trips (whoami, re-register, join-room) before the first message flows. Acceptable; it's bounded and happens once.
+
+**Related fix:** Dropped `database_backend = "rocksdb"` from the generated homeserver config — tuwunel rejects it as an unknown parameter (conduwuit/continuwuity defaulted to rocksdb anyway). Removes a noisy startup warning.
+
+**Verification:** 23 shore-matrix unit + integration tests pass (updated two TOML-contents assertions). Live auto-heal verification against the user's current broken profile is pending — the running `/usr/bin/shore-matrix` is a pre-fix system install; verification requires either a release cut via `/deploy` or stopping the systemd unit and running the dev binary directly against the same data dir.

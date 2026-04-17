@@ -37,11 +37,14 @@ impl HomeserverConfig {
     /// Generate a TOML configuration file for conduwuit / continuwuity.
     pub fn generate_config(&self) -> String {
         let db_path = self.data_dir.join("database");
+        // Note: no `database_backend` key — tuwunel dropped it (RocksDB is the
+        // only supported backend across the conduwuit/continuwuity/tuwunel
+        // family), and setting it causes a noisy "unknown config parameter"
+        // warning on tuwunel with no functional effect on the others.
         format!(
             r#"[global]
 server_name = "{server_name}"
 database_path = "{db_path}"
-database_backend = "rocksdb"
 port = {port}
 address = "127.0.0.1"
 max_request_size = 20_000_000
@@ -303,7 +306,10 @@ mod tests {
         assert!(toml.contains("server_name = \"test.shore.local\""));
         assert!(toml.contains("port = 9999"));
         assert!(toml.contains("registration_token = \"secret_token_123\""));
-        assert!(toml.contains("database_backend = \"rocksdb\""));
+        assert!(
+            !toml.contains("database_backend"),
+            "database_backend key must not be written (tuwunel rejects it)"
+        );
         assert!(toml.contains("allow_federation = false"));
         assert!(toml.contains("allow_registration = true"));
         assert!(toml.contains("/tmp/test-matrix/database"));

@@ -215,19 +215,40 @@ pub async fn provision_character(
     password: &str,
     paths: &CharacterPaths,
 ) -> Result<ProvisionState, ProvisionError> {
-    // Check for existing provisioning
+    // Check for existing provisioning. URL equality is necessary but not
+    // sufficient — the DB at that URL may have been wiped since we last ran.
+    // Verify the saved token still works, and if not, re-provision.
     if let Some(state) = ProvisionState::load(&paths.provision_file)? {
-        if state.homeserver_url == homeserver_url {
-            info!(
-                "character {} already provisioned as {}",
-                character, state.user_id
+        if state.homeserver_url != homeserver_url {
+            warn!(
+                "character {} provisioned for different homeserver ({}), re-provisioning",
+                character, state.homeserver_url
             );
-            return Ok(state);
+            wipe_character_state(paths).await?;
+        } else {
+            match check_token(homeserver_url, &state.access_token).await {
+                TokenStatus::Valid { .. } => {
+                    info!(
+                        "character {} already provisioned as {}",
+                        character, state.user_id
+                    );
+                    return Ok(state);
+                }
+                TokenStatus::Invalid => {
+                    warn!(
+                        "character {}: saved token rejected (401), wiping and re-provisioning",
+                        character
+                    );
+                    wipe_character_state(paths).await?;
+                }
+                TokenStatus::Unknown(err) => {
+                    // Don't destroy state on transient errors — surface as failure.
+                    return Err(ProvisionError::Http(format!(
+                        "could not verify saved token for {character}: {err}"
+                    )));
+                }
+            }
         }
-        warn!(
-            "character {} provisioned for different homeserver ({}), re-provisioning",
-            character, state.homeserver_url
-        );
     }
 
     paths.ensure_dirs().await?;
@@ -271,6 +292,152 @@ pub struct RegisterResponse {
     pub access_token: String,
     pub device_id: Option<String>,
     pub home_server: Option<String>,
+}
+
+// ── Liveness checks ─────────────────────────────────────────────────────
+//
+// Provision state on disk can outlive the homeserver database it was created
+// against — wiping the RocksDB leaves `provision.json` and `embedded_state.json`
+// referencing users/tokens the fresh DB has never heard of. URL equality is
+// not a proof of identity; the only reliable signal is asking the server.
+
+/// Whether an access token is still accepted by the homeserver.
+#[derive(Debug)]
+pub enum TokenStatus {
+    /// Server accepted the token and returned this user_id.
+    Valid { user_id: String },
+    /// Server returned 401 — the token is dead (DB wiped, revoked, etc.).
+    Invalid,
+    /// Request failed for some other reason. Caller should treat as
+    /// "can't tell" and NOT destroy state — a 500 or network blip must
+    /// not trigger a wipe-and-reprovision.
+    Unknown(String),
+}
+
+/// Call `GET /_matrix/client/v3/account/whoami` to verify a token.
+pub async fn check_token(homeserver_url: &str, access_token: &str) -> TokenStatus {
+    let client = reqwest::Client::new();
+    let url = format!("{homeserver_url}/_matrix/client/v3/account/whoami");
+    let resp = match client.get(&url).bearer_auth(access_token).send().await {
+        Ok(r) => r,
+        Err(e) => return TokenStatus::Unknown(format!("whoami request: {e}")),
+    };
+    if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+        return TokenStatus::Invalid;
+    }
+    if !resp.status().is_success() {
+        return TokenStatus::Unknown(format!("whoami status {}", resp.status()));
+    }
+    #[derive(Deserialize)]
+    struct WhoamiResp {
+        user_id: String,
+    }
+    match resp.json::<WhoamiResp>().await {
+        Ok(r) => TokenStatus::Valid { user_id: r.user_id },
+        Err(e) => TokenStatus::Unknown(format!("whoami parse: {e}")),
+    }
+}
+
+/// Whether a room still exists on the homeserver from the caller's view.
+#[derive(Debug)]
+pub enum RoomStatus {
+    /// `m.room.create` state was fetched successfully — the room exists
+    /// and the caller has access.
+    Exists,
+    /// Server returned 404 — the room is gone (or never existed).
+    Gone,
+    /// Any other outcome (403, 500, network error). Don't clear state.
+    Unknown(String),
+}
+
+/// Probe whether a room still exists using the admin/caller token.
+pub async fn check_room_exists(
+    homeserver_url: &str,
+    room_id: &str,
+    access_token: &str,
+) -> RoomStatus {
+    let client = reqwest::Client::new();
+    let encoded = urlencoding::encode(room_id);
+    let url =
+        format!("{homeserver_url}/_matrix/client/v3/rooms/{encoded}/state/m.room.create");
+    let resp = match client.get(&url).bearer_auth(access_token).send().await {
+        Ok(r) => r,
+        Err(e) => return RoomStatus::Unknown(format!("room check request: {e}")),
+    };
+    if resp.status().is_success() {
+        return RoomStatus::Exists;
+    }
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        return RoomStatus::Gone;
+    }
+    RoomStatus::Unknown(format!("room check status {}", resp.status()))
+}
+
+/// Remove a character's on-disk matrix state (provision.json + crypto store).
+///
+/// Called when we detect the saved state is bound to a dead homeserver DB
+/// or token. The crypto store must be wiped alongside `provision.json`
+/// because matrix-sdk's olm sessions are bound to the old device_id; after
+/// re-registration the bot gets a new device_id and the stale olm state
+/// would cause encryption failures.
+pub async fn wipe_character_state(paths: &CharacterPaths) -> Result<(), ProvisionError> {
+    if paths.provision_file.exists() {
+        tokio::fs::remove_file(&paths.provision_file)
+            .await
+            .map_err(|e| ProvisionError::Io(format!("remove provision.json: {e}")))?;
+    }
+    if paths.crypto_store.exists() {
+        tokio::fs::remove_dir_all(&paths.crypto_store)
+            .await
+            .map_err(|e| ProvisionError::Io(format!("remove crypto_store: {e}")))?;
+    }
+    Ok(())
+}
+
+/// Delete `embedded_state.json` and every character's `provision.json` +
+/// `crypto_store` found under the shore data dir. Returns the list of
+/// character names whose state was wiped.
+///
+/// Called when we detect the admin token is rejected — that means the
+/// homeserver DB has been replaced, which transitively invalidates every
+/// character's provisioning too. Does NOT touch the running homeserver's
+/// database dir; the caller is responsible for preserving the registration
+/// token so re-registration hits the same live homeserver.
+pub async fn wipe_embedded_state_and_characters(
+    hs_paths: &HomeserverPaths,
+) -> Result<Vec<String>, ProvisionError> {
+    if hs_paths.state_file.exists() {
+        tokio::fs::remove_file(&hs_paths.state_file)
+            .await
+            .map_err(|e| ProvisionError::Io(format!("remove embedded_state.json: {e}")))?;
+    }
+
+    let data_dir = shore_config::data_dir();
+    let mut wiped = Vec::new();
+    let mut entries = match tokio::fs::read_dir(&data_dir).await {
+        Ok(e) => e,
+        Err(_) => return Ok(wiped),
+    };
+    while let Some(entry) = entries
+        .next_entry()
+        .await
+        .map_err(|e| ProvisionError::Io(format!("read data_dir: {e}")))?
+    {
+        let ft = match entry.file_type().await {
+            Ok(ft) => ft,
+            Err(_) => continue,
+        };
+        if !ft.is_dir() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let char_paths = CharacterPaths::with_base(data_dir.clone(), &name);
+        if char_paths.provision_file.exists() {
+            wipe_character_state(&char_paths).await?;
+            wiped.push(name);
+        }
+    }
+    Ok(wiped)
 }
 
 #[derive(Debug, thiserror::Error)]
