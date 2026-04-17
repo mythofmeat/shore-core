@@ -52,6 +52,10 @@ Scope guardrails:
 
 - **User messages always have `content_blocks` populated.** This means the `build_content(text, images)` fallback in the LLM message builder is dead code for user messages — it only fires when `content_blocks` is empty. Prior to the fix, `m.images` was silently dropped for all user messages because the `content_blocks` branch didn't encode them. Image encoding must happen in both branches.
 
+## Streaming / Client Rendering
+
+- **A single assistant turn can emit multiple `StreamEnd` events.** During tool use, the daemon streams `StreamStart → StreamEnd(finish_reason="tool_use") → ToolCall → ToolResult → StreamStart → … → StreamEnd(finish_reason="end_turn")`. Each intermediate `StreamEnd` carries its own `StreamMetadata` covering only that phase. A client that treats every `StreamEnd` as "assistant entry complete" will push a premature empty/partial block, render a duplicate character header on the next phase, and split per-turn stats across rows. Clients must buffer text and metadata across phases and only commit a single conversation entry when `finish_reason != "tool_use"`, summing tokens and `total_ms` while preserving `ttft_ms` from the first phase. Reference impl: `shore-tui/src/main.rs::handle_server_message`.
+
 ## Process Management
 
 - **`drop(tokio::process::Child)` does NOT detach the child.** The comment on the shore-mcp auto-spawn path used to claim dropping the Child handle detached the spawned daemon. It doesn't — by default `kill_on_drop` is `false` so no signal is sent, but the child still inherits our process group and controlling terminal. If our pgroup receives SIGTERM (MCP client teardown, pkill -f) or SIGHUP (terminal close with huponexit), the daemon dies with us and leaves a stale `instances.json` entry. Real detachment requires `setsid()` in a `pre_exec` hook so the child becomes its own session leader with no controlling tty. See `shore-mcp/src/profile.rs::spawn_and_attach_test_daemon`; regression test in `shore-mcp/tests/autospawn_detach.rs`.

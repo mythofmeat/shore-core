@@ -19,6 +19,8 @@ use shore_llm_client::LlmClient;
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
+mod supervisor;
+
 #[derive(Debug, Parser)]
 #[command(name = "shore-daemon", about = "Shore daemon")]
 struct Cli {
@@ -356,6 +358,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         msg_handler.run(route_rx).await;
     });
 
+    // ── Spawn Matrix bridge supervisor (if configured) ───────────────
+    let matrix_supervisor = loaded
+        .app
+        .connections
+        .matrix
+        .as_ref()
+        .filter(|m| m.enabled)
+        .and_then(|_| supervisor::spawn(shutdown_rx.clone()));
+
     // ── Run server ───────────────────────────────────────────────────
     let result = server
         .run_with_listener(listener, shutdown_rx)
@@ -373,6 +384,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ── Wait for handler and autonomy tasks to finish ─────────────────
     let shutdown_timeout = std::time::Duration::from_secs(10);
+
+    if let Some(sup) = matrix_supervisor {
+        sup.shutdown(std::time::Duration::from_secs(6)).await;
+    }
 
     let _ = tokio::time::timeout(shutdown_timeout, handler_handle).await;
     let _ = tokio::time::timeout(shutdown_timeout, autonomy.shutdown()).await;

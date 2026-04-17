@@ -61,6 +61,10 @@ pub enum InteriorityEventKind {
     Timeout,
     /// Dormant bare ping sent to keep cache warm.
     DormantPing,
+    /// A `<recap>` was captured from the tick and persisted to `recaps.jsonl`.
+    RecapWritten,
+    /// Tick finished without a recap, even after the forced wrap-up call.
+    RecapMissing,
 }
 
 impl std::fmt::Display for InteriorityEventKind {
@@ -74,6 +78,8 @@ impl std::fmt::Display for InteriorityEventKind {
             Self::Wake => write!(f, "wake"),
             Self::Timeout => write!(f, "timeout"),
             Self::DormantPing => write!(f, "dormant_ping"),
+            Self::RecapWritten => write!(f, "recap_written"),
+            Self::RecapMissing => write!(f, "recap_missing"),
         }
     }
 }

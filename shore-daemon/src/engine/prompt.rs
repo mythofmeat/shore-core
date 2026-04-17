@@ -95,10 +95,12 @@ pub fn build_capabilities_block(config: &CapabilitiesConfig) -> Option<String> {
     }
     if config.scratchpad_enabled {
         lines.push(
-            "- You have a scratchpad: a persistent filesystem for notes, drafts, \
-             and working memory. Use it to keep track of ongoing thoughts, plans, \
-             or anything you want to remember between conversations. Available \
-             tools: scratchpad_list, scratchpad_read, scratchpad_write, scratchpad_delete.",
+            "- You have a scratchpad: your own folder on the filesystem — a \
+             personal, self-curated space that is yours to use however you want. \
+             Drafts, notes-in-progress, plans, creative work, anything you want \
+             a private place for. This is not a memory system; your memory tool \
+             handles recall and shared history. Available tools: scratchpad_list, \
+             scratchpad_read, scratchpad_write, scratchpad_delete.",
         );
     }
     if config.memory_enabled {

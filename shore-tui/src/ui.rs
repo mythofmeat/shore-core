@@ -261,15 +261,16 @@ fn pre_wrap_text(text: &str, max_width: usize) -> String {
     result
 }
 
-/// Render in-progress streaming content inline with a compact spinner.
-fn render_streaming_state(lines: &mut Vec<Line<'static>>, app: &App, content_width: u16) {
+/// Render the assistant name header for an in-progress streamed turn.
+/// A single turn can span multiple phases (tool_use → final), so this
+/// header is emitted exactly once by the caller.
+fn render_streaming_header(lines: &mut Vec<Line<'static>>, app: &App) {
     let name = if app.character_name.is_empty() {
         "Assistant"
     } else {
         &app.character_name
     };
 
-    // Name header
     if app.stream.regen {
         lines.push(Line::from(Span::styled(
             format!("{name} (regenerating)"),
@@ -286,7 +287,11 @@ fn render_streaming_state(lines: &mut Vec<Line<'static>>, app: &App, content_wid
         )));
     }
     lines.push(Line::from(""));
+}
 
+/// Render the body of an in-progress stream: interleaved thinking/text
+/// blocks followed by a compact spinner. Caller emits the header.
+fn render_streaming_content(lines: &mut Vec<Line<'static>>, app: &App, content_width: u16) {
     // Render interleaved blocks inline
     let wrap_w = content_width.saturating_sub(2) as usize;
     let thinking_style = Style::default()
@@ -524,23 +529,37 @@ fn draw_conversation(frame: &mut Frame, app: &mut App, area: Rect) {
         }
     }
 
-    // Flush orphaned pending entries (e.g. tools mid-stream before response starts)
-    flush_thinking(
-        &mut lines,
-        &mut pending_thinking,
-        app.show_thinking,
-        content_width,
-    );
-    flush_tools(
-        &mut lines,
-        &mut pending_tools,
-        app.show_tools,
-        content_width,
-    );
-
-    // Append in-progress streaming text (or typing indicator)
+    // When streaming, emit a single assistant header and flush any pending
+    // thinking/tool entries underneath it before rendering live content.
+    // Otherwise, flush orphans without a header (shouldn't normally occur).
     if app.stream.active {
-        render_streaming_state(&mut lines, app, content_width);
+        render_streaming_header(&mut lines, app);
+        flush_thinking(
+            &mut lines,
+            &mut pending_thinking,
+            app.show_thinking,
+            content_width,
+        );
+        flush_tools(
+            &mut lines,
+            &mut pending_tools,
+            app.show_tools,
+            content_width,
+        );
+        render_streaming_content(&mut lines, app, content_width);
+    } else {
+        flush_thinking(
+            &mut lines,
+            &mut pending_thinking,
+            app.show_thinking,
+            content_width,
+        );
+        flush_tools(
+            &mut lines,
+            &mut pending_tools,
+            app.show_tools,
+            content_width,
+        );
     }
 
     // Empty state: show a welcome hint
@@ -1597,6 +1616,184 @@ mod scenario_tests {
         assert!(
             content_line > result_line,
             "assistant text must appear after tool result"
+        );
+    }
+
+    // ── Scenario: multi-phase tool-use stream ───────────────────────────────
+    //
+    // Regression for the bug where an intermediate StreamEnd(finish_reason="tool_use")
+    // would push a premature empty Assistant entry with per-call metadata, producing
+    // a duplicate character header and a misleading stats line mid-turn.
+    //
+    // Real sequence (per shore-daemon/tests/suite/pipeline.rs):
+    //   StreamStart → StreamEnd(tool_use) → ToolCall → ToolResult
+    //   → StreamStart → chunks → StreamEnd(end_turn)
+
+    #[test]
+    fn scenario_tool_use_multi_phase_single_header() {
+        use shore_protocol::server_msg::{
+            ServerMessage, StreamChunk, StreamEnd, StreamStart, ToolCall, ToolResult,
+        };
+        use shore_protocol::types::{StreamMetadata, TimingInfo, TokenCounts};
+
+        let meta_phase_1 = StreamMetadata {
+            model: "anthropic/claude-haiku-4-5".into(),
+            tokens: TokenCounts {
+                input: 100,
+                output: 20,
+                cache_read: 10,
+                cache_write: 0,
+            },
+            timing: TimingInfo {
+                total_ms: 500,
+                ttft_ms: 100,
+            },
+        };
+        let meta_phase_2 = StreamMetadata {
+            model: "anthropic/claude-haiku-4-5".into(),
+            tokens: TokenCounts {
+                input: 200,
+                output: 40,
+                cache_read: 80,
+                cache_write: 0,
+            },
+            timing: TimingInfo {
+                total_ms: 1000,
+                ttft_ms: 120,
+            },
+        };
+
+        let mut h = Harness::new();
+        h.app.connection_status = ConnectionStatus::Connected;
+        h.app.character_name = "qifei".into();
+
+        h.app.entries.push(ConversationEntry::User {
+            content: "hi qifei.".into(),
+            images: vec![],
+            timestamp: "t1".into(),
+        });
+
+        // Phase 1: the model decides to call a tool; no text chunks.
+        crate::handle_server_message(
+            &mut h.app,
+            ServerMessage::StreamStart(StreamStart {
+                rid: None,
+                regen: false,
+            }),
+        );
+        crate::handle_server_message(
+            &mut h.app,
+            ServerMessage::StreamEnd(StreamEnd {
+                rid: None,
+                content: String::new(),
+                metadata: meta_phase_1.clone(),
+                finish_reason: "tool_use".into(),
+            }),
+        );
+        crate::handle_server_message(
+            &mut h.app,
+            ServerMessage::ToolCall(ToolCall {
+                rid: None,
+                tool_id: "tc1".into(),
+                tool_name: "memory".into(),
+                input: serde_json::json!({"op": "query"}),
+            }),
+        );
+
+        // Mid-turn frame: exactly one "qifei" header, no premature stats line.
+        // Headers are flush-left; the user's "hi qifei." is indented by two spaces.
+        let f_mid = h.render("mid tool-use turn");
+        let mid_header_count = f_mid.lines().filter(|l| l.trim_end() == "qifei").count();
+        assert_eq!(
+            mid_header_count, 1,
+            "exactly one 'qifei' header mid-turn; got {mid_header_count}\n{f_mid}"
+        );
+        assert!(
+            !f_mid.contains("in:100"),
+            "intermediate per-call stats must not appear mid-turn\n{f_mid}"
+        );
+
+        crate::handle_server_message(
+            &mut h.app,
+            ServerMessage::ToolResult(ToolResult {
+                rid: None,
+                tool_id: "tc1".into(),
+                tool_name: "memory".into(),
+                output: "{}".into(),
+                is_error: false,
+            }),
+        );
+
+        // Phase 2: model emits the real response.
+        crate::handle_server_message(
+            &mut h.app,
+            ServerMessage::StreamStart(StreamStart {
+                rid: None,
+                regen: false,
+            }),
+        );
+        crate::handle_server_message(
+            &mut h.app,
+            ServerMessage::StreamChunk(StreamChunk {
+                rid: None,
+                text: "hey! what's up?".into(),
+                content_type: "text".into(),
+            }),
+        );
+        crate::handle_server_message(
+            &mut h.app,
+            ServerMessage::StreamEnd(StreamEnd {
+                rid: None,
+                content: "hey! what's up?".into(),
+                metadata: meta_phase_2.clone(),
+                finish_reason: "end_turn".into(),
+            }),
+        );
+
+        let f = h.render("after multi-phase turn");
+
+        // Exactly one "qifei" header for the whole turn.
+        let header_count = f.lines().filter(|l| l.trim_end() == "qifei").count();
+        assert_eq!(
+            header_count, 1,
+            "exactly one 'qifei' header after turn; got {header_count}\n{f}"
+        );
+
+        // Final content present.
+        assert!(
+            f.contains("hey! what's up?"),
+            "final response text missing\n{f}"
+        );
+
+        // Stats line: tokens summed across both phases.
+        let expected_input = meta_phase_1.tokens.input + meta_phase_2.tokens.input;
+        let expected_output = meta_phase_1.tokens.output + meta_phase_2.tokens.output;
+        let expected_cache = meta_phase_1.tokens.cache_read + meta_phase_2.tokens.cache_read;
+        let expected_total_ms = meta_phase_1.timing.total_ms + meta_phase_2.timing.total_ms;
+        let stats_expected = format!(
+            "in:{expected_input} out:{expected_output} cache:{expected_cache}"
+        );
+        assert!(
+            f.contains(&stats_expected),
+            "expected summed stats '{stats_expected}' in frame\n{f}"
+        );
+        assert!(
+            f.contains(&format!("{expected_total_ms}ms")),
+            "expected summed timing '{expected_total_ms}ms' in frame\n{f}"
+        );
+
+        // Stream should be idle after end_turn.
+        assert!(
+            !h.app.stream.active,
+            "stream must be inactive after end_turn"
+        );
+        assert!(
+            h.app.stream.accumulated_text.is_empty(),
+            "accumulator must be cleared on finalise"
+        );
+        assert!(
+            h.app.stream.accumulated_metadata.is_none(),
+            "metadata accumulator must be cleared on finalise"
         );
     }
 

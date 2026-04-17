@@ -737,3 +737,23 @@ Also extended `discover()` to match a selector against **either** `entry.id` (ho
 Separately, fixed a hardcoded-admin bug in `shore-matrix/src/provision.rs:400` exposed by non-default `admin_user` configs: `create_character_room` was granting room power 100 to a literal `@shore-admin:{server_name}` user in its `power_level_content_override`, which only worked when `[connections.matrix.embedded].admin_user` matched the `"shore-admin"` default. Any override (e.g. `admin_user = "eshen"`) left the actual room creator with power 0, failing the subsequent `m.room.join_rules` event with `M_FORBIDDEN`. Now takes `admin_user_id` as an explicit parameter threaded from `EmbeddedState::admin_user_id`.
 
 **Not done yet:** `shore-tui`, `shore-mcp`, and other binaries still rely on `SHORE_CONFIG_DIR` / `--config` for config lookup. They could use the same registry fallback, but none of them have hit a reported issue and dragging them in now would creep this change. Follow-up if/when a user trips on the same friction.
+
+### 2026-04-17 — shore-daemon supervises shore-matrix
+
+The daemon now auto-spawns and supervises `shore-matrix` as a child process when `[connections.matrix]` is enabled in the config. Users no longer have to run `shore matrix setup` or `shore matrix` manually — the bridge comes up with the daemon. Setup-on-first-run still happens inside shore-matrix itself (unchanged behavior via `load_or_init_state()`), so the supervisor has no state of its own; it just ensures a live bridge process.
+
+**Design:**
+- Binary lookup: `which::which("shore-matrix")` → fallback to `current_exe().parent()/shore-matrix` → else one `warn!` and the supervisor task exits cleanly. No retry loop on binary-not-found; if the binary isn't installed, spamming the logs won't help.
+- Restart policy: exponential backoff (1, 2, 4, 8, 16, 32 seconds cap) with a 5-consecutive-failure give-up threshold. Counter resets after 5 minutes of stable runtime. This catches homeserver-binary-missing, port-bind-failures, and Matrix auth errors without burning CPU forever on a permanently broken setup.
+- Shutdown: listens on the same `tokio::sync::watch` shutdown signal the server uses. On signal, sends SIGTERM directly via `libc::kill` (tokio's `Child::start_kill` is SIGKILL on Unix, which would skip shore-matrix's own teardown of tuwunel), waits up to 5s, and escalates to SIGKILL if the child is still alive. `kill_on_drop` is the ultimate fallback.
+- Non-fatal: all failure paths log and return from the supervisor task. The daemon never exits because of a Matrix problem.
+
+**Why subprocess, not library:** `shore-matrix` depends on `matrix-sdk` which pulls in `sqlite` and a lot of crypto surface area. Linking it into the daemon would expand the daemon's build time and attack surface for no benefit — the bridge already talks to the daemon via SWP, same as any other client. Keeping it a separate binary also means the `shore matrix setup` / `shore matrix register` CLI commands keep working standalone for debugging; users running the daemon-supervised mode can still invoke them ad-hoc (though the daemon-managed bridge will hold port 6167, which surfaces as a clean tuwunel bind error if they try to run a second bridge).
+
+**Register is NOT automated:** `shore matrix register --username X` remains a manual command. Running it on daemon startup would spam credentials into logs; the credentials live in `config.toml` anyway.
+
+**Hook point:** `shore-daemon/src/main.rs` around line 361 (after the message handler spawn, before the server's run loop), with a clone of the shared `shutdown_rx`. Shutdown is joined before the handler so the Matrix child has a chance to flush before the daemon's SWP server tears down.
+
+**Verification:** compile + 1,208 workspace unit tests + 2 new supervisor unit tests + a 5-scenario isolated integration harness covering (a) no-matrix-config short-circuit, (b) shore-matrix binary missing, (c) tuwunel missing with supervision loop → give-up, (d) full happy path end-to-end with tuwunel spawn + admin + character + room creation + bridge loop, and (e) warm restart on populated state. All tests ran in tempdir profiles with `SHORE_CONFIG_DIR` / `SHORE_DATA_DIR` / `SHORE_RUNTIME_DIR` overrides and non-default ports (7399 daemon, 6168 homeserver), leaving the user's real daemon untouched. Clean shutdown verified: no zombie `shore-matrix` or `tuwunel` processes after `SIGTERM`.
+
+**Deferred:** no lockfile coordinating standalone-CLI vs daemon-supervised shore-matrix. Port collision on 6167 is the natural guard and surfaces cleanly; adding file-lock machinery is overkill for a single-machine user-level daemon.

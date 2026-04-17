@@ -63,6 +63,11 @@ pub struct StreamState {
     pub phase: String,
     /// Name of the tool currently being called/executed.
     pub tool_name: Option<String>,
+    // Accumulated across a multi-phase (tool-use) turn so the finalized
+    // Assistant entry carries the full text and summed metadata rather than
+    // just the first LLM call's partial slice. Cleared by reset().
+    pub accumulated_text: String,
+    pub accumulated_metadata: Option<StreamMetadata>,
 }
 
 impl StreamState {
@@ -72,6 +77,8 @@ impl StreamState {
         self.blocks.clear();
         self.phase.clear();
         self.tool_name = None;
+        self.accumulated_text.clear();
+        self.accumulated_metadata = None;
     }
 }
 

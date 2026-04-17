@@ -284,6 +284,9 @@ async fn run_embedded(
 
     // 6. Provision admin (first run only)
     if first_run {
+        eprintln!(
+            "shore-matrix: first-run setup — provisioning embedded Matrix homeserver..."
+        );
         let admin_reg = provision_admin(
             &homeserver_url,
             &embedded_state.registration_token,
@@ -305,6 +308,19 @@ async fn run_embedded(
 
     // Handle --register (register a user account and exit)
     if let Some(ref username) = args.register {
+        // The admin account was provisioned during setup using the configured
+        // admin_user + admin_password. If the caller asks to register the same
+        // username, there's nothing new to create — just print the existing
+        // credentials so they can log into their Matrix client.
+        if username == &embedded.admin_user {
+            println!("Admin account already provisioned — use these credentials in your Matrix client:");
+            println!("  User ID:    {}", embedded_state.admin_user_id);
+            println!("  Password:   {}", embedded.admin_password);
+            println!("  Homeserver: {homeserver_url}");
+            hs_manager.stop().await.ok();
+            return Ok(());
+        }
+
         let password = args
             .register_password
             .clone()
@@ -319,8 +335,8 @@ async fn run_embedded(
         .map_err(|e| format!("Registration failed: {e}"))?;
 
         println!("Account registered:");
-        println!("  User ID:  {}", reg.user_id);
-        println!("  Password: {password}");
+        println!("  User ID:    {}", reg.user_id);
+        println!("  Password:   {password}");
         println!("  Homeserver: {homeserver_url}");
         hs_manager.stop().await.ok();
         return Ok(());
@@ -440,6 +456,10 @@ async fn run_embedded(
         }
     }
 
+    eprintln!(
+        "shore-matrix: bridge starting ({} character(s), homeserver {homeserver_url})",
+        character_states.len()
+    );
     info!("shore-matrix bridge running (embedded mode)");
     run_bridge_loop(bot, matrix_rx, daemon_tx, daemon_rx, room_manager).await;
 

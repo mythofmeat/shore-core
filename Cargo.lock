@@ -6755,6 +6755,7 @@ dependencies = [
  "futures",
  "image",
  "lancedb",
+ "libc",
  "rand 0.8.5",
  "reqwest",
  "rusqlite",
@@ -6776,6 +6777,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "which",
 ]
 
 [[package]]
