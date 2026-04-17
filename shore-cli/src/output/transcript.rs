@@ -486,6 +486,8 @@ pub fn print_heartbeat_log(data: &serde_json::Value) {
             "tool_use" => Color::Cyan,
             "dormant" => Color::Red,
             "wake" => Color::Green,
+            "recap_written" => Color::Green,
+            "recap_missing" => Color::Yellow,
             _ => Color::White,
         };
 

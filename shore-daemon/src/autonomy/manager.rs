@@ -681,10 +681,18 @@ impl AutonomyManager {
 /// unless an actual action is triggered, so the overhead is negligible.
 const TICK_INTERVAL: Duration = Duration::from_secs(10);
 
-/// Maximum wall-clock time for a single interiority tick (including all tool
-/// rounds). If the tick exceeds this, the future is dropped and the tick loop
-/// continues. Prevents a hung LLM call from killing keepalive permanently.
-const INTERIORITY_TIMEOUT: Duration = Duration::from_secs(300); // 5 minutes
+/// Soft deadline for the interiority tool loop (all iterations combined). The
+/// loop checks this before each iteration and breaks to the wrap-up call if
+/// exceeded. Generous enough that a slow memory agent + slow LLM across
+/// `max_tool_rounds` iterations normally fits; tight enough that a runaway
+/// loop can't block subsequent ticks for an hour. Per-call HTTP timeouts
+/// (300s, enforced by `LlmClient`) still bound each individual request.
+const INTERIORITY_LOOP_DEADLINE: Duration = Duration::from_secs(30 * 60); // 30 minutes
+
+/// Hard timeout for the forced wrap-up call that closes every tick without a
+/// `<recap>`. Runs in its own `tokio::time::timeout` outside the loop deadline
+/// so a long-running loop can't starve the recap write.
+const INTERIORITY_WRAPUP_TIMEOUT: Duration = Duration::from_secs(5 * 60); // 5 minutes
 
 /// Lock the per-character autonomy state, recovering from mutex poisoning
 /// instead of panicking. A poisoned mutex means a previous holder panicked,
@@ -831,7 +839,11 @@ async fn tick_character(character: &str, ctx: &TickContext) {
         }
     }
 
-    // -- execute interiority action with timeout (async, outside lock) ----
+    // -- execute interiority action (async, outside lock) -----------------
+    // No outer tokio::time::timeout wrapper: `execute_unified_tick` enforces
+    // its own budgets — a soft deadline on the tool loop and a separate hard
+    // timeout on the forced wrap-up call — so a slow loop can't starve the
+    // recap write.
     match int_action {
         InteriorityAction::None => {}
         InteriorityAction::RunTick => {
@@ -840,35 +852,16 @@ async fn tick_character(character: &str, ctx: &TickContext) {
                 s.interiority_log
                     .push(InteriorityEventKind::TickFired, "Interiority tick fired");
             }
-            match tokio::time::timeout(
-                INTERIORITY_TIMEOUT,
-                execute_unified_tick(
-                    character,
-                    &ctx.state,
-                    &ctx.data_dir,
-                    ctx.llm_client.as_ref(),
-                    ctx.loaded_config.as_deref(),
-                    ctx.notifier.as_ref(),
-                    ctx.registry.as_ref(),
-                ),
+            execute_unified_tick(
+                character,
+                &ctx.state,
+                &ctx.data_dir,
+                ctx.llm_client.as_ref(),
+                ctx.loaded_config.as_deref(),
+                ctx.notifier.as_ref(),
+                ctx.registry.as_ref(),
             )
-            .await
-            {
-                Ok(()) => {}
-                Err(_) => {
-                    error!(
-                        character = %character,
-                        timeout_secs = INTERIORITY_TIMEOUT.as_secs(),
-                        "Interiority tick timed out, dropping to keep tick loop alive"
-                    );
-                    let mut s = lock_state(&ctx.state);
-                    s.interiority_log.push(
-                        InteriorityEventKind::Timeout,
-                        format!("Tick timed out after {}s", INTERIORITY_TIMEOUT.as_secs()),
-                    );
-                    s.mark_dirty();
-                }
-            }
+            .await;
         }
     }
 
@@ -1356,11 +1349,29 @@ async fn execute_unified_tick(
     // Collect <sendMessage> and <recap> content across iterations (last-wins).
     let mut send_message_text: Option<String> = None;
     let mut recap_text: Option<String> = None;
-    // True only if the loop exhausted max_iterations with tool_use still
-    // outstanding — the signal to fire a wrap-up call asking for a recap.
+    // True iff the loop completed max_iterations with tool_use still outstanding.
     let mut hit_cap = false;
+    // True iff the loop was stopped early by the soft deadline guard.
+    let mut loop_deadline_hit = false;
+    // True iff at least one LLM call in the loop returned Ok(_). Gates the
+    // wrap-up call so we don't burn a budget trying to recap a tick whose
+    // very first generate() errored (e.g. provider outage).
+    let mut made_progress = false;
+
+    let loop_deadline = std::time::Instant::now() + INTERIORITY_LOOP_DEADLINE;
 
     for iteration in 0..max_iterations {
+        if std::time::Instant::now() >= loop_deadline {
+            warn!(
+                character,
+                iteration,
+                loop_deadline_secs = INTERIORITY_LOOP_DEADLINE.as_secs(),
+                "Interiority: tool loop soft deadline reached, breaking to wrap-up"
+            );
+            loop_deadline_hit = true;
+            break;
+        }
+
         let call_type = if iteration == 0 {
             CallType::Interiority
         } else {
@@ -1374,6 +1385,7 @@ async fn execute_unified_tick(
                 break;
             }
         };
+        made_progress = true;
 
         info!(
             character,
@@ -1504,33 +1516,44 @@ async fn execute_unified_tick(
         }
     }
 
-    // -- Wrap-up call on iteration cap -----------------------------------------
-    // If we exhausted max_tool_rounds with no <recap> captured, make one more
-    // generate() call with an explicit wrap-up instruction. The pending tool
-    // results are already on request.messages (appended in the last loop
-    // iteration); we only need to add the wrap-up system message. The system+
-    // tools prefix is unchanged, so cache reads on the prefix still hit.
-    if hit_cap && recap_text.is_none() {
+    // -- Forced wrap-up call when no recap was captured ------------------------
+    // Every tick that made it to at least one successful generate() must close
+    // with a <recap>. If the model didn't volunteer one during the tool loop —
+    // natural exit, iteration cap, or soft deadline — make one more
+    // generate() call with an explicit "write a recap" system message. Wrapped
+    // in its own hard timeout so a slow or runaway loop can't starve it.
+    //
+    // The pending tool results (if any) are already on `request.messages` from
+    // the last loop iteration; we only add the wrap-up system message. The
+    // system+tools prefix is unchanged, so cache reads on the prefix still
+    // hit.
+    let mut wrapup_failed = false;
+    if recap_text.is_none() && made_progress {
+        let reason = if loop_deadline_hit {
+            "loop deadline reached"
+        } else if hit_cap {
+            "iteration cap hit"
+        } else {
+            "natural exit without recap"
+        };
         info!(
             character,
-            "Interiority: iteration cap hit with no recap, requesting wrap-up"
+            reason, "Interiority: no recap from loop, firing wrap-up call"
         );
 
-        let wrap_up_prompt = "You've used all your tool rounds for this private moment. \
-             Write a <recap> summarising what you were doing and thinking so you can \
-             pick it up next time — this is required. You can also include a \
-             <sendMessage> if there's something you want to share with the user.";
+        let wrap_up_prompt = "Your private moment is ending. Write a <recap>...</recap> \
+             summarising what you were doing and thinking so you can pick it up next \
+             time — this is required. You can also include a <sendMessage> if there's \
+             something you want to share with the user.";
 
         request.messages.push(json!({
             "role": "system",
             "content": wrap_up_prompt,
         }));
 
-        match client
-            .generate(&request, CallType::ToolLoop, character, false)
-            .await
-        {
-            Ok(resp) => {
+        let wrap_up_fut = client.generate(&request, CallType::ToolLoop, character, false);
+        match tokio::time::timeout(INTERIORITY_WRAPUP_TIMEOUT, wrap_up_fut).await {
+            Ok(Ok(resp)) => {
                 info!(
                     character,
                     finish_reason = %resp.finish_reason,
@@ -1552,26 +1575,76 @@ async fn execute_unified_tick(
                         response_preview = %preview,
                         "Interiority: wrap-up produced no recap"
                     );
+                    wrapup_failed = true;
                 }
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 error!(character, error = %e, "Interiority: wrap-up call failed");
+                wrapup_failed = true;
+            }
+            Err(_) => {
+                error!(
+                    character,
+                    timeout_secs = INTERIORITY_WRAPUP_TIMEOUT.as_secs(),
+                    "Interiority: wrap-up call timed out"
+                );
+                let mut s = lock_state(state);
+                s.interiority_log.push(
+                    InteriorityEventKind::Timeout,
+                    format!(
+                        "Wrap-up call timed out after {}s",
+                        INTERIORITY_WRAPUP_TIMEOUT.as_secs()
+                    ),
+                );
+                s.mark_dirty();
+                wrapup_failed = true;
             }
         }
     }
 
-    // -- Persist <recap> if present -----------------------------------------------
+    // -- Persist <recap> if present, or log a visible failure -----------------
     if let Some(recap) = recap_text {
         info!(character, recap = %truncate_summary(&recap, 200), "Interiority: recap written");
+        let preview = truncate_summary(&recap, 80);
         let entry = RecapEntry {
             timestamp: chrono::Local::now().fixed_offset(),
             tick_id: format!("tick_{}", uuid::Uuid::new_v4()),
             recap,
         };
         let mut store = RecapStore::load(&recap_path);
-        if let Err(e) = store.append(entry) {
-            warn!(character, error = %e, "Interiority: failed to persist recap");
+        match store.append(entry) {
+            Ok(()) => {
+                let mut s = lock_state(state);
+                s.interiority_log.push(
+                    InteriorityEventKind::RecapWritten,
+                    format!("Recap saved: {preview}"),
+                );
+                s.mark_dirty();
+            }
+            Err(e) => {
+                warn!(character, error = %e, "Interiority: failed to persist recap");
+                let mut s = lock_state(state);
+                s.interiority_log.push(
+                    InteriorityEventKind::RecapMissing,
+                    format!("Recap persist failed: {e}"),
+                );
+                s.mark_dirty();
+            }
         }
+    } else if made_progress {
+        // Loop ran (at least one generate() succeeded) but no recap landed,
+        // even after the forced wrap-up. Surface it in the visible log so the
+        // user can tell the difference between "tick didn't run" and "tick
+        // ran but model refused to recap".
+        let detail = if wrapup_failed {
+            "Wrap-up failed to produce a recap".to_string()
+        } else {
+            "Tick ended without a recap".to_string()
+        };
+        let mut s = lock_state(state);
+        s.interiority_log
+            .push(InteriorityEventKind::RecapMissing, detail);
+        s.mark_dirty();
     }
 
     // -- Cache warmed: the tick itself was a cache-warming LLM call -----------

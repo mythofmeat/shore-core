@@ -1,11 +1,11 @@
-//! Integration test for the interiority wrap-up path.
+//! Integration tests for the interiority wrap-up path.
 //!
-//! Covers the `hit_cap && recap_text.is_none()` branch in
-//! `autonomy::manager::execute_unified_tick`: when the tool loop exhausts
-//! `max_tool_rounds` without the model ever emitting a `<recap>`, the manager
-//! makes one more non-streaming `generate()` call with an explicit wrap-up
-//! system message asking for a recap, and persists any `<recap>` it produces
-//! to `{data_dir}/{character}/recaps.jsonl`.
+//! Covers the forced wrap-up branch in
+//! `autonomy::manager::execute_unified_tick`: whenever the tool loop ends
+//! without a `<recap>` (iteration cap, soft deadline, or natural early exit),
+//! the manager makes one more non-streaming `generate()` call with an
+//! explicit wrap-up system message asking for a recap, and persists any
+//! `<recap>` it produces to `{data_dir}/{character}/recaps.jsonl`.
 //!
 //! Permitted under the testing-policy Rule 2 (trait/HTTP doubles upstream of
 //! shore-llm-client) — the autonomy manager is the caller under test, and the
@@ -115,6 +115,81 @@ async fn wrap_up_persists_recap_when_iteration_cap_is_hit() {
     assert!(
         found,
         "expected wrap-up recap {expected_recap:?} in {}, existed={} contents={:?}",
+        recap_path.display(),
+        recap_path.exists(),
+        std::fs::read_to_string(&recap_path).ok(),
+    );
+
+    harness.shutdown().await;
+}
+
+/// Queue a plain-text response with NO `<recap>` tag and NO `tool_use` block
+/// for the first loop iteration, so the loop exits naturally after one round
+/// with `hit_cap=false` and `recap_text=None`. The manager must still fire a
+/// wrap-up call, which receives the recap we queue second.
+///
+/// Regression test for the bug where the wrap-up was gated on `hit_cap`,
+/// causing recaps to silently drop whenever the model ended the tick without
+/// volunteering one.
+#[tokio::test]
+async fn wrap_up_persists_recap_on_natural_exit_without_recap() {
+    init_tracing();
+    let mut harness = TestHarness::boot_with(
+        TestConfigBuilder::new()
+            .autonomy(true)
+            .interiority_max_tool_rounds(12),
+    )
+    .await;
+
+    // Prime the conversation so the autonomy state is spawned.
+    harness.mock_llm.enqueue_text("ack").await;
+    let _ = harness.send_and_collect("hello").await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // Iter 0 (CallType::Interiority): plain text, no <recap>, no tool_use.
+    // The loop sees finish_reason="end_turn" and breaks immediately.
+    harness
+        .mock_llm
+        .enqueue_json_text("just sitting with a thought.")
+        .await;
+
+    // Wrap-up call (CallType::ToolLoop): returns the recap we expect.
+    let expected_recap = "natural exit recap — picked up the thread and let it rest.";
+    harness
+        .mock_llm
+        .enqueue_json_text(&format!("closing out. <recap>{expected_recap}</recap>"))
+        .await;
+
+    let dormant = harness.autonomy.interiority_tick_now(CHARACTER);
+    assert_eq!(
+        dormant,
+        Some(false),
+        "autonomy state should exist and not be dormant after priming message"
+    );
+
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(15)).await;
+
+    let recap_path = harness.data_dir.join(CHARACTER).join("recaps.jsonl");
+    let mut found = false;
+    for _ in 0..500 {
+        if recap_path.exists() {
+            if let Ok(content) = std::fs::read_to_string(&recap_path) {
+                if content.contains(expected_recap) {
+                    found = true;
+                    break;
+                }
+            }
+        }
+        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    tokio::time::resume();
+
+    assert!(
+        found,
+        "expected natural-exit wrap-up recap {expected_recap:?} in {}, existed={} contents={:?}",
         recap_path.display(),
         recap_path.exists(),
         std::fs::read_to_string(&recap_path).ok(),
