@@ -12,11 +12,6 @@ source=("${pkgbase}::git+http://localhost:3000/eshen/silvershore.git")
 options=('!lto')
 sha256sums=('SKIP')
 
-pkgver() {
-    cd "${pkgbase}"
-    git describe --tags --abbrev=0 | sed 's/^v//'
-}
-
 prepare() {
     cd "${pkgbase}"
     export RUSTUP_TOOLCHAIN=stable

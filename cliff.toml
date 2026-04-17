@@ -1,0 +1,39 @@
+# git-cliff configuration. Drives auto-generated release notes published to
+# Gitea Releases by .gitea/workflows/package.yml on each `v*` tag push.
+#
+# CHANGELOG.md in the repo is a frozen historical record up to v0.15.0; for
+# v0.16.0 onward the canonical release notes live in Gitea Releases.
+
+[changelog]
+header = ""
+body = """
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | upper_first }}
+{% for commit in commits %}
+- {% if commit.scope %}**{{ commit.scope }}**: {% endif %}{{ commit.message | upper_first }}
+{%- endfor %}
+{% endfor %}
+"""
+trim = true
+footer = ""
+
+[git]
+conventional_commits = true
+filter_unconventional = true
+filter_commits = true
+tag_pattern = "v[0-9]+\\.[0-9]+\\.[0-9]+"
+sort_commits = "oldest"
+
+commit_parsers = [
+    { message = "^feat",     group = "Added" },
+    { message = "^fix",      group = "Fixed" },
+    { message = "^refactor", group = "Changed" },
+    { message = "^perf",     group = "Changed" },
+    { message = "^revert",   group = "Changed" },
+    { message = "^docs",     skip  = true },
+    { message = "^chore",    skip  = true },
+    { message = "^test",     skip  = true },
+    { message = "^ci",       skip  = true },
+    { message = "^build",    skip  = true },
+    { message = "^style",    skip  = true },
+]

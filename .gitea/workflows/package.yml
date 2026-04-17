@@ -10,7 +10,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 0  # git-cliff needs the full history
 
       - name: Verify tag is on main
         run: |
@@ -18,23 +18,90 @@ jobs:
           git merge-base --is-ancestor HEAD origin/main || \
             { echo "::error::Tag is not on main — skipping build"; exit 1; }
 
-      - name: Pin PKGBUILD source to tag
+      - name: Verify runner has required tools
+        run: |
+          command -v git-cliff >/dev/null || \
+            { echo "::error::git-cliff missing on runner. Run: sudo pacman -S git-cliff"; exit 1; }
+          command -v jq >/dev/null || \
+            { echo "::error::jq missing on runner. Run: sudo pacman -S jq"; exit 1; }
+          command -v makepkg >/dev/null || \
+            { echo "::error::makepkg missing on runner (Arch base-devel required)"; exit 1; }
+
+      - name: Pin PKGBUILD to tag
         working-directory: contrib
         run: |
           TAG="${{ github.ref_name }}"
+          VER="${TAG#v}"
+          sed -i "s|^pkgver=.*|pkgver=${VER}|" PKGBUILD
           sed -i "s|silvershore.git\"|silvershore.git#tag=${TAG}\"|" PKGBUILD
 
       - name: Build packages
         working-directory: contrib
         run: makepkg -sf --noconfirm
 
-      - name: Upload to Gitea package registry
+      - name: Generate release notes
+        run: git-cliff --latest -o RELEASE_NOTES.md
+
+      - name: Upload to Arch package registry
         working-directory: contrib
+        env:
+          PACKAGE_TOKEN: ${{ secrets.PACKAGE_TOKEN }}
+          GITEA_URL: ${{ gitea.server_url }}
         run: |
           for pkg in *.pkg.tar.zst; do
             [ -f "$pkg" ] || continue
-            echo "Uploading $pkg..."
-            curl --fail --user "eshen:${{ secrets.PACKAGE_TOKEN }}" \
-                 --upload-file "$pkg" \
-                 "${{ gitea.server_url }}/api/packages/eshen/arch/eshen"
+            echo "Uploading $pkg to Arch registry..."
+            HTTP=$(curl -s -o /dev/null -w '%{http_code}' \
+                   --user "eshen:${PACKAGE_TOKEN}" \
+                   --upload-file "$pkg" \
+                   "${GITEA_URL}/api/packages/eshen/arch/eshen")
+            if [ "$HTTP" = "201" ] || [ "$HTTP" = "409" ]; then
+              echo "  -> $HTTP OK"
+            else
+              echo "  -> $HTTP FAILED"
+              exit 1
+            fi
+          done
+
+      - name: Create or fetch Gitea Release
+        id: release
+        env:
+          TOKEN: ${{ secrets.PACKAGE_TOKEN }}
+          API: ${{ gitea.server_url }}/api/v1
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          BODY=$(jq -Rs . < RELEASE_NOTES.md)
+          PAYLOAD=$(jq -n \
+            --arg tag "$TAG" \
+            --arg name "$TAG" \
+            --argjson body "$BODY" \
+            '{tag_name:$tag, name:$name, body:$body, draft:false, prerelease:false}')
+          # Create (swallow 409 — release may already exist from a previous attempt)
+          curl --silent --show-error \
+            -H "Authorization: token $TOKEN" \
+            -H "Content-Type: application/json" \
+            -X POST -d "$PAYLOAD" \
+            "$API/repos/$REPO/releases" >/dev/null || true
+          # Fetch ID (handles both just-created and pre-existing)
+          RELEASE_ID=$(curl --fail --silent \
+            -H "Authorization: token $TOKEN" \
+            "$API/repos/$REPO/releases/tags/$TAG" | jq -r .id)
+          echo "id=$RELEASE_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Attach packages to Release
+        working-directory: contrib
+        env:
+          TOKEN: ${{ secrets.PACKAGE_TOKEN }}
+          API: ${{ gitea.server_url }}/api/v1
+          REPO: ${{ github.repository }}
+          RELEASE_ID: ${{ steps.release.outputs.id }}
+        run: |
+          for pkg in *.pkg.tar.zst; do
+            [ -f "$pkg" ] || continue
+            echo "Attaching $pkg to release..."
+            curl --fail --show-error \
+              -H "Authorization: token $TOKEN" \
+              -F "attachment=@${pkg}" \
+              "$API/repos/$REPO/releases/$RELEASE_ID/assets?name=${pkg}"
           done
