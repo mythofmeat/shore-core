@@ -302,11 +302,11 @@ async fn read_json_line_bounded<R>(reader: &mut BufReader<R>) -> Result<String>
 where
     R: tokio::io::AsyncRead + Unpin,
 {
-    let mut line = String::new();
+    let mut bytes: Vec<u8> = Vec::new();
     loop {
         let buf = reader.fill_buf().await.map_err(ClientError::Io)?;
         if buf.is_empty() {
-            if line.is_empty() {
+            if bytes.is_empty() {
                 debug!("EOF on connection — disconnected");
                 return Err(ClientError::Disconnected);
             }
@@ -318,23 +318,21 @@ where
             None => (buf.len(), false),
         };
 
-        if line.len() + consume > MAX_WIRE_MESSAGE_SIZE {
+        if bytes.len() + consume > MAX_WIRE_MESSAGE_SIZE {
             return Err(ClientError::Protocol(format!(
                 "server message exceeds maximum size of {MAX_WIRE_MESSAGE_SIZE} bytes"
             )));
         }
 
-        let chunk = std::str::from_utf8(&buf[..consume]).map_err(|e| {
-            ClientError::Protocol(format!("server sent invalid UTF-8 framing: {e}"))
-        })?;
-        line.push_str(chunk);
+        bytes.extend_from_slice(&buf[..consume]);
         reader.consume(consume);
         if done {
             break;
         }
     }
 
-    Ok(line)
+    String::from_utf8(bytes)
+        .map_err(|e| ClientError::Protocol(format!("server sent invalid UTF-8 framing: {e}")))
 }
 
 /// Generate a unique request ID using timestamp + atomic counter.

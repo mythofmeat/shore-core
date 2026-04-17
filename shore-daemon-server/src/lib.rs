@@ -755,11 +755,11 @@ async fn read_message<R>(
 where
     R: tokio::io::AsyncRead + Unpin,
 {
-    let mut line = String::new();
+    let mut bytes: Vec<u8> = Vec::new();
     loop {
         let buf = reader.fill_buf().await?;
         if buf.is_empty() {
-            if line.is_empty() {
+            if bytes.is_empty() {
                 return Ok(None); // EOF
             }
             break; // EOF mid-line — try to parse what we have
@@ -770,15 +770,16 @@ where
             None => (buf.len(), false),
         };
         // Check size limit BEFORE allocating.
-        if line.len() + consume > MAX_WIRE_MESSAGE_SIZE {
+        if bytes.len() + consume > MAX_WIRE_MESSAGE_SIZE {
             return Err("Message exceeds maximum size".into());
         }
-        line.push_str(std::str::from_utf8(&buf[..consume]).map_err(|e| e.to_string())?);
+        bytes.extend_from_slice(&buf[..consume]);
         reader.consume(consume);
         if done {
             break;
         }
     }
+    let line = std::str::from_utf8(&bytes).map_err(|e| e.to_string())?;
     let msg: ClientMessage = serde_json::from_str(line.trim())?;
     Ok(Some(msg))
 }
