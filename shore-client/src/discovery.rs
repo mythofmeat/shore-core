@@ -4,7 +4,7 @@ use serde::Deserialize;
 use tracing::{debug, warn};
 
 use crate::connection::ServerAddr;
-use crate::error::{ClientError, Result};
+use crate::error::{ClientError, DiscoveryKind, Result};
 
 /// One entry in `$XDG_RUNTIME_DIR/shore/instances.json`.
 #[derive(Deserialize, Debug, Clone)]
@@ -45,25 +45,25 @@ fn read_instances_from_path(path: &Path) -> Result<Vec<InstanceEntry>> {
     debug!(path = %path.display(), "reading instances file");
     let data = std::fs::read_to_string(path).map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
-            ClientError::Discovery(format!(
-                "instances registry not found at {}",
-                path.display()
-            ))
+            ClientError::Discovery {
+                kind: DiscoveryKind::RegistryMissing,
+                message: format!("instances registry not found at {}", path.display()),
+            }
         } else {
-            ClientError::Discovery(format!(
-                "cannot read instances registry {}: {e}",
-                path.display()
-            ))
+            ClientError::Discovery {
+                kind: DiscoveryKind::Io,
+                message: format!("cannot read instances registry {}: {e}", path.display()),
+            }
         }
     })?;
     if data.trim().is_empty() {
         return Ok(Vec::new());
     }
     let entries: InstancesFile = serde_json::from_str(&data).map_err(|e| {
-        ClientError::Discovery(format!(
-            "corrupt instances registry {}: {e}",
-            path.display()
-        ))
+        ClientError::Discovery {
+            kind: DiscoveryKind::RegistryCorrupt,
+            message: format!("corrupt instances registry {}: {e}", path.display()),
+        }
     })?;
     let total = entries.len();
     let live: Vec<_> = entries.into_iter().filter(entry_alive).collect();
@@ -120,19 +120,29 @@ fn discover_from_path(path: &Path, selector: Option<&str>) -> Result<ServerAddr>
     let entries = read_instances_from_path(path)?;
 
     let entry = match selector {
-        Some(wanted) => entries
-            .iter()
-            .find(|e| {
-                e.id.as_deref() == Some(wanted) || e.config_dir.as_deref() == Some(wanted)
-            })
-            .ok_or_else(|| {
-                ClientError::Discovery(format!(
-                    "no daemon found matching id or config_dir: {wanted}"
-                ))
-            })?,
-        None => entries
-            .first()
-            .ok_or_else(|| ClientError::Discovery("instances file is empty".into()))?,
+        Some(wanted) => {
+            if entries.is_empty() {
+                return Err(ClientError::Discovery {
+                    kind: DiscoveryKind::RegistryEmpty,
+                    message: format!(
+                        "instances registry has no live entries (looking for {wanted})"
+                    ),
+                });
+            }
+            entries
+                .iter()
+                .find(|e| {
+                    e.id.as_deref() == Some(wanted) || e.config_dir.as_deref() == Some(wanted)
+                })
+                .ok_or_else(|| ClientError::Discovery {
+                    kind: DiscoveryKind::NoMatch,
+                    message: format!("no daemon found matching id or config_dir: {wanted}"),
+                })?
+        }
+        None => entries.first().ok_or_else(|| ClientError::Discovery {
+            kind: DiscoveryKind::RegistryEmpty,
+            message: "instances registry has no live entries".into(),
+        })?,
     };
 
     Ok(ServerAddr(entry.addr.clone()))
@@ -200,9 +210,8 @@ fn discover_or_default_from_path(
 fn should_fallback_to_default(err: &ClientError) -> bool {
     matches!(
         err,
-        ClientError::Discovery(message)
-            if message.starts_with("instances registry not found at ")
-                || message == "instances registry is empty"
+        ClientError::Discovery { kind, .. }
+            if matches!(kind, DiscoveryKind::RegistryMissing | DiscoveryKind::RegistryEmpty)
     )
 }
 

@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use shore_client::{discover, ClientError, SWPConnection, ServerAddr};
+use shore_client::{discover, ClientError, DiscoveryKind, SWPConnection, ServerAddr};
 
 use crate::cli::Cli;
 
@@ -133,7 +133,7 @@ pub async fn attach(
                 SWPConnection::connect(&addr, "mcp", "shore-mcp", None).await?;
             Ok(conn)
         }
-        Err(ClientError::Discovery(msg)) if is_spawnable_discovery_miss(&msg) => {
+        Err(ClientError::Discovery { kind, .. }) if is_spawnable_discovery_miss(kind) => {
             // No live test daemon — spawn one.
             spawn_and_attach_test_daemon().await
         }
@@ -141,14 +141,17 @@ pub async fn attach(
     }
 }
 
-/// Whether a `ClientError::Discovery` message represents a benign "no daemon
-/// registered yet" state that justifies spawning, as opposed to a corrupt or
-/// unreadable registry which should bubble up. Mirrors the message prefixes
-/// produced in `shore-client/src/discovery.rs`.
-fn is_spawnable_discovery_miss(msg: &str) -> bool {
-    msg.starts_with("instances registry not found at ")
-        || msg.starts_with("no daemon found for id: ")
-        || msg == "instances file is empty"
+/// Whether a discovery miss is benign enough to justify spawning our own
+/// test daemon. Registry corruption or I/O errors bubble up instead — those
+/// mean something is wrong with the user's environment, not that a daemon
+/// is merely missing.
+fn is_spawnable_discovery_miss(kind: DiscoveryKind) -> bool {
+    matches!(
+        kind,
+        DiscoveryKind::RegistryMissing
+            | DiscoveryKind::RegistryEmpty
+            | DiscoveryKind::NoMatch,
+    )
 }
 
 async fn spawn_and_attach_test_daemon() -> anyhow::Result<SWPConnection> {

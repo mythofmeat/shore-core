@@ -12,7 +12,7 @@ pub use client_config::{load_client_config, ClientConfig};
 pub use conn_manager::{spawn_connection, ConnCommand, ConnEvent};
 pub use connection::{SWPConnection, ServerAddr};
 pub use discovery::{discover, discover_config_dir, discover_data_dir, discover_or_default};
-pub use error::{ClientError, Result};
+pub use error::{ClientError, DiscoveryKind, Result};
 pub use image_protocol::{detect_protocol, ImageProtocol};
 pub use stream::{collect_stream, StreamCallbacks, StreamHandler, StreamedResponse};
 pub use sync::{SyncDecision, SyncState};

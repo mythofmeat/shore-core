@@ -757,3 +757,17 @@ The daemon now auto-spawns and supervises `shore-matrix` as a child process when
 **Verification:** compile + 1,208 workspace unit tests + 2 new supervisor unit tests + a 5-scenario isolated integration harness covering (a) no-matrix-config short-circuit, (b) shore-matrix binary missing, (c) tuwunel missing with supervision loop → give-up, (d) full happy path end-to-end with tuwunel spawn + admin + character + room creation + bridge loop, and (e) warm restart on populated state. All tests ran in tempdir profiles with `SHORE_CONFIG_DIR` / `SHORE_DATA_DIR` / `SHORE_RUNTIME_DIR` overrides and non-default ports (7399 daemon, 6168 homeserver), leaving the user's real daemon untouched. Clean shutdown verified: no zombie `shore-matrix` or `tuwunel` processes after `SIGTERM`.
 
 **Deferred:** no lockfile coordinating standalone-CLI vs daemon-supervised shore-matrix. Port collision on 6167 is the natural guard and surfaces cleanly; adding file-lock machinery is overkill for a single-machine user-level daemon.
+
+### 2026-04-18 — `ClientError::Discovery` carries a typed `DiscoveryKind`
+
+`ClientError::Discovery` is now a struct variant `{ kind: DiscoveryKind, message: String }` instead of a bare string. Callers that need to branch on the failure reason (shore-mcp's spawn-on-miss path, `discover_or_default`'s fallback gate) match on `kind` rather than string-prefix the human message.
+
+**Why:** shore-mcp's auto-spawn regressed silently *twice* because the message produced in `shore-client/src/discovery.rs` drifted out of sync with the prefix list in `is_spawnable_discovery_miss` in `shore-mcp/src/profile.rs` — and the same pattern in `should_fallback_to_default` had its own stale prefix (`"instances registry is empty"` vs. the actual `"instances file is empty"`). The message strings had no compile-time link to the match arms, so the only way to notice breakage was to actually run shore-mcp against an empty registry and watch it refuse to spawn. A typed discriminant moves those checks into the type system.
+
+**Kinds:** `RegistryMissing`, `RegistryEmpty` (file `[]`, empty string, or all PIDs pruned as dead), `NoMatch` (selector didn't hit any live entry), `RegistryCorrupt`, `Io`.
+
+**shore-mcp spawn policy:** `RegistryMissing | RegistryEmpty | NoMatch` all trigger auto-spawn. `NoMatch` is now spawnable where it previously wasn't — that was the actual user-visible bug: an empty registry with a selector (`MCP_INSTANCE_ID`) produces `NoMatch`, not `RegistryEmpty`, and the old string match only covered the `None`-selector empty case. Corruption/IO bubble up as before — those mean the user's environment is broken, not merely that no daemon is registered.
+
+**Fallout:** one breaking change to `shore-client`'s public API (the `Discovery` variant shape). `DiscoveryKind` is re-exported from `shore-client` for downstream matchers.
+
+**Verification:** 39 shore-client unit tests + 18 shore-mcp unit/integration tests pass; live `cargo mcp-itest` against a real daemon passes; manual run of `target/debug/shore-mcp` with an empty `instances.json` now spawns the dev-repo daemon and registers it (previously exited with `discovery error: no daemon found matching id or config_dir: shore-mcp-test`).
