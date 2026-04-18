@@ -11,11 +11,6 @@ env:
   # they can be cached between runs.
   CARGO_TARGET_DIR_HOST: /home/builder/cargo-target
   CARGO_HOME_HOST: /home/builder/.cargo
-  # Cache keys hoisted here so the post-job save steps match the restore
-  # keys byte-for-byte without being re-evaluated in a different context.
-  PACMAN_KEY: pacman-${{ hashFiles('.github/workflows/package.yml') }}
-  CARGO_REGISTRY_KEY: cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-  CARGO_TARGET_KEY: cargo-target-${{ hashFiles('**/Cargo.lock') }}-${{ github.sha }}
 
 jobs:
   package:
@@ -24,6 +19,12 @@ jobs:
       image: archlinux:latest
     permissions:
       contents: write  # for the silvershore release (notes only; no assets)
+    env:
+      # Cache keys hoisted so the restore and save steps match byte-for-byte.
+      # hashFiles() isn't usable at workflow-level env, so this lives here.
+      PACMAN_KEY: pacman-${{ hashFiles('.github/workflows/package.yml') }}
+      CARGO_REGISTRY_KEY: cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+      CARGO_TARGET_KEY: cargo-target-${{ hashFiles('**/Cargo.lock') }}-${{ github.sha }}
     steps:
       - name: Restore pacman package cache
         uses: actions/cache/restore@v4
