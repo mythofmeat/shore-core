@@ -4,13 +4,17 @@ on:
   push:
     tags: ['v*']
 
+env:
+  REPO_NAME: repo-arch
+  REPO_OWNER: mythofmeat
+
 jobs:
   package:
     runs-on: ubuntu-latest
     container:
       image: archlinux:latest
     permissions:
-      contents: write
+      contents: write  # for the silvershore release (notes only; no assets)
     steps:
       - name: Install system dependencies
         run: |
@@ -47,29 +51,50 @@ jobs:
         working-directory: contrib
         run: sudo -u builder makepkg -sf --noconfirm
 
-      - name: Build pacman repo database
+      - name: Fetch existing repo database
+        working-directory: contrib
+        env:
+          GH_TOKEN: ${{ secrets.REPO_ARCH_TOKEN }}
+        run: |
+          # Pull the current db tarball if any project has published into
+          # repo-arch before. Missing asset is fine — we start fresh.
+          gh release download latest \
+            -R "${REPO_OWNER}/${REPO_NAME}" \
+            -p "${REPO_NAME}.db.tar.zst" \
+            -p "${REPO_NAME}.files.tar.zst" \
+            2>/dev/null || echo "No existing db; starting fresh."
+
+      - name: Merge into repo database
         working-directory: contrib
         run: |
-          sudo -u builder repo-add silvershore.db.tar.zst *.pkg.tar.zst
+          sudo -u builder repo-add "${REPO_NAME}.db.tar.zst" *.pkg.tar.zst
           # repo-add leaves .db and .files as symlinks; dereference so
           # GitHub Release stores real files, not broken symlinks.
-          for link in silvershore.db silvershore.files; do
+          for link in "${REPO_NAME}.db" "${REPO_NAME}.files"; do
             cp -L "$link" "${link}.real"
             rm "$link"
             mv "${link}.real" "$link"
           done
 
+      - name: Publish packages to repo-arch
+        working-directory: contrib
+        env:
+          GH_TOKEN: ${{ secrets.REPO_ARCH_TOKEN }}
+        run: |
+          gh release upload latest \
+            -R "${REPO_OWNER}/${REPO_NAME}" \
+            --clobber \
+            *.pkg.tar.zst \
+            "${REPO_NAME}.db" "${REPO_NAME}.db.tar.zst" \
+            "${REPO_NAME}.files" "${REPO_NAME}.files.tar.zst"
+
       - name: Generate release notes
         run: git-cliff --latest -o RELEASE_NOTES.md
 
-      - name: Publish GitHub Release
-        working-directory: contrib
+      - name: Create silvershore tag release (notes only)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release create "${{ github.ref_name }}" \
             --title "${{ github.ref_name }}" \
-            --notes-file ../RELEASE_NOTES.md \
-            *.pkg.tar.zst \
-            silvershore.db silvershore.db.tar.zst \
-            silvershore.files silvershore.files.tar.zst
+            --notes-file RELEASE_NOTES.md
