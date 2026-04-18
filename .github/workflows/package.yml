@@ -74,8 +74,10 @@ jobs:
           sed -i "s|^pkgver=.*|pkgver=${VER}|" PKGBUILD
           # Build from the checkout instead of cloning the (private) remote
           sed -i "s|^source=.*|source=(\"\${pkgbase}::git+file://${GITHUB_WORKSPACE}#tag=${TAG}\")|" PKGBUILD
-          # Point cargo's target dir at a cacheable location outside makepkg's src/
-          sed -i "s|export CARGO_TARGET_DIR=target|export CARGO_TARGET_DIR=${CARGO_TARGET_DIR_HOST}|" PKGBUILD
+          # Symlink makepkg's default 'target' dir to a persistent cacheable
+          # location. Keeps package_*() functions' 'target/release/...' paths
+          # intact while the actual artifacts live outside src/.
+          sed -i "s|export CARGO_TARGET_DIR=target|ln -sfn ${CARGO_TARGET_DIR_HOST} target|" PKGBUILD
           chown -R builder:builder "$GITHUB_WORKSPACE"
           # Make sure cache dirs exist and are owned by builder (actions/cache
           # creates any missing parent dirs as root).
