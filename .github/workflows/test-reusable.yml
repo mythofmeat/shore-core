@@ -4,7 +4,7 @@ on:
     branches: [main]
 jobs:
   call:
-    uses: mythofmeat/repo-arch/.github/workflows/hello.yml@main
+    uses: mythofmeat/repo-arch/.github/workflows/publish-arch-rust.yml@main
     with:
       pkgbuild_dir: contrib
       extra_pacman_packages: "alsa-lib protobuf"
