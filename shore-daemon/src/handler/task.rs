@@ -9,7 +9,7 @@ use tracing::{debug, info, instrument};
 
 use crate::autonomy::parse_cache_ttl_secs;
 use crate::engine::prompt::{self, CapabilitiesConfig, PromptParams};
-use crate::handler::generation::{run_tool_phase, stream_with_retry};
+use crate::handler::generation::{run_tool_phase, stream_with_retry, thinking_enabled_from_request};
 use crate::handler::images::{embed_image_data, ingest_images};
 use crate::handler::persistence::persist_and_notify;
 use crate::handler::resize::warm_image_cache;
@@ -282,12 +282,7 @@ pub(super) async fn handle_generation(
         "Sending streaming request to LLM"
     );
 
-    let thinking_enabled = request
-        .provider_options
-        .as_ref()
-        .and_then(|opts| opts.get("budget_tokens"))
-        .and_then(|v| v.as_u64())
-        .is_some_and(|b| b > 0);
+    let thinking_enabled = thinking_enabled_from_request(&request);
 
     let mut result = stream_with_retry(
         &ctx,

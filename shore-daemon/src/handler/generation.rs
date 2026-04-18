@@ -2,6 +2,84 @@
 
 use tracing::{debug, error, instrument, warn};
 
+/// True when the request has extended thinking / reasoning enabled via
+/// either provider knob: Anthropic-style `budget_tokens > 0`, or
+/// OpenAI/Anthropic-style `reasoning_effort` set to any non-null value.
+/// Used by both the primary stream call and the tool-loop re-entry to
+/// tag ledger rows and SSE metadata consistently.
+pub(super) fn thinking_enabled_from_request(
+    request: &shore_llm_client::types::LlmRequest,
+) -> bool {
+    thinking_enabled_from_provider_options(request.provider_options.as_ref())
+}
+
+fn thinking_enabled_from_provider_options(opts: Option<&serde_json::Value>) -> bool {
+    let Some(opts) = opts else {
+        return false;
+    };
+    let budget_on = opts
+        .get("budget_tokens")
+        .and_then(|v| v.as_u64())
+        .is_some_and(|b| b > 0);
+    let effort_on = opts
+        .get("reasoning_effort")
+        .is_some_and(|v| !v.is_null());
+    budget_on || effort_on
+}
+
+#[cfg(test)]
+mod tests {
+    use super::thinking_enabled_from_provider_options;
+    use serde_json::json;
+
+    #[test]
+    fn thinking_enabled_none_provider_options() {
+        assert!(!thinking_enabled_from_provider_options(None));
+    }
+
+    #[test]
+    fn thinking_enabled_empty_object() {
+        let v = json!({});
+        assert!(!thinking_enabled_from_provider_options(Some(&v)));
+    }
+
+    #[test]
+    fn thinking_enabled_budget_zero() {
+        let v = json!({ "budget_tokens": 0 });
+        assert!(!thinking_enabled_from_provider_options(Some(&v)));
+    }
+
+    #[test]
+    fn thinking_enabled_budget_positive() {
+        let v = json!({ "budget_tokens": 4096 });
+        assert!(thinking_enabled_from_provider_options(Some(&v)));
+    }
+
+    #[test]
+    fn thinking_enabled_reasoning_effort_string() {
+        let v = json!({ "reasoning_effort": "high" });
+        assert!(thinking_enabled_from_provider_options(Some(&v)));
+    }
+
+    #[test]
+    fn thinking_enabled_reasoning_effort_null_ignored() {
+        let v = json!({ "reasoning_effort": null });
+        assert!(!thinking_enabled_from_provider_options(Some(&v)));
+    }
+
+    #[test]
+    fn thinking_enabled_both_knobs_set() {
+        let v = json!({ "budget_tokens": 2048, "reasoning_effort": "medium" });
+        assert!(thinking_enabled_from_provider_options(Some(&v)));
+    }
+
+    #[test]
+    fn thinking_enabled_unrelated_keys_only() {
+        let v = json!({ "cache_ttl": "1h", "vertex_project": "x" });
+        assert!(!thinking_enabled_from_provider_options(Some(&v)));
+    }
+}
+
 use crate::engine::tools;
 use crate::memory::agent::{AgentSearchContext, CallerIdentity, MemoryAgent};
 use crate::memory::agent_llm::RealAgentLlm;
@@ -220,12 +298,7 @@ pub(super) async fn run_tool_phase(
         autonomy_val: ctx.autonomy.clone(),
     };
 
-    let thinking_enabled = request
-        .provider_options
-        .as_ref()
-        .and_then(|opts| opts.get("budget_tokens"))
-        .and_then(|v| v.as_u64())
-        .is_some_and(|b| b > 0);
+    let thinking_enabled = thinking_enabled_from_request(request);
 
     let tool_loop_result = tools::run_tool_loop(
         &ctx.llm_client,
