@@ -127,7 +127,7 @@ the gate described above.
 | `character_switch`      | Switch the active character                   |
 | `model_switch`          | Switch the active model                       |
 | `model_reset`           | Reset model to default                        |
-| `memory_compact`        | Run memory compaction                         |
+| `memory_compact`        | Run memory compaction (optional `keep_turns`) |
 | `memory_collate`        | Run memory collation                          |
 | `memory_purge`          | Purge memory entries                          |
 | `memory_reindex`        | Reindex the vector store                      |

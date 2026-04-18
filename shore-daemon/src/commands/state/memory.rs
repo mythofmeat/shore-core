@@ -425,6 +425,11 @@ pub async fn compact(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
+    let keep_turns_override = args
+        .get("keep_turns")
+        .and_then(|v| v.as_u64())
+        .map(|n| n as usize);
+
     let char_name = engine.character_name().to_string();
 
     let messages: Vec<ConversationMessage> = engine
@@ -498,6 +503,7 @@ pub async fn compact(
             &indexer,
             &conv_mgr,
             dry_run,
+            keep_turns_override,
         )
         .await
         .map_err(compaction_err)?;

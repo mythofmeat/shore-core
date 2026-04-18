@@ -581,12 +581,24 @@ fn parse_command(app: &mut App, input: &str) -> Action {
             }
         }
 
-        "compact" => Action::Send(ConnCommand::Send(ClientMessage::Command(Command {
-            rid: None,
+        "compact" => {
+            let mut args = serde_json::json!({});
+            if !arg.is_empty() {
+                match arg.parse::<u32>() {
+                    Ok(n) => args["keep_turns"] = serde_json::json!(n),
+                    Err(_) => {
+                        app.set_status("usage: :compact [keep_turns]");
+                        return Action::Redraw;
+                    }
+                }
+            }
+            Action::Send(ConnCommand::Send(ClientMessage::Command(Command {
+                rid: None,
 
-            name: "compact".into(),
-            args: serde_json::json!({}),
-        }))),
+                name: "compact".into(),
+                args,
+            })))
+        }
 
         "delete" => {
             if arg.is_empty() {

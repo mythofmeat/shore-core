@@ -797,3 +797,33 @@ On `Unknown` (network blip, 5xx), **no state is destroyed** — the error bubble
 **Related fix:** Dropped `database_backend = "rocksdb"` from the generated homeserver config — tuwunel rejects it as an unknown parameter (conduwuit/continuwuity defaulted to rocksdb anyway). Removes a noisy startup warning.
 
 **Verification:** 23 shore-matrix unit + integration tests pass (updated two TOML-contents assertions). Live auto-heal verification against the user's current broken profile is pending — the running `/usr/bin/shore-matrix` is a pre-fix system install; verification requires either a release cut via `/deploy` or stopping the systemd unit and running the dev binary directly against the same data dir.
+
+### 2026-04-18 — `memory compact` accepts an optional `keep_turns` override
+
+`shore memory compact`, the TUI `:compact` slash command, and the
+`memory_compact` MCP tool all gained an optional positional argument that
+overrides `CompactionConfig.keep_recent_turns` for a single call. The override
+flows through the SWP `compact` command as `keep_turns: u32`.
+
+- `shore memory compact`     → use the configured default (unchanged behavior)
+- `shore memory compact 8`   → retain the last 8 user turns
+- `shore memory compact 0`   → run the full pipeline (LLM recap, DB entry
+  persistence, vector indexing, archive of old segment) but leave
+  `active.jsonl` empty afterwards. The recap becomes the only carry-forward
+  context for the next turn.
+
+**Why a positional, not a `--reset` flag:** It's the same code path with a
+different value — `keep_turns_override: Option<usize>` flowing into
+`CompactionManager::compact`. A `--reset` flag would have been a synonym for
+`compact 0`, adding surface area for no functional gain.
+
+**Why `keep_turns = 0` doesn't skip the compaction LLM call:** The motivating
+use case is editing the system prompt or character config without paying for
+a long post-compaction prompt write. Persisting the recap and memory entries
+is precisely what makes that cheap — skipping them would lose the
+conversational continuity that the user is paying the LLM call for.
+
+**Sacrificed:** The CLI now needs an additional `clap` enum variant field, and
+existing in-tree call sites of `CompactionManager::compact` had to add `None`
+for the new parameter. ~13 callsite touches in the test suite, no functional
+change to the auto-compaction (background-trigger) path.

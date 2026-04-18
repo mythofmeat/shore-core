@@ -335,8 +335,12 @@ pub enum LogCommand {
 
 #[derive(Subcommand, Debug)]
 pub enum MemoryCommand {
-    /// Compact conversation into memory entries, then run collation
-    Compact,
+    /// Compact conversation into memory entries, then run collation.
+    /// Optional positional: number of recent user turns to retain
+    /// (0 = retain none — leaves only the system prompt + recap).
+    Compact {
+        keep_turns: Option<u32>,
+    },
 
     /// Show recent memory changelog entries
     Changelog {
@@ -501,9 +505,15 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
 
         // Memory: subcommands (compact/changelog/reindex) or status/query.
         CliCommand::Memory {
-            subcommand: Some(MemoryCommand::Compact),
+            subcommand: Some(MemoryCommand::Compact { keep_turns }),
             ..
-        } => Some(("compact", json!({ "collate": true }))),
+        } => {
+            let mut args = json!({ "collate": true });
+            if let Some(n) = keep_turns {
+                args["keep_turns"] = json!(n);
+            }
+            Some(("compact", args))
+        }
         CliCommand::Memory {
             subcommand: Some(MemoryCommand::Collate { full, limit }),
             ..
@@ -1004,10 +1014,38 @@ mod tests {
         let cli = parse(&["memory", "compact"]);
         match &cli.command {
             CliCommand::Memory {
-                subcommand: Some(MemoryCommand::Compact),
+                subcommand: Some(MemoryCommand::Compact { keep_turns: None }),
                 ..
             } => {}
             other => panic!("expected Memory Compact, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_memory_compact_with_keep_turns_zero() {
+        let cli = parse(&["memory", "compact", "0"]);
+        match &cli.command {
+            CliCommand::Memory {
+                subcommand: Some(MemoryCommand::Compact {
+                    keep_turns: Some(0),
+                }),
+                ..
+            } => {}
+            other => panic!("expected Memory Compact keep_turns=0, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_memory_compact_with_keep_turns_n() {
+        let cli = parse(&["memory", "compact", "8"]);
+        match &cli.command {
+            CliCommand::Memory {
+                subcommand: Some(MemoryCommand::Compact {
+                    keep_turns: Some(8),
+                }),
+                ..
+            } => {}
+            other => panic!("expected Memory Compact keep_turns=8, got: {other:?}"),
         }
     }
 
@@ -1345,7 +1383,7 @@ mod tests {
     #[test]
     fn memory_compact_maps_to_compact_command() {
         let cmd = CliCommand::Memory {
-            subcommand: Some(MemoryCommand::Compact),
+            subcommand: Some(MemoryCommand::Compact { keep_turns: None }),
             query: None,
             direct: false,
             json: false,
@@ -1353,6 +1391,23 @@ mod tests {
         let (name, args) = to_swp_command(&cmd).unwrap();
         assert_eq!(name, "compact");
         assert_eq!(args["collate"], true);
+        assert!(args.get("keep_turns").is_none());
+    }
+
+    #[test]
+    fn memory_compact_with_keep_turns_includes_field() {
+        let cmd = CliCommand::Memory {
+            subcommand: Some(MemoryCommand::Compact {
+                keep_turns: Some(0),
+            }),
+            query: None,
+            direct: false,
+            json: false,
+        };
+        let (name, args) = to_swp_command(&cmd).unwrap();
+        assert_eq!(name, "compact");
+        assert_eq!(args["collate"], true);
+        assert_eq!(args["keep_turns"], 0);
     }
 
     #[test]
@@ -1487,7 +1542,7 @@ mod tests {
                 json: false,
             },
             CliCommand::Memory {
-                subcommand: Some(MemoryCommand::Compact),
+                subcommand: Some(MemoryCommand::Compact { keep_turns: None }),
                 query: None,
                 direct: false,
                 json: false,

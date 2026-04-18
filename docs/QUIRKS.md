@@ -68,4 +68,13 @@ Scope guardrails:
 
 ## Build Toolchain
 
+- **`find_turn_split` needs an explicit `keep_turns == 0` guard.** The natural
+  reading of the loop ("walk right-to-left, return when `turns_seen >= keep_turns`")
+  silently misbehaves at zero: `turns_seen` is incremented *before* the
+  comparison, so the first user message encountered satisfies `1 >= 0` and
+  gets treated as retained. Without the explicit `if keep_turns == 0 { return
+  messages.len(); }` guard at the top of the function, `compact 0` would
+  retain one user turn instead of zero. See
+  `shore-daemon/src/memory/compaction/mod.rs::find_turn_split`.
+
 - **`matrix-sdk` 0.16.0 does not compile on rustc 1.94+ without a `recursion_limit` bump.** The default 128 is exceeded computing the layout of `matrix_sdk::Client::sync()`'s async fn body — query depth increases by 130 during that computation. Upstream 0.16.0 and `main` both ship *without* `#![recursion_limit]` on the `matrix-sdk` crate root; the fix is a one-line attribute bump that upstream hasn't merged (see matrix-org/matrix-rust-sdk#6254, draft PR #6449). We carry a pinned git fork via `[patch.crates-io]` at `http://localhost:3000/eshen/matrix-rust-sdk.git` rev `8285d1ca5da1f18227ba4eddaeef9bf579a55de6`. **Caveat: `cargo update -p matrix-sdk` silently breaks the build by re-resolving to published 0.16.0** — do not run it. The patch must stay pinned until upstream ships a fix. Drop the patch and the pin together; don't half-revert.

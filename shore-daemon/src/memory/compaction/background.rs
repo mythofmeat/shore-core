@@ -125,6 +125,7 @@ pub async fn run_compaction(
             &indexer,
             &conv_mgr,
             false,
+            None,
         )
         .await?;
 

@@ -47,7 +47,12 @@ impl CompactionManager {
     /// Find the split index that retains `keep_turns` complete user turns
     /// at the tail.  Returns the index of the first retained message.
     /// Returns 0 if there aren't enough messages to compact anything.
+    /// When `keep_turns == 0`, returns `messages.len()` so the caller
+    /// retains nothing and compacts everything (see QUIRKS.md).
     fn find_turn_split(messages: &[ConversationMessage], keep_turns: usize) -> usize {
+        if keep_turns == 0 {
+            return messages.len();
+        }
         let mut turns_seen = 0usize;
         for i in (0..messages.len()).rev() {
             if messages[i].role == "user" && !Self::is_tool_loop_message(&messages[i]) {
@@ -169,6 +174,7 @@ impl CompactionManager {
         indexer: &dyn VectorIndexer,
         conversation_mgr: &dyn ConversationManager,
         dry_run: bool,
+        keep_turns_override: Option<usize>,
     ) -> Result<CompactionOutcome, CompactionError> {
         let compaction_started = std::time::Instant::now();
         info!(
@@ -190,7 +196,8 @@ impl CompactionManager {
         }
 
         // Split messages: compact the older portion, retain the recent tail.
-        let split_at = Self::find_turn_split(messages, self.config.keep_recent_turns);
+        let keep_turns = keep_turns_override.unwrap_or(self.config.keep_recent_turns);
+        let split_at = Self::find_turn_split(messages, keep_turns);
         if split_at == 0 {
             return Err(CompactionError::InsufficientMessages);
         }
@@ -219,7 +226,7 @@ impl CompactionManager {
             "LLM compaction response parsed"
         );
 
-        let retained_turns = self.config.keep_recent_turns;
+        let retained_turns = keep_turns;
 
         // Dry run: return preview without side effects.
         if dry_run {
@@ -867,6 +874,74 @@ They discussed daily activities and the user's beverage preferences.
     }
 
     #[test]
+    fn test_find_turn_split_keep_zero_returns_full_length() {
+        // All-user, mixed, and tool-loop-interleaved shapes should all
+        // return messages.len() so the caller retains nothing.
+        let all_user = vec![
+            ConversationMessage {
+                role: "user".to_string(),
+                content: "a".to_string(),
+                timestamp: "t0".to_string(),
+                is_tool_result_only: false,
+            },
+            ConversationMessage {
+                role: "user".to_string(),
+                content: "b".to_string(),
+                timestamp: "t1".to_string(),
+                is_tool_result_only: false,
+            },
+        ];
+        assert_eq!(CompactionManager::find_turn_split(&all_user, 0), 2);
+
+        let mixed = vec![
+            ConversationMessage {
+                role: "user".to_string(),
+                content: "hi".to_string(),
+                timestamp: "t0".to_string(),
+                is_tool_result_only: false,
+            },
+            ConversationMessage {
+                role: "assistant".to_string(),
+                content: "hey".to_string(),
+                timestamp: "t1".to_string(),
+                is_tool_result_only: false,
+            },
+        ];
+        assert_eq!(CompactionManager::find_turn_split(&mixed, 0), 2);
+
+        let with_tool_loop = vec![
+            ConversationMessage {
+                role: "user".to_string(),
+                content: "do a thing".to_string(),
+                timestamp: "t0".to_string(),
+                is_tool_result_only: false,
+            },
+            ConversationMessage {
+                role: "assistant".to_string(),
+                content: "".to_string(),
+                timestamp: "t1".to_string(),
+                is_tool_result_only: false,
+            },
+            ConversationMessage {
+                role: "user".to_string(),
+                content: "tool output".to_string(),
+                timestamp: "t2".to_string(),
+                is_tool_result_only: true,
+            },
+            ConversationMessage {
+                role: "assistant".to_string(),
+                content: "done".to_string(),
+                timestamp: "t3".to_string(),
+                is_tool_result_only: false,
+            },
+        ];
+        assert_eq!(CompactionManager::find_turn_split(&with_tool_loop, 0), 4);
+
+        let empty: Vec<ConversationMessage> = vec![];
+        assert_eq!(CompactionManager::find_turn_split(&empty, 0), 0);
+    }
+
+    #[test]
     fn test_find_turn_split_all_tool_results_returns_zero() {
         let messages = vec![
             ConversationMessage {
@@ -914,6 +989,7 @@ They discussed daily activities and the user's beverage preferences.
                 &indexer,
                 &conv_mgr,
                 false,
+                None,
             )
             .await
             .unwrap();
@@ -963,6 +1039,7 @@ They discussed daily activities and the user's beverage preferences.
             &indexer,
             &conv_mgr,
             false,
+            None,
         )
         .await
         .unwrap();
@@ -997,6 +1074,7 @@ They discussed daily activities and the user's beverage preferences.
             &indexer,
             &conv_mgr,
             false,
+            None,
         )
         .await
         .unwrap();
@@ -1032,6 +1110,7 @@ They discussed daily activities and the user's beverage preferences.
                 &indexer,
                 &conv_mgr,
                 false,
+                None,
             )
             .await
             .unwrap();
@@ -1047,6 +1126,103 @@ They discussed daily activities and the user's beverage preferences.
         let calls = conv_mgr.archived_calls();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0, "old-conv");
+        assert_eq!(calls[0].1, 6);
+    }
+
+    #[tokio::test]
+    async fn test_compact_with_keep_turns_zero_retains_nothing() {
+        let db = MemoryDB::open_in_memory().unwrap();
+        let llm = MockLlm {
+            response: make_xml_response(),
+        };
+        let indexer = MockIndexer::new();
+        let conv_mgr = MockConversationMgr::new("new-conv-zero");
+        // Config default is non-zero — the override must win.
+        let mgr = CompactionManager::new(make_config_with_keep(2));
+
+        let result = mgr
+            .compact(
+                "conv-1",
+                &make_messages(10),
+                "",
+                false,
+                DEFAULT_COMPACT_PROMPT,
+                None,
+                "TestChar",
+                "TestUser",
+                &llm,
+                &db,
+                &indexer,
+                &conv_mgr,
+                false,
+                Some(0),
+            )
+            .await
+            .unwrap();
+
+        match result {
+            CompactionOutcome::Compacted(r) => {
+                assert_eq!(r.message_count, 10, "all messages should be compacted");
+                assert_eq!(r.retained_count, 0, "nothing should be retained");
+                assert_eq!(r.retained_turns, 0, "retained_turns must reflect override");
+                assert!(r.recap_generated, "recap must still be generated");
+                assert_eq!(r.entries_created.len(), 2);
+            }
+            _ => panic!("Expected Compacted outcome"),
+        }
+
+        let calls = conv_mgr.archived_calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            calls[0].1, 0,
+            "archive_and_retain must be called with keep_last_n=0"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_compact_keep_turns_override_beats_config() {
+        let db = MemoryDB::open_in_memory().unwrap();
+        let llm = MockLlm {
+            response: make_xml_response(),
+        };
+        let indexer = MockIndexer::new();
+        let conv_mgr = MockConversationMgr::new("new-conv-override");
+        // Config default would retain 4 messages; override Some(3) should retain 6.
+        let mgr = CompactionManager::new(make_config_with_keep(2));
+
+        let result = mgr
+            .compact(
+                "conv-1",
+                &make_messages(10),
+                "",
+                false,
+                DEFAULT_COMPACT_PROMPT,
+                None,
+                "TestChar",
+                "TestUser",
+                &llm,
+                &db,
+                &indexer,
+                &conv_mgr,
+                false,
+                Some(3),
+            )
+            .await
+            .unwrap();
+
+        match result {
+            CompactionOutcome::Compacted(r) => {
+                assert_eq!(
+                    r.retained_count, 6,
+                    "override of 3 turns should retain 6 messages, not config's 4"
+                );
+                assert_eq!(r.retained_turns, 3);
+            }
+            _ => panic!("Expected Compacted outcome"),
+        }
+
+        let calls = conv_mgr.archived_calls();
+        assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].1, 6);
     }
 
@@ -1075,6 +1251,7 @@ They discussed daily activities and the user's beverage preferences.
                 &indexer,
                 &conv_mgr,
                 false,
+                None,
             )
             .await
         });
@@ -1139,6 +1316,7 @@ They discussed daily activities and the user's beverage preferences.
                 &indexer,
                 &conv_mgr,
                 false,
+                None,
             )
             .await;
 
@@ -1174,6 +1352,7 @@ They discussed daily activities and the user's beverage preferences.
                 &indexer,
                 &conv_mgr,
                 true,
+                None,
             )
             .await
             .unwrap();
@@ -1219,6 +1398,7 @@ They discussed daily activities and the user's beverage preferences.
                 &indexer,
                 &conv_mgr,
                 false,
+                None,
             )
             .await;
 
@@ -1250,6 +1430,7 @@ They discussed daily activities and the user's beverage preferences.
                 &indexer,
                 &conv_mgr,
                 false,
+                None,
             )
             .await;
 
@@ -1346,6 +1527,7 @@ They discussed daily activities and the user's beverage preferences.
                 &indexer,
                 &conv_mgr,
                 false,
+                None,
             )
             .await;
 
@@ -1398,6 +1580,7 @@ They discussed daily activities and the user's beverage preferences.
                 &indexer,
                 &conv_mgr,
                 false,
+                None,
             )
             .await;
 

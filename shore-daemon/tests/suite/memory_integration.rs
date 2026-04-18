@@ -362,6 +362,7 @@ async fn test_full_memory_system_e2e() {
             &real_indexer,
             &conv_mgr,
             false,
+            None,
         )
         .await
         .unwrap();
@@ -605,6 +606,7 @@ async fn test_compaction_rejects_private_conversation() {
             &indexer,
             &conv_mgr,
             false,
+            None,
         )
         .await;
 

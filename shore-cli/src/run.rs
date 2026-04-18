@@ -1148,7 +1148,7 @@ mod tests {
     #[tokio::test]
     async fn memory_compact_sends_command() {
         let cli = test_cli(CliCommand::Memory {
-            subcommand: Some(crate::cli::MemoryCommand::Compact),
+            subcommand: Some(crate::cli::MemoryCommand::Compact { keep_turns: None }),
             query: None,
             direct: false,
             json: false,

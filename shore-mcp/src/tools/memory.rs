@@ -16,7 +16,12 @@ pub struct MemoryQueryParams {
 }
 
 #[derive(Deserialize, JsonSchema, Debug, Default)]
-pub struct MemoryCompactParams {}
+pub struct MemoryCompactParams {
+    /// Optional override for retained user turns at the tail of active.jsonl.
+    /// 0 = retain none (full pipeline runs, recap becomes the only carry-forward).
+    /// Omitted = use the configured default.
+    pub keep_turns: Option<u32>,
+}
 
 #[derive(Deserialize, JsonSchema, Debug, Default)]
 pub struct MemoryCollateParams {
@@ -65,15 +70,17 @@ impl ShoreMcpHandler {
 
     #[tool(
         name = "memory_compact",
-        description = "Trigger a memory compaction pass. Mutating — refused on main without --allow-main-writes."
+        description = "Trigger a memory compaction pass. Optional keep_turns overrides retained user turns (0 = retain none, leaving only the system prompt + recap). Mutating — refused on main without --allow-main-writes."
     )]
     pub async fn tool_memory_compact(
         &self,
-        Parameters(_p): Parameters<MemoryCompactParams>,
+        Parameters(p): Parameters<MemoryCompactParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let data = self
-            .run_cmd("memory_compact", "compact", json!({ "collate": true }))
-            .await?;
+        let mut args = json!({ "collate": true });
+        if let Some(n) = p.keep_turns {
+            args["keep_turns"] = json!(n);
+        }
+        let data = self.run_cmd("memory_compact", "compact", args).await?;
         Self::json_result(data)
     }
 
