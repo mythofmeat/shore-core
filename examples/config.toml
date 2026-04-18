@@ -89,6 +89,13 @@ model = "claude-sonnet"            # Must match a key in [chat.*.*] below
 #                            # value for Opus 4.7 (cost-curve elbow at ~30K).
 # keep_recent_turns = 2      # User turns to retain verbatim after compaction
 
+# Thinking — controls how extended-thinking blocks from prior turns are
+# handled when building outgoing API requests.
+# [memory.thinking]
+# preserve_prior_turns = false  # default: strip thinking / redacted_thinking
+#                               # blocks from history assistant messages.
+#                               # Set true to restore pre-2026-04-18 behavior.
+
 # Collation — periodically re-synthesises the memory store for quality.
 # [memory.collation]
 # enabled = true

@@ -437,6 +437,23 @@ pub struct MemoryConfig {
 
     #[serde(default)]
     pub collation: CollationConfig,
+
+    #[serde(default)]
+    pub thinking: ThinkingConfig,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ThinkingConfig {
+    /// Preserve extended-thinking blocks from prior turns in outgoing
+    /// requests. Default `false`: thinking / redacted_thinking blocks are
+    /// stripped from history assistant messages, saving the tokens they
+    /// would otherwise consume on every subsequent turn. Set `true` to
+    /// restore pre-2026-04-18 behavior (only useful if a provider/model
+    /// starts depending on prior-turn thinking, which Anthropic's Claude
+    /// 4.x family does not).
+    #[serde(default)]
+    pub preserve_prior_turns: bool,
 }
 // ── [connections] ───────────────────────────────────────────────────────
 

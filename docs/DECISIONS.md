@@ -862,3 +862,49 @@ what the ledger shows.
 **Sacrificed**: `should_compact_now`'s signature is now three-arg — every test
 caller had to be updated to pass `0` when it's testing the turn-based or idle
 path. Tolerable: 7 test callsites, all in one file.
+
+### 2026-04-18 — Strip prior-turn thinking blocks from outgoing history
+
+Signed `thinking` / `redacted_thinking` content blocks from completed prior
+turns are now removed when serialising message history for an outgoing API
+request. The in-progress tool-use loop (messages appended by
+`engine/tools.rs` or `autonomy/manager.rs` mid-turn) is unaffected — those
+go through a different serialisation path, and Anthropic's API requires
+thinking blocks to persist across iterations of the same tool loop.
+
+**Behavior is governed by a new `[memory.thinking] preserve_prior_turns`
+config (default `false` = strip)**. Users who want the pre-2026-04-18
+behavior can set `preserve_prior_turns = true`.
+
+**Why**: Anthropic's Claude 4.x models do not attend to prior-turn
+thinking (confirmed by live testing on 2026-04-17). Re-sending those
+blocks on every subsequent request just consumed input / cache tokens.
+Measured on 2026-04-17: ~$1.12 of pure waste from re-sending ~10.7K
+accumulated thinking tokens across 94 calls. The fix applies at two
+serialisation points: `handler/task.rs` when building the initial request,
+and `handler/persistence.rs` when building the `last_request` snapshot
+the autonomy/interiority subsystem uses. Both strip the same way so the
+cache prefix stays consistent across user-turn and autonomy-tick paths.
+
+**Cache invalidation trade-off**: switching stripping on causes one-time
+cache misses on prefixes that were previously cached with thinking
+blocks. After that single boundary, the new stripped prefix is stable
+and caches hit normally. Live-verified on 2026-04-18 (sonnet-test,
+reasoning_effort=high): after a thinking response, the next turn's
+outgoing request contained zero thinking blocks in history while
+`cache_read` matched the new prefix size cleanly. The stored engine
+messages still carry the thinking blocks — display and storage are
+unchanged; only outbound serialisation strips.
+
+**Why not strip at the `content_block_to_api_json` call level instead**:
+that function is also called by the tool-loop continuation path
+(`engine/tools.rs:115`), where thinking blocks must be preserved for the
+in-progress loop. Filtering inside the conversion would require a
+context parameter threaded through every call site. Operating at the
+JSON-array level (`strip_thinking_from_assistant_history`) cleanly
+separates the history case from the mid-loop case — the mid-loop path
+appends new content directly to `request.messages` and never touches
+the strip helper.
+
+**Sacrificed**: one extra boolean parameter on `persist_and_notify`. No
+ledger/engine-store format changes; no wire protocol changes.

@@ -229,6 +229,23 @@ Compaction condenses old conversation turns into durable memory entries. `idle_t
 
 `max_context_tokens` is a cost-driven trigger complementary to `max_turns`: per-turn content varies wildly (heavy-thinking turns are several times larger than light chat), so turn count is a poor proxy for context cost. Setting this to a non-zero value triggers compaction when the just-completed turn's prompt tokens cross the threshold (still floored by `min_turns` to prevent thrash). A value around **30000** is empirically sensible for Opus 4.7 — the per-call cost curve has an elbow near 30K where median cost roughly doubles. Tune it for your model and conversation shape; recorded call sizes are in the ledger CSV (`shore usage --export-csv`).
 
+### `[memory.thinking]`
+
+```toml
+[memory.thinking]
+preserve_prior_turns = false   # re-send prior-turn extended-thinking
+                               # blocks in every request (pre-2026-04-18
+                               # behavior); default false = strip them
+```
+
+Anthropic's Claude 4.x models emit signed `thinking` blocks when extended
+thinking / `reasoning_effort` is on. Those blocks must be included within
+an in-progress tool-use loop (same turn), but the model does not attend
+to thinking from prior completed turns — re-sending them on every
+subsequent request just burns input/cache tokens. Default `false` strips
+them from history when building the outgoing request; set `true` only if
+a future provider or model you're testing needs the old behavior.
+
 ### `[memory.collation]`
 
 ```toml

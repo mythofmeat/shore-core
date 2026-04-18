@@ -24,6 +24,7 @@ pub(super) async fn persist_and_notify(
     request: &shore_llm_client::types::LlmRequest,
     tool_intermediate_messages: Vec<Message>,
     wall_clock_start: Instant,
+    preserve_prior_turn_thinking: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let notify_content = {
         let mut engine = engine_arc.lock().await;
@@ -84,6 +85,12 @@ pub(super) async fn persist_and_notify(
         // Include the assistant response in last_request so the
         // interiority system sees a complete conversation ending on an
         // assistant turn — not the user turn that triggered this call.
+        // The turn has just ended (finish_reason != tool_use), so from the
+        // perspective of any future request this entire message list is
+        // history: strip thinking blocks across all assistant messages
+        // here to keep the next-turn cache prefix consistent with what
+        // `build_llm_messages` will emit. Skip the strip only when the
+        // user has explicitly opted to preserve prior-turn thinking.
         {
             let mut full_request = request.clone();
             let assistant_api_content: Vec<serde_json::Value> = content_blocks
@@ -94,6 +101,11 @@ pub(super) async fn persist_and_notify(
                 "role": "assistant",
                 "content": assistant_api_content,
             }));
+            if !preserve_prior_turn_thinking {
+                crate::content_util::strip_thinking_from_assistant_history(
+                    &mut full_request.messages,
+                );
+            }
             ctx.autonomy.notify_last_request(char_name, full_request);
         }
         let notify_content = content.clone();

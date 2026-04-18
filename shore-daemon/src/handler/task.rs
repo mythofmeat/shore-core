@@ -230,12 +230,19 @@ pub(super) async fn handle_generation(
     )
     .await;
     let include_unsigned_thinking = matches!(resolved.sdk, Sdk::Zai);
-    let (llm_messages, system) = build_llm_messages(
+    let (mut llm_messages, system) = build_llm_messages(
         &prompt_result,
         include_unsigned_thinking,
         effective_config.app.advanced.max_image_size,
         cache_dir,
     );
+    // Strip thinking / redacted_thinking blocks from prior-turn assistant
+    // messages unless the user has opted to preserve them. The in-progress
+    // tool-use loop (messages appended by `run_tool_phase`) is built via a
+    // different path and is not affected by this call.
+    if !effective_config.app.memory.thinking.preserve_prior_turns {
+        crate::content_util::strip_thinking_from_assistant_history(&mut llm_messages);
+    }
 
     let tool_defs = if effective_config.app.behavior.tool_use.enabled {
         let toggles = &effective_config.app.behavior.tool_use.tools;
@@ -325,6 +332,7 @@ pub(super) async fn handle_generation(
         &request,
         tool_intermediate_messages,
         wall_clock_start,
+        effective_config.app.memory.thinking.preserve_prior_turns,
     )
     .await?;
 

@@ -115,6 +115,42 @@ pub fn dispatch_result_to_output(result: Result<Value, crate::tools::ToolError>)
     }
 }
 
+/// Remove `thinking` and `redacted_thinking` blocks from every assistant
+/// message in an already-serialized request body. Used when
+/// `[memory.thinking] preserve_prior_turns` is false to avoid re-sending
+/// signed thinking blocks from completed prior turns on every subsequent
+/// request — they consume input/cache tokens but Anthropic's Claude 4.x
+/// models do not attend to prior-turn thinking (only to thinking within
+/// an in-progress tool-use loop, which is appended via a different code
+/// path and not touched by this helper).
+///
+/// Expects each element of `messages` to be an object with `role` and an
+/// array-typed `content` field (the format produced by `build_llm_messages`
+/// and by the tool-loop continuation paths). Non-conforming entries are
+/// left untouched.
+pub fn strip_thinking_from_assistant_history(messages: &mut [Value]) {
+    for msg in messages.iter_mut() {
+        let Some(role) = msg.get("role").and_then(|r| r.as_str()) else {
+            continue;
+        };
+        if role != "assistant" {
+            continue;
+        }
+        let Some(content) = msg.get_mut("content") else {
+            continue;
+        };
+        let Some(arr) = content.as_array_mut() else {
+            continue;
+        };
+        arr.retain(|block| {
+            block
+                .get("type")
+                .and_then(|t| t.as_str())
+                .is_none_or(|t| t != "thinking" && t != "redacted_thinking")
+        });
+    }
+}
+
 /// Build a `tool_result` JSON value for the LLM request payload.
 ///
 /// The `is_error` field is only included when `true`, matching the
@@ -313,6 +349,119 @@ mod tests {
         assert_eq!(result[1].0, "t2");
         assert_eq!(result[1].1, "roll_dice");
         assert_eq!(result[1].2, json!({"notation": "2d6"}));
+    }
+
+    // ── strip_thinking_from_assistant_history ─────────────────────────
+
+    #[test]
+    fn strip_removes_thinking_from_assistant() {
+        let mut msgs = vec![json!({
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "hmm", "signature": "sig"},
+                {"type": "text", "text": "hello"},
+            ],
+        })];
+        strip_thinking_from_assistant_history(&mut msgs);
+        let blocks = msgs[0]["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0]["type"], "text");
+    }
+
+    #[test]
+    fn strip_removes_redacted_thinking_from_assistant() {
+        let mut msgs = vec![json!({
+            "role": "assistant",
+            "content": [
+                {"type": "redacted_thinking", "data": "opaque"},
+                {"type": "text", "text": "final"},
+            ],
+        })];
+        strip_thinking_from_assistant_history(&mut msgs);
+        let blocks = msgs[0]["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0]["type"], "text");
+    }
+
+    #[test]
+    fn strip_preserves_tool_use_and_text() {
+        let mut msgs = vec![json!({
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": "x", "signature": "s"},
+                {"type": "text", "text": "checking..."},
+                {"type": "tool_use", "id": "t1", "name": "check_time", "input": {}},
+            ],
+        })];
+        strip_thinking_from_assistant_history(&mut msgs);
+        let blocks = msgs[0]["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0]["type"], "text");
+        assert_eq!(blocks[1]["type"], "tool_use");
+    }
+
+    #[test]
+    fn strip_leaves_user_messages_untouched() {
+        // Defensive — user messages shouldn't have thinking blocks, but the
+        // helper must not touch them even if one sneaks in.
+        let mut msgs = vec![json!({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "hi"},
+                {"type": "thinking", "thinking": "bogus", "signature": "x"},
+            ],
+        })];
+        strip_thinking_from_assistant_history(&mut msgs);
+        let blocks = msgs[0]["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 2);
+    }
+
+    #[test]
+    fn strip_tolerates_string_content() {
+        // Legacy/simple messages whose `content` is a bare string (not an
+        // array of blocks) must pass through unchanged.
+        let mut msgs = vec![json!({"role": "assistant", "content": "plain text"})];
+        strip_thinking_from_assistant_history(&mut msgs);
+        assert_eq!(msgs[0]["content"], "plain text");
+    }
+
+    #[test]
+    fn strip_tolerates_missing_fields() {
+        let mut msgs = vec![json!({"role": "assistant"}), json!({"content": []})];
+        strip_thinking_from_assistant_history(&mut msgs);
+        // Just asserting no panic; structure untouched.
+        assert_eq!(msgs[0].get("content"), None);
+    }
+
+    #[test]
+    fn strip_across_multiple_assistant_messages() {
+        let mut msgs = vec![
+            json!({
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": "one", "signature": "s1"},
+                    {"type": "text", "text": "a"},
+                ],
+            }),
+            json!({
+                "role": "user",
+                "content": [{"type": "text", "text": "q"}],
+            }),
+            json!({
+                "role": "assistant",
+                "content": [
+                    {"type": "redacted_thinking", "data": "d"},
+                    {"type": "text", "text": "b"},
+                    {"type": "thinking", "thinking": "two", "signature": "s2"},
+                ],
+            }),
+        ];
+        strip_thinking_from_assistant_history(&mut msgs);
+        assert_eq!(msgs[0]["content"].as_array().unwrap().len(), 1);
+        assert_eq!(msgs[1]["content"].as_array().unwrap().len(), 1); // user untouched
+        assert_eq!(msgs[2]["content"].as_array().unwrap().len(), 1);
+        assert_eq!(msgs[2]["content"][0]["type"], "text");
+        assert_eq!(msgs[2]["content"][0]["text"], "b");
     }
 
     #[test]
