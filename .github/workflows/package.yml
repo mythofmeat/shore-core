@@ -19,7 +19,7 @@ jobs:
       - name: Install system dependencies
         run: |
           pacman -Syu --noconfirm --needed \
-            base-devel clang mold git git-cliff jq nodejs github-cli sudo rustup openssl
+            base-devel clang mold git git-cliff jq nodejs github-cli sudo rustup openssl alsa-lib
           rustup default stable
           useradd -m builder
           echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder
