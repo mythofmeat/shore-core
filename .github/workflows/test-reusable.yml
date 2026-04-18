@@ -5,3 +5,7 @@ on:
 jobs:
   call:
     uses: mythofmeat/repo-arch/.github/workflows/hello.yml@main
+    with:
+      pkgbuild_dir: contrib
+      extra_pacman_packages: "alsa-lib protobuf"
+    secrets: inherit
