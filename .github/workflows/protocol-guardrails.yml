@@ -32,7 +32,7 @@ jobs:
         run: cargo test -p shore-client --lib
 
       - name: Daemon direct-response guardrails
-        run: cargo test -p shore-daemon --test direct_response_guardrails -- --nocapture
+        run: cargo test -p shore-daemon --test suite guardrails -- --nocapture
 
       - name: Daemon library suite
         run: cargo test -p shore-daemon --lib
