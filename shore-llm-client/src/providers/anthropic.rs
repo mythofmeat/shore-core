@@ -16,7 +16,7 @@ const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
 /// Effort values that map to adaptive thinking + output_config on Anthropic.
-const ANTHROPIC_EFFORT_VALUES: &[&str] = &["max", "high", "medium", "low"];
+const ANTHROPIC_EFFORT_VALUES: &[&str] = &["max", "xhigh", "high", "medium", "low"];
 
 fn is_effort_value(s: &str) -> bool {
     ANTHROPIC_EFFORT_VALUES.contains(&s)
