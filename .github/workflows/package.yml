@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   publish:
-    uses: mythofmeat/repo-arch/.github/workflows/publish-arch-rust.yml@main
+    uses: mythofmeat/repo-arch/.github/workflows/publish-arch-rust.yml@78f6edfc23f92f24d36ecdb93579650d249ad2da
     with:
       pkgbuild_dir: contrib
       extra_pacman_packages: "alsa-lib protobuf"
