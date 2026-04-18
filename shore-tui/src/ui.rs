@@ -1862,6 +1862,153 @@ mod scenario_tests {
         }
     }
 
+    // ── Scenario: History-before-StreamEnd must not duplicate the reply ─────
+    //
+    // Regression for the bug where the daemon's `History` broadcast (emitted
+    // by `engine.append_message` during `persist_and_notify`) arrives at the
+    // TUI *before* the deferred `StreamEnd` (see `task.rs` — StreamEnd is held
+    // until after persistence). The History handler rebuilds `app.entries`
+    // from the persisted message, and the StreamEnd handler used to push the
+    // assistant reply a second time, producing an in-memory duplicate that
+    // vanished on reconnect. Fix: StreamEnd now annotates the existing
+    // assistant entry with streaming metadata instead of pushing a new one.
+    #[test]
+    fn scenario_history_then_stream_end_no_duplicate() {
+        use shore_protocol::server_msg::{History, ServerMessage, StreamChunk, StreamEnd, StreamStart};
+        use shore_protocol::types::{
+            ContentBlock, Message, Role, StreamMetadata, TimingInfo, TokenCounts,
+        };
+
+        let reply = "the sea is calm tonight.";
+
+        let mut h = Harness::new();
+        h.app.connection_status = ConnectionStatus::Connected;
+        h.app.character_name = "qifei".into();
+        h.app.entries.push(ConversationEntry::User {
+            content: "describe the sea".into(),
+            images: vec![],
+            timestamp: "t1".into(),
+        });
+
+        crate::handle_server_message(
+            &mut h.app,
+            ServerMessage::StreamStart(StreamStart {
+                rid: None,
+                regen: false,
+            }),
+        );
+        crate::handle_server_message(
+            &mut h.app,
+            ServerMessage::StreamChunk(StreamChunk {
+                rid: None,
+                text: reply.into(),
+                content_type: "text".into(),
+            }),
+        );
+
+        // Daemon persists the assistant turn, which broadcasts History BEFORE
+        // the deferred StreamEnd lands at the client.
+        let persisted_assistant = Message {
+            msg_id: "m_1".into(),
+            role: Role::Assistant,
+            content: reply.into(),
+            images: vec![],
+            content_blocks: vec![ContentBlock::Text {
+                text: reply.into(),
+            }],
+            alt_index: None,
+            alt_count: None,
+            timestamp: "t2".into(),
+        };
+        let history_msgs = vec![
+            Message {
+                msg_id: "m_0".into(),
+                role: Role::User,
+                content: "describe the sea".into(),
+                images: vec![],
+                content_blocks: vec![ContentBlock::Text {
+                    text: "describe the sea".into(),
+                }],
+                alt_index: None,
+                alt_count: None,
+                timestamp: "t1".into(),
+            },
+            persisted_assistant,
+        ];
+        crate::handle_server_message(
+            &mut h.app,
+            ServerMessage::History(History {
+                rid: None,
+                messages: history_msgs,
+                config: serde_json::json!({}),
+                selected_character: None,
+                revision: 1,
+            }),
+        );
+
+        let meta = StreamMetadata {
+            model: "anthropic/claude-haiku-4-5".into(),
+            tokens: TokenCounts {
+                input: 100,
+                output: 10,
+                cache_read: 0,
+                cache_write: 0,
+            },
+            timing: TimingInfo {
+                total_ms: 400,
+                ttft_ms: 80,
+            },
+        };
+        crate::handle_server_message(
+            &mut h.app,
+            ServerMessage::StreamEnd(StreamEnd {
+                rid: None,
+                content: reply.into(),
+                metadata: meta.clone(),
+                finish_reason: "end_turn".into(),
+            }),
+        );
+
+        let assistant_count = h
+            .app
+            .entries
+            .iter()
+            .filter(|e| matches!(e, ConversationEntry::Assistant { .. }))
+            .count();
+        assert_eq!(
+            assistant_count, 1,
+            "History-then-StreamEnd must leave exactly one Assistant entry, got {assistant_count}: {:#?}",
+            h.app.entries
+        );
+
+        // The StreamEnd metadata should be attached to the History-rendered entry.
+        let attached_meta = h
+            .app
+            .entries
+            .iter()
+            .rev()
+            .find_map(|e| match e {
+                ConversationEntry::Assistant { metadata, .. } => Some(metadata.clone()),
+                _ => None,
+            })
+            .flatten();
+        assert!(
+            attached_meta.is_some(),
+            "StreamEnd metadata must be attached to the assistant entry"
+        );
+        let attached = attached_meta.unwrap();
+        assert_eq!(attached.tokens.input, meta.tokens.input);
+        assert_eq!(attached.tokens.output, meta.tokens.output);
+
+        // And only one copy of the text is rendered on screen.
+        let f = h.render("after history + stream_end");
+        assert_eq!(
+            f.matches(reply).count(),
+            1,
+            "reply text must appear exactly once on screen\n{f}"
+        );
+    }
+
     // ── Scenario: rapid send + stream (the "popin" feel) ────────────────────
 
     #[test]

@@ -685,14 +685,30 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<Co
                 app.stream.phase = "tool_use".into();
                 app.stream.tool_name = None;
             } else {
-                let content = std::mem::take(&mut app.stream.accumulated_text);
+                // The daemon broadcasts a History snapshot during
+                // `engine.append_message` (in persist_and_notify) and only
+                // then emits StreamEnd, so the assistant entry is already
+                // present in `app.entries`. Attach streaming metadata to
+                // that entry — pushing a new one would duplicate it.
                 let metadata = app.stream.accumulated_metadata.take();
-                app.entries.push(ConversationEntry::Assistant {
-                    content,
-                    images: vec![],
-                    timestamp: String::new(),
-                    metadata,
+                let slot = app.entries.iter_mut().rev().find_map(|e| match e {
+                    ConversationEntry::Assistant { metadata, .. } => Some(metadata),
+                    _ => None,
                 });
+                if let Some(slot) = slot {
+                    *slot = metadata;
+                } else {
+                    // Fallback: History hasn't been applied yet (shouldn't
+                    // happen given daemon ordering). Push so the user isn't
+                    // left with a blank turn.
+                    let content = std::mem::take(&mut app.stream.accumulated_text);
+                    app.entries.push(ConversationEntry::Assistant {
+                        content,
+                        images: vec![],
+                        timestamp: String::new(),
+                        metadata,
+                    });
+                }
                 app.stream.reset();
             }
         }
