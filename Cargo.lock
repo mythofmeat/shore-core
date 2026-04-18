@@ -4457,7 +4457,7 @@ dependencies = [
 [[package]]
 name = "matrix-sdk"
 version = "0.16.0"
-source = "git+http://localhost:3000/eshen/matrix-rust-sdk.git?rev=8285d1ca5da1f18227ba4eddaeef9bf579a55de6#8285d1ca5da1f18227ba4eddaeef9bf579a55de6"
+source = "git+https://github.com/mythofmeat/matrix-rust-sdk.git?rev=8285d1ca5da1f18227ba4eddaeef9bf579a55de6#8285d1ca5da1f18227ba4eddaeef9bf579a55de6"
 dependencies = [
  "anymap2",
  "aquamarine",
@@ -4512,7 +4512,7 @@ dependencies = [
 [[package]]
 name = "matrix-sdk-base"
 version = "0.16.0"
-source = "git+http://localhost:3000/eshen/matrix-rust-sdk.git?rev=8285d1ca5da1f18227ba4eddaeef9bf579a55de6#8285d1ca5da1f18227ba4eddaeef9bf579a55de6"
+source = "git+https://github.com/mythofmeat/matrix-rust-sdk.git?rev=8285d1ca5da1f18227ba4eddaeef9bf579a55de6#8285d1ca5da1f18227ba4eddaeef9bf579a55de6"
 dependencies = [
  "as_variant",
  "async-trait",
@@ -4539,7 +4539,7 @@ dependencies = [
 [[package]]
 name = "matrix-sdk-common"
 version = "0.16.0"
-source = "git+http://localhost:3000/eshen/matrix-rust-sdk.git?rev=8285d1ca5da1f18227ba4eddaeef9bf579a55de6#8285d1ca5da1f18227ba4eddaeef9bf579a55de6"
+source = "git+https://github.com/mythofmeat/matrix-rust-sdk.git?rev=8285d1ca5da1f18227ba4eddaeef9bf579a55de6#8285d1ca5da1f18227ba4eddaeef9bf579a55de6"
 dependencies = [
  "eyeball-im",
  "futures-core",
@@ -4562,7 +4562,7 @@ dependencies = [
 [[package]]
 name = "matrix-sdk-crypto"
 version = "0.16.0"
-source = "git+http://localhost:3000/eshen/matrix-rust-sdk.git?rev=8285d1ca5da1f18227ba4eddaeef9bf579a55de6#8285d1ca5da1f18227ba4eddaeef9bf579a55de6"
+source = "git+https://github.com/mythofmeat/matrix-rust-sdk.git?rev=8285d1ca5da1f18227ba4eddaeef9bf579a55de6#8285d1ca5da1f18227ba4eddaeef9bf579a55de6"
 dependencies = [
  "aes",
  "aquamarine",
@@ -4602,7 +4602,7 @@ dependencies = [
 [[package]]
 name = "matrix-sdk-indexeddb"
 version = "0.16.0"
-source = "git+http://localhost:3000/eshen/matrix-rust-sdk.git?rev=8285d1ca5da1f18227ba4eddaeef9bf579a55de6#8285d1ca5da1f18227ba4eddaeef9bf579a55de6"
+source = "git+https://github.com/mythofmeat/matrix-rust-sdk.git?rev=8285d1ca5da1f18227ba4eddaeef9bf579a55de6#8285d1ca5da1f18227ba4eddaeef9bf579a55de6"
 dependencies = [
  "async-trait",
  "base64",
@@ -4633,7 +4633,7 @@ dependencies = [
 [[package]]
 name = "matrix-sdk-sqlite"
 version = "0.16.0"
-source = "git+http://localhost:3000/eshen/matrix-rust-sdk.git?rev=8285d1ca5da1f18227ba4eddaeef9bf579a55de6#8285d1ca5da1f18227ba4eddaeef9bf579a55de6"
+source = "git+https://github.com/mythofmeat/matrix-rust-sdk.git?rev=8285d1ca5da1f18227ba4eddaeef9bf579a55de6#8285d1ca5da1f18227ba4eddaeef9bf579a55de6"
 dependencies = [
  "as_variant",
  "async-trait",
@@ -4660,7 +4660,7 @@ dependencies = [
 [[package]]
 name = "matrix-sdk-store-encryption"
 version = "0.16.0"
-source = "git+http://localhost:3000/eshen/matrix-rust-sdk.git?rev=8285d1ca5da1f18227ba4eddaeef9bf579a55de6#8285d1ca5da1f18227ba4eddaeef9bf579a55de6"
+source = "git+https://github.com/mythofmeat/matrix-rust-sdk.git?rev=8285d1ca5da1f18227ba4eddaeef9bf579a55de6#8285d1ca5da1f18227ba4eddaeef9bf579a55de6"
 dependencies = [
  "base64",
  "blake3",
