@@ -7,6 +7,10 @@ on:
 env:
   REPO_NAME: repo-arch
   REPO_OWNER: mythofmeat
+  # Cargo build artifacts live outside makepkg's ephemeral src/ dir so
+  # they can be cached between runs.
+  CARGO_TARGET_DIR_HOST: /home/builder/cargo-target
+  CARGO_HOME_HOST: /home/builder/.cargo
 
 jobs:
   package:
@@ -16,6 +20,13 @@ jobs:
     permissions:
       contents: write  # for the silvershore release (notes only; no assets)
     steps:
+      - name: Cache pacman package cache
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/pacman/pkg
+          key: pacman-${{ hashFiles('.github/workflows/package.yml') }}
+          restore-keys: pacman-
+
       - name: Install system dependencies
         run: |
           pacman -Syu --noconfirm --needed \
@@ -27,6 +38,24 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0  # git-cliff needs the full history
+
+      - name: Cache cargo registry and git db
+        uses: actions/cache@v4
+        with:
+          path: |
+            /home/builder/.cargo/registry
+            /home/builder/.cargo/git
+          key: cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-registry-
+
+      - name: Cache cargo build target
+        uses: actions/cache@v4
+        with:
+          path: /home/builder/cargo-target
+          key: cargo-target-${{ hashFiles('**/Cargo.lock') }}-${{ github.sha }}
+          restore-keys: |
+            cargo-target-${{ hashFiles('**/Cargo.lock') }}-
+            cargo-target-
 
       - name: Mark workspace as git-safe
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
@@ -45,7 +74,13 @@ jobs:
           sed -i "s|^pkgver=.*|pkgver=${VER}|" PKGBUILD
           # Build from the checkout instead of cloning the (private) remote
           sed -i "s|^source=.*|source=(\"\${pkgbase}::git+file://${GITHUB_WORKSPACE}#tag=${TAG}\")|" PKGBUILD
+          # Point cargo's target dir at a cacheable location outside makepkg's src/
+          sed -i "s|export CARGO_TARGET_DIR=target|export CARGO_TARGET_DIR=${CARGO_TARGET_DIR_HOST}|" PKGBUILD
           chown -R builder:builder "$GITHUB_WORKSPACE"
+          # Make sure cache dirs exist and are owned by builder (actions/cache
+          # creates any missing parent dirs as root).
+          mkdir -p "${CARGO_TARGET_DIR_HOST}" "${CARGO_HOME_HOST}"
+          chown -R builder:builder /home/builder
 
       - name: Build packages
         working-directory: contrib
