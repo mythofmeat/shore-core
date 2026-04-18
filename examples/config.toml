@@ -83,10 +83,11 @@ model = "claude-sonnet"            # Must match a key in [chat.*.*] below
 # idle_trigger = "30m"       # Trigger after this much inactivity
 # min_turns = 8              # Don't compact below this many user turns
 # max_turns = 16             # Force compaction when this many user turns is reached
-# max_context_tokens = 0     # Force compaction when the last turn's prompt context
+# max_context_tokens = 200000 # Force compaction when the last turn's prompt context
 #                            # (input + cache_read + cache_creation) reaches this
-#                            # many tokens. 0 disables. ~30000 is a reasonable
-#                            # value for Opus 4.7 (cost-curve elbow at ~30K).
+#                            # many tokens. Default 200000 is a context-window
+#                            # safety net. Set ~30000 to optimise for cost on
+#                            # Opus 4.7 (cost-curve elbow). 0 disables entirely.
 # keep_recent_turns = 2      # User turns to retain verbatim after compaction
 
 # Thinking — controls how extended-thinking blocks from prior turns are

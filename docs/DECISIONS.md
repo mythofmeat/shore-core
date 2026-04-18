@@ -845,12 +845,15 @@ at 30K saved ~3.3% on typical days and ~8% on heavy-thinking spike days in
 simulation. `max_turns` alone can't capture this because a user can stay under
 their turn limit while each turn grows large.
 
-**Why default 0 (disabled) instead of 30000**: The elbow is empirical and
-character/model-specific (derived from Opus 4.7 pricing). Turning it on by
-default would change compaction frequency for existing users without warning.
-Opt-in preserves existing behavior; `docs/CONFIGURATION.md` recommends 30000
-for Opus 4.7 and points users at `shore usage --export-csv` to tune for their
-own workload.
+**Default is 200000** — the typical context-window ceiling for Claude 4.x.
+This makes the trigger act as a blow-out-the-window safety net by default
+rather than a cost optimiser: conversations that stay below the model's
+context limit never see a behaviour change, while runaway contexts get
+compacted before they hit the wall. Lowering to ~30000 is the
+cost-optimisation setting for Opus 4.7 (the per-call cost elbow), but that
+is empirical/model-specific, so we don't impose it as the default.
+Users tune with `shore usage --export-csv`. Setting `0` disables the
+trigger entirely.
 
 **Why use actual usage instead of estimating pre-send**: The measurement
 available at the trigger point (`result.usage` from the just-completed

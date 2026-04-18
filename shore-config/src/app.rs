@@ -245,7 +245,7 @@ pub struct CompactionConfig {
 serde_default!(default_idle_trigger -> ConfigDuration { ConfigDuration::from_secs(1800) });
 serde_default!(default_min_turns -> usize { 8 });
 serde_default!(default_max_turns -> usize { 16 });
-serde_default!(default_max_context_tokens -> usize { 0 });
+serde_default!(default_max_context_tokens -> usize { 200_000 });
 serde_default!(default_keep_recent_turns -> usize { 2 });
 
 impl Default for CompactionConfig {
