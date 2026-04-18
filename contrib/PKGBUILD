@@ -5,10 +5,10 @@ pkgver=0.15.0
 pkgrel=1
 pkgdesc='Persistent AI character engine'
 arch=('x86_64')
-url='http://localhost:3000/eshen/silvershore'
+url='https://github.com/mythofmeat/silvershore'
 license=('custom')
 makedepends=('cargo' 'git')
-source=("${pkgbase}::git+http://localhost:3000/eshen/silvershore.git")
+source=("${pkgbase}::git+ssh://git@github.com/mythofmeat/silvershore.git")
 options=('!lto')
 sha256sums=('SKIP')
 

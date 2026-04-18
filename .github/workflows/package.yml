@@ -1,0 +1,75 @@
+name: Build and publish Arch packages
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+    permissions:
+      contents: write
+    steps:
+      - name: Install system dependencies
+        run: |
+          pacman -Syu --noconfirm --needed \
+            base-devel git git-cliff jq nodejs github-cli sudo rustup openssl
+          rustup default stable
+          useradd -m builder
+          echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # git-cliff needs the full history
+
+      - name: Mark workspace as git-safe
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Verify tag is on main
+        run: |
+          git fetch origin main
+          git merge-base --is-ancestor HEAD origin/main || \
+            { echo "::error::Tag is not on main — skipping build"; exit 1; }
+
+      - name: Pin PKGBUILD to tag and local checkout
+        working-directory: contrib
+        run: |
+          TAG="${{ github.ref_name }}"
+          VER="${TAG#v}"
+          sed -i "s|^pkgver=.*|pkgver=${VER}|" PKGBUILD
+          # Build from the checkout instead of cloning the (private) remote
+          sed -i "s|^source=.*|source=(\"\${pkgbase}::git+file://${GITHUB_WORKSPACE}#tag=${TAG}\")|" PKGBUILD
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+
+      - name: Build packages
+        working-directory: contrib
+        run: sudo -u builder makepkg -sf --noconfirm
+
+      - name: Build pacman repo database
+        working-directory: contrib
+        run: |
+          sudo -u builder repo-add silvershore.db.tar.zst *.pkg.tar.zst
+          # repo-add leaves .db and .files as symlinks; dereference so
+          # GitHub Release stores real files, not broken symlinks.
+          for link in silvershore.db silvershore.files; do
+            cp -L "$link" "${link}.real"
+            rm "$link"
+            mv "${link}.real" "$link"
+          done
+
+      - name: Generate release notes
+        run: git-cliff --latest -o RELEASE_NOTES.md
+
+      - name: Publish GitHub Release
+        working-directory: contrib
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --title "${{ github.ref_name }}" \
+            --notes-file ../RELEASE_NOTES.md \
+            *.pkg.tar.zst \
+            silvershore.db silvershore.db.tar.zst \
+            silvershore.files silvershore.files.tar.zst
