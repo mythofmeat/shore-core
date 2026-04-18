@@ -7,7 +7,7 @@ edition = "2021"
 shore-protocol = { path = "../shore-protocol" }
 shore-config = { path = "../shore-config" }
 shore-client = { path = "../shore-client" }
-matrix-sdk = { version = "0.16", default-features = false, features = ["e2e-encryption", "markdown", "native-tls"] }
+matrix-sdk = { version = "0.16", default-features = false, features = ["e2e-encryption", "markdown", "native-tls", "sqlite"] }
 tokio = { version = "1", features = ["full"] }
 clap = { version = "4", features = ["derive", "env"] }
 serde = { version = "1", features = ["derive"] }

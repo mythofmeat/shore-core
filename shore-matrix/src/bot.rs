@@ -52,6 +52,7 @@ impl MatrixBot {
 
         let client = Client::builder()
             .homeserver_url(&config.homeserver)
+            .sqlite_store(&config.store_path, None::<&str>)
             .build()
             .await?;
 

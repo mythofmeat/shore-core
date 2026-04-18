@@ -65,9 +65,9 @@ struct Args {
     #[arg(long)]
     config: Option<String>,
 
-    /// Path for Matrix state and crypto store
-    #[arg(long, default_value = "shore_matrix_state")]
-    store_path: String,
+    /// Path for Matrix state and crypto store (defaults to <shore-data-dir>/matrix-store)
+    #[arg(long)]
+    store_path: Option<String>,
 
     /// Run one-shot provisioning setup, then exit (used by `shore matrix setup`)
     #[arg(long, hide = true)]
@@ -130,6 +130,16 @@ fn default_port() -> u16 {
 }
 fn default_admin_user() -> String {
     "shore-admin".into()
+}
+
+fn resolve_store_path(arg: &Option<String>) -> String {
+    match arg {
+        Some(p) => p.clone(),
+        None => shore_config::data_dir()
+            .join("matrix-store")
+            .to_string_lossy()
+            .into_owned(),
+    }
 }
 
 #[tokio::main]
@@ -211,7 +221,7 @@ async fn run_external(
         access_token: args.access_token.clone(),
         password: args.password.clone(),
         device_id: args.device_id.clone(),
-        store_path: args.store_path.clone(),
+        store_path: resolve_store_path(&args.store_path),
     };
     let (bot, matrix_rx) = MatrixBot::new(&bot_config).await?;
 
@@ -502,7 +512,7 @@ async fn run_embedded(
         access_token: Some(primary.access_token.clone()),
         password: None,
         device_id: Some(primary.device_id.clone()),
-        store_path: args.store_path.clone(),
+        store_path: resolve_store_path(&args.store_path),
     };
     let (bot, matrix_rx) = MatrixBot::new(&bot_config).await?;
 
