@@ -11,6 +11,11 @@ env:
   # they can be cached between runs.
   CARGO_TARGET_DIR_HOST: /home/builder/cargo-target
   CARGO_HOME_HOST: /home/builder/.cargo
+  # Cache keys hoisted here so the post-job save steps match the restore
+  # keys byte-for-byte without being re-evaluated in a different context.
+  PACMAN_KEY: pacman-${{ hashFiles('.github/workflows/package.yml') }}
+  CARGO_REGISTRY_KEY: cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+  CARGO_TARGET_KEY: cargo-target-${{ hashFiles('**/Cargo.lock') }}-${{ github.sha }}
 
 jobs:
   package:
@@ -20,11 +25,11 @@ jobs:
     permissions:
       contents: write  # for the silvershore release (notes only; no assets)
     steps:
-      - name: Cache pacman package cache
-        uses: actions/cache@v4
+      - name: Restore pacman package cache
+        uses: actions/cache/restore@v4
         with:
           path: /var/cache/pacman/pkg
-          key: pacman-${{ hashFiles('.github/workflows/package.yml') }}
+          key: ${{ env.PACMAN_KEY }}
           restore-keys: pacman-
 
       - name: Install system dependencies
@@ -39,20 +44,20 @@ jobs:
         with:
           fetch-depth: 0  # git-cliff needs the full history
 
-      - name: Cache cargo registry and git db
-        uses: actions/cache@v4
+      - name: Restore cargo registry and git db
+        uses: actions/cache/restore@v4
         with:
           path: |
             /home/builder/.cargo/registry
             /home/builder/.cargo/git
-          key: cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ env.CARGO_REGISTRY_KEY }}
           restore-keys: cargo-registry-
 
-      - name: Cache cargo build target
-        uses: actions/cache@v4
+      - name: Restore cargo build target
+        uses: actions/cache/restore@v4
         with:
           path: /home/builder/cargo-target
-          key: cargo-target-${{ hashFiles('**/Cargo.lock') }}-${{ github.sha }}
+          key: ${{ env.CARGO_TARGET_KEY }}
           restore-keys: |
             cargo-target-${{ hashFiles('**/Cargo.lock') }}-
             cargo-target-
@@ -87,6 +92,34 @@ jobs:
       - name: Build packages
         working-directory: contrib
         run: sudo -u builder makepkg -sf --noconfirm
+
+      # Cache saves run here — BEFORE the upload/publish steps that touch
+      # external state — so the compile cache is persisted even if the
+      # later release-upload steps fail. Each save is a no-op when the
+      # primary key already exists in the cache.
+
+      - name: Save cargo build target
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: /home/builder/cargo-target
+          key: ${{ env.CARGO_TARGET_KEY }}
+
+      - name: Save cargo registry and git db
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            /home/builder/.cargo/registry
+            /home/builder/.cargo/git
+          key: ${{ env.CARGO_REGISTRY_KEY }}
+
+      - name: Save pacman package cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: /var/cache/pacman/pkg
+          key: ${{ env.PACMAN_KEY }}
 
       - name: Fetch existing repo database
         working-directory: contrib
