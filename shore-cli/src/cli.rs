@@ -167,6 +167,22 @@ pub enum CliCommand {
         json: bool,
     },
 
+    /// Show or set the session's reasoning-effort override
+    /// (e.g. "low", "medium", "high", or "off" to force no reasoning).
+    Reasoning {
+        /// Effort value, or "off"/"none" to force reasoning off.
+        /// Omit to display the current override + config default.
+        value: Option<String>,
+
+        /// Clear the override and revert to the model's configured value
+        #[arg(long)]
+        reset: bool,
+
+        /// Output raw JSON
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Show, query, or manage the memory system
     #[command(args_conflicts_with_subcommands = true)]
     Memory {
@@ -499,6 +515,20 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
                     (None, true) => Some(("model_info", json!({}))),
                     (None, false) => Some(("list_models", json!({}))),
                     (Some(name), false) => Some(("switch_model", json!({ "name": name }))),
+                }
+            }
+        }
+
+        CliCommand::Reasoning { value, reset, .. } => {
+            if *reset {
+                Some(("set_reasoning_effort", json!({ "clear": true })))
+            } else {
+                match value.as_deref() {
+                    None => Some(("set_reasoning_effort", json!({}))),
+                    Some(v) => {
+                        // daemon normalises "off"/"none" into null internally
+                        Some(("set_reasoning_effort", json!({ "value": v })))
+                    }
                 }
             }
         }

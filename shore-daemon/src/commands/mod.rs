@@ -50,6 +50,10 @@ pub struct CommandContext {
     pub data_dir: PathBuf,
     /// Currently active model name.
     pub active_model: Option<String>,
+    /// Per-session override for the resolved model's `reasoning_effort`.
+    /// `None` means "use the value from config"; `Some(v)` patches the
+    /// resolved chat model for every subsequent generation on this session.
+    pub reasoning_effort_override: Option<Option<String>>,
     /// Cumulative token usage for the session (shared with generation tasks).
     pub session_tokens: Arc<Mutex<SessionTokens>>,
     /// Shared autonomy manager for scheduler state.
@@ -185,6 +189,7 @@ pub async fn dispatch(
         "model_info" => state::model_info(ctx, &cmd.args),
         "switch_model" => state::switch_model(ctx, &cmd.args),
         "reset_model" => state::reset_model(ctx),
+        "set_reasoning_effort" => state::set_reasoning_effort(ctx, &cmd.args),
         "memory_changelog" => state::memory_changelog(engine, ctx, &cmd.args),
         "memory" => state::memory(engine, ctx, &cmd.args).await,
         "memory_shell_start" => state::memory_shell_start(engine, ctx, &cmd.args).await,
@@ -288,6 +293,7 @@ mod tests {
             push_tx,
             data_dir: data_dir.clone(),
             active_model: None,
+            reasoning_effort_override: None,
             session_tokens: Arc::new(Mutex::new(SessionTokens::default())),
             autonomy,
             llm_client: LedgerClient::new(

@@ -92,6 +92,52 @@ pub fn clear_active_model() -> std::io::Result<()> {
     }
 }
 
+/// Return the path to the reasoning_effort override state file.
+pub fn reasoning_effort_state_file_path() -> PathBuf {
+    runtime_dir().join("active_reasoning_effort")
+}
+
+/// Stored value for the reasoning_effort override.
+///
+/// - `Some(Some(s))` — force the effort to `s` (e.g. "high")
+/// - `Some(None)` — force reasoning off (value serialised as `null` on the wire)
+/// - `None` — no file, no override
+pub fn read_reasoning_effort_override() -> Option<Option<String>> {
+    let content = std::fs::read_to_string(reasoning_effort_state_file_path()).ok()?;
+    let trimmed = content.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    match trimmed.to_ascii_lowercase().as_str() {
+        "off" | "none" | "null" => Some(None),
+        _ => Some(Some(trimmed.to_string())),
+    }
+}
+
+/// Write the reasoning_effort override to the state file.
+///
+/// Pass `None` to persist the "force off" sentinel ("off") and `Some(v)` to
+/// persist a literal value.
+pub fn write_reasoning_effort_override(value: Option<&str>) -> std::io::Result<()> {
+    let path = reasoning_effort_state_file_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let body = value.unwrap_or("off");
+    debug!(value = body, "Writing active reasoning_effort override to state file");
+    std::fs::write(&path, body)
+}
+
+/// Remove the reasoning_effort override state file (treated as "no override").
+pub fn clear_reasoning_effort_override() -> std::io::Result<()> {
+    let path = reasoning_effort_state_file_path();
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
 /// Resolve the character name to display in output (transcript headers,
 /// status lines, etc.).
 ///

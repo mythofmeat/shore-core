@@ -39,6 +39,7 @@ pub(super) async fn handle_generation(
         effective_config,
         data_dir,
         active_model,
+        reasoning_effort_override,
     } = params;
     info!(
         character = %char_name,
@@ -96,7 +97,7 @@ pub(super) async fn handle_generation(
     let model_name = active_model
         .as_deref()
         .or(effective_config.app.defaults.model.as_deref());
-    let resolved = match model_name {
+    let resolved_base = match model_name {
         Some(name) => effective_config
             .models
             .find_model(name)
@@ -106,9 +107,25 @@ pub(super) async fn handle_generation(
             .first_chat_model()
             .ok_or("No model configured")?,
     };
+    // Apply the per-session `reasoning_effort` override (if any) by
+    // cloning the resolved model and patching the field. The override
+    // deliberately does NOT touch agent_model / researcher_model — those
+    // are separate roles with their own configured defaults.
+    let resolved_owned;
+    let resolved: &shore_config::models::ResolvedModel =
+        if let Some(new_effort) = reasoning_effort_override.as_ref() {
+            let mut patched = resolved_base.clone();
+            patched.reasoning_effort = new_effort.clone();
+            resolved_owned = patched;
+            &resolved_owned
+        } else {
+            resolved_base
+        };
     debug!(
         model = %resolved.qualified_name,
         provider = %resolved.provider_key,
+        reasoning_effort = ?resolved.reasoning_effort,
+        override_active = reasoning_effort_override.is_some(),
         "model resolved"
     );
 

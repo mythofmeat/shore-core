@@ -8,7 +8,7 @@ pub use memory::{
     collate, compact, memory, memory_changelog, memory_purge, memory_reindex, memory_shell_end,
     memory_shell_query, memory_shell_start, resolve_collation_model,
 };
-pub use models::{list_models, model_info, reset_model, switch_model};
+pub use models::{list_models, model_info, reset_model, set_reasoning_effort, switch_model};
 pub use status::{
     diagnostics, heartbeat_log, interiority_set_active, interiority_set_dormant,
     interiority_tick_now, status,

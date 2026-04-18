@@ -101,6 +101,36 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // Pre-apply the persisted reasoning_effort override (same reason as
+    // active_model above: one-shot CLI sessions would otherwise lose it).
+    if let Some(ov) = state::read_reasoning_effort_override() {
+        let args = match ov {
+            None => serde_json::json!({ "value": serde_json::Value::Null }),
+            Some(v) => serde_json::json!({ "value": v }),
+        };
+        if let Err(e) = conn.send_command("set_reasoning_effort", args).await {
+            debug!(error = %e, "failed to pre-apply reasoning_effort override");
+        } else {
+            match conn.recv().await {
+                Ok(ServerMessage::CommandOutput(_)) => {
+                    debug!("pre-applied reasoning_effort override");
+                }
+                Ok(ServerMessage::Error(err)) => {
+                    debug!(
+                        error = %err.message,
+                        "stale reasoning_effort state file, ignoring",
+                    );
+                }
+                Ok(other) => {
+                    debug!(?other, "unexpected reply to pre-apply set_reasoning_effort");
+                }
+                Err(e) => {
+                    debug!(error = %e, "error draining pre-apply set_reasoning_effort reply");
+                }
+            }
+        }
+    }
+
     match &cli.command {
         CliCommand::Send {
             message,
@@ -362,6 +392,46 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 println!("{}", serde_json::to_string_pretty(&data)?);
             } else {
                 output::format_command("switch_model", &data);
+            }
+        }
+        // `shore reasoning` — intercepted so we can persist the override to
+        // the state file after the daemon acks, mirroring the `shore model`
+        // path. A one-shot CLI connection loses session state otherwise.
+        CliCommand::Reasoning { value, reset, json } => {
+            let (args, persist_after_success): (serde_json::Value, Box<dyn FnOnce() -> std::io::Result<()>>) =
+                if *reset {
+                    (
+                        serde_json::json!({ "clear": true }),
+                        Box::new(state::clear_reasoning_effort_override),
+                    )
+                } else if let Some(v) = value.as_deref() {
+                    let normalized = v.trim().to_ascii_lowercase();
+                    let persist: Box<dyn FnOnce() -> std::io::Result<()>> = match normalized.as_str() {
+                        "off" | "none" | "null" | "disable" | "disabled" | "unset" => {
+                            Box::new(|| state::write_reasoning_effort_override(None))
+                        }
+                        "" => Box::new(state::clear_reasoning_effort_override),
+                        _ => {
+                            let owned = v.trim().to_string();
+                            Box::new(move || state::write_reasoning_effort_override(Some(&owned)))
+                        }
+                    };
+                    (serde_json::json!({ "value": v }), persist)
+                } else {
+                    // Read-only: no state-file write.
+                    (
+                        serde_json::json!({}),
+                        Box::new(|| Ok::<(), std::io::Error>(())),
+                    )
+                };
+
+            conn.send_command("set_reasoning_effort", args).await?;
+            let data = recv_command_data(&mut conn).await?;
+            persist_after_success()?;
+            if *json {
+                println!("{}", serde_json::to_string_pretty(&data)?);
+            } else {
+                output::format_command("set_reasoning_effort", &data);
             }
         }
         other => {

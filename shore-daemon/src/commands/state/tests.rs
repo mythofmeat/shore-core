@@ -57,6 +57,7 @@ fn make_ctx_with_models(
         push_tx,
         data_dir: data_dir.clone(),
         active_model: None,
+        reasoning_effort_override: None,
         session_tokens: std::sync::Arc::new(std::sync::Mutex::new(
             crate::commands::SessionTokens::default(),
         )),
@@ -724,5 +725,126 @@ fn rfc3339_comparison_handles_mixed_timezones() {
     assert!(
         before_dt < tokyo_dt,
         "An entry from before the cutoff should be < cutoff chronologically"
+    );
+}
+
+// ── set_reasoning_effort ─────────────────────────────────────────────────
+
+#[test]
+fn set_reasoning_effort_bare_read_shows_state() {
+    let tmp = TempDir::new().unwrap();
+    let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
+    ctx.active_model = Some("claude-sonnet".into());
+
+    let result = set_reasoning_effort(&mut ctx, &json!({})).unwrap();
+    assert!(result.get("changed").is_none(), "bare read must not mark changed");
+    assert!(result["override"].is_null(), "no override by default");
+    assert!(result["effective"].is_null(), "no config default, no override → null");
+    assert!(ctx.reasoning_effort_override.is_none());
+}
+
+#[test]
+fn set_reasoning_effort_sets_string_value() {
+    let tmp = TempDir::new().unwrap();
+    let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
+
+    let result =
+        set_reasoning_effort(&mut ctx, &json!({ "value": "high" })).unwrap();
+    assert_eq!(result["changed"], true);
+    assert_eq!(result["effective"], "high");
+    assert_eq!(ctx.reasoning_effort_override, Some(Some("high".into())));
+}
+
+#[test]
+fn set_reasoning_effort_null_forces_off() {
+    let tmp = TempDir::new().unwrap();
+    let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
+
+    let result = set_reasoning_effort(
+        &mut ctx,
+        &json!({ "value": serde_json::Value::Null }),
+    )
+    .unwrap();
+    assert_eq!(result["changed"], true);
+    assert!(result["effective"].is_null(), "forced off");
+    assert_eq!(ctx.reasoning_effort_override, Some(None));
+}
+
+#[test]
+fn set_reasoning_effort_off_sentinel_forces_off() {
+    let tmp = TempDir::new().unwrap();
+    let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
+
+    // Each of these should collapse to "force off" (override = Some(None)).
+    for sentinel in ["off", "OFF", "none", "disable", "disabled", "unset"] {
+        ctx.reasoning_effort_override = Some(Some("high".into())); // reset
+        let result =
+            set_reasoning_effort(&mut ctx, &json!({ "value": sentinel })).unwrap();
+        assert_eq!(
+            ctx.reasoning_effort_override,
+            Some(None),
+            "sentinel {sentinel:?} should force off"
+        );
+        assert!(result["effective"].is_null());
+    }
+}
+
+#[test]
+fn set_reasoning_effort_clear_flag_removes_override() {
+    let tmp = TempDir::new().unwrap();
+    let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
+    ctx.reasoning_effort_override = Some(Some("high".into()));
+
+    let result = set_reasoning_effort(&mut ctx, &json!({ "clear": true })).unwrap();
+    assert_eq!(result["changed"], true);
+    assert!(result["override"].is_null(), "cleared → no override");
+    assert!(ctx.reasoning_effort_override.is_none());
+}
+
+#[test]
+fn set_reasoning_effort_empty_string_clears() {
+    let tmp = TempDir::new().unwrap();
+    let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
+    ctx.reasoning_effort_override = Some(Some("medium".into()));
+
+    let _ = set_reasoning_effort(&mut ctx, &json!({ "value": "" })).unwrap();
+    assert!(
+        ctx.reasoning_effort_override.is_none(),
+        "empty string should clear the override, not store an empty value"
+    );
+}
+
+#[test]
+fn set_reasoning_effort_rejects_non_string_non_null_value() {
+    let tmp = TempDir::new().unwrap();
+    let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
+
+    let err = set_reasoning_effort(&mut ctx, &json!({ "value": 7 })).unwrap_err();
+    assert_eq!(err.0, shore_protocol::error::ErrorCode::InvalidRequest);
+    assert!(ctx.reasoning_effort_override.is_none(), "rejected input must not mutate state");
+}
+
+#[test]
+fn set_reasoning_effort_reports_config_default_when_model_has_one() {
+    // Confirm that the `config_default` field reflects the resolved model's
+    // reasoning_effort from the catalog. This is what lets the CLI tell the
+    // user "we'd inherit X if you cleared the override."
+    let toml_str = r#"
+[anthropic.claude-sonnet]
+model_id = "claude-sonnet-4-20250514"
+reasoning_effort = "medium"
+"#;
+    let table: toml::Table = toml_str.parse().unwrap();
+    let catalog = ModelCatalog::from_sections(Some(&table), None, None, None).unwrap();
+
+    let tmp = TempDir::new().unwrap();
+    let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, catalog);
+    ctx.active_model = Some("claude-sonnet".into());
+
+    let result = set_reasoning_effort(&mut ctx, &json!({})).unwrap();
+    assert_eq!(result["config_default"], "medium");
+    assert_eq!(
+        result["effective"], "medium",
+        "no override → effective = config default"
     );
 }

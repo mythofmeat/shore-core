@@ -249,6 +249,7 @@ pub fn format_command(name: &str, data: &serde_json::Value) {
         "switch_model" => print_model_switched(data),
         "reset_model" => print_model_reset(data),
         "model_info" => print_model_info(data),
+        "set_reasoning_effort" => print_reasoning_effort(data),
         "memory" => print_memory(data),
         "compact" => print_compact_result(data),
         "collate" => print_collate_result(data),
@@ -374,6 +375,45 @@ fn print_model_switched(data: &serde_json::Value) {
 fn print_model_reset(data: &serde_json::Value) {
     let model = data["active"].as_str().unwrap_or("(none)");
     println!("Model reset to: {}", abbreviate_model(model));
+}
+
+/// Print the current / newly-applied reasoning_effort state.
+///
+/// Expected fields from the daemon:
+/// - `override` — `null` (no override) or `{ "set": true, "value": <str|null> }`
+/// - `effective` — string or null, the value that will reach the request
+/// - `config_default` — string or null, the model's configured value
+/// - `changed` — bool (only on writes)
+fn print_reasoning_effort(data: &serde_json::Value) {
+    let effective = match data.get("effective") {
+        Some(v) if v.is_null() => "off".to_string(),
+        Some(v) => v.as_str().map(String::from).unwrap_or_else(|| v.to_string()),
+        None => "(unknown)".to_string(),
+    };
+    let config_default = match data.get("config_default") {
+        Some(v) if v.is_null() => "(unset)".to_string(),
+        Some(v) => v.as_str().map(String::from).unwrap_or_else(|| v.to_string()),
+        None => "(unknown)".to_string(),
+    };
+
+    let override_info = data.get("override");
+    let override_label = match override_info {
+        Some(v) if v.is_null() => "(none, using config)".to_string(),
+        Some(obj) if obj.is_object() => match obj.get("value") {
+            Some(x) if x.is_null() => "forced off".to_string(),
+            Some(x) => x.as_str().map(String::from).unwrap_or_else(|| x.to_string()),
+            None => "(set)".to_string(),
+        },
+        _ => "(unknown)".to_string(),
+    };
+
+    let changed = data.get("changed").and_then(|v| v.as_bool()).unwrap_or(false);
+    if changed {
+        println!("Reasoning effort updated.");
+    }
+    println!("  override:       {override_label}");
+    println!("  effective:      {effective}");
+    println!("  config default: {config_default}");
 }
 
 /// Print detailed model info.

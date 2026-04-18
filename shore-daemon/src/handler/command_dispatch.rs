@@ -93,10 +93,11 @@ impl MessageHandler {
         // models` succeed even on a multi-character config where no
         // character has been selected yet.
         if cmd.name == "list_characters" || cmd.name == "list_models" {
-            let (active_model, session_tokens, memory_shell_sessions) = {
+            let (active_model, reasoning_effort_override, session_tokens, memory_shell_sessions) = {
                 let session = self.session_state_mut(session_id);
                 (
                     session.active_model.clone(),
+                    session.reasoning_effort_override.clone(),
                     session.session_tokens.clone(),
                     std::mem::take(&mut session.memory_shell_sessions),
                 )
@@ -106,6 +107,7 @@ impl MessageHandler {
                 push_tx: self.push_tx.clone(),
                 data_dir: self.cmd_ctx.data_dir.clone(),
                 active_model,
+                reasoning_effort_override,
                 session_tokens,
                 autonomy: self.cmd_ctx.autonomy.clone(),
                 llm_client: self.cmd_ctx.llm_client.clone(),
@@ -117,6 +119,7 @@ impl MessageHandler {
                 let session = self.session_state_mut(session_id);
                 session.memory_shell_sessions = ctx.memory_shell_sessions;
                 session.active_model = ctx.active_model.clone();
+                session.reasoning_effort_override = ctx.reasoning_effort_override.clone();
             }
             return match result {
                 Ok(data) => {
@@ -167,10 +170,11 @@ impl MessageHandler {
             (engine_arc, effective_config)
         };
 
-        let (active_model, session_tokens, memory_shell_sessions) = {
+        let (active_model, reasoning_effort_override, session_tokens, memory_shell_sessions) = {
             let session = self.session_state_mut(session_id);
             (
                 session.active_model.clone(),
+                session.reasoning_effort_override.clone(),
                 session.session_tokens.clone(),
                 std::mem::take(&mut session.memory_shell_sessions),
             )
@@ -181,6 +185,7 @@ impl MessageHandler {
             push_tx: self.push_tx.clone(),
             data_dir: self.cmd_ctx.data_dir.clone(),
             active_model,
+            reasoning_effort_override,
             session_tokens,
             autonomy: self.cmd_ctx.autonomy.clone(),
             llm_client: self.cmd_ctx.llm_client.clone(),
@@ -192,10 +197,12 @@ impl MessageHandler {
             .await
             .with_rid(meta.rid.clone());
         let active_model_after_command = cmd_ctx.active_model.clone();
+        let reasoning_effort_after_command = cmd_ctx.reasoning_effort_override.clone();
 
         {
             let session = self.session_state_mut(session_id);
             session.active_model = active_model_after_command.clone();
+            session.reasoning_effort_override = reasoning_effort_after_command;
             session.memory_shell_sessions = cmd_ctx.memory_shell_sessions;
         }
 

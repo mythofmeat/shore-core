@@ -88,6 +88,7 @@ async fn make_handler(
         push_tx: push_tx.clone(),
         data_dir: data_dir.clone(),
         active_model: None,
+        reasoning_effort_override: None,
         session_tokens: Arc::new(std::sync::Mutex::new(SessionTokens::default())),
         autonomy: autonomy.clone(),
         llm_client: ledger_client.clone(),
@@ -396,6 +397,7 @@ async fn handle_engine_message_regen_builds_empty_body() {
             effective_config,
             data_dir,
             active_model: None,
+            reasoning_effort_override: None,
         },
     )
     .await;
@@ -681,6 +683,7 @@ async fn make_handler_with_models(
         push_tx: push_tx.clone(),
         data_dir: data_dir.clone(),
         active_model: None,
+        reasoning_effort_override: None,
         session_tokens: Arc::new(std::sync::Mutex::new(SessionTokens::default())),
         autonomy: autonomy.clone(),
         llm_client: ledger_client.clone(),
@@ -754,6 +757,7 @@ async fn pipeline_user_message_to_persisted_response() {
             effective_config,
             data_dir: data_dir.clone(),
             active_model: None,
+            reasoning_effort_override: None,
         },
     )
     .await;

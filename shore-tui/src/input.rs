@@ -757,6 +757,26 @@ fn parse_command(app: &mut App, input: &str) -> Action {
             }
         }
 
+        "reasoning" => {
+            // :reasoning                 → show
+            // :reasoning reset           → clear override (revert to config)
+            // :reasoning off|none|null   → force no reasoning
+            // :reasoning <value>         → force value ("low", "medium", "high", …)
+            let args = if arg.is_empty() {
+                serde_json::json!({})
+            } else {
+                match arg.to_ascii_lowercase().as_str() {
+                    "reset" => serde_json::json!({ "clear": true }),
+                    _ => serde_json::json!({ "value": arg }),
+                }
+            };
+            Action::Send(ConnCommand::Send(ClientMessage::Command(Command {
+                rid: None,
+                name: "set_reasoning_effort".into(),
+                args,
+            })))
+        }
+
         _ => {
             app.set_status(format!("unknown command: {cmd}"));
             Action::Redraw

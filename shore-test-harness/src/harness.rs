@@ -144,6 +144,7 @@ impl TestHarness {
             push_tx: push_tx.clone(),
             data_dir: config.dirs.data.clone(),
             active_model: config.app.defaults.model.clone(),
+            reasoning_effort_override: None,
             session_tokens: Arc::new(std::sync::Mutex::new(SessionTokens::default())),
             autonomy: autonomy.clone(),
             llm_client: llm_client.clone(),

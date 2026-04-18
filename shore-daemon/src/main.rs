@@ -322,6 +322,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         push_tx: push_tx.clone(),
         data_dir: loaded.dirs.data.clone(),
         active_model: None,
+        reasoning_effort_override: None,
         session_tokens: session_tokens.clone(),
         autonomy: autonomy.clone(),
         llm_client: llm_client.clone(),

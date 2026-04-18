@@ -413,6 +413,7 @@ thing, bare verb/noun when unambiguous.
 | `status` | — | System state + token counts |
 | `list_models` | — | List available model profiles |
 | `switch_model` | `name?` | No arg = show current; with arg = switch model |
+| `set_reasoning_effort` | `value? \| clear?` | Per-session override for the active model's `reasoning_effort`. `value: null` forces off; `clear: true` reverts to config |
 | `memory` | `query?` | No arg = status; with arg = search memories |
 | `toggle_private` | — | Toggle private mode on active conversation → server re-sends `history` |
 | `compact` | `dry_run?` | Trigger compaction |

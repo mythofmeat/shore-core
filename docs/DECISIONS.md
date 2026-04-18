@@ -911,3 +911,41 @@ the strip helper.
 
 **Sacrificed**: one extra boolean parameter on `persist_and_notify`. No
 ledger/engine-store format changes; no wire protocol changes.
+
+## Runtime `reasoning_effort` override via new SWP command (2026-04-19)
+
+**Added**: `set_reasoning_effort` SWP command + `shore reasoning` CLI +
+`:reasoning` TUI slash command. A per-session `Option<Option<String>>`
+lives on `SessionState` / `CommandContext`: `None` = inherit from
+config, `Some(None)` = force reasoning off, `Some(Some(v))` = force the
+given value. `handle_generation` clones the resolved `ResolvedModel`
+and patches `.reasoning_effort` before `build_request` reads it.
+
+**Why a new command rather than extending `config_set`**: `config_set`
+mutates global fields (`defaults.model`, `autonomy.enabled`) and has a
+focused allowlist. `reasoning_effort` is per-model, not global — its
+effect depends on which model is active, and a clean "override this
+field for this session, regardless of which model is selected next"
+contract is simpler to reason about than layering per-model writes onto
+the global key/value setter.
+
+**Why session-level override, not config-file write-through**: the knob
+is an exploratory quality/latency trade-off users flip several times per
+session. Persisting it to TOML on every toggle would rewrite the config
+file repeatedly and conflict with the user's hand-edited baseline. The
+override is ephemeral on the daemon side; CLI adds a thin `active_reasoning_effort`
+state file that mirrors `active_model` so one-shot invocations don't lose
+the setting between `shore send` calls.
+
+**Why the "off" sentinel**: the override has three states (inherit /
+force-on / force-off) but the daemon protocol is JSON. `{"value": null}`
+means force-off; string value means force-on. The state file encodes
+force-off as the literal string `"off"` — same file format, same
+parsing, no wire ambiguity. Synonyms (`none`, `disable`, `disabled`,
+`unset`) are accepted on input for ergonomics.
+
+**Sacrificed**: `reasoning_effort_override` field now threaded through
+five constructor sites (`CommandContext`, `SessionState`,
+`GenerationParams`, + 2 dispatch copy points). Considered wrapping in a
+struct to reduce the diff but rejected — the field count on these
+structs is already large and the `None` default is uniform.

@@ -137,11 +137,13 @@ struct GenerationParams {
     effective_config: LoadedConfig,
     data_dir: PathBuf,
     active_model: Option<String>,
+    reasoning_effort_override: Option<Option<String>>,
 }
 
 #[derive(Default)]
 struct SessionState {
     active_model: Option<String>,
+    reasoning_effort_override: Option<Option<String>>,
     session_tokens: Arc<std::sync::Mutex<SessionTokens>>,
     memory_shell_sessions: HashMap<String, MemoryShellSession>,
     generation_handle: Option<tokio::task::JoinHandle<()>>,
@@ -151,6 +153,7 @@ impl SessionState {
     fn new() -> Self {
         Self {
             active_model: None,
+            reasoning_effort_override: None,
             session_tokens: Arc::new(std::sync::Mutex::new(SessionTokens::default())),
             memory_shell_sessions: HashMap::new(),
             generation_handle: None,
@@ -380,9 +383,12 @@ impl MessageHandler {
                         Some(tx) => tx,
                         None => continue,
                     };
-                    let active_model = {
+                    let (active_model, reasoning_effort_override) = {
                         let session = self.session_state_mut(meta.session.session_id);
-                        session.active_model.clone()
+                        (
+                            session.active_model.clone(),
+                            session.reasoning_effort_override.clone(),
+                        )
                     };
                     let gen = self.gen_context(meta.session.session_id, direct_tx.clone());
                     let notifier = self.notifier.clone();
@@ -395,6 +401,7 @@ impl MessageHandler {
                         effective_config,
                         data_dir: self.cmd_ctx.data_dir.clone(),
                         active_model,
+                        reasoning_effort_override,
                     };
 
                     let session = self.session_state_mut(meta.session.session_id);
