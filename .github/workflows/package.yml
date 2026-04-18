@@ -4,12 +4,11 @@ on:
   push:
     tags: ['v*']
 
-permissions:
-  contents: write
-
 jobs:
   publish:
-    uses: mythofmeat/repo-arch/.github/workflows/publish-arch-rust.yml@78f6edfc23f92f24d36ecdb93579650d249ad2da
+    permissions:
+      contents: write
+    uses: mythofmeat/repo-arch/.github/workflows/publish-arch-rust.yml@main
     with:
       pkgbuild_dir: contrib
       extra_pacman_packages: "alsa-lib protobuf"
