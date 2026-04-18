@@ -372,8 +372,19 @@ pub(super) async fn handle_generation(
     {
         let mut engine = engine_arc.lock().await;
         let turn_count = engine.turn_count();
-        if ctx.autonomy.should_compact_now(&char_name, turn_count) {
-            info!(character = %char_name, turn_count, "Running inline compaction");
+        let context_tokens = result.usage.input_tokens as usize
+            + result.usage.cache_read_tokens as usize
+            + result.usage.cache_creation_tokens as usize;
+        if ctx
+            .autonomy
+            .should_compact_now(&char_name, turn_count, context_tokens)
+        {
+            info!(
+                character = %char_name,
+                turn_count,
+                context_tokens,
+                "Running inline compaction"
+            );
             let _ = ctx
                 .direct_tx
                 .send(

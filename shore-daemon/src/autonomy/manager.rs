@@ -530,10 +530,19 @@ impl AutonomyManager {
     }
 
     /// Check if compaction should run for this character: either the max_turns
-    /// threshold was reached, or an idle trigger set the pending flag.
-    /// Returns true (and clears the pending flag) if compaction should run.
-    /// Called by the handler inline after persist_and_notify.
-    pub fn should_compact_now(&self, character: &str, turn_count: usize) -> bool {
+    /// threshold was reached, the last turn's context tokens crossed the
+    /// `max_context_tokens` threshold, or an idle trigger set the pending
+    /// flag. `context_tokens` is the sum of input + cache_read +
+    /// cache_creation from the just-completed turn's usage (0 when no signal
+    /// is available, e.g. from the idle-tick path). Returns true (and clears
+    /// the pending flag) if compaction should run. Called by the handler
+    /// inline after persist_and_notify.
+    pub fn should_compact_now(
+        &self,
+        character: &str,
+        turn_count: usize,
+        context_tokens: usize,
+    ) -> bool {
         let compaction = &self.compaction;
         if !compaction.enabled {
             return false;
@@ -544,6 +553,19 @@ impl AutonomyManager {
             && turn_count >= compaction.min_turns
         {
             // Mark compaction_triggered so the tick doesn't also fire.
+            self.with_state(character, |s| {
+                s.compaction_triggered = true;
+                s.mark_dirty();
+            });
+            return true;
+        }
+        // Token-based trigger: fires when the just-completed turn's prompt
+        // context crossed the configured threshold. Still floored by
+        // min_turns to prevent early-conversation thrash.
+        if compaction.max_context_tokens > 0
+            && context_tokens >= compaction.max_context_tokens
+            && turn_count >= compaction.min_turns
+        {
             self.with_state(character, |s| {
                 s.compaction_triggered = true;
                 s.mark_dirty();
@@ -2736,9 +2758,9 @@ api_key_env = "{interiority_env}"
         rt.block_on(async { mgr.ensure_state("alice", None::<u64>) });
 
         // Below max_turns: should not compact.
-        assert!(!mgr.should_compact_now("alice", 15));
+        assert!(!mgr.should_compact_now("alice", 15, 0));
         // At max_turns: should compact.
-        assert!(mgr.should_compact_now("alice", 16));
+        assert!(mgr.should_compact_now("alice", 16, 0));
         // After compaction, compaction_triggered is set so tick won't double-fire.
         let triggered = mgr.with_state("alice", |s| s.compaction_triggered).unwrap();
         assert!(
@@ -2768,7 +2790,7 @@ api_key_env = "{interiority_env}"
         rt.block_on(async { mgr.ensure_state("alice", None::<u64>) });
 
         // Below max_turns and no pending flag: should not compact.
-        assert!(!mgr.should_compact_now("alice", 20));
+        assert!(!mgr.should_compact_now("alice", 20, 0));
 
         // Simulate idle trigger setting the pending flag.
         mgr.with_state("alice", |s| {
@@ -2776,7 +2798,7 @@ api_key_env = "{interiority_env}"
         });
 
         // Now should_compact_now should return true (and clear the flag).
-        assert!(mgr.should_compact_now("alice", 20));
+        assert!(mgr.should_compact_now("alice", 20, 0));
         // Flag should be cleared.
         let pending = mgr.with_state("alice", |s| s.compaction_pending).unwrap();
         assert!(!pending, "compaction_pending should be cleared after take");
@@ -2803,7 +2825,65 @@ api_key_env = "{interiority_env}"
         rt.block_on(async { mgr.ensure_state("alice", None::<u64>) });
 
         // Even above max_turns, disabled config means no compaction.
-        assert!(!mgr.should_compact_now("alice", 100));
+        assert!(!mgr.should_compact_now("alice", 100, 0));
+    }
+
+    #[test]
+    fn should_compact_now_fires_on_max_context_tokens() {
+        // Disable the turn-count trigger (max_turns well above anything we
+        // pass) so the token trigger is what decides.
+        let compaction = CompactionConfig {
+            enabled: true,
+            min_turns: 8,
+            max_turns: 10_000,
+            max_context_tokens: 30_000,
+            keep_recent_turns: 2,
+            ..Default::default()
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let (_tx, rx) = tokio::sync::watch::channel(());
+        let mgr =
+            AutonomyManager::new(Default::default(), compaction, tmp.path().to_path_buf(), rx);
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async { mgr.ensure_state("alice", None::<u64>) });
+
+        // Below threshold: no trigger.
+        assert!(!mgr.should_compact_now("alice", 10, 29_999));
+        // Below min_turns floor even though tokens exceed: no trigger.
+        assert!(!mgr.should_compact_now("alice", 5, 50_000));
+        // At threshold and above min_turns: trigger.
+        assert!(mgr.should_compact_now("alice", 10, 30_000));
+        // Flag was set.
+        let triggered = mgr.with_state("alice", |s| s.compaction_triggered).unwrap();
+        assert!(triggered);
+    }
+
+    #[test]
+    fn should_compact_now_ignores_context_tokens_when_disabled() {
+        // max_context_tokens = 0 disables the token trigger entirely.
+        let compaction = CompactionConfig {
+            enabled: true,
+            min_turns: 8,
+            max_turns: 10_000,
+            max_context_tokens: 0,
+            keep_recent_turns: 2,
+            ..Default::default()
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let (_tx, rx) = tokio::sync::watch::channel(());
+        let mgr =
+            AutonomyManager::new(Default::default(), compaction, tmp.path().to_path_buf(), rx);
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async { mgr.ensure_state("alice", None::<u64>) });
+
+        // Huge context, past min_turns — must not trigger when disabled.
+        assert!(!mgr.should_compact_now("alice", 100, 1_000_000));
     }
 
     #[test]
@@ -2827,7 +2907,7 @@ api_key_env = "{interiority_env}"
         rt.block_on(async { mgr.ensure_state("alice", None::<u64>) });
 
         // Trigger compaction.
-        assert!(mgr.should_compact_now("alice", 16));
+        assert!(mgr.should_compact_now("alice", 16, 0));
 
         // Simulate compaction complete.
         mgr.notify_compaction_complete("alice", 4);
@@ -2856,7 +2936,7 @@ api_key_env = "{interiority_env}"
         );
 
         // Should be able to trigger again.
-        assert!(mgr.should_compact_now("alice", 16));
+        assert!(mgr.should_compact_now("alice", 16, 0));
     }
 
     #[tokio::test]

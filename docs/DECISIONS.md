@@ -827,3 +827,38 @@ conversational continuity that the user is paying the LLM call for.
 existing in-tree call sites of `CompactionManager::compact` had to add `None`
 for the new parameter. ~13 callsite touches in the test suite, no functional
 change to the auto-compaction (background-trigger) path.
+
+### 2026-04-18 — Token-based compaction trigger (`max_context_tokens`)
+
+`CompactionConfig` gains a `max_context_tokens: usize` field (default `0` =
+disabled) that forces compaction when the just-completed turn's prompt context
+— `input_tokens + cache_read_tokens + cache_creation_tokens` — reaches the
+threshold. The `min_turns` floor still applies. The check runs alongside the
+existing `max_turns` trigger in `AutonomyManager::should_compact_now`, which
+now takes `context_tokens: usize` as a third parameter.
+
+**Why**: Turn count is a poor proxy for context cost because per-turn content
+varies by an order of magnitude (heavy-thinking/tool-use turns vs. light chat).
+A 30-day ledger simulation showed the per-call cost curve has an elbow around
+30K context — median cost roughly doubles above that. A token-driven trigger
+at 30K saved ~3.3% on typical days and ~8% on heavy-thinking spike days in
+simulation. `max_turns` alone can't capture this because a user can stay under
+their turn limit while each turn grows large.
+
+**Why default 0 (disabled) instead of 30000**: The elbow is empirical and
+character/model-specific (derived from Opus 4.7 pricing). Turning it on by
+default would change compaction frequency for existing users without warning.
+Opt-in preserves existing behavior; `docs/CONFIGURATION.md` recommends 30000
+for Opus 4.7 and points users at `shore usage --export-csv` to tune for their
+own workload.
+
+**Why use actual usage instead of estimating pre-send**: The measurement
+available at the trigger point (`result.usage` from the just-completed
+`StreamResult`) is the same quantity the ledger records and the simulation
+used. Running the prompt-length heuristic from `engine/prompt.rs` would
+introduce a second (less accurate) definition of context size and drift from
+what the ledger shows.
+
+**Sacrificed**: `should_compact_now`'s signature is now three-arg — every test
+caller had to be updated to pass `0` when it's testing the turn-based or idle
+path. Tolerable: 7 test callsites, all in one file.

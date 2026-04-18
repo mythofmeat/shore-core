@@ -219,10 +219,15 @@ enabled = true
 idle_trigger = "30m"       # trigger after this much inactivity
 min_turns = 8              # don't compact below this many user turns
 max_turns = 16             # force compaction at this many user turns
+max_context_tokens = 0     # force compaction when last turn's prompt
+                           # context (input + cache_read + cache_creation)
+                           # reaches this many tokens; 0 disables
 keep_recent_turns = 2      # user turns retained verbatim after compaction
 ```
 
 Compaction condenses old conversation turns into durable memory entries. `idle_trigger` is how long the session must be idle before compaction kicks in; `min_turns` / `max_turns` bracket when it's allowed to run; `keep_recent_turns` controls how much recent conversation stays verbatim.
+
+`max_context_tokens` is a cost-driven trigger complementary to `max_turns`: per-turn content varies wildly (heavy-thinking turns are several times larger than light chat), so turn count is a poor proxy for context cost. Setting this to a non-zero value triggers compaction when the just-completed turn's prompt tokens cross the threshold (still floored by `min_turns` to prevent thrash). A value around **30000** is empirically sensible for Opus 4.7 — the per-call cost curve has an elbow near 30K where median cost roughly doubles. Tune it for your model and conversation shape; recorded call sizes are in the ledger CSV (`shore usage --export-csv`).
 
 ### `[memory.collation]`
 

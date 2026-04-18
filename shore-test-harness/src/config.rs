@@ -147,6 +147,7 @@ impl TestConfigBuilder {
                 idle_trigger: ConfigDuration::from_secs(86400), // very long — tests use max_turns
                 min_turns: self.compaction_min_turns.unwrap_or(2),
                 max_turns: self.compaction_max_turns.unwrap_or(16),
+                max_context_tokens: 0,
                 keep_recent_turns: self.compaction_keep_recent.unwrap_or(2),
             };
             // Also set a default embedding profile name.

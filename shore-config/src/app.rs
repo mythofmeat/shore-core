@@ -232,6 +232,11 @@ pub struct CompactionConfig {
     /// Force compaction when this user turn count is reached.
     #[serde(default = "default_max_turns")]
     pub max_turns: usize,
+    /// Force compaction when the last turn's prompt context
+    /// (input + cache_read + cache_creation) reaches this token count.
+    /// Still floored by `min_turns`. 0 disables the token-based trigger.
+    #[serde(default = "default_max_context_tokens")]
+    pub max_context_tokens: usize,
     /// User turns retained in active.jsonl after compaction.
     #[serde(default = "default_keep_recent_turns")]
     pub keep_recent_turns: usize,
@@ -240,6 +245,7 @@ pub struct CompactionConfig {
 serde_default!(default_idle_trigger -> ConfigDuration { ConfigDuration::from_secs(1800) });
 serde_default!(default_min_turns -> usize { 8 });
 serde_default!(default_max_turns -> usize { 16 });
+serde_default!(default_max_context_tokens -> usize { 0 });
 serde_default!(default_keep_recent_turns -> usize { 2 });
 
 impl Default for CompactionConfig {
@@ -249,6 +255,7 @@ impl Default for CompactionConfig {
             idle_trigger: default_idle_trigger(),
             min_turns: default_min_turns(),
             max_turns: default_max_turns(),
+            max_context_tokens: default_max_context_tokens(),
             keep_recent_turns: default_keep_recent_turns(),
         }
     }
