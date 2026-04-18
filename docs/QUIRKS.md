@@ -68,6 +68,8 @@ Scope guardrails:
 
 ## Build Toolchain
 
+- **`StreamEnd` for the final phase is emitted after persistence — not when the LLM stream ends.** `StreamConsumer::consume` (`shore-llm-client/src/stream.rs`) does NOT emit `StreamEnd` itself; the orchestrator emits it. For intermediate `tool_use` phases, `run_tool_loop` emits `StreamEnd(tool_use)` immediately so clients can render tool calls. For the final phase, `handler/task.rs` emits `StreamEnd(end_turn)` only after `persist_and_notify` completes. This closes a race where a client (e.g. shore-mcp) issuing a back-to-back `send` + `memory_compact` would see compact snapshot stale engine state — the just-streamed assistant message hadn't been appended yet — and write an empty `active.jsonl`, only for the pending persist to land afterwards as a one-line orphan. With this ordering, "client received `StreamEnd`" implies "the message is durable," and any follow-up command sees consistent state.
+
 - **`find_turn_split` needs an explicit `keep_turns == 0` guard.** The natural
   reading of the loop ("walk right-to-left, return when `turns_seen >= keep_turns`")
   silently misbehaves at zero: `turns_seen` is incremented *before* the

@@ -26,9 +26,15 @@ impl StreamConsumer {
 
     /// Consume a streaming response from shore-llm.
     ///
-    /// Reads newline-delimited JSON events, emits `StreamStart`,
-    /// `StreamChunk`, and `StreamEnd` to the requesting SWP session, and returns
-    /// the accumulated `StreamResult` with metadata.
+    /// Reads newline-delimited JSON events, emits `StreamStart` and
+    /// `StreamChunk` to the requesting SWP session, and returns the
+    /// accumulated `StreamResult` with metadata.
+    ///
+    /// Does NOT emit `StreamEnd` — that is the caller's responsibility, so it
+    /// can be deferred until after persistence (avoiding the race where a
+    /// follow-up command snapshots engine state before the freshly-streamed
+    /// message has been appended). Use [`emit_stream_end`] after the message
+    /// is durable.
     pub async fn consume(
         &self,
         reader: &mut BufReader<impl AsyncRead + Unpin>,
@@ -183,19 +189,6 @@ impl StreamConsumer {
                         &mut content_blocks,
                         &mut pending_signature,
                     );
-                    let metadata = StreamMetadata {
-                        tokens: TokenCounts {
-                            input: usage.input_tokens,
-                            output: usage.output_tokens,
-                            cache_read: usage.cache_read_tokens,
-                            cache_write: usage.cache_creation_tokens,
-                        },
-                        timing: TimingInfo {
-                            total_ms: timing.total_ms,
-                            ttft_ms: timing.time_to_first_token_ms,
-                        },
-                        model: model.clone(),
-                    };
 
                     info!(
                         model = %model,
@@ -208,16 +201,7 @@ impl StreamConsumer {
                         "Stream completed"
                     );
 
-                    // Emit stream_end to the requesting SWP session.
-                    let _ = self
-                        .direct_tx
-                        .send(ServerMessage::StreamEnd(StreamEnd {
-                            rid: self.rid.clone(),
-                            content: content.clone(),
-                            metadata,
-                            finish_reason: finish_reason.clone(),
-                        }))
-                        .await;
+                    // StreamEnd is emitted by the caller — see emit_stream_end.
 
                     return Ok(StreamResult {
                         content,
@@ -232,6 +216,40 @@ impl StreamConsumer {
             }
         }
     }
+}
+
+/// Emit a `StreamEnd` SWP frame describing a completed stream.
+///
+/// Callers should invoke this after the message is durable (i.e. after
+/// persistence completes for the final phase, or immediately for
+/// intermediate `tool_use` phases that drive a tool loop). See the
+/// `StreamConsumer::consume` docs for the rationale.
+pub async fn emit_stream_end(
+    tx: &mpsc::Sender<ServerMessage>,
+    rid: Option<String>,
+    result: &StreamResult,
+) {
+    let metadata = StreamMetadata {
+        tokens: TokenCounts {
+            input: result.usage.input_tokens,
+            output: result.usage.output_tokens,
+            cache_read: result.usage.cache_read_tokens,
+            cache_write: result.usage.cache_creation_tokens,
+        },
+        timing: TimingInfo {
+            total_ms: result.timing.total_ms,
+            ttft_ms: result.timing.time_to_first_token_ms,
+        },
+        model: result.model.clone(),
+    };
+    let _ = tx
+        .send(ServerMessage::StreamEnd(StreamEnd {
+            rid,
+            content: result.content.clone(),
+            metadata,
+            finish_reason: result.finish_reason.clone(),
+        }))
+        .await;
 }
 
 #[cfg(test)]
@@ -255,7 +273,7 @@ mod tests {
     #[tokio::test]
     async fn consume_simple_stream() {
         let (mut writer, mut reader, direct_tx, mut direct_rx) = setup_stream_pair();
-        let consumer = StreamConsumer::new(direct_tx, None);
+        let consumer = StreamConsumer::new(direct_tx.clone(), None);
 
         // Write stream events from "server".
         let events = [
@@ -285,7 +303,8 @@ mod tests {
         assert_eq!(result.timing.time_to_first_token_ms, 50);
         assert!(result.tool_uses.is_empty());
 
-        // Verify direct messages.
+        // Verify direct messages.  consume() emits StreamStart + StreamChunks
+        // but NOT StreamEnd (caller emits via emit_stream_end after persistence).
         let msg1 = direct_rx.recv().await.unwrap();
         assert!(matches!(
             msg1,
@@ -312,6 +331,15 @@ mod tests {
             }
             other => panic!("Expected StreamChunk, got {:?}", other),
         }
+
+        // consume() must NOT have emitted a StreamEnd yet.
+        assert!(
+            direct_rx.try_recv().is_err(),
+            "consume() should not emit StreamEnd; caller is responsible"
+        );
+
+        // The caller emits via emit_stream_end.
+        emit_stream_end(&direct_tx, None, &result).await;
 
         let msg4 = direct_rx.recv().await.unwrap();
         match msg4 {
@@ -784,7 +812,7 @@ mod tests {
     #[tokio::test]
     async fn consume_stream_echoes_request_id() {
         let (mut writer, mut reader, direct_tx, mut direct_rx) = setup_stream_pair();
-        let consumer = StreamConsumer::new(direct_tx, Some("req_stream_01".into()));
+        let consumer = StreamConsumer::new(direct_tx.clone(), Some("req_stream_01".into()));
 
         let server_handle = tokio::spawn(async move {
             writer
@@ -802,7 +830,7 @@ mod tests {
             writer.shutdown().await.unwrap();
         });
 
-        consumer.consume(&mut reader, false).await.unwrap();
+        let result = consumer.consume(&mut reader, false).await.unwrap();
 
         match direct_rx.recv().await.unwrap() {
             ServerMessage::StreamStart(msg) => {
@@ -816,6 +844,9 @@ mod tests {
             }
             other => panic!("Expected StreamChunk, got {:?}", other),
         }
+
+        // The caller emits StreamEnd, propagating the same rid.
+        emit_stream_end(&direct_tx, Some("req_stream_01".into()), &result).await;
         match direct_rx.recv().await.unwrap() {
             ServerMessage::StreamEnd(msg) => assert_eq!(msg.rid.as_deref(), Some("req_stream_01")),
             other => panic!("Expected StreamEnd, got {:?}", other),

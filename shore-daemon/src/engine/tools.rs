@@ -67,6 +67,12 @@ pub async fn run_tool_loop(
             });
         }
 
+        // Emit StreamEnd for the prior LLM phase now that we've decided to
+        // continue with tool execution. Intermediate phases are emitted
+        // immediately (clients need the boundary to render tool calls); only
+        // the FINAL phase's StreamEnd is deferred until after persistence.
+        shore_llm_client::stream::emit_stream_end(direct_tx, request.rid.clone(), &result).await;
+
         info!(
             iteration = iteration + 1,
             max = max_iterations,
@@ -499,6 +505,19 @@ mod tests {
         assert!(!result.intermediate_messages[0].content_blocks.is_empty());
         assert!(!result.intermediate_messages[1].content_blocks.is_empty());
 
+        // The intermediate StreamEnd (for the initial tool_use phase) is now
+        // emitted by run_tool_loop itself before the tool dispatch — clients
+        // need this boundary to render tool calls. The FINAL StreamEnd is
+        // deferred to the caller (after persistence), so it is NOT in this
+        // event sequence.
+        let intermediate_end = push_rx.try_recv().unwrap();
+        match intermediate_end {
+            ServerMessage::StreamEnd(end) => {
+                assert_eq!(end.finish_reason, "tool_use");
+            }
+            other => panic!("Expected intermediate StreamEnd(tool_use), got {:?}", other),
+        }
+
         let tc = push_rx.try_recv().unwrap();
         match tc {
             ServerMessage::ToolCall(call) => {
@@ -527,8 +546,11 @@ mod tests {
         assert!(matches!(ss, ServerMessage::StreamStart(_)));
         let sc = push_rx.try_recv().unwrap();
         assert!(matches!(sc, ServerMessage::StreamChunk(_)));
-        let se = push_rx.try_recv().unwrap();
-        assert!(matches!(se, ServerMessage::StreamEnd(_)));
+        // No final StreamEnd from the consumer — caller emits it post-persist.
+        assert!(
+            push_rx.try_recv().is_err(),
+            "tool loop must not emit the final StreamEnd; caller emits after persist"
+        );
 
         assert_eq!(request.messages.len(), 3);
         assert_eq!(request.messages[1]["content"][0]["name"], "check_time");
@@ -624,6 +646,11 @@ mod tests {
 
         // LLM should have received the error and responded.
         assert_eq!(result.result.finish_reason, "end_turn");
+
+        // The tool loop emits the intermediate StreamEnd(tool_use) before
+        // dispatching tools.
+        let intermediate_end = push_rx.try_recv().unwrap();
+        assert!(matches!(intermediate_end, ServerMessage::StreamEnd(_)));
 
         // ToolCall event should be present.
         let tc = push_rx.try_recv().unwrap();
@@ -738,6 +765,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(result.result.finish_reason, "end_turn");
+
+        // Drain the intermediate StreamEnd(tool_use) emitted before the tool dispatch.
+        let intermediate_end = push_rx.try_recv().unwrap();
+        assert!(matches!(intermediate_end, ServerMessage::StreamEnd(_)));
 
         // Should have ToolCall + ToolResult for each tool (4 events), then stream events.
         let mut tool_calls = vec![];
