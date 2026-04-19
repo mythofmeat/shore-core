@@ -40,8 +40,10 @@ export interface DaemonHandle {
   status: ConnectionStatus | null;
   events: EventItem[];
   lastAddr: string;
+  streaming: boolean;
   connect: (addr?: string, character?: string) => Promise<void>;
   disconnect: () => Promise<void>;
+  cancel: () => Promise<void>;
   send: (text: string) => Promise<void>;
 }
 
@@ -56,6 +58,7 @@ function readStoredAddr(): string {
 export function useDaemon(): DaemonHandle {
   const [status, setStatus] = useState<ConnectionStatus | null>(null);
   const [events, setEvents] = useState<EventItem[]>([]);
+  const [streaming, setStreaming] = useState(false);
   const lastAddrRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -76,7 +79,10 @@ export function useDaemon(): DaemonHandle {
         }
       });
       unlistenMsg = await listen<ServerMessageEvent>("server-message", (e) => {
-        setEvents((prev) => [...prev, { source: "stream", message: e.payload }]);
+        const msg = e.payload;
+        if (msg.type === "stream_start") setStreaming(true);
+        else if (msg.type === "stream_end" || msg.type === "error") setStreaming(false);
+        setEvents((prev) => [...prev, { source: "stream", message: msg }]);
       });
 
       const stored = readStoredAddr();
@@ -102,12 +108,26 @@ export function useDaemon(): DaemonHandle {
   }, []);
 
   const disconnect = useCallback(async () => {
+    setStreaming(false);
     await invoke("disconnect");
+  }, []);
+
+  const cancel = useCallback(async () => {
+    await invoke("cancel");
   }, []);
 
   const send = useCallback(async (text: string) => {
     await invoke("send_message", { text });
   }, []);
 
-  return { status, events, lastAddr: readStoredAddr(), connect, disconnect, send };
+  return {
+    status,
+    events,
+    lastAddr: readStoredAddr(),
+    streaming,
+    connect,
+    disconnect,
+    cancel,
+    send,
+  };
 }

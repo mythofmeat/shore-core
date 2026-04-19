@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useDaemon, type ConnectionStatus } from "./hooks/useDaemon.ts";
 
 function statusLabel(status: ConnectionStatus | null): string {
@@ -8,7 +8,8 @@ function statusLabel(status: ConnectionStatus | null): string {
 }
 
 export default function App() {
-  const { status, events, lastAddr, connect, disconnect, send } = useDaemon();
+  const { status, events, lastAddr, streaming, connect, disconnect, cancel, send } =
+    useDaemon();
   const [input, setInput] = useState("");
   const [addr, setAddr] = useState(lastAddr);
 
@@ -20,6 +21,17 @@ export default function App() {
     await send(text);
     setInput("");
   };
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && streaming) {
+        e.preventDefault();
+        void cancel();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [streaming, cancel]);
 
   return (
     <main className="min-h-screen flex flex-col">
@@ -34,6 +46,15 @@ export default function App() {
             onChange={(e) => setAddr(e.target.value)}
             disabled={connected}
           />
+          {streaming && (
+            <button
+              onClick={cancel}
+              className="text-xs px-3 py-1 bg-red-600 rounded hover:bg-red-500"
+              title="Esc"
+            >
+              Cancel
+            </button>
+          )}
           {connected ? (
             <button
               onClick={disconnect}

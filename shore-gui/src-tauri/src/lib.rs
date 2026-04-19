@@ -1,6 +1,6 @@
 use serde::Serialize;
 use shore_client::{spawn_connection, ConnCommand, ConnEvent};
-use shore_protocol::client_msg::{ClientMessage, ClientMessageBody};
+use shore_protocol::client_msg::{Cancel, ClientMessage, ClientMessageBody};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, warn};
@@ -106,6 +106,15 @@ async fn send_message(text: String, state: State<'_, AppState>) -> Result<(), St
 }
 
 #[tauri::command]
+async fn cancel(state: State<'_, AppState>) -> Result<(), String> {
+    let guard = state.connection.lock().await;
+    let tx = guard.as_ref().ok_or("not connected")?;
+    tx.send(ConnCommand::Send(ClientMessage::Cancel(Cancel {})))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn disconnect(state: State<'_, AppState>) -> Result<(), String> {
     let mut guard = state.connection.lock().await;
     if let Some(tx) = guard.take() {
@@ -138,7 +147,12 @@ pub fn run() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![connect, send_message, disconnect])
+        .invoke_handler(tauri::generate_handler![
+            connect,
+            send_message,
+            cancel,
+            disconnect,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
