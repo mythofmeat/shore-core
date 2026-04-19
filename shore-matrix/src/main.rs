@@ -110,6 +110,8 @@ struct MatrixFileConfig {
 struct EmbeddedFileConfig {
     #[serde(default = "default_server_name")]
     server_name: String,
+    #[serde(default = "default_bind_address")]
+    bind_address: String,
     #[serde(default = "default_port")]
     port: u16,
     #[serde(default = "default_admin_user")]
@@ -124,6 +126,9 @@ fn default_true() -> bool {
 }
 fn default_server_name() -> String {
     "localhost".into()
+}
+fn default_bind_address() -> String {
+    "127.0.0.1".into()
 }
 fn default_port() -> u16 {
     6167
@@ -256,19 +261,23 @@ async fn run_embedded(
         None => HomeserverPaths::new(),
     };
 
-    // 2. Load or initialize embedded state
-    let homeserver_url = format!("http://127.0.0.1:{}", embedded.port);
-    let (mut embedded_state, mut first_run) =
-        load_or_init_state(&hs_paths, embedded, &homeserver_url)?;
-
-    // 3. Build HomeserverConfig
-    let hs_config = HomeserverConfig {
+    // 2. Build HomeserverConfig (without registration_token yet — filled in
+    //    after state load). We construct it early so `homeserver_url()` is the
+    //    single source of truth for the local-bridge URL.
+    let mut hs_config = HomeserverConfig {
         server_name: embedded.server_name.clone(),
+        bind_address: embedded.bind_address.clone(),
         port: embedded.port,
         data_dir: hs_paths.server_dir.clone(),
-        registration_token: embedded_state.registration_token.clone(),
+        registration_token: String::new(),
         allow_federation: false,
     };
+    let homeserver_url = hs_config.homeserver_url();
+
+    // 3. Load or initialize embedded state
+    let (mut embedded_state, mut first_run) =
+        load_or_init_state(&hs_paths, embedded, &homeserver_url)?;
+    hs_config.registration_token = embedded_state.registration_token.clone();
 
     // 4. Start homeserver
     let mut hs_manager = HomeserverManager::new(hs_config, embedded.binary.clone());

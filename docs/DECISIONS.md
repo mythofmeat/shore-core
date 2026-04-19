@@ -1046,3 +1046,13 @@ vs. which are ephemeral (everything else), and to tell the character to
 leave pointers in `<recap>` when scratchpad files or memory entries need
 to be retrieved next session. Recap was also promoted from optional to
 mandatory in the prompt text, matching the daemon's wrap-up enforcement.
+
+### 2026-04-19 — Embedded Matrix homeserver bind address is configurable
+
+`shore-matrix` now accepts `bind_address` under `[connections.matrix.embedded]` (default `"127.0.0.1"`, preserving prior behavior). Previously the conduwuit `address` field was hardcoded to `127.0.0.1` in `HomeserverConfig::generate_config`, making the embedded homeserver unreachable from LAN/Tailscale clients regardless of port-forwarding or firewall rules.
+
+**Why:** The whole point of running an embedded homeserver is to use a real Matrix client (Element on a phone, another laptop) against it. Forcing loopback-only defeats that.
+
+**Local bridge behavior:** `HomeserverConfig::homeserver_url()` substitutes `127.0.0.1` when the user binds `0.0.0.0` (or `::`), since the bridge runs on the same host. For any other bind address (e.g. a specific Tailscale IP like `100.64.0.5`), the bridge dials that address directly — it's reachable from the local host either way, and using a single source-of-truth method for the URL keeps the wiring simple.
+
+**Trade-off:** No multi-listener support. Conduwuit accepts `address = ["127.0.0.1", "::1"]` as a list, but our field is a single string. Users who need both loopback and a LAN IP either pick one or use `0.0.0.0` and let the kernel sort it out. Can be revisited if anyone hits it.

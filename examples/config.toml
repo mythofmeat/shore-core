@@ -147,6 +147,9 @@ model = "claude-sonnet"            # Must match a key in [chat.*.*] below
 # admin_password = "your-admin-pass"   # Required
 # port = 6167
 # admin_user = "shore-admin"
+# # bind_address = "127.0.0.1"         # Default: loopback only. Use "0.0.0.0" for
+#                                      # all interfaces, or a specific LAN/Tailscale
+#                                      # IP to expose the homeserver to other devices.
 # # data_dir = "..."                   # Default: $XDG_DATA_HOME/shore/matrix-server/
 # # binary = "continuwuity"            # Default: auto-detect
 

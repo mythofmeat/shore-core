@@ -10,6 +10,10 @@ use tracing::{error, info, warn};
 pub struct HomeserverConfig {
     /// Server name (e.g. "shore.local"). Cannot be changed after first run.
     pub server_name: String,
+    /// Address the homeserver binds to. Use `0.0.0.0` for all interfaces, or
+    /// a specific LAN/Tailscale IP. The local bridge always reaches the
+    /// homeserver via loopback when this is `0.0.0.0`.
+    pub bind_address: String,
     /// HTTP listener port.
     pub port: u16,
     /// Path to the data directory (RocksDB, media, etc.).
@@ -25,6 +29,7 @@ impl Default for HomeserverConfig {
         let data_dir = shore_config::data_dir().join("matrix-server");
         Self {
             server_name: "localhost".to_string(),
+            bind_address: "127.0.0.1".to_string(),
             port: 6167,
             data_dir,
             registration_token: String::new(),
@@ -46,7 +51,7 @@ impl HomeserverConfig {
 server_name = "{server_name}"
 database_path = "{db_path}"
 port = {port}
-address = "127.0.0.1"
+address = "{address}"
 max_request_size = 20_000_000
 allow_registration = true
 registration_token = "{reg_token}"
@@ -58,14 +63,23 @@ log = "warn,state_res=warn"
             server_name = self.server_name,
             db_path = db_path.display(),
             port = self.port,
+            address = self.bind_address,
             reg_token = self.registration_token,
             federation = self.allow_federation,
         )
     }
 
-    /// The homeserver URL for this config.
+    /// URL the local bridge uses to reach the homeserver. When the server
+    /// binds to `0.0.0.0` we reach it through loopback; otherwise the bind
+    /// address is reachable from the local host directly (loopback IP, LAN
+    /// IP, or Tailscale IP — all work).
     pub fn homeserver_url(&self) -> String {
-        format!("http://127.0.0.1:{}", self.port)
+        let host = if self.bind_address == "0.0.0.0" || self.bind_address == "::" {
+            "127.0.0.1"
+        } else {
+            self.bind_address.as_str()
+        };
+        format!("http://{host}:{}", self.port)
     }
 }
 
@@ -284,6 +298,7 @@ mod tests {
     fn default_config() {
         let config = HomeserverConfig::default();
         assert_eq!(config.server_name, "localhost");
+        assert_eq!(config.bind_address, "127.0.0.1");
         assert_eq!(config.port, 6167);
         assert!(!config.allow_federation);
         let data_dir_str = config.data_dir.to_string_lossy();
@@ -297,6 +312,7 @@ mod tests {
     fn generate_config_contains_required_fields() {
         let config = HomeserverConfig {
             server_name: "test.shore.local".to_string(),
+            bind_address: "0.0.0.0".to_string(),
             port: 9999,
             data_dir: PathBuf::from("/tmp/test-matrix"),
             registration_token: "secret_token_123".to_string(),
@@ -304,6 +320,7 @@ mod tests {
         };
         let toml = config.generate_config();
         assert!(toml.contains("server_name = \"test.shore.local\""));
+        assert!(toml.contains("address = \"0.0.0.0\""));
         assert!(toml.contains("port = 9999"));
         assert!(toml.contains("registration_token = \"secret_token_123\""));
         assert!(
@@ -326,12 +343,32 @@ mod tests {
     }
 
     #[test]
-    fn homeserver_url() {
+    fn homeserver_url_loopback_default() {
         let config = HomeserverConfig {
             port: 8448,
             ..HomeserverConfig::default()
         };
         assert_eq!(config.homeserver_url(), "http://127.0.0.1:8448");
+    }
+
+    #[test]
+    fn homeserver_url_wildcard_bind_uses_loopback() {
+        let config = HomeserverConfig {
+            bind_address: "0.0.0.0".to_string(),
+            port: 6167,
+            ..HomeserverConfig::default()
+        };
+        assert_eq!(config.homeserver_url(), "http://127.0.0.1:6167");
+    }
+
+    #[test]
+    fn homeserver_url_specific_address_used_directly() {
+        let config = HomeserverConfig {
+            bind_address: "100.64.0.5".to_string(),
+            port: 6167,
+            ..HomeserverConfig::default()
+        };
+        assert_eq!(config.homeserver_url(), "http://100.64.0.5:6167");
     }
 
     #[test]
