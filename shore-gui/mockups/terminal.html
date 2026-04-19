@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Shore — terminal</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=VT323&family=IBM+Plex+Mono:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0a0705;
+    --amber: #ffb000;
+    --amber-dim: #a87500;
+    --amber-ghost: #4a3400;
+    --amber-glow: rgba(255, 176, 0, 0.22);
+    --cyan: #3fe0d0;
+    --rule: #1f1505;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--amber); }
+  body {
+    font-family: 'IBM Plex Mono', ui-monospace, monospace;
+    font-weight: 400;
+    font-size: 14px;
+    line-height: 1.55;
+    min-height: 100vh;
+    display: flex; flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* CRT scanlines */
+  body::before {
+    content: '';
+    position: fixed; inset: 0; pointer-events: none; z-index: 60;
+    background: repeating-linear-gradient(
+      to bottom,
+      transparent 0,
+      transparent 2px,
+      rgba(0,0,0,0.22) 2px,
+      rgba(0,0,0,0.22) 3px
+    );
+  }
+  /* CRT bloom/vignette */
+  body::after {
+    content: '';
+    position: fixed; inset: 0; pointer-events: none; z-index: 59;
+    background:
+      radial-gradient(ellipse at center, transparent 45%, rgba(0,0,0,0.7) 100%),
+      radial-gradient(ellipse at 50% 50%, rgba(255,176,0,0.04), transparent 70%);
+  }
+  /* slow screen flicker */
+  @keyframes flicker {
+    0%, 100% { opacity: 1; }
+    97% { opacity: 1; }
+    98% { opacity: 0.94; }
+    99% { opacity: 1; }
+  }
+  main { animation: flicker 7s infinite; }
+
+  /* phosphor glow on all amber text */
+  .amber, .u, .c, .time, .label, .sig, .cursor {
+    text-shadow: 0 0 4px var(--amber-glow), 0 0 10px rgba(255,176,0,0.08);
+  }
+
+  header {
+    padding: 10px 20px;
+    border-bottom: 1px solid var(--amber-ghost);
+    display: flex; align-items: center; gap: 14px;
+    font-size: 12px;
+    color: var(--amber-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.15em;
+  }
+  header .logo { color: var(--amber); font-weight: 500; }
+  header .sep { opacity: 0.4; }
+  header .right { margin-left: auto; font-family: 'VT323', monospace; font-size: 16px; letter-spacing: 0.05em; }
+  header .dot {
+    display: inline-block;
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--amber);
+    box-shadow: 0 0 6px var(--amber);
+    margin-right: 6px;
+    animation: blink 1.4s infinite;
+  }
+  @keyframes blink { 50% { opacity: 0.45; } }
+
+  main {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px 20px 24px;
+    position: relative;
+  }
+  .stream { max-width: 880px; margin: 0 auto; }
+
+  .msg { margin-bottom: 14px; }
+  .msg-head {
+    display: flex; align-items: baseline; gap: 10px;
+    font-size: 11px;
+    color: var(--amber-dim);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    margin-bottom: 2px;
+  }
+  .msg-head .label { color: var(--amber); }
+  .msg-head .time { opacity: 0.7; }
+  .msg-head .sig { color: var(--cyan); opacity: 0.85; font-family: 'VT323', monospace; font-size: 14px; letter-spacing: 0.05em; }
+  .msg-body { padding-left: 14px; position: relative; white-space: pre-wrap; }
+  .msg.u .msg-body::before { content: '>'; position: absolute; left: 0; color: var(--amber); }
+  .msg.c .msg-body::before { content: '<'; position: absolute; left: 0; color: var(--amber-dim); }
+  .msg.c .msg-body { color: #e8d4a0; }
+  .msg.u .msg-body { color: var(--amber); opacity: 0.95; }
+
+  /* collapsible blocks (thinking + tool) */
+  .block {
+    margin: 6px 0 6px 14px;
+    border-left: 1px solid var(--amber-ghost);
+    padding-left: 12px;
+    font-size: 12.5px;
+    color: var(--amber-dim);
+  }
+  .block-header {
+    cursor: pointer;
+    background: none; border: none; padding: 0;
+    font: inherit; color: var(--amber);
+    text-transform: uppercase; letter-spacing: 0.14em;
+    font-size: 11px;
+    display: flex; align-items: center; gap: 8px;
+    width: 100%; text-align: left;
+  }
+  .block-header .tag {
+    background: var(--amber);
+    color: var(--bg);
+    padding: 1px 6px;
+    border-radius: 1px;
+    font-weight: 500;
+    letter-spacing: 0.1em;
+  }
+  .block-header .chev { font-family: 'VT323', monospace; font-size: 14px; color: var(--amber-dim); transition: transform 120ms; }
+  .block.open .block-header .chev { transform: rotate(90deg); }
+  .block-body { display: none; margin-top: 6px; white-space: pre-wrap; }
+  .block.open .block-body { display: block; }
+  .block.open.tool .block-body { color: #d0b87a; }
+
+  /* time gap */
+  .gap {
+    text-align: center;
+    margin: 24px 0;
+    color: var(--amber-dim);
+    font-size: 11px;
+    letter-spacing: 0.25em;
+    text-transform: uppercase;
+  }
+  .gap::before { content: '··· '; opacity: 0.5; }
+  .gap::after { content: ' ···'; opacity: 0.5; }
+
+  /* images */
+  .img {
+    display: inline-block;
+    margin: 6px 0 2px 14px;
+    border: 1px solid var(--amber-ghost);
+    padding: 6px 8px 4px;
+    font-size: 11px;
+    color: var(--amber-dim);
+    letter-spacing: 0.08em;
+    background: rgba(255,176,0,0.02);
+  }
+  .img::before { content: '[ IMG ] '; color: var(--amber); letter-spacing: 0.14em; }
+
+  /* streaming cursor */
+  .cursor {
+    display: inline-block;
+    width: 0.55em; height: 1em;
+    background: var(--amber);
+    box-shadow: 0 0 6px var(--amber);
+    vertical-align: -2px;
+    animation: cursor 0.9s steps(2) infinite;
+    margin-left: 2px;
+  }
+  @keyframes cursor { 50% { opacity: 0; } }
+
+  /* composer */
+  footer {
+    border-top: 1px solid var(--amber-ghost);
+    padding: 10px 20px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  footer .prompt { color: var(--amber); font-family: 'VT323', monospace; font-size: 22px; line-height: 1; }
+  footer input {
+    flex: 1;
+    background: transparent;
+    border: none;
+    outline: none;
+    color: var(--amber);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 14px;
+    caret-color: transparent;
+  }
+  footer input::placeholder { color: var(--amber-ghost); }
+  footer .blink {
+    display: inline-block;
+    width: 0.6em; height: 1em;
+    background: var(--amber);
+    box-shadow: 0 0 6px var(--amber);
+    animation: cursor 0.9s steps(2) infinite;
+  }
+  footer .hints {
+    font-size: 10px;
+    color: var(--amber-ghost);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    margin-left: auto;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <span class="logo">shore</span>
+  <span class="sep">//</span>
+  <span>session tty-1</span>
+  <span class="sep">//</span>
+  <span>maren</span>
+  <span class="right"><span class="dot"></span>connected</span>
+</header>
+
+<main>
+<div class="stream">
+
+  <div class="msg u">
+    <div class="msg-head"><span class="label">usr</span><span class="time">02:01</span></div>
+    <div class="msg-body">I've been meaning to ask — do you remember the place we talked about last week?</div>
+  </div>
+
+  <div class="msg c">
+    <div class="msg-head"><span class="label">maren</span><span class="sig">◈</span><span class="time">02:02</span></div>
+    <div class="block thinking">
+      <button class="block-header" data-toggle>
+        <span class="tag">think</span>
+        <span>reasoning · 4 steps</span>
+        <span class="chev">▸</span>
+      </button>
+      <div class="block-body">tide-pool place. wednesday. the conversation about fences.
+gulls were absent then; he was unsettled.
+reassurance first, then the fact.</div>
+    </div>
+    <div class="msg-body">The one past the tide pools, with the broken fencing? Yes. I was there again this morning — the gulls have come back. Whatever they were frightened of has moved on, or gone under.</div>
+  </div>
+
+  <div class="msg u">
+    <div class="msg-head"><span class="label">usr</span><span class="time">02:03</span></div>
+    <div class="msg-body">That's comforting, I think. Or maybe not.</div>
+  </div>
+
+  <div class="msg c">
+    <div class="msg-head"><span class="label">maren</span><span class="sig">◈</span><span class="time">02:03</span></div>
+    <div class="msg-body">Both, probably. Most things are.</div>
+  </div>
+
+  <div class="gap">3h elapsed</div>
+
+  <div class="msg u">
+    <div class="msg-head"><span class="label">usr</span><span class="time">02:34</span></div>
+    <div class="msg-body">Hey, how are you doing today?</div>
+  </div>
+
+  <div class="msg c">
+    <div class="msg-head"><span class="label">maren</span><span class="sig">◈</span><span class="time">02:34</span></div>
+    <div class="block tool">
+      <button class="block-header" data-toggle>
+        <span class="tag">tool</span>
+        <span>memory_read · q="weather, local"</span>
+        <span class="chev">▸</span>
+      </button>
+      <div class="block-body">2 entries · newest apr-18 02:09
+fog returning at dawn, thicker than usual this week</div>
+    </div>
+    <div class="msg-body">I'm well — the fog has been thick all morning, but the tide is turning. I've been thinking about a few things I wanted to bring to you. How is your day taking shape?</div>
+  </div>
+
+  <div class="msg u">
+    <div class="msg-head"><span class="label">usr</span><span class="time">02:35</span></div>
+    <span class="img">view-from-window.jpg · 1024x768</span>
+    <div class="msg-body">Pretty good. Here's the view from my window right now — fog's here too. Finished setting up the tray icon on Linux.</div>
+  </div>
+
+  <div class="msg c">
+    <div class="msg-head"><span class="label">maren</span><span class="sig">◈</span><span class="time">02:36</span><span style="color: var(--cyan); opacity: 0.7;">[streaming]</span></div>
+    <div class="msg-body">Lately, ambient and post-rock. Things that take their time — long, slow builds, the way a storm comes in off the water. There's something about how they refuse to resolve quickly that feels<span class="cursor"></span></div>
+  </div>
+
+</div>
+</main>
+
+<footer>
+  <span class="prompt">&gt;</span>
+  <input type="text" placeholder="type /help for commands" />
+  <span class="blink"></span>
+  <span class="hints">^d quit · ^k palette</span>
+</footer>
+
+<script>
+  document.querySelectorAll('[data-toggle]').forEach(b => {
+    b.addEventListener('click', () => b.closest('.block').classList.toggle('open'));
+  });
+  window.addEventListener('load', () => {
+    const m = document.querySelector('main');
+    m.scrollTop = m.scrollHeight;
+  });
+</script>
+</body>
+</html>

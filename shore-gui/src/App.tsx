@@ -1,43 +1,28 @@
-import { useEffect, useState } from "react";
-import { useDaemon, type ConnectionStatus } from "./hooks/useDaemon.ts";
+import { useEffect, useMemo, useRef } from "react";
+import { useDaemon } from "./hooks/useDaemon.ts";
 import { useAssistantMessageNotifications } from "./hooks/useNotifications.ts";
+import { Composer } from "./components/Composer.tsx";
+import { Message, StreamingIndicator } from "./components/Message.tsx";
+import { deriveMessages } from "./lib/messages.ts";
 
-function statusLabel(status: ConnectionStatus | null): string {
-  if (!status) return "idle";
-  if (status.kind === "connected") return `connected — ${status.server_name}`;
-  return `disconnected — ${status.reason}`;
-}
+const DEFAULT_CHARACTER_NAME = "Shore";
 
 export default function App() {
-  const {
-    status,
-    events,
-    lastAddr,
-    streaming,
-    lastStreamEnd,
-    connect,
-    disconnect,
-    cancel,
-    quit,
-    send,
-  } = useDaemon();
-  const [input, setInput] = useState("");
-  const [addr, setAddr] = useState(lastAddr);
+  const daemon = useDaemon();
+  const { status, events, streaming, lastStreamEnd, connect, cancel, send } =
+    daemon;
 
-  const connected = status?.kind === "connected";
-  const notifTitle =
+  const characterName =
     status?.kind === "connected" && status.selected_character
       ? status.selected_character
-      : "Shore";
-  useAssistantMessageNotifications(lastStreamEnd, notifTitle);
+      : DEFAULT_CHARACTER_NAME;
 
-  const handleSend = async () => {
-    const text = input.trim();
-    if (!text || !connected) return;
-    await send(text);
-    setInput("");
-  };
+  useAssistantMessageNotifications(lastStreamEnd, characterName);
 
+  const messages = useMemo(() => deriveMessages(events), [events]);
+  const connected = status?.kind === "connected";
+
+  // Esc cancels an in-flight stream
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape" && streaming) {
@@ -49,98 +34,56 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [streaming, cancel]);
 
+  // Auto-scroll to bottom via a sentinel at the end of the message list.
+  // scrollIntoView handles layout/font-loading timing more reliably than
+  // setting scrollTop manually.
+  const bottomRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const scroll = () => {
+      bottomRef.current?.scrollIntoView({ block: "end" });
+    };
+    scroll();
+    requestAnimationFrame(scroll);
+    void document.fonts.ready.then(scroll);
+  }, [messages.length, streaming]);
+
   return (
-    <main className="min-h-screen flex flex-col">
-      <header className="px-4 py-3 border-b border-neutral-800 flex items-center gap-3">
-        <h1 className="font-semibold tracking-tight">Shore</h1>
-        <span className="text-xs text-neutral-500">{statusLabel(status)}</span>
-        <div className="ml-auto flex items-center gap-2">
-          <input
-            className="bg-neutral-900 border border-neutral-800 rounded px-2 py-1 text-xs w-48"
-            placeholder="host:port (optional)"
-            value={addr}
-            onChange={(e) => setAddr(e.target.value)}
-            disabled={connected}
-          />
-          {streaming && (
-            <button
-              onClick={cancel}
-              className="text-xs px-3 py-1 bg-red-600 rounded hover:bg-red-500"
-              title="Esc"
-            >
-              Cancel
-            </button>
+    <>
+      <main className="stream">
+        <div className="stream-inner">
+          {!connected && (
+            <div className="msg user" style={{ textAlign: "center", padding: 0 }}>
+              not connected —{" "}
+              <button
+                onClick={() => void connect()}
+                style={{
+                  background: "none",
+                  border: "none",
+                  color: "var(--ember)",
+                  cursor: "pointer",
+                  font: "inherit",
+                  padding: 0,
+                  textDecoration: "underline",
+                }}
+              >
+                retry
+              </button>
+            </div>
           )}
-          {connected ? (
-            <button
-              onClick={disconnect}
-              className="text-xs px-3 py-1 bg-neutral-800 rounded hover:bg-neutral-700"
-            >
-              Disconnect
-            </button>
-          ) : (
-            <button
-              onClick={() => connect(addr || undefined)}
-              className="text-xs px-3 py-1 bg-blue-600 rounded hover:bg-blue-500"
-            >
-              Connect
-            </button>
-          )}
-          <button
-            onClick={quit}
-            className="text-xs px-3 py-1 bg-neutral-800 rounded hover:bg-red-700"
-            title="Quit Shore"
-          >
-            Quit
-          </button>
+          {messages.map((m) => (
+            <Message key={m.msg_id} message={m} characterName={characterName} />
+          ))}
+          {streaming && <StreamingIndicator characterName={characterName} />}
+          <div ref={bottomRef} aria-hidden />
         </div>
-      </header>
+        <div className="fog-bottom" />
+      </main>
 
-      <div className="flex-1 overflow-auto px-4 py-3 space-y-1 font-mono text-xs">
-        {events.length === 0 && (
-          <p className="text-neutral-600 italic">no events yet — connect and send a message.</p>
-        )}
-        {events.map((e, i) => (
-          <pre
-            key={i}
-            className={
-              "border rounded p-2 whitespace-pre-wrap break-all " +
-              (e.source === "history"
-                ? "border-amber-900/40 text-amber-200/70"
-                : "border-neutral-900 text-neutral-400")
-            }
-          >
-            <span className="text-[10px] uppercase tracking-wider opacity-60">
-              {e.source}
-            </span>
-            {"\n"}
-            {JSON.stringify(e.message, null, 2)}
-          </pre>
-        ))}
-      </div>
-
-      <footer className="p-3 border-t border-neutral-800 flex gap-2">
-        <input
-          className="flex-1 bg-neutral-900 border border-neutral-800 rounded px-3 py-2 text-sm disabled:opacity-40"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              void handleSend();
-            }
-          }}
-          placeholder={connected ? "Type a message…" : "Connect first"}
-          disabled={!connected}
-        />
-        <button
-          onClick={handleSend}
-          disabled={!connected || !input.trim()}
-          className="px-4 py-2 text-sm bg-blue-600 rounded hover:bg-blue-500 disabled:bg-neutral-800 disabled:cursor-not-allowed"
-        >
-          Send
-        </button>
-      </footer>
-    </main>
+      <Composer
+        connected={connected}
+        characterName={characterName}
+        onSend={send}
+      />
+    </>
   );
 }

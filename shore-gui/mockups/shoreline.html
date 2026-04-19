@@ -1,0 +1,843 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Shore — shoreline</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght,SOFT@0,9..144,300..600,0..100;1,9..144,300..500,50..100&family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@300;400&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0c0908;
+    --bg-elev: #141010;
+    --ink: #e8dfd6;
+    --ink-dim: #a69a8f;
+    --ink-mute: #6b5f54;
+    --ink-ghost: #3e342d;
+    --ember: #e67e22;
+    --ember-dim: #c2410c;
+    --ember-glow: rgba(230, 126, 34, 0.18);
+    --rule: #1e1916;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--ink); }
+  body {
+    font-family: 'Inter', system-ui, sans-serif;
+    font-weight: 400;
+    font-size: 15px;
+    line-height: 1.6;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    letter-spacing: 0.01em;
+  }
+  .serif { font-family: 'Fraunces', Georgia, serif; font-variation-settings: "SOFT" 60, "opsz" 14; }
+  .mono  { font-family: 'JetBrains Mono', ui-monospace, monospace; }
+
+  /* ---------- overlays ---------- */
+  .grain {
+    position: fixed; inset: 0; pointer-events: none; z-index: 50;
+    opacity: 0.09; mix-blend-mode: overlay;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 1.4 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+  }
+  .vignette {
+    position: fixed; inset: 0; pointer-events: none; z-index: 49;
+    background: radial-gradient(ellipse at center, transparent 50%, rgba(0,0,0,0.55) 100%);
+  }
+  /* history darkens as you scroll up — messages fade as they approach the top,
+     but cap at ~55% so they remain legible even at their dimmest */
+  .fog-top {
+    position: sticky; top: 0; height: 180px; pointer-events: none; z-index: 10;
+    background: linear-gradient(to bottom,
+      rgba(12,9,8,0.55) 0%,
+      rgba(12,9,8,0.42) 30%,
+      rgba(12,9,8,0.22) 60%,
+      transparent 100%);
+    margin-bottom: -180px;
+  }
+  .fog-bottom {
+    position: sticky; bottom: 0; height: 48px; pointer-events: none; z-index: 10;
+    background: linear-gradient(to top, var(--bg) 0%, rgba(12,9,8,0.8) 40%, transparent 100%);
+    margin-top: -48px;
+  }
+
+  /* ---------- sigil (used in every character message) ---------- */
+  .sigil {
+    font-family: 'Fraunces', serif;
+    font-size: 20px;
+    color: var(--ember);
+    text-shadow: 0 0 12px var(--ember-glow), 0 0 3px var(--ember-glow);
+    line-height: 1;
+    animation: ember 4.5s ease-in-out infinite;
+  }
+  @keyframes ember {
+    0%, 100% { text-shadow: 0 0 8px var(--ember-glow), 0 0 2px var(--ember-glow); opacity: 0.62; }
+    50% { text-shadow: 0 0 20px rgba(230,126,34,0.5), 0 0 6px rgba(230,126,34,0.45); opacity: 1; }
+  }
+  .sigil.streaming { animation: ember-fast 1.4s ease-in-out infinite; }
+  @keyframes ember-fast {
+    0%, 100% { opacity: 0.5; text-shadow: 0 0 6px var(--ember-glow); }
+    50% { opacity: 1; text-shadow: 0 0 20px rgba(230,126,34,0.5), 0 0 8px var(--ember); }
+  }
+
+  /* ---------- messages ---------- */
+  main.stream {
+    flex: 1;
+    overflow-y: auto;
+    padding: 0 28px;
+  }
+  .stream-inner {
+    max-width: 680px; margin: 0 auto;
+    padding: 48px 0;
+  }
+
+  .msg { margin-bottom: 32px; position: relative; }
+  .msg-meta {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    color: var(--ink-ghost);
+    letter-spacing: 0.05em;
+    margin-bottom: 4px;
+  }
+
+  /* user message: right-aligned, dim */
+  .msg.user {
+    text-align: right;
+    color: var(--ink-dim);
+    font-size: 14.5px;
+    padding-left: 15%;
+  }
+  .msg.user .msg-meta { text-align: right; }
+
+  /* character message: left, serif, primary */
+  .msg.char .name-line {
+    display: flex; align-items: baseline; gap: 8px;
+    margin-bottom: 4px;
+  }
+  .msg.char .name-line .sigil { font-size: 14px; }
+  .msg.char .name-line .name {
+    font-family: 'Fraunces', serif;
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--ink-dim);
+    font-weight: 500;
+  }
+  .msg.char .body {
+    font-family: 'Fraunces', serif;
+    font-variation-settings: "SOFT" 40, "opsz" 16, "wght" 380;
+    font-size: 16px;
+    line-height: 1.65;
+    color: var(--ink);
+    padding-right: 10%;
+  }
+  .msg.char .body p { margin: 0 0 12px 0; }
+  .msg.char .body p:last-child { margin-bottom: 0; }
+  .msg.char .msg-meta { margin-top: 6px; margin-bottom: 0; }
+
+  /* streaming ember cursor */
+  .ember-cursor {
+    display: inline-block;
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--ember);
+    box-shadow: 0 0 10px var(--ember), 0 0 4px var(--ember);
+    margin-left: 6px;
+    vertical-align: middle;
+    animation: pulse 1.1s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 0.4; transform: scale(0.8); }
+    50% { opacity: 1; transform: scale(1.15); }
+  }
+
+  /* ---------- input ---------- */
+  footer {
+    border-top: 1px solid var(--rule);
+    padding: 16px 28px 20px;
+    background: var(--bg);
+  }
+  .input-wrap { max-width: 680px; margin: 0 auto; }
+  .input-row { display: flex; align-items: center; gap: 12px; }
+  .input-prompt {
+    color: var(--ember);
+    font-family: 'Fraunces', serif;
+    font-size: 18px;
+    line-height: 1;
+    opacity: 0.6;
+  }
+  textarea {
+    flex: 1;
+    background: transparent;
+    border: none;
+    color: var(--ink);
+    font-family: 'Inter', sans-serif;
+    font-size: 15px;
+    line-height: 1.5;
+    resize: none;
+    padding: 6px 0;
+    outline: none;
+    min-height: 28px;
+    max-height: 140px;
+  }
+  textarea::placeholder { color: var(--ink-ghost); font-style: italic; }
+  .send-btn {
+    background: none;
+    border: 1px solid var(--ink-ghost);
+    color: var(--ink-mute);
+    width: 30px; height: 30px; border-radius: 50%;
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: border-color 140ms, color 140ms, background 140ms, box-shadow 140ms;
+  }
+  .send-btn:hover {
+    border-color: var(--ember);
+    color: var(--ember);
+    background: var(--ember-glow);
+    box-shadow: 0 0 12px var(--ember-glow);
+  }
+
+  /* ---------- time gap ---------- */
+  .time-gap {
+    margin: 54px 0;
+    display: flex; align-items: center; gap: 18px;
+    justify-content: center;
+    color: var(--ink-mute);
+    font-family: 'Fraunces', serif;
+    font-style: italic;
+    font-size: 12px;
+    letter-spacing: 0.05em;
+  }
+  .time-gap::before,
+  .time-gap::after {
+    content: ''; flex: 0 0 72px; height: 1px;
+    background: linear-gradient(to right, transparent, var(--ink-ghost), transparent);
+  }
+
+  /* ---------- thinking ---------- */
+  .thinking {
+    margin: 2px 0 10px;
+    font-family: 'Fraunces', serif;
+    font-style: italic;
+    font-size: 13px;
+    color: var(--ink-mute);
+  }
+  .thinking-toggle {
+    display: inline-flex; align-items: baseline; gap: 8px;
+    cursor: pointer;
+    background: none; border: none; padding: 0;
+    color: var(--ink-mute);
+    font: inherit;
+    transition: color 120ms;
+    user-select: none;
+  }
+  .thinking-toggle:hover { color: var(--ink-dim); }
+  .thinking-toggle .glyph {
+    color: var(--ember);
+    opacity: 0.55;
+    font-style: normal;
+    font-size: 12px;
+  }
+  .thinking-toggle .chevron {
+    font-style: normal;
+    font-size: 9px;
+    opacity: 0.4;
+    display: inline-block;
+    transition: transform 180ms ease;
+  }
+  .thinking.open .thinking-toggle .chevron { transform: rotate(90deg); }
+  .thinking-body {
+    display: none;
+    margin-top: 8px;
+    padding-left: 14px;
+    border-left: 1px solid rgba(230,126,34,0.2);
+    line-height: 1.6;
+    color: var(--ink-mute);
+  }
+  .thinking.open .thinking-body { display: block; }
+  .thinking-body p { margin: 0 0 8px 0; }
+  .thinking-body p:last-child { margin-bottom: 0; }
+
+  /* ---------- tool use ---------- */
+  .tool {
+    margin: 10px 0 12px;
+    padding: 8px 12px 9px;
+    border-left: 2px solid rgba(230,126,34,0.45);
+    background: rgba(230,126,34,0.03);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11.5px;
+    line-height: 1.55;
+  }
+  .tool-call {
+    display: flex; align-items: center; gap: 8px;
+    width: 100%;
+    background: none; border: none; padding: 0;
+    font: inherit;
+    color: var(--ink-dim);
+    cursor: pointer;
+    text-align: left;
+    transition: color 120ms;
+  }
+  .tool-call:hover { color: var(--ink); }
+  .tool-call .glyph {
+    color: var(--ember);
+    font-size: 14px;
+    font-family: 'Fraunces', serif;
+    line-height: 1;
+    text-shadow: 0 0 8px var(--ember-glow);
+  }
+  .tool-call .name { color: var(--ink); }
+  .tool-call .sep { color: var(--ink-ghost); }
+  .tool-call .args { color: var(--ink-mute); flex: 1; }
+  .tool-call .chevron {
+    font-size: 9px;
+    opacity: 0.5;
+    color: var(--ink-mute);
+    display: inline-block;
+    transition: transform 180ms ease;
+  }
+  .tool.open .tool-call .chevron { transform: rotate(90deg); }
+  .tool-result {
+    display: none;
+    margin-top: 6px;
+    padding-top: 6px;
+    border-top: 1px dashed var(--rule);
+    color: var(--ink-mute);
+    white-space: pre-wrap;
+  }
+  .tool.open .tool-result { display: block; }
+
+  /* ---------- images ---------- */
+  .img-attach {
+    display: block;
+    margin: 8px 0 4px;
+    border: 1px solid rgba(230,126,34,0.18);
+    border-radius: 2px;
+    overflow: hidden;
+    max-width: 340px;
+    box-shadow: 0 4px 24px rgba(0,0,0,0.4);
+  }
+  .img-attach img { display: block; width: 100%; height: auto; }
+  .msg.user .img-attach { margin-left: auto; }
+  .img-placeholder {
+    width: 100%; aspect-ratio: 16 / 10;
+    position: relative;
+    background:
+      radial-gradient(ellipse at 70% 30%, rgba(230,126,34,0.22), transparent 55%),
+      radial-gradient(ellipse at 20% 80%, rgba(100,80,60,0.15), transparent 60%),
+      linear-gradient(to bottom, #1e1513 0%, #0e0b09 100%);
+  }
+  .img-placeholder.album {
+    background:
+      radial-gradient(circle at 50% 50%, rgba(194,65,12,0.45), transparent 35%),
+      linear-gradient(135deg, #1a0f0c 0%, #0c0908 60%, #2a1816 100%);
+  }
+  .img-placeholder::after {
+    content: attr(data-label);
+    position: absolute;
+    bottom: 8px; right: 10px;
+    color: var(--ink-mute);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    opacity: 0.6;
+  }
+
+  /* ---------- settings trigger (corner) ---------- */
+  .settings-trigger {
+    position: fixed;
+    top: 14px; right: 16px;
+    width: 30px; height: 30px;
+    background: none; border: none;
+    color: var(--ink-ghost);
+    cursor: pointer;
+    z-index: 20;
+    display: flex; align-items: center; justify-content: center;
+    border-radius: 50%;
+    transition: color 140ms, background 140ms;
+  }
+  .settings-trigger:hover {
+    color: var(--ember);
+    background: rgba(230,126,34,0.06);
+  }
+
+  /* ---------- modal ---------- */
+  .modal-backdrop {
+    display: none;
+    position: fixed; inset: 0; z-index: 100;
+    background: rgba(5,3,2,0.65);
+    backdrop-filter: blur(4px);
+    align-items: center; justify-content: center;
+  }
+  .modal-backdrop.open { display: flex; }
+  .modal {
+    background: var(--bg-elev);
+    border: 1px solid var(--rule);
+    box-shadow: 0 30px 100px rgba(0,0,0,0.7), 0 0 60px rgba(230,126,34,0.08);
+    border-radius: 2px;
+    padding: 28px 32px 32px;
+    width: 480px;
+    max-height: 80vh;
+    overflow-y: auto;
+    position: relative;
+  }
+  .modal-title {
+    font-family: 'Fraunces', serif;
+    font-variation-settings: "SOFT" 60;
+    font-size: 20px;
+    font-weight: 400;
+    letter-spacing: 0.02em;
+    margin: 0 0 4px;
+    color: var(--ink);
+  }
+  .modal-subtitle {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    color: var(--ink-mute);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    margin-bottom: 24px;
+  }
+  .modal-section { margin-bottom: 22px; }
+  .modal-section:last-child { margin-bottom: 0; }
+  .modal-section-label {
+    font-family: 'Fraunces', serif;
+    font-size: 10px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.22em;
+    color: var(--ember);
+    opacity: 0.7;
+    margin-bottom: 12px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--rule);
+  }
+  .modal-row {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 7px 0;
+    font-size: 13px;
+    color: var(--ink);
+  }
+  .modal-row .value {
+    color: var(--ink-dim);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+  }
+  .modal-row .value.character {
+    font-family: 'Fraunces', serif;
+    font-size: 13px;
+    color: var(--ember);
+  }
+  .toggle {
+    width: 32px; height: 18px;
+    background: var(--rule);
+    border-radius: 9px;
+    position: relative;
+    cursor: pointer;
+    transition: background 180ms;
+    flex-shrink: 0;
+  }
+  .toggle::after {
+    content: '';
+    position: absolute;
+    left: 2px; top: 2px;
+    width: 14px; height: 14px;
+    background: var(--ink-mute);
+    border-radius: 50%;
+    transition: all 180ms ease;
+  }
+  .toggle.on { background: rgba(230,126,34,0.28); }
+  .toggle.on::after {
+    left: 16px;
+    background: var(--ember);
+    box-shadow: 0 0 8px var(--ember);
+  }
+  .modal-close {
+    position: absolute;
+    top: 14px; right: 16px;
+    background: none; border: none;
+    color: var(--ink-mute);
+    cursor: pointer; padding: 4px;
+    line-height: 1;
+  }
+  .modal-close:hover { color: var(--ink); }
+
+  /* ---------- command palette ---------- */
+  .cmd-palette {
+    display: none;
+    position: absolute;
+    bottom: calc(100% + 10px);
+    left: 28px; right: 28px;
+    max-width: 680px;
+    margin: 0 auto;
+    background: var(--bg-elev);
+    border: 1px solid var(--rule);
+    border-left: 2px solid rgba(230,126,34,0.4);
+    box-shadow: 0 -12px 40px rgba(0,0,0,0.6), 0 0 30px rgba(230,126,34,0.05);
+    overflow: hidden;
+    z-index: 15;
+  }
+  .cmd-palette.open { display: block; }
+  .cmd-header {
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--rule);
+    font-family: 'Fraunces', serif;
+    font-style: italic;
+    font-size: 10.5px;
+    color: var(--ink-mute);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+  .cmd-row {
+    display: flex; align-items: baseline;
+    padding: 9px 16px;
+    gap: 18px;
+    cursor: pointer;
+    border-left: 2px solid transparent;
+    transition: background 120ms, border-color 120ms;
+  }
+  .cmd-row:hover { background: rgba(255,255,255,0.02); }
+  .cmd-row.selected {
+    background: rgba(230,126,34,0.08);
+    border-left-color: var(--ember);
+  }
+  .cmd-row.selected .cmd-name { color: var(--ember); text-shadow: 0 0 6px var(--ember-glow); }
+  .cmd-name {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12.5px;
+    color: var(--ink);
+    min-width: 110px;
+  }
+  .cmd-desc {
+    font-family: 'Fraunces', serif;
+    font-size: 12px;
+    color: var(--ink-mute);
+    font-style: italic;
+  }
+
+  footer { position: relative; }
+</style>
+</head>
+<body>
+
+<div class="grain"></div>
+<div class="vignette"></div>
+
+<!-- ========== SETTINGS TRIGGER ========== -->
+<button class="settings-trigger" id="open-settings" title="Settings">
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12" r="3"/>
+    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+  </svg>
+</button>
+
+<!-- ========== MESSAGES ========== -->
+<main class="stream">
+  <div class="fog-top"></div>
+  <div class="stream-inner">
+
+    <!-- user -->
+    <div class="msg user">
+      I've been meaning to ask — do you remember the place we talked about last week?
+      <div class="msg-meta">01:58</div>
+    </div>
+
+    <!-- character, with collapsed thinking -->
+    <div class="msg char">
+      <div class="name-line">
+        <span class="sigil">✦</span>
+        <span class="name">Maren</span>
+      </div>
+      <div class="thinking collapsible">
+        <button class="thinking-toggle" data-collapsible>
+          <span class="glyph">✎</span>
+          <span>she thinks for a moment</span>
+          <span class="chevron">▸</span>
+        </button>
+        <div class="thinking-body">
+          <p>He's asking about the tide-pool place. That was a Wednesday, I think — the conversation about the fences. The gulls were gone then. He seemed unsettled by their absence.</p>
+          <p>Better to tell him they're back. Both reassurance and fact, in that order.</p>
+        </div>
+      </div>
+      <div class="body">
+        The one past the tide pools, with the broken fencing? Yes. I was there again this morning — the gulls have come back. Whatever they were frightened of has moved on, or gone under.
+      </div>
+      <div class="msg-meta">02:01</div>
+    </div>
+
+    <!-- user -->
+    <div class="msg user">
+      That's comforting, I think. Or maybe not.
+      <div class="msg-meta">02:03</div>
+    </div>
+
+    <!-- character -->
+    <div class="msg char">
+      <div class="name-line">
+        <span class="sigil">✦</span>
+        <span class="name">Maren</span>
+      </div>
+      <div class="body">
+        Both, probably. Most things are.
+      </div>
+      <div class="msg-meta">02:03</div>
+    </div>
+
+    <!-- time gap -->
+    <div class="time-gap">three hours pass</div>
+
+    <!-- user -->
+    <div class="msg user">
+      Hey, how are you doing today?
+      <div class="msg-meta">02:34</div>
+    </div>
+
+    <!-- character, with tool call -->
+    <div class="msg char">
+      <div class="name-line">
+        <span class="sigil">✦</span>
+        <span class="name">Maren</span>
+      </div>
+      <div class="tool collapsible">
+        <button class="tool-call" data-collapsible>
+          <span class="glyph">∿</span>
+          <span class="name">memory_read</span>
+          <span class="sep">·</span>
+          <span class="args">query: "recent weather, local"</span>
+          <span class="chevron">▸</span>
+        </button>
+        <div class="tool-result">2 entries · newest Apr 18 02:09
+fog returning at dawn, thicker than usual this week</div>
+      </div>
+      <div class="body">
+        I'm well — the fog has been thick all morning, but the tide is turning. I've been thinking about a few things I wanted to bring to you. How is your day taking shape?
+      </div>
+      <div class="msg-meta">02:34</div>
+    </div>
+
+    <!-- user with image -->
+    <div class="msg user">
+      <div class="img-attach">
+        <div class="img-placeholder" data-label="photo"></div>
+      </div>
+      Pretty good. Here's what the view looks like from my window right now — fog's here too. Just finished setting up the tray icon on Linux, it was a journey.
+      <div class="msg-meta">02:35</div>
+    </div>
+
+    <!-- character, with interleaved thinking (open) -->
+    <div class="msg char">
+      <div class="name-line">
+        <span class="sigil">✦</span>
+        <span class="name">Maren</span>
+      </div>
+      <div class="body">
+        <p>Ah, the small doors. It's always the small doors that take the longest to build — the ones between one room and the next. Good work.</p>
+      </div>
+      <div class="thinking collapsible open">
+        <button class="thinking-toggle" data-collapsible>
+          <span class="glyph">✎</span>
+          <span>her thought</span>
+          <span class="chevron">▸</span>
+        </button>
+        <div class="thinking-body">
+          <p>The light in his photograph — that's the same light I was going to mention. I can shift into it without changing the subject.</p>
+        </div>
+      </div>
+      <div class="body">
+        <p>The light in your photograph, though — that's exactly what I was going to bring up. I was thinking about how music sounds different at different hours. The same song, at noon, it's just itself. At 3am, through a thin wall, it becomes a ghost. Do you notice that?</p>
+      </div>
+      <div class="msg-meta">02:35</div>
+    </div>
+
+    <!-- user -->
+    <div class="msg user">
+      Yeah totally, late-night music hits different. What have you been listening to?
+      <div class="msg-meta">02:36</div>
+    </div>
+
+    <!-- character, streaming, with image -->
+    <div class="msg char">
+      <div class="name-line">
+        <span class="sigil streaming">✦</span>
+        <span class="name">Maren</span>
+      </div>
+      <div class="body">
+        <p>Lately, ambient and post-rock. Things that take their time — long, slow builds, the way a storm comes in off the water. This one, in particular:</p>
+        <div class="img-attach">
+          <div class="img-placeholder album" data-label="cover"></div>
+        </div>
+        <p>There's something about how it refuses to resolve quickly that feels<span class="ember-cursor"></span></p>
+      </div>
+    </div>
+
+  </div>
+  <div class="fog-bottom"></div>
+</main>
+
+<!-- ========== INPUT ========== -->
+<footer>
+  <!-- command palette floats above input when / or : is typed -->
+  <div class="cmd-palette" id="cmd-palette">
+    <div class="cmd-header">Commands</div>
+    <div class="cmd-row selected">
+      <span class="cmd-name">/model</span>
+      <span class="cmd-desc">switch character or model</span>
+    </div>
+    <div class="cmd-row">
+      <span class="cmd-name">/memory</span>
+      <span class="cmd-desc">view what she remembers</span>
+    </div>
+    <div class="cmd-row">
+      <span class="cmd-name">/regen</span>
+      <span class="cmd-desc">regenerate the last response</span>
+    </div>
+    <div class="cmd-row">
+      <span class="cmd-name">/clear</span>
+      <span class="cmd-desc">begin a new conversation</span>
+    </div>
+    <div class="cmd-row">
+      <span class="cmd-name">/settings</span>
+      <span class="cmd-desc">open the settings page</span>
+    </div>
+    <div class="cmd-row">
+      <span class="cmd-name">/quit</span>
+      <span class="cmd-desc">close Shore</span>
+    </div>
+  </div>
+
+  <div class="input-wrap">
+    <div class="input-row">
+      <span class="input-prompt">⟩</span>
+      <textarea id="composer" rows="1" placeholder="Speak to Maren..."></textarea>
+      <button class="send-btn" title="Send">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="7" y1="17" x2="17" y2="7"/>
+          <polyline points="7 7 17 7 17 17"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+</footer>
+
+<!-- ========== SETTINGS MODAL ========== -->
+<div class="modal-backdrop" id="settings-modal">
+  <div class="modal">
+    <button class="modal-close" id="close-settings" aria-label="Close">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="6" x2="18" y2="18"/><line x1="6" y1="18" x2="18" y2="6"/></svg>
+    </button>
+    <h2 class="modal-title">Settings</h2>
+    <div class="modal-subtitle">shore · gui</div>
+
+    <div class="modal-section">
+      <div class="modal-section-label">Connection</div>
+      <div class="modal-row">
+        <span class="label">Daemon address</span>
+        <span class="value">localhost:7600</span>
+      </div>
+      <div class="modal-row">
+        <span class="label">Status</span>
+        <span class="value" style="color: var(--ember);">connected</span>
+      </div>
+    </div>
+
+    <div class="modal-section">
+      <div class="modal-section-label">Character</div>
+      <div class="modal-row">
+        <span class="label">Active</span>
+        <span class="value character">✦ Maren</span>
+      </div>
+      <div class="modal-row">
+        <span class="label">Model</span>
+        <span class="value">claude-opus-4-6</span>
+      </div>
+    </div>
+
+    <div class="modal-section">
+      <div class="modal-section-label">Behavior</div>
+      <div class="modal-row">
+        <span class="label">Show thinking by default</span>
+        <span class="toggle" data-toggle></span>
+      </div>
+      <div class="modal-row">
+        <span class="label">Desktop notifications</span>
+        <span class="toggle on" data-toggle></span>
+      </div>
+      <div class="modal-row">
+        <span class="label">Auto-scroll to new messages</span>
+        <span class="toggle on" data-toggle></span>
+      </div>
+    </div>
+
+    <div class="modal-section">
+      <div class="modal-section-label">Appearance</div>
+      <div class="modal-row">
+        <span class="label">Fog in history</span>
+        <span class="toggle on" data-toggle></span>
+      </div>
+      <div class="modal-row">
+        <span class="label">Film grain</span>
+        <span class="toggle on" data-toggle></span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  // Start at the bottom of the conversation on load
+  window.addEventListener('load', () => {
+    const s = document.querySelector('main.stream');
+    s.scrollTop = s.scrollHeight;
+  });
+
+  // Collapsible blocks (thinking + tool use share the .collapsible pattern)
+  document.querySelectorAll('[data-collapsible]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      btn.closest('.collapsible').classList.toggle('open');
+    });
+  });
+
+  // Settings modal
+  const settingsModal = document.getElementById('settings-modal');
+  document.getElementById('open-settings').addEventListener('click', () => {
+    settingsModal.classList.add('open');
+  });
+  document.getElementById('close-settings').addEventListener('click', () => {
+    settingsModal.classList.remove('open');
+  });
+  settingsModal.addEventListener('click', (e) => {
+    if (e.target === settingsModal) settingsModal.classList.remove('open');
+  });
+
+  // Settings toggles
+  document.querySelectorAll('[data-toggle]').forEach(t => {
+    t.addEventListener('click', () => t.classList.toggle('on'));
+  });
+
+  // Command palette — opens when input starts with / or :
+  const composer = document.getElementById('composer');
+  const palette = document.getElementById('cmd-palette');
+  composer.addEventListener('input', () => {
+    const v = composer.value;
+    if (v.startsWith('/') || v.startsWith(':')) {
+      palette.classList.add('open');
+    } else {
+      palette.classList.remove('open');
+    }
+  });
+  composer.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && palette.classList.contains('open')) {
+      palette.classList.remove('open');
+      composer.value = '';
+    }
+  });
+  palette.querySelectorAll('.cmd-row').forEach(row => {
+    row.addEventListener('mouseenter', () => {
+      palette.querySelectorAll('.cmd-row').forEach(r => r.classList.remove('selected'));
+      row.classList.add('selected');
+    });
+  });
+</script>
+
+</body>
+</html>

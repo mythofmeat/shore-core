@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Shore — static</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Major+Mono+Display&family=VT323&family=Space+Grotesk:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #050608;
+    --surface: #0b0d10;
+    --ink: #eaeaea;
+    --ink-dim: #8a8e96;
+    --ink-ghost: #4a4e56;
+    --cyan: #00d5e0;
+    --magenta: #ff1f6c;
+    --err: #ff3040;
+    --sig-green: #3dff70;
+    --rule: #1a1d22;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--ink); overflow: hidden; }
+  body {
+    font-family: 'Space Grotesk', system-ui, sans-serif;
+    font-weight: 400;
+    font-size: 14px;
+    line-height: 1.6;
+    min-height: 100vh;
+    display: flex; flex-direction: column;
+  }
+
+  /* heavy static noise */
+  body::before {
+    content: '';
+    position: fixed; inset: 0; pointer-events: none; z-index: 80;
+    opacity: 0.22;
+    mix-blend-mode: screen;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='1.5' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 1 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+    animation: noise 0.18s steps(6) infinite;
+  }
+  @keyframes noise {
+    0% { transform: translate(0,0); }
+    25% { transform: translate(-3px, 2px); }
+    50% { transform: translate(2px, -4px); }
+    75% { transform: translate(-2px, -1px); }
+    100% { transform: translate(3px, 3px); }
+  }
+
+  /* scanlines */
+  body::after {
+    content: '';
+    position: fixed; inset: 0; pointer-events: none; z-index: 79;
+    background: repeating-linear-gradient(
+      to bottom,
+      transparent 0,
+      transparent 2px,
+      rgba(0,0,0,0.32) 2px,
+      rgba(0,0,0,0.32) 4px
+    );
+  }
+
+  /* horizontal tear sweep */
+  .tear {
+    position: fixed; left: 0; right: 0; height: 2px;
+    background: linear-gradient(to right, transparent, var(--magenta), transparent);
+    mix-blend-mode: screen;
+    pointer-events: none; z-index: 78;
+    animation: tear 9s linear infinite;
+    opacity: 0.7;
+  }
+  @keyframes tear {
+    0%   { top: -5%; }
+    45%  { top: 102%; }
+    46%  { top: -5%; }
+    100% { top: -5%; }
+  }
+
+  /* RGB chromatic aberration on key text */
+  .aberr {
+    position: relative;
+    text-shadow:
+      -1.2px 0 var(--magenta),
+       1.2px 0 var(--cyan);
+  }
+
+  /* screen flicker */
+  @keyframes flicker {
+    0%, 100% { opacity: 1; }
+    62% { opacity: 1; }
+    63% { opacity: 0.72; filter: hue-rotate(12deg); }
+    64% { opacity: 1; }
+  }
+  main { animation: flicker 4.7s infinite; }
+
+  header {
+    padding: 10px 22px;
+    border-bottom: 1px solid var(--rule);
+    display: flex; align-items: center; gap: 16px;
+    font-family: 'Major Mono Display', monospace;
+    font-size: 13px;
+    letter-spacing: 0.1em;
+    color: var(--ink-dim);
+    z-index: 5; position: relative;
+  }
+  header .brand { color: var(--ink); }
+  header .sep { color: var(--ink-ghost); }
+  header .sig-strength {
+    margin-left: auto;
+    display: flex; align-items: center; gap: 8px;
+    font-family: 'VT323', monospace;
+    font-size: 16px;
+  }
+  header .sig-bars {
+    display: inline-flex; gap: 2px; align-items: flex-end;
+  }
+  header .sig-bars span {
+    display: inline-block;
+    width: 3px;
+    background: var(--sig-green);
+    animation: sigwobble 2.3s ease-in-out infinite;
+  }
+  header .sig-bars span:nth-child(1) { height: 5px; animation-delay: 0s; }
+  header .sig-bars span:nth-child(2) { height: 9px; animation-delay: 0.2s; }
+  header .sig-bars span:nth-child(3) { height: 13px; animation-delay: 0.4s; }
+  header .sig-bars span:nth-child(4) { height: 17px; animation-delay: 0.6s; opacity: 0.4; }
+  @keyframes sigwobble {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.35; }
+  }
+
+  main {
+    flex: 1;
+    overflow-y: auto;
+    padding: 24px 28px 60px;
+    position: relative;
+    z-index: 4;
+  }
+  .stream { max-width: 720px; margin: 0 auto; }
+
+  .msg { margin-bottom: 24px; }
+  .msg-head {
+    font-family: 'Major Mono Display', monospace;
+    font-size: 10px;
+    letter-spacing: 0.18em;
+    color: var(--ink-dim);
+    margin-bottom: 4px;
+    display: flex; align-items: center; gap: 12px;
+  }
+  .msg-head .ts { color: var(--ink-ghost); }
+  .msg-head .id { color: var(--ink); }
+
+  .msg.u .body {
+    color: var(--ink);
+    padding-left: 0;
+  }
+  .msg.c .body {
+    color: var(--ink);
+    padding-left: 16px;
+    border-left: 1px solid var(--cyan);
+    margin-left: 2px;
+  }
+  .body.streaming::after {
+    content: '█';
+    color: var(--sig-green);
+    animation: blink 0.6s steps(2) infinite;
+    margin-left: 2px;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  /* unstable character name — flickers variants */
+  .unstable {
+    position: relative;
+    display: inline-block;
+    color: var(--sig-green);
+  }
+  .unstable::before, .unstable::after {
+    content: attr(data-text);
+    position: absolute; left: 0; top: 0;
+    width: 100%;
+  }
+  .unstable::before { color: var(--magenta); animation: shift-a 2.1s infinite steps(3); }
+  .unstable::after { color: var(--cyan); animation: shift-b 2.7s infinite steps(3); }
+  @keyframes shift-a { 0%, 100% { transform: translate(0,0); opacity: 0; } 10% { transform: translate(-1px, 1px); opacity: 0.6; } 11%, 100% { opacity: 0; } }
+  @keyframes shift-b { 0%, 100% { transform: translate(0,0); opacity: 0; } 20% { transform: translate(1px, -1px); opacity: 0.6; } 21%, 100% { opacity: 0; } }
+
+  /* signal-dropped thinking */
+  .signal-lost {
+    margin: 8px 0 12px;
+    padding: 10px 12px;
+    border: 1px dashed var(--err);
+    background: rgba(255,48,64,0.05);
+    font-family: 'VT323', monospace;
+    font-size: 15px;
+    letter-spacing: 0.04em;
+    color: var(--err);
+  }
+  .signal-lost-toggle {
+    background: none; border: none; padding: 0; width: 100%; text-align: left;
+    font: inherit; color: inherit; cursor: pointer;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .signal-lost-toggle .label {
+    background: var(--err); color: #000;
+    padding: 0 6px;
+    letter-spacing: 0.14em;
+    font-weight: 500;
+  }
+  .signal-lost-toggle .chev { opacity: 0.6; transition: transform 160ms; }
+  .signal-lost.open .signal-lost-toggle .chev { transform: rotate(90deg); }
+  .signal-lost-body {
+    display: none;
+    margin-top: 8px;
+    padding-top: 6px;
+    border-top: 1px dashed var(--err);
+    color: var(--ink-dim);
+    white-space: pre-wrap;
+    font-family: 'VT323', monospace;
+    font-size: 15px;
+    line-height: 1.45;
+  }
+  .signal-lost.open .signal-lost-body { display: block; }
+  .signal-lost .glyph { color: var(--err); font-size: 10px; }
+
+  /* tool — "carrier stable" */
+  .carrier {
+    margin: 10px 0 14px;
+    padding: 10px 12px;
+    border: 1px solid var(--cyan);
+    background: rgba(0,213,224,0.04);
+    font-family: 'VT323', monospace;
+    font-size: 16px;
+  }
+  .carrier-header {
+    background: none; border: none; padding: 0; width: 100%; text-align: left;
+    cursor: pointer;
+    color: var(--cyan);
+    display: flex; gap: 10px;
+    font: inherit;
+    letter-spacing: 0.02em;
+  }
+  .carrier-header:hover { color: #5befff; }
+  .carrier-header .label {
+    background: var(--cyan); color: #000;
+    padding: 0 6px;
+    font-family: 'Major Mono Display', monospace;
+    font-size: 10px;
+    letter-spacing: 0.14em;
+  }
+  .carrier-header .chev { margin-left: auto; opacity: 0.7; transition: transform 160ms; }
+  .carrier.open .carrier-header .chev { transform: rotate(90deg); }
+  .carrier-body {
+    display: none;
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--cyan);
+    color: var(--ink-dim);
+    white-space: pre-wrap;
+    font-size: 14px;
+  }
+  .carrier.open .carrier-body { display: block; }
+
+  /* image — "frame captured" */
+  .frame {
+    margin: 8px 0;
+    max-width: 320px;
+    border: 1px solid var(--ink-ghost);
+    position: relative;
+    background: #111;
+  }
+  .frame::before {
+    content: 'FRAME CAPTURED';
+    position: absolute;
+    top: -16px; left: 4px;
+    font-family: 'Major Mono Display', monospace;
+    font-size: 9px;
+    letter-spacing: 0.2em;
+    color: var(--cyan);
+  }
+  .frame-placeholder {
+    width: 100%;
+    aspect-ratio: 16/10;
+    background:
+      repeating-linear-gradient(to bottom, transparent 0, transparent 3px, rgba(255,255,255,0.04) 3px, rgba(255,255,255,0.04) 4px),
+      radial-gradient(ellipse at 30% 60%, rgba(0,213,224,0.15), transparent 55%),
+      radial-gradient(ellipse at 70% 40%, rgba(255,31,108,0.15), transparent 55%),
+      linear-gradient(to bottom, #1a1c22 0%, #0a0c10 100%);
+    filter: saturate(0.7);
+  }
+
+  /* time gap — signal dropped */
+  .gap {
+    text-align: center;
+    margin: 36px 0;
+    font-family: 'Major Mono Display', monospace;
+    font-size: 11px;
+    letter-spacing: 0.28em;
+    color: var(--err);
+  }
+  .gap::before, .gap::after {
+    content: '∙∙∙'; margin: 0 12px;
+    color: var(--ink-ghost);
+  }
+
+  /* composer */
+  footer {
+    border-top: 1px solid var(--rule);
+    padding: 14px 22px;
+    display: flex; align-items: center; gap: 14px;
+    background: var(--surface);
+    z-index: 5; position: relative;
+  }
+  footer .prompt {
+    font-family: 'Major Mono Display', monospace;
+    font-size: 14px;
+    color: var(--cyan);
+    letter-spacing: 0.14em;
+  }
+  footer input {
+    flex: 1;
+    background: transparent;
+    border: none;
+    outline: none;
+    color: var(--ink);
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 14px;
+  }
+  footer input::placeholder { color: var(--ink-ghost); }
+  footer .tx {
+    font-family: 'Major Mono Display', monospace;
+    font-size: 10px;
+    color: var(--sig-green);
+    letter-spacing: 0.18em;
+  }
+  footer .tx .dot {
+    display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+    background: var(--sig-green);
+    box-shadow: 0 0 6px var(--sig-green);
+    animation: blink 1.2s infinite;
+    margin-right: 6px; vertical-align: 1px;
+  }
+</style>
+</head>
+<body>
+
+<div class="tear"></div>
+
+<header>
+  <span class="brand aberr">SHORE</span>
+  <span class="sep">//</span>
+  <span>CH 47.2</span>
+  <span class="sep">//</span>
+  <span>RCV: <span class="aberr" id="rcv-name">MAREN</span></span>
+  <div class="sig-strength">
+    <span>SIG</span>
+    <span class="sig-bars"><span></span><span></span><span></span><span></span></span>
+    <span style="color: var(--sig-green);">72%</span>
+  </div>
+</header>
+
+<main>
+<div class="stream">
+
+  <div class="msg u">
+    <div class="msg-head"><span class="id">&gt; TX</span><span class="ts">02:01:44</span></div>
+    <div class="body">I've been meaning to ask — do you remember the place we talked about last week?</div>
+  </div>
+
+  <div class="msg c">
+    <div class="msg-head"><span class="id">&lt; RX</span><span class="ts">02:02:11</span><span class="unstable" data-text="MAREN">MAREN</span></div>
+    <div class="signal-lost">
+      <button class="signal-lost-toggle" data-toggle>
+        <span class="label">SIG LOST</span>
+        <span>partial recovery · 4 fragments decoded</span>
+        <span class="chev" style="margin-left: auto;">▸</span>
+      </button>
+      <div class="signal-lost-body">[ 01:54:08 ] &gt; tide-pool place. wednesday.
+[ 01:54:12 ] &gt; ▓▓▓ the conversation about fence▓
+[ 01:54:19 ] &gt; gulls were ▓▓▓ then. he seemed unsettled.
+[ 01:54:24 ] &gt; reassurance first, then ▓▓▓ fact.</div>
+    </div>
+    <div class="body">The one past the tide pools, with the broken fencing? Yes. I was there again this morning — the gulls have come back. Whatever they were frightened of has moved on, or gone under.</div>
+  </div>
+
+  <div class="msg u">
+    <div class="msg-head"><span class="id">&gt; TX</span><span class="ts">02:03:02</span></div>
+    <div class="body">That's comforting, I think. Or maybe not.</div>
+  </div>
+
+  <div class="msg c">
+    <div class="msg-head"><span class="id">&lt; RX</span><span class="ts">02:03:21</span><span class="unstable" data-text="MAREN">MAREN</span></div>
+    <div class="body">Both, probably. Most things are.</div>
+  </div>
+
+  <div class="gap">carrier dropped · 3h 02m · signal reacquired</div>
+
+  <div class="msg u">
+    <div class="msg-head"><span class="id">&gt; TX</span><span class="ts">02:34:00</span></div>
+    <div class="body">Hey, how are you doing today?</div>
+  </div>
+
+  <div class="msg c">
+    <div class="msg-head"><span class="id">&lt; RX</span><span class="ts">02:34:19</span><span class="unstable" data-text="MAREN">MAREN</span></div>
+    <div class="carrier">
+      <button class="carrier-header" data-tool>
+        <span class="label">TOOL</span>
+        <span>memory_read :: q="weather, local"</span>
+        <span class="chev">▸</span>
+      </button>
+      <div class="carrier-body">2 entries · newest apr-18 02:09
+&gt;&gt; fog returning at dawn, thicker than usual this week</div>
+    </div>
+    <div class="body">I'm well — the fog has been thick all morning, but the tide is turning. I've been thinking about a few things I wanted to bring to you. How is your day taking shape?</div>
+  </div>
+
+  <div class="msg u">
+    <div class="msg-head"><span class="id">&gt; TX</span><span class="ts">02:35:44</span></div>
+    <div class="frame"><div class="frame-placeholder"></div></div>
+    <div class="body">Pretty good. Fog's here too. Just finished the Linux tray icon.</div>
+  </div>
+
+  <div class="msg c">
+    <div class="msg-head"><span class="id">&lt; RX</span><span class="ts">02:36:02</span><span class="unstable" data-text="MAREN">MAREN</span></div>
+    <div class="body streaming" id="stream">Lately, ambient and post-rock. Things that take their time — long, slow builds, the way a storm comes in off the water. There's something about how they refuse to resolve quickly that feels</div>
+  </div>
+
+</div>
+</main>
+
+<footer>
+  <span class="prompt">&gt; TX</span>
+  <input type="text" placeholder="transmit..." />
+  <span class="tx"><span class="dot"></span>READY</span>
+</footer>
+
+<script>
+  document.querySelectorAll('[data-toggle]').forEach(b => {
+    b.addEventListener('click', () => b.closest('.signal-lost').classList.toggle('open'));
+  });
+  document.querySelectorAll('[data-tool]').forEach(b => {
+    b.addEventListener('click', () => b.closest('.carrier').classList.toggle('open'));
+  });
+
+  // occasional glyph corruption in the streaming text
+  const glyphs = '▓▒░▓#*@&';
+  const stream = document.getElementById('stream');
+  const original = stream.textContent;
+  setInterval(() => {
+    if (Math.random() > 0.85) {
+      const i = Math.floor(Math.random() * original.length);
+      const ch = glyphs[Math.floor(Math.random() * glyphs.length)];
+      stream.textContent = original.slice(0, i) + ch + original.slice(i + 1);
+      setTimeout(() => { stream.textContent = original; }, 90);
+    }
+  }, 350);
+
+  // occasional name corruption in receiver
+  const names = ['MAREN', 'MAR▓N', 'M▒REN', 'MARE▓', '▓AREN'];
+  document.querySelectorAll('.unstable').forEach(el => {
+    setInterval(() => {
+      if (Math.random() > 0.88) {
+        const alt = names[Math.floor(Math.random() * names.length)];
+        el.textContent = alt;
+        el.dataset.text = alt;
+        setTimeout(() => { el.textContent = 'MAREN'; el.dataset.text = 'MAREN'; }, 180);
+      }
+    }, 500);
+  });
+
+  window.addEventListener('load', () => {
+    const m = document.querySelector('main');
+    m.scrollTop = m.scrollHeight;
+  });
+</script>
+</body>
+</html>
