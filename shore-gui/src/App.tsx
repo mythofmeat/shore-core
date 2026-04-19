@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useDaemon, type ConnectionStatus } from "./hooks/useDaemon.ts";
+import { useAssistantMessageNotifications } from "./hooks/useNotifications.ts";
 
 function statusLabel(status: ConnectionStatus | null): string {
   if (!status) return "idle";
@@ -8,12 +9,26 @@ function statusLabel(status: ConnectionStatus | null): string {
 }
 
 export default function App() {
-  const { status, events, lastAddr, streaming, connect, disconnect, cancel, send } =
-    useDaemon();
+  const {
+    status,
+    events,
+    lastAddr,
+    streaming,
+    lastStreamEnd,
+    connect,
+    disconnect,
+    cancel,
+    send,
+  } = useDaemon();
   const [input, setInput] = useState("");
   const [addr, setAddr] = useState(lastAddr);
 
   const connected = status?.kind === "connected";
+  const notifTitle =
+    status?.kind === "connected" && status.selected_character
+      ? status.selected_character
+      : "Shore";
+  useAssistantMessageNotifications(lastStreamEnd, notifTitle);
 
   const handleSend = async () => {
     const text = input.trim();

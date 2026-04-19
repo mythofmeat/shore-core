@@ -41,6 +41,7 @@ export interface DaemonHandle {
   events: EventItem[];
   lastAddr: string;
   streaming: boolean;
+  lastStreamEnd: ServerMessageEvent | null;
   connect: (addr?: string, character?: string) => Promise<void>;
   disconnect: () => Promise<void>;
   cancel: () => Promise<void>;
@@ -59,6 +60,7 @@ export function useDaemon(): DaemonHandle {
   const [status, setStatus] = useState<ConnectionStatus | null>(null);
   const [events, setEvents] = useState<EventItem[]>([]);
   const [streaming, setStreaming] = useState(false);
+  const [lastStreamEnd, setLastStreamEnd] = useState<ServerMessageEvent | null>(null);
   const lastAddrRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -82,6 +84,7 @@ export function useDaemon(): DaemonHandle {
         const msg = e.payload;
         if (msg.type === "stream_start") setStreaming(true);
         else if (msg.type === "stream_end" || msg.type === "error") setStreaming(false);
+        if (msg.type === "stream_end") setLastStreamEnd(msg);
         setEvents((prev) => [...prev, { source: "stream", message: msg }]);
       });
 
@@ -125,6 +128,7 @@ export function useDaemon(): DaemonHandle {
     events,
     lastAddr: readStoredAddr(),
     streaming,
+    lastStreamEnd,
     connect,
     disconnect,
     cancel,
