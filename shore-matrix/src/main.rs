@@ -6,10 +6,10 @@ use std::time::Duration;
 
 use clap::Parser;
 use matrix_sdk::ruma::{OwnedRoomId, RoomId};
-use serde::Deserialize;
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
+use shore_config::app::{EmbeddedConfig, MatrixConfig};
 use shore_matrix::bot::{BotConfig, MatrixBot, MatrixEvent};
 use shore_matrix::bridge::{
     input_to_swp, parse_matrix_input, CollectorAction, MatrixInput, ResponseCollector,
@@ -82,61 +82,6 @@ struct Args {
     register_password: Option<String>,
 }
 
-/// Subset of the daemon's config.toml that we read directly.
-#[derive(Debug, Deserialize, Default)]
-struct ShoreConfig {
-    #[serde(default)]
-    connections: ConnectionsConfig,
-}
-
-#[derive(Debug, Deserialize, Default)]
-struct ConnectionsConfig {
-    matrix: Option<MatrixFileConfig>,
-}
-
-#[derive(Debug, Deserialize)]
-struct MatrixFileConfig {
-    #[serde(default = "default_true")]
-    enabled: bool,
-    homeserver: Option<String>,
-    user_id: Option<String>,
-    #[allow(dead_code)]
-    room_id: Option<String>,
-    trusted_user: Option<String>,
-    embedded: Option<EmbeddedFileConfig>,
-}
-
-#[derive(Debug, Deserialize)]
-struct EmbeddedFileConfig {
-    #[serde(default = "default_server_name")]
-    server_name: String,
-    #[serde(default = "default_bind_address")]
-    bind_address: String,
-    #[serde(default = "default_port")]
-    port: u16,
-    #[serde(default = "default_admin_user")]
-    admin_user: String,
-    admin_password: String,
-    data_dir: Option<String>,
-    binary: Option<String>,
-}
-
-fn default_true() -> bool {
-    true
-}
-fn default_server_name() -> String {
-    "localhost".into()
-}
-fn default_bind_address() -> String {
-    "127.0.0.1".into()
-}
-fn default_port() -> u16 {
-    6167
-}
-fn default_admin_user() -> String {
-    "shore-admin".into()
-}
-
 fn resolve_store_path(arg: &Option<String>) -> String {
     match arg {
         Some(p) => p.clone(),
@@ -183,23 +128,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Load [connections.matrix] from config.toml, if discoverable.
-fn load_matrix_config(config_flag: &Option<String>) -> Option<MatrixFileConfig> {
-    let config_dir = if let Some(ref path) = config_flag {
-        PathBuf::from(path)
-    } else {
-        shore_config::config_dir()
-    };
-
-    let config_path = config_dir.join("config.toml");
-    let content = std::fs::read_to_string(&config_path).ok()?;
-    let config: ShoreConfig = toml::from_str(&content).ok()?;
-    config.connections.matrix
+fn load_matrix_config(config_flag: &Option<String>) -> Option<MatrixConfig> {
+    let config_path = config_flag.as_ref().map(PathBuf::from);
+    let loaded = shore_config::load_config(config_path.as_deref()).ok()?;
+    loaded.app.connections.matrix
 }
 
 // ── External mode ───────────────────────────────────────────────────────
 
 async fn run_external(
-    file_config: &Option<MatrixFileConfig>,
+    file_config: &Option<MatrixConfig>,
     args: &Args,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Resolve fields: CLI args take precedence over config file
@@ -251,8 +189,8 @@ async fn run_external(
 // ── Embedded mode ───────────────────────────────────────────────────────
 
 async fn run_embedded(
-    embedded: &EmbeddedFileConfig,
-    fc: &MatrixFileConfig,
+    embedded: &EmbeddedConfig,
+    fc: &MatrixConfig,
     args: &Args,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // 1. Resolve paths
@@ -557,7 +495,7 @@ async fn run_embedded(
 
 fn load_or_init_state(
     paths: &HomeserverPaths,
-    embedded: &EmbeddedFileConfig,
+    embedded: &EmbeddedConfig,
     homeserver_url: &str,
 ) -> Result<(EmbeddedState, bool), Box<dyn std::error::Error>> {
     std::fs::create_dir_all(&paths.server_dir)?;
