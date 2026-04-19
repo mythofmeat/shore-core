@@ -59,9 +59,18 @@ export default function App() {
         {events.map((e, i) => (
           <pre
             key={i}
-            className="text-neutral-400 border border-neutral-900 rounded p-2 whitespace-pre-wrap break-all"
+            className={
+              "border rounded p-2 whitespace-pre-wrap break-all " +
+              (e.source === "history"
+                ? "border-amber-900/40 text-amber-200/70"
+                : "border-neutral-900 text-neutral-400")
+            }
           >
-            {JSON.stringify(e, null, 2)}
+            <span className="text-[10px] uppercase tracking-wider opacity-60">
+              {e.source}
+            </span>
+            {"\n"}
+            {JSON.stringify(e.message, null, 2)}
           </pre>
         ))}
       </div>

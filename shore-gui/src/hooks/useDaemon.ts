@@ -22,9 +22,21 @@ export interface ServerMessageEvent {
   [key: string]: unknown;
 }
 
+export interface HistoryMessage {
+  msg_id: string;
+  role: string;
+  content: string;
+  timestamp: string;
+  [key: string]: unknown;
+}
+
+export type EventItem =
+  | { source: "history"; message: HistoryMessage }
+  | { source: "stream"; message: ServerMessageEvent };
+
 export interface DaemonHandle {
   status: ConnectionStatus | null;
-  events: ServerMessageEvent[];
+  events: EventItem[];
   connect: (addr?: string, character?: string) => Promise<void>;
   disconnect: () => Promise<void>;
   send: (text: string) => Promise<void>;
@@ -32,7 +44,7 @@ export interface DaemonHandle {
 
 export function useDaemon(): DaemonHandle {
   const [status, setStatus] = useState<ConnectionStatus | null>(null);
-  const [events, setEvents] = useState<ServerMessageEvent[]>([]);
+  const [events, setEvents] = useState<EventItem[]>([]);
 
   useEffect(() => {
     let unlistenStatus: UnlistenFn | undefined;
@@ -41,9 +53,13 @@ export function useDaemon(): DaemonHandle {
     (async () => {
       unlistenStatus = await listen<ConnectionStatus>("connection-status", (e) => {
         setStatus(e.payload);
+        if (e.payload.kind === "connected") {
+          const history = e.payload.history as HistoryMessage[];
+          setEvents(history.map((message) => ({ source: "history", message })));
+        }
       });
       unlistenMsg = await listen<ServerMessageEvent>("server-message", (e) => {
-        setEvents((prev) => [...prev, e.payload]);
+        setEvents((prev) => [...prev, { source: "stream", message: e.payload }]);
       });
     })();
 
