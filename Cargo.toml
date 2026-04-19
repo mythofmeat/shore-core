@@ -14,6 +14,7 @@ members = [
     "shore-ledger",
     "shore-test-harness",
     "shore-matrix",
+    "shore-gui/src-tauri",
 ]
 
 [workspace.dependencies]
