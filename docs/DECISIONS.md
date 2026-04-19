@@ -949,3 +949,100 @@ five constructor sites (`CommandContext`, `SessionState`,
 `GenerationParams`, + 2 dispatch copy points). Considered wrapping in a
 struct to reduce the diff but rejected — the field count on these
 structs is already large and the `None` default is uniform.
+
+## Interiority Recap Persistence in active.jsonl (2026-04-19)
+
+**Decision:** Interiority tick recaps (the character's `<recap>` block) are
+now persisted as `Role::System` messages in `active.jsonl` at tick completion,
+not re-injected ephemerally from a `recaps.jsonl` sidecar each turn.
+
+**Why:** Two linked bugs in the prior ephemeral-injection design:
+
+1. **Autonomous-ping gating.** `trim_messages` advanced `prev_ts` on every
+   message regardless of role. When an interiority tick produced an autonomous
+   ping (assistant message), the tick's recap — timestamped before the ping —
+   fell outside the gap measured between the ping and the next user message,
+   and was silently dropped.
+2. **Non-persistence across compaction.** Even when recaps surfaced on a given
+   turn, once surrounding messages were compacted into a segment file the
+   tick timestamps no longer fell between any *retained* message pair, and
+   the recap vanished from future payloads forever. `recaps.jsonl` still had
+   the entry, but it was orphaned.
+
+Both collapse into one fix: write the recap as a real message at tick
+completion, use `MessageStore::insert_by_timestamp` to splice it into the
+correct chronological position (the tick races with the handler, so the user
+message may already be present), and delete the ephemeral injection from
+`trim_messages` entirely. Recaps are now first-class history — archived into
+segments by compaction like any other message, and they persist naturally.
+
+**Trade-offs:**
+- `recaps.jsonl` is retained as a sidecar log for `tick_id` correlation
+  in debugging, but is no longer read by the payload path.
+- The interiority prompt's `{recent_thread_block}` now reads the three most
+  recent `Role::System` messages from `active.jsonl` (previously read
+  `recaps.jsonl` directly). Single source of truth.
+- On the wire, recaps reach the model via `convert_inline_system_messages`
+  (Anthropic path) or the new mid-history `<system_instruction>` wrap
+  (OpenAI/OpenRouter path). The wrap is defensive for backends that reject
+  raw `role:"system"` mid-conversation.
+
+## Prompt Overhaul: Stance/Mechanics Split (2026-04-19)
+
+**Decision:** Refactored the capabilities system block and tool descriptions
+to follow Anthropic's documented split between "what the tool does" (tool
+description) and "when/why to reach for it" (system-prompt stance).
+
+**Why:** Capability bullets were restating tool mechanics already present in
+the `tools` array schema, and tool descriptions carried behavioral coaching
+("Don't wait to be asked", "A failed lookup costs nothing") that tried to
+shape posture from inside the decision-time reference. Per Anthropic's
+courses repo, tool descriptions should stay 1–2 sentences of pure contract
+(with tool-intrinsic preconditions like "Only orders that are 'processing'
+can be cancelled"), while the system prompt carries persona, global policy,
+and stance. Overlapping instructions dilute the model's attention and waste
+tokens on every request.
+
+**Result:**
+- **Capabilities block** (`engine/prompt.rs:build_capabilities_block`)
+  restructured into markdown-style sections (`### Memory database`,
+  `### Interiority`, `### Image creation`, `### Web access`) with
+  sub-bullets flowing under their parent section (saved images under Memory,
+  scratchpad under Interiority). Bullets are pure stance — no tool names or
+  parameters — with the exception of tools that have no other way to be
+  surfaced (e.g. `generate_image`).
+- **Tool descriptions** trimmed across the board. `set_next_wake` in
+  particular was rewritten from a stance-heavy "express your own sense of
+  pacing…continue any unfinished work" to a single mechanical line; the
+  stance moved into the interiority system prompt (`build_interiority_prompt`),
+  which only loads during ticks. `set_next_wake` is in the base tool set on
+  every request for cache stability (see CHANGELOG:132), so its description
+  is part of the cached prefix and should not carry tick-specific posture.
+- **Template rendering extended** to the capabilities block and tool
+  descriptions via `render_template` + a new `render_tool_defs` helper in
+  `shore-daemon/src/tools/mod.rs`. `{{user}}` and `{{char}}` now resolve in
+  capability bullets and tool descriptions, letting the character's copy
+  feel grounded in the actual user name. `{{date}}` / `{{time}}` must NOT
+  appear in capability bullets — they'd bust the cache prefix.
+- **Dropped capability bullets:** `activity_heatmap`, `roll_dice`,
+  `check_time` (tool description self-sufficient); `remember_image`
+  (moved to per-image annotation, see below).
+
+**Trade-off — `remember_image` annotation:** The "when the user shares an
+image, save it with context via remember_image" nudge was removed from the
+capabilities block and bundled into the `[Attached image saved as: <path>]`
+annotation emitted by `handler/images.rs:format_image_annotation`. The
+instruction now appears exactly when an image has been attached, rather
+than permanently in the cached system prefix when no image is in play.
+Scopes token cost to events that matter, at the cost of slightly more
+tokens per image-bearing message.
+
+**Interiority prompt rewrite:** Ephemerality statement ("thoughts and tool
+use are logged") was misleading — intermediate tick thoughts are never
+persisted anywhere the character sees next tick, and tool-use ring-buffer
+events are only for operator diagnostics. Rewrote to accurately describe
+which surfaces persist (`<recap>`, `<sendMessage>`, scratchpad, memory)
+vs. which are ephemeral (everything else), and to tell the character to
+leave pointers in `<recap>` when scratchpad files or memory entries need
+to be retrieved next session. Recap was also promoted from optional to
+mandatory in the prompt text, matching the daemon's wrap-up enforcement.

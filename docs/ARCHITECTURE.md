@@ -1156,6 +1156,27 @@ Templates are plain text/markdown files loaded by the daemon.
 2. Global override: `prompts/system.md`
 3. Built-in default: shipped with the binary install
 
+**Template variables:** the `render_template` function in
+`engine/prompt.rs` substitutes `{{char}}` / `{{character_name}}` /
+`{{user}}` / `{{date}}` / `{{time}}` and supports `{{#if key}}…{{/if}}`
+conditionals. `render_template` runs on the main system prompt, the
+capabilities block (see below), and every tool description (via the
+`render_tool_defs` helper in `shore-daemon/src/tools/mod.rs`) — so the
+character's name and user's name resolve consistently across all three
+surfaces. `{{date}}` / `{{time}}` must not appear in capability bullets
+or tool descriptions: those live in the Anthropic cached prefix and
+time-varying content would invalidate the cache on every call.
+
+**Capabilities block:** `build_capabilities_block` composes a
+`<capabilities>…</capabilities>` system block from markdown-style
+sections gated on per-tool flags in `CapabilitiesConfig`. Each bullet
+is pure stance (when/why to reach for a capability); mechanics live in
+tool descriptions. Sub-bullets that follow a `###` heading without
+their own heading and without a leading blank line (e.g. saved images
+under Memory, scratchpad under Interiority) must stay contiguous with
+their parent section — reordering the emit order without preserving
+parent-child adjacency orphans them.
+
 Templates are **not** compiled into the binary. They live on the filesystem so
 they can be reviewed and edited without rebuilding. The daemon ships with a
 default template directory that is installed alongside the binary.
@@ -1293,10 +1314,29 @@ it also clears `CacheKeepalive::next_wake`.
 #### Recap System
 
 Characters write first-person notes via `<recap>` tags during interiority
-ticks (last-wins semantics, same as `<sendMessage>`). Entries are stored in
-`recaps.jsonl` per character via `RecapStore`. During prompt assembly,
-`trim_messages` injects recap markers alongside time-gap markers so the
-character sees its own notes from between conversations.
+ticks (last-wins semantics, same as `<sendMessage>`). Every completed tick
+persists its recap as a `Role::System` message in the character's
+`active.jsonl`, spliced in at the tick's start timestamp via
+`MessageStore::insert_by_timestamp` — the splice handles the race where a
+user message lands during tick wrap-up. Because recaps are first-class
+messages, they survive compaction (archived into segment files like any
+other message) rather than being re-synthesized from a sidecar on every
+payload.
+
+`recaps.jsonl` is retained as a per-character sidecar log — it preserves
+`tick_id` correlation for debugging — but is no longer read by the payload
+path. The interiority system prompt's `{recent_thread_block}` reads the
+three most recent `Role::System` messages from `active.jsonl` and renders
+them as the character's "where you left off" context.
+
+On the wire, each recap reaches the model as a user turn:
+`convert_inline_system_messages` (Anthropic path, `providers/anthropic.rs`)
+wraps `role:"system"` in `<system_instruction>…</system_instruction>` and
+merges into the preceding user turn if one exists. OpenAI-path translation
+(`providers/openai.rs`) applies the same wrap defensively — some
+OpenRouter-routed backends reject raw inline system. The top-level system
+prompt (passed in `request.system`) is unaffected; only mid-history System
+messages get wrapped.
 
 #### States
 
