@@ -1,7 +1,11 @@
 use serde::Serialize;
 use shore_client::{spawn_connection, ConnCommand, ConnEvent};
 use shore_protocol::client_msg::{Cancel, ClientMessage, ClientMessageBody};
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{
+    menu::{Menu, MenuItem},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    AppHandle, Emitter, Manager, State, WindowEvent,
+};
 use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, warn};
 
@@ -129,6 +133,68 @@ fn emit<T: Serialize + Clone>(app: &AppHandle, event: &str, payload: T) {
     }
 }
 
+fn build_tray(app: &AppHandle) -> tauri::Result<()> {
+    let show = MenuItem::with_id(app, "show", "Show Shore", true, None::<&str>)?;
+    let disconnect_item =
+        MenuItem::with_id(app, "disconnect", "Disconnect", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show, &disconnect_item, &quit])?;
+
+    let icon = app
+        .default_window_icon()
+        .cloned()
+        .ok_or_else(|| tauri::Error::AssetNotFound("default window icon".into()))?;
+
+    TrayIconBuilder::with_id("main")
+        .menu(&menu)
+        .icon(icon)
+        .tooltip("Shore")
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "show" => show_main_window(app),
+            "disconnect" => {
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Some(state) = app.try_state::<AppState>() {
+                        let mut guard = state.connection.lock().await;
+                        if let Some(tx) = guard.take() {
+                            let _ = tx.send(ConnCommand::Shutdown).await;
+                        }
+                    }
+                });
+            }
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                let app = tray.app_handle();
+                if let Some(window) = app.get_webview_window("main") {
+                    if window.is_visible().unwrap_or(false) {
+                        let _ = window.hide();
+                    } else {
+                        show_main_window(app);
+                    }
+                }
+            }
+        })
+        .build(app)?;
+
+    Ok(())
+}
+
+fn show_main_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
+
 pub fn run() {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -145,6 +211,19 @@ pub fn run() {
             app.manage(AppState {
                 connection: Mutex::new(None),
             });
+
+            build_tray(app.handle())?;
+
+            if let Some(window) = app.get_webview_window("main") {
+                let handle = window.clone();
+                window.on_window_event(move |event| {
+                    if let WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                        let _ = handle.hide();
+                    }
+                });
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
