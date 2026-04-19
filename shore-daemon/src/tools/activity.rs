@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 pub fn tool_defs() -> Vec<ToolDef> {
     vec![ToolDef {
         name: "activity_heatmap",
-        description: "Show the user's message activity patterns as a heatmap by hour of day.",
+        description: "View the user's activity heatmap to see when they typically message by hour and day of week. You can use this to understand their schedule.",
         parameters: json!({
             "type": "object",
             "properties": {

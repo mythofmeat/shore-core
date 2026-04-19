@@ -12,7 +12,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
     vec![
         ToolDef {
             name: "send_image",
-            description: "Send an image from memory to the conversation.",
+            description: "Attach an image from your memory database to your reply.",
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -31,8 +31,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "list_images",
-            description:
-                "List image memories. Optionally pass a query for semantic search via RAG (top-32).",
+            description: "List image memories. Optionally pass a query to search.",
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -80,7 +79,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "generate_image",
-            description: "Generate an image using the configured image generation model.",
+            description: "Generate an image from a text description.",
             parameters: json!({
                 "type": "object",
                 "properties": {

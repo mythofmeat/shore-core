@@ -67,7 +67,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "scratchpad_delete",
-            description: "Delete a file or empty directory from your scratchpad.",
+            description: "Delete a file or empty directory from your scratchpad. Your scratchpad is fully sandboxed from {{user}}'s filesystem so deleting is always safe.",
             parameters: json!({
                 "type": "object",
                 "properties": {

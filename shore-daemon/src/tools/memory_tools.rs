@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 pub fn tool_defs() -> Vec<ToolDef> {
     vec![ToolDef {
         name: "memory",
-        description: "Search your memories or save new ones. Call this when a topic might connect to past conversation, when you're about to assume or guess something you could verify, when something feels familiar, or when a topic carries personal or emotional weight. A failed lookup costs nothing; a missed memory is a missed connection. Pass a natural language query to search, or a natural language statement to save, update, or correct.",
+        description: "Interact with your memory database to gather context. You can also save new entries, and update or correct existing entries.",
         parameters: json!({
             "type": "object",
             "properties": {

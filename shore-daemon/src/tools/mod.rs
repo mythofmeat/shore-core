@@ -139,6 +139,36 @@ pub fn all_tools() -> Vec<ToolDef> {
     tools
 }
 
+/// Build the outbound LLM `tools` array from `available_tools`, rendering
+/// `{{char}}` / `{{user}}` placeholders in each tool's description through
+/// the same template pipeline the capabilities block uses.
+///
+/// Centralizes what was previously duplicated at every call site (handler +
+/// autonomy manager) and guarantees that `{{user}}` in a description
+/// actually substitutes instead of shipping literally to the model.
+pub fn render_tool_defs(
+    is_private: bool,
+    toggles: &shore_config::app::ToolToggles,
+    char_name: &str,
+    user_name: &str,
+) -> Vec<Value> {
+    use std::collections::HashMap;
+    let mut vars: HashMap<String, String> = HashMap::new();
+    vars.insert("char".into(), char_name.to_string());
+    vars.insert("character_name".into(), char_name.to_string());
+    vars.insert("user".into(), user_name.to_string());
+    available_tools(is_private, toggles)
+        .iter()
+        .map(|t| {
+            serde_json::json!({
+                "name": t.name,
+                "description": crate::engine::prompt::render_template(t.description, &vars),
+                "input_schema": t.parameters.clone(),
+            })
+        })
+        .collect()
+}
+
 /// Returns tool definitions available for the current privacy mode and tool toggles.
 pub fn available_tools(is_private: bool, toggles: &shore_config::app::ToolToggles) -> Vec<ToolDef> {
     all_tools()
@@ -211,6 +241,42 @@ mod tests {
     use super::*;
     use crate::test_support::TestToolContext;
     use shore_config::app::ToolToggles;
+
+    #[test]
+    fn render_tool_defs_substitutes_user_placeholder() {
+        // {{user}} appears in scratchpad_delete and must resolve, not ship
+        // literal to the model.
+        let toggles = ToolToggles::default();
+        let defs = render_tool_defs(false, &toggles, "qifei", "ren");
+        let delete = defs
+            .iter()
+            .find(|d| d["name"] == "scratchpad_delete")
+            .expect("scratchpad_delete present");
+        let desc = delete["description"].as_str().unwrap();
+        assert!(
+            !desc.contains("{{user}}"),
+            "{{{{user}}}} must be substituted, got: {desc}"
+        );
+        assert!(
+            desc.contains("ren"),
+            "substituted name 'ren' must appear in description, got: {desc}"
+        );
+    }
+
+    #[test]
+    fn render_tool_defs_substitutes_char_placeholder() {
+        // Future-proof guard: {{char}} also resolves through render_tool_defs.
+        let toggles = ToolToggles::default();
+        let defs = render_tool_defs(false, &toggles, "qifei", "ren");
+        for def in &defs {
+            let desc = def["description"].as_str().unwrap();
+            assert!(
+                !desc.contains("{{char}}") && !desc.contains("{{user}}"),
+                "tool {} has unsubstituted placeholder: {desc}",
+                def["name"]
+            );
+        }
+    }
 
     #[test]
     fn test_all_tools_returns_expected_count() {

@@ -16,7 +16,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
     vec![
         ToolDef {
             name: "check_time",
-            description: "Returns the current date and time in a human-readable format.",
+            description: "Returns the current date and time.",
             parameters: json!({
                 "type": "object",
                 "properties": {},
@@ -41,7 +41,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "set_next_wake",
-            description: "Schedule when you want to have your next private moment to think and use tools. Use this at the end of a tick to express your own sense of pacing.",
+            description: "Schedule your next interiority session. Only callable during interiority ticks — outside of those, the call will be rejected.",
             parameters: json!({
                 "type": "object",
                 "properties": {

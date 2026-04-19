@@ -1176,17 +1176,12 @@ fn rebuild_request_from_disk(
     );
 
     let tool_defs = if config.app.behavior.tool_use.enabled {
-        let defs: Vec<serde_json::Value> = tool_system::available_tools(false, tool_toggles)
-            .iter()
-            .map(|t| {
-                json!({
-                    "name": t.name,
-                    "description": t.description,
-                    "input_schema": t.parameters.clone(),
-                })
-            })
-            .collect();
-        Some(defs)
+        Some(tool_system::render_tool_defs(
+            false,
+            tool_toggles,
+            character,
+            &display_name,
+        ))
     } else {
         None
     };
