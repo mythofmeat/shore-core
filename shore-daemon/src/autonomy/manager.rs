@@ -1145,12 +1145,8 @@ fn rebuild_request_from_disk(
         memory_enabled: tool_toggles.memory(),
         image_memory_enabled: tool_toggles.recall_image(),
         send_image_enabled: tool_toggles.send_image(),
-        remember_image_enabled: tool_toggles.remember_image(),
         generate_image_enabled: tool_toggles.generate_image(),
         web_search_enabled: tool_toggles.web_search(),
-        activity_heatmap_enabled: tool_toggles.activity_heatmap(),
-        roll_dice_enabled: tool_toggles.roll_dice(),
-        check_time_enabled: tool_toggles.check_time(),
     };
 
     let prompt_result = prompt::assemble_prompt(&PromptParams {

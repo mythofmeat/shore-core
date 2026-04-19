@@ -8,6 +8,25 @@ use serde_json::{json, Value};
 use shore_protocol::types::{ContentBlock, ImageRef};
 use tracing::{info, warn};
 
+/// Format the text annotation that accompanies a user-uploaded image in
+/// the conversation. The annotation does two jobs at once: it tells the
+/// character where the image landed on disk, AND it instructs the
+/// character to save the image to memory with context via `remember_image`.
+///
+/// Bundling the instruction into the annotation (instead of carrying it in
+/// the always-on `<capabilities>` block) scopes the nudge to the moment
+/// it's relevant — nothing about remembering images appears in the cached
+/// prefix when no image has been shared.
+pub(crate) fn format_image_annotation(rel_path: &str) -> String {
+    format!(
+        "[Attached image saved as: {rel_path}]\n\
+         When the user shares an image with you, you should add it to your memories with a description \
+         capturing context: who shared it, why, what it means, etc. Use the path above with remember_image. \
+         The conversational context is the most valuable part — 'a photo of Alex's cat Whiskers' is far \
+         better than 'a photo of a cat'."
+    )
+}
+
 /// Detect MIME type from file extension.
 pub(crate) fn media_type_for_path(path: &str) -> Option<&'static str> {
     let ext = path.rsplit('.').next()?.to_ascii_lowercase();
@@ -124,7 +143,7 @@ pub(super) fn ingest_images(
                     data: None,
                 });
                 content_blocks.push(ContentBlock::Text {
-                    text: format!("[Attached image saved as: {rel_path}]"),
+                    text: format_image_annotation(&rel_path),
                 });
                 info!(filename = %upload.filename, dest = %rel_path, "Saved uploaded image to attachments");
             }
@@ -164,7 +183,7 @@ pub(super) fn ingest_images(
                         data: None,
                     });
                     content_blocks.push(ContentBlock::Text {
-                        text: format!("[Attached image saved as: {rel_path}]"),
+                        text: format_image_annotation(&rel_path),
                     });
                     info!(src = %src_path_str, dest = %rel_path, "Copied incoming image to attachments");
                 }

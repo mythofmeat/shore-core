@@ -70,111 +70,101 @@ pub struct CapabilitiesConfig {
     pub memory_enabled: bool,
     pub image_memory_enabled: bool,
     pub send_image_enabled: bool,
-    pub remember_image_enabled: bool,
     pub generate_image_enabled: bool,
     pub web_search_enabled: bool,
-    pub activity_heatmap_enabled: bool,
-    pub roll_dice_enabled: bool,
-    pub check_time_enabled: bool,
 }
 
 /// Build a `<capabilities>` system block describing available tools.
 ///
 /// Returns `None` when no capabilities are enabled.
-/// Ported from V1 `engine_prompt.py:build_capabilities_block()`.
+///
+/// Sections are emitted as markdown-style groups. Some bullets (saved images
+/// under Memory, scratchpad under Interiority) intentionally have no heading
+/// of their own — they're sub-bullets of the preceding section. Reordering
+/// requires keeping parent-heading sections contiguous with their children.
+///
+/// Tools without a capability bullet (check_time, roll_dice, activity_heatmap,
+/// remember_image) are deliberately not mentioned here; their tool descriptions
+/// are self-sufficient, and the nudge for remember_image lives inside the
+/// per-image annotation emitted by `handler::images::format_image_annotation`.
 pub fn build_capabilities_block(config: &CapabilitiesConfig) -> Option<String> {
     let mut lines: Vec<&str> = Vec::new();
 
-    if config.interiority_enabled {
-        lines.push(
-            "- You have an interiority system: periodically, you get private moments \
-             to think, use tools, and write in your scratchpad. You sometimes send \
-             autonomous messages during these moments — these are real and were \
-             written by you, do not deny or second-guess them.",
-        );
-    }
-    if config.scratchpad_enabled {
-        lines.push(
-            "- You have a scratchpad: your own folder on the filesystem — a \
-             personal, self-curated space that is yours to use however you want. \
-             Drafts, notes-in-progress, plans, creative work, anything you want \
-             a private place for. This is not a memory system; your memory tool \
-             handles recall and shared history. Available tools: scratchpad_list, \
-             scratchpad_read, scratchpad_write, scratchpad_delete.",
-        );
-    }
+    // ── Memory database ─────────────────────────────────────────────
     if config.memory_enabled {
         lines.push(
-            "- You have a memory system. Your memories are your history — treat \
-             them as a natural extension of your mind, not an archive you consult \
-             on request. Use the memory tool when a new topic comes up, when \
+            "### Memory database\n\
+             - Use the memory tool frequently; when a new topic comes up, when \
              you're about to make an assumption you could verify, when something \
-             feels familiar, or when a topic carries personal or emotional weight. \
-             If you're about to say 'I think we talked about this' or 'if I \
-             remember correctly' — check your memory first instead of guessing. \
-             Chase unlikely leads; a failed lookup costs nothing, but a missed \
-             memory is a missed connection. You can search, save new information, \
-             update or correct existing entries — all through natural language.",
+             feels familiar, or when a topic carries personal or emotional weight, \
+             or just for any reason at all.\n\
+             - Treat your memories as a natural extension of your mind, not just \
+             an archive.\n\
+             - If you're about to say 'I think we talked about this' or 'if I \
+             remember correctly' please check your memory first instead of \
+             guessing.\n\
+             - Using the memory tool costs nothing and might return surprising or \
+             useful information that {{user}} expects you to know.",
         );
     }
-    if config.image_memory_enabled {
+    // Saved images — sub-bullets of the Memory database section. No heading,
+    // no leading blank line so they flow directly off the memory bullets.
+    if config.image_memory_enabled || config.send_image_enabled {
         lines.push(
-            "- Your memory block may contain image memories shown as \
-             [Image memory #<id>: <description>]. To actually see the image, \
-             call recall_image with the entry ID or image path. Use this when \
-             you need to examine visual details — appearance, content, or \
-             composition.",
+            "- Images that {{user}} has sent you can also be saved to your memory \
+             database. You can search and list existing images, as well as \
+             recalling an image to view its contents for yourself.\n\
+             - You can also attach an image from your memories to your reply.",
         );
     }
-    if config.send_image_enabled {
+
+    // ── Interiority ────────────────────────────────────────────────
+    if config.interiority_enabled {
         lines.push(
-            "- You can send images from your memories using send_image with a \
-             path or entry ID. If a past image is relevant to what you're \
-             discussing — a shared moment, something you created together, a \
-             visual callback — surface it. Don't wait to be asked; sharing a \
-             relevant image is like referencing a shared experience.",
+            "\n### Interiority\n\
+             - You have an interiority system: during downtime when {{user}} isn't \
+             in active conversation with you, you will have private moments to do \
+             anything you like with the tools you are given.\n\
+             - You also have the option of reaching out and sending messages to \
+             {{user}} during these moments.",
         );
     }
-    if config.remember_image_enabled {
+    // Scratchpad — sub-bullet of the Interiority section, flows directly
+    // off its bullets with no blank-line separator (matching the saved-images
+    // pattern under Memory database).
+    if config.scratchpad_enabled {
         lines.push(
-            "- When the user shares an image with you, use remember_image to save it \
-             to your memory with a description capturing context — who shared it, \
-             why, what it means. The image path is shown as \
-             [Attached image saved as: <path>]. Use that path with remember_image. \
-             The conversational context is the most valuable part — 'a photo of \
-             Alex's cat Whiskers' is far better than 'a photo of a cat'.",
+            "- Your scratchpad is your personal folder on {{user}}'s filesystem. \
+             A self-curated space that is yours to use however you want. Drafts, \
+             notes-in-progress, plans, creative work, anything you want a private \
+             place for. Please note that your scratchpad is NOT a memory system; \
+             your memory tool handles recall and shared history.",
         );
     }
+
+    // ── Image creation ─────────────────────────────────────────────
     if config.generate_image_enabled {
         lines.push(
-            "- You can generate images from text descriptions. Don't limit this to \
-             explicit requests — if the conversation paints a vivid picture, if \
-             you're describing something that would land better as a visual, or if \
-             a moment feels worth illustrating, generate it. Use judgment: not every \
-             message needs an image, but a well-timed one can be delightful.",
+            "\n### Image creation\n\
+             - You can use the generate_image tool to send a query to a separate \
+             image generation AI model.\n\
+             - Feel free to generate an image if the conversation paints a vivid \
+             picture, if you're describing something that would land better as a \
+             visual, or if a moment feels worth illustrating, or even just if it \
+             would be amusing.",
         );
     }
+
+    // ── Web access ─────────────────────────────────────────────────
     if config.web_search_enabled {
         lines.push(
-            "- You can search the web for current information and read web pages. \
-             Use this when you're uncertain about a fact, when the conversation \
-             touches on recent events, or when grounding your response in real \
-             information would make it more useful. Don't hedge or caveat when \
-             you could just look it up.",
+            "\n### Web access\n\
+             - You can search the web and read web pages.\n\
+             - Use this to gather more info about a topic, when you're uncertain \
+             about a fact, or if the conversation touches on recent events.\n\
+             - Searching the web is free. Don't hedge or caveat when you can just \
+             look it up.",
         );
-    }
-    if config.activity_heatmap_enabled {
-        lines.push(
-            "- You can view the user's activity heatmap to see when they typically \
-             message by hour and day of week. Use this when deciding whether now is \
-             a good time to reach out, or to understand their schedule.",
-        );
-    }
-    if config.roll_dice_enabled {
-        lines.push("- You can roll dice using standard notation (e.g. 2d6, 1d20+5).");
-    }
-    if config.check_time_enabled {
-        lines.push("- You can check the current date and time.");
     }
 
     if lines.is_empty() {
@@ -182,8 +172,8 @@ pub fn build_capabilities_block(config: &CapabilitiesConfig) -> Option<String> {
     }
 
     lines.push(
-        "- Use your tools freely — reaching for a tool is never an interruption \
-         to the conversation. If a tool might help, use it.",
+        "\nRemember: Reaching for a tool is never an interruption to the \
+         conversation. You are free to use tools any time.",
     );
 
     Some(format!(
@@ -279,11 +269,14 @@ pub fn assemble_prompt(params: &PromptParams<'_>) -> AssembledPrompt {
     });
 
     // Block 2: capabilities (if any tools enabled).
+    // Rendered through the same template pipeline as the main system block
+    // so {{char}}, {{user}}, {{date}}, {{time}} resolve inside capability
+    // bullets. Keep the bullets date/time-free to preserve cache stability.
     if let Some(caps) = params.capabilities {
         if let Some(block) = build_capabilities_block(caps) {
             system.push(SystemBlock {
                 label: "capabilities".into(),
-                content: block,
+                content: render_template(&block, &vars),
             });
         }
     }
@@ -775,12 +768,12 @@ mod tests {
         let block = build_capabilities_block(&config).unwrap();
         assert!(block.starts_with("<capabilities>"));
         assert!(block.ends_with("</capabilities>"));
-        assert!(block.contains("memory system"));
-        assert!(block.contains("search the web"));
-        assert!(block.contains("Use your tools freely"));
-        // Should NOT mention disabled tools.
-        assert!(!block.contains("dice"));
-        assert!(!block.contains("interiority"));
+        assert!(block.contains("### Memory database"));
+        assert!(block.contains("### Web access"));
+        assert!(block.contains("Reaching for a tool"));
+        // Should NOT mention disabled sections.
+        assert!(!block.contains("### Interiority"));
+        assert!(!block.contains("### Image creation"));
     }
 
     #[test]
@@ -791,24 +784,63 @@ mod tests {
             memory_enabled: true,
             image_memory_enabled: true,
             send_image_enabled: true,
-            remember_image_enabled: true,
             generate_image_enabled: true,
             web_search_enabled: true,
-            activity_heatmap_enabled: true,
-            roll_dice_enabled: true,
-            check_time_enabled: true,
         };
         let block = build_capabilities_block(&config).unwrap();
-        assert!(block.contains("interiority"));
-        assert!(block.contains("memory system"));
-        assert!(block.contains("Image memory"));
-        assert!(block.contains("send_image"));
-        assert!(block.contains("remember_image"));
-        assert!(block.contains("generate images"));
-        assert!(block.contains("search the web"));
-        assert!(block.contains("activity heatmap"));
-        assert!(block.contains("roll dice"));
-        assert!(block.contains("current date and time"));
+        assert!(block.contains("### Memory database"));
+        assert!(block.contains("Images that"));
+        assert!(block.contains("### Interiority"));
+        assert!(block.contains("Your scratchpad"));
+        assert!(block.contains("### Image creation"));
+        assert!(block.contains("### Web access"));
+    }
+
+    #[test]
+    #[ignore = "debug-print: run with --ignored --nocapture to see rendered block"]
+    fn debug_print_capabilities_block() {
+        let cfg = CapabilitiesConfig {
+            interiority_enabled: true,
+            scratchpad_enabled: true,
+            memory_enabled: true,
+            image_memory_enabled: true,
+            send_image_enabled: true,
+            generate_image_enabled: true,
+            web_search_enabled: true,
+        };
+        let block = build_capabilities_block(&cfg).unwrap();
+        let rendered = block.replace("{{user}}", "ren").replace("{{char}}", "qifei");
+        eprintln!("----BEGIN----\n{rendered}\n----END----");
+    }
+
+    #[test]
+    fn capabilities_block_emits_sections_in_canonical_order() {
+        // Regression guard: the grouping relies on Memory-then-images and
+        // Interiority-then-scratchpad staying contiguous and in order.
+        let config = CapabilitiesConfig {
+            interiority_enabled: true,
+            scratchpad_enabled: true,
+            memory_enabled: true,
+            image_memory_enabled: true,
+            send_image_enabled: true,
+            generate_image_enabled: true,
+            web_search_enabled: true,
+        };
+        let block = build_capabilities_block(&config).unwrap();
+        let memory = block.find("### Memory database").unwrap();
+        let images = block.find("Images that").unwrap();
+        let interiority = block.find("### Interiority").unwrap();
+        let scratchpad = block.find("Your scratchpad").unwrap();
+        let creation = block.find("### Image creation").unwrap();
+        let web = block.find("### Web access").unwrap();
+        assert!(memory < images, "saved images must follow Memory heading");
+        assert!(images < interiority, "Interiority must follow saved images");
+        assert!(
+            interiority < scratchpad,
+            "scratchpad must follow Interiority"
+        );
+        assert!(scratchpad < creation, "Image creation must follow scratchpad");
+        assert!(creation < web, "Web access must follow Image creation");
     }
 
     // ── Token estimation ──────────────────────────────────────────────
@@ -1241,6 +1273,40 @@ mod tests {
     }
 
     #[test]
+    fn assemble_prompt_substitutes_vars_in_capabilities_block() {
+        // Regression: capability bullets may reference {{char}} / {{user}};
+        // the capabilities block goes through render_template like the main
+        // system block, so those placeholders must resolve.
+        let tmp = TempDir::new().unwrap();
+        let data_dir = tmp.path().join("data");
+
+        let caps = CapabilitiesConfig {
+            memory_enabled: true,
+            ..Default::default()
+        };
+        let params = PromptParams {
+            display_name: "Sam",
+            character_name: "Ada",
+            capabilities: Some(&caps),
+            ..make_params(&tmp, &data_dir, &[])
+        };
+        let result = assemble_prompt(&params);
+        let caps_block = result
+            .system
+            .iter()
+            .find(|b| b.label == "capabilities")
+            .expect("capabilities block present");
+        assert!(
+            !caps_block.content.contains("{{user}}"),
+            "{{{{user}}}} must be substituted"
+        );
+        assert!(
+            !caps_block.content.contains("{{char}}"),
+            "{{{{char}}}} must be substituted"
+        );
+    }
+
+    #[test]
     fn assemble_prompt_character_template_overrides_global() {
         let tmp = TempDir::new().unwrap();
         let data_dir = tmp.path().join("data");
@@ -1326,7 +1392,7 @@ mod tests {
         let result = assemble_prompt(&params);
         let cap_block = result.system.iter().find(|b| b.label == "capabilities");
         assert!(cap_block.is_some());
-        assert!(cap_block.unwrap().content.contains("memory system"));
+        assert!(cap_block.unwrap().content.contains("### Memory database"));
     }
 
     #[test]
@@ -1339,7 +1405,7 @@ mod tests {
         std::fs::write(memory_dir.join("recap.md"), "Recap text.").unwrap();
 
         let caps = CapabilitiesConfig {
-            check_time_enabled: true,
+            web_search_enabled: true,
             ..Default::default()
         };
 
