@@ -45,6 +45,7 @@ export interface DaemonHandle {
   connect: (addr?: string, character?: string) => Promise<void>;
   disconnect: () => Promise<void>;
   cancel: () => Promise<void>;
+  quit: () => Promise<void>;
   send: (text: string) => Promise<void>;
 }
 
@@ -119,6 +120,10 @@ export function useDaemon(): DaemonHandle {
     await invoke("cancel");
   }, []);
 
+  const quit = useCallback(async () => {
+    await invoke("quit");
+  }, []);
+
   const send = useCallback(async (text: string) => {
     await invoke("send_message", { text });
   }, []);
@@ -132,6 +137,7 @@ export function useDaemon(): DaemonHandle {
     connect,
     disconnect,
     cancel,
+    quit,
     send,
   };
 }

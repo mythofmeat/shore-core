@@ -18,6 +18,7 @@ export default function App() {
     connect,
     disconnect,
     cancel,
+    quit,
     send,
   } = useDaemon();
   const [input, setInput] = useState("");
@@ -85,6 +86,13 @@ export default function App() {
               Connect
             </button>
           )}
+          <button
+            onClick={quit}
+            className="text-xs px-3 py-1 bg-neutral-800 rounded hover:bg-red-700"
+            title="Quit Shore"
+          >
+            Quit
+          </button>
         </div>
       </header>
 
