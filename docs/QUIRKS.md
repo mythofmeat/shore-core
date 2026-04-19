@@ -54,7 +54,13 @@ Scope guardrails:
 
 ## Desktop / Tray (Linux)
 
-- **Tauri `show_menu_on_left_click(false)` is a no-op on Linux.** The flag is documented by Tauri as "Linux: Unsupported" — libayatana-appindicator's StatusNotifierItem protocol doesn't expose separate left-click-activate vs context-menu events, so whenever a menu is attached to the tray it pops up on left-click regardless of the flag. To get single-left-click-to-show-window UX on Linux, the tray must be built **without** a menu; click events then route cleanly through `on_tray_icon_event`. Consequence: Quit/Disconnect cannot live in a tray menu on Linux and must be surfaced via the window UI (or a global shortcut). Reference impl: `shore-gui/src-tauri/src/lib.rs::build_tray`.
+- **libayatana-appindicator registers the icon *through* its menu, and hijacks left-click.** Two related constraints, both enforced by the StatusNotifierItem DBus protocol:
+    1. **No menu → no icon.** Building a `TrayIconBuilder` without `.menu(&menu)` causes the icon to silently not render on most Linux DEs — the indicator never registers with the shell. (It renders fine on macOS/Windows.)
+    2. **Menu attached → menu always pops on left-click.** SNI has no separate left-click-activate event, so the menu shows on both primary and context clicks. Tauri's `show_menu_on_left_click(false)` is documented as "Linux: Unsupported" and is silently ignored.
+
+    Net effect on Linux: you can't have a tray-resident icon *without* a menu, and the menu will steal left-click. Single-click-to-toggle-window is unreachable on this stack. The practical compromise: put the "Show" action as the **first** menu item so it's the default activation when the menu appears. `on_tray_icon_event` still fires and is wired for macOS/Windows where click routing is clean. Reference impl: `shore-gui/src-tauri/src/lib.rs::build_tray`.
+
+- **`libayatana-appindicator is deprecated` runtime warning is cosmetic.** Emitted by the C library when Tauri (via `tray-icon` crate) links against `libayatana-appindicator3` rather than the newer `-glib` variant. The older library still works and the warning has no behavioral impact. Switching wouldn't fix the two constraints above anyway — those are SNI protocol properties, not library properties.
 
 ## Streaming / Client Rendering
 

@@ -2,6 +2,7 @@ use serde::Serialize;
 use shore_client::{spawn_connection, ConnCommand, ConnEvent};
 use shore_protocol::client_msg::{Cancel, ClientMessage, ClientMessageBody};
 use tauri::{
+    menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, Manager, State, WindowEvent,
 };
@@ -138,19 +139,47 @@ fn emit<T: Serialize + Clone>(app: &AppHandle, event: &str, payload: T) {
 }
 
 fn build_tray(app: &AppHandle) -> tauri::Result<()> {
-    // No menu is attached: on Linux libayatana-appindicator, attaching a menu
-    // forces it onto left-click regardless of `show_menu_on_left_click`
-    // (documented as "Linux: Unsupported"). Routing click through
-    // `on_tray_icon_event` instead gives the single-click-to-show UX.
-    // Quit/Disconnect live in the window UI.
+    // Linux (libayatana-appindicator) constraints:
+    //   1. The icon registers via SNI *through* its menu — without a menu it
+    //      doesn't render at all on most DEs.
+    //   2. SNI has no separate left-click-activate event, so any attached
+    //      menu pops up on left-click regardless of show_menu_on_left_click
+    //      (documented as "Linux: Unsupported").
+    // So on Linux we accept the menu-on-left-click UX and put "Show Shore"
+    // first so it's the default activation. Tray click events still fire on
+    // other platforms where on_tray_icon_event can toggle visibility directly.
+    let show = MenuItem::with_id(app, "show", "Show Shore", true, None::<&str>)?;
+    let disconnect_item =
+        MenuItem::with_id(app, "disconnect", "Disconnect", true, None::<&str>)?;
+    let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show, &disconnect_item, &quit_item])?;
+
     let icon = app
         .default_window_icon()
         .cloned()
         .ok_or_else(|| tauri::Error::AssetNotFound("default window icon".into()))?;
 
     TrayIconBuilder::with_id("main")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
         .icon(icon)
         .tooltip("Shore")
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "show" => show_main_window(app),
+            "disconnect" => {
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Some(state) = app.try_state::<AppState>() {
+                        let mut guard = state.connection.lock().await;
+                        if let Some(tx) = guard.take() {
+                            let _ = tx.send(ConnCommand::Shutdown).await;
+                        }
+                    }
+                });
+            }
+            "quit" => app.exit(0),
+            _ => {}
+        })
         .on_tray_icon_event(|tray, event| {
             if let TrayIconEvent::Click {
                 button: MouseButton::Left,
