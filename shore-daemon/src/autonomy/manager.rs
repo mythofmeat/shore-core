@@ -1030,38 +1030,54 @@ images, check the time. Reach for whatever serves what you actually want to \
 do right now. Don't perform productivity — if what you want is to sit with \
 a thought and write it down, do that.
 
-At any point during this moment, you can do any combination of the following:
+In addition, you can:
 
-- Schedule your next private moment: use set_next_wake(hours_from_now, reason). \
-The minimum is 1 hour, the maximum is 48 hours. Sooner if you want to \
-come back to something, later if you'd rather rest. If you don't schedule, \
-your next moment will arrive in {default_interval}.
+- Schedule your next interiority session: use set_next_wake(hours_from_now, \
+reason). The minimum is 1 hour, the maximum is 48 hours. Sooner if you want \
+to come back to something, later if you'd rather rest. If you don't \
+schedule, your next moment will arrive in {default_interval}. This is the \
+next opportunity you will have to send {user_name} an autonomous message or \
+to continue any unfinished or ongoing work from this current interiority \
+session.
 
 - Send a message to {user_name}: wrap it in <sendMessage>...</sendMessage>. \
-Only when you genuinely have something to share — something you made, \
-something you found, something you want to say.
+You have the ability to autonomously and spontaneously send messages to \
+{user_name}. Any text included in the `sendMessage` tags will be delivered \
+to {user_name}.
 
-- Write a recap for yourself: wrap a brief first-person note in \
-<recap>...</recap> — what you did, what you're thinking about, what you \
-want to pick up next time. This is for you: it will surface in your \
-context at your next private moment and when {user_name} next messages, \
-so you can remember what you were up to. You decide whether to share it \
-with them or not.
+Before ending your response, ensure you write a recap for yourself. Wrap a \
+brief first-person note in <recap>...</recap> detailing what you did, and \
+what you want to pick up next time. This is for you: it will surface in \
+your context at your next private moment and when {user_name} next \
+messages, so you can remember what you were up to. You decide whether to \
+share it with them or not.
 
-Your thoughts and tool use are logged, so you can pick up where you left off.]"
+Thoughts, tool-use results, and any text in your response that is not part \
+of the `<recap>` or `<sendMessage>` tags are ephemeral and will be lost. If \
+you want to carry something forward, write it down.
+
+Changes you make to the memory database or to your scratchpad will persist, \
+but you'll need to call the relevant tool to retrieve them again. Make sure \
+to note in your `<recap>` where relevant information lives — which memory \
+entry or which scratchpad file — so you can find it next time.]"
     )
 }
 
 /// Build the `{recent_thread_block}` from recent System messages in the
-/// active conversation, falling back to the ring buffer.
+/// active conversation.
 ///
-/// Since interiority ticks now persist their recap as a `Role::System`
-/// message in `active.jsonl` (see `execute_unified_tick`), the same
-/// content surfaces here directly from the conversation. This avoids the
-/// double-source bug where the tick's own prompt used to pull from
-/// `recaps.jsonl` while the payload pulled the same content from the
-/// sidecar too. Single source of truth: `active.jsonl`.
-fn build_recent_thread(log: &InteriorityLog, messages: &[Message]) -> String {
+/// Single source of truth: `active.jsonl`. Every completed interiority tick
+/// persists its `<recap>` as a `Role::System` message (see
+/// `execute_unified_tick`), so this function reads the most recent three and
+/// renders them as the character's "where you left off" context.
+///
+/// Returns an empty string if there are no recaps (first-ever tick, or a
+/// freshly-reset conversation). The `InteriorityLog` ring buffer is kept for
+/// operator-facing diagnostics (`shore log --heartbeat`) but is deliberately
+/// not consulted here — surfacing raw tool-use events as a fallback trained
+/// the character to treat them as a second narrative channel, duplicating
+/// the recap's job.
+fn build_recent_thread(messages: &[Message]) -> String {
     let recent_recaps: Vec<&Message> = messages
         .iter()
         .rev()
@@ -1069,27 +1085,13 @@ fn build_recent_thread(log: &InteriorityLog, messages: &[Message]) -> String {
         .take(3)
         .collect();
 
-    if !recent_recaps.is_empty() {
-        let mut lines = vec!["Where you left off:".to_string()];
-        for msg in recent_recaps.iter().rev() {
-            lines.push(format!(" · {}", msg.content));
-        }
-        return lines.join("\n");
-    }
-
-    // Fall back to ring buffer tool-use summaries.
-    let events = log.recent(5);
-    let tool_events: Vec<_> = events
-        .iter()
-        .filter(|e| matches!(e.kind, InteriorityEventKind::ToolUse))
-        .collect();
-    if tool_events.is_empty() {
+    if recent_recaps.is_empty() {
         return String::new();
     }
 
-    let mut lines = vec!["Last time, you:".to_string()];
-    for event in &tool_events {
-        lines.push(format!(" · {}", event.detail));
+    let mut lines = vec!["Where you left off:".to_string()];
+    for msg in recent_recaps.iter().rev() {
+        lines.push(format!(" · {}", msg.content));
     }
     lines.join("\n")
 }
@@ -1336,10 +1338,7 @@ async fn execute_unified_tick(
     } else {
         format!("{} minutes", default_interval_secs / 60)
     };
-    let recent_thread = {
-        let s = lock_state(state);
-        build_recent_thread(&s.interiority_log, &active_messages)
-    };
+    let recent_thread = build_recent_thread(&active_messages);
     let interiority_prompt =
         build_interiority_prompt(&recent_thread, &user_name, &default_interval_str);
 
