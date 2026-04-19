@@ -54,13 +54,13 @@ Scope guardrails:
 
 ## Desktop / Tray (Linux)
 
-- **libayatana-appindicator registers the icon *through* its menu, and hijacks left-click.** Two related constraints, both enforced by the StatusNotifierItem DBus protocol:
-    1. **No menu → no icon.** Building a `TrayIconBuilder` without `.menu(&menu)` causes the icon to silently not render on most Linux DEs — the indicator never registers with the shell. (It renders fine on macOS/Windows.)
-    2. **Menu attached → menu always pops on left-click.** SNI has no separate left-click-activate event, so the menu shows on both primary and context clicks. Tauri's `show_menu_on_left_click(false)` is documented as "Linux: Unsupported" and is silently ignored.
+- **Tauri's Linux tray can't separate left-click-activate from context-menu.** libayatana-appindicator (what `tauri::tray` links against) has two compounding constraints on Linux:
+    1. **No menu → no icon.** A `TrayIconBuilder` without `.menu(&menu)` silently fails to register with the shell on most DEs.
+    2. **Menu attached → menu pops on *any* click.** SNI itself exposes `Activate` (left) and `ContextMenu` (right) as distinct DBus calls, but the appindicator bridge Tauri uses collapses them. `show_menu_on_left_click(false)` is documented as "Linux: Unsupported" and is ignored.
 
-    Net effect on Linux: you can't have a tray-resident icon *without* a menu, and the menu will steal left-click. Single-click-to-toggle-window is unreachable on this stack. The practical compromise: put the "Show" action as the **first** menu item so it's the default activation when the menu appears. `on_tray_icon_event` still fires and is wired for macOS/Windows where click routing is clean. Reference impl: `shore-gui/src-tauri/src/lib.rs::build_tray`.
+    Resolution: on Linux, shore-gui bypasses Tauri's tray entirely and registers its own SNI item via the `ksni` crate, which talks to the StatusNotifierWatcher directly and routes `Activate` to `Tray::activate` and `ContextMenu` to `Tray::menu`. This restores proper left-click-toggle-window + right-click-menu behavior. The Tauri tray path is retained for macOS/Windows where its click routing is clean. Reference impls: `shore-gui/src-tauri/src/tray_linux.rs` (ksni, Linux), `shore-gui/src-tauri/src/lib.rs::build_tray` (Tauri, non-Linux).
 
-- **`libayatana-appindicator is deprecated` runtime warning is cosmetic.** Emitted by the C library when Tauri (via `tray-icon` crate) links against `libayatana-appindicator3` rather than the newer `-glib` variant. The older library still works and the warning has no behavioral impact. Switching wouldn't fix the two constraints above anyway — those are SNI protocol properties, not library properties.
+- **`libayatana-appindicator is deprecated` runtime warning is cosmetic.** Emitted by the C library when Tauri (via `tray-icon` crate) links against `libayatana-appindicator3` rather than the newer `-glib` variant. The older library still works and the warning has no behavioral impact. No longer hit on Linux now that shore-gui uses ksni directly.
 
 ## Streaming / Client Rendering
 

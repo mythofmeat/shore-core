@@ -1,19 +1,23 @@
+#[cfg(target_os = "linux")]
+mod tray_linux;
+
 use serde::Serialize;
 use shore_client::{spawn_connection, ConnCommand, ConnEvent};
 use shore_protocol::client_msg::{Cancel, ClientMessage, ClientMessageBody};
+#[cfg(not(target_os = "linux"))]
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, Manager, State, WindowEvent,
 };
+use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, warn};
 
 const CLIENT_TYPE: &str = "gui";
 const CLIENT_NAME: &str = "shore-gui";
 
-struct AppState {
-    connection: Mutex<Option<mpsc::Sender<ConnCommand>>>,
+pub(crate) struct AppState {
+    pub(crate) connection: Mutex<Option<mpsc::Sender<ConnCommand>>>,
 }
 
 #[derive(Serialize, Clone)]
@@ -138,16 +142,8 @@ fn emit<T: Serialize + Clone>(app: &AppHandle, event: &str, payload: T) {
     }
 }
 
+#[cfg(not(target_os = "linux"))]
 fn build_tray(app: &AppHandle) -> tauri::Result<()> {
-    // Linux (libayatana-appindicator) constraints:
-    //   1. The icon registers via SNI *through* its menu — without a menu it
-    //      doesn't render at all on most DEs.
-    //   2. SNI has no separate left-click-activate event, so any attached
-    //      menu pops up on left-click regardless of show_menu_on_left_click
-    //      (documented as "Linux: Unsupported").
-    // So on Linux we accept the menu-on-left-click UX and put "Show Shore"
-    // first so it's the default activation. Tray click events still fire on
-    // other platforms where on_tray_icon_event can toggle visibility directly.
     let show = MenuItem::with_id(app, "show", "Show Shore", true, None::<&str>)?;
     let disconnect_item =
         MenuItem::with_id(app, "disconnect", "Disconnect", true, None::<&str>)?;
@@ -202,6 +198,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+#[cfg(not(target_os = "linux"))]
 fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
@@ -227,6 +224,9 @@ pub fn run() {
                 connection: Mutex::new(None),
             });
 
+            #[cfg(target_os = "linux")]
+            tray_linux::spawn(app.handle().clone());
+            #[cfg(not(target_os = "linux"))]
             build_tray(app.handle())?;
 
             if let Some(window) = app.get_webview_window("main") {
