@@ -1,4 +1,4 @@
-# shore-gui: Future Ideas & Directions
+# shore-gui-godot: Future Ideas & Directions
 
 ## Approved for Implementation
 

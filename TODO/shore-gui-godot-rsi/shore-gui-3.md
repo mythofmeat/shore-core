@@ -3,14 +3,14 @@ You are doing an implementation pass on a Godot 4.6 chat client called Shore GUI
 ## Step 1: Read everything
 
 Read in this order:
-1. shore-gui/VISION.md — the north star
-2. shore-gui/IDEAS.md — existing roadmap
-3. shore-gui/CREATIVE_DRAFT.md — creative/experimental proposals
-4. shore-gui/UX_IMPROVEMENTS.md — grounded UX analysis
-5. All scripts in shore-gui/scripts/
-6. All shaders in shore-gui/shaders/
-7. shore-gui/scenes/main.tscn and config_panel.tscn
-8. shore-gui/project.godot
+1. shore-gui-godot/VISION.md — the north star
+2. shore-gui-godot/IDEAS.md — existing roadmap
+3. shore-gui-godot/CREATIVE_DRAFT.md — creative/experimental proposals
+4. shore-gui-godot/UX_IMPROVEMENTS.md — grounded UX analysis
+5. All scripts in shore-gui-godot/scripts/
+6. All shaders in shore-gui-godot/shaders/
+7. shore-gui-godot/scenes/main.tscn and config_panel.tscn
+8. shore-gui-godot/project.godot
 
 ## Step 2: Plan your implementation
 
@@ -25,7 +25,7 @@ Write your plan before you start coding. Limit yourself to what you can do well 
 
 ## Step 3: Install addons if needed
 
-Godot addons are installed by copying files into shore-gui/addons/. You can:
+Godot addons are installed by copying files into shore-gui-godot/addons/. You can:
 - Clone repos and copy the relevant addon folder
 - Download specific files from GitHub
 
@@ -50,17 +50,17 @@ Key constraints:
 - Every effect must remain independently toggleable.
 - The app must work with all effects disabled.
 - Text must always be readable. No effect should reduce contrast or obscure messages.
-- The Rust bridge (shore-gui/rust/) handles daemon communication — don't modify it unless necessary.
+- The Rust bridge (shore-gui-godot/rust/) handles daemon communication — don't modify it unless necessary.
 
 When you add or modify shaders, ensure the corresponding GDScript manager properly initializes all uniforms.
 
 ## Step 5: Document what you did
 
 After implementation, update:
-- shore-gui/IDEAS.md — mark implemented items, add new ideas that emerged
-- shore-gui/VISION.md — only if the project direction evolved
+- shore-gui-godot/IDEAS.md — mark implemented items, add new ideas that emerged
+- shore-gui-godot/VISION.md — only if the project direction evolved
 
-Create a brief CHANGELOG entry (append to shore-gui/CREATIVE_DRAFT.md or a new file) describing what was actually implemented vs. what was proposed, and why you made the choices you did.
+Create a brief CHANGELOG entry (append to shore-gui-godot/CREATIVE_DRAFT.md or a new file) describing what was actually implemented vs. what was proposed, and why you made the choices you did.
 
 ## Important notes
 

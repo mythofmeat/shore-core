@@ -148,7 +148,7 @@ impl ShoreBridge {
         };
 
         let (cmd_tx, event_rx) =
-            spawn_connection(socket_opt, None, "bridge", "shore-gui", char_opt);
+            spawn_connection(socket_opt, None, "bridge", "shore-gui-godot", char_opt);
 
         self.cmd_tx = Some(cmd_tx);
         self.event_rx = Some(event_rx);

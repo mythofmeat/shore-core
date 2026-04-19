@@ -3,9 +3,9 @@ You are doing a grounded UI/UX analysis pass on a Godot 4.6 chat client called S
 ## Step 1: Read the project context
 
 Read these files:
-- shore-gui/VISION.md — project philosophy
-- shore-gui/IDEAS.md — existing feature roadmap
-- shore-gui/CREATIVE_DRAFT.md — the creative proposal from the previous pass
+- shore-gui-godot/VISION.md — project philosophy
+- shore-gui-godot/IDEAS.md — existing feature roadmap
+- shore-gui-godot/CREATIVE_DRAFT.md — the creative proposal from the previous pass
 
 ## Step 2: Explore the codebase thoroughly
 
@@ -30,7 +30,7 @@ For every system, ask: "What would a senior, perfectionist dev reject in code re
 
 ## Step 4: Write the grounded improvement document
 
-Create a file called shore-gui/UX_IMPROVEMENTS.md with:
+Create a file called shore-gui-godot/UX_IMPROVEMENTS.md with:
 
 ### Critical Fixes
 Things that actively hurt usability right now. Bugs, jank, readability issues.

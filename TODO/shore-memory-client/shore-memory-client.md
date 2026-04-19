@@ -200,7 +200,7 @@ Language/framework is decided (see next section). Client scaffolding can start a
 - **Dioxus / Iced.** Webview-based Rust UI inherits the "need JS viz libs" problem without the TS ecosystem convenience.
 - **Native Qt / GTK.** Best-in-class table widgets, but build-system complexity and weak macOS story.
 - **SwiftUI.** macOS-only, disqualifying for Linux primary.
-- **Godot.** Already in-stack as `shore-gui`, but that's a joke crate and Godot's table/form UI story is poor.
+- **Godot.** Already in-stack as `shore-gui-godot`, but that's a joke crate and Godot's table/form UI story is poor.
 
 ### Honest costs
 

@@ -3,16 +3,16 @@ You are doing a creative analysis pass on a Godot 4.6 chat client called Shore G
 ## Step 1: Read the project vision and existing ideas
 
 Read these files carefully:
-- shore-gui/VISION.md — the project's aesthetic philosophy and intent
-- shore-gui/IDEAS.md — existing feature ideas and design principles
+- shore-gui-godot/VISION.md — the project's aesthetic philosophy and intent
+- shore-gui-godot/IDEAS.md — existing feature ideas and design principles
 
 ## Step 2: Explore the codebase
 
 Read through the scripts, shaders, and scenes to understand what's currently built:
-- shore-gui/scripts/ — all .gd files (effects_manager.gd is the central hub)
-- shore-gui/shaders/ — all .gdshader files
-- shore-gui/scenes/main.tscn — the scene tree structure
-- shore-gui/project.godot — project configuration
+- shore-gui-godot/scripts/ — all .gd files (effects_manager.gd is the central hub)
+- shore-gui-godot/shaders/ — all .gdshader files
+- shore-gui-godot/scenes/main.tscn — the scene tree structure
+- shore-gui-godot/project.godot — project configuration
 
 Understand the architecture: how effects are toggled, how presets work, how the config panel connects to the effects manager, how the Rust bridge works.
 
@@ -26,11 +26,11 @@ Search the web for Godot 4.x addons/plugins that could enhance this project. Spe
 - Color grading / screen effect addons
 - Anything else that fits the vision
 
-Addons are installed by copying files into shore-gui/addons/ — no system permissions needed.
+Addons are installed by copying files into shore-gui-godot/addons/ — no system permissions needed.
 
 ## Step 4: Write the creative proposal
 
-Create a file called shore-gui/CREATIVE_DRAFT.md with your proposals. Structure it as:
+Create a file called shore-gui-godot/CREATIVE_DRAFT.md with your proposals. Structure it as:
 
 ### New Feature Ideas
 Bold, experimental, weird ideas that align with the vision. Think: what would make someone say "wait, this is a CHAT APP?" Push boundaries. Be specific — describe what the user sees/hears/feels, not just abstract concepts.

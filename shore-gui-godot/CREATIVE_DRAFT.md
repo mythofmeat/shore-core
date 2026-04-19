@@ -141,7 +141,7 @@ Keep the existing fog layers — they're good. Layer the SDF rain ON TOP of the 
 **Installation:**
 ```
 git clone https://github.com/EclipsingLines/GodotSynth
-cp -r GodotSynth/addons/GodotSynth shore-gui/addons/GodotSynth
+cp -r GodotSynth/addons/GodotSynth shore-gui-godot/addons/GodotSynth
 ```
 Enable in Project > Project Settings > Plugins.
 
@@ -154,7 +154,7 @@ Enable in Project > Project Settings > Plugins.
 **Installation:**
 ```
 git clone https://github.com/GodotPostProcess/addon
-cp -r addon/addons/PostProcess shore-gui/addons/PostProcess
+cp -r addon/addons/PostProcess shore-gui-godot/addons/PostProcess
 ```
 
 ### 3. Anima — UI Animation Library
@@ -166,7 +166,7 @@ cp -r addon/addons/PostProcess shore-gui/addons/PostProcess
 **Installation:**
 ```
 git clone https://github.com/ceceppa/anima-godot-4
-cp -r anima-godot-4/addons/anima shore-gui/addons/anima
+cp -r anima-godot-4/addons/anima shore-gui-godot/addons/anima
 ```
 
 ### 4. Color Correction and Screen Effects
@@ -178,7 +178,7 @@ cp -r anima-godot-4/addons/anima shore-gui/addons/anima
 **Installation:**
 ```
 git clone https://github.com/ArseniyMirniy/Godot-4-Color-Correction-and-Screen-Effects
-cp -r Godot-4-Color-Correction-and-Screen-Effects/addons shore-gui/addons/
+cp -r Godot-4-Color-Correction-and-Screen-Effects/addons shore-gui-godot/addons/
 ```
 
 ---

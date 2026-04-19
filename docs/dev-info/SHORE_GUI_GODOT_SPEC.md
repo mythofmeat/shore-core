@@ -1,4 +1,4 @@
-# shore-gui: The Most Overengineered Chat Client Ever Made
+# shore-gui-godot: The Most Overengineered Chat Client Ever Made
 
 > A GPU-accelerated, shader-heavy, physics-enabled GUI for Shore, built in Godot + gdext (Rust bindings). It does everything the TUI does, but with completely unnecessary visual flair that requires hardware acceleration.
 

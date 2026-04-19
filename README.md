@@ -36,7 +36,8 @@ Produces five binaries in `target/release/`:
 | `shore` | CLI — stateless commands |
 | `shore-tui` | Full terminal UI with a persistent connection |
 | `shore-matrix` | Matrix bridge with embedded homeserver management |
-| `shore-gui` *(if built)* | GUI client |
+| `shore-gui` *(if built)* | Desktop GUI client (Tauri + React) |
+| `shore-gui-godot` *(if built)* | Experimental Godot-based GUI (RSI exercise) |
 
 ## Quick start
 

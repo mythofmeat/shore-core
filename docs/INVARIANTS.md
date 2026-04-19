@@ -305,4 +305,4 @@ Memory is *who the character is* over time; scratchpad is *what the character is
 **Must:**
 - No client is canonical in a way that prevents others from existing. Multiple GUIs and alternative clients can coexist.
 
-**Notes:** `shore-gui` is currently the Godot-based chat GUI — inherently absurd (chat UI in a game engine) and built as a recursive-self-improvement exercise orchestrated with fish scripts during free time / free tokens. It will likely be renamed `shore-godot` and moved out of this repo when it's closer to complete. A more conventional GUI client (Tauri + TypeScript or similar) is higher-priority for the canonical rich-UI role and can land independently.
+**Notes:** `shore-gui-godot` is the Godot-based chat GUI — inherently absurd (chat UI in a game engine) and built as a recursive-self-improvement exercise orchestrated with fish scripts during free time / free tokens. It may move out of this repo when it's closer to complete. `shore-gui` (Tauri + React + TypeScript) is the canonical rich-UI client and lands independently.

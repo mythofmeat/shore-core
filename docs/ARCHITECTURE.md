@@ -1555,7 +1555,8 @@ shore/                              # Git root
 Adding future components is just another top-level directory:
 
 ```
-├── shore-gui/                      # Future: Tauri, Electron, etc.
+├── shore-gui/                      # Tauri + React + TypeScript desktop client
+├── shore-gui-godot/                # Godot-based experimental GUI (RSI exercise)
 ├── shore-telegram/                 # Future: Rust binary
 ├── shore-discord/                  # Future: Rust binary
 ├── shore-plugins/                  # Future: Python plugin host
