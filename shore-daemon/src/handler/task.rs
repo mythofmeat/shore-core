@@ -223,7 +223,6 @@ pub(super) async fn handle_generation(
         check_time_enabled: tool_toggles.check_time(),
     };
 
-    let recap_path = character_data_dir.join("recaps.jsonl");
     let prompt_result = prompt::assemble_prompt(&PromptParams {
         config_dir: &effective_config.dirs.config,
         character_name: &char_name,
@@ -236,7 +235,6 @@ pub(super) async fn handle_generation(
         max_context_tokens: resolved.max_context_tokens,
         max_output_tokens: resolved.max_tokens,
         capabilities: Some(&capabilities),
-        recap_store_path: Some(&recap_path),
     });
 
     let cache_dir = &effective_config.dirs.cache;

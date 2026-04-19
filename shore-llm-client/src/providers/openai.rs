@@ -43,7 +43,18 @@ fn translate_messages(request: &LlmRequest) -> Vec<Value> {
         match content {
             // String content — simple pass-through.
             Some(Value::String(s)) => match role {
-                "system" => out.push(json!({"role": "system", "content": s})),
+                // Inline system messages mid-history (from injection,
+                // interiority recaps) get wrapped in <system_instruction>
+                // and emitted as user turns. Some OpenRouter-routed backends
+                // reject raw role:"system" mid-conversation; the wrapper is
+                // defensive and mirrors convert_inline_system_messages in
+                // providers/anthropic.rs. The top-level system prompt is
+                // unaffected — it's injected separately from request.system
+                // at the start of translate_messages.
+                "system" => out.push(json!({
+                    "role": "user",
+                    "content": format!("<system_instruction>{s}</system_instruction>"),
+                })),
                 "user" => out.push(json!({"role": "user", "content": s})),
                 "assistant" => out.push(json!({"role": "assistant", "content": s})),
                 _ => {}
@@ -180,9 +191,15 @@ fn translate_messages(request: &LlmRequest) -> Vec<Value> {
                 }
 
                 "system" => {
+                    // Inline system messages: wrap in <system_instruction>
+                    // and emit as user (see rationale on the string-content
+                    // branch above).
                     let text = extract_system_text(&Value::Array(blocks.clone()));
                     if !text.is_empty() {
-                        out.push(json!({"role": "system", "content": text}));
+                        out.push(json!({
+                            "role": "user",
+                            "content": format!("<system_instruction>{text}</system_instruction>"),
+                        }));
                     }
                 }
 
@@ -998,14 +1015,32 @@ mod tests {
         assert!(url.starts_with("data:image/png;base64,"));
     }
 
-    // ── System messages with array content (regression: SHA 2081b63) ──
+    // ── Inline system-role messages mid-history ────────────────────────
     //
-    // translate_messages() was dropping system messages whose content was an
-    // array of content_blocks rather than a plain string.  The fix routes them
-    // through extract_system_text() which concatenates all text blocks.
+    // Inline system messages (from /inject-system-message, interiority
+    // recaps) are wrapped in <system_instruction>...</system_instruction>
+    // and emitted as user turns — defensive for OR-routed backends that
+    // reject raw role:"system" mid-conversation. Mirrors
+    // convert_inline_system_messages in providers/anthropic.rs.
 
     #[test]
-    fn test_translate_messages_inline_system_array_preserved() {
+    fn test_translate_messages_inline_system_string_wrapped_as_user() {
+        let request = make_request(
+            vec![json!({"role": "system", "content": "Be concise."})],
+            None,
+        );
+        let msgs = translate_messages(&request);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0]["role"], "user");
+        let content = msgs[0]["content"].as_str().unwrap();
+        assert_eq!(
+            content, "<system_instruction>Be concise.</system_instruction>",
+            "inline system should be wrapped in <system_instruction>"
+        );
+    }
+
+    #[test]
+    fn test_translate_messages_inline_system_array_wrapped_as_user() {
         // System message arrives as a message in the messages array (not
         // request.system) with content_blocks / array format.
         let request = make_request(
@@ -1024,16 +1059,35 @@ mod tests {
             1,
             "system message with array content must not be dropped"
         );
-        assert_eq!(msgs[0]["role"], "system");
+        assert_eq!(msgs[0]["role"], "user");
         let content = msgs[0]["content"].as_str().unwrap();
         assert!(
+            content.starts_with("<system_instruction>"),
+            "inline system array content should be wrapped"
+        );
+        assert!(
+            content.ends_with("</system_instruction>"),
+            "inline system wrapper must close"
+        );
+        assert!(
             content.contains("You are helpful."),
-            "system text block 1 must be present in output"
+            "system text block 1 must be present in wrapped output"
         );
         assert!(
             content.contains("Be concise."),
-            "system text block 2 must be present in output"
+            "system text block 2 must be present in wrapped output"
         );
+    }
+
+    #[test]
+    fn test_translate_messages_top_level_system_still_role_system() {
+        // The top-level request.system field is the real system prompt
+        // and must NOT be wrapped — it remains a role:"system" entry.
+        let request = make_request(vec![], Some(json!("Real system prompt.")));
+        let msgs = translate_messages(&request);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0]["role"], "system");
+        assert_eq!(msgs[0]["content"], "Real system prompt.");
     }
 
     // ── translate_tools ───────────────────────────────────────────────

@@ -197,3 +197,79 @@ async fn wrap_up_persists_recap_on_natural_exit_without_recap() {
 
     harness.shutdown().await;
 }
+
+/// A completed interiority tick must persist its recap to `active.jsonl` as a
+/// `Role::System` message so the recap survives compaction and the next
+/// payload sees it at its natural chronological position. This replaces the
+/// old ephemeral re-injection from `recaps.jsonl` in `trim_messages`.
+#[tokio::test]
+async fn tick_recap_persists_as_system_message_in_active_jsonl() {
+    use shore_protocol::types::{Message, Role};
+
+    init_tracing();
+    let mut harness = TestHarness::boot_with(
+        TestConfigBuilder::new()
+            .autonomy(true)
+            .interiority_max_tool_rounds(12),
+    )
+    .await;
+
+    // Prime the conversation so the autonomy state exists.
+    harness.mock_llm.enqueue_text("ack").await;
+    let _ = harness.send_and_collect("hello").await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // Iter 0: plain text, natural exit.
+    harness
+        .mock_llm
+        .enqueue_json_text("thinking quietly.")
+        .await;
+
+    // Wrap-up: returns the recap we expect to land as a System message.
+    let expected_recap = "noticed the light changing; waited for ren to come back";
+    harness
+        .mock_llm
+        .enqueue_json_text(&format!("done. <recap>{expected_recap}</recap>"))
+        .await;
+
+    harness.autonomy.interiority_tick_now(CHARACTER);
+
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(15)).await;
+
+    let active_path = harness.data_dir.join(CHARACTER).join("active.jsonl");
+    let mut found_system_recap = false;
+    for _ in 0..500 {
+        if let Ok(content) = std::fs::read_to_string(&active_path) {
+            for line in content.lines() {
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+                if let Ok(mut msg) = serde_json::from_str::<Message>(line) {
+                    msg.normalize();
+                    if msg.role == Role::System && msg.content.contains(expected_recap) {
+                        found_system_recap = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if found_system_recap {
+            break;
+        }
+        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    tokio::time::resume();
+
+    assert!(
+        found_system_recap,
+        "expected a Role::System message containing {expected_recap:?} in {}; contents={:?}",
+        active_path.display(),
+        std::fs::read_to_string(&active_path).ok(),
+    );
+
+    harness.shutdown().await;
+}

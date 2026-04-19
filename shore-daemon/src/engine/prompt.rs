@@ -221,9 +221,6 @@ pub struct PromptParams<'a> {
     /// Capabilities config for building the tool-description system block.
     /// `None` means no capabilities block is emitted.
     pub capabilities: Option<&'a CapabilitiesConfig>,
-    /// Path to the character's `recaps.jsonl` file for continuity injection.
-    /// `None` means no recap entries are injected in time gaps.
-    pub recap_store_path: Option<&'a Path>,
 }
 
 // ---------------------------------------------------------------------------
@@ -369,11 +366,7 @@ pub fn assemble_prompt(params: &PromptParams<'_>) -> AssembledPrompt {
     }
 
     // ── 5. Trim conversation history to fit budget ────────────────────
-    let messages = trim_messages(
-        params.messages,
-        available_for_messages,
-        params.recap_store_path,
-    );
+    let messages = trim_messages(params.messages, available_for_messages);
 
     debug!(
         input_messages = params.messages.len(),
@@ -533,37 +526,13 @@ fn format_time_gap(gap_secs: f64, current_ts: &DateTime<FixedOffset>) -> Option<
     Some(format!("[{relative} · {time_str}]"))
 }
 
-/// Format recap entries as a bracketed marker for injection into conversation context.
-///
-/// Single entry: `[Your notes from between conversations: did something.]`
-/// Multiple: bullet list under the same header.
-fn format_recap_marker(entries: &[&crate::autonomy::recap_store::RecapEntry]) -> String {
-    if entries.len() == 1 {
-        format!(
-            "[Your notes from between conversations: {}]",
-            entries[0].recap
-        )
-    } else {
-        let mut lines = vec!["[Your notes from between conversations:".to_string()];
-        for entry in entries {
-            lines.push(format!(" · {}", entry.recap));
-        }
-        lines.push("]".to_string());
-        lines.join("\n")
-    }
-}
-
 /// Trim messages from the beginning to fit within the token budget.
 ///
 /// Keeps the most recent messages, discarding older ones first. After
 /// trimming, drops any leading tool-loop messages (tool_result user
 /// messages and tool_use-only assistant messages) that would be orphaned
 /// without their preceding context.
-fn trim_messages(
-    messages: &[Message],
-    token_budget: usize,
-    recap_store_path: Option<&Path>,
-) -> Vec<PromptMessage> {
+fn trim_messages(messages: &[Message], token_budget: usize) -> Vec<PromptMessage> {
     // Build from the end (most recent first), accumulating token cost.
     let mut selected: Vec<(PromptMessage, &str)> = Vec::new();
     let mut used_tokens = 0;
@@ -594,13 +563,13 @@ fn trim_messages(
         selected.remove(0);
     }
 
-    // ── Inject time-gap markers (and recap entries) on user messages ──
+    // ── Inject time-gap markers on user messages ──────────────────────
     // Walk forward, tracking the previous timestamp. When the gap between
     // consecutive messages exceeds the threshold, prepend a marker like
     // `[6 hours later · 9:14 PM]` to the next user message's content.
-    // If recap entries exist in that gap, also inject them.
-    let recap_store = recap_store_path.map(crate::autonomy::recap_store::RecapStore::load);
-
+    // Interiority recaps are no longer injected here — they're persisted
+    // as Role::System messages in active.jsonl by the tick itself, so they
+    // already sit at their natural chronological position in the history.
     let mut prev_ts: Option<DateTime<FixedOffset>> = None;
     let mut result: Vec<PromptMessage> = Vec::with_capacity(selected.len());
 
@@ -612,20 +581,6 @@ fn trim_messages(
                 let gap_secs = (cur - prev).num_seconds() as f64;
                 let time_marker = format_time_gap(gap_secs, &cur);
 
-                // Recap injection: whenever entries fall between the two
-                // consecutive message timestamps, independent of wall-clock
-                // gap. The interiority prompt promises the character that
-                // recaps surface on the next user message — gating this on
-                // the 30-min marker threshold silently dropped recaps during
-                // active conversations and trained the character to stop
-                // writing them. `entries_in_range` already filters strictly,
-                // so short gaps with no recaps naturally inject nothing.
-                let recap_marker = recap_store
-                    .as_ref()
-                    .map(|store| store.entries_in_range(&prev, &cur))
-                    .filter(|entries| !entries.is_empty())
-                    .map(|entries| format_recap_marker(&entries));
-
                 // Inject the time-gap marker into the user message (it's
                 // deterministic — same timestamps always produce the same
                 // marker, so the cache prefix stays stable).
@@ -634,18 +589,6 @@ fn trim_messages(
                     if let Some(ContentBlock::Text { text }) = pm.content_blocks.first_mut() {
                         *text = format!("{t}\n\n{text}");
                     }
-                }
-
-                // Recap entries are injected as a separate user message
-                // so that existing message content is never modified between
-                // calls (which would bust the Anthropic cache prefix).
-                if let Some(r) = recap_marker {
-                    result.push(PromptMessage {
-                        role: Role::User,
-                        content: r.clone(),
-                        images: vec![],
-                        content_blocks: vec![ContentBlock::Text { text: r }],
-                    });
                 }
             }
         }
@@ -727,7 +670,6 @@ mod tests {
             max_context_tokens: None,
             max_output_tokens: None,
             capabilities: None,
-            recap_store_path: None,
         }
     }
 
@@ -1059,7 +1001,7 @@ mod tests {
         let recent_msg = make_msg(Role::User, "Recent");
 
         let msgs = vec![small_msg, big_msg, recent_msg];
-        let result = trim_messages(&msgs, 10, None);
+        let result = trim_messages(&msgs, 10);
         assert_eq!(result.last().unwrap().content, "Recent");
         assert!(result.len() < 3);
     }
@@ -1070,7 +1012,7 @@ mod tests {
             make_msg(Role::User, "Hello"),
             make_msg(Role::Assistant, "Hi there"),
         ];
-        let result = trim_messages(&msgs, 1000, None);
+        let result = trim_messages(&msgs, 1000);
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].content, "Hello");
         assert_eq!(result[1].content, "Hi there");
@@ -1083,7 +1025,7 @@ mod tests {
             make_msg(Role::Assistant, &"B".repeat(100)),
             make_msg(Role::User, "Recent"),
         ];
-        let result = trim_messages(&msgs, 30, None);
+        let result = trim_messages(&msgs, 30);
         assert!(result.len() < 3);
         assert_eq!(result.last().unwrap().content, "Recent");
     }
@@ -1091,7 +1033,7 @@ mod tests {
     #[test]
     fn trim_messages_always_includes_at_least_one() {
         let msgs = vec![make_msg(Role::User, &"A".repeat(1000))];
-        let result = trim_messages(&msgs, 0, None);
+        let result = trim_messages(&msgs, 0);
         assert_eq!(result.len(), 1);
     }
 
@@ -1102,7 +1044,7 @@ mod tests {
             make_msg(Role::Assistant, "Second"),
             make_msg(Role::User, "Third"),
         ];
-        let result = trim_messages(&msgs, 10000, None);
+        let result = trim_messages(&msgs, 10000);
         assert_eq!(result[0].content, "First");
         assert_eq!(result[1].content, "Second");
         assert_eq!(result[2].content, "Third");
@@ -1172,7 +1114,7 @@ mod tests {
             make_msg_at(Role::Assistant, "Morning!", "2026-04-04T09:01:00-07:00"),
             make_msg_at(Role::User, "I'm back", "2026-04-04T15:30:00-07:00"),
         ];
-        let result = trim_messages(&msgs, 100_000, None);
+        let result = trim_messages(&msgs, 100_000);
         assert_eq!(result.len(), 3);
         // First user message: no gap marker.
         assert!(!result[0].content.contains("later"));
@@ -1190,68 +1132,6 @@ mod tests {
         }
     }
 
-    /// Recaps must be injected whenever they fall between two consecutive
-    /// messages, regardless of whether the wall-clock gap reaches the
-    /// time-gap-marker threshold. The interiority prompt promises the
-    /// character that recaps "surface when the user next messages" — if we
-    /// gate injection on a 30-minute gap, active conversations silently drop
-    /// every recap and train the character to stop writing them.
-    #[test]
-    fn trim_messages_injects_recap_even_for_short_gaps() {
-        use crate::autonomy::recap_store::{RecapEntry, RecapStore};
-        use chrono::TimeZone;
-
-        let tmp = TempDir::new().unwrap();
-        let recap_path = tmp.path().join("recaps.jsonl");
-
-        // Two user messages 10 minutes apart (well below 30-min threshold).
-        let msgs = vec![
-            make_msg_at(Role::User, "Hey", "2026-04-14T14:00:00-07:00"),
-            make_msg_at(Role::Assistant, "Hi there", "2026-04-14T14:01:00-07:00"),
-            make_msg_at(
-                Role::User,
-                "Quick follow-up",
-                "2026-04-14T14:10:00-07:00",
-            ),
-        ];
-
-        // Recap written during the tick that fired between 14:01 and 14:10.
-        let offset = chrono::FixedOffset::west_opt(7 * 3600).unwrap();
-        let mut store = RecapStore::load(&recap_path);
-        store
-            .append(RecapEntry {
-                timestamp: offset
-                    .with_ymd_and_hms(2026, 4, 14, 14, 5, 0)
-                    .single()
-                    .unwrap(),
-                tick_id: "tick_short_gap".into(),
-                recap: "was thinking about the ocean".into(),
-            })
-            .unwrap();
-
-        let result = trim_messages(&msgs, 100_000, Some(&recap_path));
-
-        // A recap entry should have been injected as its own message between
-        // the assistant reply and the second user message.
-        let recap_msg = result
-            .iter()
-            .find(|m| m.content.contains("Your notes from between conversations"));
-        assert!(
-            recap_msg.is_some(),
-            "recap should surface on short gaps too (prompt contract)"
-        );
-        assert!(recap_msg.unwrap().content.contains("ocean"));
-
-        // The 10-minute gap must NOT produce a time-gap marker on the
-        // follow-up user message — that gate stays threshold-based.
-        let followup = result.iter().find(|m| m.content.contains("Quick follow-up"));
-        assert!(followup.is_some());
-        assert!(
-            !followup.unwrap().content.contains("later"),
-            "time-gap marker should still be gated on the 30-min threshold"
-        );
-    }
-
     #[test]
     fn trim_messages_no_gap_marker_for_short_gaps() {
         let msgs = vec![
@@ -1259,7 +1139,7 @@ mod tests {
             make_msg_at(Role::Assistant, "Hi", "2026-04-04T09:01:00-07:00"),
             make_msg_at(Role::User, "Quick follow-up", "2026-04-04T09:10:00-07:00"),
         ];
-        let result = trim_messages(&msgs, 100_000, None);
+        let result = trim_messages(&msgs, 100_000);
         assert_eq!(result[2].content, "Quick follow-up");
     }
 
@@ -1275,7 +1155,7 @@ mod tests {
             ),
             make_msg_at(Role::User, "Yeah!", "2026-04-04T15:01:00-07:00"),
         ];
-        let result = trim_messages(&msgs, 100_000, None);
+        let result = trim_messages(&msgs, 100_000);
         assert!(
             !result[1].content.contains("later"),
             "assistant messages should not get gap markers"
@@ -1308,7 +1188,6 @@ mod tests {
             max_context_tokens: Some(200_000),
             max_output_tokens: Some(4096),
             capabilities: None,
-            recap_store_path: None,
         };
 
         let result = assemble_prompt(&params);
@@ -1631,7 +1510,7 @@ mod tests {
         // With budget=5, newest-first picks Recent(2) + Done(1) + tool_result(~4) = 7 > 5,
         // so it stops. Result = [tool_result, Done, Recent].
         // Then orphan stripping removes the leading tool_result.
-        let result = trim_messages(&msgs, 5, None);
+        let result = trim_messages(&msgs, 5);
 
         // Leading ToolResult should be stripped.
         assert!(
@@ -1661,7 +1540,7 @@ mod tests {
         // Newest-first: Recent(2) + tool_result(~4) + tool_use(~6) = 12 > 5,
         // stops before tool_use. Result = [tool_result, Recent].
         // Then orphan stripping removes leading tool_result.
-        let result = trim_messages(&msgs, 5, None);
+        let result = trim_messages(&msgs, 5);
 
         assert!(
             !result.is_empty(),
@@ -1678,143 +1557,4 @@ mod tests {
         }
     }
 
-    // -- format_recap_marker -------------------------------------------------
-
-    #[test]
-    fn format_recap_marker_single_entry() {
-        use crate::autonomy::recap_store::RecapEntry;
-        use chrono::TimeZone;
-        let ts = chrono::FixedOffset::west_opt(7 * 3600)
-            .unwrap()
-            .with_ymd_and_hms(2026, 4, 7, 10, 0, 0)
-            .single()
-            .unwrap();
-        let entry = RecapEntry {
-            timestamp: ts,
-            tick_id: "t1".into(),
-            recap: "explored butterflies".into(),
-        };
-        let result = format_recap_marker(&[&entry]);
-        assert_eq!(
-            result,
-            "[Your notes from between conversations: explored butterflies]"
-        );
-    }
-
-    #[test]
-    fn format_recap_marker_multiple_entries() {
-        use crate::autonomy::recap_store::RecapEntry;
-        use chrono::TimeZone;
-        let offset = chrono::FixedOffset::west_opt(7 * 3600).unwrap();
-        let e1 = RecapEntry {
-            timestamp: offset
-                .with_ymd_and_hms(2026, 4, 7, 10, 0, 0)
-                .single()
-                .unwrap(),
-            tick_id: "t1".into(),
-            recap: "first thing".into(),
-        };
-        let e2 = RecapEntry {
-            timestamp: offset
-                .with_ymd_and_hms(2026, 4, 7, 14, 0, 0)
-                .single()
-                .unwrap(),
-            tick_id: "t2".into(),
-            recap: "second thing".into(),
-        };
-        let result = format_recap_marker(&[&e1, &e2]);
-        assert!(result.contains("· first thing"));
-        assert!(result.contains("· second thing"));
-        assert!(result.starts_with("[Your notes from between conversations:"));
-        assert!(result.ends_with(']'));
-    }
-
-    // ── Cache stability: recap injection must not change cached prefix ──
-
-    /// When a recap entry is added to `recaps.jsonl` between two LLM calls,
-    /// messages that appeared in the FIRST call's output must have identical
-    /// content in the SECOND call's output.  If they differ, the Anthropic
-    /// prompt cache prefix changes and we pay 20× the expected price.
-    ///
-    /// This test creates a conversation with a >30min gap, runs trim_messages
-    /// without recaps, then again WITH a recap entry in the gap, and asserts
-    /// the overlapping messages are byte-identical.
-    #[test]
-    fn recap_injection_must_not_change_existing_message_content() {
-        use crate::autonomy::recap_store::RecapEntry;
-        use chrono::TimeZone;
-
-        let tmp = TempDir::new().unwrap();
-        let recap_path = tmp.path().join("recaps.jsonl");
-
-        // Conversation: Turn 1 at 09:00, Turn 2 at 11:00 (2h gap), Turn 3 at 11:05.
-        let msgs = vec![
-            make_msg_at(Role::User, "Good morning", "2026-04-04T09:00:00-07:00"),
-            make_msg_at(Role::Assistant, "Morning!", "2026-04-04T09:01:00-07:00"),
-            make_msg_at(Role::User, "I'm back", "2026-04-04T11:00:00-07:00"),
-            make_msg_at(
-                Role::Assistant,
-                "Welcome back!",
-                "2026-04-04T11:01:00-07:00",
-            ),
-            make_msg_at(Role::User, "Thanks", "2026-04-04T11:05:00-07:00"),
-        ];
-
-        // Call 1: no recaps exist yet.
-        let result_before = trim_messages(&msgs, 100_000, Some(&recap_path));
-
-        // The 2h gap should produce a time-gap marker on "I'm back" but NO recap.
-        assert!(result_before[2].content.contains("hours later"));
-        assert!(!result_before[2].content.contains("Your notes"));
-
-        // Now write a recap entry in the gap (09:30, between Turn 1 and Turn 2).
-        let offset = chrono::FixedOffset::west_opt(7 * 3600).unwrap();
-        let mut store = crate::autonomy::recap_store::RecapStore::load(&recap_path);
-        store
-            .append(RecapEntry {
-                timestamp: offset
-                    .with_ymd_and_hms(2026, 4, 4, 9, 30, 0)
-                    .single()
-                    .unwrap(),
-                tick_id: "tick_test".into(),
-                recap: "thought about the weather".into(),
-            })
-            .unwrap();
-
-        // Call 2: same messages, but now recaps.jsonl has an entry.
-        let result_after = trim_messages(&msgs, 100_000, Some(&recap_path));
-
-        // The recap is injected as a separate message, so `result_after`
-        // has one more entry.  But every message from Call 1 must appear
-        // byte-identical in Call 2 (preserving the cache prefix).
-        assert_eq!(
-            result_after.len(),
-            result_before.len() + 1,
-            "Recap should be injected as a separate message"
-        );
-
-        // Walk result_after, skipping the injected recap message, and
-        // verify all original messages are byte-identical.
-        let mut before_iter = result_before.iter();
-        for msg in &result_after {
-            if msg.content.contains("Your notes") {
-                // This is the injected recap — skip it.
-                continue;
-            }
-            let before_msg = before_iter
-                .next()
-                .expect("more messages in after than before");
-            assert_eq!(
-                before_msg.content, msg.content,
-                "Original message content changed (cache prefix would change).\n\
-                 Before: {:?}\n\
-                 After:  {:?}",
-                before_msg.content, msg.content,
-            );
-        }
-        assert!(
-            before_iter.next().is_none(),
-            "all before messages accounted for"
-        );
-    }
 }

@@ -1052,21 +1052,27 @@ Your thoughts and tool use are logged, so you can pick up where you left off.]"
     )
 }
 
-/// Build the `{recent_thread_block}` from recap entries and the ring buffer.
+/// Build the `{recent_thread_block}` from recent System messages in the
+/// active conversation, falling back to the ring buffer.
 ///
-/// Uses the most recent 1–3 recap entries since the last user message.
-/// Falls back to ring-buffer tool-use summaries if no recaps exist.
-fn build_recent_thread(
-    log: &InteriorityLog,
-    recap_store: &super::recap_store::RecapStore,
-) -> String {
-    // Try recap entries first (most recent 3).
-    let recaps = recap_store.entries();
-    if !recaps.is_empty() {
-        let recent: Vec<_> = recaps.iter().rev().take(3).collect();
+/// Since interiority ticks now persist their recap as a `Role::System`
+/// message in `active.jsonl` (see `execute_unified_tick`), the same
+/// content surfaces here directly from the conversation. This avoids the
+/// double-source bug where the tick's own prompt used to pull from
+/// `recaps.jsonl` while the payload pulled the same content from the
+/// sidecar too. Single source of truth: `active.jsonl`.
+fn build_recent_thread(log: &InteriorityLog, messages: &[Message]) -> String {
+    let recent_recaps: Vec<&Message> = messages
+        .iter()
+        .rev()
+        .filter(|m| m.role == Role::System)
+        .take(3)
+        .collect();
+
+    if !recent_recaps.is_empty() {
         let mut lines = vec!["Where you left off:".to_string()];
-        for entry in recent.iter().rev() {
-            lines.push(format!(" · {}", entry.recap));
+        for msg in recent_recaps.iter().rev() {
+            lines.push(format!(" · {}", msg.content));
         }
         return lines.join("\n");
     }
@@ -1147,7 +1153,6 @@ fn rebuild_request_from_disk(
         check_time_enabled: tool_toggles.check_time(),
     };
 
-    let recap_path = char_dir.join("recaps.jsonl");
     let prompt_result = prompt::assemble_prompt(&PromptParams {
         config_dir: &config.dirs.config,
         character_name: character,
@@ -1160,7 +1165,6 @@ fn rebuild_request_from_disk(
         max_context_tokens: resolved.max_context_tokens,
         max_output_tokens: resolved.max_tokens,
         capabilities: Some(&capabilities),
-        recap_store_path: Some(&recap_path),
     });
 
     let cache_dir = &config.dirs.cache;
@@ -1270,6 +1274,11 @@ async fn execute_unified_tick(
 ) {
     let Some(client) = llm_client else { return };
 
+    // Captured at tick entry so the recap's persisted position in active.jsonl
+    // reflects when the tick actually started — not when recap-write finally
+    // lands (which could race past a user message that arrived during wrap-up).
+    let tick_started_at = chrono::Local::now().fixed_offset();
+
     // Clone last_request under the lock, then release.
     let mut request = {
         let s = lock_state(state);
@@ -1312,7 +1321,11 @@ async fn execute_unified_tick(
 
     // Build the dynamic interiority prompt.
     let recap_path = data_dir.join(character).join("recaps.jsonl");
-    let recap_store = RecapStore::load(&recap_path);
+    let active_messages =
+        crate::engine::messages::MessageStore::load(data_dir.join(character).join("active.jsonl"))
+            .ok()
+            .map(|s| s.messages().to_vec())
+            .unwrap_or_default();
     let user_name = lc.app.defaults.resolve_display_name();
     let default_interval_secs = lc
         .app
@@ -1334,7 +1347,7 @@ async fn execute_unified_tick(
     };
     let recent_thread = {
         let s = lock_state(state);
-        build_recent_thread(&s.interiority_log, &recap_store)
+        build_recent_thread(&s.interiority_log, &active_messages)
     };
     let interiority_prompt =
         build_interiority_prompt(&recent_thread, &user_name, &default_interval_str);
@@ -1628,14 +1641,71 @@ async fn execute_unified_tick(
     if let Some(recap) = recap_text {
         info!(character, recap = %truncate_summary(&recap, 200), "Interiority: recap written");
         let preview = truncate_summary(&recap, 80);
+        let recap_for_active = recap.clone();
         let entry = RecapEntry {
-            timestamp: chrono::Local::now().fixed_offset(),
+            timestamp: tick_started_at,
             tick_id: format!("tick_{}", uuid::Uuid::new_v4()),
             recap,
         };
         let mut store = RecapStore::load(&recap_path);
         match store.append(entry) {
             Ok(()) => {
+                // Persist as a Role::System message in active.jsonl so the
+                // recap survives compaction and appears in future payloads at
+                // its chronological position. The Anthropic provider wraps
+                // inline System messages in <system_instruction> and emits as
+                // a user turn (convert_inline_system_messages in
+                // providers/anthropic.rs). OpenAI-family providers accept
+                // role:"system" mid-history.
+                //
+                // insert_by_timestamp (not append) because a user message
+                // might have landed via the handler while the tick was
+                // wrapping up — the recap's tick_started_at is earlier than
+                // that user message, so it must splice before it.
+                let recap_msg = Message {
+                    msg_id: format!("m_{}", uuid::Uuid::new_v4()),
+                    role: Role::System,
+                    content: recap_for_active.clone(),
+                    images: vec![],
+                    content_blocks: vec![ContentBlock::Text {
+                        text: recap_for_active,
+                    }],
+                    alt_index: None,
+                    alt_count: None,
+                    timestamp: tick_started_at.to_rfc3339(),
+                };
+
+                if let Some(reg) = registry {
+                    let engine_arc = {
+                        let mut r = reg.lock().await;
+                        r.get_or_create(character)
+                    };
+                    match engine_arc {
+                        Ok(engine_arc) => {
+                            let mut engine = engine_arc.lock().await;
+                            if let Err(e) = engine.insert_message_by_timestamp(recap_msg) {
+                                error!(
+                                    character,
+                                    error = %e,
+                                    "Failed to persist recap to active.jsonl via engine"
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            error!(
+                                character,
+                                error = %e,
+                                "Failed to get engine for recap persistence"
+                            );
+                        }
+                    }
+                } else {
+                    error!(
+                        character,
+                        "No registry available, recap not persisted to active.jsonl"
+                    );
+                }
+
                 let mut s = lock_state(state);
                 s.interiority_log.push(
                     InteriorityEventKind::RecapWritten,

@@ -109,6 +109,41 @@ impl MessageStore {
         self.persist()
     }
 
+    /// Insert a message at its chronological position by `timestamp`.
+    ///
+    /// Inserts after the last existing message whose timestamp is `<=` the
+    /// new message's timestamp. Falls back to append if either timestamp is
+    /// unparseable (no silent reordering of malformed data).
+    ///
+    /// Needed for out-of-band writers (e.g. an interiority tick completing
+    /// while a user message has already landed via the handler) — the
+    /// resulting chronology stays consistent.
+    pub fn insert_by_timestamp(&mut self, msg: Message) -> Result<(), EngineError> {
+        use chrono::DateTime;
+        let insert_pos = match DateTime::parse_from_rfc3339(&msg.timestamp) {
+            Ok(new_ts) => self
+                .messages
+                .iter()
+                .rposition(|m| {
+                    DateTime::parse_from_rfc3339(&m.timestamp)
+                        .map(|existing| existing <= new_ts)
+                        .unwrap_or(true)
+                })
+                .map(|i| i + 1)
+                .unwrap_or(0),
+            Err(_) => self.messages.len(),
+        };
+        info!(
+            msg_id = %msg.msg_id,
+            role = ?msg.role,
+            insert_pos,
+            total = self.messages.len(),
+            "Inserting message by timestamp"
+        );
+        self.messages.insert(insert_pos, msg);
+        self.persist()
+    }
+
     /// Edit the content of a message by `msg_id`. Returns an error if not found.
     ///
     /// Updates both `content` and `content_blocks` to keep them in sync.
@@ -546,6 +581,173 @@ mod tests {
         let reloaded = MessageStore::load(path).unwrap();
         assert_eq!(reloaded.messages().len(), 1);
         assert_eq!(reloaded.messages()[0].msg_id, "m1");
+    }
+
+    // ── insert_by_timestamp ────────────────────────────────────────────
+
+    fn make_msg_ts(id: &str, role: Role, ts: &str) -> Message {
+        let mut m = make_msg(id, role, id);
+        m.timestamp = ts.to_string();
+        m
+    }
+
+    #[test]
+    fn insert_by_timestamp_empty_store() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("conv.jsonl");
+        let mut store = MessageStore::new(path.clone());
+
+        store
+            .insert_by_timestamp(make_msg_ts("m1", Role::User, "2026-04-19T10:00:00+10:00"))
+            .unwrap();
+
+        assert_eq!(store.messages().len(), 1);
+        assert_eq!(store.messages()[0].msg_id, "m1");
+    }
+
+    #[test]
+    fn insert_by_timestamp_at_end_for_latest_ts() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("conv.jsonl");
+        let mut store = MessageStore::new(path.clone());
+
+        store
+            .append(make_msg_ts("m1", Role::User, "2026-04-19T10:00:00+10:00"))
+            .unwrap();
+        store
+            .append(make_msg_ts("m2", Role::Assistant, "2026-04-19T10:05:00+10:00"))
+            .unwrap();
+
+        // New message with the latest timestamp should land at the end.
+        store
+            .insert_by_timestamp(make_msg_ts("m3", Role::System, "2026-04-19T10:30:00+10:00"))
+            .unwrap();
+
+        let ids: Vec<&str> = store
+            .messages()
+            .iter()
+            .map(|m| m.msg_id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["m1", "m2", "m3"]);
+    }
+
+    #[test]
+    fn insert_by_timestamp_in_middle() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("conv.jsonl");
+        let mut store = MessageStore::new(path.clone());
+
+        // Simulate the tick's recap racing a user-message landing: the tick
+        // captures tick_started_at earlier, but the user message lands
+        // first. The recap should splice before the user message.
+        store
+            .append(make_msg_ts("m_user1", Role::User, "2026-04-19T10:00:00+10:00"))
+            .unwrap();
+        store
+            .append(make_msg_ts(
+                "m_assistant1",
+                Role::Assistant,
+                "2026-04-19T10:05:00+10:00",
+            ))
+            .unwrap();
+        store
+            .append(make_msg_ts("m_user2", Role::User, "2026-04-19T10:30:00+10:00"))
+            .unwrap();
+
+        // Recap timestamped at 10:20 (between assistant and user2).
+        store
+            .insert_by_timestamp(make_msg_ts(
+                "m_recap",
+                Role::System,
+                "2026-04-19T10:20:00+10:00",
+            ))
+            .unwrap();
+
+        let ids: Vec<&str> = store
+            .messages()
+            .iter()
+            .map(|m| m.msg_id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["m_user1", "m_assistant1", "m_recap", "m_user2"]);
+
+        // Persisted in correct order.
+        let reloaded = MessageStore::load(path).unwrap();
+        let ids: Vec<&str> = reloaded
+            .messages()
+            .iter()
+            .map(|m| m.msg_id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["m_user1", "m_assistant1", "m_recap", "m_user2"]);
+    }
+
+    #[test]
+    fn insert_by_timestamp_at_front_for_earliest_ts() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("conv.jsonl");
+        let mut store = MessageStore::new(path.clone());
+
+        store
+            .append(make_msg_ts("m1", Role::User, "2026-04-19T10:00:00+10:00"))
+            .unwrap();
+        store
+            .append(make_msg_ts("m2", Role::Assistant, "2026-04-19T10:05:00+10:00"))
+            .unwrap();
+
+        store
+            .insert_by_timestamp(make_msg_ts("m0", Role::System, "2026-04-19T09:00:00+10:00"))
+            .unwrap();
+
+        let ids: Vec<&str> = store
+            .messages()
+            .iter()
+            .map(|m| m.msg_id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["m0", "m1", "m2"]);
+    }
+
+    #[test]
+    fn insert_by_timestamp_tolerates_different_offsets() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("conv.jsonl");
+        let mut store = MessageStore::new(path);
+
+        // 10:00 +10:00 == 00:00 UTC
+        store
+            .append(make_msg_ts("m1", Role::User, "2026-04-19T10:00:00+10:00"))
+            .unwrap();
+        // 01:30 UTC == 11:30 +10:00 — should land after m1.
+        store
+            .insert_by_timestamp(make_msg_ts("m2", Role::System, "2026-04-19T01:30:00+00:00"))
+            .unwrap();
+
+        let ids: Vec<&str> = store
+            .messages()
+            .iter()
+            .map(|m| m.msg_id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["m1", "m2"]);
+    }
+
+    #[test]
+    fn insert_by_timestamp_unparseable_falls_back_to_append() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("conv.jsonl");
+        let mut store = MessageStore::new(path);
+
+        store
+            .append(make_msg_ts("m1", Role::User, "2026-04-19T10:00:00+10:00"))
+            .unwrap();
+        // Malformed timestamp — store should just append, not panic.
+        store
+            .insert_by_timestamp(make_msg_ts("m_bad", Role::System, "not-a-timestamp"))
+            .unwrap();
+
+        let ids: Vec<&str> = store
+            .messages()
+            .iter()
+            .map(|m| m.msg_id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["m1", "m_bad"]);
     }
 
     #[test]
