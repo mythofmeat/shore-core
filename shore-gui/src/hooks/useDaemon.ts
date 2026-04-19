@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+
+const ADDR_KEY = "shore-gui:last-addr";
 
 export type ConnectionStatus =
   | {
@@ -37,14 +39,24 @@ export type EventItem =
 export interface DaemonHandle {
   status: ConnectionStatus | null;
   events: EventItem[];
+  lastAddr: string;
   connect: (addr?: string, character?: string) => Promise<void>;
   disconnect: () => Promise<void>;
   send: (text: string) => Promise<void>;
 }
 
+function readStoredAddr(): string {
+  try {
+    return localStorage.getItem(ADDR_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
 export function useDaemon(): DaemonHandle {
   const [status, setStatus] = useState<ConnectionStatus | null>(null);
   const [events, setEvents] = useState<EventItem[]>([]);
+  const lastAddrRef = useRef<string | null>(null);
 
   useEffect(() => {
     let unlistenStatus: UnlistenFn | undefined;
@@ -56,11 +68,25 @@ export function useDaemon(): DaemonHandle {
         if (e.payload.kind === "connected") {
           const history = e.payload.history as HistoryMessage[];
           setEvents(history.map((message) => ({ source: "history", message })));
+          try {
+            localStorage.setItem(ADDR_KEY, lastAddrRef.current ?? "");
+          } catch {
+            // storage unavailable — silently skip persistence
+          }
         }
       });
       unlistenMsg = await listen<ServerMessageEvent>("server-message", (e) => {
         setEvents((prev) => [...prev, { source: "stream", message: e.payload }]);
       });
+
+      const stored = readStoredAddr();
+      const addr = stored.length > 0 ? stored : null;
+      lastAddrRef.current = addr;
+      try {
+        await invoke("connect", { addr, character: null });
+      } catch (err) {
+        console.error("auto-connect failed", err);
+      }
     })();
 
     return () => {
@@ -70,7 +96,9 @@ export function useDaemon(): DaemonHandle {
   }, []);
 
   const connect = useCallback(async (addr?: string, character?: string) => {
-    await invoke("connect", { addr: addr ?? null, character: character ?? null });
+    const normalized = addr && addr.length > 0 ? addr : null;
+    lastAddrRef.current = normalized;
+    await invoke("connect", { addr: normalized, character: character ?? null });
   }, []);
 
   const disconnect = useCallback(async () => {
@@ -81,5 +109,5 @@ export function useDaemon(): DaemonHandle {
     await invoke("send_message", { text });
   }, []);
 
-  return { status, events, connect, disconnect, send };
+  return { status, events, lastAddr: readStoredAddr(), connect, disconnect, send };
 }

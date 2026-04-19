@@ -8,9 +8,9 @@ function statusLabel(status: ConnectionStatus | null): string {
 }
 
 export default function App() {
-  const { status, events, connect, disconnect, send } = useDaemon();
+  const { status, events, lastAddr, connect, disconnect, send } = useDaemon();
   const [input, setInput] = useState("");
-  const [addr, setAddr] = useState("");
+  const [addr, setAddr] = useState(lastAddr);
 
   const connected = status?.kind === "connected";
 
