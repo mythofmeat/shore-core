@@ -52,6 +52,10 @@ Scope guardrails:
 
 - **User messages always have `content_blocks` populated.** This means the `build_content(text, images)` fallback in the LLM message builder is dead code for user messages — it only fires when `content_blocks` is empty. Prior to the fix, `m.images` was silently dropped for all user messages because the `content_blocks` branch didn't encode them. Image encoding must happen in both branches.
 
+## Desktop / Tray (Linux)
+
+- **Tauri `show_menu_on_left_click(false)` is a no-op on Linux.** The flag is documented by Tauri as "Linux: Unsupported" — libayatana-appindicator's StatusNotifierItem protocol doesn't expose separate left-click-activate vs context-menu events, so whenever a menu is attached to the tray it pops up on left-click regardless of the flag. To get single-left-click-to-show-window UX on Linux, the tray must be built **without** a menu; click events then route cleanly through `on_tray_icon_event`. Consequence: Quit/Disconnect cannot live in a tray menu on Linux and must be surfaced via the window UI (or a global shortcut). Reference impl: `shore-gui/src-tauri/src/lib.rs::build_tray`.
+
 ## Streaming / Client Rendering
 
 - **A single assistant turn can emit multiple `StreamEnd` events.** During tool use, the daemon streams `StreamStart → StreamEnd(finish_reason="tool_use") → ToolCall → ToolResult → StreamStart → … → StreamEnd(finish_reason="end_turn")`. Each intermediate `StreamEnd` carries its own `StreamMetadata` covering only that phase. A client that treats every `StreamEnd` as "assistant entry complete" will push a premature empty/partial block, render a duplicate character header on the next phase, and split per-turn stats across rows. Clients must buffer text and metadata across phases and only commit a single conversation entry when `finish_reason != "tool_use"`, summing tokens and `total_ms` while preserving `ttft_ms` from the first phase. Reference impl: `shore-tui/src/main.rs::handle_server_message`.
