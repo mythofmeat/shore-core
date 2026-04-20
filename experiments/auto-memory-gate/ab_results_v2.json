@@ -1,0 +1,822 @@
+{
+  "config": {
+    "gate_model": "google/gemma-4-31b-it",
+    "char_model": "anthropic/claude-haiku-4-5",
+    "window_size": 12,
+    "sample_per_cat": 5,
+    "convs": [
+      "conv-26",
+      "conv-50"
+    ]
+  },
+  "per_cat_A": {
+    "1": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "2": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "3": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "4": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "per_cat_B": {
+    "1": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "2": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "3": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "4": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "overall": {
+    "A": 0.0,
+    "B": 0.0,
+    "delta": 0.0,
+    "fire_rate": 0.95,
+    "cost": 0.008599279999999999,
+    "wall_time_s": 123.66615295410156
+  },
+  "rows": [
+    {
+      "conv_id": "conv-26",
+      "category": 1,
+      "question": "What does Melanie do with her family on hikes?",
+      "ground_truth": "Roast marshmallows, tell stories",
+      "fired": true,
+      "inject_sessions": [
+        16,
+        18
+      ],
+      "gate_reason": "The user is asking a stateful question about Melanie's family activities that is not mentioned in the current conversation window.",
+      "answer_A": "",
+      "answer_B": "",
+      "f1_A": 0.0,
+      "f1_B": 0.0
+    },
+    {
+      "conv_id": "conv-26",
+      "category": 1,
+      "question": "What activities does Melanie partake in?",
+      "ground_truth": "pottery, camping, painting, swimming",
+      "fired": true,
+      "inject_sessions": [
+        2,
+        8,
+        13,
+        15,
+        16,
+        18
+      ],
+      "gate_reason": "The user is asking a stateful question about Melanie's activities that are not mentioned in the current conversation window.",
+      "answer_A": "",
+      "answer_B": "",
+      "f1_A": 0.0,
+      "f1_B": 0.0
+    },
+    {
+      "conv_id": "conv-26",
+      "category": 1,
+      "question": "What LGBTQ+ events has Caroline participated in?",
+      "ground_truth": "Pride parade, school speech, support group",
+      "fired": true,
+      "inject_sessions": [
+        1,
+        3,
+        5,
+        7,
+        9,
+        10,
+        11,
+        15
+      ],
+      "gate_reason": "The user is asking a stateful question about Caroline's history of participating in LGBTQ+ events, which is detailed across multiple past sessions.",
+      "answer_A": "",
+      "answer_B": "",
+      "f1_A": 0.0,
+      "f1_B": 0.0
+    },
+    {
+      "conv_id": "conv-26",
+      "category": 1,
+      "question": "How many times has Melanie gone to the beach in 2023?",
+      "ground_truth": "2",
+      "fired": true,
+      "inject_sessions": [
+        2,
+        4,
+        8,
+        11,
+        13,
+        14,
+        15,
+        16,
+        18
+      ],
+      "gate_reason": "The user is asking a stateful question about Melanie's past activities throughout the year.",
+      "answer_A": "",
+      "answer_B": "",
+      "f1_A": 0.0,
+      "f1_B": 0.0
+    },
+    {
+      "conv_id": "conv-26",
+      "category": 1,
+      "question": "What are some changes Caroline has faced during her transition journey?",
+      "ground_truth": "Changes to her body, losing unsupportive friends",
+      "fired": true,
+      "inject_sessions": [
+        1,
+        3,
+        5,
+        7
+      ],
+      "gate_reason": "The user is asking a stateful question about Caroline's transition history, which is detailed in multiple past sessions.",
+      "answer_A": "",
+      "answer_B": "",
+      "f1_A": 0.0,
+      "f1_B": 0.0
+    },
+    {
+      "conv_id": "conv-26",
+      "category": 2,
+      "question": "When did Caroline and Melanie go to a pride fesetival together?",
+      "ground_truth": "2022",
+      "fired": true,
+      "inject_sessions": [
+        5,
+        9
+      ],
+      "gate_reason": "The user is asking a specific factual question about their shared history that is not present in the current conversation window.",
+      "answer_A": "",
+      "answer_B": "",
+      "f1_A": 0.0,
+      "f1_B": 0.0
+    },
+    {
+      "conv_id": "conv-26",
+      "category": 2,
+      "question": "When did Caroline join a new activist group?",
+      "ground_truth": "The Tuesday before 20 July 2023",
+      "fired": true,
+      "inject_sessions": [
+        10
+      ],
+      "gate_reason": "The user is asking a specific stateful question about Caroline's history that is not present in the current conversation window.",
+      "answer_A": "",
+      "answer_B": "",
+      "f1_A": 0.0,
+      "f1_B": 0.0
+    },
+    {
+      "conv_id": "conv-26",
+      "category": 2,
+      "question": "When did Caroline meet up with her friends, family, and mentors?",
+      "ground_truth": "The week before 9 June 2023",
+      "fired": true,
+      "inject_sessions": [
+        1,
+        3,
+        5,
+        7,
+        9,
+        10,
+        15
+      ],
+      "gate_reason": "The user is asking a stateful question about specific past events regarding Caroline's support system.",
+      "answer_A": "",
+      "answer_B": "",
+      "f1_A": 0.0,
+      "f1_B": 0.0
+    },
+    {
+      "conv_id": "conv-26",
+      "category": 2,
+      "question": "How long has Melanie been practicing art?",
+      "ground_truth": "Since 2016",
+      "fired": true,
+      "inject_sessions": [
+        9
+      ],
+      "gate_reason": "The user is asking a stateful question about Melanie's history with art, which is not mentioned in the current conversation window.",
+      "answer_A": "",
+      "answer_B": "",
+      "f1_A": 0.0,
+      "f1_B": 0.0
+    },
+    {
+      "conv_id": "conv-26",
+      "category": 2,
+      "question": "When did Melanie go to the museum?",
+      "ground_truth": "5 July 2023",
+      "fired": false,
+      "inject_sessions": [],
+      "gate_reason": "The incoming message asks a specific factual question about Melanie's history that is not present in the current window or the provided long-term memory sessions.",
+      "answer_A": "",
+      "answer_B": "",
+      "f1_A": 0.0,
+      "f1_B": 0.0
+    },
+    {
+      "conv_id": "conv-26",
+      "category": 3,
+      "question": "What would Caroline's political leaning likely be?",
+      "ground_truth": "Liberal",
+      "fired": true,
+      "inject_sessions": [
+        1,
+        3,
+        5,
+        7,
+        9,
+        10,
+        11,
+        12
+      ],
+      "gate_reason": "The user is asking a stateful question about the character's beliefs, which requires synthesizing her history of LGBTQ+ activism and advocacy.",
+      "answer_A": "",
+      "answer_B": "",
+      "f1_A": 0.0,
+      "f1_B": 0.0
+    },
+    {
+      "conv_id": "conv-26",
+      "category": 3,
+      "question": "Would Melanie be considered a member of the LGBTQ community?",
+      "ground_truth": "Likely no, she does not refer to herself as part of it",
+      "fired": false,
+      "inject_sessions": [],
+      "gate_reason": "The question asks about Melanie's identity, and none of the provided session summaries contain information regarding Melanie's sexual orientation or gender identity.",
+      "answer_A": "",
+      "answer_B": "",
+      "f1_A": 0.0,
+      "f1_B": 0.0
+    },
+    {
+      "conv_id": "conv-26",
+      "category": 3,
+      "question": "Would Melanie be considered an ally to the transgender community?",
+      "ground_truth": "Yes, she is supportive",
+      "fired": true,
+      "inject_sessions": [
+        1,
+        3,
+        5,
+        6,
+        7,
+        9,
+        10,
+        11,
+        12,
+        15
+      ],
+      "gate_reason": "The user is asking a stateful question about Melanie's character and role as an ally, which requires reviewing her historical reactions to Caroline's transgender identity and advocacy.",
+      "answer_A": "",
+      "answer_B": "",
+      "f1_A": 0.0,
+      "f1_B": 0.0
+    },
+    {
+      "conv_id": "conv-26",
+      "category": 3,
+      "question": "Would Caroline still want to pursue counseling as a career if she hadn't received support growing up?",
+      "ground_truth": "Likely no",
+      "fired": true,
+      "inject_sessions": [
+        5,
+        6
+      ],
+      "gate_reason": "The message asks a stateful question about Caroline's career aspirations (counseling) and the influence of her support system.",
+      "answer_A": "",
+      "answer_B": "",
+      "f1_A": 0.0,
+      "f1_B": 0.0
+    },
+    {
+      "conv_id": "conv-26",
+      "category": 3,
+      "question": "What fields would Caroline be likely to pursue in her educaton?",
+      "ground_truth": "Psychology, counseling certification",
+      "fired": true,
+      "inject_sessions": [
+        5,
+        6
+      ],
+      "gate_reason": "The user is asking a stateful question about Caroline's educational goals, which relates to her previously mentioned interests in counseling and mental health work.",
+      "answer_A": "",
+      "answer_B": "",
+      "f1_A": 0.0,
+      "f1_B": 0.0
+    },
+    {
+      "conv_id": "conv-26",
+      "category": 4,
+      "question": "How did Melanie feel about her family after the accident?",
+      "ground_truth": "They are important and mean the world to her",
+      "fired": true,
+      "inject_sessions": [
+        18
+      ],
+      "gate_reason": "The user is asking a stateful question about Melanie's feelings regarding a specific past event (the accident) mentioned in a previous session.",
+      "answer_A": "",
+      "answer_B": "",
+      "f1_A": 0.0,
+      "f1_B": 0.0
+    },
+    {
+      "conv_id": "conv-26",
+      "category": 4,
+      "question": "What is Caroline excited about in the adoption process?",
+      "ground_truth": "creating a family for kids who need one",
+      "fired": true,
+      "inject_sessions": [
+        13,
+        17
+      ],
+      "gate_reason": "The user is asking a stateful question about Caroline's specific motivations and feelings regarding the adoption process, which was discussed in previous sessions.",
+      "answer_A": "",
+      "answer_B": "",
+      "f1_A": 0.0,
+      "f1_B": 0.0
+    },
+    {
+      "conv_id": "conv-26",
+      "category": 4,
+      "question": "What activity did Caroline used to do with her dad?",
+      "ground_truth": "Horseback riding",
+      "fired": true,
+      "inject_sessions": [
+        4
+      ],
+      "gate_reason": "The user is asking a stateful question about Caroline's past activities with her father, which is not mentioned in the current window.",
+      "answer_A": "",
+      "answer_B": "",
+      "f1_A": 0.0,
+      "f1_B": 0.0
+    },
+    {
+      "conv_id": "conv-26",
+      "category": 4,
+      "question": "What was grandma's gift to Caroline?",
+      "ground_truth": "necklace",
+      "fired": true,
+      "inject_sessions": [
+        4
+      ],
+      "gate_reason": "The user is asking a specific question about a past detail (grandma's gift) that is not present in the current conversation window.",
+      "answer_A": "",
+      "answer_B": "",
+      "f1_A": 0.0,
+      "f1_B": 0.0
+    },
+    {
+      "conv_id": "conv-26",
+      "category": 4,
+      "question": "What does Melanie say running has been great for?",
+      "ground_truth": "Her mental health",
+      "fired": true,
+      "inject_sessions": [
+        2
+      ],
+      "gate_reason": "The user is asking a stateful question about Melanie's experience with running, which is not mentioned in the current conversation window.",
+      "answer_A": "",
+      "answer_B": "",
+      "f1_A": 0.0,
+      "f1_B": 0.0
+    },
+    {
+      "conv_id": "conv-50",
+      "category": 1,
+      "question": "Which events in Dave's life inspired him to take up auto engineering?",
+      "ground_truth": "attending a car show with Dad, working on an old car in a neighbor's garage when he was young, spent a summer restoring an old car with Dad",
+      "fired": true,
+      "inject_sessions": [
+        4,
+        5,
+        13,
+        17,
+        22
+      ],
+      "gate_reason": "The user is asking a stateful question about Dave's background and motivations regarding auto engineering, which is a recurring theme in long-term memory.",
+      "answer_A": "",
+      "answer_B": "",
+      "f1_A": 0.0,
+      "f1_B": 0.0
+    },
+    {
+      "conv_id": "conv-50",
+      "category": 1,
+      "question": "Why does Dave regularly visit parks?",
+      "ground_truth": "because it relaxes and calms him",
+      "fired": true,
+      "inject_sessions": [
+        8,
+        10
+      ],
+      "gate_reason": "The user is asking a stateful question about Dave's motivations for visiting parks, which was discussed in previous sessions.",
+      "answer_A": "",
+      "answer_B": "",
+      "f1_A": 0.0,
+      "f1_B": 0.0
+    },
+    {
+      "conv_id": "conv-50",
+      "category": 1,
+      "question": "What is Dave's main passion?",
+      "ground_truth": "auto engineering",
+      "fired": true,
+      "inject_sessions": [
+        4,
+        5,
+        7,
+        12,
+        13,
+        17,
+        21,
+        22
+      ],
+      "gate_reason": "The user is asking a stateful question about Dave's main passion, which is detailed across multiple past sessions.",
+      "answer_A": "",
+      "answer_B": "",
+      "f1_A": 0.0,
+      "f1_B": 0.0
+    },
+    {
+      "conv_id": "conv-50",
+      "category": 1,
+      "question": "Where did Dave return from with new knowledge of different techniques of car restoration?",
+      "ground_truth": "San Francisco",
+      "fired": true,
+      "inject_sessions": [
+        13,
+        14,
+        17
+      ],
+      "gate_reason": "The user is asking a stateful question about Dave's past travels and car restoration learning, which is contained in the long-term memory.",
+      "answer_A": "",
+      "answer_B": "",
+      "f1_A": 0.0,
+      "f1_B": 0.0
+    },
+    {
+      "conv_id": "conv-50",
+      "category": 1,
+      "question": "Which cities did Dave travel to in 2023?",
+      "ground_truth": "San Francsico, Detroit",
+      "fired": true,
+      "inject_sessions": [
+        4,
+        13,
+        14,
+        17,
+        26
+      ],
+      "gate_reason": "The user is asking a stateful question about Dave's travel history throughout the year 2023, which requires searching past session summaries.",
+      "answer_A": "",
+      "answer_B": "",
+      "f1_A": 0.0,
+      "f1_B": 0.0
+    },
+    {
+      "conv_id": "conv-50",
+      "category": 2,
+      "question": "When did Calvin visit some of the sights in Boston with a former high school friend?",
+      "ground_truth": "October 24, 2023",
+      "fired": true,
+      "inject_sessions": [
+        26,
+        29
+      ],
+      "gate_reason": "The user is asking a specific stateful question about a past event involving Calvin's visit to Boston with a high school friend.",
+      "answer_A": "",
+      "answer_B": "",
+      "f1_A": 0.0,
+      "f1_B": 0.0
+    },
+    {
+      "conv_id": "conv-50",
+      "category": 2,
+      "question": "How long did Dave's work on the Ford Mustang take?",
+      "ground_truth": "nearly two months",
+      "fired": true,
+      "inject_sessions": [
+        4,
+        5,
+        7,
+        13,
+        17,
+        22
+      ],
+      "gate_reason": "The user is asking a stateful question about a specific detail of Dave's work that is not mentioned in the current conversation window.",
+      "answer_A": "",
+      "answer_B": "",
+      "f1_A": 0.0,
+      "f1_B": 0.0
+    },
+    {
+      "conv_id": "conv-50",
+      "category": 2,
+      "question": "When did Dave take a trip to mountainous regions?",
+      "ground_truth": "July 2023",
+      "fired": true,
+      "inject_sessions": [
+        11
+      ],
+      "gate_reason": "The user is asking a stateful question about a specific past event (a trip to mountainous regions) that is not mentioned in the current conversation window.",
+      "answer_A": "",
+      "answer_B": "",
+      "f1_A": 0.0,
+      "f1_B": 0.0
+    },
+    {
+      "conv_id": "conv-50",
+      "category": 2,
+      "question": "When did Calvin plan on travelling to Tokyo the second time?",
+      "ground_truth": "November 2023",
+      "fired": true,
+      "inject_sessions": [
+        1,
+        3,
+        10,
+        20
+      ],
+      "gate_reason": "The user is asking a stateful question about Calvin's travel plans to Tokyo, which is not mentioned in the recent window.",
+      "answer_A": "",
+      "answer_B": "",
+      "f1_A": 0.0,
+      "f1_B": 0.0
+    },
+    {
+      "conv_id": "conv-50",
+      "category": 2,
+      "question": "When did Dave return from San Francisco?",
+      "ground_truth": "September 1, 2023",
+      "fired": true,
+      "inject_sessions": [
+        14,
+        17
+      ],
+      "gate_reason": "The user is asking a stateful question about a specific past event (Dave's trip to San Francisco) that is not mentioned in the current conversation window.",
+      "answer_A": "",
+      "answer_B": "",
+      "f1_A": 0.0,
+      "f1_B": 0.0
+    },
+    {
+      "conv_id": "conv-50",
+      "category": 3,
+      "question": "Does Calvin love music tours?",
+      "ground_truth": "yes",
+      "fired": true,
+      "inject_sessions": [
+        7,
+        14,
+        24,
+        25
+      ],
+      "gate_reason": "The user is asking a stateful question about Calvin's preferences regarding music tours, which is discussed across several past sessions.",
+      "answer_A": "",
+      "answer_B": "",
+      "f1_A": 0.0,
+      "f1_B": 0.0
+    },
+    {
+      "conv_id": "conv-50",
+      "category": 3,
+      "question": "Would Calvin enjoy performing at the Hollywood Bowl?",
+      "ground_truth": "Yes; because he enjoys the rush of performing onstage to large crowds",
+      "fired": true,
+      "inject_sessions": [
+        3,
+        14,
+        16,
+        18,
+        24
+      ],
+      "gate_reason": "The user is asking a stateful question about Calvin's preferences and aspirations regarding music performances.",
+      "answer_A": "",
+      "answer_B": "",
+      "f1_A": 0.0,
+      "f1_B": 0.0
+    },
+    {
+      "conv_id": "conv-50",
+      "category": 3,
+      "question": "Would Dave prefer working on a Dodge Charger or a Subaru Forester?",
+      "ground_truth": "Dodge Charger",
+      "fired": true,
+      "inject_sessions": [
+        4,
+        5,
+        7,
+        13,
+        17,
+        22
+      ],
+      "gate_reason": "The message asks a stateful question about Dave's preferences regarding specific types of cars, which relates to his long-term passion for car restoration and modification.",
+      "answer_A": "",
+      "answer_B": "",
+      "f1_A": 0.0,
+      "f1_B": 0.0
+    },
+    {
+      "conv_id": "conv-50",
+      "category": 3,
+      "question": "Does Calvin wish to become more popular?",
+      "ground_truth": "Yes; he want's to grow his fanbase",
+      "fired": true,
+      "inject_sessions": [
+        3,
+        18,
+        24,
+        27
+      ],
+      "gate_reason": "The message asks a stateful question about Calvin's goals/desires regarding his popularity and music career.",
+      "answer_A": "",
+      "answer_B": "",
+      "f1_A": 0.0,
+      "f1_B": 0.0
+    },
+    {
+      "conv_id": "conv-50",
+      "category": 3,
+      "question": "Which country do Calvin and Dave want to meet in?",
+      "ground_truth": "United States",
+      "fired": true,
+      "inject_sessions": [
+        1
+      ],
+      "gate_reason": "The user is asking a stateful question about the characters' shared history and travel plans.",
+      "answer_A": "",
+      "answer_B": "",
+      "f1_A": 0.0,
+      "f1_B": 0.0
+    },
+    {
+      "conv_id": "conv-50",
+      "category": 4,
+      "question": "What project did Calvin work on to chill out?",
+      "ground_truth": "A shiny orange car",
+      "fired": true,
+      "inject_sessions": [
+        11
+      ],
+      "gate_reason": "The user is asking a stateful question about a specific project Calvin worked on for relaxation, which is not mentioned in the current window.",
+      "answer_A": "",
+      "answer_B": "",
+      "f1_A": 0.0,
+      "f1_B": 0.0
+    },
+    {
+      "conv_id": "conv-50",
+      "category": 4,
+      "question": "What does Dave aim to do with his passion for cars?",
+      "ground_truth": "Take something broken and make it into something awesome",
+      "fired": true,
+      "inject_sessions": [
+        4,
+        5,
+        13,
+        17,
+        22
+      ],
+      "gate_reason": "The user is asking a stateful question about Dave's goals and passions which are documented across multiple previous sessions.",
+      "answer_A": "",
+      "answer_B": "",
+      "f1_A": 0.0,
+      "f1_B": 0.0
+    },
+    {
+      "conv_id": "conv-50",
+      "category": 4,
+      "question": "What is Calvin excited about after the tour?",
+      "ground_truth": "exploring and growing his brand",
+      "fired": true,
+      "inject_sessions": [
+        18,
+        24,
+        25
+      ],
+      "gate_reason": "The user is asking a stateful question about Calvin's post-tour excitement, which requires retrieving information from previous sessions.",
+      "answer_A": "",
+      "answer_B": "",
+      "f1_A": 0.0,
+      "f1_B": 0.0
+    },
+    {
+      "conv_id": "conv-50",
+      "category": 4,
+      "question": "What kind of music has Calvin been creating lately?",
+      "ground_truth": "experimenting with different genres",
+      "fired": true,
+      "inject_sessions": [
+        3,
+        15,
+        16,
+        18,
+        24,
+        28
+      ],
+      "gate_reason": "The user is asking a stateful question about Calvin's musical output, which is detailed in several past sessions.",
+      "answer_A": "",
+      "answer_B": "",
+      "f1_A": 0.0,
+      "f1_B": 0.0
+    },
+    {
+      "conv_id": "conv-50",
+      "category": 4,
+      "question": "What did Calvin receive as a gift from another artist?",
+      "ground_truth": "a gold necklace with a diamond pendant",
+      "fired": true,
+      "inject_sessions": [
+        16
+      ],
+      "gate_reason": "The user is asking a specific stateful question about a gift Calvin received from another artist, which is not mentioned in the current window.",
+      "answer_A": "",
+      "answer_B": "",
+      "f1_A": 0.0,
+      "f1_B": 0.0
+    }
+  ]
+}

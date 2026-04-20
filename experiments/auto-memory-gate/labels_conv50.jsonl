@@ -1,0 +1,40 @@
+{"global_pos": 86, "dia_id": "D5:1", "session": 5, "should_fire": true, "reason": "'Long time no talk' catch-up opener after gap; character should refresh on Calvin's life"}
+{"global_pos": 101, "dia_id": "D6:1", "session": 6, "should_fire": true, "reason": "'Long time no chat! Lots has gone down since we last caught up' — explicit catch-up opener"}
+{"global_pos": 119, "dia_id": "D7:1", "session": 7, "should_fire": true, "reason": "catch-up + introduces Frank Ocean touring arc which will span multiple sessions"}
+{"global_pos": 128, "dia_id": "D7:10", "session": 7, "should_fire": true, "reason": "'you mentioned Tokyo lit you up' — explicit callback asking the character about prior statement"}
+{"global_pos": 190, "dia_id": "D11:1", "session": 11, "should_fire": true, "reason": "'been ages since we spoke' catch-up opener"}
+{"global_pos": 204, "dia_id": "D12:1", "session": 12, "should_fire": true, "reason": "catch-up + Ferrari arc continuation; Calvin attached to it, multi-session"}
+{"global_pos": 206, "dia_id": "D12:3", "session": 12, "should_fire": true, "reason": "'Remember any good memories from working on cars with your dad?' — explicit recall ask on distant personal history"}
+{"global_pos": 271, "dia_id": "D16:1", "session": 16, "should_fire": true, "reason": "catch-up + asks about end-of-tour, a multi-session arc"}
+{"global_pos": 283, "dia_id": "D16:13", "session": 16, "should_fire": true, "reason": "'Remember that photo you sent me once?' — explicit callback to shared past item"}
+{"global_pos": 306, "dia_id": "D18:1", "session": 18, "should_fire": true, "reason": "catch-up + album drop milestone in Calvin's music arc"}
+{"global_pos": 311, "dia_id": "D18:6", "session": 18, "should_fire": true, "reason": "'come a long way since we started talking music' — multi-session arc reflection"}
+{"global_pos": 327, "dia_id": "D19:6", "session": 19, "should_fire": true, "reason": "'Last time we talked, you mentioned your car hobby - how's it going?' — explicit callback + asks about Dave's arc"}
+{"global_pos": 398, "dia_id": "D23:16", "session": 23, "should_fire": true, "reason": "announces new Ferrari — continuation of Calvin's Ferrari arc from s12"}
+{"global_pos": 401, "dia_id": "D24:1", "session": 24, "should_fire": true, "reason": "Frank Ocean tour arc continuation; first mentioned s7, recurrent thereafter"}
+{"global_pos": 405, "dia_id": "D24:5", "session": 24, "should_fire": true, "reason": "'It all started August last year' — explicit distant callback about origin of the collab"}
+{"global_pos": 440, "dia_id": "D25:17", "session": 25, "should_fire": true, "reason": "'I restored a car last year, but I sold it' — distant callback to past project"}
+{"global_pos": 455, "dia_id": "D26:1", "session": 26, "should_fire": true, "reason": "catch-up + references Boston & high school friend, both multi-session arcs"}
+{"global_pos": 470, "dia_id": "D27:1", "session": 27, "should_fire": true, "reason": "'Since we last talked' catch-up opener + networking for music arc"}
+{"global_pos": 528, "dia_id": "D29:3", "session": 29, "should_fire": true, "reason": "'Remembering those days made me so nostalgic!' — explicit reflection on shared past"}
+{"global_pos": 544, "dia_id": "D30:1", "session": 30, "should_fire": true, "reason": "catch-up opener after gap; introduces new photography arc but character should refresh"}
+{"global_pos": 87, "dia_id": "D5:2", "session": 5, "should_fire": false, "reason": "supportive in-session reaction to Dave's new garage team-up"}
+{"global_pos": 89, "dia_id": "D5:4", "session": 5, "should_fire": false, "reason": "in-session compliment on a just-shown photo; 'Got any plans?' is forward-looking, not recall"}
+{"global_pos": 141, "dia_id": "D8:4", "session": 8, "should_fire": false, "reason": "in-session compliment on studio photo + generic affirmation"}
+{"global_pos": 155, "dia_id": "D9:4", "session": 9, "should_fire": false, "reason": "in-session follow-up question about insurance process mentioned moments ago"}
+{"global_pos": 158, "dia_id": "D9:7", "session": 9, "should_fire": false, "reason": "mechanical reply identifying a person in a photo"}
+{"global_pos": 178, "dia_id": "D10:6", "session": 10, "should_fire": false, "reason": "in-session reaction to a photo; Japanese mansion mention is ambient detail, not an arc ask"}
+{"global_pos": 194, "dia_id": "D11:5", "session": 11, "should_fire": false, "reason": "supportive in-session reaction + question about ongoing current project"}
+{"global_pos": 224, "dia_id": "D13:4", "session": 13, "should_fire": false, "reason": "supportive in-session encouragement about Dave's custom-car workshop just announced"}
+{"global_pos": 228, "dia_id": "D13:8", "session": 13, "should_fire": false, "reason": "in-session compliment on Dave's car-workshop photo"}
+{"global_pos": 246, "dia_id": "D14:7", "session": 14, "should_fire": false, "reason": "in-session follow-up 'got any pictures?' about the tour just discussed"}
+{"global_pos": 260, "dia_id": "D15:5", "session": 15, "should_fire": false, "reason": "in-session reaction to Tokyo mention Calvin just made"}
+{"global_pos": 300, "dia_id": "D17:5", "session": 17, "should_fire": false, "reason": "in-session supportive affirmation about the fixing-cars satisfaction"}
+{"global_pos": 309, "dia_id": "D18:4", "session": 18, "should_fire": false, "reason": "in-session supportive reaction to Calvin's album success just mentioned"}
+{"global_pos": 357, "dia_id": "D21:7", "session": 21, "should_fire": false, "reason": "in-session collaborative filler about restoring cars"}
+{"global_pos": 372, "dia_id": "D22:4", "session": 22, "should_fire": false, "reason": "in-session compliment 'turned it into a masterpiece'"}
+{"global_pos": 427, "dia_id": "D25:4", "session": 25, "should_fire": false, "reason": "in-session answer to 'how are you managing?' just asked"}
+{"global_pos": 485, "dia_id": "D28:3", "session": 28, "should_fire": false, "reason": "in-session reaction + showing a photo from event just described"}
+{"global_pos": 531, "dia_id": "D29:6", "session": 29, "should_fire": false, "reason": "in-session generic reflection on support; continues current topic"}
+{"global_pos": 546, "dia_id": "D30:3", "session": 30, "should_fire": false, "reason": "in-session question about an event Calvin just mentioned"}
+{"global_pos": 549, "dia_id": "D30:6", "session": 30, "should_fire": false, "reason": "in-session question 'Do you use this camera?' about Dave's current photography"}

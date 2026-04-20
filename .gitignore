@@ -35,6 +35,11 @@ contrib/src/
 # Gitea runner
 .runner
 
+# Bench / experiment generated artifacts (regenerable from fixtures + scripts)
+experiments/auto-memory-gate/shore-bench/templates/
+experiments/auto-memory-gate/shore-bench/results/
+experiments/**/__pycache__/
+
 # Environment / secrets
 .env
 .env.*

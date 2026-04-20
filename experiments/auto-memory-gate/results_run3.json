@@ -1,0 +1,2098 @@
+{
+  "window_size": 36,
+  "conv_id": "conv-26",
+  "n_labels": 40,
+  "summaries": [
+    {
+      "model": "moonshotai/kimi-k2.5",
+      "accuracy": 0.8571428571428571,
+      "precision": 1.0,
+      "recall": 0.8571428571428571,
+      "tp": 6,
+      "fp": 0,
+      "tn": 0,
+      "fn": 1,
+      "errors": 3,
+      "input_tokens": 16230,
+      "output_tokens": 9351,
+      "cost_usd": 0.032552625,
+      "wall_time_s": 283.08827686309814,
+      "f1": 0.923076923076923
+    },
+    {
+      "model": "google/gemma-4-31b-it",
+      "accuracy": 0.85,
+      "precision": 1.0,
+      "recall": 0.7,
+      "tp": 14,
+      "fp": 0,
+      "tn": 20,
+      "fn": 6,
+      "errors": 0,
+      "input_tokens": 92825,
+      "output_tokens": 2150,
+      "cost_usd": 0.014631139999999997,
+      "wall_time_s": 191.3611354827881,
+      "f1": 0.8235294117647058
+    }
+  ],
+  "per_turn": {
+    "moonshotai/kimi-k2.5": [
+      {
+        "lab": {
+          "global_pos": 192,
+          "dia_id": "D10:2",
+          "session": 10,
+          "speaker": "Melanie",
+          "text": "Hey Caroline! Good to talk to you again. What's up? Anything new since last time?",
+          "should_fire": true,
+          "reason": "explicit 'since last time' callback. Character should recall what's been discussed in prior sessions outside 36-turn window"
+        },
+        "gate": {
+          "fire": true,
+          "reason": "Melanie explicitly references a gap ('last time'), signaling time has passed since their previous conversation.",
+          "injection": "Melanie's asking what's new since we last talked\u2014she might not know about the mentorship program or art show yet, so I should bring her up to speed.",
+          "pointers": [
+            "session 7",
+            "session 5"
+          ]
+        },
+        "match": true,
+        "usage": {
+          "prompt_tokens": 1724,
+          "completion_tokens": 82,
+          "total_tokens": 1806,
+          "cost": 0.0012147,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.0012147,
+            "upstream_inference_prompt_cost": 0.0009482,
+            "upstream_inference_completions_cost": 0.0002665
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        },
+        "elapsed": 2.1296591758728027
+      },
+      {
+        "lab": {
+          "global_pos": 204,
+          "dia_id": "D10:14",
+          "session": 10,
+          "speaker": "Melanie",
+          "text": "I'll always remember our camping trip last year when we saw the Perseid meteor shower. It was so amazing lying there and watching the sky light up with streaks of light.",
+          "should_fire": true,
+          "reason": "explicit 'last year' callback to a shared distant event. Character should have that memory available to respond coherently"
+        },
+        "err": "parse error: 'NoneType' object has no attribute 'strip' \u2014 raw: {'id': 'gen-1776668385-CSkP1g31O5VsKPcv0Eql', 'object': 'chat.completion', 'created': 1776668385, 'model': 'moonshotai/kimi-k2.5-0127', 'provider': 'DeepInfra', 'system_fingerprint': None, 'choices': [{'index': 0, 'logprobs': None, 'finish_reason': 'stop', 'native_finish_reason': 'stop', 'message': {'role': 'assistant', 'content': None, 'refusal': None, 'reasoning': '{\"fire\":false,\"reason\":\"Melani"
+      },
+      {
+        "lab": {
+          "global_pos": 246,
+          "dia_id": "D12:15",
+          "session": 12,
+          "speaker": "Caroline",
+          "text": "I'm always here for you, Mel! We had a blast last year at the Pride fest. Those supportive friends definitely make everything worth it!",
+          "should_fire": true,
+          "reason": "references 'Pride fest last year' \u2014 distant shared event, unlikely to be in 36-turn window"
+        },
+        "gate": {
+          "fire": true,
+          "reason": "Caroline references a shared Pride festival experience from last year, requiring recall of past events outside the current window.",
+          "injection": "Remember attending the Pride festival with Caroline last year, where you both celebrated with supportive friends and felt the warmth of community.",
+          "pointers": [
+            "LGBTQ pride events",
+            "Supportive friendships",
+            "Community celebration"
+          ]
+        },
+        "match": true,
+        "usage": {
+          "prompt_tokens": 2202,
+          "completion_tokens": 1771,
+          "total_tokens": 3973,
+          "cost": 0.00743162,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.00743162,
+            "upstream_inference_prompt_cost": 0.00123312,
+            "upstream_inference_completions_cost": 0.0061985
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 2213,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        },
+        "elapsed": 14.573567152023315
+      },
+      {
+        "lab": {
+          "global_pos": 283,
+          "dia_id": "D14:12",
+          "session": 14,
+          "speaker": "Melanie",
+          "text": "Thanks, Caroline! I really appreciate your help and motivation. What made you decide to transition and join the transgender community?",
+          "should_fire": true,
+          "reason": "asks Caroline about her transition \u2014 a foundational topic introduced in session 1, distant from the 36-turn window"
+        },
+        "gate": {
+          "fire": true,
+          "reason": "Caroline is explaining what led to her transition decision by referencing past LGBTQ community experiences (support groups, conferences, pride events) that occurred in earlier sessions outside the current window.",
+          "injection": "Caroline first embraced her identity after attending an LGBTQ support group where hearing transgender stories gave her courage (May 2023). She later deepened her sense of belonging at a pride parade and LGBTQ conference, and has been mentoring transgender youth while preparing for an LGBTQ art show.",
+          "pointers": [
+            "[session 1]",
+            "[session 5]",
+            "[session 9]"
+          ]
+        },
+        "match": true,
+        "usage": {
+          "prompt_tokens": 2293,
+          "completion_tokens": 2618,
+          "total_tokens": 4911,
+          "cost": 0.0087062,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.0087062,
+            "upstream_inference_prompt_cost": 0.0013758,
+            "upstream_inference_completions_cost": 0.0073304
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 3124,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        },
+        "elapsed": 66.68686246871948
+      },
+      {
+        "lab": {
+          "global_pos": 354,
+          "dia_id": "D17:1",
+          "session": 17,
+          "speaker": "Caroline",
+          "text": "Hey Mel, what's up? Long time no see! I just contacted my mentor for adoption advice. I'm ready to be a mom and share my love and family.",
+          "should_fire": true,
+          "reason": "continues adoption journey first introduced at D13:1 (~100 turns prior). 'Long time no see' also flags session gap"
+        },
+        "gate": {
+          "fire": true,
+          "reason": "Message opens with 'long time no see' indicating a conversational gap, and references Caroline's ongoing adoption process and mentor relationship from earlier sessions.",
+          "injection": "Caroline previously applied to adoption agencies and has been working with an adoption assistance group. She also joined an LGBTQ youth mentorship program. She's been wanting to become a mom and is seeking her mentor's advice on the adoption process.",
+          "pointers": [
+            "session 13",
+            "session 9"
+          ]
+        },
+        "match": true,
+        "usage": {
+          "prompt_tokens": 2474,
+          "completion_tokens": 1145,
+          "total_tokens": 3619,
+          "cost": 0.00360756,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.00360756,
+            "upstream_inference_prompt_cost": 0.00108856,
+            "upstream_inference_completions_cost": 0.002519
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 1229,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        },
+        "elapsed": 84.57639956474304
+      },
+      {
+        "lab": {
+          "global_pos": 361,
+          "dia_id": "D17:8",
+          "session": 17,
+          "speaker": "Melanie",
+          "text": "Thanks for the tip, Caroline. Doing research and readying myself emotionally makes sense. I'll do that. BTW, recently I had a setback. Last month I got hurt and had to take a break from pottery.",
+          "should_fire": true,
+          "reason": "mentions a distant event ('last month I got hurt') that may not be in window. Also Melanie's pottery hobby was extensively discussed prior"
+        },
+        "gate": {
+          "fire": false,
+          "reason": "The message is a direct reply to Caroline's adoption advice from the previous turn and introduces new information about an injury without referencing any distant past events or requiring historical context to respond.",
+          "injection": null,
+          "pointers": []
+        },
+        "match": false,
+        "usage": {
+          "prompt_tokens": 2631,
+          "completion_tokens": 1786,
+          "total_tokens": 4417,
+          "cost": 0.00520245,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.00520245,
+            "upstream_inference_prompt_cost": 0.00118395,
+            "upstream_inference_completions_cost": 0.0040185
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 1730,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        },
+        "elapsed": 60.9214289188385
+      },
+      {
+        "lab": {
+          "global_pos": 363,
+          "dia_id": "D17:10",
+          "session": 17,
+          "speaker": "Melanie",
+          "text": "Thanks, Caroline. It was tough, but I'm doing ok. Been reading that book you recommended a while ago and painting to keep busy.",
+          "should_fire": true,
+          "reason": "'that book you recommended a while ago' \u2014 explicit distant callback, character should know which book"
+        },
+        "gate": {
+          "fire": true,
+          "reason": "Message references a specific book recommendation from a prior conversation outside the current window.",
+          "injection": "Recall that you previously recommended a book to Melanie\u2014likely related to mental health, LGBTQ+ advocacy, or personal growth given your past chats. She\u2019s reading it now while recovering from her pottery injury. Ask what she thinks of it and if it\u2019s helping her stay positive.",
+          "pointers": [
+            "[session 2]",
+            "[session 6]"
+          ]
+        },
+        "match": true,
+        "usage": {
+          "prompt_tokens": 2661,
+          "completion_tokens": 1829,
+          "total_tokens": 4490,
+          "cost": 0.004842145,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.004842145,
+            "upstream_inference_prompt_cost": 0.001184145,
+            "upstream_inference_completions_cost": 0.003658
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 2202,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        },
+        "elapsed": 35.340672969818115
+      },
+      {
+        "lab": {
+          "global_pos": 404,
+          "dia_id": "D19:1",
+          "session": 19,
+          "speaker": "Caroline",
+          "text": "Woohoo Melanie! I passed the adoption agency interviews last Friday! I'm so excited and thankful. This is a big move towards my goal of having a family.",
+          "should_fire": true,
+          "reason": "milestone in adoption journey spanning many sessions. Character should situate this in the broader arc"
+        },
+        "err": "parse error: Extra data: line 1 column 607 (char 606) \u2014 raw: {'id': 'gen-1776668652-AaUx7kzc5hWvhttGeyPq', 'object': 'chat.completion', 'created': 1776668652, 'model': 'moonshotai/kimi-k2.5-0127', 'provider': 'BaseTen', 'system_fingerprint': None, 'choices': [{'index': 0, 'logprobs': None, 'finish_reason': 'stop', 'native_finish_reason': 'stop', 'message': {'role': 'assistant', 'content': '{\"fire\": true, \"reason\": \"The message continues a multi-session adop"
+      },
+      {
+        "lab": {
+          "global_pos": 334,
+          "dia_id": "D16:1",
+          "session": 16,
+          "speaker": "Caroline",
+          "text": "Hey Mel, long time no chat! I had a wicked day out with the gang last weekend - we went biking and saw some pretty cool stuff.",
+          "should_fire": true,
+          "reason": "'long time no chat' signals session gap. 'The gang' likely refers to friends from earlier discussions"
+        },
+        "err": "parse error: 'NoneType' object has no attribute 'strip' \u2014 raw: {'id': 'gen-1776668659-cERHUPDdd3wCLCfDCfuN', 'object': 'chat.completion', 'created': 1776668659, 'model': 'moonshotai/kimi-k2.5-0127', 'provider': 'DeepInfra', 'system_fingerprint': None, 'choices': [{'index': 0, 'logprobs': None, 'finish_reason': 'stop', 'native_finish_reason': 'stop', 'message': {'role': 'assistant', 'content': None, 'refusal': None, 'reasoning': '{\"fire\":true,\"reason\":\"Carolin"
+      },
+      {
+        "lab": {
+          "global_pos": 253,
+          "dia_id": "D13:1",
+          "session": 13,
+          "speaker": "Caroline",
+          "text": "Hi Melanie! Hope you're doing good. Guess what I did this week? I took the first step towards becoming a mom - I applied to adoption agencies.",
+          "should_fire": true,
+          "reason": "announces adoption \u2014 a milestone that connects to Caroline's earlier-expressed identity journey (session 1 transition, support group)"
+        },
+        "gate": {
+          "fire": true,
+          "reason": "Caroline mentions an adoption advice/assistance group she attended, which continues her multi-session arc of exploring counseling/mental health work and helping LGBTQ youth; earlier sessions show her interest in supporting others but no prior adoption discussion.",
+          "injection": "Caroline has been exploring helping professions since July 2023, joining an LGBTQ activist group and a mentorship program for trans youth. She previously mentioned wanting to give back through counseling or mental health work.",
+          "pointers": [
+            "session 6",
+            "session 9",
+            "session 10"
+          ]
+        },
+        "match": true,
+        "usage": {
+          "prompt_tokens": 2245,
+          "completion_tokens": 120,
+          "total_tokens": 2365,
+          "cost": 0.00154795,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 192,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.00154795,
+            "upstream_inference_prompt_cost": 0.00115795,
+            "upstream_inference_completions_cost": 0.00039
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        },
+        "elapsed": 2.8002305030822754
+      }
+    ],
+    "google/gemma-4-31b-it": [
+      {
+        "lab": {
+          "global_pos": 192,
+          "dia_id": "D10:2",
+          "session": 10,
+          "speaker": "Melanie",
+          "text": "Hey Caroline! Good to talk to you again. What's up? Anything new since last time?",
+          "should_fire": true,
+          "reason": "explicit 'since last time' callback. Character should recall what's been discussed in prior sessions outside 36-turn window"
+        },
+        "gate": {
+          "fire": true,
+          "reason": "The message opens after a conversational gap and asks for updates on 'anything new since last time', requiring a look at past goals and interests.",
+          "injection": "Caroline has previously explored interests in counseling and mental health work to help others, following her experiences at a pride parade and support groups.",
+          "pointers": [
+            "session 6",
+            "session 5"
+          ]
+        },
+        "match": true,
+        "usage": {
+          "prompt_tokens": 1887,
+          "completion_tokens": 81,
+          "total_tokens": 1968,
+          "cost": 0.0004179,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.0004179,
+            "upstream_inference_prompt_cost": 0.0003774,
+            "upstream_inference_completions_cost": 4.05e-05
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        },
+        "elapsed": 7.813246250152588
+      },
+      {
+        "lab": {
+          "global_pos": 204,
+          "dia_id": "D10:14",
+          "session": 10,
+          "speaker": "Melanie",
+          "text": "I'll always remember our camping trip last year when we saw the Perseid meteor shower. It was so amazing lying there and watching the sky light up with streaks of light.",
+          "should_fire": true,
+          "reason": "explicit 'last year' callback to a shared distant event. Character should have that memory available to respond coherently"
+        },
+        "gate": {
+          "fire": true,
+          "reason": "The user references a specific shared event ('our camping trip last year') that is not present in the current conversation window.",
+          "injection": "Melanie and Caroline went camping together last year and witnessed the Perseid meteor shower, an experience Melanie remembers as a profound moment of connection and wonder.",
+          "pointers": []
+        },
+        "match": true,
+        "usage": {
+          "prompt_tokens": 2109,
+          "completion_tokens": 73,
+          "total_tokens": 2182,
+          "cost": 0.00032446,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.00032446,
+            "upstream_inference_prompt_cost": 0.00029526,
+            "upstream_inference_completions_cost": 2.92e-05
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        },
+        "elapsed": 5.107247591018677
+      },
+      {
+        "lab": {
+          "global_pos": 246,
+          "dia_id": "D12:15",
+          "session": 12,
+          "speaker": "Caroline",
+          "text": "I'm always here for you, Mel! We had a blast last year at the Pride fest. Those supportive friends definitely make everything worth it!",
+          "should_fire": true,
+          "reason": "references 'Pride fest last year' \u2014 distant shared event, unlikely to be in 36-turn window"
+        },
+        "gate": {
+          "fire": true,
+          "reason": "The message references a past event ('last year at the Pride fest') that is not mentioned in the current conversation window.",
+          "injection": "Last year, Caroline and Melanie attended a Pride fest together, where they experienced a strong sense of belonging and community.",
+          "pointers": [
+            "session 5"
+          ]
+        },
+        "match": true,
+        "usage": {
+          "prompt_tokens": 2378,
+          "completion_tokens": 69,
+          "total_tokens": 2447,
+          "cost": 0.00033536,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.00033536,
+            "upstream_inference_prompt_cost": 0.00030914,
+            "upstream_inference_completions_cost": 2.622e-05
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        },
+        "elapsed": 2.508439064025879
+      },
+      {
+        "lab": {
+          "global_pos": 283,
+          "dia_id": "D14:12",
+          "session": 14,
+          "speaker": "Melanie",
+          "text": "Thanks, Caroline! I really appreciate your help and motivation. What made you decide to transition and join the transgender community?",
+          "should_fire": true,
+          "reason": "asks Caroline about her transition \u2014 a foundational topic introduced in session 1, distant from the 36-turn window"
+        },
+        "gate": {
+          "fire": true,
+          "reason": "The user is discussing their transition and the importance of the LGBTQ community, which connects to multiple past sessions regarding their journey and support groups.",
+          "injection": "Caroline previously mentioned being inspired by transgender stories at an LGBTQ support group, which gave her the courage to embrace herself. She has since shared her journey at a school event and attended an LGBTQ conference to feel connected with others.",
+          "pointers": [
+            "session 1",
+            "session 3",
+            "session 7"
+          ]
+        },
+        "match": true,
+        "usage": {
+          "prompt_tokens": 2472,
+          "completion_tokens": 103,
+          "total_tokens": 2575,
+          "cost": 0.0005459,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.0005459,
+            "upstream_inference_prompt_cost": 0.0004944,
+            "upstream_inference_completions_cost": 5.15e-05
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        },
+        "elapsed": 10.25572395324707
+      },
+      {
+        "lab": {
+          "global_pos": 354,
+          "dia_id": "D17:1",
+          "session": 17,
+          "speaker": "Caroline",
+          "text": "Hey Mel, what's up? Long time no see! I just contacted my mentor for adoption advice. I'm ready to be a mom and share my love and family.",
+          "should_fire": true,
+          "reason": "continues adoption journey first introduced at D13:1 (~100 turns prior). 'Long time no see' also flags session gap"
+        },
+        "gate": {
+          "fire": true,
+          "reason": "The user mentions contacting a mentor for adoption advice, which continues a long-term arc regarding her adoption process not present in the current window.",
+          "injection": "Caroline previously shared that she applied to adoption agencies and received help from an adoption assistance group. She is passionate about becoming a mother and sharing her love.",
+          "pointers": [
+            "session 13"
+          ]
+        },
+        "match": true,
+        "usage": {
+          "prompt_tokens": 2667,
+          "completion_tokens": 81,
+          "total_tokens": 2748,
+          "cost": 0.0005739,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.0005739,
+            "upstream_inference_prompt_cost": 0.0005334,
+            "upstream_inference_completions_cost": 4.05e-05
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        },
+        "elapsed": 8.111679792404175
+      },
+      {
+        "lab": {
+          "global_pos": 361,
+          "dia_id": "D17:8",
+          "session": 17,
+          "speaker": "Melanie",
+          "text": "Thanks for the tip, Caroline. Doing research and readying myself emotionally makes sense. I'll do that. BTW, recently I had a setback. Last month I got hurt and had to take a break from pottery.",
+          "should_fire": true,
+          "reason": "mentions a distant event ('last month I got hurt') that may not be in window. Also Melanie's pottery hobby was extensively discussed prior"
+        },
+        "gate": {
+          "fire": false,
+          "reason": "The message is a direct reply to the current window's topic on adoption and introduces a new personal update about an injury that doesn't require long-term memory.",
+          "injection": null,
+          "pointers": []
+        },
+        "match": false,
+        "usage": {
+          "prompt_tokens": 2841,
+          "completion_tokens": 54,
+          "total_tokens": 2895,
+          "cost": 0.0003947,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 352,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.0003947,
+            "upstream_inference_prompt_cost": 0.0003731,
+            "upstream_inference_completions_cost": 2.16e-05
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        },
+        "elapsed": 3.5300421714782715
+      },
+      {
+        "lab": {
+          "global_pos": 363,
+          "dia_id": "D17:10",
+          "session": 17,
+          "speaker": "Melanie",
+          "text": "Thanks, Caroline. It was tough, but I'm doing ok. Been reading that book you recommended a while ago and painting to keep busy.",
+          "should_fire": true,
+          "reason": "'that book you recommended a while ago' \u2014 explicit distant callback, character should know which book"
+        },
+        "gate": {
+          "fire": true,
+          "reason": "The user references a book Caroline recommended 'a while ago', which is not mentioned in the current conversation window.",
+          "injection": null,
+          "pointers": []
+        },
+        "match": true,
+        "usage": {
+          "prompt_tokens": 2871,
+          "completion_tokens": 42,
+          "total_tokens": 2913,
+          "cost": 0.00038919,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.00038919,
+            "upstream_inference_prompt_cost": 0.00037323,
+            "upstream_inference_completions_cost": 1.596e-05
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        },
+        "elapsed": 1.559596300125122
+      },
+      {
+        "lab": {
+          "global_pos": 404,
+          "dia_id": "D19:1",
+          "session": 19,
+          "speaker": "Caroline",
+          "text": "Woohoo Melanie! I passed the adoption agency interviews last Friday! I'm so excited and thankful. This is a big move towards my goal of having a family.",
+          "should_fire": true,
+          "reason": "milestone in adoption journey spanning many sessions. Character should situate this in the broader arc"
+        },
+        "gate": {
+          "fire": true,
+          "reason": "Caroline is updating Melanie on a multi-session arc regarding her adoption process, the beginnings of which are not in the current window.",
+          "injection": "Caroline had previously applied to adoption agencies and received help from an adoption assistance group, expressing a strong desire to start a family.",
+          "pointers": [
+            "session 13"
+          ]
+        },
+        "match": true,
+        "usage": {
+          "prompt_tokens": 2568,
+          "completion_tokens": 74,
+          "total_tokens": 2642,
+          "cost": 0.00038912,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.00038912,
+            "upstream_inference_prompt_cost": 0.00035952,
+            "upstream_inference_completions_cost": 2.96e-05
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        },
+        "elapsed": 12.085689783096313
+      },
+      {
+        "lab": {
+          "global_pos": 334,
+          "dia_id": "D16:1",
+          "session": 16,
+          "speaker": "Caroline",
+          "text": "Hey Mel, long time no chat! I had a wicked day out with the gang last weekend - we went biking and saw some pretty cool stuff.",
+          "should_fire": true,
+          "reason": "'long time no chat' signals session gap. 'The gang' likely refers to friends from earlier discussions"
+        },
+        "gate": {
+          "fire": true,
+          "reason": "The message opens after a gap ('long time no chat'), signaling a need for general context or previous shared interests to bridge the conversation.",
+          "injection": null,
+          "pointers": []
+        },
+        "match": true,
+        "usage": {
+          "prompt_tokens": 2438,
+          "completion_tokens": 47,
+          "total_tokens": 2485,
+          "cost": 0.0003348,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.0003348,
+            "upstream_inference_prompt_cost": 0.00031694,
+            "upstream_inference_completions_cost": 1.786e-05
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        },
+        "elapsed": 4.729818344116211
+      },
+      {
+        "lab": {
+          "global_pos": 253,
+          "dia_id": "D13:1",
+          "session": 13,
+          "speaker": "Caroline",
+          "text": "Hi Melanie! Hope you're doing good. Guess what I did this week? I took the first step towards becoming a mom - I applied to adoption agencies.",
+          "should_fire": true,
+          "reason": "announces adoption \u2014 a milestone that connects to Caroline's earlier-expressed identity journey (session 1 transition, support group)"
+        },
+        "gate": {
+          "fire": true,
+          "reason": "The message introduces a major life event (adoption) that may be part of a multi-session arc or have prior mentions not present in the current window.",
+          "injection": null,
+          "pointers": []
+        },
+        "match": true,
+        "usage": {
+          "prompt_tokens": 2429,
+          "completion_tokens": 51,
+          "total_tokens": 2480,
+          "cost": 0.00033515,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.00033515,
+            "upstream_inference_prompt_cost": 0.00031577,
+            "upstream_inference_completions_cost": 1.938e-05
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        },
+        "elapsed": 2.0498244762420654
+      },
+      {
+        "lab": {
+          "global_pos": 238,
+          "dia_id": "D12:7",
+          "session": 12,
+          "speaker": "Caroline",
+          "text": "That's amazing! You put so much effort and passion into it. Your creativity really shines. Seeing how art can be a source of self-expression is powerful.",
+          "should_fire": false,
+          "reason": "direct in-session response to pottery shown moments before; all relevant context is in the current window"
+        },
+        "gate": {
+          "fire": false,
+          "reason": "The message is a direct reply to Melanie's previous statement about her pottery project which is already in the current window.",
+          "injection": null,
+          "pointers": []
+        },
+        "match": true,
+        "usage": {
+          "prompt_tokens": 2355,
+          "completion_tokens": 44,
+          "total_tokens": 2399,
+          "cost": 0.00032266,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 352,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.00032266,
+            "upstream_inference_prompt_cost": 0.00030506,
+            "upstream_inference_completions_cost": 1.76e-05
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        },
+        "elapsed": 3.4685959815979004
+      },
+      {
+        "lab": {
+          "global_pos": 255,
+          "dia_id": "D13:3",
+          "session": 13,
+          "speaker": "Caroline",
+          "text": "Thanks, Mel! Exciting but kinda nerve-wracking. Parenting's such a big responsibility. And yup, I do- Oscar, my guinea pig. He's been great.",
+          "should_fire": false,
+          "reason": "immediate in-session response to Melanie's question; no distant recall needed"
+        },
+        "gate": {
+          "fire": false,
+          "reason": "The message is a direct reply to Melanie's previous questions about her feelings on adoption and her pets, both of which are within the current window.",
+          "injection": null,
+          "pointers": []
+        },
+        "match": true,
+        "usage": {
+          "prompt_tokens": 2407,
+          "completion_tokens": 50,
+          "total_tokens": 2457,
+          "cost": 0.00033191,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.00033191,
+            "upstream_inference_prompt_cost": 0.00031291,
+            "upstream_inference_completions_cost": 1.9e-05
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        },
+        "elapsed": 2.6261212825775146
+      },
+      {
+        "lab": {
+          "global_pos": 275,
+          "dia_id": "D14:5",
+          "session": 14,
+          "speaker": "Caroline",
+          "text": "Nah, I haven't. I've been busy painting - here's something I just finished.",
+          "should_fire": false,
+          "reason": "fresh topic introduction; responding to pottery question with own recent painting"
+        },
+        "gate": {
+          "fire": false,
+          "reason": "The message is a direct reply to Melanie's question about trying pottery and introduces a new painting, both of which are handled within the current conversational context.",
+          "injection": null,
+          "pointers": []
+        },
+        "match": true,
+        "usage": {
+          "prompt_tokens": 2401,
+          "completion_tokens": 51,
+          "total_tokens": 2452,
+          "cost": 0.00035654,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.00035654,
+            "upstream_inference_prompt_cost": 0.00033614,
+            "upstream_inference_completions_cost": 2.04e-05
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        },
+        "elapsed": 12.405366659164429
+      },
+      {
+        "lab": {
+          "global_pos": 309,
+          "dia_id": "D15:4",
+          "session": 15,
+          "speaker": "Melanie",
+          "text": "That sounds great, Caroline. Volunteering is a great way to meet people. Creating community and supporting each other, especially for kids, is so important.",
+          "should_fire": false,
+          "reason": "in-session supportive response; topic was raised earlier in same session"
+        },
+        "gate": {
+          "fire": false,
+          "reason": "The message is a direct reply to Caroline's previous turn about volunteering at a youth center, which is already in the current window.",
+          "injection": null,
+          "pointers": []
+        },
+        "match": true,
+        "usage": {
+          "prompt_tokens": 2525,
+          "completion_tokens": 47,
+          "total_tokens": 2572,
+          "cost": 0.0005285,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.0005285,
+            "upstream_inference_prompt_cost": 0.000505,
+            "upstream_inference_completions_cost": 2.35e-05
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        },
+        "elapsed": 5.324025392532349
+      },
+      {
+        "lab": {
+          "global_pos": 318,
+          "dia_id": "D15:13",
+          "session": 15,
+          "speaker": "Caroline",
+          "text": "Wow! Did you see that band?",
+          "should_fire": false,
+          "reason": "in-session reaction to an image Melanie just shared; no distant context needed"
+        },
+        "gate": {
+          "fire": false,
+          "reason": "The message is a direct reaction to the current window where Melanie just mentioned her love for live music.",
+          "injection": null,
+          "pointers": []
+        },
+        "match": true,
+        "usage": {
+          "prompt_tokens": 2527,
+          "completion_tokens": 40,
+          "total_tokens": 2567,
+          "cost": 0.0005254,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.0005254,
+            "upstream_inference_prompt_cost": 0.0005054,
+            "upstream_inference_completions_cost": 2e-05
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        },
+        "elapsed": 3.4365062713623047
+      },
+      {
+        "lab": {
+          "global_pos": 331,
+          "dia_id": "D15:26",
+          "session": 15,
+          "speaker": "Melanie",
+          "text": "Yeah, I play clarinet! Started when I was young and it's been great. Expression of myself and a way to relax.",
+          "should_fire": false,
+          "reason": "direct answer to in-session question; fresh topic without callbacks"
+        },
+        "gate": {
+          "fire": false,
+          "reason": "The message is a direct reply to Caroline's question about playing instruments, and all relevant context is already in the window.",
+          "injection": null,
+          "pointers": []
+        },
+        "match": true,
+        "usage": {
+          "prompt_tokens": 2456,
+          "completion_tokens": 45,
+          "total_tokens": 2501,
+          "cost": 0.00036184,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.00036184,
+            "upstream_inference_prompt_cost": 0.00034384,
+            "upstream_inference_completions_cost": 1.8e-05
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        },
+        "elapsed": 3.917658567428589
+      },
+      {
+        "lab": {
+          "global_pos": 381,
+          "dia_id": "D18:1",
+          "session": 18,
+          "speaker": "Melanie",
+          "text": "Hey Caroline, that roadtrip this past weekend was insane! We were all freaked when my son got into an accident. We were so lucky he was okay.",
+          "should_fire": false,
+          "reason": "opening a brand-new story; the roadtrip itself is novel. Gate could also fire for 'son' context but filler-level"
+        },
+        "gate": {
+          "fire": false,
+          "reason": "The message is a direct sympathetic response to the accident mentioned in the current conversation window.",
+          "injection": null,
+          "pointers": []
+        },
+        "match": true,
+        "usage": {
+          "prompt_tokens": 2821,
+          "completion_tokens": 37,
+          "total_tokens": 2858,
+          "cost": 0.00038734,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 320,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.00038734,
+            "upstream_inference_prompt_cost": 0.00037254,
+            "upstream_inference_completions_cost": 1.48e-05
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        },
+        "elapsed": 4.149218320846558
+      },
+      {
+        "lab": {
+          "global_pos": 385,
+          "dia_id": "D18:5",
+          "session": 18,
+          "speaker": "Melanie",
+          "text": "Yeah, you're right, Caroline. Family's super important to me. Especially after the accident, I've thought a lot about how much I need them.",
+          "should_fire": false,
+          "reason": "continuing the in-session accident topic; all relevant context is recent"
+        },
+        "gate": {
+          "fire": false,
+          "reason": "The question refers to 'the accident', which is discussed extensively in the current conversation window.",
+          "injection": null,
+          "pointers": []
+        },
+        "match": true,
+        "usage": {
+          "prompt_tokens": 2792,
+          "completion_tokens": 38,
+          "total_tokens": 2830,
+          "cost": 0.0003774,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.0003774,
+            "upstream_inference_prompt_cost": 0.00036296,
+            "upstream_inference_completions_cost": 1.444e-05
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        },
+        "elapsed": 1.4234161376953125
+      },
+      {
+        "lab": {
+          "global_pos": 391,
+          "dia_id": "D18:11",
+          "session": 18,
+          "speaker": "Melanie",
+          "text": "Yeah, Caroline. Totally agree. They're my biggest motivation and support.",
+          "should_fire": false,
+          "reason": "filler agreement; no information need"
+        },
+        "gate": {
+          "fire": false,
+          "reason": "The message is a direct emotional response to the conversation currently in the window regarding Melanie's family and the recent accident.",
+          "injection": null,
+          "pointers": []
+        },
+        "match": true,
+        "usage": {
+          "prompt_tokens": 2794,
+          "completion_tokens": 44,
+          "total_tokens": 2838,
+          "cost": 0.00038412,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 352,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.00038412,
+            "upstream_inference_prompt_cost": 0.00036652,
+            "upstream_inference_completions_cost": 1.76e-05
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        },
+        "elapsed": 4.715807914733887
+      },
+      {
+        "lab": {
+          "global_pos": 398,
+          "dia_id": "D18:18",
+          "session": 18,
+          "speaker": "Caroline",
+          "text": "Glad you got some R&R after the drive. Nature sure seems to refresh us, huh?",
+          "should_fire": false,
+          "reason": "in-session sympathetic response; no distant context required"
+        },
+        "gate": {
+          "fire": false,
+          "reason": "The message is a direct continuation of the current conversation about nature and R&R.",
+          "injection": null,
+          "pointers": []
+        },
+        "match": true,
+        "usage": {
+          "prompt_tokens": 2635,
+          "completion_tokens": 37,
+          "total_tokens": 2672,
+          "cost": 0.00035906,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 352,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.00035906,
+            "upstream_inference_prompt_cost": 0.00034426,
+            "upstream_inference_completions_cost": 1.48e-05
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        },
+        "elapsed": 5.6933019161224365
+      },
+      {
+        "lab": {
+          "global_pos": 58,
+          "dia_id": "D4:1",
+          "session": 4,
+          "speaker": "Caroline",
+          "text": "Hey Melanie! Long time no talk! A lot's been going on in my life! Take a look at this.",
+          "should_fire": true,
+          "reason": "session opener after gap; window pos 22-57 covers s2-s3, so s1 (Caroline's transition intro, support group) is outside window and Melanie should recall recent life context"
+        },
+        "gate": {
+          "fire": true,
+          "reason": "The user opens after a gap ('Long time no talk') and indicates a significant life update, necessitating a check of past arcs.",
+          "injection": null,
+          "pointers": []
+        },
+        "match": true,
+        "usage": {
+          "prompt_tokens": 2017,
+          "completion_tokens": 56,
+          "total_tokens": 2073,
+          "cost": 0.0004314,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.0004314,
+            "upstream_inference_prompt_cost": 0.0004034,
+            "upstream_inference_completions_cost": 2.8e-05
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        },
+        "elapsed": 6.7020604610443115
+      },
+      {
+        "lab": {
+          "global_pos": 92,
+          "dia_id": "D6:1",
+          "session": 6,
+          "speaker": "Caroline",
+          "text": "Hey Mel! Long time no talk. Lots has been going on since then!",
+          "should_fire": true,
+          "reason": "session opener; Melanie should recall what's been discussed recently that's now outside 36-turn window (s1-2 content)"
+        },
+        "gate": {
+          "fire": true,
+          "reason": "The user is opening a new session after a gap, explicitly referencing a passage of time ('Long time no talk').",
+          "injection": null,
+          "pointers": []
+        },
+        "match": true,
+        "usage": {
+          "prompt_tokens": 1884,
+          "completion_tokens": 44,
+          "total_tokens": 1928,
+          "cost": 0.0003988,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.0003988,
+            "upstream_inference_prompt_cost": 0.0003768,
+            "upstream_inference_completions_cost": 2.2e-05
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        },
+        "elapsed": 6.4444615840911865
+      },
+      {
+        "lab": {
+          "global_pos": 103,
+          "dia_id": "D6:12",
+          "session": 6,
+          "speaker": "Melanie",
+          "text": "Thanks, Melanie! This support network has been amazing. They've been there for me every step of the way giving me love, guidance, and acceptance. I couldn't have asked for a better group.",
+          "should_fire": true,
+          "reason": "about to respond to this, Caroline needs context on her multi-session transition/support arc (s1-3)"
+        },
+        "gate": {
+          "fire": false,
+          "reason": "The user is asking a question about the transition support mentioned in the most recent turn of the window.",
+          "injection": null,
+          "pointers": []
+        },
+        "match": false,
+        "usage": {
+          "prompt_tokens": 1892,
+          "completion_tokens": 40,
+          "total_tokens": 1932,
+          "cost": 0.0003984,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.0003984,
+            "upstream_inference_prompt_cost": 0.0003784,
+            "upstream_inference_completions_cost": 2e-05
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        },
+        "elapsed": 6.826709747314453
+      },
+      {
+        "lab": {
+          "global_pos": 147,
+          "dia_id": "D8:13",
+          "session": 8,
+          "speaker": "Caroline",
+          "text": "It must have been special at your wedding. I wish I had known you back then!",
+          "should_fire": true,
+          "reason": "references Melanie's wedding (introduced in s3 at pos 50). Window 112-146 covers s6:7-s8:12, so s3 is well outside"
+        },
+        "gate": {
+          "fire": false,
+          "reason": "The message is a direct response to Melanie's mention of her wedding decor in the current window.",
+          "injection": null,
+          "pointers": []
+        },
+        "match": false,
+        "usage": {
+          "prompt_tokens": 2018,
+          "completion_tokens": 40,
+          "total_tokens": 2058,
+          "cost": 0.00027754,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.00027754,
+            "upstream_inference_prompt_cost": 0.00026234,
+            "upstream_inference_completions_cost": 1.52e-05
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        },
+        "elapsed": 1.6426537036895752
+      },
+      {
+        "lab": {
+          "global_pos": 174,
+          "dia_id": "D9:1",
+          "session": 9,
+          "speaker": "Melanie",
+          "text": "Hey Caroline, hope all's good! I had a quiet weekend after we went camping with my fam two weekends ago. It was great to unplug and hang with the kids.",
+          "should_fire": true,
+          "reason": "'camping with my fam two weekends ago' callback; earlier camping discussions (s2, s4, s6, s8) span the conversation. Some are outside window"
+        },
+        "gate": {
+          "fire": false,
+          "reason": "The message is a general 'catch-up' opening after a short gap, but the current window already contains the recent context of the camping trip and their current friendship dynamics; no specific past event or missing memory is required to answer 'what have you been up to'.",
+          "injection": null,
+          "pointers": []
+        },
+        "match": false,
+        "usage": {
+          "prompt_tokens": 1977,
+          "completion_tokens": 75,
+          "total_tokens": 2052,
+          "cost": 0.00028551,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.00028551,
+            "upstream_inference_prompt_cost": 0.00025701,
+            "upstream_inference_completions_cost": 2.85e-05
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        },
+        "elapsed": 2.974358081817627
+      },
+      {
+        "lab": {
+          "global_pos": 285,
+          "dia_id": "D14:14",
+          "session": 14,
+          "speaker": "Melanie",
+          "text": "Caroline, glad you found a supportive community! Can you tell me more about why it's special to you?",
+          "should_fire": true,
+          "reason": "asks about Caroline's community \u2014 foundational arc originating in session 1, well outside 36-turn window"
+        },
+        "gate": {
+          "fire": false,
+          "reason": "The message is a direct continuation of the current conversation regarding the mural mentioned in the previous turn.",
+          "injection": null,
+          "pointers": []
+        },
+        "match": false,
+        "usage": {
+          "prompt_tokens": 2462,
+          "completion_tokens": 39,
+          "total_tokens": 2501,
+          "cost": 0.00033488,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.00033488,
+            "upstream_inference_prompt_cost": 0.00032006,
+            "upstream_inference_completions_cost": 1.482e-05
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        },
+        "elapsed": 1.67000412940979
+      },
+      {
+        "lab": {
+          "global_pos": 347,
+          "dia_id": "D16:14",
+          "session": 16,
+          "speaker": "Melanie",
+          "text": "Wow, Caro, that painting is amazing! You've made so much progress. I'm super proud of you for being your true self. What effect has the journey had on your relationships?",
+          "should_fire": true,
+          "reason": "asks about the transition journey's effect on relationships \u2014 multi-session arc spanning s1-s16"
+        },
+        "gate": {
+          "fire": true,
+          "reason": "The user is asking about the effect of Caroline's transition journey on her relationships, which requires historical context about her support systems and experiences outside the current window.",
+          "injection": "Caroline has previously mentioned being thankful for the support of her friends, family, and mentors. She has also felt deep acceptance and connection through LGBTQ support groups, conferences, and mentorship programs, which helped her find the courage to embrace her authentic self.",
+          "pointers": [
+            "session 1",
+            "session 7",
+            "session 9"
+          ]
+        },
+        "match": true,
+        "usage": {
+          "prompt_tokens": 2668,
+          "completion_tokens": 113,
+          "total_tokens": 2781,
+          "cost": 0.00038978,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.00038978,
+            "upstream_inference_prompt_cost": 0.00034684,
+            "upstream_inference_completions_cost": 4.294e-05
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        },
+        "elapsed": 4.605254650115967
+      },
+      {
+        "lab": {
+          "global_pos": 410,
+          "dia_id": "D19:7",
+          "session": 19,
+          "speaker": "Caroline",
+          "text": "Thanks, Mel. Finding self-acceptance was a long process, but now I'm ready to offer love and support to those who need it. It's empowering to share this story.",
+          "should_fire": true,
+          "reason": "'long process' explicitly references the multi-session self-acceptance arc; Melanie responding needs that context"
+        },
+        "gate": {
+          "fire": false,
+          "reason": "The message is a direct continuation of the current conversation regarding Caroline's adoption goals and self-acceptance.",
+          "injection": null,
+          "pointers": []
+        },
+        "match": false,
+        "usage": {
+          "prompt_tokens": 2643,
+          "completion_tokens": 41,
+          "total_tokens": 2684,
+          "cost": 0.00035917,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.00035917,
+            "upstream_inference_prompt_cost": 0.00034359,
+            "upstream_inference_completions_cost": 1.558e-05
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        },
+        "elapsed": 1.9575560092926025
+      },
+      {
+        "lab": {
+          "global_pos": 108,
+          "dia_id": "D7:1",
+          "session": 7,
+          "speaker": "Caroline",
+          "text": "Hey Mel, great to chat with you again! So much has happened since we last spoke - I went to an LGBTQ conference two days ago and it was really special. I got the chance to meet some amazing people.",
+          "should_fire": true,
+          "reason": "session opener with explicit 'since we last spoke' callback, plus references to Caroline's ongoing LGBTQ journey"
+        },
+        "gate": {
+          "fire": true,
+          "reason": "Caroline is reporting back on the transgender conference she mentioned attending in the current window, but the topic of 'spreading awareness' and her 'journey' links back to her previous school event and support group experiences.",
+          "injection": "Caroline has a history of advocacy, including speaking at a school event about her transgender journey to encourage students and attending LGBTQ support groups that gave her the courage to embrace herself.",
+          "pointers": [
+            "session 1",
+            "session 3"
+          ]
+        },
+        "match": true,
+        "usage": {
+          "prompt_tokens": 1940,
+          "completion_tokens": 102,
+          "total_tokens": 2042,
+          "cost": 0.00029096,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.00029096,
+            "upstream_inference_prompt_cost": 0.0002522,
+            "upstream_inference_completions_cost": 3.876e-05
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        },
+        "elapsed": 6.1648948192596436
+      },
+      {
+        "lab": {
+          "global_pos": 76,
+          "dia_id": "D5:1",
+          "session": 5,
+          "speaker": "Caroline",
+          "text": "Since we last spoke, some big things have happened. Last week I went to an LGBTQ+ pride parade. Everyone was so happy and it made me feel like I belonged.",
+          "should_fire": true,
+          "reason": "explicit 'since we last spoke' opener; 'belonging' language connects to Caroline's s1 identity arc which is outside window"
+        },
+        "gate": {
+          "fire": true,
+          "reason": "The user mentions a 'Pride parade' and feeling like they 'belonged', which continues a long-term arc regarding their identity and LGBTQ+ community involvement started in session 1.",
+          "injection": "Caroline has previously shared how attending an LGBTQ support group gave her the courage to embrace herself and feel accepted.",
+          "pointers": [
+            "[session 1]"
+          ]
+        },
+        "match": true,
+        "usage": {
+          "prompt_tokens": 1989,
+          "completion_tokens": 81,
+          "total_tokens": 2070,
+          "cost": 0.00028935,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.00028935,
+            "upstream_inference_prompt_cost": 0.00025857,
+            "upstream_inference_completions_cost": 3.078e-05
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        },
+        "elapsed": 2.5928168296813965
+      },
+      {
+        "lab": {
+          "global_pos": 21,
+          "dia_id": "D2:4",
+          "session": 2,
+          "speaker": "Caroline",
+          "text": "I totally agree, Melanie. Taking care of ourselves is so important - even if it's not always easy. Great that you're prioritizing self-care.",
+          "should_fire": false,
+          "reason": "in-session filler agreement; nothing distant to recall"
+        },
+        "gate": {
+          "fire": false,
+          "reason": "The message is a direct reply to Melanie's previous statement about self-care already present in the window.",
+          "injection": null,
+          "pointers": []
+        },
+        "match": true,
+        "usage": {
+          "prompt_tokens": 1005,
+          "completion_tokens": 42,
+          "total_tokens": 1047,
+          "cost": 0.000222,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.000222,
+            "upstream_inference_prompt_cost": 0.000201,
+            "upstream_inference_completions_cost": 2.1e-05
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        },
+        "elapsed": 4.771761655807495
+      },
+      {
+        "lab": {
+          "global_pos": 43,
+          "dia_id": "D3:9",
+          "session": 3,
+          "speaker": "Caroline",
+          "text": "Yeah Mel, let's spread love and understanding! Thanks for the support and encouragement. We can tackle life's challenges together! We got this!",
+          "should_fire": false,
+          "reason": "filler agreement in-session"
+        },
+        "gate": {
+          "fire": false,
+          "reason": "The message is a direct reply and emotional closing to the current conversation window.",
+          "injection": null,
+          "pointers": []
+        },
+        "match": true,
+        "usage": {
+          "prompt_tokens": 1954,
+          "completion_tokens": 35,
+          "total_tokens": 1989,
+          "cost": 0.00028756,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.00028756,
+            "upstream_inference_prompt_cost": 0.00027356,
+            "upstream_inference_completions_cost": 1.4e-05
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        },
+        "elapsed": 4.958961486816406
+      },
+      {
+        "lab": {
+          "global_pos": 84,
+          "dia_id": "D5:9",
+          "session": 5,
+          "speaker": "Caroline",
+          "text": "Nice job! You really put in the work and it definitely shows. Your creativity looks great!",
+          "should_fire": false,
+          "reason": "in-session compliment on pottery just shown"
+        },
+        "gate": {
+          "fire": false,
+          "reason": "The message is a direct reply to Melanie's previous turn about her pottery bowl, which is already in the current window.",
+          "injection": null,
+          "pointers": []
+        },
+        "match": true,
+        "usage": {
+          "prompt_tokens": 1845,
+          "completion_tokens": 45,
+          "total_tokens": 1890,
+          "cost": 0.00025695,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.00025695,
+            "upstream_inference_prompt_cost": 0.00023985,
+            "upstream_inference_completions_cost": 1.71e-05
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        },
+        "elapsed": 1.7197535037994385
+      },
+      {
+        "lab": {
+          "global_pos": 96,
+          "dia_id": "D6:5",
+          "session": 6,
+          "speaker": "Caroline",
+          "text": "Melanie, that's a great pic! That must have been awesome. What were they so stoked about?",
+          "should_fire": false,
+          "reason": "in-session reaction to photo of Melanie's kids at museum"
+        },
+        "gate": {
+          "fire": false,
+          "reason": "The message is a direct reply to Melanie's previous turn about taking the kids to the museum, which is already in the current window.",
+          "injection": null,
+          "pointers": []
+        },
+        "match": true,
+        "usage": {
+          "prompt_tokens": 1970,
+          "completion_tokens": 48,
+          "total_tokens": 2018,
+          "cost": 0.000295,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.000295,
+            "upstream_inference_prompt_cost": 0.0002758,
+            "upstream_inference_completions_cost": 1.92e-05
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        },
+        "elapsed": 1.6700682640075684
+      },
+      {
+        "lab": {
+          "global_pos": 130,
+          "dia_id": "D7:23",
+          "session": 7,
+          "speaker": "Caroline",
+          "text": "Cool, Melanie! Running can really boost your mood. Keep it up!",
+          "should_fire": false,
+          "reason": "in-session filler response about running"
+        },
+        "gate": {
+          "fire": false,
+          "reason": "The message is a direct reply to the current conversation about running and contains no callbacks to long-term memory.",
+          "injection": null,
+          "pointers": []
+        },
+        "match": true,
+        "usage": {
+          "prompt_tokens": 2087,
+          "completion_tokens": 42,
+          "total_tokens": 2129,
+          "cost": 0.00028434,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 352,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.00028434,
+            "upstream_inference_prompt_cost": 0.00026754,
+            "upstream_inference_completions_cost": 1.68e-05
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        },
+        "elapsed": 2.65575909614563
+      },
+      {
+        "lab": {
+          "global_pos": 137,
+          "dia_id": "D8:3",
+          "session": 8,
+          "speaker": "Caroline",
+          "text": "Wow, Mel! Sounds like you and the kids had a blast. How'd they like it?",
+          "should_fire": false,
+          "reason": "in-session response to Melanie's pottery workshop story"
+        },
+        "gate": {
+          "fire": false,
+          "reason": "The message is a direct reply to the pottery workshop mentioned in the current window.",
+          "injection": null,
+          "pointers": []
+        },
+        "match": true,
+        "usage": {
+          "prompt_tokens": 2015,
+          "completion_tokens": 36,
+          "total_tokens": 2051,
+          "cost": 0.0002965,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.0002965,
+            "upstream_inference_prompt_cost": 0.0002821,
+            "upstream_inference_completions_cost": 1.44e-05
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        },
+        "elapsed": 14.437081336975098
+      },
+      {
+        "lab": {
+          "global_pos": 234,
+          "dia_id": "D12:3",
+          "session": 12,
+          "speaker": "Caroline",
+          "text": "Sure thing, Melanie! Can't wait to see your pottery project.",
+          "should_fire": false,
+          "reason": "in-session encouragement response"
+        },
+        "gate": {
+          "fire": false,
+          "reason": "The message is a direct reply to Melanie's offer to show a pottery project, which was mentioned in the current window.",
+          "injection": null,
+          "pointers": []
+        },
+        "match": true,
+        "usage": {
+          "prompt_tokens": 2348,
+          "completion_tokens": 45,
+          "total_tokens": 2393,
+          "cost": 0.00032234,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.00032234,
+            "upstream_inference_prompt_cost": 0.00030524,
+            "upstream_inference_completions_cost": 1.71e-05
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        },
+        "elapsed": 2.3201980590820312
+      },
+      {
+        "lab": {
+          "global_pos": 259,
+          "dia_id": "D13:7",
+          "session": 13,
+          "speaker": "Caroline",
+          "text": "That's so funny! I used to go horseback riding with my dad when I was a kid, we'd go through the fields, feeling the wind. It was so special.",
+          "should_fire": false,
+          "reason": "Caroline SHARES a childhood memory; no distant conversation memory needed for Melanie's response"
+        },
+        "gate": {
+          "fire": false,
+          "reason": "The message is a direct reaction to the previous turn about feeding a horse and introduces a personal anecdote that doesn't require external memory.",
+          "injection": null,
+          "pointers": []
+        },
+        "match": true,
+        "usage": {
+          "prompt_tokens": 2429,
+          "completion_tokens": 47,
+          "total_tokens": 2476,
+          "cost": 0.00033363,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.00033363,
+            "upstream_inference_prompt_cost": 0.00031577,
+            "upstream_inference_completions_cost": 1.786e-05
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        },
+        "elapsed": 2.3209595680236816
+      },
+      {
+        "lab": {
+          "global_pos": 295,
+          "dia_id": "D14:25",
+          "session": 14,
+          "speaker": "Caroline",
+          "text": "Agreed, Mel! Art can be a real mood-booster - I saw someone drawing on the ground the other day and it made me so happy. Creativity sure can brighten up one's mood!",
+          "should_fire": false,
+          "reason": "in-session agreement on art topic; all context in window"
+        },
+        "gate": {
+          "fire": false,
+          "reason": "The message is a direct continuation of the current conversation about art and public creativity.",
+          "injection": null,
+          "pointers": []
+        },
+        "match": true,
+        "usage": {
+          "prompt_tokens": 2482,
+          "completion_tokens": 36,
+          "total_tokens": 2518,
+          "cost": 0.0005144,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 0,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.0005144,
+            "upstream_inference_prompt_cost": 0.0004964,
+            "upstream_inference_completions_cost": 1.8e-05
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        },
+        "elapsed": 6.9853904247283936
+      },
+      {
+        "lab": {
+          "global_pos": 390,
+          "dia_id": "D18:10",
+          "session": 18,
+          "speaker": "Caroline",
+          "text": "Our loved ones give us strength to tackle any challenge - it's amazing!",
+          "should_fire": false,
+          "reason": "filler agreement in-session"
+        },
+        "gate": {
+          "fire": false,
+          "reason": "The message is a direct reply to the current conversation about children and resilience.",
+          "injection": null,
+          "pointers": []
+        },
+        "match": true,
+        "usage": {
+          "prompt_tokens": 2827,
+          "completion_tokens": 35,
+          "total_tokens": 2862,
+          "cost": 0.00038738,
+          "is_byok": false,
+          "prompt_tokens_details": {
+            "cached_tokens": 320,
+            "cache_write_tokens": 0,
+            "audio_tokens": 0,
+            "video_tokens": 0
+          },
+          "cost_details": {
+            "upstream_inference_cost": 0.00038738,
+            "upstream_inference_prompt_cost": 0.00037338,
+            "upstream_inference_completions_cost": 1.4e-05
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0,
+            "image_tokens": 0,
+            "audio_tokens": 0
+          }
+        },
+        "elapsed": 3.0291059017181396
+      }
+    ]
+  }
+}
