@@ -505,6 +505,11 @@ pub struct EmbeddedConfig {
     #[serde(default = "default_server_name")]
     pub server_name: String,
 
+    /// HTTP bind address. Default "127.0.0.1" (loopback only). Set to "0.0.0.0"
+    /// or "::" to expose the embedded homeserver to LAN/Tailscale clients.
+    #[serde(default = "default_bind_address")]
+    pub bind_address: String,
+
     /// HTTP listener port.
     #[serde(default = "default_homeserver_port")]
     pub port: u16,
@@ -525,6 +530,7 @@ pub struct EmbeddedConfig {
 }
 
 serde_default!(default_server_name -> String { "localhost".into() });
+serde_default!(default_bind_address -> String { "127.0.0.1".into() });
 serde_default!(default_homeserver_port -> u16 { 6167 });
 serde_default!(default_admin_user -> String { "shore-admin".into() });
 
@@ -532,6 +538,7 @@ impl Default for EmbeddedConfig {
     fn default() -> Self {
         Self {
             server_name: default_server_name(),
+            bind_address: default_bind_address(),
             port: default_homeserver_port(),
             admin_user: default_admin_user(),
             admin_password: String::new(),
@@ -1068,6 +1075,7 @@ admin_password = "required"
         let config: AppConfig = toml::from_str(toml_str).unwrap();
         let emb = config.connections.matrix.unwrap().embedded.unwrap();
         assert_eq!(emb.server_name, "localhost");
+        assert_eq!(emb.bind_address, "127.0.0.1");
         assert_eq!(emb.port, 6167);
         assert_eq!(emb.admin_user, "shore-admin");
     }
@@ -1077,6 +1085,7 @@ admin_password = "required"
         let toml_str = r#"
 [connections.matrix.embedded]
 server_name = "test.local"
+bind_address = "0.0.0.0"
 port = 9999
 admin_user = "admin"
 admin_password = "secret123"
@@ -1086,6 +1095,7 @@ binary = "tuwunel"
         let config: AppConfig = toml::from_str(toml_str).unwrap();
         let emb = config.connections.matrix.unwrap().embedded.unwrap();
         assert_eq!(emb.server_name, "test.local");
+        assert_eq!(emb.bind_address, "0.0.0.0");
         assert_eq!(emb.port, 9999);
         assert_eq!(emb.admin_user, "admin");
         assert_eq!(emb.admin_password, "secret123");
