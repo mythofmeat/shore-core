@@ -41,6 +41,7 @@ fn homeserver_config_generates_valid_toml_with_all_fields() {
     let token = generate_token();
     let config = HomeserverConfig {
         server_name: "shore-test.local".to_string(),
+        bind_address: "127.0.0.1".to_string(),
         port: 18008,
         data_dir: PathBuf::from("/tmp/shore-test-matrix"),
         registration_token: token.clone(),
@@ -602,6 +603,7 @@ fn homeserver_embedded_config_pipeline() {
 
     let config = HomeserverConfig {
         server_name: "shore.local".to_string(),
+        bind_address: "127.0.0.1".to_string(),
         port: 18448,
         data_dir: dir.path().to_path_buf(),
         registration_token: token.clone(),

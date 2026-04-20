@@ -258,7 +258,8 @@ const STREAM_END_FIXTURE: &str = r#"{
             "ttft_ms": 450
         },
         "model": "claude-haiku-4-5-20251001"
-    }
+    },
+    "is_final": true
 }"#;
 
 #[test]
@@ -275,6 +276,7 @@ fn stream_end_golden() {
             assert_eq!(se.metadata.timing.total_ms, 2340);
             assert_eq!(se.metadata.timing.ttft_ms, 450);
             assert_eq!(se.metadata.model, "claude-haiku-4-5-20251001");
+            assert!(se.is_final);
         }
         other => panic!("expected StreamEnd, got {:?}", other),
     }
