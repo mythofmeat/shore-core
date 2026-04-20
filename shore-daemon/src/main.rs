@@ -273,7 +273,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if loaded.app.advanced.api_payload_logging {
         raw_llm_client.set_payload_log_dir(loaded.dirs.data.clone());
         info!(
-            "API payload logging enabled → {}/api_payloads.jsonl",
+            "API payload logging enabled → {}/debug/api_logs/",
             loaded.dirs.data.display()
         );
     }

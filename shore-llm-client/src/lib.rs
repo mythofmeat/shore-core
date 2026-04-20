@@ -1,4 +1,5 @@
 pub mod cache_forensics;
+pub mod debug_log;
 pub(crate) mod providers;
 pub mod retry;
 pub mod sanitize;
@@ -8,12 +9,17 @@ pub mod types;
 use std::borrow::Cow;
 use std::path::PathBuf;
 
-use chrono::Local;
-use tokio::io::{BufReader, DuplexStream};
+use tokio::io::{AsyncRead, BufReader};
 use tracing::{debug, warn};
 
 use shore_config::models::ResolvedModel;
 use types::{ImageGenerateParams, ImageGenerateResponse, LlmRequest};
+
+/// The reader returned by `LlmClient::stream_raw`.
+///
+/// Trait-object so the stream can be transparently teed for debug logging
+/// without leaking that wiring into the type signatures of every consumer.
+pub type StreamReader = BufReader<Box<dyn AsyncRead + Send + Unpin>>;
 
 /// Errors from the LLM client.
 #[derive(Debug, thiserror::Error)]
@@ -50,7 +56,8 @@ pub enum LlmError {
 #[derive(Debug, Clone)]
 pub struct LlmClient {
     http_client: reqwest::Client,
-    /// If set, API payloads are logged to `{dir}/api_payloads.jsonl`.
+    /// If set, per-call request/response files are written to
+    /// `{dir}/debug/api_logs/`. See `debug_log` module.
     payload_log_dir: Option<PathBuf>,
 }
 
@@ -163,15 +170,17 @@ impl LlmClient {
 
     /// Send a streaming completion request to the LLM provider.
     ///
-    /// Returns a `BufReader` over a DuplexStream that yields NDJSON `StreamEvent`
-    /// lines for consumption by the stream consumer.
+    /// Returns a `BufReader` over an `AsyncRead` that yields NDJSON
+    /// `StreamEvent` lines for consumption by the stream consumer. When
+    /// debug logging is enabled, the reader is transparently teed to a
+    /// per-call response file.
     pub async fn stream_raw(
         &self,
         request: &LlmRequest,
-    ) -> Result<BufReader<DuplexStream>, LlmError> {
+    ) -> Result<StreamReader, LlmError> {
         let request = maybe_sanitize_request(request);
         let body = serde_json::to_string(&*request).map_err(LlmError::Serialize)?;
-        self.log_payload("request", &body);
+        let handle = debug_log::log_request(self.payload_log_dir.as_deref(), &request, &body);
 
         debug!(
             sdk = %request.sdk.as_str(),
@@ -180,7 +189,11 @@ impl LlmClient {
         );
 
         let read_half = providers::stream(&self.http_client, &request).await?;
-        Ok(BufReader::new(read_half))
+        let reader: Box<dyn AsyncRead + Send + Unpin> = match handle {
+            Some(h) => Box::new(debug_log::TeeReader::new(read_half, h)),
+            None => Box::new(read_half),
+        };
+        Ok(BufReader::new(reader))
     }
 
     /// Send a non-streaming completion request to the LLM provider.
@@ -190,10 +203,16 @@ impl LlmClient {
     ) -> Result<types::GenerateResponse, LlmError> {
         let request = maybe_sanitize_request(request);
         let body = serde_json::to_string(&*request).map_err(LlmError::Serialize)?;
-        self.log_payload("request", &body);
+        let handle = debug_log::log_request(self.payload_log_dir.as_deref(), &request, &body);
 
-        let resp = providers::generate(&self.http_client, &request).await?;
-        Ok(resp)
+        let result = providers::generate(&self.http_client, &request).await;
+        if let Some(h) = handle {
+            match &result {
+                Ok(resp) => debug_log::log_response(h, resp),
+                Err(e) => debug_log::log_error(h, e),
+            }
+        }
+        result
     }
 
     /// Send an embedding request to the provider.
@@ -216,46 +235,6 @@ impl LlmClient {
         providers::image_generate(&self.http_client, params).await
     }
 
-    /// Log an API payload to `{payload_log_dir}/api_payloads.jsonl` if logging is enabled.
-    fn log_payload(&self, direction: &str, payload: &str) {
-        let Some(dir) = &self.payload_log_dir else {
-            return;
-        };
-        let path = dir.join("api_payloads.jsonl");
-        let ts = Local::now().to_rfc3339();
-        // Redact api_key from request payloads.
-        let sanitized = if direction == "request" {
-            if let Ok(mut v) = serde_json::from_str::<serde_json::Value>(payload) {
-                if let Some(obj) = v.as_object_mut() {
-                    if obj.contains_key("api_key") {
-                        obj.insert("api_key".into(), serde_json::json!("[REDACTED]"));
-                    }
-                }
-                serde_json::to_string(&v).unwrap_or_else(|_| payload.to_string())
-            } else {
-                payload.to_string()
-            }
-        } else {
-            payload.to_string()
-        };
-        let line = serde_json::json!({
-            "ts": ts,
-            "direction": direction,
-            "payload": serde_json::from_str::<serde_json::Value>(&sanitized)
-                .unwrap_or_else(|_| serde_json::Value::String(sanitized)),
-        });
-        if let Err(e) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .and_then(|mut f| {
-                use std::io::Write;
-                writeln!(f, "{}", line)
-            })
-        {
-            warn!(error = %e, path = %path.display(), "Failed to write API payload log");
-        }
-    }
 }
 
 impl Default for LlmClient {

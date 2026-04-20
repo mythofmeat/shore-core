@@ -5,13 +5,13 @@ use crate::client::{record_call, CallType};
 use crate::ledger::Ledger;
 use crate::pricing::PricingEngine;
 use shore_llm_client::types::StreamResult;
+use shore_llm_client::StreamReader;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use tokio::io::{BufReader, DuplexStream};
 use tracing::error;
 
 pub struct LedgerStream {
-    reader: BufReader<DuplexStream>,
+    reader: StreamReader,
     provider: String,
     model: String,
     call_type: CallType,
@@ -27,7 +27,7 @@ pub struct LedgerStream {
 impl LedgerStream {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
-        reader: BufReader<DuplexStream>,
+        reader: StreamReader,
         provider: String,
         model: String,
         call_type: CallType,
@@ -67,8 +67,9 @@ impl LedgerStream {
         cache_trackers: Arc<Mutex<HashMap<String, CacheTracker>>>,
     ) -> Self {
         let (_write, read) = tokio::io::duplex(1);
+        let boxed: Box<dyn tokio::io::AsyncRead + Send + Unpin> = Box::new(read);
         Self::new(
-            BufReader::new(read),
+            tokio::io::BufReader::new(boxed),
             provider,
             model,
             call_type,
@@ -81,7 +82,7 @@ impl LedgerStream {
         )
     }
 
-    pub fn reader_mut(&mut self) -> &mut BufReader<DuplexStream> {
+    pub fn reader_mut(&mut self) -> &mut StreamReader {
         &mut self.reader
     }
 

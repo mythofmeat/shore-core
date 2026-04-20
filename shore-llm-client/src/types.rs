@@ -188,7 +188,7 @@ pub struct ImageGenerateTiming {
 // ContentBlock is re-exported from shore_protocol::types::ContentBlock.
 
 /// Non-streaming response from POST /v1/generate.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenerateResponse {
     pub content: String,
     #[serde(default)]

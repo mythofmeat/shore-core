@@ -1047,6 +1047,21 @@ leave pointers in `<recap>` when scratchpad files or memory entries need
 to be retrieved next session. Recap was also promoted from optional to
 mandatory in the prompt text, matching the daemon's wrap-up enforcement.
 
+### 2026-04-20 — API payload logging switched from single JSONL to per-call JSON files
+
+The `api_payload_logging` flag in `[advanced]` used to append every outbound request to a single ever-growing `{data_dir}/api_payloads.jsonl`. Responses were never logged at all — the feature's doc comment claimed "request/response" but the code only ever called `log_payload("request", ...)`. That made the flag nearly useless for diagnosing a failed call: you could see what we sent but not what came back (or what error surfaced), which is exactly the case we needed it for when Shore's interiority wrap-up started dying on provider moderation rejections.
+
+Rewritten to write per-call JSON files under `{data_dir}/debug/api_logs/`:
+- `{call_id}.json` — the outbound request (api_key redacted).
+- `{call_id}_response.json` — the paired response on success, or an error envelope (error string + `error_kind` discriminant) on failure.
+- Streaming calls (`stream_raw`) tee the on-wire NDJSON event sequence into the response file, with a leading `stream_start` envelope line carrying the same metadata as the non-streaming envelope. The content is NDJSON inside a `.json` extension — accepted as a pragmatic compromise, since the alternatives (buffering the full stream before write, or a separate extension) either lose in-flight fidelity or break naming consistency.
+
+Call IDs are `{YYYYMMDDTHHMMSSmmm}-{counter:04}` — sortable, monotonic within a process, collision-safe at any realistic concurrency. Every file carries the same envelope fields (`ts`, `call_id`, `sdk`, `model`, `character`, `rid`) at the top level so a `grep` over the folder remains useful.
+
+**Trade-off — no rotation:** Deliberately skipped. Operators delete the folder when they're done debugging. The assumption is that `api_payload_logging` is a diagnostic toggle, not an always-on feature, so unbounded growth is a non-issue in practice.
+
+**Knock-on:** `scripts/cache-tests/21-prefix-stability.sh` still reads the old `api_payloads.jsonl` and needs to be reworked to walk the per-call JSON files instead. Flagged as follow-up.
+
 ### 2026-04-19 — Embedded Matrix homeserver bind address is configurable
 
 `shore-matrix` now accepts `bind_address` under `[connections.matrix.embedded]` (default `"127.0.0.1"`, preserving prior behavior). Previously the conduwuit `address` field was hardcoded to `127.0.0.1` in `HomeserverConfig::generate_config`, making the embedded homeserver unreachable from LAN/Tailscale clients regardless of port-forwarding or firewall rules.

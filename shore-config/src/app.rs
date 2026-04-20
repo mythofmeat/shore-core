@@ -710,7 +710,10 @@ impl Default for NotificationEventsConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct AdvancedConfig {
-    /// Log full API request/response payloads to api_payloads.jsonl per character.
+    /// Log every API request and response as individual JSON files under
+    /// `{data_dir}/debug/api_logs/`. Filenames are `{call_id}.json` for the
+    /// request and `{call_id}_response.json` for the paired response or
+    /// error. No rotation — operators manage disk usage manually.
     #[serde(default)]
     pub api_payload_logging: bool,
 
