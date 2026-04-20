@@ -83,6 +83,7 @@ export function useDaemon(): DaemonHandle {
       });
       unlistenMsg = await listen<ServerMessageEvent>("server-message", (e) => {
         const msg = e.payload;
+        console.log("[shore-gui] server-message", msg.type, msg);
         if (msg.type === "stream_start") setStreaming(true);
         else if (msg.type === "stream_end" || msg.type === "error") setStreaming(false);
         if (msg.type === "stream_end") setLastStreamEnd(msg);

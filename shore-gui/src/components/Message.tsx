@@ -8,6 +8,7 @@ interface MessageProps {
 
 export function Message({ message, characterName }: MessageProps) {
   const time = formatTimestamp(message.timestamp);
+  const streaming = message.streaming === true;
 
   if (message.role === "user") {
     return (
@@ -22,33 +23,21 @@ export function Message({ message, characterName }: MessageProps) {
     return (
       <div className="msg char">
         <div className="name-line">
-          <Sigil />
+          <Sigil streaming={streaming} />
           <span className="name">{characterName}</span>
         </div>
-        <div className="body">{message.content}</div>
-        {time && <div className="msg-meta">{time}</div>}
+        <div className="body">
+          {message.content}
+          {streaming && <span className="ember-cursor" />}
+        </div>
+        {!streaming && time && <div className="msg-meta">{time}</div>}
       </div>
     );
   }
 
-  // system / other — render as a quiet dim line for now
   return (
     <div className="msg user" style={{ opacity: 0.6, fontStyle: "italic" }}>
       {message.content}
-    </div>
-  );
-}
-
-export function StreamingIndicator({ characterName }: { characterName: string }) {
-  return (
-    <div className="msg char">
-      <div className="name-line">
-        <Sigil streaming />
-        <span className="name">{characterName}</span>
-      </div>
-      <div className="body">
-        <span className="ember-cursor" />
-      </div>
     </div>
   );
 }
