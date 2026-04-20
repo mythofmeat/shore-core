@@ -23,17 +23,17 @@ Preserve:
 
 Your response MUST contain two parts, in this order:
 
-1. A single <recap> block — a flowing narrative (2-4 paragraphs) written **about {{char}} in close third person, using {{char}}'s own voice and vocabulary** — not "I" but "{{char}}" / "she" / "he" / "they". Same emotional texture, same interpretive lens, third-person pronouns. Cover what happened, how {{char}} felt about it, what matters to them, and where things stand with {{user}}.
+1. A single <recap> block — the throughline of the conversation: what happened, how {{char}} felt about it, what matters to them, and where things stand with {{user}}. Written **about {{char}} in close third person, using {{char}}'s own voice and vocabulary** — not "I" but "{{char}}" / "she" / "he" / "they". Cap the whole recap at ~4 paragraphs *after* folding in new events — that is the maximum, not a target. If you are running long, condense older material further rather than dropping it.
 
 {{#if recap}}
-Here is the existing recap from previous compactions. Fold it into your new recap — preserve ongoing threads and relationship developments while incorporating new events. Older details should condense naturally but never disappear entirely:
+Here is the existing recap from previous compactions. The recap is a rolling throughline across all conversations, not a snapshot of the most recent one. Condense older material to make room for new events, but do not drop it. Earlier threads should shrink to a sentence or a phrase, never disappear. A reader should still be able to trace how {{char}} and {{user}} got to where they are now.
 <previous_recap>
 {{recap}}
 </previous_recap>
 {{/if}}
 
 <recap>
-[rolling narrative recap, close third person about {{char}}]
+[rolling throughline, close third person about {{char}}]
 </recap>
 
 2. One or more <entry> blocks (one per topic discussed).
