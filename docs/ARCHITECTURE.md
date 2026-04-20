@@ -1167,15 +1167,16 @@ surfaces. `{{date}}` / `{{time}}` must not appear in capability bullets
 or tool descriptions: those live in the Anthropic cached prefix and
 time-varying content would invalidate the cache on every call.
 
-**Capabilities block:** `build_capabilities_block` composes a
-`<capabilities>…</capabilities>` system block from markdown-style
-sections gated on per-tool flags in `CapabilitiesConfig`. Each bullet
-is pure stance (when/why to reach for a capability); mechanics live in
-tool descriptions. Sub-bullets that follow a `###` heading without
-their own heading and without a leading blank line (e.g. saved images
-under Memory, scratchpad under Interiority) must stay contiguous with
-their parent section — reordering the emit order without preserving
-parent-child adjacency orphans them.
+**Capabilities block:** `build_capabilities_block` emits a short, fixed
+"Tool usage" stance whenever any tool is enabled (checked via
+`CapabilitiesConfig::any_enabled`). The block content is identical
+regardless of which specific tools are on — its purpose is to assert
+that reaching for a tool is in-character, since character-framed system
+prompts can otherwise make Claude treat tool calls as breaking frame.
+Per-tool when/why guidance lives in each tool's own `description`
+field (see Anthropic's tool-use docs: detailed descriptions are the
+primary signal for selection). `CapabilitiesConfig`'s per-tool flags
+still gate presence of the block, but no longer shape its content.
 
 Templates are **not** compiled into the binary. They live on the filesystem so
 they can be reviewed and edited without rebuilding. The daemon ships with a

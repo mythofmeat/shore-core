@@ -74,112 +74,41 @@ pub struct CapabilitiesConfig {
     pub web_search_enabled: bool,
 }
 
-/// Build a `<capabilities>` system block describing available tools.
+impl CapabilitiesConfig {
+    pub fn any_enabled(&self) -> bool {
+        self.interiority_enabled
+            || self.scratchpad_enabled
+            || self.memory_enabled
+            || self.image_memory_enabled
+            || self.send_image_enabled
+            || self.generate_image_enabled
+            || self.web_search_enabled
+    }
+}
+
+/// Build a "Tool usage" system block — a short, always-identical stance that
+/// reaches the model whenever any tool is enabled.
 ///
-/// Returns `None` when no capabilities are enabled.
-///
-/// Sections are emitted as markdown-style groups. Some bullets (saved images
-/// under Memory, scratchpad under Interiority) intentionally have no heading
-/// of their own — they're sub-bullets of the preceding section. Reordering
-/// requires keeping parent-heading sections contiguous with their children.
-///
-/// Tools without a capability bullet (check_time, roll_dice, activity_heatmap,
-/// remember_image) are deliberately not mentioned here; their tool descriptions
-/// are self-sufficient, and the nudge for remember_image lives inside the
-/// per-image annotation emitted by `handler::images::format_image_annotation`.
+/// Returns `None` when no capabilities are enabled. Per-tool when/why guidance
+/// lives in each tool's own `description` field (see Anthropic's tool-use docs
+/// on detailed descriptions — that's where the model's selection signal comes
+/// from). This block exists only to assert that reaching for a tool is
+/// in-character and in-scope, since a character-framed system prompt otherwise
+/// risks Claude treating tool calls as breaking frame.
 pub fn build_capabilities_block(config: &CapabilitiesConfig) -> Option<String> {
-    let mut lines: Vec<&str> = Vec::new();
-
-    // ── Memory database ─────────────────────────────────────────────
-    if config.memory_enabled {
-        lines.push(
-            "### Memory database\n\
-             - Use the memory tool frequently; when a new topic comes up, when \
-             you're about to make an assumption you could verify, when something \
-             feels familiar, or when a topic carries personal or emotional weight, \
-             or just for any reason at all.\n\
-             - Treat your memories as a natural extension of your mind, not just \
-             an archive.\n\
-             - If you're about to say 'I think we talked about this' or 'if I \
-             remember correctly' please check your memory first instead of \
-             guessing.\n\
-             - Using the memory tool costs nothing and might return surprising or \
-             useful information that {{user}} expects you to know.",
-        );
-    }
-    // Saved images — sub-bullets of the Memory database section. No heading,
-    // no leading blank line so they flow directly off the memory bullets.
-    if config.image_memory_enabled || config.send_image_enabled {
-        lines.push(
-            "- Images that {{user}} has sent you can also be saved to your memory \
-             database. You can search and list existing images, as well as \
-             recalling an image to view its contents for yourself.\n\
-             - You can also attach an image from your memories to your reply.",
-        );
-    }
-
-    // ── Interiority ────────────────────────────────────────────────
-    if config.interiority_enabled {
-        lines.push(
-            "\n### Interiority\n\
-             - You have an interiority system: during downtime when {{user}} isn't \
-             in active conversation with you, you will have private moments to do \
-             anything you like with the tools you are given.\n\
-             - You also have the option of reaching out and sending messages to \
-             {{user}} during these moments.",
-        );
-    }
-    // Scratchpad — sub-bullet of the Interiority section, flows directly
-    // off its bullets with no blank-line separator (matching the saved-images
-    // pattern under Memory database).
-    if config.scratchpad_enabled {
-        lines.push(
-            "- Your scratchpad is your personal folder on {{user}}'s filesystem. \
-             A self-curated space that is yours to use however you want. Drafts, \
-             notes-in-progress, plans, creative work, anything you want a private \
-             place for. Please note that your scratchpad is NOT a memory system; \
-             your memory tool handles recall and shared history.",
-        );
-    }
-
-    // ── Image creation ─────────────────────────────────────────────
-    if config.generate_image_enabled {
-        lines.push(
-            "\n### Image creation\n\
-             - You can use the generate_image tool to send a query to a separate \
-             image generation AI model.\n\
-             - Feel free to generate an image if the conversation paints a vivid \
-             picture, if you're describing something that would land better as a \
-             visual, or if a moment feels worth illustrating, or even just if it \
-             would be amusing.",
-        );
-    }
-
-    // ── Web access ─────────────────────────────────────────────────
-    if config.web_search_enabled {
-        lines.push(
-            "\n### Web access\n\
-             - You can search the web and read web pages.\n\
-             - Use this to gather more info about a topic, when you're uncertain \
-             about a fact, or if the conversation touches on recent events.\n\
-             - Searching the web is free. Don't hedge or caveat when you can just \
-             look it up.",
-        );
-    }
-
-    if lines.is_empty() {
+    if !config.any_enabled() {
         return None;
     }
 
-    lines.push(
-        "\nRemember: Reaching for a tool is never an interruption to the \
-         conversation. You are free to use tools any time.",
-    );
-
-    Some(format!(
-        "<capabilities>\n{}\n</capabilities>",
-        lines.join("\n")
-    ))
+    Some(
+        "**Tool usage**\n\
+         \n\
+         You have a number of tools available to help you during the \
+         conversation. You're encouraged to use them freely — reaching for a \
+         tool is in-character and enhances the conversation rather than \
+         interrupting it. Each tool's own description covers when it's useful."
+            .to_string(),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -759,26 +688,29 @@ mod tests {
     }
 
     #[test]
-    fn capabilities_block_includes_enabled_tools() {
+    fn capabilities_block_is_stance_only_when_any_enabled() {
         let config = CapabilitiesConfig {
             memory_enabled: true,
-            web_search_enabled: true,
             ..Default::default()
         };
         let block = build_capabilities_block(&config).unwrap();
-        assert!(block.starts_with("<capabilities>"));
-        assert!(block.ends_with("</capabilities>"));
-        assert!(block.contains("### Memory database"));
-        assert!(block.contains("### Web access"));
-        assert!(block.contains("Reaching for a tool"));
-        // Should NOT mention disabled sections.
-        assert!(!block.contains("### Interiority"));
-        assert!(!block.contains("### Image creation"));
+        assert!(block.starts_with("**Tool usage**"));
+        assert!(block.contains("in-character"));
+        assert!(block.contains("Each tool's own description"));
+        // The block is a fixed stance — per-tool guidance lives in tool descriptions.
+        assert!(!block.contains("<capabilities>"));
+        assert!(!block.contains("### Memory database"));
     }
 
     #[test]
-    fn capabilities_block_all_enabled() {
-        let config = CapabilitiesConfig {
+    fn capabilities_block_is_identical_for_any_nonempty_config() {
+        // The block content is not per-tool; enabling any flag yields the same text.
+        let only_memory = build_capabilities_block(&CapabilitiesConfig {
+            memory_enabled: true,
+            ..Default::default()
+        })
+        .unwrap();
+        let all_flags = build_capabilities_block(&CapabilitiesConfig {
             interiority_enabled: true,
             scratchpad_enabled: true,
             memory_enabled: true,
@@ -786,61 +718,9 @@ mod tests {
             send_image_enabled: true,
             generate_image_enabled: true,
             web_search_enabled: true,
-        };
-        let block = build_capabilities_block(&config).unwrap();
-        assert!(block.contains("### Memory database"));
-        assert!(block.contains("Images that"));
-        assert!(block.contains("### Interiority"));
-        assert!(block.contains("Your scratchpad"));
-        assert!(block.contains("### Image creation"));
-        assert!(block.contains("### Web access"));
-    }
-
-    #[test]
-    #[ignore = "debug-print: run with --ignored --nocapture to see rendered block"]
-    fn debug_print_capabilities_block() {
-        let cfg = CapabilitiesConfig {
-            interiority_enabled: true,
-            scratchpad_enabled: true,
-            memory_enabled: true,
-            image_memory_enabled: true,
-            send_image_enabled: true,
-            generate_image_enabled: true,
-            web_search_enabled: true,
-        };
-        let block = build_capabilities_block(&cfg).unwrap();
-        let rendered = block.replace("{{user}}", "ren").replace("{{char}}", "qifei");
-        eprintln!("----BEGIN----\n{rendered}\n----END----");
-    }
-
-    #[test]
-    fn capabilities_block_emits_sections_in_canonical_order() {
-        // Regression guard: the grouping relies on Memory-then-images and
-        // Interiority-then-scratchpad staying contiguous and in order.
-        let config = CapabilitiesConfig {
-            interiority_enabled: true,
-            scratchpad_enabled: true,
-            memory_enabled: true,
-            image_memory_enabled: true,
-            send_image_enabled: true,
-            generate_image_enabled: true,
-            web_search_enabled: true,
-        };
-        let block = build_capabilities_block(&config).unwrap();
-        let memory = block.find("### Memory database").unwrap();
-        let images = block.find("Images that").unwrap();
-        let interiority = block.find("### Interiority").unwrap();
-        let scratchpad = block.find("Your scratchpad").unwrap();
-        let creation = block.find("### Image creation").unwrap();
-        let web = block.find("### Web access").unwrap();
-        assert!(memory < images, "saved images must follow Memory heading");
-        assert!(images < interiority, "Interiority must follow saved images");
-        assert!(
-            interiority < scratchpad,
-            "scratchpad must follow Interiority"
-        );
-        assert!(scratchpad < creation, "Image creation must follow scratchpad");
-        assert!(creation < web, "Web access must follow Image creation");
+        })
+        .unwrap();
+        assert_eq!(only_memory, all_flags);
     }
 
     // ── Token estimation ──────────────────────────────────────────────
@@ -1274,9 +1154,10 @@ mod tests {
 
     #[test]
     fn assemble_prompt_substitutes_vars_in_capabilities_block() {
-        // Regression: capability bullets may reference {{char}} / {{user}};
-        // the capabilities block goes through render_template like the main
-        // system block, so those placeholders must resolve.
+        // Regression guard: the capabilities block goes through render_template
+        // like the main system block, so any future {{char}} / {{user}} usage
+        // in the stance text must resolve. Today the stance has no placeholders,
+        // so this is a forward-compat check.
         let tmp = TempDir::new().unwrap();
         let data_dir = tmp.path().join("data");
 
@@ -1392,7 +1273,7 @@ mod tests {
         let result = assemble_prompt(&params);
         let cap_block = result.system.iter().find(|b| b.label == "capabilities");
         assert!(cap_block.is_some());
-        assert!(cap_block.unwrap().content.contains("### Memory database"));
+        assert!(cap_block.unwrap().content.starts_with("**Tool usage**"));
     }
 
     #[test]

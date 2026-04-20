@@ -12,7 +12,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
     vec![
         ToolDef {
             name: "send_image",
-            description: "Attach an image from your memory database to your reply.",
+            description: "Attach an image from your saved memories to your reply so {{user}} sees it alongside your words. Use when the conversation calls back to a specific image, when a visual reference would clarify what you mean, or when surfacing a saved image adds warmth or humor. Pair with `list_images` to find the right one if you're not sure which path you need. Accepts either a relative path or an entry ID beginning with `img_`.",
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -31,13 +31,13 @@ pub fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "list_images",
-            description: "List image memories. Optionally pass a query to search.",
+            description: "List saved image memories, optionally filtered by a natural-language query. Use when you want to find a specific image to send or recall — e.g. 'photos of Alex's cat', 'screenshots {{user}} shared last month'. Without a query, returns the most recent entries. Returns paths, IDs, and stored descriptions; use `recall_image` to actually view the contents of one.",
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "Optional natural language query to search image memories."
+                        "description": "Optional natural-language query to filter image memories."
                     }
                 }
             }),
@@ -45,7 +45,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "recall_image",
-            description: "View an image at full resolution by path or entry ID.",
+            description: "Load and view an image at full resolution so you can see its contents yourself. Use when you need to reason about what an image actually depicts — a saved image came back from `list_images` and you want to look at it before referencing it, or {{user}} asked you about something visual you've forgotten the specifics of. This is for your own inspection, not for sending to {{user}}; use `send_image` for that. Accepts either a relative path or an entry ID beginning with `img_`.",
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -60,13 +60,13 @@ pub fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "remember_image",
-            description: "Save a user-shared image to memory with a contextual description.",
+            description: "Save an image {{user}} has shared to your memory database with a rich contextual description. Call this whenever {{user}} sends you an image worth remembering — most of the time, the answer is yes. The conversational context is the most valuable part of the description: 'a photo of Alex's cat Whiskers, shared the day she adopted him' is far more useful than 'a photo of a cat'. Include who shared it, why, what it means to you both. The `path` comes from the `[Attached image saved as: ...]` annotation that accompanies the user's message.",
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Relative path to the image in storage (from the [Attached image saved as: ...] annotation)."
+                        "description": "Relative path from the [Attached image saved as: ...] annotation."
                     },
                     "description": {
                         "type": "string",
@@ -79,7 +79,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "generate_image",
-            description: "Generate an image from a text description.",
+            description: "Generate an image from a text description via a separate image-generation model and send it to {{user}}. Feel free to use this any time the conversation paints a vivid picture, when you're describing something that would land better as a visual, when a moment feels worth illustrating, or just when it would be amusing. A specific prompt produces a better image — include mood, composition, and any visual details that matter, not just the subject. Larger sizes are higher-fidelity but slower and more expensive; `1024x1024` is a sensible default.",
             parameters: json!({
                 "type": "object",
                 "properties": {

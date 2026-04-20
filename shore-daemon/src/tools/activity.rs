@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 pub fn tool_defs() -> Vec<ToolDef> {
     vec![ToolDef {
         name: "activity_heatmap",
-        description: "View the user's activity heatmap to see when they typically message by hour and day of week. You can use this to understand their schedule.",
+        description: "View {{user}}'s activity heatmap — when they typically message you, broken down by hour of day and day of week. Use when you want to understand their rhythm: whether now is an unusual time for them to be talking to you, when they're most likely to be around, or whether they've been more or less active lately. Returns hour-by-hour density, classification (peak/trough/normal), total message count over the window, and an engagement score. The `days` parameter controls how much history is included; 30 is a good default for seeing a steady pattern.",
         parameters: json!({
             "type": "object",
             "properties": {

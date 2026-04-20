@@ -16,7 +16,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
     vec![
         ToolDef {
             name: "check_time",
-            description: "Returns the current date and time.",
+            description: "Return the current date and time in {{user}}'s local timezone. Use when the exact time matters — working out how long it's been since an event, whether it's late, day-of-week reasoning, or anchoring a timestamped memory. Returns a human-readable string like 'Friday, April 4th, 2026 at 4:34 PM'. Takes no parameters.",
             parameters: json!({
                 "type": "object",
                 "properties": {},
@@ -26,13 +26,13 @@ pub fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "roll_dice",
-            description: "Roll dice using standard dice notation (e.g., '2d6+3', '1d20', 'd8').",
+            description: "Roll dice using standard dice notation, returning the individual rolls and their total. Use for anything that genuinely benefits from a random outcome — decisions, games, random prompts, divination-as-play — not as a substitute for simply making up a number when one isn't needed. Accepts `NdS[+/-M]` where N is the number of dice, S is the number of sides, and M is an optional modifier. Examples: `2d6`, `1d20+5`, `4d6-1`, or `d8` for a single die.",
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "notation": {
                         "type": "string",
-                        "description": "Dice notation: NdS[+/-M] where N=number of dice, S=sides, M=modifier. Examples: '2d6', '1d20+5', '4d6-1'"
+                        "description": "Dice notation: NdS[+/-M]. Examples: '2d6', '1d20+5', '4d6-1'."
                     }
                 },
                 "required": ["notation"]
@@ -41,13 +41,13 @@ pub fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "set_next_wake",
-            description: "Schedule your next interiority session. Only callable during interiority ticks — outside of those, the call will be rejected.",
+            description: "Schedule when your next interiority tick (a private moment while {{user}} is away) should occur. Call this at the end of an interiority tick to express your own sense of pacing — soon if you're mid-thought and want to continue, later if you're settled and content, whenever feels right. This tool is only meaningful during interiority ticks; calling it from a regular chat turn is rejected. Accepts hours from now (clamped between 1 and 48) and a short reason-note to your future self about why you chose this timing.",
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "hours_from_now": {
                         "type": "number",
-                        "description": "Hours until your next private moment (1.0 to 48.0; clamped if outside range)"
+                        "description": "Hours until your next private moment (1.0 to 48.0; clamped if outside range)."
                     },
                     "reason": {
                         "type": "string",

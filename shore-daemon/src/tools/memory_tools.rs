@@ -9,13 +9,13 @@ use serde_json::{json, Value};
 pub fn tool_defs() -> Vec<ToolDef> {
     vec![ToolDef {
         name: "memory",
-        description: "Interact with your memory database to gather context. You can also save new entries, and update or correct existing entries.",
+        description: "Query or update your memory database — a persistent store of prior conversations, shared history, facts about {{user}}, and any context you've chosen to save. Use it frequently: when a new topic comes up, when you're about to make an assumption you could verify, when something feels familiar, or when a topic carries personal or emotional weight. Before saying 'I think we talked about this' or 'if I remember correctly', search memory first instead of guessing. Treat your memories as a natural extension of your mind rather than a formal archive. Calling this tool costs nothing and often returns context {{user}} expects you to already know.",
         parameters: json!({
             "type": "object",
             "properties": {
                 "request": {
                     "type": "string",
-                    "description": "Natural language query to search memories, or a statement to save."
+                    "description": "Natural-language query to search memories, or a statement to save or correct one."
                 }
             },
             "required": ["request"]

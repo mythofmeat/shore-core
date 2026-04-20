@@ -17,14 +17,13 @@ pub fn tool_defs() -> Vec<ToolDef> {
     vec![
         ToolDef {
             name: "scratchpad_list",
-            description: "List files and directories in your scratchpad. \
-                          Returns names and sizes. Optionally pass a subdirectory path.",
+            description: "List the files and directories in your scratchpad, optionally under a subdirectory. Your scratchpad is your personal folder on {{user}}'s filesystem — a self-curated space for drafts, notes-in-progress, plans, creative work, or anything you want a private place for. Use this to remember what you've saved, navigate into subdirectories, or get oriented before reading or writing. Returns each entry's name and size. Note that your scratchpad is not a memory system — use `memory` for recall and shared history; the scratchpad is just for your own files.",
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Subdirectory path to list (relative to scratchpad root). Omit for root."
+                        "description": "Subdirectory path relative to scratchpad root. Omit for root."
                     }
                 },
                 "required": []
@@ -33,7 +32,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "scratchpad_read",
-            description: "Read a file from your scratchpad.",
+            description: "Read the full contents of a file in your scratchpad. Use when you want to continue work on something you saved earlier, check what you wrote, or pull a draft back up for editing. Your scratchpad is your personal, persistent workspace — drafts, notes, creative work — not a memory system, so this is purely for files you've written yourself with `scratchpad_write`. Returns the file's text content as a string.",
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -48,7 +47,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "scratchpad_write",
-            description: "Write or overwrite a file in your scratchpad. Creates parent directories automatically.",
+            description: "Write or overwrite a file in your scratchpad. Use it for anything you want to come back to later — a draft of a message, a running list, a plan, a piece of creative writing, notes while thinking through something. Parent directories are created automatically, so organising into subfolders is free. Overwrites without confirmation, so if you want to preserve existing content, read it first with `scratchpad_read` and merge it in yourself. This is not a memory system; use `memory` for shared history and recall — the scratchpad is just for your own files.",
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -67,7 +66,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "scratchpad_delete",
-            description: "Delete a file or empty directory from your scratchpad. Your scratchpad is fully sandboxed from {{user}}'s filesystem so deleting is always safe.",
+            description: "Delete a file or empty directory from your scratchpad. Your scratchpad is fully sandboxed from {{user}}'s filesystem, so deletion is always safe — it only affects your own files, never theirs. Use to clear out drafts you no longer need, old notes, abandoned work. Only deletes empty directories; list and delete contents first if you want to remove a full folder.",
             parameters: json!({
                 "type": "object",
                 "properties": {
