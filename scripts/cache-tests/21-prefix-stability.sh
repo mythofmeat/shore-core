@@ -7,8 +7,9 @@
 # or tool ordering between request types. If the prefix changes, the
 # Anthropic prompt cache is invalidated.
 #
-# Reads api_payloads.jsonl after running messages + a tick, then compares
-# the system and tools sections of the request payloads.
+# Reads the per-call JSON files under debug/api_logs/ after running
+# messages + a tick, then compares the system and tools sections of the
+# request payloads.
 #
 set -euo pipefail
 source "$(dirname "$0")/harness.sh"
@@ -116,35 +117,44 @@ sleep 5
 # ── Phase 3: Compare prefixes ────────────────────────────────────
 echo -e "${CYAN}[$TEST_NAME]${NC} === PHASE 3: Compare prefixes ==="
 
-PAYLOAD_LOG="$DATA_DIR/api_payloads.jsonl"
-if [[ ! -f "$PAYLOAD_LOG" ]]; then
-    harness_fail "api_payloads.jsonl not found"
+API_LOGS_DIR="$DATA_DIR/debug/api_logs"
+if [[ ! -d "$API_LOGS_DIR" ]]; then
+    harness_fail "debug/api_logs/ not found at $API_LOGS_DIR"
 fi
 
 # Extract system and tools from each request payload and compare.
-PAYLOAD_LOG_PATH="$PAYLOAD_LOG" python3 << 'PYEOF'
+API_LOGS_DIR="$API_LOGS_DIR" python3 << 'PYEOF'
 import json
 import os
+import pathlib
 import sys
 
-payload_file = os.environ["PAYLOAD_LOG_PATH"]
+logs_dir = pathlib.Path(os.environ["API_LOGS_DIR"])
 
-# Parse all request payloads.
+# Walk every {call_id}.json request file in chronological order (call_id
+# prefix is a sortable timestamp). Skip the paired *_response.json files
+# and anything that doesn't deserialize as a request envelope.
 requests = []
-with open(payload_file) as f:
-    for line in f:
-        entry = json.loads(line)
-        if entry.get("direction") != "request":
-            continue
-        body = entry.get("payload", {})
-        if isinstance(body, str):
-            body = json.loads(body)
-        if "system" not in body:
-            continue
-        requests.append(body)
+for path in sorted(logs_dir.glob("*.json")):
+    if path.name.endswith("_response.json"):
+        continue
+    try:
+        with path.open() as f:
+            entry = json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        print(f"WARN: skipping {path.name}: {e}", file=sys.stderr)
+        continue
+    if entry.get("direction") != "request":
+        continue
+    body = entry.get("payload", {})
+    if isinstance(body, str):
+        body = json.loads(body)
+    if "system" not in body:
+        continue
+    requests.append(body)
 
 if len(requests) < 2:
-    print("FAIL: fewer than 2 request payloads found")
+    print(f"FAIL: fewer than 2 request payloads found in {logs_dir}")
     sys.exit(1)
 
 # The prefix that must be stable: system blocks + tools.
