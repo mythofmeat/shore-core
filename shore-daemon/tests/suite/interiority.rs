@@ -198,6 +198,133 @@ async fn wrap_up_persists_recap_on_natural_exit_without_recap() {
     harness.shutdown().await;
 }
 
+/// Regression test for the "natural exit drops the final assistant turn" bug.
+///
+/// When the interiority tool loop runs at least one tool-use iteration and
+/// then a *subsequent* iteration ends naturally (no tool_use, no `<recap>`),
+/// the forced wrap-up call that follows must see the full conversation —
+/// including the final assistant turn that triggered the exit. Dropping
+/// that turn leaves the wrap-up call looking at a dangling
+/// `user: tool_results` followed by the wrap-up system nudge, which real
+/// models reliably mistake for "the user gave me tool results, continue
+/// tool-calling" and respond with more tool calls rather than a recap.
+///
+/// This test pins the loop's message-history bookkeeping: the wrap-up
+/// request the mock receives must contain the iter-1 assistant text as an
+/// assistant turn in its `messages` array.
+#[tokio::test]
+async fn wrap_up_sees_final_assistant_turn_after_tool_use_then_natural_exit() {
+    init_tracing();
+    let mut harness = TestHarness::boot_with(
+        TestConfigBuilder::new()
+            .autonomy(true)
+            .interiority_max_tool_rounds(12),
+    )
+    .await;
+
+    // Prime the conversation so the autonomy state exists.
+    harness.mock_llm.enqueue_text("ack").await;
+    let _ = harness.send_and_collect("hello").await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // Iter 0: tool_use. set_next_wake is intercepted inline by the manager,
+    // so we don't need the tool to actually exist in the dispatch surface —
+    // the mock just has to produce a tool_use stop so the loop continues.
+    harness
+        .mock_llm
+        .enqueue_json_tool_use(
+            "tu_natexit_01",
+            "set_next_wake",
+            json!({ "hours_from_now": 2.0, "reason": "let the thread rest" }),
+        )
+        .await;
+
+    // Iter 1: plain text, finish_reason=end_turn, no <recap>, no tool_use.
+    // The loop sees tool_uses.is_empty() and breaks → natural exit.
+    let iter1_text = "just sitting with a thought and watching the light shift";
+    harness.mock_llm.enqueue_json_text(iter1_text).await;
+
+    // Wrap-up call: returns a recap. Mock is deterministic — what we're
+    // actually testing is the shape of the request that reached this slot.
+    let expected_recap = "closed the loop after a quiet moment.";
+    harness
+        .mock_llm
+        .enqueue_json_text(&format!("done. <recap>{expected_recap}</recap>"))
+        .await;
+
+    harness.autonomy.interiority_tick_now(CHARACTER);
+
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(15)).await;
+
+    // Wait for the wrap-up's recap to land on disk — that's the signal that
+    // all three tick calls have been consumed by the mock and we can read
+    // `received_requests()` for assertions.
+    let recap_path = harness.data_dir.join(CHARACTER).join("recaps.jsonl");
+    let mut recap_landed = false;
+    for _ in 0..500 {
+        if let Ok(content) = std::fs::read_to_string(&recap_path) {
+            if content.contains(expected_recap) {
+                recap_landed = true;
+                break;
+            }
+        }
+        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    tokio::time::resume();
+    assert!(
+        recap_landed,
+        "wrap-up recap never persisted; tick did not complete its mocks"
+    );
+
+    // Find the wrap-up request among all received calls. It's the only one
+    // whose messages contain the wrap-up prompt's signature string. The
+    // Anthropic provider wraps inline system-role messages in
+    // `<system_instruction>` and emits them as a user turn, so the marker
+    // appears in message content regardless of the wire role.
+    let requests = harness.mock_llm.received_requests().await;
+    let wrapup_req = requests
+        .iter()
+        .find(|r| {
+            serde_json::to_string(r)
+                .unwrap_or_default()
+                .contains("Your private moment is ending")
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "no wrap-up request found in {} received requests; bodies: {:#?}",
+                requests.len(),
+                requests,
+            )
+        });
+
+    // The iter-1 assistant turn (plain text, natural exit) must appear as an
+    // assistant message in the wrap-up request. Without the fix, the loop
+    // breaks before pushing iter-1's response onto request.messages, and this
+    // assertion fails.
+    let messages = wrapup_req
+        .get("messages")
+        .and_then(|m| m.as_array())
+        .expect("wrap-up request missing messages array");
+    let has_iter1_assistant = messages.iter().any(|msg| {
+        let role_is_assistant = msg.get("role").and_then(|r| r.as_str()) == Some("assistant");
+        let content_has_text = serde_json::to_string(msg.get("content").unwrap_or(&json!(null)))
+            .unwrap_or_default()
+            .contains(iter1_text);
+        role_is_assistant && content_has_text
+    });
+    assert!(
+        has_iter1_assistant,
+        "wrap-up request must include the iter-1 assistant turn \
+         ({iter1_text:?}); otherwise the wrap-up model sees a dangling \
+         user turn and misreads the intent. messages={:#?}",
+        messages,
+    );
+
+    harness.shutdown().await;
+}
+
 /// A completed interiority tick must persist its recap to `active.jsonl` as a
 /// `Role::System` message so the recap survives compaction and the next
 /// payload sees it at its natural chronological position. This replaces the

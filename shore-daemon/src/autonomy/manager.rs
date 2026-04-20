@@ -1441,6 +1441,27 @@ async fn execute_unified_tick(
             recap_text = Some(recap);
         }
 
+        // Build assistant message from content blocks (filter unsigned thinking)
+        // and push it before any exit path. Every successful generate() must
+        // land in the conversation history — otherwise the forced wrap-up call
+        // sees a dangling user: tool_results turn from the previous iteration
+        // with no record of the model's own "I stopped calling tools" signal,
+        // and reliably mistakes the wrap-up nudge for "continue tool-calling".
+        //
+        // Uses content_block_to_api_json (Anthropic path) — interiority always
+        // uses Anthropic models. ZAI would need content_block_to_json.
+        let assistant_content: Vec<serde_json::Value> = resp
+            .content_blocks
+            .iter()
+            .filter_map(crate::content_util::content_block_to_api_json)
+            .collect();
+        if !assistant_content.is_empty() {
+            request.messages.push(json!({
+                "role": "assistant",
+                "content": assistant_content,
+            }));
+        }
+
         // Extract tool uses.
         let tool_uses = crate::content_util::extract_tool_uses(&resp.content_blocks);
 
@@ -1448,20 +1469,6 @@ async fn execute_unified_tick(
         if tool_uses.is_empty() || resp.finish_reason != "tool_use" {
             break;
         }
-
-        // Build assistant message from content blocks (filter unsigned thinking).
-        // Note: uses content_block_to_api_json (Anthropic path) — interiority
-        // always uses Anthropic models. ZAI would need content_block_to_json.
-        let assistant_content: Vec<serde_json::Value> = resp
-            .content_blocks
-            .iter()
-            .filter_map(crate::content_util::content_block_to_api_json)
-            .collect();
-
-        request.messages.push(json!({
-            "role": "assistant",
-            "content": assistant_content,
-        }));
 
         // Dispatch each tool, collect results.
         let mut tool_results: Vec<serde_json::Value> = Vec::new();
