@@ -43,6 +43,7 @@ impl MessageHandler {
                             model: String::new(),
                         },
                         finish_reason: "cancelled".into(),
+                        is_final: true,
                     })
                     .with_rid(rid),
                 )

@@ -346,7 +346,8 @@ pub(super) async fn handle_generation(
     // an immediate follow-up command (e.g. `memory_compact` via shore-mcp)
     // would otherwise race the persist write and snapshot stale engine
     // state. See QUIRKS.md (StreamEnd / persistence ordering).
-    shore_llm_client::stream::emit_stream_end(&ctx.direct_tx, request.rid.clone(), &result).await;
+    shore_llm_client::stream::emit_stream_end(&ctx.direct_tx, request.rid.clone(), &result, true)
+        .await;
 
     if ctx.live_speak.load(Ordering::Relaxed) {
         if let Some(ref tts_client) = ctx.tts_client {

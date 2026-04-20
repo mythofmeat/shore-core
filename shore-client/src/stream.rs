@@ -179,15 +179,20 @@ impl Default for StreamHandler {
 /// Consume a full streaming response from a connection and return the
 /// aggregated result.
 ///
-/// This loops on `conn.recv()` until a `StreamEnd` arrives (or an error),
-/// collecting tool calls / tool results along the way. It is the
-/// request/response-shaped counterpart to `StreamHandler`'s frame-by-frame
-/// API, intended for callers (like `shore-mcp`) that cannot render chunks
-/// as they arrive and just want the final result.
+/// This loops on `conn.recv()` until a **terminal** `StreamEnd` arrives
+/// (or an error), collecting tool calls / tool results along the way. A
+/// daemon-side tool loop emits one `StreamEnd` per LLM turn so streaming
+/// clients can render tool calls as they happen; only the frame with
+/// `is_final = true` ends the whole generation. This function spans the
+/// full sequence — intermediate StreamEnds (`is_final = false`) reset the
+/// handler so the next `StreamStart` is accepted, and the returned
+/// `StreamedResponse` reflects the final turn's text, metadata, and
+/// finish_reason with tool_call / tool_result frames aggregated across
+/// every phase.
 ///
 /// Returns an error if:
 /// - The server sends an `Error` frame.
-/// - The connection closes before `StreamEnd` arrives.
+/// - The connection closes before a terminal `StreamEnd` arrives.
 /// - Any protocol-level stream assembly error occurs.
 ///
 /// Unknown frame types are logged at `debug` level and skipped without
@@ -206,10 +211,18 @@ pub async fn collect_stream(
         let consumed = handler.feed(&msg, None)?;
 
         if consumed {
-            // If the stream just ended, capture the end frame and break out.
+            // If the stream just ended, decide whether this was terminal.
             if !handler.is_active() && handler.final_content().is_some() {
                 match msg {
-                    ServerMessage::StreamEnd(end) => break end,
+                    ServerMessage::StreamEnd(end) => {
+                        if end.is_final {
+                            break end;
+                        }
+                        // Intermediate tool-loop boundary: the daemon will
+                        // emit more frames for subsequent turns. Reset so
+                        // the next StreamStart is accepted, and keep reading.
+                        handler.reset();
+                    }
                     // Defensive: handler.feed() today only flips !is_active +
                     // final_content().is_some() on StreamEnd. If that ever
                     // changes, surface the anomaly instead of spinning.

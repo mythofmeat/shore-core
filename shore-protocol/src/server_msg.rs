@@ -76,6 +76,14 @@ fn default_content_type() -> String {
 }
 
 /// Done streaming.
+///
+/// A single `send`/`regen` can emit multiple `StreamEnd` frames when the
+/// daemon is running a tool loop: one per LLM turn, so clients can render
+/// tool calls as they happen. Only the frame with `is_final = true` marks
+/// the end of the whole generation — clients that want the final aggregated
+/// result (e.g. `collect_stream`) must keep reading until they see it.
+/// Older servers that predate the field will serialize nothing; `serde`'s
+/// default treats missing as `true`, preserving pre-tool-loop semantics.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct StreamEnd {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -85,6 +93,16 @@ pub struct StreamEnd {
     /// Why the model stopped: "end_turn", "tool_use", "max_tokens", etc.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub finish_reason: String,
+    /// Whether this is the final `StreamEnd` for the generation. Intermediate
+    /// tool-loop boundaries set this to `false`; the terminal StreamEnd sets
+    /// it to `true`. Defaults to `true` so pre-field daemon frames are treated
+    /// as terminal (matching historical single-turn behavior).
+    #[serde(default = "default_true")]
+    pub is_final: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// Generation phase change.

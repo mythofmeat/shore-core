@@ -1138,6 +1138,7 @@ mod tests {
                     model: "test-model".into(),
                 },
                 finish_reason: "end_turn".into(),
+                is_final: true,
             }),
         ]
     }
@@ -1347,6 +1348,7 @@ mod tests {
                     model: "test-model".into(),
                 },
                 finish_reason: "end_turn".into(),
+                is_final: true,
             }),
         ];
 

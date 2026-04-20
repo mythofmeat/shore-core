@@ -249,6 +249,7 @@ mod tests {
                 model: "claude-haiku-4-5-20251001".into(),
             },
             finish_reason: "end_turn".into(),
+            is_final: true,
         });
         let (json, _back) = round_trip(&msg);
         assert_eq!(json["type"], "stream_end");

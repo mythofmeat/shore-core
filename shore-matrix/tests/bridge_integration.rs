@@ -292,6 +292,7 @@ fn full_stream_response_lifecycle() {
             },
             finish_reason: "end_turn".into(),
             rid: None,
+            is_final: true,
         }),
     ];
 
@@ -346,6 +347,7 @@ fn stream_with_images_delivers_both() {
             },
             finish_reason: "end_turn".into(),
             rid: None,
+            is_final: true,
         }),
     ];
 
@@ -489,6 +491,7 @@ fn cross_room_isolation_with_independent_collectors() {
             },
             finish_reason: "end_turn".into(),
             rid: None,
+            is_final: true,
         }));
 
     // Bob's room: stream ends (no images)
@@ -512,6 +515,7 @@ fn cross_room_isolation_with_independent_collectors() {
             },
             finish_reason: "end_turn".into(),
             rid: None,
+            is_final: true,
         }));
 
     // Verify isolation: Alice's room has 3 messages (start + image + end)
@@ -720,6 +724,7 @@ fn full_bridge_message_flow() {
             },
             finish_reason: "end_turn".into(),
             rid: None,
+            is_final: true,
         }),
         // Response to status command
         ServerMessage::CommandOutput(CommandOutput {
@@ -783,6 +788,7 @@ fn e2e_encryption_verification_types() {
         },
         finish_reason: "end_turn".into(),
         rid: None,
+        is_final: true,
     });
 
     if let ServerMessage::StreamEnd(end) = &stream_end {

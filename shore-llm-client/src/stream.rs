@@ -224,10 +224,15 @@ impl StreamConsumer {
 /// persistence completes for the final phase, or immediately for
 /// intermediate `tool_use` phases that drive a tool loop). See the
 /// `StreamConsumer::consume` docs for the rationale.
+///
+/// `is_final` distinguishes the terminal frame (after persistence) from
+/// intermediate frames emitted at tool-loop iteration boundaries. Aggregating
+/// clients like `collect_stream` use this to decide whether to keep reading.
 pub async fn emit_stream_end(
     tx: &mpsc::Sender<ServerMessage>,
     rid: Option<String>,
     result: &StreamResult,
+    is_final: bool,
 ) {
     let metadata = StreamMetadata {
         tokens: TokenCounts {
@@ -248,6 +253,7 @@ pub async fn emit_stream_end(
             content: result.content.clone(),
             metadata,
             finish_reason: result.finish_reason.clone(),
+            is_final,
         }))
         .await;
 }
@@ -339,7 +345,7 @@ mod tests {
         );
 
         // The caller emits via emit_stream_end.
-        emit_stream_end(&direct_tx, None, &result).await;
+        emit_stream_end(&direct_tx, None, &result, true).await;
 
         let msg4 = direct_rx.recv().await.unwrap();
         match msg4 {
@@ -846,7 +852,7 @@ mod tests {
         }
 
         // The caller emits StreamEnd, propagating the same rid.
-        emit_stream_end(&direct_tx, Some("req_stream_01".into()), &result).await;
+        emit_stream_end(&direct_tx, Some("req_stream_01".into()), &result, true).await;
         match direct_rx.recv().await.unwrap() {
             ServerMessage::StreamEnd(msg) => assert_eq!(msg.rid.as_deref(), Some("req_stream_01")),
             other => panic!("Expected StreamEnd, got {:?}", other),

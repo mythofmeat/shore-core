@@ -349,6 +349,7 @@ mod tests {
                 model: "test-model".into(),
             },
             finish_reason: "end_turn".into(),
+            is_final: true,
         });
         assert!(handler.feed(&end, None).unwrap());
         assert!(!handler.is_active());
@@ -407,6 +408,7 @@ mod tests {
                 model: "".into(),
             },
             finish_reason: "end_turn".into(),
+            is_final: true,
         });
         let result = handler.feed(&end, None);
         assert!(result.is_err());
@@ -496,6 +498,7 @@ mod tests {
                 model: "m".into(),
             },
             finish_reason: "end_turn".into(),
+            is_final: true,
         });
         handler.feed(&end, Some(&mut cb)).unwrap();
         assert!(*ended.lock().unwrap());
@@ -534,6 +537,7 @@ mod tests {
                 model: "m".into(),
             },
             finish_reason: "end_turn".into(),
+            is_final: true,
         });
         handler.feed(&end, None).unwrap();
 
@@ -644,6 +648,7 @@ mod tests {
                         model: "test-model".into(),
                     },
                     finish_reason: "end_turn".into(),
+                    is_final: true,
                 }),
             )
             .await;
@@ -702,5 +707,151 @@ mod tests {
         let result = collect_stream(&mut conn).await;
         assert!(result.is_err());
         assert!(format!("{}", result.unwrap_err()).contains("disconnected"));
+    }
+
+    /// Regression: collect_stream must span a daemon-side tool loop.
+    ///
+    /// The daemon emits one StreamEnd per LLM turn so that streaming clients
+    /// can render intermediate tool calls. Only the terminal StreamEnd has
+    /// `is_final = true`. Aggregating callers (shore-mcp's `send` tool, etc.)
+    /// must keep reading past non-final StreamEnds — otherwise they return
+    /// the intermediate "Let me check my memory—" text, miss the ToolCall
+    /// and ToolResult frames entirely, and surface the wrong finish_reason.
+    #[tokio::test]
+    async fn collect_stream_spans_tool_loop_to_final_end() {
+        use crate::stream::{collect_stream, StreamedResponse};
+        use shore_protocol::server_msg::*;
+        use shore_protocol::types::*;
+
+        let (client_stream, server_stream) = duplex(8192);
+
+        fn meta(model: &str) -> StreamMetadata {
+            StreamMetadata {
+                tokens: TokenCounts {
+                    input: 1,
+                    output: 1,
+                    cache_read: 0,
+                    cache_write: 0,
+                },
+                timing: TimingInfo {
+                    total_ms: 1,
+                    ttft_ms: 1,
+                },
+                model: model.into(),
+            }
+        }
+
+        let server_handle = tokio::spawn(async move {
+            let (_r, mut w) = tokio::io::split(server_stream);
+
+            // Turn 1: preface text, then finish with an intermediate StreamEnd.
+            write_json_line(
+                &mut w,
+                &ServerMessage::StreamStart(StreamStart {
+                    rid: None,
+                    regen: false,
+                }),
+            )
+            .await;
+            write_json_line(
+                &mut w,
+                &ServerMessage::StreamChunk(StreamChunk {
+                    rid: None,
+                    text: "Let me check my memory—".into(),
+                    content_type: "text".into(),
+                }),
+            )
+            .await;
+            write_json_line(
+                &mut w,
+                &ServerMessage::StreamEnd(StreamEnd {
+                    rid: None,
+                    content: "Let me check my memory—".into(),
+                    metadata: meta("turn-1"),
+                    finish_reason: "tool_use".into(),
+                    is_final: false,
+                }),
+            )
+            .await;
+
+            // Tool phase: the daemon emits one ToolCall and one ToolResult.
+            write_json_line(
+                &mut w,
+                &ServerMessage::ToolCall(ToolCall {
+                    rid: None,
+                    tool_id: "toolu_01".into(),
+                    tool_name: "memory".into(),
+                    input: serde_json::json!({"request": "sister"}),
+                }),
+            )
+            .await;
+            write_json_line(
+                &mut w,
+                &ServerMessage::ToolResult(ToolResult {
+                    rid: None,
+                    tool_id: "toolu_01".into(),
+                    tool_name: "memory".into(),
+                    output: "Your sister's name is Maya.".into(),
+                    is_error: false,
+                }),
+            )
+            .await;
+
+            // Turn 2: the final LLM response, with is_final=true.
+            write_json_line(
+                &mut w,
+                &ServerMessage::StreamStart(StreamStart {
+                    rid: None,
+                    regen: false,
+                }),
+            )
+            .await;
+            write_json_line(
+                &mut w,
+                &ServerMessage::StreamChunk(StreamChunk {
+                    rid: None,
+                    text: "Of course — her name is Maya.".into(),
+                    content_type: "text".into(),
+                }),
+            )
+            .await;
+            write_json_line(
+                &mut w,
+                &ServerMessage::StreamEnd(StreamEnd {
+                    rid: None,
+                    content: "Of course — her name is Maya.".into(),
+                    metadata: meta("turn-2"),
+                    finish_reason: "end_turn".into(),
+                    is_final: true,
+                }),
+            )
+            .await;
+        });
+
+        let mut conn = SWPConnection::from_raw_stream(client_stream);
+        let response: StreamedResponse = collect_stream(&mut conn).await.unwrap();
+
+        // The aggregated response must be the FINAL turn's text, not the
+        // intermediate preface.
+        assert_eq!(response.text, "Of course — her name is Maya.");
+        assert_eq!(response.finish_reason, "end_turn");
+        assert_eq!(response.metadata.model, "turn-2");
+
+        // Tool frames emitted between the two StreamEnds must be captured.
+        assert_eq!(
+            response.tool_calls.len(),
+            1,
+            "one ToolCall frame must be collected"
+        );
+        assert_eq!(response.tool_calls[0].tool_name, "memory");
+        assert_eq!(
+            response.tool_results.len(),
+            1,
+            "one ToolResult frame must be collected"
+        );
+        assert_eq!(response.tool_results[0].tool_id, "toolu_01");
+
+        drop(conn);
+        server_handle.await.unwrap();
     }
 }

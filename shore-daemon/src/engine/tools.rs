@@ -71,7 +71,10 @@ pub async fn run_tool_loop(
         // continue with tool execution. Intermediate phases are emitted
         // immediately (clients need the boundary to render tool calls); only
         // the FINAL phase's StreamEnd is deferred until after persistence.
-        shore_llm_client::stream::emit_stream_end(direct_tx, request.rid.clone(), &result).await;
+        // is_final=false so aggregating clients (collect_stream) know to keep
+        // reading past this boundary.
+        shore_llm_client::stream::emit_stream_end(direct_tx, request.rid.clone(), &result, false)
+            .await;
 
         info!(
             iteration = iteration + 1,

@@ -1688,6 +1688,7 @@ mod scenario_tests {
                 content: String::new(),
                 metadata: meta_phase_1.clone(),
                 finish_reason: "tool_use".into(),
+                is_final: false,
             }),
         );
         crate::handle_server_message(
@@ -1747,6 +1748,7 @@ mod scenario_tests {
                 content: "hey! what's up?".into(),
                 metadata: meta_phase_2.clone(),
                 finish_reason: "end_turn".into(),
+                is_final: true,
             }),
         );
 
@@ -1966,6 +1968,7 @@ mod scenario_tests {
                 content: reply.into(),
                 metadata: meta.clone(),
                 finish_reason: "end_turn".into(),
+                is_final: true,
             }),
         );
 
