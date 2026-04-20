@@ -97,17 +97,27 @@ pub fn handle_search_entries(db: &MemoryDB, input: &Value) -> Result<String, Str
             if hits.is_empty() {
                 Ok("No results.".into())
             } else {
-                // Convert to JSON-friendly format
+                // Convert to JSON-friendly format. `when` is the event time
+                // (start_timestamp), falling back to created_at when the entry
+                // was created without event context.
                 let results: Vec<HashMap<String, Value>> = hits
                     .into_iter()
                     .map(|h| {
                         let mut m = HashMap::new();
+                        let when = if h.start_timestamp.is_empty() {
+                            h.created_at.clone()
+                        } else {
+                            h.start_timestamp.clone()
+                        };
                         m.insert("id".into(), Value::String(h.entry_id));
                         m.insert("summary_text".into(), Value::String(h.summary_text));
                         m.insert("topic_tags".into(), Value::String(h.topic_tags));
                         m.insert("topic_key".into(), Value::String(h.topic_key));
                         m.insert("status".into(), Value::String(h.status));
                         m.insert("memory_type".into(), Value::String(h.memory_type));
+                        m.insert("when".into(), Value::String(when));
+                        m.insert("start_timestamp".into(), Value::String(h.start_timestamp));
+                        m.insert("end_timestamp".into(), Value::String(h.end_timestamp));
                         m.insert("created_at".into(), Value::String(h.created_at));
                         m.insert(
                             "confidence".into(),
@@ -230,12 +240,20 @@ pub async fn handle_semantic_search(
         .filter_map(|r| {
             entry_map.get(&r.entry_id).map(|e| {
                 let mut m = HashMap::new();
+                let when = if e.start_timestamp.is_empty() {
+                    e.created_at.clone()
+                } else {
+                    e.start_timestamp.clone()
+                };
                 m.insert("id".into(), Value::String(e.id.clone()));
                 m.insert("summary_text".into(), Value::String(e.summary_text.clone()));
                 m.insert("topic_tags".into(), Value::String(e.topic_tags.clone()));
                 m.insert("topic_key".into(), Value::String(e.topic_key.clone()));
                 m.insert("status".into(), Value::String(e.status.clone()));
                 m.insert("memory_type".into(), Value::String(e.memory_type.clone()));
+                m.insert("when".into(), Value::String(when));
+                m.insert("start_timestamp".into(), Value::String(e.start_timestamp.clone()));
+                m.insert("end_timestamp".into(), Value::String(e.end_timestamp.clone()));
                 m.insert("created_at".into(), Value::String(e.created_at.clone()));
                 m.insert(
                     "confidence".into(),

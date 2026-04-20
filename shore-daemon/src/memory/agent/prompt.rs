@@ -101,6 +101,7 @@ When returning search/query results:
 1. Include the **entry ID** for each result.
 2. Present the content of each entry fully — all bullet points, all details. You may rephrase for clarity but never drop or condense information.
 3. If multiple entries match, present each one. Do not silently omit entries that matched the query.
+4. When answering temporal questions ("when did X happen?"), use the `when` field returned by `search_entries` / `semantic_search` — it is the event's `start_timestamp` if set, falling back to `created_at`. Do not say "I don't know when" if `when` is present.
 
 When confirming writes:
 1. State what was created/updated/superseded with the entry ID.

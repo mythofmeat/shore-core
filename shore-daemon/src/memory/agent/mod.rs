@@ -43,6 +43,11 @@ pub struct RetrievedEntry {
     pub memory_type: String,
     pub confidence: f64,
     pub relevance_score: f64,
+    /// When the event itself happened. Empty when the entry was created with
+    /// no event-time context — callers should fall back to `created_at`.
+    pub start_timestamp: String,
+    pub end_timestamp: String,
+    pub created_at: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -249,6 +254,9 @@ impl MemoryAgent {
                     memory_type: entry.memory_type,
                     confidence: entry.confidence,
                     relevance_score: hit.score,
+                    start_timestamp: entry.start_timestamp,
+                    end_timestamp: entry.end_timestamp,
+                    created_at: entry.created_at,
                 });
             }
         }

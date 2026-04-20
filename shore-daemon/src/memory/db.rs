@@ -196,6 +196,10 @@ pub struct FtsHit {
     pub status: String,
     pub confidence: f64,
     pub memory_type: String,
+    /// When the event itself happened (RFC 3339). Empty for entries created
+    /// without event-time context — callers should fall back to `created_at`.
+    pub start_timestamp: String,
+    pub end_timestamp: String,
     pub created_at: String,
 }
 
@@ -847,7 +851,8 @@ impl MemoryDB {
         let sql = match status {
             Some("all") | None => {
                 "SELECT e.id, rank, e.summary_text, e.topic_tags, e.topic_key,
-                        e.status, e.confidence, e.memory_type, e.created_at
+                        e.status, e.confidence, e.memory_type,
+                        e.start_timestamp, e.end_timestamp, e.created_at
                  FROM entries_fts
                  JOIN entries e ON e.rowid = entries_fts.rowid
                  WHERE entries_fts MATCH ?1
@@ -856,7 +861,8 @@ impl MemoryDB {
             }
             Some(_) => {
                 "SELECT e.id, rank, e.summary_text, e.topic_tags, e.topic_key,
-                        e.status, e.confidence, e.memory_type, e.created_at
+                        e.status, e.confidence, e.memory_type,
+                        e.start_timestamp, e.end_timestamp, e.created_at
                  FROM entries_fts
                  JOIN entries e ON e.rowid = entries_fts.rowid
                  WHERE entries_fts MATCH ?1 AND e.status = ?3
@@ -1051,7 +1057,9 @@ fn row_to_fts_hit(row: &rusqlite::Row<'_>) -> SqlResult<FtsHit> {
         status: row.get(5)?,
         confidence: row.get(6)?,
         memory_type: row.get(7)?,
-        created_at: row.get(8)?,
+        start_timestamp: row.get(8)?,
+        end_timestamp: row.get(9)?,
+        created_at: row.get(10)?,
     })
 }
 
