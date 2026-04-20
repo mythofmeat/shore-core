@@ -67,24 +67,8 @@ pub async fn run_compaction(
     let prompt_template = resolve_prompt_template(&effective.dirs.config, character, "compact.md")
         .unwrap_or_else(|| DEFAULT_COMPACT_PROMPT.to_string());
 
-    // Resolve model: defaults.compaction → defaults.model → first chat model.
-    let model = effective
-        .app
-        .defaults
-        .compaction
-        .as_deref()
-        .and_then(|name| effective.models.find_model(name).ok())
-        .or_else(|| {
-            effective
-                .app
-                .defaults
-                .model
-                .as_deref()
-                .and_then(|name| effective.models.find_model(name).ok())
-        })
-        .or_else(|| effective.models.first_chat_model())
-        .ok_or("No model configured for background compaction")?
-        .clone();
+    let model = crate::commands::state::resolve_compaction_model(&effective)
+        .ok_or("No model configured for background compaction")?;
 
     // Resolve embedding config.
     let embed_config = resolve_embed_config(

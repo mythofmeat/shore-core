@@ -204,6 +204,21 @@ Rewrote the memory collation pipeline to fix multiple design flaws in the origin
 **Why:** The original watermark (`updated_at > collated_at`) was permanently one-shot — once stamped, entries were never reconsidered unless externally modified. TTL-based reconsideration allows incremental refinement: `shore collate` can be run repeatedly to work through the backlog, and entries naturally come up for re-evaluation as their TTL expires. The separate model config exists because collation is synthesis/judgment work (merge decisions, split decisions, entity normalization) that benefits from a more capable model than memory retrieval.
 
 **Trade-off:** With `batch_limit = 10`, convergence mode (`--full`) may take many passes. The existing 10-pass cap prevents runaway, but a single `--full` invocation could process up to 100 entries. This is acceptable since the user explicitly opts into convergence mode.
+
+### Compaction model resolution unified across entry points (2026-04-20)
+
+**Decision:** Both compaction entry points (interactive `/compact` command and background auto-compaction) now resolve through a single shared `resolve_compaction_model()` helper, mirroring the earlier `resolve_collation_model()` unification from 2026-04-01.
+
+**Changes made:**
+- Added `resolve_compaction_model()` to `shore-daemon/src/commands/state/memory.rs` with fallback chain `defaults.compaction → defaults.memory_agent → defaults.model → first chat model` (parallel to `resolve_collation_model()`).
+- Interactive `/compact` (`commands/state/memory.rs`) used to call `resolve_agent_model()` — the memory-agent chain — which silently ignored `defaults.compaction`. It now calls `resolve_compaction_model()`.
+- Background `run_compaction()` (`memory/compaction/background.rs`) had its own inlined chain lacking the `memory_agent` fallback. It now calls `resolve_compaction_model()` too.
+- Added unit tests in `memory::resolver_tests` asserting precedence (`compaction` wins over `memory_agent`), the full fallback chain, and cross-resolver parity between compaction and collation.
+
+**Why:** This was a latent user-visible bug — users with `defaults.compaction` configured saw interactive `/compact` call their `memory_agent` instead. Two parallel resolvers existed because the earlier collation unification (DECISIONS 2026-04-01) didn't touch compaction, and no test locked the two paths together.
+
+**Trade-off:** The cross-resolver parity test in `resolver_tests` is slightly over-specified for the current bug — it asserts structural symmetry between the two chains, so a future intentional divergence (e.g., compaction never falling back to `memory_agent`) would need to update the test. This is intentional: the goal is to make any such divergence loud rather than silent.
+
 ### OpenRouter proxy removed from Anthropic SDK (2026-04-01)
 
 **Decision:** The Anthropic SDK (`sdk = "anthropic"`) no longer supports custom `base_url`. Setting one is a runtime error with a message pointing to the `openrouter` SDK. Localhost is exempted for unit tests.

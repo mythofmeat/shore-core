@@ -466,7 +466,8 @@ pub async fn compact(
         resolve_prompt_template(&ctx.config.dirs.config, &char_name, "compact.md")
             .unwrap_or_else(|| DEFAULT_COMPACT_PROMPT.to_string());
 
-    let model = resolve_agent_model(ctx)?;
+    let model = resolve_compaction_model(&ctx.config)
+        .ok_or_else(|| (ErrorCode::InternalError, "No model configured".to_string()))?;
 
     let (store, embed_config) = open_embed_and_vectorstore(ctx, &char_name).await?;
 
@@ -590,6 +591,40 @@ pub fn resolve_collation_model(
         .app
         .defaults
         .collation
+        .as_deref()
+        .and_then(|name| config.models.find_model(name).ok())
+        .or_else(|| {
+            config
+                .app
+                .defaults
+                .memory_agent
+                .as_deref()
+                .and_then(|name| config.models.find_model(name).ok())
+        })
+        .or_else(|| {
+            config
+                .app
+                .defaults
+                .model
+                .as_deref()
+                .and_then(|name| config.models.find_model(name).ok())
+        })
+        .or_else(|| config.models.first_chat_model())
+        .cloned()
+}
+
+/// Resolve the model to use for compaction.
+///
+/// Chain: `defaults.compaction` → `defaults.memory_agent` → `defaults.model` → first chat model.
+/// Must be kept in lockstep with [`resolve_collation_model`] — both background and interactive
+/// compaction entry points depend on this returning the same value.
+pub fn resolve_compaction_model(
+    config: &shore_config::LoadedConfig,
+) -> Option<shore_config::models::ResolvedModel> {
+    config
+        .app
+        .defaults
+        .compaction
         .as_deref()
         .and_then(|name| config.models.find_model(name).ok())
         .or_else(|| {
@@ -903,4 +938,177 @@ pub async fn memory_reindex(engine: &ConversationEngine, ctx: &CommandContext) -
         "reindexed": entries.len(),
         "message": format!("Reindexed {} entries (FTS + vector)", entries.len()),
     }))
+}
+
+#[cfg(test)]
+mod resolver_tests {
+    //! Regression tests for [`resolve_compaction_model`] and [`resolve_collation_model`].
+    //!
+    //! Bug history: interactive `/compact` used to call `resolve_agent_model`, which
+    //! consults `defaults.memory_agent` — so a user's `defaults.compaction` setting was
+    //! silently ignored by the interactive entry point while the background path honored
+    //! it. Parallel resolvers with no shared helper, no test locking them together.
+    //!
+    //! These tests pin the resolution chain for both operations and assert that
+    //! `defaults.compaction` / `defaults.collation` take precedence over
+    //! `defaults.memory_agent`. Don't delete without a matching DECISIONS.md entry.
+    use super::{resolve_collation_model, resolve_compaction_model};
+    use shore_config::app::{AppConfig, DefaultsConfig};
+    use shore_config::models::ModelCatalog;
+    use shore_config::{LoadedConfig, ShoreDirs};
+    use std::path::PathBuf;
+
+    fn catalog_with_chat_and_tools() -> ModelCatalog {
+        let chat: toml::Table = toml::from_str(
+            r#"
+[anthropic.primary]
+model_id = "claude-primary"
+
+[anthropic.bg]
+model_id = "claude-bg"
+"#,
+        )
+        .unwrap();
+        let tools: toml::Table = toml::from_str(
+            r#"
+[openrouter.minimax]
+model_id = "minimax-tool"
+"#,
+        )
+        .unwrap();
+        ModelCatalog::from_sections(Some(&chat), Some(&tools), None, None).unwrap()
+    }
+
+    fn make_config(defaults: DefaultsConfig) -> LoadedConfig {
+        let mut app = AppConfig::default();
+        app.defaults = defaults;
+        LoadedConfig::new_for_test(
+            app,
+            catalog_with_chat_and_tools(),
+            ShoreDirs {
+                config: PathBuf::from("/tmp/resolver-test/config"),
+                data: PathBuf::from("/tmp/resolver-test/data"),
+                runtime: PathBuf::from("/tmp/resolver-test/runtime"),
+                cache: PathBuf::from("/tmp/resolver-test/cache"),
+            },
+        )
+    }
+
+    /// The bug this test was written for: compaction must honor `defaults.compaction`
+    /// even when `memory_agent` is also set.
+    #[test]
+    fn compaction_prefers_defaults_compaction_over_memory_agent() {
+        let config = make_config(DefaultsConfig {
+            compaction: Some("bg".to_string()),
+            memory_agent: Some("minimax".to_string()),
+            model: Some("primary".to_string()),
+            ..DefaultsConfig::default()
+        });
+        let model = resolve_compaction_model(&config).expect("resolved");
+        assert_eq!(
+            model.name, "bg",
+            "defaults.compaction must win over memory_agent"
+        );
+    }
+
+    #[test]
+    fn compaction_falls_back_to_memory_agent_when_unset() {
+        let config = make_config(DefaultsConfig {
+            compaction: None,
+            memory_agent: Some("minimax".to_string()),
+            model: Some("primary".to_string()),
+            ..DefaultsConfig::default()
+        });
+        let model = resolve_compaction_model(&config).expect("resolved");
+        assert_eq!(model.name, "minimax");
+    }
+
+    #[test]
+    fn compaction_falls_back_to_model_when_compaction_and_memory_agent_unset() {
+        let config = make_config(DefaultsConfig {
+            compaction: None,
+            memory_agent: None,
+            model: Some("primary".to_string()),
+            ..DefaultsConfig::default()
+        });
+        let model = resolve_compaction_model(&config).expect("resolved");
+        assert_eq!(model.name, "primary");
+    }
+
+    #[test]
+    fn compaction_falls_back_to_first_chat_model_when_nothing_set() {
+        let config = make_config(DefaultsConfig::default());
+        let model = resolve_compaction_model(&config).expect("resolved");
+        // first_chat_model returns the first BTreeMap entry: "bg" sorts before "primary".
+        assert_eq!(model.name, "bg");
+    }
+
+    #[test]
+    fn compaction_returns_none_with_empty_catalog() {
+        let mut app = AppConfig::default();
+        app.defaults = DefaultsConfig::default();
+        let config = LoadedConfig::new_for_test(
+            app,
+            ModelCatalog::default(),
+            ShoreDirs {
+                config: PathBuf::from("/tmp/resolver-test/config"),
+                data: PathBuf::from("/tmp/resolver-test/data"),
+                runtime: PathBuf::from("/tmp/resolver-test/runtime"),
+                cache: PathBuf::from("/tmp/resolver-test/cache"),
+            },
+        );
+        assert!(resolve_compaction_model(&config).is_none());
+    }
+
+    /// Parallel test: collation also honors its dedicated default over memory_agent.
+    #[test]
+    fn collation_prefers_defaults_collation_over_memory_agent() {
+        let config = make_config(DefaultsConfig {
+            collation: Some("bg".to_string()),
+            memory_agent: Some("minimax".to_string()),
+            model: Some("primary".to_string()),
+            ..DefaultsConfig::default()
+        });
+        let model = resolve_collation_model(&config).expect("resolved");
+        assert_eq!(model.name, "bg");
+    }
+
+    #[test]
+    fn collation_falls_back_to_memory_agent_when_unset() {
+        let config = make_config(DefaultsConfig {
+            collation: None,
+            memory_agent: Some("minimax".to_string()),
+            model: Some("primary".to_string()),
+            ..DefaultsConfig::default()
+        });
+        let model = resolve_collation_model(&config).expect("resolved");
+        assert_eq!(model.name, "minimax");
+    }
+
+    /// Cross-resolver parity: given identical defaults, compaction and collation
+    /// return the same fallback chain *structurally*. Locks them together so a
+    /// future change to one is loud if not mirrored to the other.
+    #[test]
+    fn compaction_and_collation_fallback_chains_are_parallel() {
+        // memory_agent set, no dedicated defaults — both should fall back to it.
+        let config = make_config(DefaultsConfig {
+            memory_agent: Some("minimax".to_string()),
+            model: Some("primary".to_string()),
+            ..DefaultsConfig::default()
+        });
+        let comp = resolve_compaction_model(&config).expect("resolved");
+        let col = resolve_collation_model(&config).expect("resolved");
+        assert_eq!(comp.name, col.name);
+        assert_eq!(comp.name, "minimax");
+
+        // Only `model` set — both fall all the way through to it.
+        let config = make_config(DefaultsConfig {
+            model: Some("primary".to_string()),
+            ..DefaultsConfig::default()
+        });
+        let comp = resolve_compaction_model(&config).expect("resolved");
+        let col = resolve_collation_model(&config).expect("resolved");
+        assert_eq!(comp.name, col.name);
+        assert_eq!(comp.name, "primary");
+    }
 }
