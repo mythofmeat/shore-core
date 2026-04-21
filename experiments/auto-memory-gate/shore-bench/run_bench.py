@@ -193,21 +193,36 @@ def run_one_question(conv_id: str, char_name: str, question: str, log_dir: Path)
             if addr is None:
                 return {"ok": False, "error": "daemon did not register", "raw": ""}
 
-            # 3. Send
-            result = subprocess.run(
-                [str(SHORE_BIN), "--addr", addr, "--character", char_name, "send", question],
-                env=env, capture_output=True, text=True, timeout=180,
-            )
-            raw = (result.stdout or "") + (result.stderr or "")
-            answer = extract_final_answer(raw)
-            elapsed = time.time() - start
-            return {
-                "ok": result.returncode == 0,
-                "returncode": result.returncode,
-                "raw": raw,
-                "answer": answer,
-                "elapsed_s": round(elapsed, 2),
-            }
+            # 3. Send. Upstream OpenRouter rate limits on cheap models can
+            # push a single question past the default 180s (e.g. Gemma-4
+            # retry storms on inner agent). Bump to 600s and catch the
+            # TimeoutExpired so one slow Q doesn't abort the whole run.
+            try:
+                result = subprocess.run(
+                    [str(SHORE_BIN), "--addr", addr, "--character", char_name, "send", question],
+                    env=env, capture_output=True, text=True, timeout=600,
+                )
+                raw = (result.stdout or "") + (result.stderr or "")
+                answer = extract_final_answer(raw)
+                elapsed = time.time() - start
+                return {
+                    "ok": result.returncode == 0,
+                    "returncode": result.returncode,
+                    "raw": raw,
+                    "answer": answer,
+                    "elapsed_s": round(elapsed, 2),
+                }
+            except subprocess.TimeoutExpired as e:
+                raw = (e.stdout.decode("utf-8", "replace") if e.stdout else "") + \
+                      (e.stderr.decode("utf-8", "replace") if e.stderr else "")
+                return {
+                    "ok": False,
+                    "returncode": -1,
+                    "error": "shore send timed out after 600s",
+                    "raw": raw,
+                    "answer": "",
+                    "elapsed_s": round(time.time() - start, 2),
+                }
         finally:
             daemon.terminate()
             try:
