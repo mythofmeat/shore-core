@@ -104,9 +104,10 @@ pub fn build_capabilities_block(config: &CapabilitiesConfig) -> Option<String> {
         "**Tool usage**\n\
          \n\
          You have a number of tools available to help you during the \
-         conversation. You're encouraged to use them freely — reaching for a \
+         conversation. You're encouraged to use them freely. Reaching for a \
          tool is in-character and enhances the conversation rather than \
-         interrupting it. Each tool's own description covers when it's useful."
+         interrupting it. Each tool's own description covers when it's useful. \
+         Please use your memory tools often."
             .to_string(),
     )
 }
@@ -235,9 +236,10 @@ pub fn assemble_prompt(params: &PromptParams<'_>) -> AssembledPrompt {
             system.push(SystemBlock {
                 label: "recap".into(),
                 content: format!(
-                    "<{char_tag}_recap>\n\
-                     The following is a recap of the conversation so far, \
-                     written about you ({char_tag}) in close third person.\n\n\
+                    "<{char_tag}_recap> \n\
+                     The following is a brief recap of recent conversations. \
+                     This recap is not exhaustive and only covers a short period of time. \
+                     Much more detailed information can be found within your memory database.\n\n\
                      {recap}\n\
                      </{char_tag}_recap>"
                 ),
