@@ -39,6 +39,8 @@ contrib/src/
 experiments/auto-memory-gate/shore-bench/templates/
 experiments/auto-memory-gate/shore-bench/results/
 experiments/**/__pycache__/
+experiments/**/.venv/
+experiments/memory-framework-eval/mem0_store/
 
 # Environment / secrets
 .env
