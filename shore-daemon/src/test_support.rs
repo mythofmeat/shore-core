@@ -216,6 +216,10 @@ impl ToolContext for TestToolContext {
     fn markdown_store(&self) -> Option<&MarkdownMemoryStore> {
         self.markdown_store_val.as_ref()
     }
+    fn config_dir(&self) -> &str {
+        ""
+    }
+    fn defer_edit(&self, _path: &str) {}
 }
 
 // ── make_image_entry ────────────────────────────────────────────────────

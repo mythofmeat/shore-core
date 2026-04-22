@@ -132,6 +132,17 @@ pub trait ToolContext: Sync {
     fn markdown_store(&self) -> Option<&crate::memory::markdown_store::MarkdownMemoryStore> {
         None
     }
+
+    // Config directory for deferred character self-edits
+    fn config_dir(&self) -> &str {
+        ""
+    }
+
+    /// Queue a deferred edit for a protected file (character.md, user.md,
+    /// prompts/system.md). Called by the tool dispatch layer after a
+    /// successful write or edit to a protected path. The actual copy to
+    /// the config dir happens at the next compaction boundary.
+    fn defer_edit(&self, _path: &str) {}
 }
 
 // ---------------------------------------------------------------------------
@@ -240,8 +251,32 @@ pub fn dispatch_tool<'a>(
             }
             // Workspace tools
             "read" => workspace::handle_read(input, ctx.workspace_dir()).await,
-            "write" => workspace::handle_write(input, ctx.workspace_dir()).await,
-            "edit" => workspace::handle_edit(input, ctx.workspace_dir()).await,
+            "write" => {
+                let path = input
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let mut result = workspace::handle_write(input, ctx.workspace_dir()).await?;
+                if crate::memory::deferred_edits::is_protected_path(&path) {
+                    ctx.defer_edit(&path);
+                    result["deferred_until_compaction"] = serde_json::json!(true);
+                }
+                Ok(result)
+            }
+            "edit" => {
+                let path = input
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let mut result = workspace::handle_edit(input, ctx.workspace_dir()).await?;
+                if crate::memory::deferred_edits::is_protected_path(&path) {
+                    ctx.defer_edit(&path);
+                    result["deferred_until_compaction"] = serde_json::json!(true);
+                }
+                Ok(result)
+            }
             "list_files" => workspace::handle_list_files(input, ctx.workspace_dir()).await,
             "exec" => workspace::handle_exec(input, ctx.workspace_dir()).await,
             // set_next_wake is in the base tool set for cache stability but

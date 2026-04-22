@@ -116,6 +116,12 @@ impl ToolContext for HandlerToolContext {
     fn markdown_store(&self) -> Option<&crate::memory::markdown_store::MarkdownMemoryStore> {
         self.inner.markdown_store()
     }
+    fn config_dir(&self) -> &str {
+        self.inner.config_dir()
+    }
+    fn defer_edit(&self, path: &str) {
+        self.inner.defer_edit(path);
+    }
 }
 
 #[derive(Clone)]

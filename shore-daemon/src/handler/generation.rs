@@ -254,6 +254,23 @@ pub(super) async fn run_tool_phase(
         Err(_) => None,
     };
 
+    let character_data_dir = data_dir.join(char_name);
+    let config_dir = &effective_config.dirs.config;
+
+    // Bootstrap protected workspace files from config so the assistant
+    // can read and edit them during the conversation.
+    if let Err(e) = crate::memory::deferred_edits::bootstrap_workspace_files(
+        &character_data_dir,
+        config_dir,
+        char_name,
+    ) {
+        warn!(
+            character = %char_name,
+            error = %e,
+            "Failed to bootstrap workspace files"
+        );
+    }
+
     let tool_ctx = HandlerToolContext {
         inner: SharedToolContext {
             db: memory_db,
@@ -281,8 +298,7 @@ pub(super) async fn run_tool_phase(
             researcher_model_val: researcher_model.clone(),
             rag: NoopRag,
             search_ctx,
-            image_dir_val: data_dir
-                .join(char_name)
+            image_dir_val: character_data_dir
                 .join("images")
                 .to_string_lossy()
                 .into_owned(),
@@ -290,20 +306,20 @@ pub(super) async fn run_tool_phase(
             image_gen_config_val: image_gen_config,
             search_config_val: effective_config.app.behavior.tool_use.search.clone(),
             character_name_val: char_name.to_owned(),
-            scratchpad_dir_val: data_dir
-                .join(char_name)
+            scratchpad_dir_val: character_data_dir
                 .join("scratchpad")
                 .to_string_lossy()
                 .into_owned(),
-            workspace_dir_val: data_dir
-                .join(char_name)
+            workspace_dir_val: character_data_dir
                 .join("workspace")
                 .to_string_lossy()
                 .into_owned(),
             markdown_store_val: MarkdownMemoryStore::open_sync(
-                data_dir.join(char_name).join("memories"),
+                character_data_dir.join("memories"),
             )
             .ok(),
+            config_dir_val: config_dir.to_string_lossy().into_owned(),
+            character_data_dir_val: character_data_dir.to_string_lossy().into_owned(),
         },
         autonomy_val: ctx.autonomy.clone(),
     };

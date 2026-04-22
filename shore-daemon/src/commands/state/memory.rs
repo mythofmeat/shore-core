@@ -470,6 +470,21 @@ pub async fn compact(
                 .reload()
                 .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
 
+            // Apply deferred character self-edits now that the cache has
+            // been bust by the engine reload.
+            let character_data_dir = ctx.config.dirs.data.join(&char_name);
+            if let Err(e) = crate::memory::deferred_edits::apply_deferred_edits(
+                &character_data_dir,
+                &ctx.config.dirs.config,
+                &char_name,
+            ) {
+                tracing::warn!(
+                    character = %char_name,
+                    error = %e,
+                    "Failed to apply deferred edits after compaction"
+                );
+            }
+
             Ok(json!({
                 "status": "compacted",
                 "character": char_name,

@@ -2,6 +2,7 @@ pub mod agent;
 pub mod agent_llm;
 pub mod compaction;
 pub mod compaction_impls;
+pub mod deferred_edits;
 pub mod db;
 pub mod markdown_store;
 pub mod rag;

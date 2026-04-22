@@ -974,6 +974,23 @@ async fn execute_idle_compaction(character: &str, ctx: &TickContext) {
                 }
             }
 
+            // Apply deferred character self-edits now that the cache has
+            // been bust by the engine reload.
+            let character_data_dir = ctx.data_dir.join(character);
+            if let Some(lc) = ctx.loaded_config.as_deref() {
+                if let Err(e) = crate::memory::deferred_edits::apply_deferred_edits(
+                    &character_data_dir,
+                    &lc.dirs.config,
+                    character,
+                ) {
+                    warn!(
+                        character,
+                        error = %e,
+                        "Idle compaction: failed to apply deferred edits"
+                    );
+                }
+            }
+
             let mut s = lock_state(&ctx.state);
             s.last_request = None;
             s.active_turn_count = retained_count;
@@ -1923,6 +1940,8 @@ async fn build_tool_context(
             char_dir.join("memories"),
         )
         .ok(),
+        config_dir_val: config.dirs.config.to_string_lossy().into_owned(),
+        character_data_dir_val: char_dir.to_string_lossy().into_owned(),
     })
 }
 

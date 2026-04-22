@@ -279,17 +279,22 @@ Keep the SQLite DB file. Don't delete it. If the markdown experiment fails, we c
 
 ## Current Phase
 
-**Phase 5: Fix Tool Use for Memory Retrieval — COMPLETE**
+**Phase 6: Deferred Character Self-Edits — COMPLETE**
 
 Phase 1 complete and verified.
 Phase 2 complete and verified.
 Phase 3 complete and verified.
 Phase 4 complete and verified.
-Phase 5 complete and verified:
-- Sharpened `memory_search`, `memory_read`, `memory_list` tool descriptions
-- Narrowed legacy `memory` tool to frame it as advanced researcher-agent query
-- Added "Memory retrieval" paragraph to capabilities system block when memory enabled
-- All unit tests pass (649 passed, 3 ignored), MCP tests pass (2 passed)
+Phase 5 complete and verified.
+Phase 6 complete and verified:
+- Bootstrap protected files (`character.md`, `user.md`, `prompts/system.md`)
+  from config dir into workspace at generation start
+- Intercept `write`/`edit` to protected paths: apply to workspace immediately,
+  queue deferred copy in `deferred_edits.jsonl`
+- Apply queued edits to config dir **after** compaction completes and engine
+  reloads (cache-bust boundary) in all three compaction paths:
+  inline post-generation, interactive `shore memory compact`, idle-triggered
+- All unit tests pass (650 passed, 3 ignored), MCP tests pass (2 passed)
 
-Next action: Phase 6 — deferred character self-edits (queue edits to protected
-files and apply at compaction boundary).
+Next action: Phase 7 — one-time migration script (`shore memory migrate`) to
+export existing SQLite `entries` to markdown files.

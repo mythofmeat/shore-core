@@ -5,6 +5,29 @@ replaced by better alternatives or because they don't fit the V2 architecture.
 
 Add items here as decisions are made.
 
+## Deferred Character Self-Edits (2026-04-22)
+
+Phase 6 of the memory refactor. The assistant can edit its own `character.md`,
+`user.md`, and `prompts/system.md` during a conversation, but doing so mid-turn
+would invalidate the Anthropic prompt cache (same cache markers, different bytes).
+
+Solution:
+- **Bootstrap**: at the start of each generation, copy protected config files
+  from `{config_dir}/characters/{char}/` into `{data_dir}/{char}/workspace/`
+  if they don't already exist there.
+- **Intercept**: `write` and `edit` tool calls targeting protected paths
+  (`character.md`, `user.md`, `prompts/system.md`) are applied immediately to
+  the workspace file so the assistant can read its own changes back, but a
+  deferred-edit record is queued in `{data_dir}/{char}/deferred_edits.jsonl`.
+- **Apply at boundary**: after every compaction — inline (post-generation),
+  interactive (`shore memory compact`), and idle-triggered (autonomy) — the
+  engine reloads, which already busts the cache. **Immediately after** the
+  reload, queued edits are copied from workspace to the config dir, and the
+  queue is cleared.
+
+This gives the assistant the illusion of editing its own files in real time
+while preserving cache stability until the natural reset boundary.
+
 ## Improved Memory Retrieval Tool Use (2026-04-22)
 
 Phase 5 of the memory refactor. The assistant was not proactively calling

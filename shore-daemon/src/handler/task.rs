@@ -420,6 +420,22 @@ pub(super) async fn handle_generation(
             {
                 Ok(retained_count) => {
                     engine.reload().map_err(|e| e.to_string())?;
+
+                    // Apply deferred character self-edits now that the cache
+                    // has been bust by the engine reload.
+                    let character_data_dir = data_dir.join(&char_name);
+                    if let Err(e) = crate::memory::deferred_edits::apply_deferred_edits(
+                        &character_data_dir,
+                        &effective_config.dirs.config,
+                        &char_name,
+                    ) {
+                        tracing::warn!(
+                            character = %char_name,
+                            error = %e,
+                            "Failed to apply deferred edits after inline compaction"
+                        );
+                    }
+
                     ctx.autonomy
                         .notify_compaction_complete(&char_name, retained_count);
                     info!(

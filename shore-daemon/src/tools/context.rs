@@ -5,6 +5,7 @@
 //! updating this struct + impl (one place) instead of two separate copies.
 
 use std::future::Future;
+use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -64,6 +65,8 @@ pub(crate) struct SharedToolContext {
     pub(crate) scratchpad_dir_val: String,
     pub(crate) workspace_dir_val: String,
     pub(crate) markdown_store_val: Option<MarkdownMemoryStore>,
+    pub(crate) config_dir_val: String,
+    pub(crate) character_data_dir_val: String,
 }
 
 impl ToolContext for SharedToolContext {
@@ -120,5 +123,17 @@ impl ToolContext for SharedToolContext {
     }
     fn markdown_store(&self) -> Option<&MarkdownMemoryStore> {
         self.markdown_store_val.as_ref()
+    }
+    fn config_dir(&self) -> &str {
+        &self.config_dir_val
+    }
+    fn defer_edit(&self, path: &str) {
+        if !crate::memory::deferred_edits::is_protected_path(path) {
+            return;
+        }
+        let data_dir = Path::new(&self.character_data_dir_val);
+        if let Err(e) = crate::memory::deferred_edits::queue_deferred_edit(data_dir, path) {
+            tracing::warn!(path = %path, error = %e, "Failed to queue deferred edit");
+        }
     }
 }
