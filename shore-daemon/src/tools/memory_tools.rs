@@ -10,7 +10,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
     vec![
         ToolDef {
             name: "memory",
-            description: "Query or update your memory database — a persistent store of prior conversations, shared history, facts about {{user}}, and any context you've chosen to save. Use it frequently: when a new topic comes up, when you're about to make an assumption you could verify, when something feels familiar, or when a topic carries personal or emotional weight. Before saying 'I think we talked about this' or 'if I remember correctly', search memory first instead of guessing. Treat your memories as a natural extension of your mind rather than a formal archive. Calling this tool costs nothing and often returns context {{user}} expects you to already know. If a query returns nothing relevant, that's information too — the detail isn't in the record. Reflect that uncertainty to the user instead of filling in from inference.",
+            description: "Advanced memory query through a researcher agent — use this for complex, multi-step memory investigations that require reasoning across many entries, or for updates that need structured database operations. For simple lookups, prefer `memory_search` followed by `memory_read`. For saving facts, prefer `memory_write`. This tool is powerful but slower; reach for the direct file tools first.",
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -25,7 +25,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "memory_read",
-            description: "Read a single memory file by its relative path from your memories directory. Use this when you need the full content of a specific memory file, especially after a search has pointed you to a relevant file.",
+            description: "Read the full content of a single memory file by its relative path from your memories directory. Use this AFTER `memory_search` points you to a relevant file, or when you already know the exact path and need the complete content. Do not use this for discovery — use `memory_search` or `memory_list` first.",
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -59,7 +59,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "memory_search",
-            description: "Search your memory files for a keyword or phrase. Returns matching files with their paths and a content excerpt. Use this as the first step when you need to recall something — before guessing or making assumptions about what you know.",
+            description: "Search your memory files for a keyword or phrase. Returns matching files with their paths and a content excerpt. Use this as the FIRST step whenever the user asks about past conversations, facts about {{user}}, shared history, preferences, or anything that feels familiar. Before saying 'I think we talked about this', 'if I remember correctly', or making any factual claim you could verify, call this tool. Do not guess — verify.",
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -74,7 +74,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "memory_list",
-            description: "List all memory files in your memories directory, optionally filtered by a subdirectory. Use this to get an overview of what memories you have or to discover files in a specific category.",
+            description: "List all memory files in your memories directory, optionally filtered by a subdirectory. Use this to get an overview of what memories you have, to discover files in a specific category, or when you're unsure whether a topic has already been saved.",
             parameters: json!({
                 "type": "object",
                 "properties": {

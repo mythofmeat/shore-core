@@ -279,15 +279,17 @@ Keep the SQLite DB file. Don't delete it. If the markdown experiment fails, we c
 
 ## Current Phase
 
-**Phase 4: Drop Collation — COMPLETE**
+**Phase 5: Fix Tool Use for Memory Retrieval — COMPLETE**
 
 Phase 1 complete and verified.
 Phase 2 complete and verified.
 Phase 3 complete and verified.
-Phase 4 complete and verified:
-- Research confirmed OpenClaw/Letta have no separate collation phase
-- Deleted ~2,700 LOC of collation code and all call sites
-- Config fields deprecated but kept for backward compatibility
-- All unit tests pass, integration tests pass, MCP tests pass
+Phase 4 complete and verified.
+Phase 5 complete and verified:
+- Sharpened `memory_search`, `memory_read`, `memory_list` tool descriptions
+- Narrowed legacy `memory` tool to frame it as advanced researcher-agent query
+- Added "Memory retrieval" paragraph to capabilities system block when memory enabled
+- All unit tests pass (649 passed, 3 ignored), MCP tests pass (2 passed)
 
-Next action: Phase 5 — improve memory retrieval tool use (assistant should proactively search/read memory when useful).
+Next action: Phase 6 — deferred character self-edits (queue edits to protected
+files and apply at compaction boundary).

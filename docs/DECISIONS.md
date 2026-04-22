@@ -5,6 +5,31 @@ replaced by better alternatives or because they don't fit the V2 architecture.
 
 Add items here as decisions are made.
 
+## Improved Memory Retrieval Tool Use (2026-04-22)
+
+Phase 5 of the memory refactor. The assistant was not proactively calling
+memory tools before answering questions about past conversations or user facts.
+
+Changes:
+- Sharpened `memory_search` description: explicitly instructs "call this FIRST"
+  before making factual claims about {{user}} or past conversations.
+- Sharpened `memory_read` description: clarifies it's a follow-up to
+  `memory_search`, not a discovery tool.
+- Sharpened `memory_list` description: emphasizes discovery use case.
+- Narrowed legacy `memory` tool description: now frames it as an advanced
+  researcher-agent query, steering the model toward the direct file tools
+  (`memory_search`, `memory_read`, `memory_write`) for simple lookups.
+- Added a **Memory retrieval** paragraph to the capabilities system block
+  (emitted when `memory_enabled` is true): "Before making a factual claim about
+  {{user}} or past conversations, search your memories with `memory_search` or
+  `memory_read`. Do not guess facts you could verify."
+
+Rationale: The split markdown tools (Phase 2) were already registered, but the
+system prompt didn't prime retrieval and the tool descriptions weren't explicit
+enough about the search-first workflow. Adding a capabilities-block reminder
+and stronger tool descriptions gives the model stronger selection signals
+without adding few-shot examples that would bloat token cost.
+
 ## Dropped Shore Collation (2026-04-22)
 
 Shore's 5-phase collation pipeline (timestamp backfill → refine/merge → tidy/split

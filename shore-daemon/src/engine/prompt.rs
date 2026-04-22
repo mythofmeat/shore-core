@@ -100,15 +100,31 @@ pub fn build_capabilities_block(config: &CapabilitiesConfig) -> Option<String> {
         return None;
     }
 
-    Some(
-        "**Tool usage**\n\
-         \n\
-         You have a number of tools available to help you during the \
+    let mut parts = vec![
+        "**Tool usage**".to_string(),
+        String::new(),
+        "You have a number of tools available to help you during the \
          conversation. You're encouraged to use them freely — reaching for a \
          tool is in-character and enhances the conversation rather than \
          interrupting it. Each tool's own description covers when it's useful."
             .to_string(),
-    )
+    ];
+
+    if config.memory_enabled {
+        parts.push(String::new());
+        parts.push(
+            "**Memory retrieval**\n\
+             \n\
+             Before making a factual claim about {{user}} or past conversations, \
+             search your memories with `memory_search` or `memory_read`. \
+             Do not guess facts you could verify. If `memory_search` returns \
+             a relevant file, call `memory_read` to get the full content \
+             before answering."
+                .to_string(),
+        );
+    }
+
+    Some(parts.join("\n"))
 }
 
 // ---------------------------------------------------------------------------
