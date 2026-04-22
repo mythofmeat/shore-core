@@ -1919,6 +1919,7 @@ async fn build_tool_context(
         search_config_val: config.app.behavior.tool_use.search.clone(),
         character_name_val: character.to_string(),
         scratchpad_dir_val: char_dir.join("scratchpad").to_string_lossy().into_owned(),
+        workspace_dir_val: char_dir.join("workspace").to_string_lossy().into_owned(),
     })
 }
 

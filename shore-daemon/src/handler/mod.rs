@@ -110,6 +110,9 @@ impl ToolContext for HandlerToolContext {
     fn scratchpad_dir(&self) -> &str {
         self.inner.scratchpad_dir()
     }
+    fn workspace_dir(&self) -> &str {
+        self.inner.workspace_dir()
+    }
 }
 
 #[derive(Clone)]

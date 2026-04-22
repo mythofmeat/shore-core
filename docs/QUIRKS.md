@@ -92,3 +92,58 @@ Scope guardrails:
   `shore-daemon/src/memory/compaction/mod.rs::find_turn_split`.
 
 - **`matrix-sdk` 0.16.0 does not compile on rustc 1.94+ without a `recursion_limit` bump.** The default 128 is exceeded computing the layout of `matrix_sdk::Client::sync()`'s async fn body — query depth increases by 130 during that computation. Upstream 0.16.0 and `main` both ship *without* `#![recursion_limit]` on the `matrix-sdk` crate root; the fix is a one-line attribute bump that upstream hasn't merged (see matrix-org/matrix-rust-sdk#6254, draft PR #6449). We carry a pinned git fork via `[patch.crates-io]` at `http://localhost:3000/eshen/matrix-rust-sdk.git` rev `8285d1ca5da1f18227ba4eddaeef9bf579a55de6`. **Caveat: `cargo update -p matrix-sdk` silently breaks the build by re-resolving to published 0.16.0** — do not run it. The patch must stay pinned until upstream ships a fix. Drop the patch and the pin together; don't half-revert.
+
+## Testing via shore-mcp (live LLM verification)
+
+The fastest way to verify daemon behavior with a real LLM is driving `shore-mcp` over JSON-RPC stdio. The MCP server auto-spawns its own test daemon, but when you need a **fresh test daemon with a specific config** (e.g., testing new tools), you must spawn the daemon manually and point MCP at it.
+
+### Procedure
+
+```bash
+# 1. Set up a temp config dir with your test character and model
+export SHORE_CONFIG_DIR=/tmp/shore-test-config
+export SHORE_DATA_DIR=/tmp/shore-test-data
+export OPENROUTER_API_KEY=sk-...
+
+# 2. Create a minimal config.toml under $SHORE_CONFIG_DIR/config.toml
+#    Include a cheap model (e.g., anthropic/claude-haiku-4-5 via OpenRouter)
+#    and enable the tools you want to test.
+
+# 3. Create $SHORE_CONFIG_DIR/characters/TestChar/character.md
+
+# 4. Spawn the daemon manually
+nohup ./target/debug/shore-daemon --instance-id=shore-mcp-test \
+    > /tmp/shore-daemon.log 2>&1 &
+
+# 5. Find the daemon address
+cat /run/user/$(id - u)/shore/instances.json
+
+# 6. Drive MCP via a FIFO (critical — closing stdin kills the MCP server)
+rm -f /tmp/mcp_stdin
+mkfifo /tmp/mcp_stdin
+
+OPENROUTER_API_KEY=sk-... ./target/debug/shore-mcp \
+    --daemon-addr 127.0.0.1:PORT \
+    --attach-main --allow-main-writes \
+    > /tmp/mcp_out.jsonl 2>/tmp/shore-mcp.log < /tmp/mcp_stdin &
+
+exec 3>/tmp/mcp_stdin
+
+# 7. Send JSON-RPC frames
+echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}' >&3
+echo '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"send","arguments":{"text":"your test message"}}}' >&3
+
+# 8. Wait, then clean up
+sleep 30
+exec 3>&-
+kill $MCP_PID
+kill $(cat /run/user/1000/shore/instances.json | jq '.[0].pid')
+rm -rf /tmp/shore-test-config /tmp/shore-test-data
+```
+
+### Critical gotchas
+
+- **FIFO is mandatory.** `shore-mcp` exits when stdin closes. A heredoc (`<<'EOF'`) closes stdin after the last line, killing the server before the LLM response arrives. Use a named pipe (`mkfifo`) and keep the write fd open.
+- **Environment variables must be exported to the daemon.** The daemon reads `OPENROUTER_API_KEY` (or provider-specific keys) at runtime. If you set it only for the MCP client, the daemon won't see it and will fail with "API key environment variable not set."
+- **`--attach-main --allow-main-writes` on a test daemon.** These flags tell MCP "this is my main profile, allow mutations." It doesn't actually have to be the user's real profile — it's just the permission model. Without `--allow-main-writes`, mutation tools like `send` are refused.
+- **`--daemon-addr` bypasses auto-spawn.** Without it, MCP tries to discover `shore-mcp-test` in the registry. If you spawned your own daemon, you must pass its address explicitly.

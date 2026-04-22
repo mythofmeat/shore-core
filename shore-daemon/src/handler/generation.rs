@@ -294,6 +294,11 @@ pub(super) async fn run_tool_phase(
                 .join("scratchpad")
                 .to_string_lossy()
                 .into_owned(),
+            workspace_dir_val: data_dir
+                .join(char_name)
+                .join("workspace")
+                .to_string_lossy()
+                .into_owned(),
         },
         autonomy_val: ctx.autonomy.clone(),
     };

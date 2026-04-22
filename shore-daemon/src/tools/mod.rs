@@ -5,6 +5,7 @@ pub mod images;
 pub mod memory_tools;
 pub mod scratchpad;
 pub mod web;
+pub mod workspace;
 
 use crate::autonomy::manager::AutonomyManager;
 use crate::memory::agent::types::{AgentIndexer, AgentSearchContext};
@@ -121,6 +122,11 @@ pub trait ToolContext: Sync {
     fn scratchpad_dir(&self) -> &str {
         ""
     }
+
+    // Workspace directory for general filesystem tools
+    fn workspace_dir(&self) -> &str {
+        ""
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -136,6 +142,7 @@ pub fn all_tools() -> Vec<ToolDef> {
     tools.extend(activity::tool_defs());
     tools.extend(basic::tool_defs());
     tools.extend(scratchpad::tool_defs());
+    tools.extend(workspace::tool_defs());
     tools
 }
 
@@ -222,6 +229,12 @@ pub fn dispatch_tool<'a>(
             "scratchpad_delete" => {
                 scratchpad::handle_scratchpad_delete(input, ctx.scratchpad_dir()).await
             }
+            // Workspace tools
+            "read" => workspace::handle_read(input, ctx.workspace_dir()).await,
+            "write" => workspace::handle_write(input, ctx.workspace_dir()).await,
+            "edit" => workspace::handle_edit(input, ctx.workspace_dir()).await,
+            "list_files" => workspace::handle_list_files(input, ctx.workspace_dir()).await,
+            "exec" => workspace::handle_exec(input, ctx.workspace_dir()).await,
             // set_next_wake is in the base tool set for cache stability but
             // only handled during interiority ticks (intercepted in manager.rs).
             "set_next_wake" => Err(ToolError::InvalidArgs(
@@ -281,8 +294,8 @@ mod tests {
     #[test]
     fn test_all_tools_returns_expected_count() {
         let tools = all_tools();
-        // memory(1) + images(5) + web(2) + activity(1) + basic(2) + scratchpad(4) + 1 = 16
-        assert_eq!(tools.len(), 16);
+        // memory(1) + images(5) + web(2) + activity(1) + basic(2) + scratchpad(4) + workspace(5) = 21
+        assert_eq!(tools.len(), 21);
     }
 
     #[test]
@@ -338,7 +351,7 @@ mod tests {
         assert!(!names.contains(&"web_search"));
         assert!(names.contains(&"memory"));
         assert!(names.contains(&"check_time"));
-        assert_eq!(tools.len(), 14); // 16 - 2 disabled
+        assert_eq!(tools.len(), 19); // 21 - 2 disabled
     }
 
     #[test]

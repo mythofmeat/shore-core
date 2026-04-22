@@ -61,6 +61,7 @@ pub(crate) struct SharedToolContext {
     pub(crate) search_config_val: SearchConfig,
     pub(crate) character_name_val: String,
     pub(crate) scratchpad_dir_val: String,
+    pub(crate) workspace_dir_val: String,
 }
 
 impl ToolContext for SharedToolContext {
@@ -111,5 +112,8 @@ impl ToolContext for SharedToolContext {
     }
     fn scratchpad_dir(&self) -> &str {
         &self.scratchpad_dir_val
+    }
+    fn workspace_dir(&self) -> &str {
+        &self.workspace_dir_val
     }
 }
