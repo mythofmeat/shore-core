@@ -18,13 +18,13 @@ pub fn tool_defs() -> Vec<ToolDef> {
     vec![
         ToolDef {
             name: "read",
-            description: "Read the contents of a file in your workspace or memories. Use this to check existing files before editing, review your own notes, or pull up context you saved earlier. Returns the full file content as a string. If the file is large you may read it in chunks using offset and limit.",
+            description: "Read the contents of a file in your workspace or memories. Paths without a prefix are resolved under workspace/. Use `memories/...` to access the memories directory. Returns the file content as text; use offset and limit for large files.",
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Relative path to the file under workspace/ or memories/."
+                        "description": "Relative path. Bare paths resolve under workspace/. Use `workspace/...` or `memories/...` for an explicit root."
                     },
                     "offset": {
                         "type": "number",
@@ -41,13 +41,13 @@ pub fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "write",
-            description: "Write or overwrite a file in your workspace or memories. Use this to create new notes, save structured information, or write drafts. Parent directories are created automatically. Overwrites without confirmation — if you want to preserve existing content, read it first and merge manually.",
+            description: "Write or overwrite a file in your workspace or memories. Bare paths resolve under workspace/. Use `memories/...` to write memory files. Parent directories are created automatically. Overwrites without confirmation.",
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Relative path to the file under workspace/ or memories/."
+                        "description": "Relative path. Bare paths resolve under workspace/. Use `workspace/...` or `memories/...` for an explicit root."
                     },
                     "content": {
                         "type": "string",
@@ -60,13 +60,13 @@ pub fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "edit",
-            description: "Edit an existing file by replacing specific text. Provide one or more replacements. Each replacement must match the old_string exactly (including whitespace and newlines). If the old_string appears multiple times, every occurrence is replaced. Use read first if you are unsure of the exact text.",
+            description: "Edit an existing file by replacing specific text. Bare paths resolve under workspace/. Use `memories/...` to edit memory files. Each replacement must match the old_string exactly, including whitespace and newlines.",
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Relative path to the file under workspace/ or memories/."
+                        "description": "Relative path. Bare paths resolve under workspace/. Use `workspace/...` or `memories/...` for an explicit root."
                     },
                     "edits": {
                         "type": "array",
@@ -93,13 +93,13 @@ pub fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "list_files",
-            description: "List files and directories under a path in your workspace or memories. Use this to explore your file tree, find where something is saved, or orient yourself before reading or writing. Returns each entry's name, type (file or directory), and size.",
+            description: "List files and directories under a path in your workspace or memories. Bare paths resolve under workspace/. Use `memories/...` to inspect memory files. Returns each entry's name, type, and size.",
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Relative directory path under workspace/ or memories/. Omit for root."
+                        "description": "Relative directory path. Bare paths resolve under workspace/. Use `workspace/...` or `memories/...` for an explicit root. Omit for workspace root."
                     }
                 },
                 "required": []
@@ -108,7 +108,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "exec",
-            description: "Run a shell command on the host. Use this for file search (rg, find), version control (git), build tools, or any task that is easier done with a command than with file tools. Commands run against an allowlist — restricted commands are rejected. Output is returned as text.",
+            description: "Run an allowlisted host command. The command string is parsed into argv and executed directly; shell features like pipes, redirects, command substitution, and `;` chaining are not supported. Use this for search, git, and build/test commands when a file tool is awkward.",
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -132,7 +132,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
 // Path resolution
 // ---------------------------------------------------------------------------
 
-fn resolve_path(workspace_dir: &str, relative: &str) -> Result<PathBuf, ToolError> {
+fn resolve_roots(workspace_dir: &str, relative: &str) -> Result<(PathBuf, String), ToolError> {
     if workspace_dir.is_empty() {
         return Err(ToolError::InvalidArgs("workspace not configured".into()));
     }
@@ -142,7 +142,33 @@ fn resolve_path(workspace_dir: &str, relative: &str) -> Result<PathBuf, ToolErro
         return Err(ToolError::InvalidArgs("path is empty".into()));
     }
 
-    for component in Path::new(relative).components() {
+    let workspace_root = PathBuf::from(workspace_dir);
+    let character_root = workspace_root.parent().ok_or_else(|| {
+        ToolError::InvalidArgs("workspace root has no character data directory".into())
+    })?;
+
+    let (root, stripped) = if relative == "workspace" {
+        (workspace_root, String::new())
+    } else if let Some(rest) = relative.strip_prefix("workspace/") {
+        (workspace_root, rest.to_string())
+    } else if relative == "memories" {
+        (character_root.join("memories"), String::new())
+    } else if let Some(rest) = relative.strip_prefix("memories/") {
+        (character_root.join("memories"), rest.to_string())
+    } else {
+        (workspace_root, relative.to_string())
+    };
+
+    Ok((root, stripped))
+}
+
+fn resolve_path(workspace_dir: &str, relative: &str) -> Result<PathBuf, ToolError> {
+    let (base, stripped) = resolve_roots(workspace_dir, relative)?;
+    if stripped.is_empty() {
+        return Err(ToolError::InvalidArgs("path is empty".into()));
+    }
+
+    for component in Path::new(&stripped).components() {
         match component {
             std::path::Component::ParentDir => {
                 return Err(ToolError::InvalidArgs(
@@ -158,8 +184,7 @@ fn resolve_path(workspace_dir: &str, relative: &str) -> Result<PathBuf, ToolErro
         }
     }
 
-    let base = PathBuf::from(workspace_dir);
-    let resolved = base.join(relative);
+    let resolved = base.join(&stripped);
 
     if let Ok(canonical_base) = base.canonicalize() {
         if let Ok(canonical) = resolved.canonicalize() {
@@ -192,12 +217,21 @@ fn resolve_list_path(workspace_dir: &str, relative: Option<&str>) -> Result<Path
         return Err(ToolError::InvalidArgs("workspace not configured".into()));
     }
 
-    let base = PathBuf::from(workspace_dir);
-
     match relative {
-        None | Some("") | Some(".") => Ok(base),
-        Some(rel) => resolve_path(workspace_dir, rel),
+        None | Some("") | Some(".") => Ok(PathBuf::from(workspace_dir)),
+        Some(rel) => {
+            let (base, stripped) = resolve_roots(workspace_dir, rel)?;
+            if stripped.is_empty() {
+                Ok(base)
+            } else {
+                resolve_path(workspace_dir, rel)
+            }
+        }
     }
+}
+
+fn truncate_chars(text: &str, limit: usize) -> String {
+    text.chars().take(limit).collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -241,7 +275,12 @@ pub async fn handle_read(input: Value, workspace_dir: &str) -> Result<Value, Too
         .unwrap_or(total_lines);
 
     let end = (offset + limit).min(total_lines);
-    let selected: Vec<&str> = lines.iter().skip(offset).take(end - offset).copied().collect();
+    let selected: Vec<&str> = lines
+        .iter()
+        .skip(offset)
+        .take(end - offset)
+        .copied()
+        .collect();
     let result_text = selected.join("\n");
 
     let mut result = json!({
@@ -337,10 +376,14 @@ pub async fn handle_edit(input: Value, workspace_dir: &str) -> Result<Value, Too
 
         if !content.contains(old_str) {
             let snippet_limit = 800;
-            let snippet = if content.len() <= snippet_limit {
+            let content_chars = content.chars().count();
+            let snippet = if content_chars <= snippet_limit {
                 content.clone()
             } else {
-                format!("{}\n... (truncated)", &content[..snippet_limit])
+                format!(
+                    "{}\n... (truncated)",
+                    truncate_chars(&content, snippet_limit)
+                )
             };
             return Err(ToolError::InvalidArgs(format!(
                 "Could not find the exact text in {path_str}.\nCurrent file contents:\n{snippet}"
@@ -415,57 +458,58 @@ pub async fn handle_list_files(input: Value, workspace_dir: &str) -> Result<Valu
 
 /// Default allowed commands for the exec tool.
 static DEFAULT_ALLOWLIST: &[&str] = &[
-    "ls", "cat", "rg", "git", "find", "head", "tail", "wc", "pwd", "echo", "mkdir", "cp",
-    "mv", "touch", "sort", "uniq", "grep", "awk", "sed", "xargs", "dirname", "basename",
-    "file", "stat", "du", "df", "which", "whoami", "date", "env", "printenv", "tree", "fd",
-    "tldr", "man", "help", "cargo", "rustc", "python3", "python", "node", "npm", "pnpm",
-    "yarn", "make", "cmake", "gcc", "g++", "clang", "go", "ruby", "perl", "php", "lua",
-    "javac", "java", "kotlin", "scala", "swift", "dotnet", "zig", "odin", "v", "nim",
-    "composer", "bundle", "gem", "pip", "pip3", "poetry", "uv", "conda", "mvn", "gradle",
-    "sbt", "leiningen", "mix", "rebar3", "dune", "ocamlfind", "opam", "stack", "cabal",
-    "ghc", "racket", "raco", "chicken", "csi", "gosh", "gauche", "mit-scheme", "guile",
-    "chez", "chibi-scheme", "bigloo", "larceny", "ypsilon", "ironscheme", "ikarus",
-    "mosh", "sagittarius", "foment", "ol", " Owl Lisp", "s7", "tinyscheme", "minischeme",
-    "scheme48", "scsh", " Stalin", "vc", "loko", "tr7", "umb", "sxm", "scheme9", "s9fes",
-    "chicken5", "chicken4", "gambit", "gsi", "gsc", "gerbil", "gxc", "lfe", "joxa",
-    "elixir", "iex", "erl", "escript", "rebar", "rebar3", "mix", "hex", "cargo", "rustup",
-    "clippy", "rustfmt", "rls", "rust-analyzer", "deno", "bun", "ts-node", "tsc",
-    "eslint", "prettier", "jest", "vitest", "playwright", "cypress", "webpack", "vite",
-    "rollup", "parcel", "esbuild", "swc", "babel", "turbopack", "next", "nuxt", "astro",
-    "svelte-kit", "remix", "gatsby", "hexo", "hugo", "jekyll", "eleventy", "mkdocs",
-    "docusaurus", "vuepress", "vitepress", "docsify", "gitbook", "slate", "redoc",
-    "swagger", "openapi", "postman", "insomnia", "hoppscotch", "bruno", "k6", "artillery",
-    "locust", "jmeter", "gatling", "tsung", " vegeta", "wrk", "wrk2", "ab", "siege",
-    "hey", "boom", "cobra", "cobra-cli", "viper", "urfave", "gin", "echo", "fiber",
-    "chi", "mux", "gorilla", "pat", "httprouter", "fasthttp", "atreugo", "vapor",
-    "leaf", "kitura", "perfect", "swifter", "hummingbird", "vapor", "vapor-beta",
+    "ls",
+    "cat",
+    "rg",
+    "git",
+    "wc",
+    "pwd",
+    "sort",
+    "uniq",
+    "dirname",
+    "basename",
+    "file",
+    "stat",
+    "du",
+    "df",
+    "which",
+    "whoami",
+    "date",
+    "tree",
+    "fd",
+    "cargo",
+    "rustc",
+    "rustfmt",
+    "clippy",
+    "rust-analyzer",
+    "npm",
+    "pnpm",
+    "yarn",
+    "make",
+    "cmake",
 ];
 
-fn is_command_allowed(command: &str) -> bool {
-    let trimmed = command.trim();
-    if trimmed.is_empty() {
-        return false;
+fn parse_command(command: &str) -> Result<Vec<String>, ToolError> {
+    let argv = shell_words::split(command)
+        .map_err(|e| ToolError::InvalidArgs(format!("invalid command line: {e}")))?;
+    if argv.is_empty() {
+        return Err(ToolError::InvalidArgs("command is empty".into()));
     }
+    Ok(argv)
+}
 
-    // Extract the first token (the command itself, before any args or pipes)
-    let first_token = trimmed
-        .split(|c: char| c.is_whitespace() || c == '|' || c == ';' || c == '&' || c == '>' || c == '<')
-        .next()
-        .unwrap_or("")
-        .trim();
-
-    if first_token.is_empty() {
+fn is_command_allowed(argv: &[String]) -> bool {
+    let Some(first_token) = argv.first() else {
         return false;
-    }
+    };
 
-    // Allow absolute paths to allowed binaries
     let cmd_name = if first_token.contains('/') {
         std::path::Path::new(first_token)
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or(first_token)
     } else {
-        first_token
+        first_token.as_str()
     };
 
     DEFAULT_ALLOWLIST.iter().any(|&allowed| allowed == cmd_name)
@@ -477,10 +521,12 @@ pub async fn handle_exec(input: Value, workspace_dir: &str) -> Result<Value, Too
         .and_then(|v| v.as_str())
         .ok_or_else(|| ToolError::InvalidArgs("missing required field: command".into()))?;
 
-    if !is_command_allowed(command) {
+    let argv = parse_command(command)?;
+
+    if !is_command_allowed(&argv) {
         return Err(ToolError::InvalidArgs(format!(
             "command '{}' is not in the allowlist",
-            command
+            argv[0]
         )));
     }
 
@@ -490,8 +536,8 @@ pub async fn handle_exec(input: Value, workspace_dir: &str) -> Result<Value, Too
         .map(|w| resolve_path(workspace_dir, w))
         .transpose()?;
 
-    let mut cmd = tokio::process::Command::new("sh");
-    cmd.arg("-c").arg(command);
+    let mut cmd = tokio::process::Command::new(&argv[0]);
+    cmd.args(&argv[1..]);
 
     if let Some(dir) = workdir {
         cmd.current_dir(dir);
@@ -665,6 +711,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn edit_mismatch_with_unicode_content_does_not_panic() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("workspace");
+        let ws_str = ws.to_string_lossy().to_string();
+
+        handle_write(
+            json!({"path": "test.txt", "content": "🙂".repeat(900)}),
+            &ws_str,
+        )
+        .await
+        .unwrap();
+
+        let result = handle_edit(
+            json!({
+                "path": "test.txt",
+                "edits": [
+                    {"old_string": "missing", "new_string": "replaced"}
+                ]
+            }),
+            &ws_str,
+        )
+        .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
     async fn write_creates_subdirectories() {
         let tmp = tempfile::tempdir().unwrap();
         let ws = tmp.path().join("workspace");
@@ -704,15 +776,36 @@ mod tests {
         assert_eq!(result["total_lines"], 5);
     }
 
+    #[tokio::test]
+    async fn write_and_read_memories_prefix() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("workspace");
+        let ws_str = ws.to_string_lossy().to_string();
+
+        handle_write(
+            json!({"path": "memories/people/ren.md", "content": "# Ren\n\nLikes tea."}),
+            &ws_str,
+        )
+        .await
+        .unwrap();
+
+        let result = handle_read(json!({"path": "memories/people/ren.md"}), &ws_str)
+            .await
+            .unwrap();
+        assert_eq!(result["content"], "# Ren\n\nLikes tea.");
+        assert!(tmp.path().join("memories/people/ren.md").exists());
+    }
+
     #[test]
     fn exec_allowlist_basic() {
-        assert!(is_command_allowed("ls -la"));
-        assert!(is_command_allowed("git status"));
-        assert!(is_command_allowed("rg pattern"));
-        assert!(!is_command_allowed("rm -rf /"));
-        assert!(!is_command_allowed("sudo apt install"));
-        assert!(!is_command_allowed(""));
-        assert!(!is_command_allowed("  "));
+        assert!(is_command_allowed(&parse_command("ls -la").unwrap()));
+        assert!(is_command_allowed(&parse_command("git status").unwrap()));
+        assert!(is_command_allowed(&parse_command("rg pattern").unwrap()));
+        assert!(!is_command_allowed(
+            &parse_command("python3 -c 'print(1)'").unwrap()
+        ));
+        assert!(parse_command("").is_err());
+        assert!(parse_command("  ").is_err());
     }
 
     #[tokio::test]
@@ -722,10 +815,14 @@ mod tests {
         tokio::fs::create_dir_all(&ws).await.unwrap();
         let ws_str = ws.to_string_lossy().to_string();
 
-        let result = handle_exec(json!({"command": "echo hello"}), &ws_str)
+        let result = handle_exec(json!({"command": "pwd"}), &ws_str)
             .await
             .unwrap();
-        assert_eq!(result["stdout"], "hello\n");
+        let stdout = result["stdout"].as_str().unwrap();
+        assert!(
+            stdout.contains("workspace"),
+            "expected workspace path in pwd output: {stdout}"
+        );
         assert_eq!(result["exit_code"], 0);
     }
 
@@ -739,6 +836,17 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn exec_rejects_shell_chaining() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("workspace");
+        tokio::fs::create_dir_all(&ws).await.unwrap();
+        let ws_str = ws.to_string_lossy().to_string();
+
+        let result = handle_exec(json!({"command": "pwd; pwd"}), &ws_str).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
     async fn exec_with_workdir() {
         let tmp = tempfile::tempdir().unwrap();
         let ws = tmp.path().join("workspace");
@@ -746,13 +854,13 @@ mod tests {
 
         tokio::fs::create_dir_all(ws.join("subdir")).await.unwrap();
 
-        let result = handle_exec(
-            json!({"command": "pwd", "workdir": "subdir"}),
-            &ws_str,
-        )
-        .await
-        .unwrap();
+        let result = handle_exec(json!({"command": "pwd", "workdir": "subdir"}), &ws_str)
+            .await
+            .unwrap();
         let stdout = result["stdout"].as_str().unwrap();
-        assert!(stdout.contains("subdir"), "expected subdir in pwd output: {stdout}");
+        assert!(
+            stdout.contains("subdir"),
+            "expected subdir in pwd output: {stdout}"
+        );
     }
 }

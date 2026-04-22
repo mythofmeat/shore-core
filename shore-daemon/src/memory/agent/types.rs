@@ -299,6 +299,7 @@ mod tests {
             entry_type: String::new(),
             image_path: String::new(),
             collated_at: String::new(),
+            file_path: String::new(),
         }
     }
 

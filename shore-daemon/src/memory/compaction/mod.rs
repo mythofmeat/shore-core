@@ -8,7 +8,6 @@ pub use types::*;
 
 use crate::memory::db::{Entry, MemoryDB};
 use crate::memory::markdown_store::MarkdownMemoryStore;
-use chrono::Local;
 use std::sync::Arc;
 use tokio::sync::Notify;
 use tokio::time::Duration;
@@ -21,6 +20,15 @@ use tracing::{debug, info, instrument};
 pub struct CompactionManager {
     config: CompactionConfig,
     activity_notify: Arc<Notify>,
+}
+
+struct CompactionWriteState {
+    entry_id: String,
+    changelog_id: Option<i64>,
+    was_indexed: bool,
+    markdown_path: Option<String>,
+    previous_markdown: Option<String>,
+    previous_entry: Option<Entry>,
 }
 
 impl CompactionManager {
@@ -142,15 +150,22 @@ impl CompactionManager {
         result
     }
 
+    fn dedupe_file_ops(file_ops: Vec<MemoryFileOp>) -> Vec<MemoryFileOp> {
+        let mut deduped: Vec<MemoryFileOp> = Vec::new();
+        for op in file_ops {
+            if let Some(existing_idx) = deduped.iter().position(|existing| existing.path == op.path)
+            {
+                deduped.remove(existing_idx);
+            }
+            deduped.push(op);
+        }
+        deduped
+    }
+
     /// Generate an entry ID with a compaction prefix: c_YYYYMMDD_HHMMSS_N
     ///
     /// The `c_` prefix marks compaction-generated entries.
     /// when both run in the same second.
-    fn generate_entry_id(index: usize) -> String {
-        let now = Local::now();
-        format!("c_{}_{}", now.format("%Y%m%d_%H%M%S"), index)
-    }
-
     /// Run compaction on a conversation.
     ///
     /// Splits messages into a compacted portion (sent to LLM) and a retained
@@ -221,7 +236,8 @@ impl CompactionManager {
         let raw_response = llm.summarize(&prompt).await?;
 
         // Parse recap + memory file operations from LLM response.
-        let (recap, file_ops) = parse_compaction_response(&raw_response)?;
+        let (recap, raw_file_ops) = parse_compaction_response(&raw_response)?;
+        let file_ops = Self::dedupe_file_ops(raw_file_ops);
         debug!(
             ops = file_ops.len(),
             has_recap = recap.is_some(),
@@ -250,16 +266,37 @@ impl CompactionManager {
             }));
         }
 
-        let now_str = Local::now().to_rfc3339();
-
         // Track created resources for compensating deletes on failure.
-        let mut created: Vec<(String, Option<i64>, bool, Option<String>)> = Vec::new();
+        let mut created: Vec<CompactionWriteState> = Vec::new();
         let mut db_entry_elapsed = std::time::Duration::ZERO;
         let mut vector_index_elapsed = std::time::Duration::ZERO;
         let mut markdown_elapsed = std::time::Duration::ZERO;
 
-        for (i, op) in file_ops.iter().enumerate() {
-            let entry_id = Self::generate_entry_id(i);
+        for op in &file_ops {
+            let previous_markdown = if let Some(store) = markdown_store {
+                match store.read(&op.path).await {
+                    Ok(entry) => Some(entry.content),
+                    Err(crate::memory::markdown_store::MarkdownStoreError::NotFound(_)) => None,
+                    Err(e) => return Err(CompactionError::MarkdownStore(e.to_string())),
+                }
+            } else {
+                None
+            };
+            let previous_entry = db
+                .get_entry_by_file_path(&op.path)
+                .map_err(|e| CompactionError::Db(e.to_string()))?;
+            let entry_id = previous_entry
+                .as_ref()
+                .map(|entry| entry.id.clone())
+                .unwrap_or_else(|| crate::memory::markdown_index::entry_id_for_path(&op.path));
+            created.push(CompactionWriteState {
+                entry_id: entry_id.clone(),
+                changelog_id: None,
+                was_indexed: false,
+                markdown_path: markdown_store.map(|_| op.path.clone()),
+                previous_markdown,
+                previous_entry,
+            });
 
             // Write markdown file first (new primary storage).
             let md_started = std::time::Instant::now();
@@ -272,58 +309,46 @@ impl CompactionManager {
             }
             markdown_elapsed += md_started.elapsed();
 
-            // Keep a lightweight SQLite entry for backwards compatibility (vector indexing, changelog).
-            let summary_text = op.content.lines().take(5).collect::<Vec<_>>().join("\n");
-            let topic_key = op.path
-                .trim_end_matches(".md")
-                .split('/')
-                .last()
-                .unwrap_or("")
-                .to_string();
-            let entry = Entry {
-                id: entry_id.clone(),
-                memory_type: "semantic".to_string(),
-                source: "summary".to_string(),
-                reason: "compaction".to_string(),
-                status: "active".to_string(),
-                confidence: 0.9,
-                summary_text: summary_text.clone(),
-                topic_tags: topic_key.clone(),
-                topic_key: topic_key.clone(),
-                start_timestamp: now_str.clone(),
-                end_timestamp: now_str.clone(),
-                message_count: split_at as i64,
-                source_entry_ids: String::new(),
-                related_entry_ids: String::new(),
-                superseded_by: String::new(),
-                created_at: now_str.clone(),
-                updated_at: now_str.clone(),
-                entry_type: String::new(),
-                image_path: String::new(),
-                collated_at: String::new(),
-            };
-
             let db_entry_started = std::time::Instant::now();
-            if let Err(e) = db.create_entry(&entry) {
+            let mut entry = match crate::memory::markdown_index::upsert_markdown_entry(
+                db,
+                &op.path,
+                &op.content,
+                "compaction",
+            ) {
+                Ok((entry, _)) => entry,
+                Err(e) => {
+                    Self::rollback_compaction(&created, db, indexer, markdown_store).await;
+                    return Err(CompactionError::Db(e.to_string()));
+                }
+            };
+            entry.message_count = split_at as i64;
+            if let Err(e) = db.update_entry(&entry) {
                 Self::rollback_compaction(&created, db, indexer, markdown_store).await;
                 return Err(CompactionError::Db(e.to_string()));
             }
+            if let Some(state) = created.last_mut() {
+                state.entry_id = entry.id.clone();
+            }
+            if entry.created_at.is_empty() || entry.updated_at.is_empty() {
+                Self::rollback_compaction(&created, db, indexer, markdown_store).await;
+                return Err(CompactionError::Db(
+                    "markdown shadow entry missing timestamps".into(),
+                ));
+            }
             let db_elapsed = db_entry_started.elapsed();
             db_entry_elapsed += db_elapsed;
-            debug!(entry_id, elapsed = ?db_elapsed, "compaction: DB entry created");
-
-            let md_path_opt = markdown_store.map(|_| op.path.clone());
-            created.push((entry_id.clone(), None, false, md_path_opt));
+            debug!(entry_id = %entry.id, elapsed = ?db_elapsed, "compaction: DB entry upserted");
 
             let vector_index_started = std::time::Instant::now();
-            if let Err(e) = indexer.index_entry(&entry_id, &summary_text).await {
+            if let Err(e) = indexer.index_entry(&entry.id, &entry.summary_text).await {
                 Self::rollback_compaction(&created, db, indexer, markdown_store).await;
                 return Err(e);
             }
             let index_elapsed = vector_index_started.elapsed();
             vector_index_elapsed += index_elapsed;
-            debug!(entry_id, elapsed = ?index_elapsed, "compaction: vector entry indexed");
-            created.last_mut().unwrap().2 = true;
+            debug!(entry_id = %entry.id, elapsed = ?index_elapsed, "compaction: vector entry indexed");
+            created.last_mut().unwrap().was_indexed = true;
 
             let cl_id = match db.append_changelog(
                 "compaction",
@@ -338,9 +363,9 @@ impl CompactionManager {
                     return Err(CompactionError::Db(e.to_string()));
                 }
             };
-            created.last_mut().unwrap().1 = Some(cl_id);
+            created.last_mut().unwrap().changelog_id = Some(cl_id);
 
-            if let Err(e) = db.link_changelog_entry(cl_id, &entry_id) {
+            if let Err(e) = db.link_changelog_entry(cl_id, &entry.id) {
                 Self::rollback_compaction(&created, db, indexer, markdown_store).await;
                 return Err(CompactionError::Db(e.to_string()));
             }
@@ -383,10 +408,10 @@ impl CompactionManager {
             "compaction: archive/retain done"
         );
 
-        let entry_ids: Vec<String> = created.iter().map(|(id, _, _, _)| id.clone()).collect();
+        let entry_ids: Vec<String> = created.iter().map(|state| state.entry_id.clone()).collect();
         let markdown_paths: Vec<String> = created
             .into_iter()
-            .filter_map(|(_, _, _, md)| md)
+            .filter_map(|state| state.markdown_path)
             .collect();
 
         info!(
@@ -419,30 +444,60 @@ impl CompactionManager {
     /// Errors during cleanup are logged at WARN level and skipped so that
     /// rollback continues regardless of individual failures.
     async fn rollback_compaction(
-        created: &[(String, Option<i64>, bool, Option<String>)],
+        created: &[CompactionWriteState],
         db: &MemoryDB,
         indexer: &dyn VectorIndexer,
         markdown_store: Option<&MarkdownMemoryStore>,
     ) {
         use tracing::warn;
-        for (entry_id, cl_id, was_indexed, md_path) in created.iter().rev() {
+        for state in created.iter().rev() {
             if let Some(store) = markdown_store {
-                if let Some(path) = md_path {
-                    if let Err(e) = store.delete(path).await {
-                        warn!(entry_id, path, error = %e, "rollback: failed to delete markdown entry");
+                if let Some(path) = state.markdown_path.as_deref() {
+                    match &state.previous_markdown {
+                        Some(previous) => {
+                            if let Err(e) = store.write(path, previous).await {
+                                warn!(entry_id = %state.entry_id, path, error = %e, "rollback: failed to restore markdown entry");
+                            }
+                        }
+                        None => match store.delete(path).await {
+                            Ok(()) => {}
+                            Err(crate::memory::markdown_store::MarkdownStoreError::NotFound(_)) => {
+                            }
+                            Err(e) => {
+                                warn!(entry_id = %state.entry_id, path, error = %e, "rollback: failed to delete markdown entry");
+                            }
+                        },
                     }
                 }
             }
-            if let Some(cl_id) = cl_id {
-                if let Err(e) = db.delete_changelog(*cl_id) {
-                    warn!(entry_id, cl_id, error = %e, "rollback: failed to delete changelog");
+            if let Some(cl_id) = state.changelog_id {
+                if let Err(e) = db.delete_changelog(cl_id) {
+                    warn!(entry_id = %state.entry_id, cl_id, error = %e, "rollback: failed to delete changelog");
                 }
             }
-            if let Err(e) = db.delete_entry(entry_id) {
-                warn!(entry_id, error = %e, "rollback: failed to delete entry");
+            match &state.previous_entry {
+                Some(previous_entry) => {
+                    if let Err(e) = db.update_entry(previous_entry) {
+                        warn!(entry_id = %state.entry_id, error = %e, "rollback: failed to restore entry");
+                    }
+                }
+                None => {
+                    if let Err(e) = db.delete_entry(&state.entry_id) {
+                        warn!(entry_id = %state.entry_id, error = %e, "rollback: failed to delete entry");
+                    }
+                }
             }
-            if *was_indexed {
-                indexer.remove_entry(entry_id).await;
+            if state.was_indexed {
+                if let Some(previous_entry) = &state.previous_entry {
+                    if let Err(e) = indexer
+                        .index_entry(&state.entry_id, &previous_entry.summary_text)
+                        .await
+                    {
+                        warn!(entry_id = %state.entry_id, error = %e, "rollback: failed to restore vector entry");
+                    }
+                } else {
+                    indexer.remove_entry(&state.entry_id).await;
+                }
             }
         }
     }
@@ -494,6 +549,7 @@ impl IdleTimer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Local;
     use std::future::Future;
     use std::pin::Pin;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -1033,7 +1089,7 @@ They discussed daily activities and the user's beverage preferences.
                 for id in &r.entries_created {
                     let entry = db.get_entry(id).unwrap().unwrap();
                     assert_eq!(entry.reason, "compaction");
-                    assert_eq!(entry.source, "summary");
+                    assert_eq!(entry.source, "markdown_store");
                     assert_eq!(entry.status, "active");
                     assert_eq!(entry.message_count, 6);
                 }
@@ -1651,4 +1707,65 @@ They discussed daily activities and the user's beverage preferences.
         );
     }
 
+    #[tokio::test]
+    async fn test_compact_rollback_restores_overwritten_markdown_and_shadow_entry() {
+        let db = MemoryDB::open_in_memory().unwrap();
+        let llm = MockLlm {
+            response: make_xml_response(),
+        };
+        let indexer = MockIndexer::new();
+        let conv_mgr = FailingConversationMgr;
+        let mgr = CompactionManager::new(make_config_with_keep(2));
+        let tmp = tempfile::tempdir().unwrap();
+        let store = MarkdownMemoryStore::open(tmp.path().join("memories"))
+            .await
+            .unwrap();
+
+        let original = "# Beverage Preferences\n\n- User prefers coffee on weekends\n";
+        store
+            .write("preferences/beverages.md", original)
+            .await
+            .unwrap();
+        crate::memory::markdown_index::upsert_markdown_entry(
+            &db,
+            "preferences/beverages.md",
+            original,
+            "seed",
+        )
+        .unwrap();
+
+        let result = mgr
+            .compact(
+                "conv-1",
+                &make_messages(10),
+                "",
+                false,
+                DEFAULT_COMPACT_PROMPT,
+                None,
+                "TestChar",
+                "TestUser",
+                &llm,
+                &db,
+                &indexer,
+                &conv_mgr,
+                Some(&store),
+                false,
+                None,
+            )
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(CompactionError::ConversationManager(_))
+        ));
+
+        let restored = store.read("preferences/beverages.md").await.unwrap();
+        assert_eq!(restored.content, original);
+
+        let shadow = db
+            .get_entry_by_file_path("preferences/beverages.md")
+            .unwrap()
+            .unwrap();
+        assert_eq!(shadow.summary_text, original);
+    }
 }

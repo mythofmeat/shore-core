@@ -21,7 +21,7 @@ use shore_daemon::memory::compaction::{
     ConversationManager, ConversationMessage, RetentionParams, VectorIndexer,
     DEFAULT_COMPACT_PROMPT,
 };
-use shore_daemon::memory::db::{Entry, MemoryDB};
+use shore_daemon::memory::db::MemoryDB;
 use shore_daemon::memory::rag::{EntryMeta, RagPipeline, SourceResult};
 use shore_daemon::memory::search::Bm25Index;
 use shore_daemon::memory::vectorstore::VectorStore;
@@ -63,7 +63,7 @@ impl MockCompactionLlm {
         xml.push_str("<recap>Test recap of conversation.</recap>\n");
         xml.push_str("<memory>\n");
         for (_memory_type, summary, tags, _confidence) in entries {
-            let path = format!("compacted/{}.md", tags.split(',').next().unwrap_or("entry"));
+            let path = format!("compacted/{}.md", tags.replace(',', "_"));
             xml.push_str(&format!(
                 "<write path=\"{path}\">\n# {tags}\n\n{summary}\n</write>\n"
             ));
@@ -369,7 +369,7 @@ async fn test_full_memory_system_e2e() {
         let entry = db.get_entry(id).unwrap().expect("entry should exist");
         assert_eq!(entry.status, "active");
         assert_eq!(entry.reason, "compaction");
-        assert_eq!(entry.source, "summary");
+        assert_eq!(entry.source, "markdown_store");
     }
 
     // Verify changelog recorded compaction
@@ -441,7 +441,6 @@ async fn test_full_memory_system_e2e() {
         private_hits.is_empty(),
         "RAG should return empty in private mode"
     );
-
 }
 
 // ===========================================================================

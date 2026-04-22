@@ -248,5 +248,6 @@ pub fn make_image_entry(id: &str, summary: &str, image_path: &str) -> crate::mem
         entry_type: String::new(),
         image_path: image_path.to_string(),
         collated_at: String::new(),
+        file_path: String::new(),
     }
 }

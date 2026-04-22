@@ -31,6 +31,7 @@ reqwest = { version = "0.12", features = ["json", "stream"] }
 sha2 = "0.10"
 base64 = "0.22.1"
 tempfile = "3"
+shell-words = "1.1"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 fast_image_resize = { version = "6", features = ["image"] }
 which = { workspace = true }

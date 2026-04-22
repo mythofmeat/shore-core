@@ -2,6 +2,32 @@ use super::{ToolCategory, ToolContext, ToolDef, ToolError};
 use crate::memory::agent::RealAgentIndexer;
 use serde_json::{json, Value};
 
+fn build_indexer<'a>(
+    search_ctx: Option<&'a crate::memory::agent::AgentSearchContext>,
+) -> Option<RealAgentIndexer<'a>> {
+    search_ctx.map(RealAgentIndexer::new)
+}
+
+async fn sync_markdown_store(ctx: &dyn ToolContext, reason: &str) -> Result<(), ToolError> {
+    let search_ctx = ctx.search_context();
+    let real_indexer = build_indexer(search_ctx);
+    let indexer = real_indexer
+        .as_ref()
+        .map(|i| i as &dyn crate::memory::agent::AgentIndexer);
+
+    if let Some(store) = ctx.markdown_store() {
+        crate::memory::markdown_index::sync_store_changes(ctx.memory_db(), store, indexer, reason)
+            .await
+            .map_err(ToolError::Io)?;
+    }
+
+    Ok(())
+}
+
+fn truncate_chars(text: &str, limit: usize) -> String {
+    text.chars().take(limit).collect()
+}
+
 // ---------------------------------------------------------------------------
 // Tool definitions
 // ---------------------------------------------------------------------------
@@ -107,13 +133,15 @@ pub async fn handle_memory(input: Value, ctx: &dyn ToolContext) -> Result<Value,
         .and_then(|v| v.as_str())
         .ok_or_else(|| ToolError::InvalidArgs("missing 'request' field".to_string()))?;
 
+    sync_markdown_store(ctx, "memory_tool_sync").await?;
+
     let agent = ctx.memory_agent();
     let db = ctx.memory_db();
     let agent_llm = ctx.agent_llm();
     let agent_model = ctx.agent_model();
     let search_ctx = ctx.search_context();
     // Build a real indexer from the search context when available; falls back to None.
-    let real_indexer = search_ctx.map(RealAgentIndexer::new);
+    let real_indexer = build_indexer(search_ctx);
     let indexer = real_indexer
         .as_ref()
         .map(|i| i as &dyn crate::memory::agent::AgentIndexer);
@@ -163,7 +191,10 @@ pub async fn handle_memory_read(input: Value, ctx: &dyn ToolContext) -> Result<V
         .markdown_store()
         .ok_or_else(|| ToolError::InvalidArgs("markdown memory store not available".to_string()))?;
 
-    let entry = store.read(path).await.map_err(|e| ToolError::Io(e.to_string()))?;
+    let entry = store
+        .read(path)
+        .await
+        .map_err(|e| ToolError::Io(e.to_string()))?;
 
     Ok(json!({
         "path": entry.path,
@@ -193,6 +224,21 @@ pub async fn handle_memory_write(input: Value, ctx: &dyn ToolContext) -> Result<
         .await
         .map_err(|e| ToolError::Io(e.to_string()))?;
 
+    let search_ctx = ctx.search_context();
+    let real_indexer = build_indexer(search_ctx);
+    let indexer = real_indexer
+        .as_ref()
+        .map(|i| i as &dyn crate::memory::agent::AgentIndexer);
+    crate::memory::markdown_index::sync_markdown_entry_content(
+        ctx.memory_db(),
+        indexer,
+        path,
+        content,
+        "memory_write",
+    )
+    .await
+    .map_err(ToolError::Io)?;
+
     Ok(json!({"status": "written", "path": path, "bytes": content.len()}))
 }
 
@@ -216,8 +262,8 @@ pub async fn handle_memory_search(input: Value, ctx: &dyn ToolContext) -> Result
         .into_iter()
         .map(|entry| {
             // Truncate content to a reasonable excerpt for the LLM
-            let excerpt = if entry.content.len() > 400 {
-                format!("{}...", &entry.content[..400])
+            let excerpt = if entry.content.chars().count() > 400 {
+                format!("{}...", truncate_chars(&entry.content, 400))
             } else {
                 entry.content.clone()
             };
@@ -388,7 +434,9 @@ mod tests {
     #[tokio::test]
     async fn test_memory_write_and_read() {
         let tmp = tempfile::tempdir().unwrap();
-        let store = MarkdownMemoryStore::open(tmp.path().join("memories")).await.unwrap();
+        let store = MarkdownMemoryStore::open(tmp.path().join("memories"))
+            .await
+            .unwrap();
         let ctx = TestToolContext::new().with_markdown_store(store);
 
         let result = handle_memory_write(
@@ -403,12 +451,55 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(read["content"], "# Alice\n\nLikes chocolate.");
+        let shadow = ctx
+            .db
+            .get_entry_by_file_path("people/alice.md")
+            .unwrap()
+            .unwrap();
+        assert_eq!(shadow.summary_text, "# Alice\n\nLikes chocolate.");
+    }
+
+    #[tokio::test]
+    async fn test_handle_memory_syncs_markdown_store_before_query() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = MarkdownMemoryStore::open(tmp.path().join("memories"))
+            .await
+            .unwrap();
+        store
+            .write("people/alice.md", "# Alice\n\nLikes chocolate.")
+            .await
+            .unwrap();
+
+        let agent_llm = MockAgentLlm::new(vec![AgentLlmResponse {
+            text: "No relevant memories found.".into(),
+            content_blocks: vec![ContentBlock::Text {
+                text: "No relevant memories found.".into(),
+            }],
+            finish_reason: "end_turn".into(),
+        }]);
+
+        let ctx = TestToolContext::new()
+            .with_markdown_store(store)
+            .with_agent_llm(agent_llm);
+
+        handle_memory(json!({"request": "What does Alice like?"}), &ctx)
+            .await
+            .unwrap();
+
+        let shadow = ctx
+            .db
+            .get_entry_by_file_path("people/alice.md")
+            .unwrap()
+            .unwrap();
+        assert_eq!(shadow.summary_text, "# Alice\n\nLikes chocolate.");
     }
 
     #[tokio::test]
     async fn test_memory_search_finds_matches() {
         let tmp = tempfile::tempdir().unwrap();
-        let store = MarkdownMemoryStore::open(tmp.path().join("memories")).await.unwrap();
+        let store = MarkdownMemoryStore::open(tmp.path().join("memories"))
+            .await
+            .unwrap();
         let ctx = TestToolContext::new().with_markdown_store(store);
 
         handle_memory_write(
@@ -433,17 +524,46 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_memory_list_all_and_filtered() {
+    async fn test_memory_search_truncates_unicode_excerpt_safely() {
         let tmp = tempfile::tempdir().unwrap();
-        let store = MarkdownMemoryStore::open(tmp.path().join("memories")).await.unwrap();
+        let store = MarkdownMemoryStore::open(tmp.path().join("memories"))
+            .await
+            .unwrap();
         let ctx = TestToolContext::new().with_markdown_store(store);
 
-        handle_memory_write(json!({"path": "topics/gaming/doom.md", "content": "Doom"}), &ctx)
+        let content = "é".repeat(401);
+        handle_memory_write(json!({"path": "unicode.md", "content": content}), &ctx)
             .await
             .unwrap();
-        handle_memory_write(json!({"path": "topics/food/tea.md", "content": "Tea"}), &ctx)
+
+        let result = handle_memory_search(json!({"query": "é"}), &ctx)
             .await
             .unwrap();
+        let results = result["results"].as_array().unwrap();
+        let excerpt = results[0]["excerpt"].as_str().unwrap();
+        assert!(excerpt.ends_with("..."));
+    }
+
+    #[tokio::test]
+    async fn test_memory_list_all_and_filtered() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = MarkdownMemoryStore::open(tmp.path().join("memories"))
+            .await
+            .unwrap();
+        let ctx = TestToolContext::new().with_markdown_store(store);
+
+        handle_memory_write(
+            json!({"path": "topics/gaming/doom.md", "content": "Doom"}),
+            &ctx,
+        )
+        .await
+        .unwrap();
+        handle_memory_write(
+            json!({"path": "topics/food/tea.md", "content": "Tea"}),
+            &ctx,
+        )
+        .await
+        .unwrap();
 
         let all = handle_memory_list(json!({}), &ctx).await.unwrap();
         let files = all["files"].as_array().unwrap();

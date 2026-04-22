@@ -113,6 +113,7 @@ pub fn handle_search_entries(db: &MemoryDB, input: &Value) -> Result<String, Str
                         m.insert("summary_text".into(), Value::String(h.summary_text));
                         m.insert("topic_tags".into(), Value::String(h.topic_tags));
                         m.insert("topic_key".into(), Value::String(h.topic_key));
+                        m.insert("file_path".into(), Value::String(h.file_path));
                         m.insert("status".into(), Value::String(h.status));
                         m.insert("memory_type".into(), Value::String(h.memory_type));
                         m.insert("when".into(), Value::String(when));
@@ -249,11 +250,18 @@ pub async fn handle_semantic_search(
                 m.insert("summary_text".into(), Value::String(e.summary_text.clone()));
                 m.insert("topic_tags".into(), Value::String(e.topic_tags.clone()));
                 m.insert("topic_key".into(), Value::String(e.topic_key.clone()));
+                m.insert("file_path".into(), Value::String(e.file_path.clone()));
                 m.insert("status".into(), Value::String(e.status.clone()));
                 m.insert("memory_type".into(), Value::String(e.memory_type.clone()));
                 m.insert("when".into(), Value::String(when));
-                m.insert("start_timestamp".into(), Value::String(e.start_timestamp.clone()));
-                m.insert("end_timestamp".into(), Value::String(e.end_timestamp.clone()));
+                m.insert(
+                    "start_timestamp".into(),
+                    Value::String(e.start_timestamp.clone()),
+                );
+                m.insert(
+                    "end_timestamp".into(),
+                    Value::String(e.end_timestamp.clone()),
+                );
                 m.insert("created_at".into(), Value::String(e.created_at.clone()));
                 m.insert(
                     "confidence".into(),
@@ -377,6 +385,7 @@ pub async fn handle_create_entry(
         entry_type: String::new(),
         image_path: input["image_path"].as_str().unwrap_or("").to_string(),
         collated_at: String::new(),
+        file_path: String::new(),
     };
 
     db.create_entry(&entry)
@@ -760,6 +769,7 @@ mod tests {
             entry_type: String::new(),
             image_path: String::new(),
             collated_at: String::new(),
+            file_path: String::new(),
         };
         db.create_entry(&entry).unwrap();
     }

@@ -876,9 +876,10 @@ $XDG_CONFIG_HOME/shore/            (~/.config/shore/)
 $XDG_DATA_HOME/shore/              (~/.local/share/shore/)
 ├── prompts.manifest.json          # Tracks stock vs user-modified templates
 └── {character}/
+    ├── memories/                  # Markdown memory files (source of truth)
     ├── memory/
-    │   ├── memory.db              # SQLite (entries, entities, flags, changelog)
-    │   ├── vectorstore/           # LanceDB index
+    │   ├── memory.db              # SQLite shadow index + changelog metadata
+    │   ├── vectorstore/           # LanceDB shadow index for retrieval
     │   ├── recap.md               # Rolling narrative recap (generated)
     │   └── changelog.md           # Audit trail (generated, configurable path)
     ├── conversations/
@@ -887,6 +888,7 @@ $XDG_DATA_HOME/shore/              (~/.local/share/shore/)
     ├── images/
     │   ├── generated/             # AI-generated images
     │   └── received/              # Images from user or chat platforms
+    ├── workspace/                 # General agent workspace files
     └── matrix/
         ├── provision.json         # Provisioning state (user_id, token, room_id)
         └── crypto_store/          # E2E encryption keys (matrix-sdk managed)
@@ -894,6 +896,19 @@ $XDG_DATA_HOME/shore/              (~/.local/share/shore/)
 
 Everything under `{character}/` is self-contained. You can back up, move, or
 delete a character's data by operating on a single directory.
+
+### 7.2.1 Markdown Memory Shadow Index
+
+- `memories/` is the authoritative long-term memory store.
+- `memory/memory.db` and `memory/vectorstore/` remain as a retrieval/indexing
+  compatibility layer for the memory agent, CLI memory commands, changelog,
+  FTS, and semantic search.
+- SQLite `entries.file_path` links a shadow row back to the markdown file that
+  produced it.
+- `memory_write`, workspace writes to `memories/...`, and compaction all update
+  the markdown file first and then upsert the shadow SQLite/vector entries.
+- Compaction rollback restores the prior markdown file contents, prior SQLite
+  row, and prior vector entry when later archive/index/changelog work fails.
 
 Matrix bridge state lives under the character it belongs to, not in a separate
 top-level `matrix/` directory.
@@ -1017,11 +1032,12 @@ allowed_hosts = ["100.64.0.2"]
 
 ## 9. SQLite Schema
 
-Carried forward from V1 with no changes.
+Carried forward from V1, but `entries` is now a shadow index for markdown
+memories rather than the primary store.
 
 ### Tables
 
-**entries** — Primary memory store
+**entries** — Shadow retrieval/index row for memory files and legacy entries
 | Column | Type | Description |
 |--------|------|-------------|
 | id | TEXT PK | `YYYYMMDD_HHMMSS_N` |
@@ -1029,9 +1045,8 @@ Carried forward from V1 with no changes.
 | source | TEXT | `summary` / `import` / ... |
 | reason | TEXT | `compaction` / `collation` / `tidy_split` / ... |
 | status | TEXT | `active` / `protected` / `superseded` |
-| canonical | BOOL | Is this a canonical (merged) entry? |
 | confidence | REAL | 0.0–1.0 |
-| summary_text | TEXT | Newline-joined content |
+| summary_text | TEXT | Full indexed text or summary |
 | topic_tags | TEXT | Comma-separated |
 | topic_key | TEXT | Inferred topic cluster |
 | start_timestamp | TEXT | ISO timestamp |
@@ -1045,6 +1060,7 @@ Carried forward from V1 with no changes.
 | entry_type | TEXT | `""` / `"image"` |
 | image_path | TEXT | Filesystem path if image |
 | collated_at | TEXT | Last collation pipeline timestamp (empty = never) |
+| file_path | TEXT | Relative path in `{character}/memories/` for markdown-backed rows |
 
 **entities** — Entity registry (entity_id INT PK, name TEXT UNIQUE NOCASE,
 type TEXT, description TEXT, created_at TEXT, updated_at TEXT)
@@ -1248,6 +1264,12 @@ LLM during conversation:
 **Private conversation behavior:** When a conversation is private, memory write
 tools are excluded from the tool list. Memory read tools (RAG) are also
 suppressed. Other tools (web, images, dice, time) remain available.
+
+**Filesystem tool routing:** Bare file-tool paths resolve under `workspace/`.
+The `memories/...` prefix explicitly targets the markdown memory namespace.
+The `exec` tool parses its input into argv and runs an allowlisted executable
+directly; shell syntax (`;`, pipes, redirects, command substitution) is not
+part of the contract.
 
 **Memory agent identity fix:** The memory agent must be told whether its caller
 is `{{char}}` (during agentic tool calls) or `{{user}}` (during interactive

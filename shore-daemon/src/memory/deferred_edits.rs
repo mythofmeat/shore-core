@@ -4,15 +4,15 @@ use std::path::Path;
 /// Paths relative to workspace/ that, when edited, should be deferred
 /// until the next compaction boundary to avoid mid-conversation cache
 /// invalidation.
-const PROTECTED_PATHS: &[&str] = &[
-    "character.md",
-    "user.md",
-    "prompts/system.md",
-];
+const PROTECTED_PATHS: &[&str] = &["character.md", "user.md", "prompts/system.md"];
 
 /// Check whether a workspace-relative path is a protected file.
 pub fn is_protected_path(path: &str) -> bool {
-    let normalized = path.trim_start_matches('/').trim_start_matches('\\');
+    let normalized = path
+        .trim_start_matches('/')
+        .trim_start_matches('\\')
+        .strip_prefix("workspace/")
+        .unwrap_or(path.trim_start_matches('/').trim_start_matches('\\'));
     PROTECTED_PATHS.iter().any(|&p| normalized == p)
 }
 

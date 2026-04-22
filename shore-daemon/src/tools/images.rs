@@ -268,6 +268,7 @@ pub async fn handle_remember_image(
         entry_type: String::new(),
         image_path: path.to_string(),
         collated_at: String::new(),
+        file_path: String::new(),
     };
 
     ctx.memory_db()
@@ -394,6 +395,7 @@ pub async fn handle_generate_image(
         entry_type: String::new(),
         image_path: relative_path.clone(),
         collated_at: String::new(),
+        file_path: String::new(),
     };
     ctx.memory_db()
         .create_entry(&entry)

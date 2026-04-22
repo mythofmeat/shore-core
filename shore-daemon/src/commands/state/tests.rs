@@ -328,6 +328,7 @@ async fn memory_status_with_db() {
         entry_type: String::new(),
         image_path: String::new(),
         collated_at: String::new(),
+        file_path: String::new(),
     })
     .unwrap();
     drop(db);
@@ -520,6 +521,7 @@ async fn memory_purge_deletes_old_superseded_entries() {
             entry_type: empty.clone(),
             image_path: image_path.into(),
             collated_at: empty.clone(),
+            file_path: empty.clone(),
         };
 
     db.create_entry(&make_entry("active-1", "active", "", "", &old_ts))
@@ -675,6 +677,7 @@ dimensions = 1536
             entry_type: String::new(),
             image_path: String::new(),
             collated_at: String::new(),
+            file_path: String::new(),
         })
         .unwrap();
     }
@@ -721,9 +724,15 @@ fn set_reasoning_effort_bare_read_shows_state() {
     ctx.active_model = Some("claude-sonnet".into());
 
     let result = set_reasoning_effort(&mut ctx, &json!({})).unwrap();
-    assert!(result.get("changed").is_none(), "bare read must not mark changed");
+    assert!(
+        result.get("changed").is_none(),
+        "bare read must not mark changed"
+    );
     assert!(result["override"].is_null(), "no override by default");
-    assert!(result["effective"].is_null(), "no config default, no override → null");
+    assert!(
+        result["effective"].is_null(),
+        "no config default, no override → null"
+    );
     assert!(ctx.reasoning_effort_override.is_none());
 }
 
@@ -732,8 +741,7 @@ fn set_reasoning_effort_sets_string_value() {
     let tmp = TempDir::new().unwrap();
     let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
 
-    let result =
-        set_reasoning_effort(&mut ctx, &json!({ "value": "high" })).unwrap();
+    let result = set_reasoning_effort(&mut ctx, &json!({ "value": "high" })).unwrap();
     assert_eq!(result["changed"], true);
     assert_eq!(result["effective"], "high");
     assert_eq!(ctx.reasoning_effort_override, Some(Some("high".into())));
@@ -744,11 +752,8 @@ fn set_reasoning_effort_null_forces_off() {
     let tmp = TempDir::new().unwrap();
     let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
 
-    let result = set_reasoning_effort(
-        &mut ctx,
-        &json!({ "value": serde_json::Value::Null }),
-    )
-    .unwrap();
+    let result =
+        set_reasoning_effort(&mut ctx, &json!({ "value": serde_json::Value::Null })).unwrap();
     assert_eq!(result["changed"], true);
     assert!(result["effective"].is_null(), "forced off");
     assert_eq!(ctx.reasoning_effort_override, Some(None));
@@ -762,8 +767,7 @@ fn set_reasoning_effort_off_sentinel_forces_off() {
     // Each of these should collapse to "force off" (override = Some(None)).
     for sentinel in ["off", "OFF", "none", "disable", "disabled", "unset"] {
         ctx.reasoning_effort_override = Some(Some("high".into())); // reset
-        let result =
-            set_reasoning_effort(&mut ctx, &json!({ "value": sentinel })).unwrap();
+        let result = set_reasoning_effort(&mut ctx, &json!({ "value": sentinel })).unwrap();
         assert_eq!(
             ctx.reasoning_effort_override,
             Some(None),
@@ -805,7 +809,10 @@ fn set_reasoning_effort_rejects_non_string_non_null_value() {
 
     let err = set_reasoning_effort(&mut ctx, &json!({ "value": 7 })).unwrap_err();
     assert_eq!(err.0, shore_protocol::error::ErrorCode::InvalidRequest);
-    assert!(ctx.reasoning_effort_override.is_none(), "rejected input must not mutate state");
+    assert!(
+        ctx.reasoning_effort_override.is_none(),
+        "rejected input must not mutate state"
+    );
 }
 
 #[test]

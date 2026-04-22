@@ -19,8 +19,8 @@ use shore_config::resolve_prompt_template;
 use shore_ledger::CallType;
 
 use crate::commands::{
-    memory_dir, open_embed_and_vectorstore, resolve_agent_model,
-    setup_search_context, CommandContext, CommandResult, MemoryShellSession,
+    memory_dir, open_embed_and_vectorstore, resolve_agent_model, setup_search_context,
+    CommandContext, CommandResult, MemoryShellSession,
 };
 
 /// Build the memory DB path for a character and open it.
@@ -32,6 +32,36 @@ fn open_memory_db(ctx: &CommandContext, char_name: &str) -> Result<MemoryDB, (Er
             format!("Failed to open memory DB: {e}"),
         )
     })
+}
+
+async fn sync_markdown_memories(
+    ctx: &CommandContext,
+    char_name: &str,
+    db: &MemoryDB,
+    indexer: Option<&dyn crate::memory::agent::AgentIndexer>,
+    reason: &str,
+) -> Result<(), (ErrorCode, String)> {
+    let store = crate::memory::markdown_store::MarkdownMemoryStore::open(
+        ctx.data_dir.join(char_name).join("memories"),
+    )
+    .await
+    .map_err(|e| {
+        (
+            ErrorCode::InternalError,
+            format!("Failed to open markdown store: {e}"),
+        )
+    })?;
+
+    crate::memory::markdown_index::sync_store_changes(db, &store, indexer, reason)
+        .await
+        .map_err(|e| {
+            (
+                ErrorCode::InternalError,
+                format!("Failed to sync markdown memories: {e}"),
+            )
+        })?;
+
+    Ok(())
 }
 
 /// Show recent memory changelog entries.
@@ -167,6 +197,8 @@ async fn memory_query(
         .as_ref()
         .map(|i| i as &dyn crate::memory::agent::AgentIndexer);
 
+    sync_markdown_memories(ctx, char_name, &db, indexer, "memory_command_sync").await?;
+
     let researcher_model = if direct {
         None
     } else {
@@ -300,6 +332,8 @@ pub async fn memory_shell_query(
     let indexer = real_indexer
         .as_ref()
         .map(|i| i as &dyn crate::memory::agent::AgentIndexer);
+
+    sync_markdown_memories(ctx, &char_name, &db, indexer, "memory_shell_sync").await?;
 
     let session = ctx
         .memory_shell_sessions
@@ -874,5 +908,4 @@ model_id = "minimax-tool"
         );
         assert!(resolve_compaction_model(&config).is_none());
     }
-
 }

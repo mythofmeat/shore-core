@@ -20,6 +20,7 @@
 
 use std::path::{Path, PathBuf};
 
+use chrono::{DateTime, Local, Utc};
 use tokio::fs;
 use tracing::info;
 
@@ -78,8 +79,7 @@ impl MarkdownMemoryStore {
     pub fn open_sync(base_dir: impl AsRef<Path>) -> Result<Self, MarkdownStoreError> {
         let base = base_dir.as_ref().to_path_buf();
         if !base.exists() {
-            std::fs::create_dir_all(&base)
-                .map_err(|e| MarkdownStoreError::Io(e.to_string()))?;
+            std::fs::create_dir_all(&base).map_err(|e| MarkdownStoreError::Io(e.to_string()))?;
         }
         Ok(Self { base_dir: base })
     }
@@ -107,7 +107,7 @@ impl MarkdownMemoryStore {
         let modified = meta
             .modified()
             .ok()
-            .and_then(|t| t.elapsed().ok().map(|_| chrono::Local::now().to_rfc3339()))
+            .map(format_modified_at)
             .unwrap_or_default();
         Ok(MarkdownEntry {
             path: rel_path.to_string(),
@@ -176,7 +176,11 @@ impl MarkdownMemoryStore {
             let filename = if entry.topic_key.is_empty() {
                 format!("migrated/{}.md", entry.id)
             } else {
-                format!("migrated/{}_{}.md", sanitize_filename(&entry.topic_key), entry.id)
+                format!(
+                    "migrated/{}_{}.md",
+                    sanitize_filename(&entry.topic_key),
+                    entry.id
+                )
             };
             let content = format!("# {}\n\n{}\n", entry.topic_key, entry.summary_text);
             self.write(&filename, &content).await?;
@@ -212,7 +216,8 @@ impl MarkdownMemoryStore {
             if meta.is_dir() {
                 Box::pin(self.collect_md_files(&path, entries)).await?;
             } else if path.extension().and_then(|e| e.to_str()) == Some("md") {
-                let rel = path.strip_prefix(&self.base_dir)
+                let rel = path
+                    .strip_prefix(&self.base_dir)
                     .unwrap_or(&path)
                     .to_string_lossy()
                     .to_string();
@@ -222,9 +227,7 @@ impl MarkdownMemoryStore {
                 let modified = meta
                     .modified()
                     .ok()
-                    .and_then(|t| {
-                        t.elapsed().ok().map(|_| chrono::Local::now().to_rfc3339())
-                    })
+                    .map(format_modified_at)
                     .unwrap_or_default();
                 entries.push(MarkdownEntry {
                     path: rel,
@@ -261,6 +264,11 @@ impl MarkdownMemoryStore {
     }
 }
 
+fn format_modified_at(time: std::time::SystemTime) -> String {
+    let utc: DateTime<Utc> = time.into();
+    utc.with_timezone(&Local).to_rfc3339()
+}
+
 fn sanitize_filename(name: &str) -> String {
     name.chars()
         .map(|c| match c {
@@ -282,16 +290,23 @@ mod tests {
     #[tokio::test]
     async fn open_creates_dir() {
         let tmp = tempfile::tempdir().unwrap();
-        let store = MarkdownMemoryStore::open(tmp.path().join("memories")).await.unwrap();
+        let store = MarkdownMemoryStore::open(tmp.path().join("memories"))
+            .await
+            .unwrap();
         assert!(store.base_dir.exists());
     }
 
     #[tokio::test]
     async fn write_read_cycle() {
         let tmp = tempfile::tempdir().unwrap();
-        let store = MarkdownMemoryStore::open(tmp.path().join("memories")).await.unwrap();
+        let store = MarkdownMemoryStore::open(tmp.path().join("memories"))
+            .await
+            .unwrap();
 
-        store.write("topics/gaming/doom.md", "# Doom\n\n- UV-Max speedrunner\n").await.unwrap();
+        store
+            .write("topics/gaming/doom.md", "# Doom\n\n- UV-Max speedrunner\n")
+            .await
+            .unwrap();
 
         let entry = store.read("topics/gaming/doom.md").await.unwrap();
         assert_eq!(entry.content, "# Doom\n\n- UV-Max speedrunner\n");
@@ -299,9 +314,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn read_reports_real_modified_timestamp() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = MarkdownMemoryStore::open(tmp.path().join("memories"))
+            .await
+            .unwrap();
+
+        store.write("a.md", "A").await.unwrap();
+
+        let path = tmp.path().join("memories/a.md");
+        let metadata = std::fs::metadata(&path).unwrap();
+        let expected = format_modified_at(metadata.modified().unwrap());
+
+        let entry = store.read("a.md").await.unwrap();
+        assert_eq!(entry.modified_at, expected);
+    }
+
+    #[tokio::test]
     async fn list_all_recursive() {
         let tmp = tempfile::tempdir().unwrap();
-        let store = MarkdownMemoryStore::open(tmp.path().join("memories")).await.unwrap();
+        let store = MarkdownMemoryStore::open(tmp.path().join("memories"))
+            .await
+            .unwrap();
 
         store.write("a.md", "A").await.unwrap();
         store.write("deep/b.md", "B").await.unwrap();
@@ -315,7 +349,9 @@ mod tests {
     #[tokio::test]
     async fn search_text_finds_matches() {
         let tmp = tempfile::tempdir().unwrap();
-        let store = MarkdownMemoryStore::open(tmp.path().join("memories")).await.unwrap();
+        let store = MarkdownMemoryStore::open(tmp.path().join("memories"))
+            .await
+            .unwrap();
 
         store.write("a.md", "Ren likes chocolate").await.unwrap();
         store.write("b.md", "Alice prefers tea").await.unwrap();
@@ -328,7 +364,9 @@ mod tests {
     #[tokio::test]
     async fn delete_removes_file() {
         let tmp = tempfile::tempdir().unwrap();
-        let store = MarkdownMemoryStore::open(tmp.path().join("memories")).await.unwrap();
+        let store = MarkdownMemoryStore::open(tmp.path().join("memories"))
+            .await
+            .unwrap();
 
         store.write("temp.md", "temp").await.unwrap();
         store.delete("temp.md").await.unwrap();
@@ -339,7 +377,9 @@ mod tests {
     #[tokio::test]
     async fn rejects_traversal() {
         let tmp = tempfile::tempdir().unwrap();
-        let store = MarkdownMemoryStore::open(tmp.path().join("memories")).await.unwrap();
+        let store = MarkdownMemoryStore::open(tmp.path().join("memories"))
+            .await
+            .unwrap();
 
         assert!(store.read("../secret.md").await.is_err());
         assert!(store.write("../secret.md", "x").await.is_err());

@@ -205,6 +205,51 @@ pub fn available_tools(is_private: bool, toggles: &shore_config::app::ToolToggle
         .collect()
 }
 
+fn memory_relative_path(path: &str) -> Option<&str> {
+    let normalized = path.trim_start_matches('/').trim_start_matches('\\');
+    let relative = normalized.strip_prefix("memories/")?;
+    if relative.is_empty() {
+        None
+    } else {
+        Some(relative)
+    }
+}
+
+async fn sync_memory_file_after_workspace_write(
+    ctx: &dyn ToolContext,
+    path: &str,
+    reason: &str,
+) -> Result<(), ToolError> {
+    let Some(relative_path) = memory_relative_path(path) else {
+        return Ok(());
+    };
+    let Some(store) = ctx.markdown_store() else {
+        return Ok(());
+    };
+
+    let entry = store
+        .read(relative_path)
+        .await
+        .map_err(|e| ToolError::Io(e.to_string()))?;
+    let real_indexer = ctx
+        .search_context()
+        .map(crate::memory::agent::RealAgentIndexer::new);
+    let indexer = real_indexer
+        .as_ref()
+        .map(|i| i as &dyn crate::memory::agent::AgentIndexer);
+
+    crate::memory::markdown_index::sync_markdown_entry_content(
+        ctx.memory_db(),
+        indexer,
+        relative_path,
+        &entry.content,
+        reason,
+    )
+    .await
+    .map(|_| ())
+    .map_err(ToolError::Io)
+}
+
 // ---------------------------------------------------------------------------
 // Tool dispatch
 // ---------------------------------------------------------------------------
@@ -262,6 +307,7 @@ pub fn dispatch_tool<'a>(
                     ctx.defer_edit(&path);
                     result["deferred_until_compaction"] = serde_json::json!(true);
                 }
+                sync_memory_file_after_workspace_write(ctx, &path, "workspace_write").await?;
                 Ok(result)
             }
             "edit" => {
@@ -275,6 +321,7 @@ pub fn dispatch_tool<'a>(
                     ctx.defer_edit(&path);
                     result["deferred_until_compaction"] = serde_json::json!(true);
                 }
+                sync_memory_file_after_workspace_write(ctx, &path, "workspace_edit").await?;
                 Ok(result)
             }
             "list_files" => workspace::handle_list_files(input, ctx.workspace_dir()).await,

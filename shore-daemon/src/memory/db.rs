@@ -29,7 +29,8 @@ CREATE TABLE IF NOT EXISTS entries (
     updated_at      TEXT NOT NULL,
     entry_type      TEXT NOT NULL DEFAULT '',
     image_path      TEXT NOT NULL DEFAULT '',
-    collated_at     TEXT NOT NULL DEFAULT ''
+    collated_at     TEXT NOT NULL DEFAULT '',
+    file_path       TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS entities (
@@ -97,6 +98,8 @@ const MIGRATIONS_SQL: &str = "
 ALTER TABLE entries ADD COLUMN collated_at TEXT NOT NULL DEFAULT '';
 -- v2.3: Drop canonical column (never used by users, blocked collation on 95% of entries).
 ALTER TABLE entries DROP COLUMN canonical;
+-- v2.4: Track markdown-backed entries by relative file path.
+ALTER TABLE entries ADD COLUMN file_path TEXT NOT NULL DEFAULT '';
 ";
 
 /// FTS5 virtual table for full-text search over entries.
@@ -154,6 +157,8 @@ pub struct Entry {
     pub image_path: String,
     /// When this entry was last processed by collation. Empty = never collated.
     pub collated_at: String,
+    /// Relative path within `{character}/memories/` for markdown-backed entries.
+    pub file_path: String,
 }
 
 #[derive(Debug, Clone)]
@@ -193,6 +198,7 @@ pub struct FtsHit {
     pub summary_text: String,
     pub topic_tags: String,
     pub topic_key: String,
+    pub file_path: String,
     pub status: String,
     pub confidence: f64,
     pub memory_type: String,
@@ -347,12 +353,12 @@ impl MemoryDB {
                 id, memory_type, source, reason, status, confidence,
                 summary_text, topic_tags, topic_key, start_timestamp, end_timestamp,
                 message_count, source_entry_ids, related_entry_ids, superseded_by,
-                created_at, updated_at, entry_type, image_path, collated_at
+                created_at, updated_at, entry_type, image_path, collated_at, file_path
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6,
                 ?7, ?8, ?9, ?10, ?11,
                 ?12, ?13, ?14, ?15,
-                ?16, ?17, ?18, ?19, ?20
+                ?16, ?17, ?18, ?19, ?20, ?21
             )",
             params![
                 entry.id,
@@ -375,6 +381,7 @@ impl MemoryDB {
                 entry.entry_type,
                 entry.image_path,
                 entry.collated_at,
+                entry.file_path,
             ],
         )?;
         Ok(())
@@ -385,10 +392,25 @@ impl MemoryDB {
             "SELECT id, memory_type, source, reason, status, confidence,
                     summary_text, topic_tags, topic_key, start_timestamp, end_timestamp,
                     message_count, source_entry_ids, related_entry_ids, superseded_by,
-                    created_at, updated_at, entry_type, image_path, collated_at
+                    created_at, updated_at, entry_type, image_path, collated_at, file_path
              FROM entries WHERE id = ?1",
         )?;
         let mut rows = stmt.query_map(params![id], row_to_entry)?;
+        match rows.next() {
+            Some(row) => Ok(Some(row?)),
+            None => Ok(None),
+        }
+    }
+
+    pub fn get_entry_by_file_path(&self, file_path: &str) -> SqlResult<Option<Entry>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, memory_type, source, reason, status, confidence,
+                    summary_text, topic_tags, topic_key, start_timestamp, end_timestamp,
+                    message_count, source_entry_ids, related_entry_ids, superseded_by,
+                    created_at, updated_at, entry_type, image_path, collated_at, file_path
+             FROM entries WHERE file_path = ?1",
+        )?;
+        let mut rows = stmt.query_map(params![file_path], row_to_entry)?;
         match rows.next() {
             Some(row) => Ok(Some(row?)),
             None => Ok(None),
@@ -405,7 +427,7 @@ impl MemoryDB {
             "SELECT id, memory_type, source, reason, status, confidence,
                     summary_text, topic_tags, topic_key, start_timestamp, end_timestamp,
                     message_count, source_entry_ids, related_entry_ids, superseded_by,
-                    created_at, updated_at, entry_type, image_path, collated_at
+                    created_at, updated_at, entry_type, image_path, collated_at, file_path
              FROM entries WHERE id IN ({})",
             placeholders.join(", ")
         );
@@ -423,7 +445,7 @@ impl MemoryDB {
             "SELECT id, memory_type, source, reason, status, confidence,
                     summary_text, topic_tags, topic_key, start_timestamp, end_timestamp,
                     message_count, source_entry_ids, related_entry_ids, superseded_by,
-                    created_at, updated_at, entry_type, image_path, collated_at
+                    created_at, updated_at, entry_type, image_path, collated_at, file_path
              FROM entries WHERE status = ?1 ORDER BY created_at DESC",
         )?;
         let rows = stmt.query_map(params![status], row_to_entry)?;
@@ -456,7 +478,7 @@ impl MemoryDB {
             "SELECT id, memory_type, source, reason, status, confidence,
                     summary_text, topic_tags, topic_key, start_timestamp, end_timestamp,
                     message_count, source_entry_ids, related_entry_ids, superseded_by,
-                    created_at, updated_at, entry_type, image_path, collated_at
+                    created_at, updated_at, entry_type, image_path, collated_at, file_path
              FROM entries WHERE memory_type = ?1 ORDER BY created_at DESC",
         )?;
         let rows = stmt.query_map(params![memory_type], row_to_entry)?;
@@ -469,7 +491,7 @@ impl MemoryDB {
             "SELECT id, memory_type, source, reason, status, confidence,
                     summary_text, topic_tags, topic_key, start_timestamp, end_timestamp,
                     message_count, source_entry_ids, related_entry_ids, superseded_by,
-                    created_at, updated_at, entry_type, image_path, collated_at
+                    created_at, updated_at, entry_type, image_path, collated_at, file_path
              FROM entries ORDER BY created_at DESC",
         )?;
         let rows = stmt.query_map([], row_to_entry)?;
@@ -485,7 +507,7 @@ impl MemoryDB {
                 end_timestamp = ?11, message_count = ?12, source_entry_ids = ?13,
                 related_entry_ids = ?14, superseded_by = ?15,
                 updated_at = ?16, entry_type = ?17, image_path = ?18,
-                collated_at = ?19
+                collated_at = ?19, file_path = ?20
              WHERE id = ?1",
             params![
                 entry.id,
@@ -507,6 +529,7 @@ impl MemoryDB {
                 entry.entry_type,
                 entry.image_path,
                 entry.collated_at,
+                entry.file_path,
             ],
         )
     }
@@ -820,7 +843,7 @@ impl MemoryDB {
         let sql = match status {
             Some("all") | None => {
                 "SELECT e.id, rank, e.summary_text, e.topic_tags, e.topic_key,
-                        e.status, e.confidence, e.memory_type,
+                        e.file_path, e.status, e.confidence, e.memory_type,
                         e.start_timestamp, e.end_timestamp, e.created_at
                  FROM entries_fts
                  JOIN entries e ON e.rowid = entries_fts.rowid
@@ -830,7 +853,7 @@ impl MemoryDB {
             }
             Some(_) => {
                 "SELECT e.id, rank, e.summary_text, e.topic_tags, e.topic_key,
-                        e.status, e.confidence, e.memory_type,
+                        e.file_path, e.status, e.confidence, e.memory_type,
                         e.start_timestamp, e.end_timestamp, e.created_at
                  FROM entries_fts
                  JOIN entries e ON e.rowid = entries_fts.rowid
@@ -993,6 +1016,7 @@ fn row_to_entry(row: &rusqlite::Row<'_>) -> SqlResult<Entry> {
         entry_type: row.get(17)?,
         image_path: row.get(18)?,
         collated_at: row.get(19)?,
+        file_path: row.get(20)?,
     })
 }
 
@@ -1014,12 +1038,13 @@ fn row_to_fts_hit(row: &rusqlite::Row<'_>) -> SqlResult<FtsHit> {
         summary_text: row.get(2)?,
         topic_tags: row.get(3)?,
         topic_key: row.get(4)?,
-        status: row.get(5)?,
-        confidence: row.get(6)?,
-        memory_type: row.get(7)?,
-        start_timestamp: row.get(8)?,
-        end_timestamp: row.get(9)?,
-        created_at: row.get(10)?,
+        file_path: row.get(5)?,
+        status: row.get(6)?,
+        confidence: row.get(7)?,
+        memory_type: row.get(8)?,
+        start_timestamp: row.get(9)?,
+        end_timestamp: row.get(10)?,
+        created_at: row.get(11)?,
     })
 }
 
@@ -1081,6 +1106,7 @@ mod tests {
             entry_type: String::new(),
             image_path: String::new(),
             collated_at: String::new(),
+            file_path: String::new(),
         }
     }
 
@@ -1300,12 +1326,12 @@ mod tests {
                     id, memory_type, source, reason, status, confidence,
                     summary_text, topic_tags, topic_key, start_timestamp, end_timestamp,
                     message_count, source_entry_ids, related_entry_ids, superseded_by,
-                    created_at, updated_at, entry_type, image_path, collated_at
+                    created_at, updated_at, entry_type, image_path, collated_at, file_path
                 ) VALUES (
                     '20240601_100000_0', 'episodic', 'summary', 'compaction', 'active', 0.85,
                     'V1 memory content', 'v1,test', 'legacy', '2024-06-01T10:00:00Z', '2024-06-01T10:30:00Z',
                     10, '', '', '',
-                    '2024-06-01T10:00:00Z', '2024-06-01T10:00:00Z', '', '', ''
+                    '2024-06-01T10:00:00Z', '2024-06-01T10:00:00Z', '', '', '', ''
                 )",
                 [],
             )
@@ -1343,5 +1369,4 @@ mod tests {
         let path = MemoryDB::default_path("shore");
         assert!(path.ends_with("shore/shore/memory/memory.db"));
     }
-
 }

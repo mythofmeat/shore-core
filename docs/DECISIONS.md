@@ -5,6 +5,46 @@ replaced by better alternatives or because they don't fit the V2 architecture.
 
 Add items here as decisions are made.
 
+## Markdown Memory Shadow Index + Safe Rollback (2026-04-22)
+
+The markdown store is now the source of truth, but the existing memory agent,
+FTS queries, vector search, and changelog machinery still depend on SQLite and
+LanceDB.
+
+Decision:
+- Keep SQLite/vectorstore as a shadow retrieval layer rather than deleting it
+  immediately.
+- Add `entries.file_path` so a markdown file has a stable shadow row.
+- `memory_write`, workspace writes to `memories/...`, CLI memory queries, and
+  compaction all sync markdown files into the shadow index.
+- Compaction rollback restores previous markdown content and the previous shadow
+  SQLite/vector state instead of blindly deleting whatever path was touched.
+
+Rationale: this preserves Letta/OpenClaw-style inspectable markdown memories
+without breaking the existing researcher/agent retrieval stack during the
+transition. The alternative was two inconsistent stores where direct file writes
+were invisible to the agent, or a rollback path that could delete curated
+memory files after a later failure.
+
+## Workspace Exec Hardening + Explicit Memory Namespace (2026-04-22)
+
+Phase 1's workspace tools advertised access to both workspace files and memory
+files, and exposed an `exec` tool with an allowlist. Both needed tightening.
+
+Decision:
+- Bare filesystem-tool paths continue to resolve under `workspace/`.
+- `memories/...` is now the explicit namespace for memory files.
+- `workspace/...` is accepted as an explicit alias for the default root.
+- `exec` no longer shells out through `sh -c`; it parses argv directly and runs
+  an allowlisted executable.
+- The allowlist is intentionally narrower and excludes general-purpose
+  interpreters and shell-style text-processing tools.
+
+Rationale: the previous `exec` implementation only checked the first token and
+then handed the full string to a shell, which made `;`/`&&` injection trivial.
+The previous workspace resolver also claimed `memories/` support it did not
+actually provide.
+
 ## Deferred Character Self-Edits (2026-04-22)
 
 Phase 6 of the memory refactor. The assistant can edit its own `character.md`,
