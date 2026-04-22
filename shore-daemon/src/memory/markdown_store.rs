@@ -8,7 +8,7 @@
 //! filenames. Trust the model to organize.
 //!
 //! Directory layout:
-//! ```
+//! ```text
 //! {character}/memories/
 //!   README.md              # Character-curated index
 //!   topics/
@@ -69,6 +69,16 @@ impl MarkdownMemoryStore {
         if !base.exists() {
             fs::create_dir_all(&base)
                 .await
+                .map_err(|e| MarkdownStoreError::Io(e.to_string()))?;
+        }
+        Ok(Self { base_dir: base })
+    }
+
+    /// Synchronous version of `open` for contexts where async is unavailable.
+    pub fn open_sync(base_dir: impl AsRef<Path>) -> Result<Self, MarkdownStoreError> {
+        let base = base_dir.as_ref().to_path_buf();
+        if !base.exists() {
+            std::fs::create_dir_all(&base)
                 .map_err(|e| MarkdownStoreError::Io(e.to_string()))?;
         }
         Ok(Self { base_dir: base })

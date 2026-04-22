@@ -1920,6 +1920,10 @@ async fn build_tool_context(
         character_name_val: character.to_string(),
         scratchpad_dir_val: char_dir.join("scratchpad").to_string_lossy().into_owned(),
         workspace_dir_val: char_dir.join("workspace").to_string_lossy().into_owned(),
+        markdown_store_val: crate::memory::markdown_store::MarkdownMemoryStore::open_sync(
+            char_dir.join("memories"),
+        )
+        .ok(),
     })
 }
 

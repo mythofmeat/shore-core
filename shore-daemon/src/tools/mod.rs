@@ -127,6 +127,11 @@ pub trait ToolContext: Sync {
     fn workspace_dir(&self) -> &str {
         ""
     }
+
+    // Markdown memory store for inspectable memory files
+    fn markdown_store(&self) -> Option<&crate::memory::markdown_store::MarkdownMemoryStore> {
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -203,6 +208,10 @@ pub fn dispatch_tool<'a>(
         match name {
             // Memory tools
             "memory" => memory_tools::handle_memory(input, ctx).await,
+            "memory_read" => memory_tools::handle_memory_read(input, ctx).await,
+            "memory_write" => memory_tools::handle_memory_write(input, ctx).await,
+            "memory_search" => memory_tools::handle_memory_search(input, ctx).await,
+            "memory_list" => memory_tools::handle_memory_list(input, ctx).await,
             "send_image" => images::handle_send_image(input, ctx).await,
             "list_images" => images::handle_list_images(input, ctx).await,
             "recall_image" => images::handle_recall_image(input, ctx).await,
@@ -294,8 +303,8 @@ mod tests {
     #[test]
     fn test_all_tools_returns_expected_count() {
         let tools = all_tools();
-        // memory(1) + images(5) + web(2) + activity(1) + basic(2) + scratchpad(4) + workspace(5) = 21
-        assert_eq!(tools.len(), 21);
+        // memory(5) + images(5) + web(2) + activity(1) + basic(2) + scratchpad(4) + workspace(5) = 25
+        assert_eq!(tools.len(), 25);
     }
 
     #[test]
@@ -326,6 +335,10 @@ mod tests {
 
         // Memory tools should be excluded.
         assert!(!private_names.contains(&"memory"));
+        assert!(!private_names.contains(&"memory_read"));
+        assert!(!private_names.contains(&"memory_write"));
+        assert!(!private_names.contains(&"memory_search"));
+        assert!(!private_names.contains(&"memory_list"));
         assert!(!private_names.contains(&"send_image"));
         assert!(!private_names.contains(&"list_images"));
         assert!(!private_names.contains(&"recall_image"));
@@ -351,7 +364,7 @@ mod tests {
         assert!(!names.contains(&"web_search"));
         assert!(names.contains(&"memory"));
         assert!(names.contains(&"check_time"));
-        assert_eq!(tools.len(), 19); // 21 - 2 disabled
+        assert_eq!(tools.len(), 23); // 25 - 2 disabled
     }
 
     #[test]

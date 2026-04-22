@@ -97,48 +97,73 @@ Scope guardrails:
 
 The fastest way to verify daemon behavior with a real LLM is driving `shore-mcp` over JSON-RPC stdio. The MCP server auto-spawns its own test daemon, but when you need a **fresh test daemon with a specific config** (e.g., testing new tools), you must spawn the daemon manually and point MCP at it.
 
+### Envvars
+
+API keys live in `~/.config/shore/.env` (not committed). Source them before testing:
+
+```bash
+set -a; source ~/.config/shore/.env; set +a
+```
+
+Key envvars:
+- `OPENROUTER_SHORE_PRIMARY` — main test key (Haiku/sonnet for `send`)
+- `OPENROUTER_SHORE_TOOL` — key for tool-use testing (separate for cost tracking)
+- `OPENROUTER_SHORE_EMBEDDING` — key for embedding tests
+- `OPENROUTER_SHORE_IMAGES` — key for image generation tests
+- Provider-specific keys (`ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, etc.) for direct-provider tests
+
 ### Procedure
 
 ```bash
-# 1. Set up a temp config dir with your test character and model
-export SHORE_CONFIG_DIR=/tmp/shore-test-config
-export SHORE_DATA_DIR=/tmp/shore-test-data
-export OPENROUTER_API_KEY=sk-...
+# 1. Source envvars
+set -a; source ~/.config/shore/.env; set +a
 
-# 2. Create a minimal config.toml under $SHORE_CONFIG_DIR/config.toml
-#    Include a cheap model (e.g., anthropic/claude-haiku-4-5 via OpenRouter)
-#    and enable the tools you want to test.
+# 2. Build the debug binary
+cargo build -p shore-mcp
 
-# 3. Create $SHORE_CONFIG_DIR/characters/TestChar/character.md
-
-# 4. Spawn the daemon manually
-nohup ./target/debug/shore-daemon --instance-id=shore-mcp-test \
-    > /tmp/shore-daemon.log 2>&1 &
-
-# 5. Find the daemon address
-cat /run/user/$(id - u)/shore/instances.json
-
-# 6. Drive MCP via a FIFO (critical — closing stdin kills the MCP server)
+# 3. Use the default test profile (auto-spawns its own daemon on demand)
+#    No manual daemon spawn needed for basic verification.
 rm -f /tmp/mcp_stdin
 mkfifo /tmp/mcp_stdin
 
-OPENROUTER_API_KEY=sk-... ./target/debug/shore-mcp \
-    --daemon-addr 127.0.0.1:PORT \
-    --attach-main --allow-main-writes \
-    > /tmp/mcp_out.jsonl 2>/tmp/shore-mcp.log < /tmp/mcp_stdin &
+./target/debug/shore-mcp > /tmp/mcp_out.jsonl 2>/tmp/shore-mcp.log < /tmp/mcp_stdin &
+MCP_PID=$!
 
 exec 3>/tmp/mcp_stdin
 
-# 7. Send JSON-RPC frames
+# 4. Send JSON-RPC frames
+#    initialize
 echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}' >&3
-echo '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"send","arguments":{"text":"your test message"}}}' >&3
 
-# 8. Wait, then clean up
+#    list tools (verify new tools are advertised)
+echo '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' >&3
+
+#    send a message that exercises the tool loop
+echo '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"send","arguments":{"text":"Write a memory about liking tea"}}}' >&3
+
+#    memory_compact to verify compaction + markdown writes
+echo '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"memory_compact","arguments":{}}}' >&3
+
+# 5. Wait for responses, then clean up
 sleep 30
 exec 3>&-
-kill $MCP_PID
-kill $(cat /run/user/1000/shore/instances.json | jq '.[0].pid')
-rm -rf /tmp/shore-test-config /tmp/shore-test-data
+kill $MCP_PID 2>/dev/null
+```
+
+### Inspecting results
+
+```bash
+# MCP JSON-RPC output (one line per frame)
+cat /tmp/mcp_out.jsonl | jq .
+
+# MCP server logs (includes daemon stderr if auto-spawned)
+cat /tmp/shore-mcp.log
+
+# Test profile data dir (markdown files land here)
+ls ~/.local/share/shore-mcp-test/TestChar/memories/
+
+# If the daemon got into a bad state, kill and let it respawn:
+pkill -f 'shore-daemon.*shore-mcp-test'
 ```
 
 ### Critical gotchas
@@ -147,3 +172,4 @@ rm -rf /tmp/shore-test-config /tmp/shore-test-data
 - **Environment variables must be exported to the daemon.** The daemon reads `OPENROUTER_API_KEY` (or provider-specific keys) at runtime. If you set it only for the MCP client, the daemon won't see it and will fail with "API key environment variable not set."
 - **`--attach-main --allow-main-writes` on a test daemon.** These flags tell MCP "this is my main profile, allow mutations." It doesn't actually have to be the user's real profile — it's just the permission model. Without `--allow-main-writes`, mutation tools like `send` are refused.
 - **`--daemon-addr` bypasses auto-spawn.** Without it, MCP tries to discover `shore-mcp-test` in the registry. If you spawned your own daemon, you must pass its address explicitly.
+- **Default mode uses a persistent test profile.** `~/.local/share/shore-mcp-test/` survives across runs. Use `--ephemeral` for a tempdir that tears down on exit.

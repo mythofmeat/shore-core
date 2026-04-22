@@ -13,6 +13,7 @@ use crate::memory::agent::{CallerIdentity, MemoryAgent};
 use crate::memory::agent_llm::{AgentLlm, MockAgentLlm};
 use crate::memory::compaction_impls::ImageGenConfig;
 use crate::memory::db::MemoryDB;
+use crate::memory::markdown_store::MarkdownMemoryStore;
 use crate::memory::researcher::MemoryResearcher;
 use crate::tools::ToolContext;
 use shore_config::app::SearchConfig;
@@ -98,6 +99,7 @@ pub struct TestToolContext {
     pub search_config_val: SearchConfig,
     pub autonomy_mgr: Option<AutonomyManager>,
     pub character_name_val: String,
+    pub markdown_store_val: Option<MarkdownMemoryStore>,
 }
 
 impl TestToolContext {
@@ -116,6 +118,7 @@ impl TestToolContext {
             search_config_val: SearchConfig::default(),
             autonomy_mgr: None,
             character_name_val: String::new(),
+            markdown_store_val: None,
         }
     }
 
@@ -154,6 +157,12 @@ impl TestToolContext {
         self.researcher = Some(researcher);
         self.researcher_llm_val = Some(llm);
         self.researcher_model_val = Some(model);
+        self
+    }
+
+    /// Set a markdown memory store.
+    pub fn with_markdown_store(mut self, store: MarkdownMemoryStore) -> Self {
+        self.markdown_store_val = Some(store);
         self
     }
 }
@@ -203,6 +212,9 @@ impl ToolContext for TestToolContext {
     }
     fn character_name(&self) -> &str {
         &self.character_name_val
+    }
+    fn markdown_store(&self) -> Option<&MarkdownMemoryStore> {
+        self.markdown_store_val.as_ref()
     }
 }
 

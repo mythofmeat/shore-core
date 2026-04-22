@@ -269,15 +269,22 @@ Keep the SQLite DB file. Don't delete it. If the markdown experiment fails, we c
 
 ## Current Phase
 
-**Phase 2: Markdown Memory Store**
+**Phase 2: Markdown Memory Store — IN PROGRESS**
 
 Phase 1 is complete and verified:
 - `read`, `write`, `edit`, `list_files`, `exec` tools implemented
 - All unit tests pass (14 workspace tests, 27 tools module tests)
-- Live MCP verification passed with real OpenRouter Haiku LLM:
-  - `write` created `hello.txt` in workspace
-  - `edit` changed file content via `old_string`/`new_string` replacement
-  - `list_files` enumerated workspace entries
-  - `exec` ran `echo` command and returned output
+- Live MCP verification passed with real OpenRouter Haiku LLM
 
-Next action: implement markdown memory store (replace SQLite `entries` with `.md` files).
+Phase 2 infrastructure complete:
+- `MarkdownMemoryStore` wired into `ToolContext` (handler, autonomy, tests)
+- New memory tools implemented and registered:
+  - `memory_read`, `memory_write`, `memory_search`, `memory_list`
+- Compaction writes markdown files to `memories/compacted/` in addition to SQLite
+- All unit tests pass (25 total tools, 700+ daemon tests)
+
+**Still open within Phase 2:**
+- Memory agent still reads from SQLite (transition path — will be addressed in Phase 5)
+- Vector store / RAG does not yet index markdown files
+
+Next action: Phase 3 — AI-curated compaction, or Phase 5 — split memory tool and improve retrieval.

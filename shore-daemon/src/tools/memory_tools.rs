@@ -7,25 +7,91 @@ use serde_json::{json, Value};
 // ---------------------------------------------------------------------------
 
 pub fn tool_defs() -> Vec<ToolDef> {
-    vec![ToolDef {
-        name: "memory",
-        description: "Query or update your memory database — a persistent store of prior conversations, shared history, facts about {{user}}, and any context you've chosen to save. Use it frequently: when a new topic comes up, when you're about to make an assumption you could verify, when something feels familiar, or when a topic carries personal or emotional weight. Before saying 'I think we talked about this' or 'if I remember correctly', search memory first instead of guessing. Treat your memories as a natural extension of your mind rather than a formal archive. Calling this tool costs nothing and often returns context {{user}} expects you to already know. If a query returns nothing relevant, that's information too — the detail isn't in the record. Reflect that uncertainty to the user instead of filling in from inference.",
-        parameters: json!({
-            "type": "object",
-            "properties": {
-                "request": {
-                    "type": "string",
-                    "description": "Natural-language query to search memories, or a statement to save or correct one."
-                }
-            },
-            "required": ["request"]
-        }),
-        category: ToolCategory::MemoryWrite,
-    }]
+    vec![
+        ToolDef {
+            name: "memory",
+            description: "Query or update your memory database — a persistent store of prior conversations, shared history, facts about {{user}}, and any context you've chosen to save. Use it frequently: when a new topic comes up, when you're about to make an assumption you could verify, when something feels familiar, or when a topic carries personal or emotional weight. Before saying 'I think we talked about this' or 'if I remember correctly', search memory first instead of guessing. Treat your memories as a natural extension of your mind rather than a formal archive. Calling this tool costs nothing and often returns context {{user}} expects you to already know. If a query returns nothing relevant, that's information too — the detail isn't in the record. Reflect that uncertainty to the user instead of filling in from inference.",
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "request": {
+                        "type": "string",
+                        "description": "Natural-language query to search memories, or a statement to save or correct one."
+                    }
+                },
+                "required": ["request"]
+            }),
+            category: ToolCategory::MemoryWrite,
+        },
+        ToolDef {
+            name: "memory_read",
+            description: "Read a single memory file by its relative path from your memories directory. Use this when you need the full content of a specific memory file, especially after a search has pointed you to a relevant file.",
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Relative path within the memories directory (e.g., 'topics/gaming/doom.md')."
+                    }
+                },
+                "required": ["path"]
+            }),
+            category: ToolCategory::MemoryRead,
+        },
+        ToolDef {
+            name: "memory_write",
+            description: "Write or overwrite a memory file in your memories directory. Use this to save new facts, update existing memory files, or reorganize your knowledge. Prefer updating existing files over creating new ones. Auto-creates parent directories.",
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Relative path within the memories directory (e.g., 'people/ren.md')."
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Full markdown content to write."
+                    }
+                },
+                "required": ["path", "content"]
+            }),
+            category: ToolCategory::MemoryWrite,
+        },
+        ToolDef {
+            name: "memory_search",
+            description: "Search your memory files for a keyword or phrase. Returns matching files with their paths and a content excerpt. Use this as the first step when you need to recall something — before guessing or making assumptions about what you know.",
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Keyword or phrase to search for (case-insensitive)."
+                    }
+                },
+                "required": ["query"]
+            }),
+            category: ToolCategory::MemoryRead,
+        },
+        ToolDef {
+            name: "memory_list",
+            description: "List all memory files in your memories directory, optionally filtered by a subdirectory. Use this to get an overview of what memories you have or to discover files in a specific category.",
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Optional subdirectory to list (e.g., 'topics/gaming'). Omit to list all memory files."
+                    }
+                },
+                "required": []
+            }),
+            category: ToolCategory::MemoryRead,
+        },
+    ]
 }
 
 // ---------------------------------------------------------------------------
-// Handler
+// Handlers
 // ---------------------------------------------------------------------------
 
 /// Handle the `memory` tool — search or save via the memory researcher/agent.
@@ -86,6 +152,121 @@ pub async fn handle_memory(input: Value, ctx: &dyn ToolContext) -> Result<Value,
     Ok(json!(result_text))
 }
 
+/// Read a memory file by relative path.
+pub async fn handle_memory_read(input: Value, ctx: &dyn ToolContext) -> Result<Value, ToolError> {
+    let path = input
+        .get("path")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| ToolError::InvalidArgs("missing 'path' field".to_string()))?;
+
+    let store = ctx
+        .markdown_store()
+        .ok_or_else(|| ToolError::InvalidArgs("markdown memory store not available".to_string()))?;
+
+    let entry = store.read(path).await.map_err(|e| ToolError::Io(e.to_string()))?;
+
+    Ok(json!({
+        "path": entry.path,
+        "content": entry.content,
+        "size": entry.size,
+        "modified_at": entry.modified_at,
+    }))
+}
+
+/// Write or overwrite a memory file.
+pub async fn handle_memory_write(input: Value, ctx: &dyn ToolContext) -> Result<Value, ToolError> {
+    let path = input
+        .get("path")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| ToolError::InvalidArgs("missing 'path' field".to_string()))?;
+    let content = input
+        .get("content")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| ToolError::InvalidArgs("missing 'content' field".to_string()))?;
+
+    let store = ctx
+        .markdown_store()
+        .ok_or_else(|| ToolError::InvalidArgs("markdown memory store not available".to_string()))?;
+
+    store
+        .write(path, content)
+        .await
+        .map_err(|e| ToolError::Io(e.to_string()))?;
+
+    Ok(json!({"status": "written", "path": path, "bytes": content.len()}))
+}
+
+/// Search memory files for a keyword or phrase.
+pub async fn handle_memory_search(input: Value, ctx: &dyn ToolContext) -> Result<Value, ToolError> {
+    let query = input
+        .get("query")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| ToolError::InvalidArgs("missing 'query' field".to_string()))?;
+
+    let store = ctx
+        .markdown_store()
+        .ok_or_else(|| ToolError::InvalidArgs("markdown memory store not available".to_string()))?;
+
+    let results = store
+        .search_text(query)
+        .await
+        .map_err(|e| ToolError::Io(e.to_string()))?;
+
+    let hits: Vec<Value> = results
+        .into_iter()
+        .map(|entry| {
+            // Truncate content to a reasonable excerpt for the LLM
+            let excerpt = if entry.content.len() > 400 {
+                format!("{}...", &entry.content[..400])
+            } else {
+                entry.content.clone()
+            };
+            json!({
+                "path": entry.path,
+                "excerpt": excerpt,
+                "size": entry.size,
+                "modified_at": entry.modified_at,
+            })
+        })
+        .collect();
+
+    Ok(json!({"query": query, "results": hits, "count": hits.len()}))
+}
+
+/// List memory files, optionally filtered by subdirectory.
+pub async fn handle_memory_list(input: Value, ctx: &dyn ToolContext) -> Result<Value, ToolError> {
+    let store = ctx
+        .markdown_store()
+        .ok_or_else(|| ToolError::InvalidArgs("markdown memory store not available".to_string()))?;
+
+    let filter_path = input.get("path").and_then(|v| v.as_str());
+
+    let all = store
+        .list_all()
+        .await
+        .map_err(|e| ToolError::Io(e.to_string()))?;
+
+    let files: Vec<Value> = all
+        .into_iter()
+        .filter(|entry| {
+            if let Some(filter) = filter_path {
+                entry.path.starts_with(filter)
+            } else {
+                true
+            }
+        })
+        .map(|entry| {
+            json!({
+                "path": entry.path,
+                "size": entry.size,
+                "modified_at": entry.modified_at,
+            })
+        })
+        .collect();
+
+    Ok(json!({"files": files, "count": files.len()}))
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -94,15 +275,20 @@ pub async fn handle_memory(input: Value, ctx: &dyn ToolContext) -> Result<Value,
 mod tests {
     use super::*;
     use crate::memory::agent_llm::{AgentLlmResponse, MockAgentLlm};
+    use crate::memory::markdown_store::MarkdownMemoryStore;
     use crate::test_support::TestToolContext;
     use shore_llm_client::types::ContentBlock;
 
     #[test]
-    fn test_memory_tool_def() {
+    fn test_memory_tool_defs() {
         let defs = tool_defs();
-        assert_eq!(defs.len(), 1);
-        assert_eq!(defs[0].name, "memory");
-        assert_eq!(defs[0].category, ToolCategory::MemoryWrite);
+        assert_eq!(defs.len(), 5);
+        let names: Vec<&str> = defs.iter().map(|d| d.name).collect();
+        assert!(names.contains(&"memory"));
+        assert!(names.contains(&"memory_read"));
+        assert!(names.contains(&"memory_write"));
+        assert!(names.contains(&"memory_search"));
+        assert!(names.contains(&"memory_list"));
     }
 
     #[tokio::test]
@@ -195,5 +381,93 @@ mod tests {
             "Expected InvalidArgs for missing researcher LLM, got {:?}",
             result
         );
+    }
+
+    // -- Markdown memory tools tests ------------------------------------------
+
+    #[tokio::test]
+    async fn test_memory_write_and_read() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = MarkdownMemoryStore::open(tmp.path().join("memories")).await.unwrap();
+        let ctx = TestToolContext::new().with_markdown_store(store);
+
+        let result = handle_memory_write(
+            json!({"path": "people/alice.md", "content": "# Alice\n\nLikes chocolate."}),
+            &ctx,
+        )
+        .await
+        .unwrap();
+        assert_eq!(result["status"], "written");
+
+        let read = handle_memory_read(json!({"path": "people/alice.md"}), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(read["content"], "# Alice\n\nLikes chocolate.");
+    }
+
+    #[tokio::test]
+    async fn test_memory_search_finds_matches() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = MarkdownMemoryStore::open(tmp.path().join("memories")).await.unwrap();
+        let ctx = TestToolContext::new().with_markdown_store(store);
+
+        handle_memory_write(
+            json!({"path": "a.md", "content": "Ren likes chocolate"}),
+            &ctx,
+        )
+        .await
+        .unwrap();
+        handle_memory_write(
+            json!({"path": "b.md", "content": "Alice prefers tea"}),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+        let result = handle_memory_search(json!({"query": "chocolate"}), &ctx)
+            .await
+            .unwrap();
+        let results = result["results"].as_array().unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["path"], "a.md");
+    }
+
+    #[tokio::test]
+    async fn test_memory_list_all_and_filtered() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = MarkdownMemoryStore::open(tmp.path().join("memories")).await.unwrap();
+        let ctx = TestToolContext::new().with_markdown_store(store);
+
+        handle_memory_write(json!({"path": "topics/gaming/doom.md", "content": "Doom"}), &ctx)
+            .await
+            .unwrap();
+        handle_memory_write(json!({"path": "topics/food/tea.md", "content": "Tea"}), &ctx)
+            .await
+            .unwrap();
+
+        let all = handle_memory_list(json!({}), &ctx).await.unwrap();
+        let files = all["files"].as_array().unwrap();
+        assert_eq!(files.len(), 2);
+
+        let filtered = handle_memory_list(json!({"path": "topics/gaming"}), &ctx)
+            .await
+            .unwrap();
+        let ffiles = filtered["files"].as_array().unwrap();
+        assert_eq!(ffiles.len(), 1);
+        assert_eq!(ffiles[0]["path"], "topics/gaming/doom.md");
+    }
+
+    #[tokio::test]
+    async fn test_memory_read_missing_path() {
+        let ctx = TestToolContext::new();
+        let result = handle_memory_read(json!({}), &ctx).await;
+        assert!(matches!(result, Err(ToolError::InvalidArgs(_))));
+    }
+
+    #[tokio::test]
+    async fn test_memory_tools_without_store() {
+        let ctx = TestToolContext::new();
+        let result = handle_memory_read(json!({"path": "x.md"}), &ctx).await;
+        assert!(matches!(result, Err(ToolError::InvalidArgs(_))));
     }
 }

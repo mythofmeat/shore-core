@@ -94,6 +94,13 @@ pub async fn run_compaction(
     let existing_recap = tokio::fs::read_to_string(&recap_path).await.ok();
 
     let display_name = effective.app.defaults.resolve_display_name();
+
+    // Open markdown memory store (best-effort — compaction proceeds without it).
+    let markdown_store =
+        crate::memory::markdown_store::MarkdownMemoryStore::open(character_dir.join("memories"))
+            .await
+            .ok();
+
     let outcome = mgr
         .compact(
             character,
@@ -108,6 +115,7 @@ pub async fn run_compaction(
             &db,
             &indexer,
             &conv_mgr,
+            markdown_store.as_ref(),
             false,
             None,
         )

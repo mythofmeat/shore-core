@@ -113,6 +113,9 @@ impl ToolContext for HandlerToolContext {
     fn workspace_dir(&self) -> &str {
         self.inner.workspace_dir()
     }
+    fn markdown_store(&self) -> Option<&crate::memory::markdown_store::MarkdownMemoryStore> {
+        self.inner.markdown_store()
+    }
 }
 
 #[derive(Clone)]

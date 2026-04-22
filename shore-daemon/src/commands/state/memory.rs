@@ -489,6 +489,13 @@ pub async fn compact(
         })?;
 
     let display_name = ctx.config.app.defaults.resolve_display_name();
+
+    let markdown_store = crate::memory::markdown_store::MarkdownMemoryStore::open(
+        engine.character_dir().join("memories"),
+    )
+    .await
+    .ok();
+
     let outcome = mgr
         .compact(
             &char_name,
@@ -503,6 +510,7 @@ pub async fn compact(
             &db,
             &indexer,
             &conv_mgr,
+            markdown_store.as_ref(),
             dry_run,
             keep_turns_override,
         )

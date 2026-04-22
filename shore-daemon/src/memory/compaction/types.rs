@@ -49,6 +49,8 @@ pub struct CompactionResult {
     pub retained_count: usize,
     pub retained_turns: usize,
     pub recap_generated: bool,
+    /// Paths of markdown files written during compaction.
+    pub markdown_paths: Vec<String>,
 }
 
 /// Result of a dry-run compaction.
@@ -60,6 +62,8 @@ pub struct DryRunResult {
     pub retained_count: usize,
     pub retained_turns: usize,
     pub recap_preview: Option<String>,
+    /// Paths of markdown files that would be written.
+    pub markdown_preview: Vec<String>,
 }
 
 /// Parameters for archiving with message retention.
@@ -95,6 +99,8 @@ pub enum CompactionError {
     Indexing(String),
     #[error("conversation: {0}")]
     ConversationManager(String),
+    #[error("markdown store: {0}")]
+    MarkdownStore(String),
 }
 
 // ---------------------------------------------------------------------------

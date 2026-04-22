@@ -361,6 +361,7 @@ async fn test_full_memory_system_e2e() {
             &db,
             &real_indexer,
             &conv_mgr,
+            None,
             false,
             None,
         )
@@ -605,6 +606,7 @@ async fn test_compaction_rejects_private_conversation() {
             &db,
             &indexer,
             &conv_mgr,
+            None,
             false,
             None,
         )

@@ -7,6 +7,7 @@ pub use parser::{parse_compaction_response, DEFAULT_COMPACT_PROMPT};
 pub use types::*;
 
 use crate::memory::db::{Entry, MemoryDB};
+use crate::memory::markdown_store::MarkdownMemoryStore;
 use chrono::Local;
 use std::sync::Arc;
 use tokio::sync::Notify;
@@ -157,7 +158,7 @@ impl CompactionManager {
     /// and memory entries from the compacted messages.
     ///
     /// If `dry_run` is true, returns what would be created without side effects.
-    #[instrument(skip(self, messages, active_content, prompt_template, existing_recap, llm, db, indexer, conversation_mgr), fields(char = char_name, user = user_name, msg_count = messages.len(), dry_run))]
+    #[instrument(skip(self, messages, active_content, prompt_template, existing_recap, llm, db, indexer, conversation_mgr, markdown_store), fields(char = char_name, user = user_name, msg_count = messages.len(), dry_run))]
     #[allow(clippy::too_many_arguments)]
     pub async fn compact(
         &self,
@@ -173,6 +174,7 @@ impl CompactionManager {
         db: &MemoryDB,
         indexer: &dyn VectorIndexer,
         conversation_mgr: &dyn ConversationManager,
+        markdown_store: Option<&MarkdownMemoryStore>,
         dry_run: bool,
         keep_turns_override: Option<usize>,
     ) -> Result<CompactionOutcome, CompactionError> {
@@ -228,6 +230,16 @@ impl CompactionManager {
 
         let retained_turns = keep_turns;
 
+        // Build markdown previews for dry run.
+        let markdown_preview: Vec<String> = if dry_run {
+            compacted
+                .iter()
+                .map(|ce| Self::markdown_path_from_entry(ce))
+                .collect()
+        } else {
+            Vec::new()
+        };
+
         // Dry run: return preview without side effects.
         if dry_run {
             return Ok(CompactionOutcome::DryRun(DryRunResult {
@@ -237,6 +249,7 @@ impl CompactionManager {
                 retained_count: messages.len() - split_at,
                 retained_turns,
                 recap_preview: recap,
+                markdown_preview,
             }));
         }
 
@@ -253,14 +266,28 @@ impl CompactionManager {
         let now_str = Local::now().to_rfc3339();
 
         // Track created resources for compensating deletes on failure.
-        // Each element: (entry_id, changelog_id, indexed_in_vector_store).
+        // Each element: (entry_id, changelog_id, indexed_in_vector_store, markdown_path).
         // changelog_id is None until the changelog row is successfully written.
-        let mut created: Vec<(String, Option<i64>, bool)> = Vec::new();
+        let mut created: Vec<(String, Option<i64>, bool, Option<String>)> = Vec::new();
         let mut db_entry_elapsed = std::time::Duration::ZERO;
         let mut vector_index_elapsed = std::time::Duration::ZERO;
+        let mut markdown_elapsed = std::time::Duration::ZERO;
 
         for (i, ce) in compacted.iter().enumerate() {
             let entry_id = Self::generate_entry_id(i);
+            let md_path = Self::markdown_path_from_entry(ce);
+            let md_content = Self::markdown_content_from_entry(ce, &start_timestamp, &end_timestamp);
+
+            // Write markdown file first (new primary storage).
+            let md_started = std::time::Instant::now();
+            if let Some(store) = markdown_store {
+                if let Err(e) = store.write(&md_path, &md_content).await {
+                    Self::rollback_compaction(&created, db, indexer, markdown_store).await;
+                    return Err(CompactionError::MarkdownStore(e.to_string()));
+                }
+                debug!(entry_id, path = %md_path, elapsed = ?md_started.elapsed(), "compaction: markdown entry written");
+            }
+            markdown_elapsed += md_started.elapsed();
 
             let entry = Entry {
                 id: entry_id.clone(),
@@ -287,19 +314,20 @@ impl CompactionManager {
 
             let db_entry_started = std::time::Instant::now();
             if let Err(e) = db.create_entry(&entry) {
-                Self::rollback_compaction(&created, db, indexer).await;
+                Self::rollback_compaction(&created, db, indexer, markdown_store).await;
                 return Err(CompactionError::Db(e.to_string()));
             }
             let db_elapsed = db_entry_started.elapsed();
             db_entry_elapsed += db_elapsed;
             debug!(entry_id, elapsed = ?db_elapsed, "compaction: DB entry created");
 
-            // Entry now exists in SQLite. Track it (changelog_id=None, not yet indexed).
-            created.push((entry_id.clone(), None, false));
+            // Entry now exists in SQLite. Track it (changelog_id=None, not yet indexed, markdown_path=Some).
+            let md_path_opt = markdown_store.map(|_| md_path.clone());
+            created.push((entry_id.clone(), None, false, md_path_opt));
 
             let vector_index_started = std::time::Instant::now();
             if let Err(e) = indexer.index_entry(&entry_id, &ce.summary_text).await {
-                Self::rollback_compaction(&created, db, indexer).await;
+                Self::rollback_compaction(&created, db, indexer, markdown_store).await;
                 return Err(e);
             }
             let index_elapsed = vector_index_started.elapsed();
@@ -318,7 +346,7 @@ impl CompactionManager {
             ) {
                 Ok(id) => id,
                 Err(e) => {
-                    Self::rollback_compaction(&created, db, indexer).await;
+                    Self::rollback_compaction(&created, db, indexer, markdown_store).await;
                     return Err(CompactionError::Db(e.to_string()));
                 }
             };
@@ -327,7 +355,7 @@ impl CompactionManager {
             // cl_id is now set on the tracked tuple above, so if link_changelog_entry
             // fails below, rollback will correctly delete this changelog row.
             if let Err(e) = db.link_changelog_entry(cl_id, &entry_id) {
-                Self::rollback_compaction(&created, db, indexer).await;
+                Self::rollback_compaction(&created, db, indexer, markdown_store).await;
                 return Err(CompactionError::Db(e.to_string()));
             }
         }
@@ -359,7 +387,7 @@ impl CompactionManager {
         {
             Ok(id) => id,
             Err(e) => {
-                Self::rollback_compaction(&created, db, indexer).await;
+                Self::rollback_compaction(&created, db, indexer, markdown_store).await;
                 return Err(e);
             }
         };
@@ -369,10 +397,15 @@ impl CompactionManager {
             "compaction: archive/retain done"
         );
 
-        let entry_ids: Vec<String> = created.into_iter().map(|(id, _, _)| id).collect();
+        let entry_ids: Vec<String> = created.iter().map(|(id, _, _, _)| id.clone()).collect();
+        let markdown_paths: Vec<String> = created
+            .into_iter()
+            .filter_map(|(_, _, _, md)| md)
+            .collect();
 
         info!(
             entries_created = entry_ids.len(),
+            markdown_files = markdown_paths.len(),
             conversation_id,
             retained,
             elapsed = ?compaction_started.elapsed(),
@@ -386,6 +419,7 @@ impl CompactionManager {
             retained_count: retained,
             retained_turns,
             recap_generated: recap.is_some(),
+            markdown_paths,
         }))
     }
 
@@ -399,12 +433,20 @@ impl CompactionManager {
     /// Errors during cleanup are logged at WARN level and skipped so that
     /// rollback continues regardless of individual failures.
     async fn rollback_compaction(
-        created: &[(String, Option<i64>, bool)],
+        created: &[(String, Option<i64>, bool, Option<String>)],
         db: &MemoryDB,
         indexer: &dyn VectorIndexer,
+        markdown_store: Option<&MarkdownMemoryStore>,
     ) {
         use tracing::warn;
-        for (entry_id, cl_id, was_indexed) in created.iter().rev() {
+        for (entry_id, cl_id, was_indexed, md_path) in created.iter().rev() {
+            if let Some(store) = markdown_store {
+                if let Some(path) = md_path {
+                    if let Err(e) = store.delete(path).await {
+                        warn!(entry_id, path, error = %e, "rollback: failed to delete markdown entry");
+                    }
+                }
+            }
             if let Some(cl_id) = cl_id {
                 if let Err(e) = db.delete_changelog(*cl_id) {
                     warn!(entry_id, cl_id, error = %e, "rollback: failed to delete changelog");
@@ -417,6 +459,50 @@ impl CompactionManager {
                 indexer.remove_entry(entry_id).await;
             }
         }
+    }
+
+    /// Derive a markdown file path from a compacted entry.
+    fn markdown_path_from_entry(ce: &CompactedEntry) -> String {
+        let base = if !ce.topic_key.is_empty() {
+            ce.topic_key.clone()
+        } else if !ce.topic_tags.is_empty() {
+            ce.topic_tags.split(',').next().unwrap_or("entry").trim().to_string()
+        } else {
+            "entry".to_string()
+        };
+        let sanitized = base
+            .chars()
+            .map(|c| match c {
+                'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_' => c,
+                ' ' | '/' | '\\' | ':' => '-',
+                _ => '-',
+            })
+            .collect::<String>();
+        format!("compacted/{}.md", sanitized)
+    }
+
+    /// Build markdown content from a compacted entry.
+    fn markdown_content_from_entry(
+        ce: &CompactedEntry,
+        start_timestamp: &str,
+        end_timestamp: &str,
+    ) -> String {
+        let mut content = String::new();
+        if !ce.topic_key.is_empty() {
+            content.push_str(&format!("# {}\n\n", ce.topic_key));
+        }
+        content.push_str(&ce.summary_text);
+        content.push('\n');
+        if !ce.topic_tags.is_empty() {
+            content.push_str(&format!("\n- **Tags:** {}\n", ce.topic_tags));
+        }
+        if !ce.memory_type.is_empty() {
+            content.push_str(&format!("- **Type:** {}\n", ce.memory_type));
+        }
+        if !start_timestamp.is_empty() {
+            content.push_str(&format!("- **Session:** {} – {}\n", start_timestamp, end_timestamp));
+        }
+        content
     }
 
     /// Create an idle timer bound to this manager's activity signal.
@@ -988,6 +1074,7 @@ They discussed daily activities and the user's beverage preferences.
                 &db,
                 &indexer,
                 &conv_mgr,
+                None,
                 false,
                 None,
             )
@@ -1038,6 +1125,7 @@ They discussed daily activities and the user's beverage preferences.
             &db,
             &indexer,
             &conv_mgr,
+            None,
             false,
             None,
         )
@@ -1073,6 +1161,7 @@ They discussed daily activities and the user's beverage preferences.
             &db,
             &indexer,
             &conv_mgr,
+            None,
             false,
             None,
         )
@@ -1109,6 +1198,7 @@ They discussed daily activities and the user's beverage preferences.
                 &db,
                 &indexer,
                 &conv_mgr,
+                None,
                 false,
                 None,
             )
@@ -1154,6 +1244,7 @@ They discussed daily activities and the user's beverage preferences.
                 &db,
                 &indexer,
                 &conv_mgr,
+                None,
                 false,
                 Some(0),
             )
@@ -1204,6 +1295,7 @@ They discussed daily activities and the user's beverage preferences.
                 &db,
                 &indexer,
                 &conv_mgr,
+                None,
                 false,
                 Some(3),
             )
@@ -1250,6 +1342,7 @@ They discussed daily activities and the user's beverage preferences.
                 &db,
                 &indexer,
                 &conv_mgr,
+                None,
                 false,
                 None,
             )
@@ -1315,6 +1408,7 @@ They discussed daily activities and the user's beverage preferences.
                 &db,
                 &indexer,
                 &conv_mgr,
+                None,
                 false,
                 None,
             )
@@ -1351,6 +1445,7 @@ They discussed daily activities and the user's beverage preferences.
                 &db,
                 &indexer,
                 &conv_mgr,
+                None,
                 true,
                 None,
             )
@@ -1397,6 +1492,7 @@ They discussed daily activities and the user's beverage preferences.
                 &db,
                 &indexer,
                 &conv_mgr,
+                None,
                 false,
                 None,
             )
@@ -1429,6 +1525,7 @@ They discussed daily activities and the user's beverage preferences.
                 &db,
                 &indexer,
                 &conv_mgr,
+                None,
                 false,
                 None,
             )
@@ -1526,6 +1623,7 @@ They discussed daily activities and the user's beverage preferences.
                 &db,
                 &indexer,
                 &conv_mgr,
+                None,
                 false,
                 None,
             )
@@ -1579,6 +1677,7 @@ They discussed daily activities and the user's beverage preferences.
                 &db,
                 &indexer,
                 &conv_mgr,
+                None,
                 false,
                 None,
             )

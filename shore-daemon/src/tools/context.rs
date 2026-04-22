@@ -17,6 +17,7 @@ use crate::memory::agent::{AgentError, AgentRag, MemoryAgent, RagHit};
 use crate::memory::agent_llm::{AgentLlm, RealAgentLlm};
 use crate::memory::compaction_impls::ImageGenConfig;
 use crate::memory::db::MemoryDB;
+use crate::memory::markdown_store::MarkdownMemoryStore;
 use crate::memory::researcher::MemoryResearcher;
 
 use super::ToolContext;
@@ -62,6 +63,7 @@ pub(crate) struct SharedToolContext {
     pub(crate) character_name_val: String,
     pub(crate) scratchpad_dir_val: String,
     pub(crate) workspace_dir_val: String,
+    pub(crate) markdown_store_val: Option<MarkdownMemoryStore>,
 }
 
 impl ToolContext for SharedToolContext {
@@ -115,5 +117,8 @@ impl ToolContext for SharedToolContext {
     }
     fn workspace_dir(&self) -> &str {
         &self.workspace_dir_val
+    }
+    fn markdown_store(&self) -> Option<&MarkdownMemoryStore> {
+        self.markdown_store_val.as_ref()
     }
 }

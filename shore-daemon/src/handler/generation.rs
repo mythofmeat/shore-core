@@ -84,6 +84,7 @@ use crate::engine::tools;
 use crate::memory::agent::{AgentSearchContext, CallerIdentity, MemoryAgent};
 use crate::memory::agent_llm::RealAgentLlm;
 use crate::memory::compaction_impls::resolve_embed_config;
+use crate::memory::markdown_store::MarkdownMemoryStore;
 use crate::memory::researcher::MemoryResearcher;
 use crate::tools::context::{NoopRag, SharedToolContext};
 use shore_config::LoadedConfig;
@@ -299,6 +300,10 @@ pub(super) async fn run_tool_phase(
                 .join("workspace")
                 .to_string_lossy()
                 .into_owned(),
+            markdown_store_val: MarkdownMemoryStore::open_sync(
+                data_dir.join(char_name).join("memories"),
+            )
+            .ok(),
         },
         autonomy_val: ctx.autonomy.clone(),
     };

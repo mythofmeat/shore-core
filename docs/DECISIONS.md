@@ -1086,3 +1086,24 @@ Call IDs are `{YYYYMMDDTHHMMSSmmm}-{counter:04}` — sortable, monotonic within 
 **Local bridge behavior:** `HomeserverConfig::homeserver_url()` substitutes `127.0.0.1` when the user binds `0.0.0.0` (or `::`), since the bridge runs on the same host. For any other bind address (e.g. a specific Tailscale IP like `100.64.0.5`), the bridge dials that address directly — it's reachable from the local host either way, and using a single source-of-truth method for the URL keeps the wiring simple.
 
 **Trade-off:** No multi-listener support. Conduwuit accepts `address = ["127.0.0.1", "::1"]` as a list, but our field is a single string. Users who need both loopback and a LAN IP either pick one or use `0.0.0.0` and let the kernel sort it out. Can be revisited if anyone hits it.
+
+### Markdown Memory Store — Phase 2 Integration (2026-04-22)
+
+**Decision:** Wire `MarkdownMemoryStore` into compaction and tool dispatch. Compaction now writes `.md` files to `{character}/memories/compacted/` in addition to SQLite entries. New granular memory tools (`memory_read`, `memory_write`, `memory_search`, `memory_list`) give the assistant direct filesystem access to its memories.
+
+**What changed:**
+- Added `MarkdownMemoryStore::open_sync()` for synchronous construction in `ToolContext`
+- Added `markdown_store()` to `ToolContext` trait; wired into `SharedToolContext`, `HandlerToolContext`, `TestToolContext`, and autonomy manager
+- New tools in `tools/memory_tools.rs`:
+  - `memory_read(path)` — read full content of a memory file
+  - `memory_write(path, content)` — write or overwrite a memory file
+  - `memory_search(query)` — case-insensitive text search across all `.md` files, returns excerpts
+  - `memory_list(path?)` — list memory files, optionally filtered by subdirectory
+- Compaction writes markdown BEFORE SQLite. If markdown write fails, full rollback occurs (markdown + SQLite + vectors + changelog)
+- Markdown path derived from `topic_key` → `compacted/{sanitized}.md`; content is `# {topic_key}\n\n{summary}\n` with optional tags/type/session metadata
+- `CompactionResult` now includes `markdown_paths: Vec<String>`
+- `CompactionError` gains `MarkdownStore(String)` variant
+
+**Why:** The existing `memory` tool routes through a complex agent/researcher pipeline that queries SQLite and RAG. The new tools give the model direct, explicit control over its memory files — matching OpenClaw's filesystem model and making memory inspectable/git-diffable.
+
+**Trade-off:** During transition, compaction writes BOTH markdown and SQLite. SQLite remains the source of truth for the legacy memory agent. The new tools operate on the markdown store exclusively. Full cutover (dropping SQLite writes) waits until Phase 3 (AI-curated compaction) or Phase 5 (tool-use verification).
