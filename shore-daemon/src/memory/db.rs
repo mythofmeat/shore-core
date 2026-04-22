@@ -463,6 +463,19 @@ impl MemoryDB {
         rows.collect()
     }
 
+    /// Fetch all entries regardless of status.
+    pub fn get_all_entries(&self) -> SqlResult<Vec<Entry>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, memory_type, source, reason, status, confidence,
+                    summary_text, topic_tags, topic_key, start_timestamp, end_timestamp,
+                    message_count, source_entry_ids, related_entry_ids, superseded_by,
+                    created_at, updated_at, entry_type, image_path, collated_at
+             FROM entries ORDER BY created_at DESC",
+        )?;
+        let rows = stmt.query_map([], row_to_entry)?;
+        rows.collect()
+    }
+
     pub fn update_entry(&self, entry: &Entry) -> SqlResult<usize> {
         self.conn.execute(
             "UPDATE entries SET

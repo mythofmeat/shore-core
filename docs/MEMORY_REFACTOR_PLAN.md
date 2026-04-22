@@ -236,7 +236,7 @@ If the assistant says "I should update my character.md to reflect that Ren likes
 
 ---
 
-## Phase 7: Migration from SQLite
+## Phase 7: Migration from SQLite — COMPLETE
 
 ### One-time migration script
 
@@ -248,11 +248,21 @@ shore memory migrate
 2. Writes a markdown file per entry to `{character}/memories/migrated/{id}.md`.
 3. Content is the `summary_text` as markdown body.
 4. Filename is derived from `topic_key` or `topic_tags` if available, else `migrated_{id}.md`.
-5. After migration, mark the migration as complete in a sentinel file.
+5. After migration, writes a sentinel file `migrated/.migration_complete`.
 
 ### Rollback plan
 
 Keep the SQLite DB file. Don't delete it. If the markdown experiment fails, we can revert to SQLite reads. (But the goal is to eventually drop it.)
+
+### Changes made
+
+- Added `MemoryDB::get_all_entries()` to fetch every row regardless of status.
+- Added `memory_migrate` command handler in `shore-daemon/src/commands/state/memory.rs`.
+- Wired command into dispatch (`memory_migrate`).
+- Added unit tests: no-db path, empty-db path, and full migration with sentinel
+  verification.
+
+---
 
 ---
 
@@ -268,33 +278,28 @@ Keep the SQLite DB file. Don't delete it. If the markdown experiment fails, we c
 
 ## Success Criteria
 
-- [ ] `shore send` → assistant can `read` and `write` files in its workspace.
-- [ ] `shore memory compact` → assistant reviews conversation and updates its own `.md` files.
-- [ ] `shore memory search "doom"` → returns excerpts from markdown files.
-- [ ] No SQLite `entries` table reads during normal operation.
-- [ ] Character self-edits to `character.md` are deferred and applied at compaction.
+- [x] `shore send` → assistant can `read` and `write` files in its workspace.
+- [x] `shore memory compact` → assistant reviews conversation and updates its own `.md` files.
+- [x] `shore memory search "doom"` → returns excerpts from markdown files.
+- [ ] No SQLite `entries` table reads during normal operation. (Pending: switch memory agent to read markdown instead of SQLite)
+- [x] Character self-edits to `character.md` are deferred and applied at compaction.
 - [ ] Assistant uses memory tools in ≥80% of relevant turns (benchmarked).
+- [x] `shore memory migrate` exports existing SQLite entries to markdown files.
 
 ---
 
 ## Current Phase
 
-**Phase 6: Deferred Character Self-Edits — COMPLETE**
+**Phase 7: Migration from SQLite — COMPLETE**
 
-Phase 1 complete and verified.
-Phase 2 complete and verified.
-Phase 3 complete and verified.
-Phase 4 complete and verified.
-Phase 5 complete and verified.
-Phase 6 complete and verified:
-- Bootstrap protected files (`character.md`, `user.md`, `prompts/system.md`)
-  from config dir into workspace at generation start
-- Intercept `write`/`edit` to protected paths: apply to workspace immediately,
-  queue deferred copy in `deferred_edits.jsonl`
-- Apply queued edits to config dir **after** compaction completes and engine
-  reloads (cache-bust boundary) in all three compaction paths:
-  inline post-generation, interactive `shore memory compact`, idle-triggered
-- All unit tests pass (650 passed, 3 ignored), MCP tests pass (2 passed)
+All phases complete:
+- Phase 1: Workspace + Filesystem Tools
+- Phase 2: Markdown Memory Store
+- Phase 3: AI-Curated Compaction
+- Phase 4: Drop Collation
+- Phase 5: Fix Tool Use for Memory Retrieval
+- Phase 6: Deferred Character Self-Edits
+- Phase 7: SQLite-to-Markdown Migration Script
 
-Next action: Phase 7 — one-time migration script (`shore memory migrate`) to
-export existing SQLite `entries` to markdown files.
+Next action: Full integration test and benchmark of memory tool use in
+conversations (success criterion: ≥80% retrieval rate in benchmark).

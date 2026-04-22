@@ -28,6 +28,25 @@ Solution:
 This gives the assistant the illusion of editing its own files in real time
 while preserving cache stability until the natural reset boundary.
 
+## SQLite-to-Markdown Migration Script (2026-04-22)
+
+Phase 7 of the memory refactor. Existing SQLite `entries` must be exported to
+markdown files before the assistant can manage them through its filesystem tools.
+
+Implementation:
+- New command: `shore memory migrate` (daemon-side: `memory_migrate`).
+- Reads all rows from `entries` table via `MemoryDB::get_all_entries()`.
+- Writes one markdown file per entry to `{character}/memories/migrated/` using
+the existing `MarkdownMemoryStore::migrate_from_entries()`.
+- Writes a sentinel file `migrated/.migration_complete` with timestamp and count.
+- The SQLite database is **not deleted** — rollback is possible by reverting to
+SQLite reads.
+
+Rationale: The markdown memory store (Phase 2) and AI-curated compaction
+(Phase 3) assume memories exist as files. Users with existing SQLite databases
+need a one-time export path. The `migrated/` subdirectory keeps old entries
+separate from new AI-curated files.
+
 ## Improved Memory Retrieval Tool Use (2026-04-22)
 
 Phase 5 of the memory refactor. The assistant was not proactively calling

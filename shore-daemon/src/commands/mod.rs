@@ -182,6 +182,7 @@ pub async fn dispatch(
         "config" => state::config(ctx, &cmd.args),
         "config_check" => state::config_check(ctx),
         "memory_reindex" => state::memory_reindex(engine, ctx).await,
+        "memory_migrate" => state::memory_migrate(engine, ctx).await,
         "config_reset" => state::config_reset(ctx),
         "diagnostics" => state::diagnostics(ctx, &cmd.args),
         "heartbeat_log" => state::heartbeat_log(engine, ctx, &cmd.args),

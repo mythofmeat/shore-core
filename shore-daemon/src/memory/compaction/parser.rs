@@ -82,27 +82,6 @@ pub(super) fn extract_xml_tag(text: &str, tag: &str) -> Option<String> {
     }
 }
 
-/// Extract all occurrences of `<tag>...</tag>` in the text.
-pub(super) fn extract_all_xml_tags(text: &str, tag: &str) -> Vec<String> {
-    let open = format!("<{tag}>");
-    let close = format!("</{tag}>");
-    let mut results = Vec::new();
-    let mut search_from = 0;
-    while let Some(start) = text[search_from..].find(&open) {
-        let abs_start = search_from + start + open.len();
-        if let Some(end) = text[abs_start..].find(&close) {
-            let content = text[abs_start..abs_start + end].trim();
-            if !content.is_empty() {
-                results.push(content.to_string());
-            }
-            search_from = abs_start + end + close.len();
-        } else {
-            break;
-        }
-    }
-    results
-}
-
 /// A memory file operation extracted from the LLM compaction response.
 #[derive(Debug, Clone)]
 pub struct MemoryFileOp {
@@ -242,13 +221,6 @@ They discussed daily activities and the user's beverage preferences.
             extract_xml_tag(text, "recap"),
             Some("trimmed content".to_string())
         );
-    }
-
-    #[test]
-    fn test_extract_all_xml_tags() {
-        let text = "<entry>first</entry> middle <entry>second</entry>";
-        let results = extract_all_xml_tags(text, "entry");
-        assert_eq!(results, vec!["first", "second"]);
     }
 
     #[test]
