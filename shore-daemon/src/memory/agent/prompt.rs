@@ -41,7 +41,7 @@ The memory system uses SQLite with these tables:
 | id | TEXT PK | Entry ID (YYYYMMDD_HHMMSS_N) |
 | memory_type | TEXT | 'episodic' or 'semantic' |
 | source | TEXT | How it was created (summary, tool, import) |
-| reason | TEXT | Why (compaction, collation, tidy_split, etc.) |
+| reason | TEXT | Why (compaction, tidy_split, etc.) |
 | status | TEXT | 'active', 'protected', or 'superseded' |
 | confidence | REAL | 0.0-1.0 confidence score |
 | summary_text | TEXT | The actual memory content |

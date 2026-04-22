@@ -1,7 +1,7 @@
 //! Daemon-side push notification service.
 //!
 //! Fires notifications for autonomous events (interiority messages, cache warnings,
-//! compaction/collation completion, errors) via configurable backends:
+//! compaction completion, errors) via configurable backends:
 //! notify-send (Linux desktop), ntfy (mobile push), or custom shell commands.
 
 use std::sync::Arc;
@@ -17,7 +17,6 @@ pub enum NotificationEvent {
     AutonomousMessage,
     CacheWarning,
     CompactionComplete,
-    CollationComplete,
     Error,
     MessageComplete,
 }
@@ -68,7 +67,6 @@ impl NotificationService {
             NotificationEvent::AutonomousMessage => self.config.events.autonomous_message,
             NotificationEvent::CacheWarning => self.config.events.cache_warning,
             NotificationEvent::CompactionComplete => self.config.events.compaction_complete,
-            NotificationEvent::CollationComplete => self.config.events.collation_complete,
             NotificationEvent::Error => self.config.events.error,
             NotificationEvent::MessageComplete => self.config.events.message_complete,
         }
@@ -201,7 +199,6 @@ mod tests {
             autonomous_message: true,
             cache_warning: false,
             compaction_complete: true,
-            collation_complete: false,
             error: true,
             message_complete: true,
         };
@@ -209,7 +206,6 @@ mod tests {
         assert!(svc.is_event_enabled(NotificationEvent::AutonomousMessage));
         assert!(!svc.is_event_enabled(NotificationEvent::CacheWarning));
         assert!(svc.is_event_enabled(NotificationEvent::CompactionComplete));
-        assert!(!svc.is_event_enabled(NotificationEvent::CollationComplete));
         assert!(svc.is_event_enabled(NotificationEvent::Error));
         assert!(svc.is_event_enabled(NotificationEvent::MessageComplete));
     }

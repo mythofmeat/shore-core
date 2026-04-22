@@ -3,7 +3,7 @@ pub mod parser;
 pub mod types;
 
 pub use background::run_compaction;
-pub use parser::{parse_compaction_response, DEFAULT_COMPACT_PROMPT};
+pub use parser::{parse_compaction_response, MemoryFileOp, DEFAULT_COMPACT_PROMPT};
 pub use types::*;
 
 use crate::memory::db::{Entry, MemoryDB};
@@ -144,7 +144,7 @@ impl CompactionManager {
 
     /// Generate an entry ID with a compaction prefix: c_YYYYMMDD_HHMMSS_N
     ///
-    /// The `c_` prefix prevents collision with collation IDs (`l_` prefix)
+    /// The `c_` prefix marks compaction-generated entries.
     /// when both run in the same second.
     fn generate_entry_id(index: usize) -> String {
         let now = Local::now();
@@ -220,10 +220,10 @@ impl CompactionManager {
         );
         let raw_response = llm.summarize(&prompt).await?;
 
-        // Parse recap + entries from LLM response.
-        let (recap, compacted) = parse_compaction_response(&raw_response)?;
+        // Parse recap + memory file operations from LLM response.
+        let (recap, file_ops) = parse_compaction_response(&raw_response)?;
         debug!(
-            entries = compacted.len(),
+            ops = file_ops.len(),
             has_recap = recap.is_some(),
             "LLM compaction response parsed"
         );
@@ -232,10 +232,7 @@ impl CompactionManager {
 
         // Build markdown previews for dry run.
         let markdown_preview: Vec<String> = if dry_run {
-            compacted
-                .iter()
-                .map(|ce| Self::markdown_path_from_entry(ce))
-                .collect()
+            file_ops.iter().map(|op| op.path.clone()).collect()
         } else {
             Vec::new()
         };
@@ -243,8 +240,8 @@ impl CompactionManager {
         // Dry run: return preview without side effects.
         if dry_run {
             return Ok(CompactionOutcome::DryRun(DryRunResult {
-                would_create_entries: compacted.len(),
-                entries_preview: compacted,
+                would_create_entries: file_ops.len(),
+                file_ops_preview: file_ops,
                 message_count: split_at,
                 retained_count: messages.len() - split_at,
                 retained_turns,
@@ -253,54 +250,48 @@ impl CompactionManager {
             }));
         }
 
-        // Determine time range from compacted messages.
-        let start_timestamp = compacted_part
-            .first()
-            .map(|m| m.timestamp.clone())
-            .unwrap_or_default();
-        let end_timestamp = compacted_part
-            .last()
-            .map(|m| m.timestamp.clone())
-            .unwrap_or_default();
-
         let now_str = Local::now().to_rfc3339();
 
         // Track created resources for compensating deletes on failure.
-        // Each element: (entry_id, changelog_id, indexed_in_vector_store, markdown_path).
-        // changelog_id is None until the changelog row is successfully written.
         let mut created: Vec<(String, Option<i64>, bool, Option<String>)> = Vec::new();
         let mut db_entry_elapsed = std::time::Duration::ZERO;
         let mut vector_index_elapsed = std::time::Duration::ZERO;
         let mut markdown_elapsed = std::time::Duration::ZERO;
 
-        for (i, ce) in compacted.iter().enumerate() {
+        for (i, op) in file_ops.iter().enumerate() {
             let entry_id = Self::generate_entry_id(i);
-            let md_path = Self::markdown_path_from_entry(ce);
-            let md_content = Self::markdown_content_from_entry(ce, &start_timestamp, &end_timestamp);
 
             // Write markdown file first (new primary storage).
             let md_started = std::time::Instant::now();
             if let Some(store) = markdown_store {
-                if let Err(e) = store.write(&md_path, &md_content).await {
+                if let Err(e) = store.write(&op.path, &op.content).await {
                     Self::rollback_compaction(&created, db, indexer, markdown_store).await;
                     return Err(CompactionError::MarkdownStore(e.to_string()));
                 }
-                debug!(entry_id, path = %md_path, elapsed = ?md_started.elapsed(), "compaction: markdown entry written");
+                debug!(entry_id, path = %op.path, elapsed = ?md_started.elapsed(), "compaction: markdown entry written");
             }
             markdown_elapsed += md_started.elapsed();
 
+            // Keep a lightweight SQLite entry for backwards compatibility (vector indexing, changelog).
+            let summary_text = op.content.lines().take(5).collect::<Vec<_>>().join("\n");
+            let topic_key = op.path
+                .trim_end_matches(".md")
+                .split('/')
+                .last()
+                .unwrap_or("")
+                .to_string();
             let entry = Entry {
                 id: entry_id.clone(),
-                memory_type: ce.memory_type.clone(),
+                memory_type: "semantic".to_string(),
                 source: "summary".to_string(),
                 reason: "compaction".to_string(),
                 status: "active".to_string(),
-                confidence: ce.confidence,
-                summary_text: ce.summary_text.clone(),
-                topic_tags: ce.topic_tags.clone(),
-                topic_key: ce.topic_key.clone(),
-                start_timestamp: start_timestamp.clone(),
-                end_timestamp: end_timestamp.clone(),
+                confidence: 0.9,
+                summary_text: summary_text.clone(),
+                topic_tags: topic_key.clone(),
+                topic_key: topic_key.clone(),
+                start_timestamp: now_str.clone(),
+                end_timestamp: now_str.clone(),
                 message_count: split_at as i64,
                 source_entry_ids: String::new(),
                 related_entry_ids: String::new(),
@@ -321,27 +312,24 @@ impl CompactionManager {
             db_entry_elapsed += db_elapsed;
             debug!(entry_id, elapsed = ?db_elapsed, "compaction: DB entry created");
 
-            // Entry now exists in SQLite. Track it (changelog_id=None, not yet indexed, markdown_path=Some).
-            let md_path_opt = markdown_store.map(|_| md_path.clone());
+            let md_path_opt = markdown_store.map(|_| op.path.clone());
             created.push((entry_id.clone(), None, false, md_path_opt));
 
             let vector_index_started = std::time::Instant::now();
-            if let Err(e) = indexer.index_entry(&entry_id, &ce.summary_text).await {
+            if let Err(e) = indexer.index_entry(&entry_id, &summary_text).await {
                 Self::rollback_compaction(&created, db, indexer, markdown_store).await;
                 return Err(e);
             }
             let index_elapsed = vector_index_started.elapsed();
             vector_index_elapsed += index_elapsed;
             debug!(entry_id, elapsed = ?index_elapsed, "compaction: vector entry indexed");
-            // Mark as indexed so rollback will remove it from the vector store.
             created.last_mut().unwrap().2 = true;
 
-            // Record changelog.
             let cl_id = match db.append_changelog(
                 "compaction",
                 &format!(
-                    "Compacted conversation {} into entry {}",
-                    conversation_id, entry_id
+                    "Compacted conversation {} into memory file {}",
+                    conversation_id, op.path
                 ),
             ) {
                 Ok(id) => id,
@@ -352,20 +340,18 @@ impl CompactionManager {
             };
             created.last_mut().unwrap().1 = Some(cl_id);
 
-            // cl_id is now set on the tracked tuple above, so if link_changelog_entry
-            // fails below, rollback will correctly delete this changelog row.
             if let Err(e) = db.link_changelog_entry(cl_id, &entry_id) {
                 Self::rollback_compaction(&created, db, indexer, markdown_store).await;
                 return Err(CompactionError::Db(e.to_string()));
             }
         }
         debug!(
-            entries = compacted.len(),
+            entries = file_ops.len(),
             elapsed = ?db_entry_elapsed,
             "compaction: DB entry loop complete"
         );
         debug!(
-            entries = compacted.len(),
+            entries = file_ops.len(),
             elapsed = ?vector_index_elapsed,
             "compaction: vector indexing loop complete"
         );
@@ -459,50 +445,6 @@ impl CompactionManager {
                 indexer.remove_entry(entry_id).await;
             }
         }
-    }
-
-    /// Derive a markdown file path from a compacted entry.
-    fn markdown_path_from_entry(ce: &CompactedEntry) -> String {
-        let base = if !ce.topic_key.is_empty() {
-            ce.topic_key.clone()
-        } else if !ce.topic_tags.is_empty() {
-            ce.topic_tags.split(',').next().unwrap_or("entry").trim().to_string()
-        } else {
-            "entry".to_string()
-        };
-        let sanitized = base
-            .chars()
-            .map(|c| match c {
-                'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_' => c,
-                ' ' | '/' | '\\' | ':' => '-',
-                _ => '-',
-            })
-            .collect::<String>();
-        format!("compacted/{}.md", sanitized)
-    }
-
-    /// Build markdown content from a compacted entry.
-    fn markdown_content_from_entry(
-        ce: &CompactedEntry,
-        start_timestamp: &str,
-        end_timestamp: &str,
-    ) -> String {
-        let mut content = String::new();
-        if !ce.topic_key.is_empty() {
-            content.push_str(&format!("# {}\n\n", ce.topic_key));
-        }
-        content.push_str(&ce.summary_text);
-        content.push('\n');
-        if !ce.topic_tags.is_empty() {
-            content.push_str(&format!("\n- **Tags:** {}\n", ce.topic_tags));
-        }
-        if !ce.memory_type.is_empty() {
-            content.push_str(&format!("- **Type:** {}\n", ce.memory_type));
-        }
-        if !start_timestamp.is_empty() {
-            content.push_str(&format!("- **Session:** {} – {}\n", start_timestamp, end_timestamp));
-        }
-        content
     }
 
     /// Create an idle timer bound to this manager's activity signal.
@@ -784,23 +726,21 @@ The assistant had a pleasant conversation with the user about their day and pref
 They discussed daily activities and the user's beverage preferences.
 </recap>
 
-<entry>
-<summary>
+<memory>
+<write path="daily/2026-03-25.md">
+# Conversation on 2026-03-25
+
 - User discussed their day
 - They mentioned having a busy morning
-</summary>
-<topic_tags>daily, personal</topic_tags>
-<memory_type>episodic</memory_type>
-</entry>
+</write>
 
-<entry>
-<summary>
+<write path="preferences/beverages.md">
+# Beverage Preferences
+
 - User prefers tea over coffee
 - This is a stable preference
-</summary>
-<topic_tags>preference, food</topic_tags>
-<memory_type>semantic</memory_type>
-</entry>"#
+</write>
+</memory>"#
             .to_string()
     }
 
@@ -1457,7 +1397,7 @@ They discussed daily activities and the user's beverage preferences.
                 assert_eq!(r.would_create_entries, 2);
                 assert_eq!(r.message_count, 6);
                 assert_eq!(r.retained_count, 4);
-                assert_eq!(r.entries_preview.len(), 2);
+                assert_eq!(r.file_ops_preview.len(), 2);
                 assert!(r.recap_preview.is_some());
             }
             _ => panic!("Expected DryRun outcome"),
@@ -1711,23 +1651,4 @@ They discussed daily activities and the user's beverage preferences.
         );
     }
 
-    /// Compaction and collation both generate entry IDs using the same
-    /// `YYYYMMDD_HHMMSS_N` format with index starting at 0. If both run
-    /// in the same second, they produce identical IDs → PK conflict.
-    /// IDs must include a source prefix to prevent collision.
-    #[test]
-    fn compaction_and_collation_ids_are_distinct() {
-        use crate::memory::collation::CollationManager;
-
-        // Generate IDs from both systems with the same index.
-        let compaction_id = CompactionManager::generate_entry_id(0);
-        let collation_id = CollationManager::generate_entry_id(0);
-
-        // If called within the same second, these must still be distinct.
-        // (They share the same timestamp format + index, so currently they collide.)
-        assert_ne!(
-            compaction_id, collation_id,
-            "Compaction and collation entry IDs must be distinct even in the same second"
-        );
-    }
 }

@@ -6,10 +6,6 @@ use tracing::{debug, info};
 use crate::engine::ConversationEngine;
 use crate::memory::agent::{CallerIdentity, MemoryAgent, RealAgentIndexer};
 use crate::memory::agent_llm::RealAgentLlm;
-use crate::memory::collation::{
-    CollationError, CollationManager, CollationOutcome, DecayConfig, DEFAULT_REFINE_PROMPT,
-};
-use crate::memory::collation_impls::RealCollationLlm;
 use crate::memory::compaction::{
     CompactionError, CompactionManager, CompactionOutcome, ConversationMessage,
     DEFAULT_COMPACT_PROMPT,
@@ -23,7 +19,7 @@ use shore_config::resolve_prompt_template;
 use shore_ledger::CallType;
 
 use crate::commands::{
-    build_collation_vars, memory_dir, open_embed_and_vectorstore, resolve_agent_model,
+    memory_dir, open_embed_and_vectorstore, resolve_agent_model,
     setup_search_context, CommandContext, CommandResult, MemoryShellSession,
 };
 
@@ -358,62 +354,6 @@ pub fn memory_shell_end(ctx: &mut CommandContext, args: &serde_json::Value) -> C
     Ok(json!({ "ok": true }))
 }
 
-/// Run collation after a successful compaction, if enabled.
-async fn run_post_compaction_collation(
-    ctx: &CommandContext,
-    char_name: &str,
-    display_name: &str,
-    db: &MemoryDB,
-) -> Option<serde_json::Value> {
-    let cmodel = resolve_collation_model(&ctx.config)?;
-
-    let collation_llm =
-        RealCollationLlm::new(ctx.llm_client.clone(), cmodel, char_name.to_string());
-    let refine_template = resolve_prompt_template(&ctx.config.dirs.config, char_name, "refine.md")
-        .unwrap_or_else(|| DEFAULT_REFINE_PROMPT.to_string());
-
-    let collation_mgr = CollationManager::new(DecayConfig::default());
-    let collation_limit = ctx.config.app.memory.collation.batch_limit;
-
-    let collation_search_ctx = setup_search_context(ctx, char_name).await;
-    let collation_indexer = collation_search_ctx.as_ref().map(RealAgentIndexer::new);
-
-    let collation_vars = build_collation_vars(ctx, char_name, display_name);
-    match collation_mgr
-        .run(
-            db,
-            &collation_llm,
-            &refine_template,
-            &collation_vars,
-            collation_indexer
-                .as_ref()
-                .map(|i| i as &dyn crate::memory::agent::AgentIndexer),
-            collation_search_ctx.as_ref().map(|ctx| &*ctx.vector_store),
-            Some(collation_limit),
-        )
-        .await
-    {
-        Ok(outcome) => Some(json!({
-            "timestamps_backfilled": outcome.timestamps_backfilled,
-            "refine_merges": outcome.refine_merges,
-            "refine_splits": outcome.refine_splits,
-            "refine_updates": outcome.refine_updates,
-            "refine_new_entries": outcome.refine_new_entries,
-            "refine_kept": outcome.refine_kept,
-            "entries_decayed": outcome.entries_decayed,
-            "entries_skipped": outcome.entries_skipped,
-        })),
-        Err(e) => {
-            tracing::warn!(
-                character = %char_name,
-                error = %e,
-                "Collation after compaction failed"
-            );
-            None
-        }
-    }
-}
-
 /// Run compaction on the current character's conversation.
 pub async fn compact(
     engine: &mut ConversationEngine,
@@ -530,16 +470,6 @@ pub async fn compact(
                 .reload()
                 .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
 
-            let do_collate = args
-                .get("collate")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            let collation_result = if do_collate && ctx.config.app.memory.collation.enabled {
-                run_post_compaction_collation(ctx, &char_name, &display_name, &db).await
-            } else {
-                None
-            };
-
             Ok(json!({
                 "status": "compacted",
                 "character": char_name,
@@ -550,20 +480,16 @@ pub async fn compact(
                 "retained_turns": result.retained_turns,
                 "recap_generated": result.recap_generated,
                 "new_conversation_id": result.new_conversation_id,
-                "collation": collation_result,
             }))
         }
         CompactionOutcome::DryRun(result) => {
             let previews: Vec<serde_json::Value> = result
-                .entries_preview
+                .file_ops_preview
                 .iter()
-                .map(|e| {
+                .map(|op| {
                     json!({
-                        "memory_type": e.memory_type,
-                        "summary_text": e.summary_text,
-                        "topic_tags": e.topic_tags,
-                        "topic_key": e.topic_key,
-                        "confidence": e.confidence,
+                        "path": op.path,
+                        "content_preview": op.content.chars().take(200).collect::<String>(),
                     })
                 })
                 .collect();
@@ -572,7 +498,7 @@ pub async fn compact(
                 "status": "dry_run",
                 "character": char_name,
                 "would_create_entries": result.would_create_entries,
-                "entries_preview": previews,
+                "file_ops_preview": previews,
                 "message_count": result.message_count,
                 "retained_count": result.retained_count,
                 "retained_turns": result.retained_turns,
@@ -591,41 +517,11 @@ fn compaction_err(e: CompactionError) -> (ErrorCode, String) {
     }
 }
 
-/// Resolve the model to use for collation.
-pub fn resolve_collation_model(
-    config: &shore_config::LoadedConfig,
-) -> Option<shore_config::models::ResolvedModel> {
-    config
-        .app
-        .defaults
-        .collation
-        .as_deref()
-        .and_then(|name| config.models.find_model(name).ok())
-        .or_else(|| {
-            config
-                .app
-                .defaults
-                .memory_agent
-                .as_deref()
-                .and_then(|name| config.models.find_model(name).ok())
-        })
-        .or_else(|| {
-            config
-                .app
-                .defaults
-                .model
-                .as_deref()
-                .and_then(|name| config.models.find_model(name).ok())
-        })
-        .or_else(|| config.models.first_chat_model())
-        .cloned()
-}
-
 /// Resolve the model to use for compaction.
 ///
 /// Chain: `defaults.compaction` → `defaults.memory_agent` → `defaults.model` → first chat model.
-/// Must be kept in lockstep with [`resolve_collation_model`] — both background and interactive
-/// compaction entry points depend on this returning the same value.
+/// Background and interactive compaction entry points depend on this returning
+/// the same value.
 pub fn resolve_compaction_model(
     config: &shore_config::LoadedConfig,
 ) -> Option<shore_config::models::ResolvedModel> {
@@ -653,110 +549,6 @@ pub fn resolve_compaction_model(
         })
         .or_else(|| config.models.first_chat_model())
         .cloned()
-}
-
-/// Run the 4-phase collation pipeline on the current character's memory.
-pub async fn collate(
-    engine: &mut ConversationEngine,
-    ctx: &CommandContext,
-    args: &serde_json::Value,
-) -> CommandResult {
-    let char_name = engine.character_name().to_string();
-    let full_mode = args.get("full").and_then(|v| v.as_bool()).unwrap_or(false);
-
-    let db = open_memory_db(ctx, &char_name)?;
-
-    let model = resolve_collation_model(&ctx.config)
-        .ok_or_else(|| (ErrorCode::InternalError, "No model configured".to_string()))?;
-
-    let llm = RealCollationLlm::new(ctx.llm_client.clone(), model, char_name.clone());
-
-    let refine_template = resolve_prompt_template(&ctx.config.dirs.config, &char_name, "refine.md")
-        .unwrap_or_else(|| DEFAULT_REFINE_PROMPT.to_string());
-
-    let mgr = CollationManager::new(DecayConfig::default());
-
-    let config_limit = ctx.config.app.memory.collation.batch_limit;
-    let limit = args
-        .get("limit")
-        .and_then(|v| v.as_u64())
-        .map(|v| v as usize)
-        .unwrap_or(config_limit);
-
-    let search_ctx = setup_search_context(ctx, &char_name).await;
-    let indexer = search_ctx.as_ref().map(RealAgentIndexer::new);
-
-    let display_name = ctx.config.app.defaults.resolve_display_name();
-    let collation_vars = build_collation_vars(ctx, &char_name, &display_name);
-
-    info!(character = %char_name, full_mode, limit, "Collation started");
-
-    const MAX_PASSES: usize = 10;
-    let mut total = CollationOutcome::default();
-    let mut passes: usize = 0;
-
-    loop {
-        passes += 1;
-        let outcome = mgr
-            .run(
-                &db,
-                &llm,
-                &refine_template,
-                &collation_vars,
-                indexer
-                    .as_ref()
-                    .map(|i| i as &dyn crate::memory::agent::AgentIndexer),
-                search_ctx.as_ref().map(|ctx| &*ctx.vector_store),
-                Some(limit),
-            )
-            .await
-            .map_err(collation_err)?;
-
-        total.timestamps_backfilled += outcome.timestamps_backfilled;
-        total.refine_merges += outcome.refine_merges;
-        total.refine_splits += outcome.refine_splits;
-        total.refine_updates += outcome.refine_updates;
-        total.refine_new_entries += outcome.refine_new_entries;
-        total.refine_kept += outcome.refine_kept;
-        total.entries_decayed += outcome.entries_decayed;
-        total.entries_skipped += outcome.entries_skipped;
-
-        if !full_mode
-            || (outcome.refine_merges == 0
-                && outcome.refine_splits == 0
-                && outcome.refine_updates == 0)
-            || passes >= MAX_PASSES
-        {
-            break;
-        }
-    }
-
-    info!(
-        character = %char_name,
-        passes,
-        merges = total.refine_merges,
-        splits = total.refine_splits,
-        updates = total.refine_updates,
-        decayed = total.entries_decayed,
-        "Collation complete"
-    );
-    Ok(json!({
-        "status": "collated",
-        "character": char_name,
-        "passes": passes,
-        "timestamps_backfilled": total.timestamps_backfilled,
-        "refine_merges": total.refine_merges,
-        "refine_splits": total.refine_splits,
-        "refine_updates": total.refine_updates,
-        "refine_new_entries": total.refine_new_entries,
-        "refine_kept": total.refine_kept,
-        "entries_decayed": total.entries_decayed,
-        "entries_skipped": total.entries_skipped,
-    }))
-}
-
-fn collation_err(e: CollationError) -> (ErrorCode, String) {
-    (ErrorCode::InternalError, e.to_string())
 }
 
 /// Purge old superseded entries to reclaim space.
@@ -950,17 +742,17 @@ pub async fn memory_reindex(engine: &ConversationEngine, ctx: &CommandContext) -
 
 #[cfg(test)]
 mod resolver_tests {
-    //! Regression tests for [`resolve_compaction_model`] and [`resolve_collation_model`].
+    //! Regression tests for [`resolve_compaction_model`].
     //!
     //! Bug history: interactive `/compact` used to call `resolve_agent_model`, which
     //! consults `defaults.memory_agent` — so a user's `defaults.compaction` setting was
     //! silently ignored by the interactive entry point while the background path honored
     //! it. Parallel resolvers with no shared helper, no test locking them together.
     //!
-    //! These tests pin the resolution chain for both operations and assert that
-    //! `defaults.compaction` / `defaults.collation` take precedence over
-    //! `defaults.memory_agent`. Don't delete without a matching DECISIONS.md entry.
-    use super::{resolve_collation_model, resolve_compaction_model};
+    //! These tests pin the resolution chain and assert that
+    //! `defaults.compaction` take precedence over `defaults.memory_agent`.
+    //! Don't delete without a matching DECISIONS.md entry.
+    use super::resolve_compaction_model;
     use shore_config::app::{AppConfig, DefaultsConfig};
     use shore_config::models::ModelCatalog;
     use shore_config::{LoadedConfig, ShoreDirs};
@@ -1068,55 +860,4 @@ model_id = "minimax-tool"
         assert!(resolve_compaction_model(&config).is_none());
     }
 
-    /// Parallel test: collation also honors its dedicated default over memory_agent.
-    #[test]
-    fn collation_prefers_defaults_collation_over_memory_agent() {
-        let config = make_config(DefaultsConfig {
-            collation: Some("bg".to_string()),
-            memory_agent: Some("minimax".to_string()),
-            model: Some("primary".to_string()),
-            ..DefaultsConfig::default()
-        });
-        let model = resolve_collation_model(&config).expect("resolved");
-        assert_eq!(model.name, "bg");
-    }
-
-    #[test]
-    fn collation_falls_back_to_memory_agent_when_unset() {
-        let config = make_config(DefaultsConfig {
-            collation: None,
-            memory_agent: Some("minimax".to_string()),
-            model: Some("primary".to_string()),
-            ..DefaultsConfig::default()
-        });
-        let model = resolve_collation_model(&config).expect("resolved");
-        assert_eq!(model.name, "minimax");
-    }
-
-    /// Cross-resolver parity: given identical defaults, compaction and collation
-    /// return the same fallback chain *structurally*. Locks them together so a
-    /// future change to one is loud if not mirrored to the other.
-    #[test]
-    fn compaction_and_collation_fallback_chains_are_parallel() {
-        // memory_agent set, no dedicated defaults — both should fall back to it.
-        let config = make_config(DefaultsConfig {
-            memory_agent: Some("minimax".to_string()),
-            model: Some("primary".to_string()),
-            ..DefaultsConfig::default()
-        });
-        let comp = resolve_compaction_model(&config).expect("resolved");
-        let col = resolve_collation_model(&config).expect("resolved");
-        assert_eq!(comp.name, col.name);
-        assert_eq!(comp.name, "minimax");
-
-        // Only `model` set — both fall all the way through to it.
-        let config = make_config(DefaultsConfig {
-            model: Some("primary".to_string()),
-            ..DefaultsConfig::default()
-        });
-        let comp = resolve_compaction_model(&config).expect("resolved");
-        let col = resolve_collation_model(&config).expect("resolved");
-        assert_eq!(comp.name, col.name);
-        assert_eq!(comp.name, "primary");
-    }
 }

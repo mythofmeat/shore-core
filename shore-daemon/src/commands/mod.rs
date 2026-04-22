@@ -19,7 +19,7 @@ use crate::memory::agent::{AgentSearchContext, MemoryAgent};
 use crate::memory::compaction_impls::resolve_embed_config;
 use crate::memory::vectorstore::VectorStore;
 use shore_config::models::ResolvedModel;
-use shore_config::{load_character_definition, resolve_user_definition, LoadedConfig};
+use shore_config::LoadedConfig;
 use shore_diagnostics::Diagnostics;
 use shore_ledger::LedgerClient;
 
@@ -71,7 +71,7 @@ pub type CommandResult = Result<serde_json::Value, (ErrorCode, String)>;
 
 /// Resolve the agent model: configured `memory_agent` → active model → first chat model.
 ///
-/// Used by memory queries, memory shell, and collation setup.
+/// Used by memory queries and memory shell.
 pub fn resolve_agent_model(ctx: &CommandContext) -> Result<ResolvedModel, (ErrorCode, String)> {
     ctx.config
         .app
@@ -141,24 +141,6 @@ pub async fn open_embed_and_vectorstore(
     Ok((store, embed_config))
 }
 
-/// Build the template variable map used by collation.
-pub fn build_collation_vars(
-    ctx: &CommandContext,
-    char_name: &str,
-    display_name: &str,
-) -> HashMap<String, String> {
-    let mut vars = HashMap::new();
-    vars.insert("char".to_string(), char_name.to_string());
-    vars.insert("user".to_string(), display_name.to_string());
-    if let Some(cd) = load_character_definition(&ctx.config.dirs.config, char_name) {
-        vars.insert("char_description".to_string(), cd);
-    }
-    if let Some(ud) = resolve_user_definition(&ctx.config.dirs.config, char_name) {
-        vars.insert("user_description".to_string(), ud);
-    }
-    vars
-}
-
 /// Dispatch a command to the appropriate handler.
 pub async fn dispatch(
     engine: Arc<tokio::sync::Mutex<ConversationEngine>>,
@@ -196,7 +178,6 @@ pub async fn dispatch(
         "memory_shell_query" => state::memory_shell_query(ctx, &cmd.args).await,
         "memory_shell_end" => state::memory_shell_end(ctx, &cmd.args),
         "compact" => state::compact(engine, ctx, &cmd.args).await,
-        "collate" => state::collate(engine, ctx, &cmd.args).await,
         "memory_purge" => state::memory_purge(engine, ctx, &cmd.args).await,
         "config" => state::config(ctx, &cmd.args),
         "config_check" => state::config_check(ctx),

@@ -5,6 +5,28 @@ replaced by better alternatives or because they don't fit the V2 architecture.
 
 Add items here as decisions are made.
 
+## Dropped Shore Collation (2026-04-22)
+
+Shore's 5-phase collation pipeline (timestamp backfill → refine/merge → tidy/split
+→ normalize entities → confidence decay) has been removed. Research confirmed
+OpenClaw has no separate "collation" concept — memory maintenance is implicit in
+compaction or delegated to the model. Letta front-loads extraction at ingest time.
+
+The ~2,700 LOC collation module (`shore-daemon/src/memory/collation/`,
+`collation_impls.rs`) and all call sites (background compaction, interactive
+`shore memory collate`, autonomy manager) were deleted. The `collation_skip`
+SQLite table and `collated_at` column remain in existing DBs for backward
+compatibility but are no longer written to.
+
+Config fields (`memory.collation.*`, `defaults.collation`) are kept with
+`deny_unknown_fields` compatibility but are ignored. `NotificationEventsConfig`
+lost its `collation_complete` toggle.
+
+Rationale: AI-curated markdown compaction (Phase 3) already lets the model
+reorganize, merge, and update memory files. A separate deterministic pipeline
+is redundant and conflicts with the goal of letting the assistant manage its
+own memory structure.
+
 ## Replaced by Better V2 Alternatives
 
 - **defaults.cli_target_character** (10.1) — Removed. V2 uses a state file +

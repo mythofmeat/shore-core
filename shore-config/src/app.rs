@@ -92,7 +92,8 @@ pub struct DefaultsConfig {
     /// Default memory agent model name.
     pub memory_agent: Option<String>,
 
-    /// Default collation model name (for merge/split/normalize decisions).
+    /// Deprecated: collation has been removed. Kept for backward config
+    /// compatibility but ignored.
     pub collation: Option<String>,
 
     /// Default compaction model name (for conversation summarization).
@@ -261,18 +262,21 @@ impl Default for CompactionConfig {
     }
 }
 
+/// Deprecated: collation has been removed in favor of AI-curated markdown
+/// memory maintenance during compaction. The struct is kept for backward
+/// config compatibility but all fields are ignored.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct CollationConfig {
-    /// Whether collation is enabled (gates both auto and manual triggers).
-    #[serde(default = "default_true")]
+    /// Deprecated, ignored.
+    #[serde(default = "default_false")]
     pub enabled: bool,
 
-    /// Whether collation runs automatically after compaction.
-    #[serde(default = "default_true")]
+    /// Deprecated, ignored.
+    #[serde(default = "default_false")]
     pub auto_run: bool,
 
-    /// Maximum entries to process per collation run. Controls LLM cost.
+    /// Deprecated, ignored.
     #[serde(default = "default_batch_limit")]
     pub batch_limit: usize,
 }
@@ -282,8 +286,8 @@ serde_default!(default_batch_limit -> usize { 10 });
 impl Default for CollationConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
-            auto_run: true,
+            enabled: false,
+            auto_run: false,
             batch_limit: default_batch_limit(),
         }
     }
@@ -692,8 +696,6 @@ pub struct NotificationEventsConfig {
     #[serde(default = "default_true")]
     pub compaction_complete: bool,
     #[serde(default = "default_true")]
-    pub collation_complete: bool,
-    #[serde(default = "default_true")]
     pub error: bool,
     #[serde(default)]
     pub message_complete: bool,
@@ -705,7 +707,6 @@ impl Default for NotificationEventsConfig {
             autonomous_message: true,
             cache_warning: true,
             compaction_complete: true,
-            collation_complete: true,
             error: true,
             message_complete: false,
         }
@@ -800,6 +801,7 @@ impl Default for TtsConfig {
 // ── Shared defaults ─────────────────────────────────────────────────────
 
 serde_default!(default_true -> bool { true });
+serde_default!(default_false -> bool { false });
 serde_default!(default_max_image_size -> u64 { 2_000_000 });
 
 #[cfg(test)]
@@ -953,7 +955,6 @@ key = "value"
         assert!(config.notifications.events.autonomous_message);
         assert!(config.notifications.events.cache_warning);
         assert!(config.notifications.events.compaction_complete);
-        assert!(config.notifications.events.collation_complete);
         assert!(config.notifications.events.error);
     }
 

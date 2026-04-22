@@ -1,14 +1,13 @@
 //! US-026: Full memory system milestone — end-to-end integration test.
 //!
 //! Exercises the complete memory pipeline with real SQLite, LanceDB, BM25,
-//! and RAG components, using mock LLM traits for compaction and collation.
+//! and RAG components, using mock LLM traits for compaction.
 //!
 //! Coverage:
 //! - Multi-turn conversation simulation (5+ messages)
 //! - Compaction → entries in SQLite + LanceDB vector store
 //! - BM25 indexing + hybrid RAG retrieval
 //! - Memory tool dispatch via ToolContext
-//! - Collation (refine, decay)
 //! - Memory agent create_entry persists entries
 
 use chrono::Local;
@@ -17,10 +16,6 @@ use std::pin::Pin;
 use tempfile::TempDir;
 
 use shore_daemon::memory::agent::RagHit;
-use shore_daemon::memory::collation::{
-    CollationError, CollationLlm, CollationManager, DecayConfig, RefineAction, RefineEntryFields,
-    DEFAULT_REFINE_PROMPT,
-};
 use shore_daemon::memory::compaction::{
     CompactionConfig, CompactionError, CompactionLlm, CompactionManager, CompactionOutcome,
     ConversationManager, ConversationMessage, RetentionParams, VectorIndexer,
@@ -66,11 +61,14 @@ impl MockCompactionLlm {
     fn with_entries(entries: &[(&str, &str, &str, f64)]) -> Self {
         let mut xml = String::new();
         xml.push_str("<recap>Test recap of conversation.</recap>\n");
-        for (memory_type, summary, tags, confidence) in entries {
+        xml.push_str("<memory>\n");
+        for (_memory_type, summary, tags, _confidence) in entries {
+            let path = format!("compacted/{}.md", tags.split(',').next().unwrap_or("entry"));
             xml.push_str(&format!(
-                "<entry>\n<memory_type>{memory_type}</memory_type>\n<summary>{summary}</summary>\n<topic_tags>{tags}</topic_tags>\n<confidence>{confidence}</confidence>\n</entry>\n"
+                "<write path=\"{path}\">\n# {tags}\n\n{summary}\n</write>\n"
             ));
         }
+        xml.push_str("</memory>\n");
         Self { response_xml: xml }
     }
 }
@@ -81,24 +79,6 @@ impl CompactionLlm for MockCompactionLlm {
         _prompt: &str,
     ) -> Pin<Box<dyn Future<Output = Result<String, CompactionError>> + Send + '_>> {
         let result = Ok(self.response_xml.clone());
-        Box::pin(async move { result })
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Mock LLM for collation (unified refine phase)
-// ---------------------------------------------------------------------------
-
-struct MockCollationLlm {
-    refine_response: Vec<RefineAction>,
-}
-
-impl CollationLlm for MockCollationLlm {
-    fn refine(
-        &self,
-        _prompt: &str,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<RefineAction>, CollationError>> + Send + '_>> {
-        let result = Ok(self.refine_response.clone());
         Box::pin(async move { result })
     }
 }
@@ -462,116 +442,6 @@ async fn test_full_memory_system_e2e() {
         "RAG should return empty in private mode"
     );
 
-    // -----------------------------------------------------------------------
-    // Phase 8: Collation — unified refine + decay
-    // -----------------------------------------------------------------------
-
-    // Add some entries for collation to work on
-    let now_str = Local::now().to_rfc3339();
-    let thirty_days_ago = (Local::now() - chrono::Duration::days(30)).to_rfc3339();
-
-    // Entry pair that will be merged by refine
-    let sim1 = Entry {
-        id: "sim_001".to_string(),
-        memory_type: "semantic".to_string(),
-        source: "summary".to_string(),
-        reason: "compaction".to_string(),
-        status: "active".to_string(),
-        confidence: 0.9,
-        summary_text: "User enjoys green tea".to_string(),
-        topic_tags: "preference,beverage".to_string(),
-        topic_key: "preferences".to_string(),
-        start_timestamp: now_str.clone(),
-        end_timestamp: now_str.clone(),
-        message_count: 3,
-        source_entry_ids: String::new(),
-        related_entry_ids: String::new(),
-        superseded_by: String::new(),
-        created_at: now_str.clone(),
-        updated_at: now_str.clone(),
-        entry_type: String::new(),
-        image_path: String::new(),
-        collated_at: String::new(),
-    };
-    let sim2 = Entry {
-        id: "sim_002".to_string(),
-        summary_text: "User drinks green tea daily".to_string(),
-        created_at: now_str.clone(),
-        updated_at: now_str.clone(),
-        ..sim1.clone()
-    };
-    db.create_entry(&sim1).unwrap();
-    db.create_entry(&sim2).unwrap();
-
-    // Old entry for decay
-    let stale_entry = Entry {
-        id: "stale_001".to_string(),
-        summary_text: "User used to play chess".to_string(),
-        confidence: 0.8,
-        created_at: thirty_days_ago.clone(),
-        updated_at: thirty_days_ago.clone(),
-        ..sim1.clone()
-    };
-    db.create_entry(&stale_entry).unwrap();
-
-    let collation_llm = MockCollationLlm {
-        refine_response: vec![RefineAction::Merge {
-            source_entry_ids: vec!["sim_001".to_string(), "sim_002".to_string()],
-            result: RefineEntryFields {
-                summary_text: "User regularly enjoys and drinks green tea".to_string(),
-                topic_tags: "preference,beverage,tea".to_string(),
-                topic_key: "preferences".to_string(),
-                confidence: 0.9,
-            },
-            reason: "Duplicate entries about tea".to_string(),
-        }],
-    };
-
-    // Sleep 1.1s to ensure collation generates different timestamp-based entry IDs
-    // than compaction (both use YYYYMMDD_HHMMSS_N format).
-    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
-
-    let collation_mgr = CollationManager::new(DecayConfig::default());
-    let collation_outcome = collation_mgr
-        .run(
-            &db,
-            &collation_llm,
-            DEFAULT_REFINE_PROMPT,
-            &std::collections::HashMap::new(),
-            None,                // indexer
-            Some(&vector_store), // vector_store for re-indexing
-            None,                // limit
-        )
-        .await
-        .unwrap();
-
-    // Verify refine merge
-    assert_eq!(
-        collation_outcome.refine_merges, 1,
-        "Should have 1 refine merge"
-    );
-    let sim1 = db.get_entry("sim_001").unwrap().unwrap();
-    let sim2 = db.get_entry("sim_002").unwrap().unwrap();
-    assert_eq!(sim1.status, "superseded");
-    assert_eq!(sim2.status, "superseded");
-
-    // Verify confidence decay (stale_001 is 30 days old = one half-life)
-    assert!(
-        collation_outcome.entries_decayed >= 1,
-        "At least stale_001 should be decayed"
-    );
-    let stale = db.get_entry("stale_001").unwrap().unwrap();
-    assert!(
-        stale.confidence < 0.8,
-        "Decayed confidence {:.3} should be < 0.8",
-        stale.confidence
-    );
-    assert!(stale.confidence >= 0.1, "Confidence should respect floor");
-
-    // Verify collation changelog entries
-    let all_logs = db.get_recent_changelog(50).unwrap();
-    assert!(all_logs.iter().any(|l| l.operation == "collation_refine"));
-    assert!(all_logs.iter().any(|l| l.operation == "collation_decay"));
 }
 
 // ===========================================================================

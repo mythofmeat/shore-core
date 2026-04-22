@@ -19,7 +19,7 @@ pub async fn run_compaction(
     use crate::notifications::NotificationEvent;
     use shore_config::{load_character_config, resolve_prompt_template};
     use shore_protocol::types::ContentBlock;
-    use tracing::{info, warn};
+    use tracing::info;
 
     let character_dir = data_dir.join(character);
     let active_path = character_dir.join("active.jsonl");
@@ -141,31 +141,6 @@ pub async fn run_compaction(
                     result.message_count
                 ),
             );
-
-            // Run collation after successful compaction if configured.
-            if config.app.memory.collation.enabled && config.app.memory.collation.auto_run {
-                info!(character = %character, "Running auto-collation after compaction");
-                match crate::memory::collation::run_collation(
-                    character, config, llm_client, data_dir,
-                )
-                .await
-                {
-                    Ok(()) => {
-                        notifier.notify(
-                            NotificationEvent::CollationComplete,
-                            &format!("Shore — {character}"),
-                            "Collation complete",
-                        );
-                    }
-                    Err(e) => {
-                        warn!(
-                            character = %character,
-                            error = %e,
-                            "Auto-collation failed"
-                        );
-                    }
-                }
-            }
 
             Ok(result.retained_turns)
         }

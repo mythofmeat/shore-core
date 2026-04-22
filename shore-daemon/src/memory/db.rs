@@ -203,13 +203,6 @@ pub struct FtsHit {
     pub created_at: String,
 }
 
-#[derive(Debug, Clone)]
-pub struct CollationSkip {
-    pub entry_id: String,
-    pub phase: String,
-    pub skipped_at: String,
-}
-
 // ---------------------------------------------------------------------------
 // MemoryDB
 // ---------------------------------------------------------------------------
@@ -798,43 +791,6 @@ impl MemoryDB {
     }
 
     // ------------------------------------------------------------------
-    // Collation skip
-    // ------------------------------------------------------------------
-
-    pub fn add_collation_skip(&self, entry_id: &str, phase: &str) -> SqlResult<()> {
-        let now = Local::now().to_rfc3339();
-        self.conn.execute(
-            "INSERT OR IGNORE INTO collation_skip (entry_id, phase, skipped_at)
-             VALUES (?1, ?2, ?3)",
-            params![entry_id, phase, now],
-        )?;
-        Ok(())
-    }
-
-    pub fn is_collation_skipped(&self, entry_id: &str, phase: &str) -> SqlResult<bool> {
-        let count: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM collation_skip WHERE entry_id = ?1 AND phase = ?2",
-            params![entry_id, phase],
-            |row| row.get(0),
-        )?;
-        Ok(count > 0)
-    }
-
-    pub fn get_collation_skips(&self, phase: &str) -> SqlResult<Vec<CollationSkip>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT entry_id, phase, skipped_at FROM collation_skip WHERE phase = ?1")?;
-        let rows = stmt.query_map(params![phase], |row| {
-            Ok(CollationSkip {
-                entry_id: row.get(0)?,
-                phase: row.get(1)?,
-                skipped_at: row.get(2)?,
-            })
-        })?;
-        rows.collect()
-    }
-
-    // ------------------------------------------------------------------
     // Full-text search (FTS5)
     // ------------------------------------------------------------------
 
@@ -971,15 +927,6 @@ impl MemoryDB {
             Some(row) => Ok(Some(row?)),
             None => Ok(None),
         }
-    }
-
-    /// Stamp an entry as collated at the given timestamp.
-    /// This marks the entry as processed by collation in its current form.
-    pub fn stamp_collated(&self, entry_id: &str, timestamp: &str) -> SqlResult<usize> {
-        self.conn.execute(
-            "UPDATE entries SET collated_at = ?2 WHERE id = ?1",
-            params![entry_id, timestamp],
-        )
     }
 
     /// Update an entry's confidence score.
@@ -1322,33 +1269,6 @@ mod tests {
         assert_eq!(unresolved[0].flag_id, f2);
     }
 
-    // -- Collation skip ---------------------------------------------------
-
-    #[test]
-    fn test_collation_skip() {
-        let db = MemoryDB::open_in_memory().unwrap();
-
-        let entry = make_entry("20250101_120000_0", "episodic");
-        db.create_entry(&entry).unwrap();
-
-        assert!(!db
-            .is_collation_skipped("20250101_120000_0", "phase1")
-            .unwrap());
-
-        db.add_collation_skip("20250101_120000_0", "phase1")
-            .unwrap();
-        assert!(db
-            .is_collation_skipped("20250101_120000_0", "phase1")
-            .unwrap());
-
-        // Duplicate insert should be ignored.
-        db.add_collation_skip("20250101_120000_0", "phase1")
-            .unwrap();
-
-        let skips = db.get_collation_skips("phase1").unwrap();
-        assert_eq!(skips.len(), 1);
-    }
-
     // -- V1 compatibility -------------------------------------------------
 
     #[test]
@@ -1411,55 +1331,4 @@ mod tests {
         assert!(path.ends_with("shore/shore/memory/memory.db"));
     }
 
-    // -- stamp_collated / get_collation_skips --------------------------------
-
-    #[test]
-    fn test_stamp_collated_direct() {
-        let db = MemoryDB::open_in_memory().unwrap();
-        let entry = make_entry("20250401_120000_0", "episodic");
-        db.create_entry(&entry).unwrap();
-
-        // Stamp and verify row count.
-        let rows = db
-            .stamp_collated("20250401_120000_0", "2026-04-03T12:00:00Z")
-            .unwrap();
-        assert_eq!(rows, 1);
-
-        // Verify the field was updated.
-        let fetched = db.get_entry("20250401_120000_0").unwrap().unwrap();
-        assert_eq!(fetched.collated_at, "2026-04-03T12:00:00Z");
-
-        // Non-existent ID returns 0.
-        let rows = db
-            .stamp_collated("nonexistent", "2026-04-03T12:00:00Z")
-            .unwrap();
-        assert_eq!(rows, 0);
-    }
-
-    #[test]
-    fn test_get_collation_skips_filters_by_phase() {
-        let db = MemoryDB::open_in_memory().unwrap();
-        let entry = make_entry("20250401_120000_0", "episodic");
-        db.create_entry(&entry).unwrap();
-
-        // Add skips for two different phases.
-        db.add_collation_skip("20250401_120000_0", "refine")
-            .unwrap();
-        db.add_collation_skip("20250401_120000_0", "decay").unwrap();
-
-        // Query by phase.
-        let refine_skips = db.get_collation_skips("refine").unwrap();
-        assert_eq!(refine_skips.len(), 1);
-        assert_eq!(refine_skips[0].entry_id, "20250401_120000_0");
-        assert_eq!(refine_skips[0].phase, "refine");
-        assert!(!refine_skips[0].skipped_at.is_empty());
-
-        let decay_skips = db.get_collation_skips("decay").unwrap();
-        assert_eq!(decay_skips.len(), 1);
-        assert_eq!(decay_skips[0].phase, "decay");
-
-        // Non-existent phase returns empty.
-        let empty = db.get_collation_skips("nonexistent").unwrap();
-        assert!(empty.is_empty());
-    }
 }

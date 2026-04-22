@@ -152,26 +152,36 @@ Old compaction used a cheap model with a rigid prompt. New compaction could use 
 
 ---
 
-## Phase 4: Drop Collation, Adopt OpenClaw/Letta Approach
+## Phase 4: Drop Collation, Adopt OpenClaw/Letta Approach — COMPLETE
 
 **Purpose:** Replace Shore's 5-phase collation with whatever OpenClaw / Letta do for memory maintenance.
 
-### Current behavior (to drop)
+### Research findings
 
-Shore collation: timestamp backfill → collate (merge) → tidy (split) → normalize entities → confidence decay. This runs automatically or on `shore memory collate`.
+- **OpenClaw:** No separate "collation" concept. Memory maintenance is implicit
+  in compaction (the model decides to merge while updating files) or delegated
+  to an optional background "dreaming" cron.
+- **Letta:** Front-loads extraction at ingest time, eliminating downstream
+  collation entirely.
 
-### New behavior
+### Changes made
 
-TBD. We need to research exactly what OpenClaw and Letta do.
+- Deleted `shore-daemon/src/memory/collation/` (4 files, ~2,500 LOC) and
+  `collation_impls.rs` (~225 LOC).
+- Removed collation calls from background compaction, interactive `compact`,
+  autonomy manager, and command dispatch.
+- Deprecated config fields: `memory.collation.*` and `defaults.collation` are
+  kept for backward compatibility but ignored.
+- Removed `CollationComplete` notification event.
+- Kept SQLite `collation_skip` table and `collated_at` column in existing DBs
+  (no schema migration needed).
 
-**Hypothesis:** OpenClaw doesn't have a separate "collation" concept. Its memory maintenance is either:
-- Implicit in compaction (the model decides to merge while updating files).
-- Or a periodic "clean up your workspace" prompt.
-- Or it doesn't do explicit maintenance, trusting the model to organize well.
+### Rationale
 
-**Action item:** Research OpenClaw's memory maintenance. Read their docs, prompt templates, or source if available. Same for Letta.
-
-**Fallback:** If OpenClaw doesn't have a distinct collation phase, we simply drop it. The assistant is responsible for keeping its memory tidy during compaction. If memory grows too large, RAG/BM25 ranking handles it.
+AI-curated markdown compaction (Phase 3) already lets the model reorganize,
+merge, and update memory files. A separate deterministic pipeline is redundant
+and conflicts with the goal of letting the assistant manage its own memory
+structure.
 
 ---
 
@@ -269,22 +279,15 @@ Keep the SQLite DB file. Don't delete it. If the markdown experiment fails, we c
 
 ## Current Phase
 
-**Phase 2: Markdown Memory Store — IN PROGRESS**
+**Phase 4: Drop Collation — COMPLETE**
 
-Phase 1 is complete and verified:
-- `read`, `write`, `edit`, `list_files`, `exec` tools implemented
-- All unit tests pass (14 workspace tests, 27 tools module tests)
-- Live MCP verification passed with real OpenRouter Haiku LLM
+Phase 1 complete and verified.
+Phase 2 complete and verified.
+Phase 3 complete and verified.
+Phase 4 complete and verified:
+- Research confirmed OpenClaw/Letta have no separate collation phase
+- Deleted ~2,700 LOC of collation code and all call sites
+- Config fields deprecated but kept for backward compatibility
+- All unit tests pass, integration tests pass, MCP tests pass
 
-Phase 2 infrastructure complete:
-- `MarkdownMemoryStore` wired into `ToolContext` (handler, autonomy, tests)
-- New memory tools implemented and registered:
-  - `memory_read`, `memory_write`, `memory_search`, `memory_list`
-- Compaction writes markdown files to `memories/compacted/` in addition to SQLite
-- All unit tests pass (25 total tools, 700+ daemon tests)
-
-**Still open within Phase 2:**
-- Memory agent still reads from SQLite (transition path — will be addressed in Phase 5)
-- Vector store / RAG does not yet index markdown files
-
-Next action: Phase 3 — AI-curated compaction, or Phase 5 — split memory tool and improve retrieval.
+Next action: Phase 5 — improve memory retrieval tool use (assistant should proactively search/read memory when useful).

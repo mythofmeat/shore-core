@@ -167,8 +167,7 @@ fn list_models_empty() {
 #[test]
 fn list_models_excludes_tool_models() {
     // Regression: list_models previously merged chat AND tools into one
-    // flat list. Tool-only profiles (e.g. a function-calling sidecar model
-    // used for memory collation) are not meant to be user-selectable chat
+    // flat list. Tool-only profiles are not meant to be user-selectable chat
     // targets, and they pollute the UI in `shore models list` /
     // auto-completions.
     let tmp = TempDir::new().unwrap();
@@ -361,21 +360,6 @@ async fn compact_empty_conversation_returns_error() {
     let (code, msg) = result.unwrap_err();
     assert_eq!(code, shore_protocol::error::ErrorCode::InvalidRequest);
     assert!(msg.contains("No messages"));
-}
-
-#[tokio::test]
-async fn collate_no_model_returns_error() {
-    let tmp = TempDir::new().unwrap();
-    let (mut engine, ctx, _rx) = make_ctx(&tmp);
-
-    let db_dir = ctx.data_dir.join("TestChar").join("memory");
-    std::fs::create_dir_all(&db_dir).unwrap();
-    let _db = MemoryDB::open(&db_dir.join("memory.db")).unwrap();
-
-    let result = collate(&mut engine, &ctx, &json!({})).await;
-    assert!(result.is_err());
-    let (code, _msg) = result.unwrap_err();
-    assert_eq!(code, shore_protocol::error::ErrorCode::InternalError);
 }
 
 #[test]

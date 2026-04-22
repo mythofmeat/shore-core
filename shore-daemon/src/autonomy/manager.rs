@@ -837,11 +837,10 @@ async fn tick_character(character: &str, ctx: &TickContext) {
     };
 
     // Idle-triggered compaction: when the tick has the dependencies it needs
-    // (LLM client, config, notifier, registry), run compaction + cascaded
-    // collation inline so idle periods actually produce the work. When any
-    // dependency is missing (unit-test contexts), fall back to setting the
-    // pending flag so the handler's post-generation path picks it up on the
-    // user's next message.
+    // (LLM client, config, notifier, registry), run compaction inline so idle
+    // periods actually produce the work. When any dependency is missing
+    // (unit-test contexts), fall back to setting the pending flag so the
+    // handler's post-generation path picks it up on the user's next message.
     let mut run_compaction_now = false;
     if compaction_needed {
         let have_deps = ctx.llm_client.is_some()
@@ -917,10 +916,10 @@ async fn tick_character(character: &str, ctx: &TickContext) {
     }
 }
 
-/// Run compaction + cascaded collation for a character during an autonomy
-/// tick, without waiting for the user's next message. Resets the compaction
-/// state flags and reloads the engine's cached messages on success so the
-/// next turn (or interiority tick) sees the compacted `active.jsonl`.
+/// Run compaction for a character during an autonomy tick, without waiting
+/// for the user's next message. Resets the compaction state flags and reloads
+/// the engine's cached messages on success so the next turn (or interiority
+/// tick) sees the compacted `active.jsonl`.
 async fn execute_idle_compaction(character: &str, ctx: &TickContext) {
     let llm_client = match ctx.llm_client.as_ref() {
         Some(c) => c,
@@ -1857,7 +1856,7 @@ async fn build_tool_context(
     let researcher_model = config
         .app
         .defaults
-        .collation
+        .tool_model
         .as_deref()
         .and_then(|name| config.models.find_model(name).ok())
         .cloned();

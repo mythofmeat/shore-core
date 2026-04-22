@@ -57,7 +57,7 @@ pub struct CompactionResult {
 #[derive(Debug)]
 pub struct DryRunResult {
     pub would_create_entries: usize,
-    pub entries_preview: Vec<CompactedEntry>,
+    pub file_ops_preview: Vec<crate::memory::compaction::parser::MemoryFileOp>,
     pub message_count: usize,
     pub retained_count: usize,
     pub retained_turns: usize,
