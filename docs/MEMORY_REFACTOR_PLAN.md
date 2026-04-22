@@ -241,13 +241,13 @@ If the assistant says "I should update my character.md to reflect that Ren likes
 ### One-time migration script
 
 ```sh
-shore memory migrate
+python3 scripts/migrate-memory.py <character> [data_dir]
 ```
 
 1. Reads every row from `entries` table.
 2. Writes a markdown file per entry to `{character}/memories/migrated/{id}.md`.
 3. Content is the `summary_text` as markdown body.
-4. Filename is derived from `topic_key` or `topic_tags` if available, else `migrated_{id}.md`.
+4. Filename is derived from `topic_key` if available, else `{id}.md`.
 5. After migration, writes a sentinel file `migrated/.migration_complete`.
 
 ### Rollback plan
@@ -256,11 +256,10 @@ Keep the SQLite DB file. Don't delete it. If the markdown experiment fails, we c
 
 ### Changes made
 
-- Added `MemoryDB::get_all_entries()` to fetch every row regardless of status.
-- Added `memory_migrate` command handler in `shore-daemon/src/commands/state/memory.rs`.
-- Wired command into dispatch (`memory_migrate`).
-- Added unit tests: no-db path, empty-db path, and full migration with sentinel
-  verification.
+- Added standalone Python script `scripts/migrate-memory.py`.
+- Script uses `sqlite3` directly; no daemon binary changes needed.
+- Not wired into the daemon command system — one-off scripts shouldn't bloat
+the permanent dispatch table.
 
 ---
 
@@ -284,7 +283,7 @@ Keep the SQLite DB file. Don't delete it. If the markdown experiment fails, we c
 - [ ] No SQLite `entries` table reads during normal operation. (Pending: switch memory agent to read markdown instead of SQLite)
 - [x] Character self-edits to `character.md` are deferred and applied at compaction.
 - [ ] Assistant uses memory tools in ≥80% of relevant turns (benchmarked).
-- [x] `shore memory migrate` exports existing SQLite entries to markdown files.
+- [x] `scripts/migrate-memory.py` exports existing SQLite entries to markdown files.
 
 ---
 
