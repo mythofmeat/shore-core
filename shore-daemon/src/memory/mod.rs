@@ -5,6 +5,7 @@ pub mod collation_impls;
 pub mod compaction;
 pub mod compaction_impls;
 pub mod db;
+pub mod markdown_store;
 pub mod rag;
 pub mod researcher;
 pub mod search;
