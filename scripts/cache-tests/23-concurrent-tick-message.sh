@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
-# Test: concurrent interiority tick + user message.
+# Test: concurrent heartbeat tick + user message.
 #
-# Forces an interiority tick and immediately sends a user message
+# Forces a heartbeat tick and immediately sends a user message
 # in parallel. Verifies that neither busts the cache and both
 # complete without errors.
 #
@@ -25,10 +25,10 @@ model        = "chat.test.model"
 [behavior.autonomy]
 enabled = true
 
-[behavior.autonomy.interiority]
+[behavior.autonomy.heartbeat]
 enabled = true
-fallback_interiority_interval = "1h"
-dormant_after_interiority_turns = 5
+fallback_heartbeat_interval = "1h"
+dormant_after_heartbeat_turns = 5
 dormant_after_idle_time = "48h"
 
 [behavior.tool_use.tools]
@@ -84,7 +84,7 @@ echo -e "${CYAN}[$TEST_NAME]${NC} === PHASE 2: Concurrent tick + message ==="
 echo -e "${CYAN}[$TEST_NAME]${NC} forcing tick and sending message simultaneously..."
 
 # Fire tick in background.
-send_cmd "interiority_tick_now" &
+send_cmd "heartbeat_tick_now" &
 TICK_PID=$!
 
 # Wait just 1 second, then send a message while the tick is pending/running.

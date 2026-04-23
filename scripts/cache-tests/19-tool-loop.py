@@ -227,20 +227,10 @@ TOOLS = [
      "input_schema": {"type": "object", "properties": {
          "path": {"type": "string"}, "caption": {"type": "string"}},
          "required": ["path"]}},
-    {"name": "list_images", "description": "List available images.",
-     "input_schema": {"type": "object", "properties": {
-         "query": {"type": "string"}}, "required": []}},
     {"name": "generate_image", "description": "Generate an image from a text prompt.",
      "input_schema": {"type": "object", "properties": {
          "prompt": {"type": "string"}, "size": {"type": "string"}},
          "required": ["prompt"]}},
-    {"name": "recall_image", "description": "Recall a previously seen image.",
-     "input_schema": {"type": "object", "properties": {
-         "path": {"type": "string"}}, "required": ["path"]}},
-    {"name": "remember_image", "description": "Store a memory about an image.",
-     "input_schema": {"type": "object", "properties": {
-         "path": {"type": "string"}, "description": {"type": "string"}},
-         "required": ["path", "description"]}},
     {"name": "activity_heatmap", "description": "Generate activity heatmap visualization.",
      "input_schema": {"type": "object", "properties": {
          "days": {"type": "integer", "description": "Number of days"}},

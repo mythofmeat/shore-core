@@ -65,7 +65,7 @@ pub struct AssembledPrompt {
 /// config tree into prompt assembly.
 #[derive(Debug, Clone, Default)]
 pub struct CapabilitiesConfig {
-    pub interiority_enabled: bool,
+    pub heartbeat_enabled: bool,
     pub scratchpad_enabled: bool,
     pub memory_enabled: bool,
     pub send_image_enabled: bool,
@@ -75,7 +75,7 @@ pub struct CapabilitiesConfig {
 
 impl CapabilitiesConfig {
     pub fn any_enabled(&self) -> bool {
-        self.interiority_enabled
+        self.heartbeat_enabled
             || self.scratchpad_enabled
             || self.memory_enabled
             || self.send_image_enabled
@@ -502,7 +502,7 @@ fn trim_messages(messages: &[Message], token_budget: usize) -> Vec<PromptMessage
     // Walk forward, tracking the previous timestamp. When the gap between
     // consecutive messages exceeds the threshold, prepend a marker like
     // `[6 hours later · 9:14 PM]` to the next user message's content.
-    // Interiority recaps are no longer injected here — they're persisted
+    // Heartbeat recaps are no longer injected here — they're persisted
     // as Role::System messages in active.jsonl by the tick itself, so they
     // already sit at their natural chronological position in the history.
     let mut prev_ts: Option<DateTime<FixedOffset>> = None;
@@ -724,7 +724,7 @@ mod tests {
         })
         .unwrap();
         let all_flags = build_capabilities_block(&CapabilitiesConfig {
-            interiority_enabled: true,
+            heartbeat_enabled: true,
             scratchpad_enabled: true,
             memory_enabled: true,
             send_image_enabled: true,
@@ -1398,7 +1398,7 @@ mod tests {
     }
 
     #[test]
-    fn no_interiority_injection() {
+    fn no_heartbeat_injection() {
         let tmp = TempDir::new().unwrap();
         let data_dir = tmp.path().join("data");
 
@@ -1410,7 +1410,7 @@ mod tests {
             .map(|b| b.content.to_lowercase())
             .collect::<Vec<_>>()
             .join(" ");
-        assert!(!all_text.contains("interiority"));
+        assert!(!all_text.contains("heartbeat"));
         assert!(!all_text.contains("journal"));
         assert!(!all_text.contains("story"));
     }

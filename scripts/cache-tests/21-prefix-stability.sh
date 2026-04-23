@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Test: verify the serialized prefix (system + tools) is byte-identical
-# between normal messages and interiority ticks.
+# between normal messages and heartbeat ticks.
 #
 # This catches any code that mutates the system blocks, tool definitions,
 # or tool ordering between request types. If the prefix changes, the
@@ -31,10 +31,10 @@ model        = "chat.test.model"
 [behavior.autonomy]
 enabled = true
 
-[behavior.autonomy.interiority]
+[behavior.autonomy.heartbeat]
 enabled = true
-fallback_interiority_interval = "1h"
-dormant_after_interiority_turns = 5
+fallback_heartbeat_interval = "1h"
+dormant_after_heartbeat_turns = 5
 dormant_after_idle_time = "48h"
 
 [behavior.tool_use.tools]
@@ -108,8 +108,8 @@ for i in $(seq 1 5); do
 done
 
 # ── Phase 2: Force tick ──────────────────────────────────────────
-echo -e "${CYAN}[$TEST_NAME]${NC} === PHASE 2: Force interiority tick ==="
-send_cmd "interiority_tick_now"
+echo -e "${CYAN}[$TEST_NAME]${NC} === PHASE 2: Force heartbeat tick ==="
+send_cmd "heartbeat_tick_now"
 wait_for_tick || harness_fail "tick did not fire"
 # Give the tick's tool loop a moment to finish.
 sleep 5

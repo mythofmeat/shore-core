@@ -37,9 +37,9 @@ use tracing::{debug, error, info};
 
 use crate::autonomy::manager::AutonomyManager;
 use crate::characters::CharacterRegistry;
-use crate::commands::{CommandContext, MemoryShellSession, SessionTokens};
-use crate::memory::agent_llm::AgentLlm;
+use crate::commands::{CommandContext, SessionTokens};
 use crate::memory::compaction_impls::ImageGenConfig;
+use crate::memory::memory_llm::MemoryLlm;
 use crate::notifications::{NotificationEvent, NotificationService};
 use crate::tools::context::SharedToolContext;
 use crate::tools::ToolContext;
@@ -56,11 +56,11 @@ pub(super) struct HandlerToolContext {
 }
 
 impl ToolContext for HandlerToolContext {
-    fn agent_llm(&self) -> &dyn AgentLlm {
-        self.inner.agent_llm()
+    fn memory_llm(&self) -> &dyn MemoryLlm {
+        self.inner.memory_llm()
     }
-    fn agent_model(&self) -> &shore_config::models::ResolvedModel {
-        self.inner.agent_model()
+    fn memory_model(&self) -> &shore_config::models::ResolvedModel {
+        self.inner.memory_model()
     }
     fn image_dir(&self) -> &str {
         self.inner.image_dir()
@@ -139,7 +139,6 @@ struct SessionState {
     active_model: Option<String>,
     reasoning_effort_override: Option<Option<String>>,
     session_tokens: Arc<std::sync::Mutex<SessionTokens>>,
-    memory_shell_sessions: HashMap<String, MemoryShellSession>,
     generation_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
@@ -149,7 +148,6 @@ impl SessionState {
             active_model: None,
             reasoning_effort_override: None,
             session_tokens: Arc::new(std::sync::Mutex::new(SessionTokens::default())),
-            memory_shell_sessions: HashMap::new(),
             generation_handle: None,
         }
     }

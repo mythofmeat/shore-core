@@ -127,17 +127,12 @@ max_iterations = 3
 [behavior.tool_use.tools]
 memory = false
 send_image = false
-list_images = false
-recall_image = false
 generate_image = false
 web_search = false
 fetch_url = false
 check_time = true
 roll_dice = true
 activity_heatmap = false
-
-[memory.collation]
-enabled = false
 
 [chat.openrouter]
 base_url = "https://openrouter.ai/api/v1"
@@ -420,9 +415,6 @@ else
     printf "${RED}FAIL (expected < 26, got $new_count)${RESET}\n"
     fail=$((fail + 1))
 fi
-
-# Verify memory reindex works after compaction.
-run_test "memory reindex after compact" $CLI memory reindex
 
 # ── Summary ───────────────────────────────────────────────────────────
 printf "\n${BOLD}Results: ${GREEN}$pass passed${RESET}"

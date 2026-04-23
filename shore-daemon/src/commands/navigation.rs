@@ -218,7 +218,6 @@ mod tests {
             diagnostics: std::sync::Arc::new(std::sync::Mutex::new(
                 shore_diagnostics::Diagnostics::default(),
             )),
-            memory_shell_sessions: std::collections::HashMap::new(),
         };
         (engine, ctx, push_rx)
     }

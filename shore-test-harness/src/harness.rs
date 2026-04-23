@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -43,8 +42,8 @@ pub struct TestHarness {
     server_handle: JoinHandle<()>,
     handler_handle: JoinHandle<()>,
     pub config: LoadedConfig,
-    /// Exposed so integration tests can drive interiority ticks deterministically
-    /// (e.g. `autonomy.interiority_tick_now(character)` followed by a virtual-time
+    /// Exposed so integration tests can drive heartbeat ticks deterministically
+    /// (e.g. `autonomy.heartbeat_tick_now(character)` followed by a virtual-time
     /// advance to fire the tick loop).
     pub autonomy: AutonomyManager,
     // Stored for `trigger_compaction_now`.
@@ -151,7 +150,6 @@ impl TestHarness {
             diagnostics: Arc::new(std::sync::Mutex::new(
                 shore_diagnostics::Diagnostics::default(),
             )),
-            memory_shell_sessions: HashMap::new(),
         };
 
         // Clone for storage in TestHarness (before ownership is moved into msg_handler).

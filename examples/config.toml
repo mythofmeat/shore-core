@@ -19,9 +19,9 @@
 [defaults]
 model = "claude-sonnet"            # Must match a key in [chat.*.*] below
 # tool_model = "mistral-small"      # Model for tool-use calls
-# memory_agent = "mistral-small"    # Model for markdown memory Q&A
+# memory_query = "mistral-small"    # Model for markdown memory Q&A
 # compaction = "mistral-small"      # Model for conversation compaction into markdown memory
-# interiority = "claude-sonnet"     # Model for autonomous interiority ticks
+# heartbeat = "claude-sonnet"     # Model for autonomous heartbeat ticks
 # embedding = "text-large"          # Embedding profile
 # image_generation = "gemini-flash" # Image generation profile
 # display_name = "Your Name"        # {{user}} in templates; falls back to $USER
@@ -34,14 +34,14 @@ model = "claude-sonnet"            # Must match a key in [chat.*.*] below
 # [behavior.autonomy]
 # enabled = false
 
-# Interiority — autonomous "private moment" ticks where the character can reflect,
+# Heartbeat — autonomous "private moment" ticks where the character can reflect,
 # use tools (memory, web search, etc.), and optionally send an unprompted message.
-# [behavior.autonomy.interiority]
+# [behavior.autonomy.heartbeat]
 # enabled = true
-# fallback_interiority_interval = "1h"      # Base cadence when the character doesn't self-schedule
-# dormant_after_interiority_turns = 3       # Consecutive ticks with no user reply before sleeping
+# fallback_heartbeat_interval = "1h"      # Base cadence when the character doesn't self-schedule
+# dormant_after_heartbeat_turns = 3       # Consecutive ticks with no user reply before sleeping
 # dormant_after_idle_time = "48h"           # Hard idle ceiling before sleeping until user returns
-# minimum_interiority_latency = "1h"        # Floor between a user message and the next tick
+# minimum_heartbeat_latency = "1h"        # Floor between a user message and the next tick
 # max_tool_rounds = 12                      # Tool-use rounds per tick before a wrap-up recap is forced
 
 # ── Tool use ─────────────────────────────────────────────────────────────
@@ -102,12 +102,6 @@ model = "claude-sonnet"            # Must match a key in [chat.*.*] below
 #                               # blocks from history assistant messages.
 #                               # Set true to restore pre-2026-04-18 behavior.
 
-# Collation — legacy compatibility only in markdown memory mode.
-# [memory.collation]
-# enabled = false
-# auto_run = false
-# batch_limit = 10
-
 # ── Notifications ────────────────────────────────────────────────────────
 
 # [notifications]
@@ -128,7 +122,6 @@ model = "claude-sonnet"            # Must match a key in [chat.*.*] below
 # autonomous_message = true
 # cache_warning = true
 # compaction_complete = true
-# collation_complete = true
 # error = true
 # message_complete = false  # Notify when message generation completes
 

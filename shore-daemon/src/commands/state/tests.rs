@@ -69,7 +69,6 @@ fn make_ctx_with_models(
         diagnostics: std::sync::Arc::new(std::sync::Mutex::new(
             shore_diagnostics::Diagnostics::default(),
         )),
-        memory_shell_sessions: std::collections::HashMap::new(),
     };
     (engine, ctx, push_rx)
 }
@@ -116,12 +115,12 @@ fn status_returns_state() {
         assert_eq!(result["character"], "TestChar");
         assert_eq!(result["message_count"], 0);
         assert_eq!(result["active_model"], "claude-sonnet");
-        assert_eq!(result["autonomy"]["interiority_state"], "Active");
+        assert_eq!(result["autonomy"]["heartbeat_state"], "Active");
     });
 }
 
 #[test]
-fn status_reports_dormant_interiority() {
+fn status_reports_dormant_heartbeat() {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -132,12 +131,10 @@ fn status_reports_dormant_interiority() {
         let (engine, ctx, _rx) = make_ctx(&tmp);
 
         ctx.autonomy.ensure_state(engine.character_name(), None);
-        assert!(ctx
-            .autonomy
-            .interiority_set_dormant(engine.character_name()));
+        assert!(ctx.autonomy.heartbeat_set_dormant(engine.character_name()));
 
         let result = status(&engine, &ctx).unwrap();
-        assert_eq!(result["autonomy"]["interiority_state"], "Dormant");
+        assert_eq!(result["autonomy"]["heartbeat_state"], "Dormant");
     });
 }
 
@@ -459,15 +456,6 @@ fn test_reset_model_clears_override() {
     assert!(ctx.active_model.is_none());
 }
 
-#[tokio::test]
-async fn memory_purge_reports_removed_command() {
-    let tmp = TempDir::new().unwrap();
-    let (mut engine, ctx, _rx) = make_ctx(&tmp);
-
-    let result = memory_purge(&mut engine, &ctx, &json!({"older_than": "1d"})).await;
-    assert!(result.is_err());
-}
-
 #[test]
 fn config_reset_clears_active_model_and_reloads() {
     let tmp = TempDir::new().unwrap();
@@ -482,14 +470,6 @@ fn config_reset_clears_active_model_and_reloads() {
 
     ctx.active_model = Some("custom-override".into());
     ctx.config.app.defaults.stream = true;
-    ctx.memory_shell_sessions.insert(
-        "shell-1".into(),
-        crate::commands::MemoryShellSession {
-            history: vec![],
-            character: "TestChar".into(),
-            model: sample_models().first_chat_model().cloned().unwrap(),
-        },
-    );
 
     let result = config_reset(&mut ctx).unwrap();
 
@@ -499,19 +479,6 @@ fn config_reset_clears_active_model_and_reloads() {
         !ctx.config.app.defaults.stream,
         "config should be reloaded from ctx.config.dirs.config"
     );
-    assert!(
-        ctx.memory_shell_sessions.is_empty(),
-        "memory shell sessions should be cleared because they hold stale runtime state"
-    );
-}
-
-#[tokio::test]
-async fn memory_reindex_reports_not_needed() {
-    let tmp = TempDir::new().unwrap();
-    let (engine, ctx, _rx) = make_ctx(&tmp);
-
-    let result = memory_reindex(&engine, &ctx).await.unwrap();
-    assert!(result["message"].as_str().unwrap().contains("unnecessary"));
 }
 
 #[test]

@@ -84,9 +84,9 @@ pub fn heartbeat_log(
     Ok(json!({ "events": events_json }))
 }
 
-pub fn interiority_tick_now(engine: &ConversationEngine, ctx: &CommandContext) -> CommandResult {
+pub fn heartbeat_tick_now(engine: &ConversationEngine, ctx: &CommandContext) -> CommandResult {
     let char_name = engine.character_name();
-    match ctx.autonomy.interiority_tick_now(char_name) {
+    match ctx.autonomy.heartbeat_tick_now(char_name) {
         Some(dormant) => {
             let mut result = json!({
                 "status": "scheduled",
@@ -94,8 +94,8 @@ pub fn interiority_tick_now(engine: &ConversationEngine, ctx: &CommandContext) -
             });
             if dormant {
                 result["warning"] = json!(
-                    "Interiority is dormant. The scheduled tick will be suppressed \
-                     by the abandonment guard. Run `shore debug interiority_status_active` \
+                    "Heartbeat is dormant. The scheduled tick will be suppressed \
+                     by the abandonment guard. Run `shore debug heartbeat_status_active` \
                      first to wake the clock."
                 );
             }
@@ -108,9 +108,9 @@ pub fn interiority_tick_now(engine: &ConversationEngine, ctx: &CommandContext) -
     }
 }
 
-pub fn interiority_set_dormant(engine: &ConversationEngine, ctx: &CommandContext) -> CommandResult {
+pub fn heartbeat_set_dormant(engine: &ConversationEngine, ctx: &CommandContext) -> CommandResult {
     let char_name = engine.character_name();
-    if ctx.autonomy.interiority_set_dormant(char_name) {
+    if ctx.autonomy.heartbeat_set_dormant(char_name) {
         Ok(json!({ "status": "dormant", "character": char_name }))
     } else {
         Err((
@@ -120,9 +120,9 @@ pub fn interiority_set_dormant(engine: &ConversationEngine, ctx: &CommandContext
     }
 }
 
-pub fn interiority_set_active(engine: &ConversationEngine, ctx: &CommandContext) -> CommandResult {
+pub fn heartbeat_set_active(engine: &ConversationEngine, ctx: &CommandContext) -> CommandResult {
     let char_name = engine.character_name();
-    if ctx.autonomy.interiority_set_active(char_name) {
+    if ctx.autonomy.heartbeat_set_active(char_name) {
         Ok(json!({ "status": "active", "character": char_name }))
     } else {
         Err((

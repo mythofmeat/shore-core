@@ -7,7 +7,7 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [0.15.0] — 2026-04-16
 
 ### Added
-- `shore-mcp` crate: debug-only MCP server exposing the daemon over JSON-RPC stdio, with status, log, usage, character, model, memory, config, debug (interiority), send, regen, and log_follow tools
+- `shore-mcp` crate: debug-only MCP server exposing the daemon over JSON-RPC stdio, with status, log, usage, character, model, memory, config, debug (heartbeat), send, regen, and log_follow tools
 - `shore-mcp` profile resolution (main / persistent / ephemeral), daemon discover-or-spawn with `--daemon-addr` override, and write-op gating rules to prevent accidental writes to the main profile
 - TTS integration: SWP message types for audio streaming, `[tts]` config section, daemon TTS client with WAV relay, `AudioPlayer` using rodio, `shore speak` CLI subcommand with on-demand and live modes, TUI `:speak` command with live-TTS toggle and indicator
 - TUI clipboard image paste: `ctrl+v` binding, `:image` command completion, paste-temp cleanup on exit (implemented via `wl-paste` shell-out)
@@ -18,14 +18,14 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Daemon `--instance-id` flag for stable registry IDs
 - Daemon runs idle compaction inline during the autonomy tick
 - CLI persists active model across sessions, adds dynamic completions, and includes character name in the log
-- Autonomy: force a recap wrap-up when the interiority tool loop hits its cap
+- Autonomy: force a recap wrap-up when the heartbeat tool loop hits its cap
 - `collect_stream` client helper for request/response consumers
 - Ledger/CLI: usage breakdown by call type
 
 ### Fixed
 - `shore-llm-client`: strip orphan `tool_use` / `tool_result` pairs from outbound requests
 - Memory agent retries on `content_filter` and transient errors
-- Daemon registers the kernel-resolved port when bound to `:0`, excludes tool models from `list_models`, applies the interiority model override on the warm path, and drops the time-gap gate on recap injection
+- Daemon registers the kernel-resolved port when bound to `:0`, excludes tool models from `list_models`, applies the heartbeat model override on the warm path, and drops the time-gap gate on recap injection
 - Ledger/CLI usage deserialization by column name
 - `shore-mcp`: detach auto-spawned daemon via `setsid`, clamp `log_follow` seconds, exhaustive `run_cmd` match, unified `character_info` param shape, narrower spawn-on-discovery-miss, schemars alignment with rmcp
 
@@ -74,16 +74,16 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [0.13.0] — 2026-04-11
 
 ### Added
-- Replace hidden `force-tick` with three explicit debug commands: `interiority_tick_now`, `interiority_status_dormant`, and `interiority_status_active`
+- Replace hidden `force-tick` with three explicit debug commands: `heartbeat_tick_now`, `heartbeat_status_dormant`, and `heartbeat_status_active`
 
 ### Fixed
-- Prevent the interiority abandonment guard from immediately re-tripping on every tick after going dormant
-- Align dormant status reporting and cache-test debug scripts with the new explicit interiority debug commands
+- Prevent the heartbeat abandonment guard from immediately re-tripping on every tick after going dormant
+- Align dormant status reporting and cache-test debug scripts with the new explicit heartbeat debug commands
 
 ## [0.12.0] — 2026-04-11
 
 ### Added
-- Per-operation model selectors: `defaults.compaction` and `defaults.interiority` config fields allow using separate models (and API keys) for background operations, enabling budget isolation from the primary chat model
+- Per-operation model selectors: `defaults.compaction` and `defaults.heartbeat` config fields allow using separate models (and API keys) for background operations, enabling budget isolation from the primary chat model
 
 ## [0.11.1] — 2026-04-11
 
@@ -128,8 +128,8 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Security hardening: shell escape in notifications, symlink escape in scratchpad
 - UTF-8 boundary safety for string truncation
 - Cache keepalive: phantom pings, startup priming, 55min interval with 10s tick granularity, user message appended for valid API request
-- Skip cache anomaly detection for interiority and tool-loop calls
-- Move `set_next_wake` to base tool set to prevent interiority cache busting
+- Skip cache anomaly detection for heartbeat and tool-loop calls
+- Move `set_next_wake` to base tool set to prevent heartbeat cache busting
 - Ledger: run cache tracker for OpenRouter-routed Anthropic calls
 - Daemon: create data/runtime dirs on startup
 
@@ -158,9 +158,9 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [0.8.0] — 2026-04-08
 
 ### Added
-- Interiority redesign: autonomy as deadline holder with self-scheduling
+- Heartbeat redesign: autonomy as deadline holder with self-scheduling
 - Structured logging and instrument spans across all crates (`LOGGING.md`)
-- `min_wake_secs` in `InteriorityConfig` for testability
+- `min_wake_secs` in `HeartbeatConfig` for testability
 - Split autonomy `manager.rs` into `state.rs` and `tick.rs` modules
 
 ### Fixed
@@ -179,7 +179,7 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Route autonomous messages through engine lock to prevent race condition
 - Abort in-flight generation when all clients disconnect
 - Cache `MemoryDB` and `VectorStore` per character to avoid repeated opens
-- Reschedule interiority tick on user message to prevent mid-conversation firing
+- Reschedule heartbeat tick on user message to prevent mid-conversation firing
 
 ### Changed
 - Revert Anthropic 1h cache multiplier back to calculation time
@@ -197,7 +197,7 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `shore usage` CLI subcommand for querying token costs and anomalies
 - Expose usage command over SWP protocol for remote clients
 - Route `shore memory` queries through researcher-agent pipeline
-- Interiority tick rewrite as real multi-turn tool loop
+- Heartbeat tick rewrite as real multi-turn tool loop
 
 ### Fixed
 - Ledger token display format and OpenRouter model ID mapping
@@ -229,7 +229,7 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - GUI: hauntings, shooting stars, and visual polish
 
 ### Fixed
-- Interiority: rebuild request after compaction, improve tick prompt
+- Heartbeat: rebuild request after compaction, improve tick prompt
 - Disable `shore-matrix` to unblock build on rustc 1.94+
 - Remove hardcoded `base_url` from Z.AI provider defaults
 - Convert non-PNG images to PNG before kitty protocol transmission
@@ -257,7 +257,7 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Migrate all timestamps from UTC to local-offset RFC 3339
 - Suppress kitty graphics responses leaking into TUI input
 - Remove synthetic "Understood." ack from inline system message conversion
-- Include assistant response in `last_request` for interiority
+- Include assistant response in `last_request` for heartbeat
 - Thinking/reasoning configuration for all providers
 - Autonomy init ordering
 
@@ -266,8 +266,8 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Consolidate duplicated provider logic into shared helpers
 - Apply `cargo fmt` across entire workspace
 - Move compaction/collation to `[memory]`, `cache_keepalive` to provider config
-- Interiority journal module, unified timer interval
-- Unify interiority and cache keepalive into single system
+- Heartbeat journal module, unified timer interval
+- Unify heartbeat and cache keepalive into single system
 - Extract sub-functions from oversized `draw_conversation()` and `print_log()`
 
 ## [0.4.0]

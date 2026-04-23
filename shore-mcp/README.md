@@ -128,12 +128,9 @@ the gate described above.
 | `model_switch`          | Switch the active model                       |
 | `model_reset`           | Reset model to default                        |
 | `memory_compact`        | Run memory compaction (optional `keep_turns`) |
-| `memory_collate`        | Run memory collation                          |
-| `memory_purge`          | Purge memory entries                          |
-| `memory_reindex`        | Reindex the vector store                      |
-| `debug_tick_now`        | Force an interiority tick                     |
-| `debug_status_dormant`  | Force the agent into the dormant phase        |
-| `debug_status_active`   | Force the agent into the active phase         |
+| `debug_tick_now`        | Force a heartbeat tick                        |
+| `debug_status_dormant`  | Force heartbeat into dormant state            |
+| `debug_status_active`   | Force heartbeat into active state             |
 
 ## Integration test
 

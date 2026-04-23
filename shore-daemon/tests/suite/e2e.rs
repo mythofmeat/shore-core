@@ -233,7 +233,6 @@ async fn e2e_conversation_milestone() {
         diagnostics: std::sync::Arc::new(std::sync::Mutex::new(
             shore_diagnostics::Diagnostics::default(),
         )),
-        memory_shell_sessions: std::collections::HashMap::new(),
     };
 
     let mut msg_handler = MessageHandler::new(
@@ -722,7 +721,6 @@ impl E2EHarness {
             diagnostics: std::sync::Arc::new(std::sync::Mutex::new(
                 shore_diagnostics::Diagnostics::default(),
             )),
-            memory_shell_sessions: std::collections::HashMap::new(),
         };
 
         let mut msg_handler = MessageHandler::new(

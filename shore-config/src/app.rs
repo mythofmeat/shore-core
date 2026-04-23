@@ -89,18 +89,14 @@ pub struct DefaultsConfig {
     /// Default tool model name (for tool-use calls).
     pub tool_model: Option<String>,
 
-    /// Default memory agent model name.
-    pub memory_agent: Option<String>,
-
-    /// Deprecated: collation has been removed. Kept for backward config
-    /// compatibility but ignored.
-    pub collation: Option<String>,
+    /// Default memory memory model name.
+    pub memory_query: Option<String>,
 
     /// Default compaction model name (for conversation summarization).
     pub compaction: Option<String>,
 
-    /// Default interiority model name (for autonomous interiority ticks).
-    pub interiority: Option<String>,
+    /// Default heartbeat model name (for autonomous heartbeat ticks).
+    pub heartbeat: Option<String>,
 
     /// Default embedding profile name.
     pub embedding: Option<String>,
@@ -132,10 +128,9 @@ impl Default for DefaultsConfig {
         Self {
             model: None,
             tool_model: None,
-            memory_agent: None,
-            collation: None,
+            memory_query: None,
             compaction: None,
-            interiority: None,
+            heartbeat: None,
             embedding: None,
             image_generation: None,
             display_name: None,
@@ -165,54 +160,54 @@ pub struct AutonomyConfig {
     pub enabled: bool,
 
     #[serde(default)]
-    pub interiority: InteriorityConfig,
+    pub heartbeat: HeartbeatConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct InteriorityConfig {
-    /// Whether interiority ticks are enabled.
+pub struct HeartbeatConfig {
+    /// Whether heartbeat ticks are enabled.
     #[serde(default = "default_true")]
     pub enabled: bool,
 
-    /// Base interval between interiority ticks.
-    #[serde(default = "default_fallback_interiority_interval")]
-    pub fallback_interiority_interval: ConfigDuration,
+    /// Base interval between heartbeat ticks.
+    #[serde(default = "default_fallback_heartbeat_interval")]
+    pub fallback_heartbeat_interval: ConfigDuration,
 
     /// Consecutive ticks without a user message before the abandonment guard
     /// stops scheduling further ticks (character sleeps until user returns).
-    #[serde(default = "default_dormant_after_interiority_turns")]
-    pub dormant_after_interiority_turns: u32,
+    #[serde(default = "default_dormant_after_heartbeat_turns")]
+    pub dormant_after_heartbeat_turns: u32,
 
     /// Time without a user message before the abandonment guard
     /// stops scheduling further ticks. Default: 48 hours.
     #[serde(default = "default_dormant_after_idle_time")]
     pub dormant_after_idle_time: ConfigDuration,
 
-    /// Minimum time between a user message and the next interiority tick.
+    /// Minimum time between a user message and the next heartbeat tick.
     /// Prevents ticks from firing during active conversation. Default: 1h.
-    #[serde(default = "default_minimum_interiority_latency")]
-    pub minimum_interiority_latency: ConfigDuration,
+    #[serde(default = "default_minimum_heartbeat_latency")]
+    pub minimum_heartbeat_latency: ConfigDuration,
 
-    /// Maximum tool-use rounds per interiority tick.
+    /// Maximum tool-use rounds per heartbeat tick.
     #[serde(default = "default_max_tool_rounds")]
     pub max_tool_rounds: u32,
 }
 
-serde_default!(default_fallback_interiority_interval -> ConfigDuration { ConfigDuration::from_secs(3600) });
-serde_default!(default_dormant_after_interiority_turns -> u32 { 3 });
+serde_default!(default_fallback_heartbeat_interval -> ConfigDuration { ConfigDuration::from_secs(3600) });
+serde_default!(default_dormant_after_heartbeat_turns -> u32 { 3 });
 serde_default!(default_dormant_after_idle_time -> ConfigDuration { ConfigDuration::from_secs(172800) }); // 48 hours
-serde_default!(default_minimum_interiority_latency -> ConfigDuration { ConfigDuration::from_secs(3600) }); // 1 hour
+serde_default!(default_minimum_heartbeat_latency -> ConfigDuration { ConfigDuration::from_secs(3600) }); // 1 hour
 serde_default!(default_max_tool_rounds -> u32 { 12 });
 
-impl Default for InteriorityConfig {
+impl Default for HeartbeatConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            fallback_interiority_interval: default_fallback_interiority_interval(),
-            dormant_after_interiority_turns: default_dormant_after_interiority_turns(),
+            fallback_heartbeat_interval: default_fallback_heartbeat_interval(),
+            dormant_after_heartbeat_turns: default_dormant_after_heartbeat_turns(),
             dormant_after_idle_time: default_dormant_after_idle_time(),
-            minimum_interiority_latency: default_minimum_interiority_latency(),
+            minimum_heartbeat_latency: default_minimum_heartbeat_latency(),
             max_tool_rounds: default_max_tool_rounds(),
         }
     }
@@ -258,37 +253,6 @@ impl Default for CompactionConfig {
             max_turns: default_max_turns(),
             max_context_tokens: default_max_context_tokens(),
             keep_recent_turns: default_keep_recent_turns(),
-        }
-    }
-}
-
-/// Deprecated: collation has been removed in favor of AI-curated markdown
-/// memory maintenance during compaction. The struct is kept for backward
-/// config compatibility but all fields are ignored.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct CollationConfig {
-    /// Deprecated, ignored.
-    #[serde(default = "default_false")]
-    pub enabled: bool,
-
-    /// Deprecated, ignored.
-    #[serde(default = "default_false")]
-    pub auto_run: bool,
-
-    /// Deprecated, ignored.
-    #[serde(default = "default_batch_limit")]
-    pub batch_limit: usize,
-}
-
-serde_default!(default_batch_limit -> usize { 10 });
-
-impl Default for CollationConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            auto_run: false,
-            batch_limit: default_batch_limit(),
         }
     }
 }
@@ -372,17 +336,8 @@ impl ToolToggles {
     pub fn send_image(&self) -> bool {
         self.is_enabled("send_image")
     }
-    pub fn list_images(&self) -> bool {
-        self.is_enabled("list_images")
-    }
-    pub fn recall_image(&self) -> bool {
-        self.is_enabled("recall_image")
-    }
     pub fn generate_image(&self) -> bool {
         self.is_enabled("generate_image")
-    }
-    pub fn remember_image(&self) -> bool {
-        self.is_enabled("remember_image")
     }
     pub fn web_search(&self) -> bool {
         self.is_enabled("web_search")
@@ -465,9 +420,6 @@ impl Default for SearchConfig {
 pub struct MemoryConfig {
     #[serde(default)]
     pub compaction: CompactionConfig,
-
-    #[serde(default)]
-    pub collation: CollationConfig,
 
     #[serde(default)]
     pub thinking: ThinkingConfig,
@@ -828,7 +780,6 @@ impl Default for TtsConfig {
 // ── Shared defaults ─────────────────────────────────────────────────────
 
 serde_default!(default_true -> bool { true });
-serde_default!(default_false -> bool { false });
 serde_default!(default_max_image_size -> u64 { 2_000_000 });
 
 #[cfg(test)]
@@ -840,40 +791,34 @@ mod tests {
         let config = AppConfig::default();
         assert!(config.defaults.stream);
         assert!(!config.behavior.autonomy.enabled);
-        assert!(config.behavior.autonomy.interiority.enabled);
+        assert!(config.behavior.autonomy.heartbeat.enabled);
         assert_eq!(
             config
                 .behavior
                 .autonomy
-                .interiority
-                .fallback_interiority_interval,
+                .heartbeat
+                .fallback_heartbeat_interval,
             ConfigDuration::from_secs(3600)
         );
         assert_eq!(
             config
                 .behavior
                 .autonomy
-                .interiority
-                .dormant_after_interiority_turns,
+                .heartbeat
+                .dormant_after_heartbeat_turns,
             3
         );
         assert_eq!(
-            config.behavior.autonomy.interiority.dormant_after_idle_time,
+            config.behavior.autonomy.heartbeat.dormant_after_idle_time,
             ConfigDuration::from_secs(172800)
         );
         assert_eq!(
-            config
-                .behavior
-                .autonomy
-                .interiority
-                .minimum_interiority_latency,
+            config.behavior.autonomy.heartbeat.minimum_heartbeat_latency,
             ConfigDuration::from_secs(3600)
         );
-        assert_eq!(config.behavior.autonomy.interiority.max_tool_rounds, 12);
+        assert_eq!(config.behavior.autonomy.heartbeat.max_tool_rounds, 12);
         assert!(config.behavior.tool_use.enabled);
         assert!(config.memory.compaction.enabled);
-        assert!(!config.memory.collation.enabled);
-        assert!(!config.memory.collation.auto_run);
         // Tool toggles default to true.
         assert!(config.behavior.tool_use.tools.is_enabled("memory"));
         assert!(config.behavior.tool_use.tools.is_enabled("roll_dice"));

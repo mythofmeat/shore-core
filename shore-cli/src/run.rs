@@ -1,4 +1,4 @@
-use std::io::{self, IsTerminal, Read as _, Write as _};
+use std::io::{self, IsTerminal, Read as _};
 use std::sync::OnceLock;
 
 use shore_client::audio::AudioPlayer;
@@ -354,12 +354,6 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
-        CliCommand::Memory {
-            subcommand: Some(crate::cli::MemoryCommand::Shell),
-            ..
-        } => {
-            run_memory_shell(&mut conn).await?;
-        }
         // Intercept model switch/reset so we can mirror the daemon's
         // decision into the client state file. Without this the choice
         // is lost as soon as the one-shot CLI session exits.
@@ -613,77 +607,6 @@ fn handle_create_character(name: &str) -> Result<(), Box<dyn std::error::Error>>
         format!("You are {name}.\n\n<!-- Edit this file to define {name}'s personality and behavior. -->\n"),
     )?;
     println!("Created character scaffold: {}", char_dir.display());
-    Ok(())
-}
-
-/// Run an interactive memory shell session.
-async fn run_memory_shell(conn: &mut SWPConnection) -> Result<(), Box<dyn std::error::Error>> {
-    // Start the session.
-    conn.send_command("memory_shell_start", serde_json::json!({}))
-        .await?;
-    let start_data = recv_command_data(conn).await?;
-    let session_id = start_data["session_id"]
-        .as_str()
-        .ok_or("missing session_id in response")?
-        .to_string();
-    let character = start_data["character"].as_str().unwrap_or("unknown");
-
-    info!(session_id, character, "Memory shell session started");
-    output::print_memory_shell_welcome(character);
-
-    let stdin = io::stdin();
-    let mut line_buf = String::new();
-
-    loop {
-        // Print prompt.
-        eprint!("memory> ");
-        io::stderr().flush().ok();
-
-        line_buf.clear();
-        let bytes = stdin.read_line(&mut line_buf)?;
-
-        // EOF (ctrl-d).
-        if bytes == 0 {
-            eprintln!();
-            break;
-        }
-
-        let input = line_buf.trim();
-
-        if input.is_empty() {
-            continue;
-        }
-
-        if input == "/quit" || input == "/exit" {
-            break;
-        }
-
-        // Send query.
-        conn.send_command(
-            "memory_shell_query",
-            serde_json::json!({
-                "session_id": session_id,
-                "input": input,
-            }),
-        )
-        .await?;
-
-        let data = recv_command_data(conn).await?;
-        let response = data["response"].as_str().unwrap_or("");
-        let mutations = data["mutations"].as_str().unwrap_or("");
-
-        output::print_memory_shell_response(response, mutations);
-    }
-
-    // End the session.
-    info!(session_id, "Memory shell session ended");
-    conn.send_command(
-        "memory_shell_end",
-        serde_json::json!({ "session_id": session_id }),
-    )
-    .await?;
-    let _ = recv_command_data(conn).await;
-
     Ok(())
 }
 
@@ -1224,7 +1147,7 @@ mod tests {
         match received {
             ClientMessage::Command(c) => {
                 assert_eq!(c.name, "compact");
-                assert_eq!(c.args["collate"], true);
+                assert!(c.args.get("collate").is_none());
             }
             other => panic!("expected Command, got: {other:?}"),
         }

@@ -63,7 +63,7 @@ Shore runs against real LLM APIs. You can use different models for different ope
 
 ### Why it exists
 
-A serious AI character does a lot of background work: summarizing conversations into memory, running tool-use loops, periodically reflecting via interiority ticks, looking things up, writing embeddings. If every one of those jobs used the same big model, cost and latency would be miserable. Per-operation model slots let you pay for quality where it matters and speed where it doesn't.
+A serious AI character does a lot of background work: summarizing conversations into memory, running tool-use loops, periodically reflecting via heartbeat ticks, looking things up, writing embeddings. If every one of those jobs used the same big model, cost and latency would be miserable. Per-operation model slots let you pay for quality where it matters and speed where it doesn't.
 
 ### Supported providers
 
@@ -88,7 +88,7 @@ You then reference aliases (`claude-sonnet`, `haiku-fast`) from `[defaults]`:
 model = "claude-sonnet"        # main conversation
 tool_model = "haiku-fast"      # tool-use calls
 compaction = "haiku-fast"      # summarization
-interiority = "claude-sonnet"  # private ticks
+heartbeat = "claude-sonnet"  # private ticks
 ```
 
 ### Runtime overrides
@@ -155,7 +155,7 @@ Shore keeps each character's long-term memory as markdown under:
 $XDG_DATA_HOME/shore/<Character>/memories/
 ```
 
-The assistant can work with those files through memory tools (`memory_read`, `memory_write`, `memory_search`, `memory_list`) and through workspace file tools using the `memories/...` prefix when memory access is enabled. The legacy SQLite/vector memory agent is retained only for migration, compatibility tests, and old benchmarks.
+The assistant can work with those files through memory tools (`memory_read`, `memory_write`, `memory_search`, `memory_list`) and through workspace file tools using the `memories/...` prefix when memory access is enabled. The only SQLite migration path is `scripts/migrate-memory.py`.
 
 ### Compaction
 
@@ -175,7 +175,7 @@ shore memory --direct "doom"          # direct text-search result formatting
 shore memory compact                  # compact old conversation into markdown memory
 ```
 
-For direct inspection, open the character's `memories/` directory or ask the character to use `memory_list`, `memory_read`, `memory_write`, and `memory_search`. The old interactive memory shell, collation, purge, and reindex commands are removed or compatibility-only in markdown mode.
+For direct inspection, open the character's `memories/` directory or ask the character to use `memory_list`, `memory_read`, `memory_write`, and `memory_search`. The old interactive memory shell, collation, purge, and reindex commands are removed.
 
 See [`CONFIGURATION.md` — `[memory]`](CONFIGURATION.md#memory) for tunables.
 
@@ -196,17 +196,17 @@ The character has two phases:
 
 The character drifts from active to dormant after stretches of no engagement, and back to active when you speak up again.
 
-### Interiority ticks
+### Heartbeat ticks
 
-The core autonomy primitive is an **interiority tick** — one private moment where the character thinks, may use tools (search memory, look things up on the web, read its scratchpad, schedule its own next tick), and may or may not produce a message to send you.
+The core autonomy primitive is a **heartbeat tick** — one private moment where the character thinks, may use tools (search memory, look things up on the web, read its scratchpad, schedule its own next tick), and may or may not produce a message to send you.
 
 At the end of every tick the character writes a **recap** — a short note about what it thought about and what it plans to follow up on. Recaps carry state forward from tick to tick, giving the character narrative continuity across its private life.
 
 ### Scheduling
 
-The character self-schedules the next tick when it finishes one. If it doesn't pick a time, Shore falls back to `fallback_interiority_interval` (default `1h`).
+The character self-schedules the next tick when it finishes one. If it doesn't pick a time, Shore falls back to `fallback_heartbeat_interval` (default `1h`).
 
-A floor (`minimum_interiority_latency`, default `1h`) prevents ticks from piling up right after you send a message — the character needs breathing room.
+A floor (`minimum_heartbeat_latency`, default `1h`) prevents ticks from piling up right after you send a message — the character needs breathing room.
 
 ### Wrap-up
 
@@ -216,7 +216,7 @@ If a tick goes long (many tool-use rounds), Shore caps it at `max_tool_rounds` (
 
 Two paths lead to the dormant phase:
 
-- `dormant_after_interiority_turns` — this many ticks in a row with no user reply → sleep (default `3`)
+- `dormant_after_heartbeat_turns` — this many ticks in a row with no user reply → sleep (default `3`)
 - `dormant_after_idle_time` — this much total idle time → sleep until the user returns (default `48h`)
 
 ### How to enable
@@ -225,11 +225,11 @@ Two paths lead to the dormant phase:
 [behavior.autonomy]
 enabled = true
 
-[behavior.autonomy.interiority]
+[behavior.autonomy.heartbeat]
 enabled = true
 ```
 
-Both switches must be on. `[behavior.autonomy]` is the master gate; the `interiority` sub-table controls the tick behavior.
+Both switches must be on. `[behavior.autonomy]` is the master gate; the `heartbeat` sub-table controls the tick behavior.
 
 See [`CONFIGURATION.md` — `[behavior.autonomy]`](CONFIGURATION.md#behaviorautonomy) for every tunable.
 
@@ -262,10 +262,7 @@ Every tool has an exact toggle under `[behavior.tool_use.tools]`. All are enable
 #### Images
 
 - `send_image` — send an image back as part of the reply.
-- `list_images` — list previously sent or generated images.
-- `recall_image` — re-send a previously generated image by reference.
 - `generate_image` — create a new image. Uses the model in `[defaults] image_generation`.
-- `remember_image` — save a user-shared image to memory with context the character can recall later.
 
 #### Scratchpad
 
@@ -315,7 +312,7 @@ Full command reference:
 | `shore log` | Last 20 messages |
 | `shore log -n 50` | Last N messages |
 | `shore log -f` | Follow mode — stream new messages |
-| `shore log --heartbeat` | Show the interiority / autonomy event log (wakeups, ticks, dormancy transitions) |
+| `shore log --heartbeat` | Show the heartbeat / autonomy event log (wakeups, ticks, dormancy transitions) |
 | `shore log last` / `shore log -1` | Single most recent message |
 | `shore log edit <ref> <text>` | Edit a message |
 | `shore log delete <ref>` | Delete a message |
@@ -342,11 +339,8 @@ Full command reference:
 | Command | Description |
 | ------- | ----------- |
 | `shore memory <query>` | Free-text query |
-| `shore memory compact` | Compact conversation → memory; then collate |
+| `shore memory compact` | Compact conversation into markdown memory |
 | `shore memory changelog` | Recent memory writes |
-| `shore memory reindex` | Rebuild FTS and vector indexes |
-| `shore memory purge` | Delete memory entries |
-| `shore memory shell` | Interactive memory shell |
 
 #### Status / config
 

@@ -403,42 +403,7 @@ pub fn print_single_message(data: &serde_json::Value, character_name: &str) {
     print_log(std::slice::from_ref(data), character_name);
 }
 
-// ---------------------------------------------------------------------------
-// Memory shell
-// ---------------------------------------------------------------------------
-
-/// Print the memory shell welcome banner.
-pub fn print_memory_shell_welcome(character: &str) {
-    let mut out = io::stderr().lock();
-    if use_color() {
-        let _ = crossterm::execute!(out, SetForegroundColor(Color::Cyan));
-    }
-    let _ = writeln!(out, "Memory shell for {character}");
-    if use_color() {
-        let _ = crossterm::execute!(out, ResetColor);
-    }
-    let _ = writeln!(out, "Type a query or command. /quit to exit.\n");
-}
-
-/// Print a memory shell response.
-pub fn print_memory_shell_response(response: &str, mutations: &str) {
-    if !response.is_empty() {
-        println!("{response}");
-    }
-    if !mutations.is_empty() {
-        let mut out = io::stdout().lock();
-        if use_color() {
-            let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
-        }
-        let _ = writeln!(out, "  [{mutations}]");
-        if use_color() {
-            let _ = crossterm::execute!(out, ResetColor);
-        }
-    }
-    println!();
-}
-
-/// Print interiority event log returned by `shore log --heartbeat`.
+/// Print heartbeat event log returned by `shore log --heartbeat`.
 pub fn print_heartbeat_log(data: &serde_json::Value) {
     let stdout = io::stdout();
     let mut out = stdout.lock();
@@ -447,19 +412,19 @@ pub fn print_heartbeat_log(data: &serde_json::Value) {
     let events = match data["events"].as_array() {
         Some(arr) => arr,
         None => {
-            print_dim_line(&mut out, "(no interiority events)");
+            print_dim_line(&mut out, "(no heartbeat events)");
             return;
         }
     };
 
     if events.is_empty() {
-        print_dim_line(&mut out, "(no interiority events)");
+        print_dim_line(&mut out, "(no heartbeat events)");
         return;
     }
 
     write_section_header(
         &mut out,
-        "Interiority Log",
+        "Heartbeat Log",
         &format!("{} events", events.len()),
         width,
     );

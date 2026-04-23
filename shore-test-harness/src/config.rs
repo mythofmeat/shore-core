@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use shore_config::{
-    app::{AppConfig, BehaviorConfig, CompactionConfig, InteriorityConfig, ToolUseConfig},
+    app::{AppConfig, BehaviorConfig, CompactionConfig, HeartbeatConfig, ToolUseConfig},
     duration::ConfigDuration,
     models::ModelCatalog,
     LoadedConfig, ShoreDirs,
@@ -20,7 +20,7 @@ pub struct TestConfigBuilder {
     pub compaction_min_turns: Option<usize>,
     pub compaction_keep_recent: Option<usize>,
     pub autonomy_enabled: bool,
-    pub interiority_max_tool_rounds: Option<u32>,
+    pub heartbeat_max_tool_rounds: Option<u32>,
 }
 
 impl Default for TestConfigBuilder {
@@ -46,7 +46,7 @@ impl TestConfigBuilder {
             compaction_min_turns: None,
             compaction_keep_recent: None,
             autonomy_enabled: false,
-            interiority_max_tool_rounds: None,
+            heartbeat_max_tool_rounds: None,
         }
     }
 
@@ -90,10 +90,10 @@ impl TestConfigBuilder {
         self
     }
 
-    /// Cap the number of tool-use rounds per interiority tick. A cap of 1 with
+    /// Cap the number of tool-use rounds per heartbeat tick. A cap of 1 with
     /// a queued tool_use response at iteration 0 forces `hit_cap` → wrap-up.
-    pub fn interiority_max_tool_rounds(mut self, n: u32) -> Self {
-        self.interiority_max_tool_rounds = Some(n);
+    pub fn heartbeat_max_tool_rounds(mut self, n: u32) -> Self {
+        self.heartbeat_max_tool_rounds = Some(n);
         self
     }
 
@@ -128,16 +128,16 @@ impl TestConfigBuilder {
             ..BehaviorConfig::default()
         };
         app.behavior.autonomy.enabled = self.autonomy_enabled;
-        if let Some(rounds) = self.interiority_max_tool_rounds {
-            app.behavior.autonomy.interiority = InteriorityConfig {
+        if let Some(rounds) = self.heartbeat_max_tool_rounds {
+            app.behavior.autonomy.heartbeat = HeartbeatConfig {
                 max_tool_rounds: rounds,
                 // Long intervals so spontaneous ticks don't fire during the
                 // test — the caller drives the tick manually with
-                // `AutonomyManager::interiority_tick_now` and advances virtual
+                // `AutonomyManager::heartbeat_tick_now` and advances virtual
                 // time to fire the per-character tick loop.
-                fallback_interiority_interval: ConfigDuration::from_secs(86400),
-                minimum_interiority_latency: ConfigDuration::from_secs(86400),
-                ..InteriorityConfig::default()
+                fallback_heartbeat_interval: ConfigDuration::from_secs(86400),
+                minimum_heartbeat_latency: ConfigDuration::from_secs(86400),
+                ..HeartbeatConfig::default()
             };
         }
 
@@ -153,9 +153,6 @@ impl TestConfigBuilder {
             // Also set a default embedding profile name.
             app.defaults.embedding = Some("test-embed".into());
         }
-        // Disable collation auto_run to prevent post-compaction collation.
-        app.memory.collation.auto_run = false;
-
         // Build ModelCatalog from TOML pointing at the mock server.
         let models_toml = format!(
             r#"

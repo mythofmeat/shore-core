@@ -192,7 +192,7 @@ pub enum CliCommand {
         /// Query to search memory
         query: Option<String>,
 
-        /// Skip the researcher and query the memory agent directly
+        /// Return raw markdown search matches instead of an LLM-synthesized answer
         #[arg(long)]
         direct: bool,
 
@@ -351,7 +351,7 @@ pub enum LogCommand {
 
 #[derive(Subcommand, Debug)]
 pub enum MemoryCommand {
-    /// Compact conversation into memory entries, then run collation.
+    /// Compact conversation into markdown memory.
     /// Optional positional: number of recent user turns to retain
     /// (0 = retain none — leaves only the system prompt + recap).
     Compact { keep_turns: Option<u32> },
@@ -362,42 +362,19 @@ pub enum MemoryCommand {
         #[arg(short = 'n', long, default_value = "20")]
         limit: u32,
     },
-
-    /// Run memory collation (merge, split, normalize, decay)
-    Collate {
-        /// Run convergence mode: repeat until no merges/splits occur
-        #[arg(long)]
-        full: bool,
-        /// Override batch limit (max entries to process per run)
-        #[arg(long)]
-        limit: Option<u64>,
-    },
-
-    /// Delete old superseded entries to reclaim space
-    Purge {
-        /// Minimum age of superseded entries to delete (e.g., 30d, 7d)
-        #[arg(long, default_value = "30d")]
-        older_than: String,
-    },
-
-    /// Rebuild FTS and vector indexes
-    Reindex,
-
-    /// Interactive memory agent shell
-    Shell,
 }
 
 #[derive(Subcommand, Debug)]
 #[command(rename_all = "snake_case")]
 pub enum DebugCommand {
-    /// Schedule an interiority tick to fire immediately
-    #[command(name = "interiority_tick_now")]
+    /// Schedule a heartbeat tick to fire immediately
+    #[command(name = "heartbeat_tick_now")]
     TickNow,
-    /// Force interiority into dormant state (reverts on next user message)
-    #[command(name = "interiority_status_dormant")]
+    /// Force heartbeat into dormant state (reverts on next user message)
+    #[command(name = "heartbeat_status_dormant")]
     StatusDormant,
-    /// Force interiority into active state (reverts naturally via abandonment guard)
-    #[command(name = "interiority_status_active")]
+    /// Force heartbeat into active state (reverts naturally via abandonment guard)
+    #[command(name = "heartbeat_status_active")]
     StatusActive,
 }
 
@@ -497,9 +474,9 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
         CliCommand::Status { .. } => Some(("status", json!({}))),
 
         CliCommand::Debug { subcommand } => match subcommand {
-            DebugCommand::TickNow => Some(("interiority_tick_now", json!({}))),
-            DebugCommand::StatusDormant => Some(("interiority_set_dormant", json!({}))),
-            DebugCommand::StatusActive => Some(("interiority_set_active", json!({}))),
+            DebugCommand::TickNow => Some(("heartbeat_tick_now", json!({}))),
+            DebugCommand::StatusDormant => Some(("heartbeat_set_dormant", json!({}))),
+            DebugCommand::StatusActive => Some(("heartbeat_set_active", json!({}))),
         },
 
         CliCommand::Model {
@@ -531,44 +508,21 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
             }
         }
 
-        // Memory: subcommands (compact/changelog/reindex) or status/query.
+        // Memory: subcommands (compact/changelog) or status/query.
         CliCommand::Memory {
             subcommand: Some(MemoryCommand::Compact { keep_turns }),
             ..
         } => {
-            let mut args = json!({ "collate": true });
+            let mut args = json!({});
             if let Some(n) = keep_turns {
                 args["keep_turns"] = json!(n);
             }
             Some(("compact", args))
         }
         CliCommand::Memory {
-            subcommand: Some(MemoryCommand::Collate { full, limit }),
-            ..
-        } => {
-            let mut args = json!({ "full": full });
-            if let Some(l) = limit {
-                args["limit"] = json!(l);
-            }
-            Some(("collate", args))
-        }
-        CliCommand::Memory {
-            subcommand: Some(MemoryCommand::Purge { older_than }),
-            ..
-        } => Some(("memory_purge", json!({ "older_than": older_than }))),
-        CliCommand::Memory {
             subcommand: Some(MemoryCommand::Changelog { limit }),
             ..
         } => Some(("memory_changelog", json!({ "limit": limit }))),
-        CliCommand::Memory {
-            subcommand: Some(MemoryCommand::Reindex),
-            ..
-        } => Some(("memory_reindex", json!({}))),
-        // Shell is handled as a special case in run.rs (interactive REPL).
-        CliCommand::Memory {
-            subcommand: Some(MemoryCommand::Shell),
-            ..
-        } => None,
         CliCommand::Memory { query, direct, .. } => {
             Some(("memory", json!({ "query": query, "direct": direct })))
         }
@@ -938,7 +892,7 @@ mod tests {
 
     #[test]
     fn parse_debug_tick_now() {
-        let cli = parse(&["debug", "interiority_tick_now"]);
+        let cli = parse(&["debug", "heartbeat_tick_now"]);
         match &cli.command {
             CliCommand::Debug {
                 subcommand: DebugCommand::TickNow,
@@ -949,7 +903,7 @@ mod tests {
 
     #[test]
     fn parse_debug_status_dormant() {
-        let cli = parse(&["debug", "interiority_status_dormant"]);
+        let cli = parse(&["debug", "heartbeat_status_dormant"]);
         match &cli.command {
             CliCommand::Debug {
                 subcommand: DebugCommand::StatusDormant,
@@ -960,7 +914,7 @@ mod tests {
 
     #[test]
     fn parse_debug_status_active() {
-        let cli = parse(&["debug", "interiority_status_active"]);
+        let cli = parse(&["debug", "heartbeat_status_active"]);
         match &cli.command {
             CliCommand::Debug {
                 subcommand: DebugCommand::StatusActive,
@@ -1107,18 +1061,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn parse_memory_reindex() {
-        let cli = parse(&["memory", "reindex"]);
-        match &cli.command {
-            CliCommand::Memory {
-                subcommand: Some(MemoryCommand::Reindex),
-                ..
-            } => {}
-            other => panic!("expected Memory Reindex, got: {other:?}"),
-        }
-    }
-
     // ── Config ───────────────────────────────────────────────────────
 
     #[test]
@@ -1255,7 +1197,7 @@ mod tests {
             subcommand: DebugCommand::TickNow,
         };
         let (name, args) = to_swp_command(&cmd).unwrap();
-        assert_eq!(name, "interiority_tick_now");
+        assert_eq!(name, "heartbeat_tick_now");
         assert_eq!(args, serde_json::json!({}));
     }
 
@@ -1265,7 +1207,7 @@ mod tests {
             subcommand: DebugCommand::StatusDormant,
         };
         let (name, args) = to_swp_command(&cmd).unwrap();
-        assert_eq!(name, "interiority_set_dormant");
+        assert_eq!(name, "heartbeat_set_dormant");
         assert_eq!(args, serde_json::json!({}));
     }
 
@@ -1275,7 +1217,7 @@ mod tests {
             subcommand: DebugCommand::StatusActive,
         };
         let (name, args) = to_swp_command(&cmd).unwrap();
-        assert_eq!(name, "interiority_set_active");
+        assert_eq!(name, "heartbeat_set_active");
         assert_eq!(args, serde_json::json!({}));
     }
 
@@ -1420,7 +1362,6 @@ mod tests {
         };
         let (name, args) = to_swp_command(&cmd).unwrap();
         assert_eq!(name, "compact");
-        assert_eq!(args["collate"], true);
         assert!(args.get("keep_turns").is_none());
     }
 
@@ -1436,7 +1377,6 @@ mod tests {
         };
         let (name, args) = to_swp_command(&cmd).unwrap();
         assert_eq!(name, "compact");
-        assert_eq!(args["collate"], true);
         assert_eq!(args["keep_turns"], 0);
     }
 
@@ -1451,18 +1391,6 @@ mod tests {
         let (name, args) = to_swp_command(&cmd).unwrap();
         assert_eq!(name, "memory_changelog");
         assert_eq!(args["limit"], 20);
-    }
-
-    #[test]
-    fn memory_reindex_maps_to_command() {
-        let cmd = CliCommand::Memory {
-            subcommand: Some(MemoryCommand::Reindex),
-            query: None,
-            direct: false,
-            json: false,
-        };
-        let (name, _) = to_swp_command(&cmd).unwrap();
-        assert_eq!(name, "memory_reindex");
     }
 
     #[test]
@@ -1579,12 +1507,6 @@ mod tests {
             },
             CliCommand::Memory {
                 subcommand: Some(MemoryCommand::Changelog { limit: 20 }),
-                query: None,
-                direct: false,
-                json: false,
-            },
-            CliCommand::Memory {
-                subcommand: Some(MemoryCommand::Reindex),
                 query: None,
                 direct: false,
                 json: false,

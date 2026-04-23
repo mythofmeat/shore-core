@@ -3,8 +3,8 @@ use std::cmp::Reverse;
 use serde_json::json;
 use shore_config::models::ResolvedModel;
 
-use crate::memory::agent_llm::{AgentLlm, AgentLlmError};
 use crate::memory::markdown_store::{MarkdownEntry, MarkdownMemoryStore, MarkdownStoreError};
+use crate::memory::memory_llm::{MemoryLlm, MemoryLlmError};
 
 const MAX_QUERY_FILES: usize = 8;
 const MAX_QUERY_CHARS_PER_FILE: usize = 4_000;
@@ -72,7 +72,7 @@ pub async fn answer_query(
     character_name: &str,
     user_name: &str,
     store: &MarkdownMemoryStore,
-    llm: &dyn AgentLlm,
+    llm: &dyn MemoryLlm,
     model: &ResolvedModel,
 ) -> Result<String, MarkdownQueryError> {
     let hits = store
@@ -233,6 +233,6 @@ fn excerpt(text: &str, limit: usize) -> String {
     }
 }
 
-fn map_llm_error(error: AgentLlmError) -> MarkdownQueryError {
+fn map_llm_error(error: MemoryLlmError) -> MarkdownQueryError {
     MarkdownQueryError::Llm(error.to_string())
 }

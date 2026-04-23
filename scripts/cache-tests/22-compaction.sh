@@ -27,15 +27,15 @@ _write_config() {
 [defaults]
 display_name = "tester"
 model        = "chat.test.model"
-memory_agent = "chat.test.model"
+memory_query = "chat.test.model"
 embedding    = "qwen3"
 
 [behavior.autonomy]
 enabled = true
 
-[behavior.autonomy.interiority]
+[behavior.autonomy.heartbeat]
 enabled = true
-fallback_interiority_interval = "1h"
+fallback_heartbeat_interval = "1h"
 
 [memory.compaction]
 enabled = true

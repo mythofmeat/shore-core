@@ -24,8 +24,6 @@ Scope guardrails:
 
 - **Thinking blocks don't need client-side stripping.** The Anthropic API strips `thinking` and `redacted_thinking` blocks from prior assistant turns internally. Sending them intact does not affect the cache key — confirmed via live testing with adaptive thinking across multi-turn conversations including tool use. Pre-stripping on the client side is unnecessary and was removed.
 
-- **Interiority replaces heartbeat — config migration is breaking.** The `[behavior.autonomy]` section no longer accepts `personality`, `max_unanswered`, `max_deferral_hours`, or `[behavior.autonomy.heartbeat]`. Due to `deny_unknown_fields`, old config files will fail to parse. The persisted state file (`autonomy.json`) version bumped from 1→2; old heartbeat fields are silently ignored on load. The wire protocol command `heartbeat_log` is kept as-is to avoid breaking existing CLI versions — it returns `InteriorityEvent` data under the old name.
-
 - **Anthropic prompt cache has minimum token thresholds.** Caching silently doesn't activate if the cached prefix is shorter than the model's minimum. Opus 4.6: 4096 tokens, Sonnet 4.6: 2048 tokens, Haiku 4.5: 4096 tokens. The API returns `cache_creation_tokens=0` and `cache_read_tokens=0` with no error. This is easy to miss in test configurations with short prompts — cache verification is meaningless if input tokens don't exceed the threshold.
 
 - **Anthropic prompt cache has ~5s propagation delay.** After a cache write, identical requests within ~2s may miss. Requests after ~5s reliably hit. This is relevant for tool loops where the continuation call fires within ~1s of the initial call — the cache from the initial call won't be available yet, but this is expected and not a bug.

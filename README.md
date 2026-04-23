@@ -14,7 +14,7 @@ With autonomy enabled, characters speak on their own: checking in after a silenc
 
 ## A day of use
 
-You say hi to your character in the morning. It replies with a thread it's been thinking about since yesterday (an interiority tick overnight; it wrote a recap before going dormant). Later you ask it about a Doom WAD you mentioned last week — it pulls the right memory, cached from a conversation three days ago. You go heads-down for the afternoon. Around dinner, a scheduled tick fires and the character checks in on its own: *"hey, how'd that thing go?"* — because autonomy is on, and the character remembered you were working on something.
+You say hi to your character in the morning. It replies with a thread it's been thinking about since yesterday (a heartbeat tick overnight; it wrote a recap before going dormant). Later you ask it about a Doom WAD you mentioned last week — it pulls the right memory, cached from a conversation three days ago. You go heads-down for the afternoon. Around dinner, a scheduled tick fires and the character checks in on its own: *"hey, how'd that thing go?"* — because autonomy is on, and the character remembered you were working on something.
 
 ## Prerequisites
 
@@ -79,7 +79,7 @@ She has a dry sense of humour and remembers everything you've told her.
 
 ## What's next
 
-- **[Features](docs/FEATURES.md)** — every feature explained: characters, memory, autonomy, interiority, tool use, clients (CLI / TUI / Matrix), prompt caching, diagnostics, remote access.
+- **[Features](docs/FEATURES.md)** — every feature explained: characters, memory, autonomy, heartbeat, tool use, clients (CLI / TUI / Matrix), prompt caching, diagnostics, remote access.
 - **[Configuration](docs/CONFIGURATION.md)** — every config section with purpose, tradeoffs, and worked examples. See also [`examples/config.toml`](examples/config.toml) for the canonical option list.
 - **[Architecture](docs/ARCHITECTURE.md)** — internals, for contributors.
 

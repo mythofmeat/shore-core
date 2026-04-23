@@ -111,8 +111,8 @@ pub(super) async fn handle_generation(
     };
     // Apply the per-session `reasoning_effort` override (if any) by
     // cloning the resolved model and patching the field. The override
-    // deliberately does NOT touch agent_model / researcher_model — those
-    // are separate roles with their own configured defaults.
+    // deliberately does NOT touch the memory-query model, which has its own
+    // configured default.
     let resolved_owned;
     let resolved: &shore_config::models::ResolvedModel =
         if let Some(new_effort) = reasoning_effort_override.as_ref() {
@@ -131,22 +131,14 @@ pub(super) async fn handle_generation(
         "model resolved"
     );
 
-    let agent_model = effective_config
+    let memory_model = effective_config
         .app
         .defaults
-        .memory_agent
+        .memory_query
         .as_deref()
         .and_then(|name| effective_config.models.find_model(name).ok())
         .unwrap_or(resolved)
         .clone();
-
-    let researcher_model = effective_config
-        .app
-        .defaults
-        .tool_model
-        .as_deref()
-        .and_then(|name| effective_config.models.find_model(name).ok())
-        .cloned();
 
     let cache_ttl_secs = resolved.cache_ttl.as_deref().and_then(parse_cache_ttl_secs);
     let is_new_autonomy_state =
@@ -212,7 +204,7 @@ pub(super) async fn handle_generation(
     let display_name = effective_config.app.defaults.resolve_display_name();
     let tool_toggles = &effective_config.app.behavior.tool_use.tools;
     let capabilities = CapabilitiesConfig {
-        interiority_enabled: effective_config.app.behavior.autonomy.interiority.enabled,
+        heartbeat_enabled: effective_config.app.behavior.autonomy.heartbeat.enabled,
         scratchpad_enabled: tool_toggles.scratchpad_read() || tool_toggles.scratchpad_write(),
         memory_enabled: tool_toggles.memory(),
         send_image_enabled: tool_toggles.send_image(),
@@ -316,8 +308,7 @@ pub(super) async fn handle_generation(
                 &data_dir,
                 &char_name,
                 &effective_config,
-                &agent_model,
-                &researcher_model,
+                &memory_model,
                 &character_definition,
                 &user_definition,
                 &mut request,

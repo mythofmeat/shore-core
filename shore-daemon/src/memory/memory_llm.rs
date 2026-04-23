@@ -1,7 +1,7 @@
-//! LLM abstraction for the memory agent loop.
+//! LLM abstraction for markdown memory queries.
 //!
-//! The `AgentLlm` trait decouples the agent from the concrete LLM transport,
-//! enabling unit tests with canned responses via `MockAgentLlm`.
+//! The `MemoryLlm` trait decouples query synthesis from the concrete LLM transport,
+//! enabling unit tests with canned responses via `MockMemoryLlm`.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -19,9 +19,9 @@ use shore_llm_client::types::ContentBlock;
 // Error
 // ---------------------------------------------------------------------------
 
-/// Errors from agent LLM calls.
+/// Errors from memory LLM calls.
 #[derive(Debug, thiserror::Error)]
-pub enum AgentLlmError {
+pub enum MemoryLlmError {
     /// Transport/API error.
     #[error("llm transport: {0}")]
     Transport(String),
@@ -34,9 +34,9 @@ pub enum AgentLlmError {
 // Response
 // ---------------------------------------------------------------------------
 
-/// Normalized response from an agent LLM call.
+/// Normalized response from a memory LLM call.
 #[derive(Debug, Clone)]
-pub struct AgentLlmResponse {
+pub struct MemoryLlmResponse {
     /// Concatenated text content (convenience — same as joining Text blocks).
     pub text: String,
     /// Full content blocks including tool_use, thinking, etc.
@@ -49,18 +49,15 @@ pub struct AgentLlmResponse {
 // Trait
 // ---------------------------------------------------------------------------
 
-/// Abstraction over LLM calls for the memory agent loop.
-///
-/// The memory agent's inner loop calls this to generate completions with tool
-/// definitions. The trait is object-safe and async-friendly via boxed futures.
-pub trait AgentLlm: Send + Sync {
+/// Abstraction over LLM calls for markdown memory query synthesis.
+pub trait MemoryLlm: Send + Sync {
     fn generate<'a>(
         &'a self,
         messages: Vec<Value>,
         system: Option<Value>,
         tools: Option<Vec<Value>>,
         model: &'a ResolvedModel,
-    ) -> Pin<Box<dyn Future<Output = Result<AgentLlmResponse, AgentLlmError>> + Send + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = Result<MemoryLlmResponse, MemoryLlmError>> + Send + 'a>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -69,23 +66,23 @@ pub trait AgentLlm: Send + Sync {
 
 use shore_ledger::{CallType, LedgerClient};
 
-/// Retry config for agent-tier LLM calls.
+/// Retry config for memory-query LLM calls.
 ///
 /// Gemini Flash (and occasionally other providers) returns `finish_reason=content_filter`
 /// with zero tokens on innocuous memory queries. Transport blips also manifest as empty
-/// responses or transient 5xx/429s. Retry covers both cases so the researcher's fallback
-/// path isn't triggered by a ~2% flake.
-const AGENT_MAX_RETRIES: u32 = 2;
-const AGENT_RETRY_BACKOFF_MS: u64 = 500;
+/// responses or transient 5xx/429s. Retry covers both cases so direct-search
+/// fallback is not triggered by a transient provider flake.
+const MEMORY_MAX_RETRIES: u32 = 2;
+const MEMORY_RETRY_BACKOFF_MS: u64 = 500;
 
-/// Production `AgentLlm` backed by `LedgerClient` (ledger-tracked LLM calls).
-pub struct RealAgentLlm {
+/// Production `MemoryLlm` backed by `LedgerClient` (ledger-tracked LLM calls).
+pub struct RealMemoryLlm {
     client: LedgerClient,
     character: String,
     call_type: CallType,
 }
 
-impl RealAgentLlm {
+impl RealMemoryLlm {
     pub fn new(client: LedgerClient, character: String, call_type: CallType) -> Self {
         Self {
             client,
@@ -95,17 +92,17 @@ impl RealAgentLlm {
     }
 }
 
-impl AgentLlm for RealAgentLlm {
+impl MemoryLlm for RealMemoryLlm {
     fn generate<'a>(
         &'a self,
         messages: Vec<Value>,
         system: Option<Value>,
         tools: Option<Vec<Value>>,
         model: &'a ResolvedModel,
-    ) -> Pin<Box<dyn Future<Output = Result<AgentLlmResponse, AgentLlmError>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<MemoryLlmResponse, MemoryLlmError>> + Send + 'a>> {
         Box::pin(async move {
             let policy = RetryPolicy {
-                max_retries: AGENT_MAX_RETRIES,
+                max_retries: MEMORY_MAX_RETRIES,
                 fallback_model: None,
             };
             let mut attempt: u32 = 0;
@@ -118,7 +115,7 @@ impl AgentLlm for RealAgentLlm {
                     tools.clone(),
                     None,
                 )
-                .map_err(|e| AgentLlmError::Transport(e.to_string()))?;
+                .map_err(|e| MemoryLlmError::Transport(e.to_string()))?;
 
                 match self
                     .client
@@ -131,9 +128,9 @@ impl AgentLlm for RealAgentLlm {
                         let filtered = resp.finish_reason == "content_filter"
                             || resp.finish_reason == "refusal";
 
-                        if (empty_output || filtered) && attempt < AGENT_MAX_RETRIES {
+                        if (empty_output || filtered) && attempt < MEMORY_MAX_RETRIES {
                             let delay = std::time::Duration::from_millis(
-                                AGENT_RETRY_BACKOFF_MS * 2u64.pow(attempt),
+                                MEMORY_RETRY_BACKOFF_MS * 2u64.pow(attempt),
                             );
                             warn!(
                                 attempt,
@@ -142,14 +139,14 @@ impl AgentLlm for RealAgentLlm {
                                 call_type = self.call_type.as_str(),
                                 model = %model.qualified_name,
                                 empty_output,
-                                "Agent LLM returned empty/filtered response, retrying"
+                                "Memory LLM returned empty/filtered response, retrying"
                             );
                             tokio::time::sleep(delay).await;
                             attempt += 1;
                             continue;
                         }
 
-                        return Ok(AgentLlmResponse {
+                        return Ok(MemoryLlmResponse {
                             text,
                             content_blocks: resp.content_blocks,
                             finish_reason: resp.finish_reason,
@@ -158,20 +155,20 @@ impl AgentLlm for RealAgentLlm {
                     Err(e) => match should_retry_error(&e, attempt, &policy) {
                         RetryDecision::Retry => {
                             let delay = std::time::Duration::from_millis(
-                                AGENT_RETRY_BACKOFF_MS * 2u64.pow(attempt),
+                                MEMORY_RETRY_BACKOFF_MS * 2u64.pow(attempt),
                             );
                             warn!(
                                 attempt,
                                 delay_ms = delay.as_millis() as u64,
                                 error = %e,
                                 call_type = self.call_type.as_str(),
-                                "Retrying transient agent LLM error"
+                                "Retrying transient memory LLM error"
                             );
                             tokio::time::sleep(delay).await;
                             attempt += 1;
                         }
                         RetryDecision::FallbackModel(_) | RetryDecision::Fail => {
-                            return Err(AgentLlmError::Transport(e.to_string()));
+                            return Err(MemoryLlmError::Transport(e.to_string()));
                         }
                     },
                 }
@@ -184,26 +181,26 @@ impl AgentLlm for RealAgentLlm {
 // Mock implementation (for tests)
 // ---------------------------------------------------------------------------
 
-/// Mock `AgentLlm` that returns canned responses in sequence.
+/// Mock `MemoryLlm` that returns canned responses in sequence.
 ///
 /// Tracks call history for assertion in tests.
-pub struct MockAgentLlm {
-    responses: Mutex<Vec<AgentLlmResponse>>,
+pub struct MockMemoryLlm {
+    responses: Mutex<Vec<MemoryLlmResponse>>,
     call_index: AtomicUsize,
-    pub calls: Mutex<Vec<MockAgentLlmCall>>,
+    pub calls: Mutex<Vec<MockMemoryLlmCall>>,
 }
 
 /// A recorded call to the mock LLM.
 #[derive(Debug, Clone)]
-pub struct MockAgentLlmCall {
+pub struct MockMemoryLlmCall {
     pub messages: Vec<Value>,
     pub system: Option<Value>,
     pub tools: Option<Vec<Value>>,
 }
 
-impl MockAgentLlm {
+impl MockMemoryLlm {
     /// Create a mock that returns the given responses in order.
-    pub fn new(responses: Vec<AgentLlmResponse>) -> Self {
+    pub fn new(responses: Vec<MemoryLlmResponse>) -> Self {
         Self {
             responses: Mutex::new(responses),
             call_index: AtomicUsize::new(0),
@@ -217,16 +214,16 @@ impl MockAgentLlm {
     }
 }
 
-impl AgentLlm for MockAgentLlm {
+impl MemoryLlm for MockMemoryLlm {
     fn generate<'a>(
         &'a self,
         messages: Vec<Value>,
         system: Option<Value>,
         tools: Option<Vec<Value>>,
         _model: &'a ResolvedModel,
-    ) -> Pin<Box<dyn Future<Output = Result<AgentLlmResponse, AgentLlmError>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<MemoryLlmResponse, MemoryLlmError>> + Send + 'a>> {
         // Record the call.
-        self.calls.lock().unwrap().push(MockAgentLlmCall {
+        self.calls.lock().unwrap().push(MockMemoryLlmCall {
             messages,
             system,
             tools,
@@ -236,7 +233,7 @@ impl AgentLlm for MockAgentLlm {
         let responses = self.responses.lock().unwrap();
         let response = responses.get(idx).cloned();
 
-        Box::pin(async move { response.ok_or(AgentLlmError::MockExhausted) })
+        Box::pin(async move { response.ok_or(MemoryLlmError::MockExhausted) })
     }
 }
 
@@ -252,15 +249,15 @@ mod tests {
 
     #[tokio::test]
     async fn mock_returns_canned_responses() {
-        let mock = MockAgentLlm::new(vec![
-            AgentLlmResponse {
+        let mock = MockMemoryLlm::new(vec![
+            MemoryLlmResponse {
                 text: "First response".into(),
                 content_blocks: vec![ContentBlock::Text {
                     text: "First response".into(),
                 }],
                 finish_reason: "end_turn".into(),
             },
-            AgentLlmResponse {
+            MemoryLlmResponse {
                 text: "Second response".into(),
                 content_blocks: vec![ContentBlock::Text {
                     text: "Second response".into(),
@@ -302,15 +299,15 @@ mod tests {
 
     #[tokio::test]
     async fn mock_exhausted_returns_error() {
-        let mock = MockAgentLlm::new(vec![]);
+        let mock = MockMemoryLlm::new(vec![]);
         let model = test_model();
         let result = mock.generate(vec![], None, None, &model).await;
-        assert!(matches!(result, Err(AgentLlmError::MockExhausted)));
+        assert!(matches!(result, Err(MemoryLlmError::MockExhausted)));
     }
 
     #[tokio::test]
     async fn mock_records_tools() {
-        let mock = MockAgentLlm::new(vec![AgentLlmResponse {
+        let mock = MockMemoryLlm::new(vec![MemoryLlmResponse {
             text: "ok".into(),
             content_blocks: vec![],
             finish_reason: "end_turn".into(),

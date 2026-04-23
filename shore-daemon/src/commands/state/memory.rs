@@ -4,7 +4,6 @@ use shore_protocol::types::{ContentBlock, Role};
 use tracing::{debug, info};
 
 use crate::engine::ConversationEngine;
-use crate::memory::agent_llm::RealAgentLlm;
 use crate::memory::compaction::{
     CompactionError, CompactionManager, CompactionOutcome, ConversationMessage,
     DEFAULT_COMPACT_PROMPT,
@@ -12,10 +11,11 @@ use crate::memory::compaction::{
 use crate::memory::compaction_impls::{RealCompactionLlm, RealConversationManager};
 use crate::memory::markdown_query;
 use crate::memory::markdown_store::MarkdownMemoryStore;
+use crate::memory::memory_llm::RealMemoryLlm;
 use shore_config::resolve_prompt_template;
 use shore_ledger::CallType;
 
-use crate::commands::{memory_dir, resolve_agent_model, CommandContext, CommandResult};
+use crate::commands::{memory_dir, resolve_memory_model, CommandContext, CommandResult};
 
 async fn open_markdown_store(
     ctx: &CommandContext,
@@ -154,11 +154,11 @@ async fn memory_query(
 ) -> CommandResult {
     let char_name = engine.character_name();
     let store = open_markdown_store(ctx, char_name).await?;
-    let agent_model = resolve_agent_model(ctx)?;
-    let agent_llm = RealAgentLlm::new(
+    let memory_model = resolve_memory_model(ctx)?;
+    let memory_llm = RealMemoryLlm::new(
         ctx.llm_client.clone(),
         char_name.to_string(),
-        CallType::MemoryAgent,
+        CallType::MemoryQuery,
     );
 
     let result = if direct {
@@ -175,8 +175,8 @@ async fn memory_query(
             char_name,
             &ctx.config.app.defaults.resolve_display_name(),
             &store,
-            &agent_llm,
-            &agent_model,
+            &memory_llm,
+            &memory_model,
         )
         .await
         .map_err(|e| {
@@ -192,36 +192,6 @@ async fn memory_query(
         "query": query,
         "result": result,
     }))
-}
-
-/// Legacy memory shell removed in markdown-only memory mode.
-pub async fn memory_shell_start(
-    _engine: &ConversationEngine,
-    _ctx: &mut CommandContext,
-    _args: &serde_json::Value,
-) -> CommandResult {
-    Err((
-        ErrorCode::InvalidRequest,
-        "memory shell was removed; use `shore memory <query>` or the markdown file tools instead"
-            .to_string(),
-    ))
-}
-
-pub async fn memory_shell_query(
-    _ctx: &mut CommandContext,
-    _args: &serde_json::Value,
-) -> CommandResult {
-    Err((
-        ErrorCode::InvalidRequest,
-        "memory shell was removed; use markdown memory files directly".to_string(),
-    ))
-}
-
-pub fn memory_shell_end(_ctx: &mut CommandContext, _args: &serde_json::Value) -> CommandResult {
-    Err((
-        ErrorCode::InvalidRequest,
-        "memory shell was removed; nothing to close".to_string(),
-    ))
 }
 
 /// Run compaction on the current character's conversation.
@@ -396,7 +366,7 @@ fn compaction_err(e: CompactionError) -> (ErrorCode, String) {
 
 /// Resolve the model to use for compaction.
 ///
-/// Chain: `defaults.compaction` → `defaults.memory_agent` → `defaults.model` → first chat model.
+/// Chain: `defaults.compaction` → `defaults.memory_query` → `defaults.model` → first chat model.
 /// Background and interactive compaction entry points depend on this returning
 /// the same value.
 pub fn resolve_compaction_model(
@@ -412,7 +382,7 @@ pub fn resolve_compaction_model(
             config
                 .app
                 .defaults
-                .memory_agent
+                .memory_query
                 .as_deref()
                 .and_then(|name| config.models.find_model(name).ok())
         })
@@ -428,39 +398,17 @@ pub fn resolve_compaction_model(
         .cloned()
 }
 
-/// Legacy purge removed in markdown-only memory mode.
-pub async fn memory_purge(
-    _engine: &mut ConversationEngine,
-    _ctx: &CommandContext,
-    _args: &serde_json::Value,
-) -> CommandResult {
-    Err((
-        ErrorCode::InvalidRequest,
-        "memory_purge was removed; markdown memories are edited directly instead".to_string(),
-    ))
-}
-
-/// Legacy reindex removed in markdown-only memory mode.
-pub async fn memory_reindex(engine: &ConversationEngine, ctx: &CommandContext) -> CommandResult {
-    let char_name = engine.character_name().to_string();
-    let _ = ctx;
-    Ok(json!({
-        "character": char_name,
-        "message": "memory_reindex is unnecessary in the markdown-only memory system"
-    }))
-}
-
 #[cfg(test)]
 mod resolver_tests {
     //! Regression tests for [`resolve_compaction_model`].
     //!
-    //! Bug history: interactive `/compact` used to call `resolve_agent_model`, which
-    //! consults `defaults.memory_agent` — so a user's `defaults.compaction` setting was
+    //! Bug history: interactive `/compact` used to call `resolve_memory_model`, which
+    //! consults `defaults.memory_query` — so a user's `defaults.compaction` setting was
     //! silently ignored by the interactive entry point while the background path honored
     //! it. Parallel resolvers with no shared helper, no test locking them together.
     //!
     //! These tests pin the resolution chain and assert that
-    //! `defaults.compaction` take precedence over `defaults.memory_agent`.
+    //! `defaults.compaction` take precedence over `defaults.memory_query`.
     //! Don't delete without a matching DECISIONS.md entry.
     use super::resolve_compaction_model;
     use shore_config::app::{AppConfig, DefaultsConfig};
@@ -505,27 +453,27 @@ model_id = "minimax-tool"
     }
 
     /// The bug this test was written for: compaction must honor `defaults.compaction`
-    /// even when `memory_agent` is also set.
+    /// even when `memory_query` is also set.
     #[test]
-    fn compaction_prefers_defaults_compaction_over_memory_agent() {
+    fn compaction_prefers_defaults_compaction_over_memory_query() {
         let config = make_config(DefaultsConfig {
             compaction: Some("bg".to_string()),
-            memory_agent: Some("minimax".to_string()),
+            memory_query: Some("minimax".to_string()),
             model: Some("primary".to_string()),
             ..DefaultsConfig::default()
         });
         let model = resolve_compaction_model(&config).expect("resolved");
         assert_eq!(
             model.name, "bg",
-            "defaults.compaction must win over memory_agent"
+            "defaults.compaction must win over memory_query"
         );
     }
 
     #[test]
-    fn compaction_falls_back_to_memory_agent_when_unset() {
+    fn compaction_falls_back_to_memory_query_when_unset() {
         let config = make_config(DefaultsConfig {
             compaction: None,
-            memory_agent: Some("minimax".to_string()),
+            memory_query: Some("minimax".to_string()),
             model: Some("primary".to_string()),
             ..DefaultsConfig::default()
         });
@@ -534,10 +482,10 @@ model_id = "minimax-tool"
     }
 
     #[test]
-    fn compaction_falls_back_to_model_when_compaction_and_memory_agent_unset() {
+    fn compaction_falls_back_to_model_when_compaction_and_memory_query_unset() {
         let config = make_config(DefaultsConfig {
             compaction: None,
-            memory_agent: None,
+            memory_query: None,
             model: Some("primary".to_string()),
             ..DefaultsConfig::default()
         });

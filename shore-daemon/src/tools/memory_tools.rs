@@ -113,8 +113,8 @@ pub async fn handle_memory(input: Value, ctx: &dyn ToolContext) -> Result<Value,
         ctx.character_name(),
         "the user",
         store,
-        ctx.agent_llm(),
-        ctx.agent_model(),
+        ctx.memory_llm(),
+        ctx.memory_model(),
     )
     .await
     .map_err(|e| ToolError::Io(e.to_string()))?;
@@ -247,8 +247,8 @@ pub async fn handle_memory_list(input: Value, ctx: &dyn ToolContext) -> Result<V
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::agent_llm::{AgentLlmResponse, MockAgentLlm};
     use crate::memory::markdown_store::MarkdownMemoryStore;
+    use crate::memory::memory_llm::{MemoryLlmResponse, MockMemoryLlm};
     use crate::test_support::TestToolContext;
     use shore_llm_client::types::ContentBlock;
 
@@ -275,7 +275,7 @@ mod tests {
             .await
             .unwrap();
 
-        let agent_llm = MockAgentLlm::new(vec![AgentLlmResponse {
+        let memory_llm = MockMemoryLlm::new(vec![MemoryLlmResponse {
             text: "The user likes chocolate.".into(),
             content_blocks: vec![ContentBlock::Text {
                 text: "The user likes chocolate.".into(),
@@ -284,7 +284,7 @@ mod tests {
         }]);
 
         let ctx = TestToolContext::new()
-            .with_agent_llm(agent_llm)
+            .with_memory_llm(memory_llm)
             .with_markdown_store(store);
 
         let result = handle_memory(json!({"request": "What do I like?"}), &ctx)
@@ -337,7 +337,7 @@ mod tests {
             .await
             .unwrap();
 
-        let agent_llm = MockAgentLlm::new(vec![AgentLlmResponse {
+        let memory_llm = MockMemoryLlm::new(vec![MemoryLlmResponse {
             text: "No relevant memories found.".into(),
             content_blocks: vec![ContentBlock::Text {
                 text: "No relevant memories found.".into(),
@@ -347,12 +347,12 @@ mod tests {
 
         let ctx = TestToolContext::new()
             .with_markdown_store(store)
-            .with_agent_llm(agent_llm);
+            .with_memory_llm(memory_llm);
 
         handle_memory(json!({"request": "What does Alice like?"}), &ctx)
             .await
             .unwrap();
-        assert_eq!(ctx.agent_llm.call_count(), 1);
+        assert_eq!(ctx.memory_llm.call_count(), 1);
     }
 
     #[tokio::test]

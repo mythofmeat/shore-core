@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 #
-# Shore autonomy live test — verifies the deadline-based interiority system
+# Shore autonomy live test — verifies the deadline-based heartbeat system
 # against real Anthropic API calls.
 #
 # Requires: ANTHROPIC_API_KEY set in environment.
 #
 # What this tests:
 #   1. Daemon starts, sends messages to prime last_request
-#   2. Interiority tick fires after min_wake_secs (deadline-based)
-#   3. Status command shows interiority_state and effective_interval_secs
+#   2. Heartbeat tick fires after min_wake_secs (deadline-based)
+#   3. Status command shows heartbeat_state and effective_interval_secs
 #   4. Heartbeat log shows tick_fired events
-#   5. Cache hits on interiority tick LLM calls
+#   5. Cache hits on heartbeat tick LLM calls
 #
 # Uses compressed timescales (min_wake_secs=120) so the test completes
 # in ~3 minutes. Cache keepalive pings (59min interval) won't fire
@@ -111,7 +111,7 @@ mkdir -p "$CONFIG_DIR/characters/TestChar" "$DATA_DIR" "$RUNTIME_DIR"
 # ── Config ────────────────────────────────────────────────────────────
 # Mirrors production config structure with compressed timescales.
 #
-# The interiority system is deadline-based: after user messages,
+# The heartbeat system is deadline-based: after user messages,
 # next_wake_at = max(existing, now + min_wake_secs). We set min_wake_secs
 # and interval_secs both to 120s so the first tick fires ~2min after
 # priming messages. Cache keepalive is on a fixed 59min cycle and won't
@@ -122,7 +122,7 @@ mkdir -p "$CONFIG_DIR/characters/TestChar" "$DATA_DIR" "$RUNTIME_DIR"
 # needing an excessively long character definition.
 #
 # Timing:
-#   ~120s after last user message: first interiority tick
+#   ~120s after last user message: first heartbeat tick
 
 cat > "$CONFIG_DIR/config.toml" <<EOF
 [daemon]
@@ -135,7 +135,7 @@ display_name = "tester"
 [behavior.autonomy]
 enabled = true
 
-[behavior.autonomy.interiority]
+[behavior.autonomy.heartbeat]
 enabled       = true
 interval_secs = 120
 min_wake_secs = 120
@@ -148,8 +148,6 @@ max_iterations = 1
 [behavior.tool_use.tools]
 memory          = true
 send_image      = false
-list_images     = false
-recall_image    = false
 generate_image  = false
 web_search      = true
 fetch_url       = true
@@ -157,9 +155,6 @@ check_time      = true
 roll_dice       = true
 activity_heatmap = true
 scratchpad      = true
-
-[memory.collation]
-enabled = false
 
 [chat.openrouter]
 max_context_tokens = 16384
@@ -178,10 +173,10 @@ Keep all responses to one sentence. Do not use tools unless asked.
 ## Background
 
 TestChar was designed as a diagnostic entity for the Shore character engine.
-Your purpose is to validate that the autonomy subsystem — interiority ticks,
+Your purpose is to validate that the autonomy subsystem — heartbeat ticks,
 cache refresh pings, and the journal system — functions correctly under
 real API conditions. You exist in a compressed-timescale environment where
-interiority intervals are measured in minutes rather than hours.
+heartbeat intervals are measured in minutes rather than hours.
 
 ## Personality Traits
 
@@ -210,7 +205,7 @@ Anthropic Messages API and its caching behavior.
 
 ## Behavioral Guidelines
 
-When operating autonomously (during interiority ticks):
+When operating autonomously (during heartbeat ticks):
 - Reflect briefly on the current state of the conversation
 - Note any tools available but do not use them unless there is a reason
 - Keep your internal thoughts concise and relevant
@@ -235,25 +230,23 @@ and all cache verification tests will fail silently.
 The character engine renders this definition as part of the system
 prompt alongside tool definitions, conversation context, and any
 active memory or RAG results. The combined prompt must exceed the
-caching threshold for the dormant ping and interiority tick cache
+caching threshold for the dormant ping and heartbeat tick cache
 hit verification to be meaningful.
 
 ## Test Scenarios
 
 TestChar should handle the following scenarios gracefully:
 1. Initial greeting messages from the test harness
-2. Silent interiority ticks with journal persistence
+2. Silent heartbeat ticks with journal persistence
 3. Tool availability without tool invocation
 4. Cache refresh via dormant ping mechanism
 5. Transition from active to dormant state after max_idle_ticks
 6. Wake from dormancy on receipt of user message
 7. Journal truncation when entries exceed the character budget
 
-Each scenario validates a different aspect of the unified interiority
-system that replaced the previous dual-system architecture (separate
-InteriorityClock and CacheKeepaliveScheduler). The unified system
-uses a single timer with dual deadlines — one for full interiority
-ticks and one for bare cache refresh pings.
+Each scenario validates heartbeat behavior plus the separate cache
+keepalive cost-saving path. Heartbeat owns autonomous private ticks;
+cache keepalive owns bare prompt-cache refresh pings.
 EOF
 
 export XDG_CONFIG_HOME="$TMPDIR/config"
@@ -318,9 +311,9 @@ run_check "effective_interval_secs = 120 (configured)" \
     "$([[ "$eff_interval" == "120" ]] && echo true || echo false)" \
     "got ${eff_interval:-?}"
 
-# Check interiority_state is Active.
-int_state=$(echo "$status_json" | grep -o '"interiority_state": "[^"]*"' | head -1 | grep -o '"[^"]*"$' | tr -d '"')
-run_check "interiority_state is Active" \
+# Check heartbeat_state is Active.
+int_state=$(echo "$status_json" | grep -o '"heartbeat_state": "[^"]*"' | head -1 | grep -o '"[^"]*"$' | tr -d '"')
+run_check "heartbeat_state is Active" \
     "$([[ "$int_state" == "Active" ]] && echo true || echo false)" \
     "$int_state"
 
@@ -330,9 +323,9 @@ run_check "no cache_keepalive fields in status" \
     "$([[ "$has_keepalive" == "0" ]] && echo true || echo false)"
 
 # ══════════════════════════════════════════════════════════════════════
-# PHASE 3: Wait for interiority tick
+# PHASE 3: Wait for heartbeat tick
 # ══════════════════════════════════════════════════════════════════════
-printf "\n${BOLD}Phase 3: Wait for interiority tick (~2.5 min)${RESET}\n"
+printf "\n${BOLD}Phase 3: Wait for heartbeat tick (~2.5 min)${RESET}\n"
 
 # With min_wake_secs=120, the tick fires ~120s after the last user
 # message. We wait 150s to be safe.
@@ -376,15 +369,15 @@ printf "\n${BOLD}Phase 5: Verify daemon logs${RESET}\n"
 CLEAN_LOG="$TMPDIR/daemon_clean.log"
 strip_ansi < "$LOG_FILE" > "$CLEAN_LOG"
 
-# Check interiority tick ran (tool loop).
-has_tool_loop=$(grep -c "Interiority: executing tool loop tick" "$CLEAN_LOG" || true)
-run_check "daemon log: interiority tick executed" \
+# Check heartbeat tick ran (tool loop).
+has_tool_loop=$(grep -c "Heartbeat: executing tool loop tick" "$CLEAN_LOG" || true)
+run_check "daemon log: heartbeat tick executed" \
     "$([[ "$has_tool_loop" -gt 0 ]] && echo true || echo false)" \
     "${has_tool_loop}x"
 
-# Check for LLM response from the interiority tick.
-has_llm=$(grep -c "Interiority: LLM response" "$CLEAN_LOG" || true)
-run_check "daemon log: interiority LLM response" \
+# Check for LLM response from the heartbeat tick.
+has_llm=$(grep -c "Heartbeat: LLM response" "$CLEAN_LOG" || true)
+run_check "daemon log: heartbeat LLM response" \
     "$([[ "$has_llm" -gt 0 ]] && echo true || echo false)" \
     "${has_llm}x"
 
@@ -393,18 +386,18 @@ run_check "daemon log: interiority LLM response" \
 # ══════════════════════════════════════════════════════════════════════
 printf "\n${BOLD}Phase 6: Token usage verification${RESET}\n"
 
-# Verify the interiority tick actually produced an LLM response with tokens.
-tick_line=$(grep "Interiority: LLM response" "$CLEAN_LOG" | head -1 || true)
+# Verify the heartbeat tick actually produced an LLM response with tokens.
+tick_line=$(grep "Heartbeat: LLM response" "$CLEAN_LOG" | head -1 || true)
 if [[ -n "$tick_line" ]]; then
     tick_input=$(echo "$tick_line" | sed -n 's/.*input_tokens=\([0-9]*\).*/\1/p')
     tick_output=$(echo "$tick_line" | sed -n 's/.*output_tokens=\([0-9]*\).*/\1/p')
-    run_check "interiority tick: got LLM response" "true" \
+    run_check "heartbeat tick: got LLM response" "true" \
         "input=${tick_input:-?} output=${tick_output:-?}"
-    run_check "interiority tick: output_tokens > 0" \
+    run_check "heartbeat tick: output_tokens > 0" \
         "$([[ -n "$tick_output" && "$tick_output" -gt 0 ]] && echo true || echo false)" \
         "${tick_output:-0} tokens"
 else
-    run_check "interiority tick: LLM response logged" "false" "no response line"
+    run_check "heartbeat tick: LLM response logged" "false" "no response line"
 fi
 
 # Print token-related lines for manual inspection.
@@ -421,14 +414,14 @@ done
 printf "\n${BOLD}Phase 7: API call count${RESET}\n"
 
 # Count calls in the daemon log.
-interiority_calls=$(grep -c "Interiority: LLM response" "$CLEAN_LOG" || true)
+heartbeat_calls=$(grep -c "Heartbeat: LLM response" "$CLEAN_LOG" || true)
 user_calls=$(grep -c "Response complete" "$CLEAN_LOG" || true)
-printf "${DIM}  user responses: $user_calls, interiority ticks: $interiority_calls${RESET}\n"
+printf "${DIM}  user responses: $user_calls, heartbeat ticks: $heartbeat_calls${RESET}\n"
 
-# Sanity: interiority calls should be modest (1-2 expected).
-run_check "interiority API calls reasonable (< 5)" \
-    "$([[ "$interiority_calls" -lt 5 ]] && echo true || echo false)" \
-    "$interiority_calls calls"
+# Sanity: heartbeat calls should be modest (1-2 expected).
+run_check "heartbeat API calls reasonable (< 5)" \
+    "$([[ "$heartbeat_calls" -lt 5 ]] && echo true || echo false)" \
+    "$heartbeat_calls calls"
 
 # ── Summary ───────────────────────────────────────────────────────────
 printf "\n${BOLD}Results: ${GREEN}$pass passed${RESET}"

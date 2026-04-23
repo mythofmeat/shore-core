@@ -94,13 +94,12 @@ impl MessageHandler {
         // models` succeed even on a multi-character config where no
         // character has been selected yet.
         if cmd.name == "list_characters" || cmd.name == "list_models" {
-            let (active_model, reasoning_effort_override, session_tokens, memory_shell_sessions) = {
+            let (active_model, reasoning_effort_override, session_tokens) = {
                 let session = self.session_state_mut(session_id);
                 (
                     session.active_model.clone(),
                     session.reasoning_effort_override.clone(),
                     session.session_tokens.clone(),
-                    std::mem::take(&mut session.memory_shell_sessions),
                 )
             };
             let ctx = CommandContext {
@@ -113,12 +112,10 @@ impl MessageHandler {
                 autonomy: self.cmd_ctx.autonomy.clone(),
                 llm_client: self.cmd_ctx.llm_client.clone(),
                 diagnostics: self.cmd_ctx.diagnostics.clone(),
-                memory_shell_sessions,
             };
             let result = commands::dispatch_characterless(&ctx, cmd);
             {
                 let session = self.session_state_mut(session_id);
-                session.memory_shell_sessions = ctx.memory_shell_sessions;
                 session.active_model = ctx.active_model.clone();
                 session.reasoning_effort_override = ctx.reasoning_effort_override.clone();
             }
@@ -171,13 +168,12 @@ impl MessageHandler {
             (engine_arc, effective_config)
         };
 
-        let (active_model, reasoning_effort_override, session_tokens, memory_shell_sessions) = {
+        let (active_model, reasoning_effort_override, session_tokens) = {
             let session = self.session_state_mut(session_id);
             (
                 session.active_model.clone(),
                 session.reasoning_effort_override.clone(),
                 session.session_tokens.clone(),
-                std::mem::take(&mut session.memory_shell_sessions),
             )
         };
 
@@ -191,7 +187,6 @@ impl MessageHandler {
             autonomy: self.cmd_ctx.autonomy.clone(),
             llm_client: self.cmd_ctx.llm_client.clone(),
             diagnostics: self.cmd_ctx.diagnostics.clone(),
-            memory_shell_sessions,
         };
 
         let mut result = commands::dispatch(engine_arc.clone(), &mut cmd_ctx, cmd)
@@ -204,7 +199,6 @@ impl MessageHandler {
             let session = self.session_state_mut(session_id);
             session.active_model = active_model_after_command.clone();
             session.reasoning_effort_override = reasoning_effort_after_command;
-            session.memory_shell_sessions = cmd_ctx.memory_shell_sessions;
         }
 
         if cmd.name == "config_reset" {
@@ -232,9 +226,6 @@ impl MessageHandler {
                 output.data["invalidated"]["character_discovery"] =
                     json!(summary.character_discovery_changed);
                 output.data["invalidated"]["merged_character_configs"] = json!(true);
-                output.data["invalidated"]["memory_db_handles"] = json!(summary.dropped_db_handles);
-                output.data["invalidated"]["vector_store_handles"] =
-                    json!(summary.dropped_vector_stores);
                 output.data["invalidated"]["removed_character_engines"] =
                     json!(summary.dropped_engines);
             }

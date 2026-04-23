@@ -8,8 +8,8 @@ pub mod web;
 pub mod workspace;
 
 use crate::autonomy::manager::AutonomyManager;
-use crate::memory::agent_llm::AgentLlm;
 use crate::memory::compaction_impls::ImageGenConfig;
+use crate::memory::memory_llm::MemoryLlm;
 use serde_json::Value;
 use shore_config::models::ResolvedModel;
 use shore_llm_client::LlmClient;
@@ -81,8 +81,8 @@ pub enum ToolError {
 /// Requires `Sync` so that `&dyn ToolContext` is `Send`, enabling tool handlers
 /// to hold the reference across `.await` points in `Send` futures.
 pub trait ToolContext: Sync {
-    fn agent_llm(&self) -> &dyn AgentLlm;
-    fn agent_model(&self) -> &ResolvedModel;
+    fn memory_llm(&self) -> &dyn MemoryLlm;
+    fn memory_model(&self) -> &ResolvedModel;
     fn image_dir(&self) -> &str;
     fn llm_client(&self) -> Option<&LlmClient>;
     fn image_gen_config(&self) -> Option<&ImageGenConfig>;
@@ -386,9 +386,9 @@ pub fn dispatch_tool<'a>(
                 workspace::handle_exec(input, ctx.workspace_dir()).await
             }
             // set_next_wake is in the base tool set for cache stability but
-            // only handled during interiority ticks (intercepted in manager.rs).
+            // only handled during heartbeat ticks (intercepted in manager.rs).
             "set_next_wake" => Err(ToolError::InvalidArgs(
-                "set_next_wake is only available during interiority ticks".into(),
+                "set_next_wake is only available during heartbeat ticks".into(),
             )),
             _ => Err(ToolError::NotImplemented(name.to_string())),
         }

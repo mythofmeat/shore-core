@@ -13,7 +13,7 @@ pub enum CacheKeepaliveAction {
 /// Standalone subsystem that keeps the Anthropic 1h prompt cache warm during
 /// quiet stretches — but only when doing so is economically justified.
 ///
-/// Has zero knowledge of interiority state. It observes two signals:
+/// Has zero knowledge of autonomy/heartbeat state. It observes two signals:
 /// - `on_cache_warmed`: any LLM call that touches the cached prompt
 /// - `set_next_wake`: the character's next scheduled wake time
 ///
@@ -25,7 +25,7 @@ pub enum CacheKeepaliveAction {
 pub struct CacheKeepalive {
     /// Next time a keepalive ping should fire.
     next_ping_at: Option<Instant>,
-    /// Mirror of the interiority clock's next_wake_at.
+    /// The next scheduled wake, supplied by the heartbeat subsystem.
     next_wake_at: Option<Instant>,
 }
 
@@ -59,7 +59,7 @@ impl CacheKeepalive {
     }
 
     /// Called after ANY LLM call involving the cached prompt — user message,
-    /// assistant response, interiority tick, or keepalive ping itself.
+    /// assistant response, heartbeat tick, or keepalive ping itself.
     /// Resets the internal ping deadline.
     pub fn on_cache_warmed(&mut self, now: Instant) {
         self.next_ping_at = Some(now + ping_interval());
@@ -72,7 +72,7 @@ impl CacheKeepalive {
         self.next_ping_at = None;
     }
 
-    /// Mirror of the interiority clock's schedule. Called whenever
+    /// Mirror of the scheduled heartbeat wake. Called whenever
     /// `next_wake_at` changes (including being cleared on guard trip).
     pub fn set_next_wake(&mut self, at: Option<Instant>) {
         self.next_wake_at = at;

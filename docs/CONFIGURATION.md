@@ -94,9 +94,9 @@ model = "claude-sonnet"       # must match a key in [chat.*.*]
 display_name = "Your Name"    # fills `{{user}}` in templates
 # stream = true
 # tool_model = "mistral-small"
-# memory_agent = "mistral-small"
+# memory_query = "mistral-small"
 # compaction = "mistral-small"
-# interiority = "claude-sonnet"
+# heartbeat = "claude-sonnet"
 # embedding = "text-large"
 # image_generation = "gemini-flash"
 ```
@@ -104,9 +104,9 @@ display_name = "Your Name"    # fills `{{user}}` in templates
 **Per-operation model slots** let you run heavy work (the main conversation) on one model and cheap background work on another. Each slot, if omitted, falls back to `model`:
 
 - `tool_model` — used when the character is invoking tools (web search, memory, etc.)
-- `memory_agent` — the small model used for markdown memory question answering
+- `memory_query` — the small model used for markdown memory question answering
 - `compaction` — conversation summarization into markdown memory
-- `interiority` — the "private moment" autonomous ticks
+- `heartbeat` — the "private moment" autonomous ticks
 - `embedding` — which embedding profile to use (see `[chat.<provider>.<alias>]` with an embedding model)
 - `image_generation` — which model handles `generate_image`
 
@@ -116,13 +116,13 @@ See [`examples/config.toml`](../examples/config.toml) for every default.
 
 ## `[behavior.autonomy]`
 
-Controls whether the character speaks on its own. Disabled by default. Autonomy in Shore is implemented via **interiority** — self-scheduled private ticks where the character can think, use tools, and optionally send you a message. There is no separate heartbeat mechanism; `[behavior.autonomy]` is just an `enabled` switch plus the interiority sub-table.
+Controls whether the character speaks on its own. Disabled by default. Autonomy in Shore is implemented via **heartbeat** — self-scheduled private ticks where the character can think, use tools, and optionally send you a message. Cache keepalive is not part of autonomy; it is an Anthropic prompt-cache cost-saving subsystem that runs separately from heartbeat behavior.
 
 See [FEATURES.md — Autonomy](FEATURES.md#autonomy) for what this actually does. This section is the config reference.
 
 ### Active vs dormant
 
-The character has two phases: **active** (responsive, may schedule interiority ticks) and **dormant** (silent; wakes on a user message). The character goes dormant after `dormant_after_interiority_turns` ticks with no user reply, or after `dormant_after_idle_time` of total silence.
+The character has two phases: **active** (responsive, may schedule heartbeat ticks) and **dormant** (silent; wakes on a user message). The character goes dormant after `dormant_after_heartbeat_turns` ticks with no user reply, or after `dormant_after_idle_time` of total silence.
 
 ### `[behavior.autonomy]` — the umbrella
 
@@ -131,23 +131,23 @@ The character has two phases: **active** (responsive, may schedule interiority t
 enabled = false   # master switch for autonomous speech
 ```
 
-Only one top-level field. Everything else lives under `interiority`.
+Only one top-level field. Everything else lives under `heartbeat`.
 
-### `[behavior.autonomy.interiority]` — self-scheduled private ticks
+### `[behavior.autonomy.heartbeat]` — self-scheduled private ticks
 
 ```toml
-[behavior.autonomy.interiority]
+[behavior.autonomy.heartbeat]
 enabled = true
-fallback_interiority_interval = "1h"      # base cadence when the character doesn't self-schedule
-dormant_after_interiority_turns = 3       # consecutive ticks with no user reply before sleeping
+fallback_heartbeat_interval = "1h"      # base cadence when the character doesn't self-schedule
+dormant_after_heartbeat_turns = 3       # consecutive ticks with no user reply before sleeping
 dormant_after_idle_time = "48h"           # hard idle ceiling before sleeping until user returns
-minimum_interiority_latency = "1h"        # floor between a user message and the next tick
+minimum_heartbeat_latency = "1h"        # floor between a user message and the next tick
 max_tool_rounds = 12                      # tool-use rounds per tick before forcing a wrap-up recap
 ```
 
-The character schedules its own next tick when it finishes one; `fallback_interiority_interval` only applies when it doesn't.
+The character schedules its own next tick when it finishes one; `fallback_heartbeat_interval` only applies when it doesn't.
 
-`minimum_interiority_latency` prevents ticks from firing the second you stop typing — the character needs breathing room.
+`minimum_heartbeat_latency` prevents ticks from firing the second you stop typing — the character needs breathing room.
 
 `max_tool_rounds` is a safety limit — if a tick wanders, Shore forces a wrap-up recap at this many tool rounds.
 
@@ -251,10 +251,6 @@ to thinking from prior completed turns — re-sending them on every
 subsequent request just burns input/cache tokens. Default `false` strips
 them from history when building the outgoing request; set `true` only if
 a future provider or model you're testing needs the old behavior.
-
-### `[memory.collation]`
-
-This table is legacy compatibility only in markdown memory mode. Shore no longer runs the old SQLite collation pass; compaction updates markdown files directly.
 
 See [`examples/config.toml`](../examples/config.toml) for every memory option.
 

@@ -5,9 +5,9 @@
 //! single source.
 
 use crate::autonomy::manager::AutonomyManager;
-use crate::memory::agent_llm::{AgentLlm, MockAgentLlm};
 use crate::memory::compaction_impls::ImageGenConfig;
 use crate::memory::markdown_store::MarkdownMemoryStore;
+use crate::memory::memory_llm::{MemoryLlm, MockMemoryLlm};
 use crate::tools::ToolContext;
 use shore_config::app::SearchConfig;
 use shore_config::models::{ResolvedModel, Sdk};
@@ -50,7 +50,7 @@ pub fn test_model() -> ResolvedModel {
 
 /// Shared `ToolContext` implementation for unit tests.
 pub struct TestToolContext {
-    pub agent_llm: MockAgentLlm,
+    pub memory_llm: MockMemoryLlm,
     pub model: ResolvedModel,
     pub image_dir_val: String,
     pub search_config_val: SearchConfig,
@@ -67,7 +67,7 @@ impl TestToolContext {
     /// Create a default test context.
     pub fn new() -> Self {
         Self {
-            agent_llm: MockAgentLlm::new(vec![]),
+            memory_llm: MockMemoryLlm::new(vec![]),
             model: test_model(),
             image_dir_val: "/tmp/test_images".to_string(),
             search_config_val: SearchConfig::default(),
@@ -81,9 +81,9 @@ impl TestToolContext {
         }
     }
 
-    /// Create with a custom agent LLM (for canned responses).
-    pub fn with_agent_llm(mut self, llm: MockAgentLlm) -> Self {
-        self.agent_llm = llm;
+    /// Create with a custom memory LLM (for canned responses).
+    pub fn with_memory_llm(mut self, llm: MockMemoryLlm) -> Self {
+        self.memory_llm = llm;
         self
     }
 
@@ -134,10 +134,10 @@ impl TestToolContext {
 }
 
 impl ToolContext for TestToolContext {
-    fn agent_llm(&self) -> &dyn AgentLlm {
-        &self.agent_llm
+    fn memory_llm(&self) -> &dyn MemoryLlm {
+        &self.memory_llm
     }
-    fn agent_model(&self) -> &ResolvedModel {
+    fn memory_model(&self) -> &ResolvedModel {
         &self.model
     }
     fn image_dir(&self) -> &str {

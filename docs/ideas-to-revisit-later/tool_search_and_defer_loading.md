@@ -14,7 +14,7 @@ Shore has 16 tools right now — below the threshold where Anthropic recommends 
 
 1. Per-tool `defer_loading: bool` field on `ToolDef` in `shore-daemon/src/tools/mod.rs`.
 2. User-configurable override in `shore-config::app::ToolToggles` (or a sibling struct) so the defaults can be tuned per character without recompiling.
-3. Sensible built-in default by `ToolCategory`: `Web`, `MemoryWrite`, `MemoryRead`, `Scratchpad` → visible; `Image` (non-memory), `Basic` novelty (`roll_dice`, `check_time`), `Activity`, `Interiority` (`set_next_wake`) → deferred.
+3. Sensible built-in default by `ToolCategory`: `Web`, `MemoryWrite`, `MemoryRead`, `Scratchpad` → visible; `Image` (non-memory), `Basic` novelty (`roll_dice`, `check_time`), `Activity`, `Heartbeat` (`set_next_wake`) → deferred.
 4. Emit a `tool_search_tool_bm25_20251119` server-tool entry alongside user tools when any are deferred. BM25 over regex — natural-language queries fit a character-driven model better than `re.search()` patterns.
 5. `render_tool_defs` in `shore-daemon/src/tools/mod.rs` passes `defer_loading` through to the outbound JSON.
 6. `shore-llm-client/src/providers/anthropic.rs` passes it through unchanged — it's just a field on the tool dict.
@@ -48,7 +48,7 @@ Anthropic's docs describe [custom client-side tool search](https://platform.clau
 
 4. **Does `render_tool_defs` need to know the target provider?** Currently it renders Anthropic-shape tools and the provider translates. If deferral semantics differ per-provider, `render_tool_defs` either stays provider-agnostic (and providers strip `defer_loading` when unsupported) or becomes provider-aware (cleaner dispatch but leakier abstraction). Leaning toward the former — strip in the provider, keep the daemon's tool-building pure.
 
-5. **What does the interiority tick mode do?** Interiority already uses a different tool set (or could); `set_next_wake` is canonically interiority-only. Deferral might let us leave `set_next_wake` visible always (matching today's validation-not-filtering design — see `project_shore_tool_scoping_validation_not_filtering` memory) without paying its token cost during normal chat. That's a nicer end state than the current "always visible, errors on misuse" approach.
+5. **What does the heartbeat tick mode do?** Heartbeat already uses a different tool set (or could); `set_next_wake` is canonically heartbeat-only. Deferral might let us leave `set_next_wake` visible always (matching today's validation-not-filtering design — see `project_shore_tool_scoping_validation_not_filtering` memory) without paying its token cost during normal chat. That's a nicer end state than the current "always visible, errors on misuse" approach.
 
 6. **Observability.** `server_tool_use.tool_search_requests` is in the usage object per the docs. Do we surface this in `shore-ledger` as a separate call-type, or roll it into the owning request? Probably its own line item for diagnostics parity.
 

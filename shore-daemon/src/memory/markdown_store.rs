@@ -171,32 +171,6 @@ impl MarkdownMemoryStore {
         Ok(results)
     }
 
-    /// Migrate existing SQLite entries to markdown files.
-    ///
-    /// Writes each entry to `migrated/{id}.md` with the summary_text as body.
-    pub async fn migrate_from_entries(
-        &self,
-        entries: &[crate::memory::db::Entry],
-    ) -> Result<usize, MarkdownStoreError> {
-        let mut count = 0;
-        for entry in entries {
-            let filename = if entry.topic_key.is_empty() {
-                format!("migrated/{}.md", entry.id)
-            } else {
-                format!(
-                    "migrated/{}_{}.md",
-                    sanitize_filename(&entry.topic_key),
-                    entry.id
-                )
-            };
-            let content = format!("# {}\n\n{}\n", entry.topic_key, entry.summary_text);
-            self.write(&filename, &content).await?;
-            count += 1;
-        }
-        info!(count, "migrated entries to markdown");
-        Ok(count)
-    }
-
     // -----------------------------------------------------------------------
     // Internal
     // -----------------------------------------------------------------------
@@ -274,16 +248,6 @@ impl MarkdownMemoryStore {
 fn format_modified_at(time: std::time::SystemTime) -> String {
     let utc: DateTime<Utc> = time.into();
     utc.with_timezone(&Local).to_rfc3339()
-}
-
-fn sanitize_filename(name: &str) -> String {
-    name.chars()
-        .map(|c| match c {
-            'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_' => c,
-            ' ' | '/' | '\\' | ':' => '-',
-            _ => '-',
-        })
-        .collect()
 }
 
 fn tokenize_query(query: &str) -> Vec<&str> {

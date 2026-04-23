@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 #
-# Test: cache stability through an interiority tick.
+# Test: cache stability through a heartbeat tick.
 #
 # Sequence:
 #   1. Send 3 messages (warm up cache, establish baseline)
-#   2. Force an interiority tick via `shore debug interiority_tick_now`
+#   2. Force a heartbeat tick via `shore debug heartbeat_tick_now`
 #   3. Wait for the tick to complete (~15s)
 #   4. Send 2 more messages
 #   5. Check that cache_r never dropped to 0 after the cold start
@@ -15,7 +15,7 @@
 set -euo pipefail
 source "$(dirname "$0")/harness.sh"
 
-harness_init "interiority-tick"
+harness_init "heartbeat-tick"
 
 CACHE_DEPTH_TURNS="[1, 2]"
 CACHE_PINNED_POSITION="[-1]"
@@ -32,10 +32,10 @@ model        = "chat.test.model"
 [behavior.autonomy]
 enabled = true
 
-[behavior.autonomy.interiority]
+[behavior.autonomy.heartbeat]
 enabled = true
-fallback_interiority_interval = "1h"
-dormant_after_interiority_turns = 5
+fallback_heartbeat_interval = "1h"
+dormant_after_heartbeat_turns = 5
 dormant_after_idle_time = "48h"
 
 [behavior.tool_use.tools]
@@ -61,7 +61,7 @@ TOML
     } > "$model_toml"
 }
 
-# Write a recap so the interiority prompt has context.
+# Write a recap so the heartbeat prompt has context.
 mkdir -p "$DATA_DIR/$CHARACTER_NAME/memory"
 cat > "$DATA_DIR/$CHARACTER_NAME/memory/recap.md" << 'RECAP'
 The conversation has covered a range of topics so far. The user asked about
@@ -92,13 +92,13 @@ forensics_count() {
     grep -c '"type":"response"' "$path" 2>/dev/null || echo 0
 }
 
-# ── Helper: wait for interiority tick to appear in forensics ──────
+# ── Helper: wait for heartbeat tick to appear in forensics ──────
 wait_for_tick() {
     local path
     path="$(forensics_path)"
     local before
     before="$(forensics_count)"
-    echo -e "${CYAN}[$TEST_NAME]${NC} waiting for interiority tick (forensics count=$before)..."
+    echo -e "${CYAN}[$TEST_NAME]${NC} waiting for heartbeat tick (forensics count=$before)..."
 
     local tries=0
     while [[ $tries -lt 30 ]]; do
@@ -107,7 +107,7 @@ wait_for_tick() {
         local now
         now="$(forensics_count)"
         if [[ "$now" -gt "$before" ]]; then
-            # Check if the new entry is from an interiority call.
+            # Check if the new entry is from a heartbeat call.
             local last
             last="$(tail -5 "$path" | grep '"type":"response"' | tail -1)"
             echo -e "${CYAN}[$TEST_NAME]${NC} new forensics entry detected (count=$now, waited ${tries}x2s)"
@@ -119,7 +119,7 @@ wait_for_tick() {
             return 0
         fi
     done
-    echo -e "${YELLOW}[$TEST_NAME]${NC} timeout waiting for interiority tick"
+    echo -e "${YELLOW}[$TEST_NAME]${NC} timeout waiting for heartbeat tick"
     return 1
 }
 
@@ -136,10 +136,10 @@ PRE_TICK_FORENSICS="$(grep '"type":"response"' "$(forensics_path)" | tail -1)"
 PRE_TICK_CACHE_R="$(echo "$PRE_TICK_FORENSICS" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('cache_read_tokens', 0))" 2>/dev/null)" || PRE_TICK_CACHE_R=0
 echo -e "${CYAN}[$TEST_NAME]${NC} pre-tick cache_r=$PRE_TICK_CACHE_R"
 
-# ── Phase 2: Force interiority tick ───────────────────────────────
-echo -e "${CYAN}[$TEST_NAME]${NC} === PHASE 2: Force interiority tick ==="
-send_cmd "interiority_tick_now"
-wait_for_tick || harness_fail "interiority tick did not fire"
+# ── Phase 2: Force heartbeat tick ───────────────────────────────
+echo -e "${CYAN}[$TEST_NAME]${NC} === PHASE 2: Force heartbeat tick ==="
+send_cmd "heartbeat_tick_now"
+wait_for_tick || harness_fail "heartbeat tick did not fire"
 
 # ── Phase 3: Verify tick didn't bust cache ────────────────────────
 # Check ALL forensics entries from the tick — none should have cache_r=0
@@ -157,7 +157,7 @@ done < <(grep '"type":"response"' "$(forensics_path)" | tail -n +2)
 # (tail -n +2 skips the cold start entry)
 
 if [[ "$TICK_BUSTED" -eq 1 ]]; then
-    harness_fail "interiority tick caused a full cache rewrite"
+    harness_fail "heartbeat tick caused a full cache rewrite"
 fi
 
 # ── Phase 4: Post-tick follow-up ──────────────────────────────────

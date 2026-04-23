@@ -1,4 +1,4 @@
-//! Interiority clock — deadline holder with abandonment guard.
+//! Heartbeat clock — deadline holder with abandonment guard.
 //!
 //! The character schedules its own next wake via `set_next_wake`. The clock
 //! holds that deadline and fires `RunTick` when it passes. An abandonment
@@ -9,7 +9,7 @@ use tokio::time::Instant;
 
 use tracing::{debug, info, warn};
 
-use shore_config::app::InteriorityConfig;
+use shore_config::app::HeartbeatConfig;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -26,15 +26,15 @@ pub const MAX_WAKE_INTERVAL: Duration = Duration::from_secs(48 * 60 * 60);
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InteriorityAction {
+pub enum HeartbeatAction {
     /// Nothing to do this tick.
     None,
-    /// Fire a full interiority tick (journal-backed, LLM call with tools).
+    /// Fire a full heartbeat tick (recap-backed LLM call with tools).
     RunTick,
 }
 
 // ---------------------------------------------------------------------------
-// InteriorityClock
+// HeartbeatClock
 // ---------------------------------------------------------------------------
 
 /// Deadline holder with abandonment guard.
@@ -42,7 +42,7 @@ pub enum InteriorityAction {
 /// The character drives its own cadence via `schedule()`. The clock's job is
 /// to hold that deadline, apply bounds, and stop ticking when the user has
 /// been gone too long.
-pub struct InteriorityClock {
+pub struct HeartbeatClock {
     /// Next scheduled wake time. `None` means no wake is scheduled (first
     /// boot, or guard has tripped).
     next_wake_at: Option<Instant>,
@@ -52,7 +52,7 @@ pub struct InteriorityClock {
     last_anchor: Instant,
 
     // -- abandonment guard --------------------------------------------------
-    /// Consecutive interiority ticks that fired without a user message.
+    /// Consecutive heartbeat ticks that fired without a user message.
     ticks_without_user: u32,
 
     /// Last time a user message arrived. Used for the wall-clock leg of the
@@ -74,17 +74,17 @@ pub struct InteriorityClock {
     min_wake_interval: Duration,
 }
 
-impl InteriorityClock {
-    pub fn with_config(config: &InteriorityConfig) -> Self {
+impl HeartbeatClock {
+    pub fn with_config(config: &HeartbeatConfig) -> Self {
         Self {
             next_wake_at: None,
             last_anchor: Instant::now(),
             ticks_without_user: 0,
             last_user_at: None,
-            default_interval: config.fallback_interiority_interval.as_duration(),
-            max_idle_ticks: config.dormant_after_interiority_turns,
+            default_interval: config.fallback_heartbeat_interval.as_duration(),
+            max_idle_ticks: config.dormant_after_heartbeat_turns,
             max_silent_duration: config.dormant_after_idle_time.as_duration(),
-            min_wake_interval: config.minimum_interiority_latency.as_duration(),
+            min_wake_interval: config.minimum_heartbeat_latency.as_duration(),
         }
     }
 
@@ -167,27 +167,27 @@ impl InteriorityClock {
     ///    `next_wake_at` and return None.
     /// 4. Guard passes → increment counter, clear deadline, update anchor,
     ///    return RunTick.
-    pub fn tick(&mut self, now: Instant) -> InteriorityAction {
+    pub fn tick(&mut self, now: Instant) -> HeartbeatAction {
         // Step 1: bootstrap if no deadline set — but only if the guard hasn't
         // already tripped. Once abandoned, we stay dormant until reset by a
         // user message.
         if self.next_wake_at.is_none() {
             if self.is_abandoned(now) {
-                return InteriorityAction::None;
+                return HeartbeatAction::None;
             }
             let target = self.last_anchor + self.default_interval;
             self.next_wake_at = Some(target);
             debug!(
                 default_interval_secs = self.default_interval.as_secs(),
-                "InteriorityClock: no deadline set, scheduling default"
+                "HeartbeatClock: no deadline set, scheduling default"
             );
-            return InteriorityAction::None;
+            return HeartbeatAction::None;
         }
 
         // Step 2: not due yet.
         let wake_at = self.next_wake_at.unwrap();
         if now < wake_at {
-            return InteriorityAction::None;
+            return HeartbeatAction::None;
         }
 
         // Step 3: deadline passed — check abandonment guard.
@@ -196,20 +196,20 @@ impl InteriorityClock {
             info!(
                 ticks_without_user = self.ticks_without_user,
                 max_idle_ticks = self.max_idle_ticks,
-                "InteriorityClock: abandonment guard tripped (tick count)"
+                "HeartbeatClock: abandonment guard tripped (tick count)"
             );
             self.next_wake_at = None;
-            return InteriorityAction::None;
+            return HeartbeatAction::None;
         }
         if let Some(last_user) = self.last_user_at {
             if now.duration_since(last_user) >= self.max_silent_duration {
                 info!(
                     silent_secs = now.duration_since(last_user).as_secs(),
                     max_silent_secs = self.max_silent_duration.as_secs(),
-                    "InteriorityClock: abandonment guard tripped (silent duration)"
+                    "HeartbeatClock: abandonment guard tripped (silent duration)"
                 );
                 self.next_wake_at = None;
-                return InteriorityAction::None;
+                return HeartbeatAction::None;
             }
         }
 
@@ -219,9 +219,9 @@ impl InteriorityClock {
         self.last_anchor = now;
         debug!(
             ticks_without_user = self.ticks_without_user,
-            "InteriorityClock: tick firing"
+            "HeartbeatClock: tick firing"
         );
-        InteriorityAction::RunTick
+        HeartbeatAction::RunTick
     }
 
     /// Called when the character invokes `set_next_wake` during a tick.
@@ -229,7 +229,7 @@ impl InteriorityClock {
     /// Bounds: `MIN_WAKE_INTERVAL <= (when - now) <= MAX_WAKE_INTERVAL`.
     /// Out-of-range values are clamped (with a warning logged) rather than
     /// rejected, so a misbehaving character can never silently disable
-    /// interiority.
+    /// heartbeat.
     pub fn schedule(&mut self, when: Instant, now: Instant) {
         let delta = when.saturating_duration_since(now);
         let clamped = delta.clamp(MIN_WAKE_INTERVAL, MAX_WAKE_INTERVAL);
@@ -238,7 +238,7 @@ impl InteriorityClock {
             warn!(
                 requested_secs = delta.as_secs(),
                 clamped_secs = clamped.as_secs(),
-                "InteriorityClock: set_next_wake clamped to bounds"
+                "HeartbeatClock: set_next_wake clamped to bounds"
             );
         }
 
@@ -247,7 +247,7 @@ impl InteriorityClock {
         self.last_anchor = now;
         debug!(
             wake_in_secs = clamped.as_secs(),
-            "InteriorityClock: character scheduled next wake"
+            "HeartbeatClock: character scheduled next wake"
         );
     }
 
@@ -272,7 +272,7 @@ impl InteriorityClock {
 
         debug!(
             wake_in_secs = self.next_wake_at.unwrap().duration_since(now).as_secs(),
-            "InteriorityClock: user message, deadline set"
+            "HeartbeatClock: user message, deadline set"
         );
     }
 
@@ -287,7 +287,7 @@ impl InteriorityClock {
             ticks_without_user,
             has_wake = next_wake_at.is_some(),
             has_user = last_user_at.is_some(),
-            "InteriorityClock: state restored from persistence"
+            "HeartbeatClock: state restored from persistence"
         );
         self.ticks_without_user = ticks_without_user;
         if let Some(wake) = next_wake_at {
@@ -308,17 +308,17 @@ impl InteriorityClock {
 mod tests {
     use super::*;
 
-    fn clock(interval_secs: u64, max_idle: u32) -> InteriorityClock {
+    fn clock(interval_secs: u64, max_idle: u32) -> HeartbeatClock {
         use shore_config::ConfigDuration;
-        let config = InteriorityConfig {
+        let config = HeartbeatConfig {
             enabled: true,
-            fallback_interiority_interval: ConfigDuration::from_secs(interval_secs),
-            dormant_after_interiority_turns: max_idle,
+            fallback_heartbeat_interval: ConfigDuration::from_secs(interval_secs),
+            dormant_after_heartbeat_turns: max_idle,
             dormant_after_idle_time: ConfigDuration::from_secs(172800), // 48h
-            minimum_interiority_latency: ConfigDuration::from_secs(3600), // 1h
+            minimum_heartbeat_latency: ConfigDuration::from_secs(3600), // 1h
             max_tool_rounds: 3,
         };
-        InteriorityClock::with_config(&config)
+        HeartbeatClock::with_config(&config)
     }
 
     fn secs(s: u64) -> Duration {
@@ -331,7 +331,7 @@ mod tests {
     fn first_tick_bootstraps_deadline() {
         let mut c = clock(60, 3);
         let now = Instant::now();
-        assert_eq!(c.tick(now), InteriorityAction::None);
+        assert_eq!(c.tick(now), HeartbeatAction::None);
         assert!(c.next_wake_at.is_some());
     }
 
@@ -340,7 +340,7 @@ mod tests {
         let mut c = clock(60, 3);
         let now = Instant::now();
         c.tick(now); // bootstrap
-        assert_eq!(c.tick(now + secs(61)), InteriorityAction::RunTick);
+        assert_eq!(c.tick(now + secs(61)), HeartbeatAction::RunTick);
         assert_eq!(c.ticks_without_user, 1);
     }
 
@@ -349,7 +349,7 @@ mod tests {
         let mut c = clock(60, 3);
         let now = Instant::now();
         c.tick(now); // bootstrap
-        assert_eq!(c.tick(now + secs(30)), InteriorityAction::None);
+        assert_eq!(c.tick(now + secs(30)), HeartbeatAction::None);
     }
 
     #[test]
@@ -360,11 +360,11 @@ mod tests {
         let now = Instant::now();
         c.tick(now); // bootstrap
         let t1 = now + secs(61);
-        assert_eq!(c.tick(t1), InteriorityAction::RunTick);
+        assert_eq!(c.tick(t1), HeartbeatAction::RunTick);
         // next_wake_at is now None; next tick re-bootstraps.
-        assert_eq!(c.tick(t1 + secs(1)), InteriorityAction::None);
+        assert_eq!(c.tick(t1 + secs(1)), HeartbeatAction::None);
         // Fires again after another full interval from anchor.
-        assert_eq!(c.tick(t1 + secs(61)), InteriorityAction::RunTick);
+        assert_eq!(c.tick(t1 + secs(61)), HeartbeatAction::RunTick);
     }
 
     // -- abandonment guard: tick count --------------------------------------
@@ -378,19 +378,19 @@ mod tests {
 
         // Tick 1.
         now += secs(61);
-        assert_eq!(c.tick(now), InteriorityAction::RunTick);
+        assert_eq!(c.tick(now), HeartbeatAction::RunTick);
 
         // Tick 2.
         now += secs(61);
         c.tick(now); // bootstrap
         now += secs(61);
-        assert_eq!(c.tick(now), InteriorityAction::RunTick);
+        assert_eq!(c.tick(now), HeartbeatAction::RunTick);
 
         // ticks_without_user is now 2 == max_idle. Next deadline: guard trips.
         now += secs(61);
         c.tick(now); // bootstrap
         now += secs(61);
-        assert_eq!(c.tick(now), InteriorityAction::None);
+        assert_eq!(c.tick(now), HeartbeatAction::None);
         assert!(c.next_wake_at.is_none());
     }
 
@@ -402,7 +402,7 @@ mod tests {
         c.tick(now); // bootstrap
 
         now += secs(61);
-        assert_eq!(c.tick(now), InteriorityAction::RunTick); // tick 1
+        assert_eq!(c.tick(now), HeartbeatAction::RunTick); // tick 1
 
         // User resets the counter.
         now += secs(10);
@@ -411,7 +411,7 @@ mod tests {
 
         // Next tick fires normally.
         now += secs(3601);
-        assert_eq!(c.tick(now), InteriorityAction::RunTick);
+        assert_eq!(c.tick(now), HeartbeatAction::RunTick);
         assert_eq!(c.ticks_without_user, 1);
     }
 
@@ -428,7 +428,7 @@ mod tests {
 
         // Fast-forward past the first tick (1h).
         let t1 = now + secs(3601);
-        assert_eq!(c.tick(t1), InteriorityAction::RunTick);
+        assert_eq!(c.tick(t1), HeartbeatAction::RunTick);
 
         // Bootstrap next deadline.
         let t2 = t1 + secs(1);
@@ -436,7 +436,7 @@ mod tests {
 
         // At 2h+1s past user message → silent guard trips.
         let t3 = now + secs(7201);
-        assert_eq!(c.tick(t3), InteriorityAction::None);
+        assert_eq!(c.tick(t3), HeartbeatAction::None);
         assert!(c.next_wake_at.is_none());
     }
 
@@ -453,9 +453,9 @@ mod tests {
         assert!(c.next_wake_at.is_some());
 
         // Should not fire at 3h.
-        assert_eq!(c.tick(now + secs(3 * 3600)), InteriorityAction::None);
+        assert_eq!(c.tick(now + secs(3 * 3600)), HeartbeatAction::None);
         // Should fire at 4h+1s.
-        assert_eq!(c.tick(now + secs(4 * 3600 + 1)), InteriorityAction::RunTick);
+        assert_eq!(c.tick(now + secs(4 * 3600 + 1)), HeartbeatAction::RunTick);
     }
 
     #[test]
@@ -553,7 +553,7 @@ mod tests {
         now += secs(61);
         c.tick(now); // bootstrap
         now += secs(61);
-        assert_eq!(c.tick(now), InteriorityAction::None); // guard trips
+        assert_eq!(c.tick(now), HeartbeatAction::None); // guard trips
         assert!(c.next_wake_at.is_none());
 
         // User returns.
@@ -585,7 +585,7 @@ mod tests {
 
         c.restore(1, Some(past), Some(now));
         // Deadline is in the past → tick() fires immediately.
-        assert_eq!(c.tick(now), InteriorityAction::RunTick);
+        assert_eq!(c.tick(now), HeartbeatAction::RunTick);
     }
 
     // -- state_at() label ---------------------------------------------------
@@ -619,13 +619,13 @@ mod tests {
         c.on_user_message(now);
 
         let t1 = now + secs(3601);
-        assert_eq!(c.tick(t1), InteriorityAction::RunTick);
+        assert_eq!(c.tick(t1), HeartbeatAction::RunTick);
 
         let t2 = t1 + secs(1);
         c.tick(t2);
 
         let t3 = now + secs(7201);
-        assert_eq!(c.tick(t3), InteriorityAction::None);
+        assert_eq!(c.tick(t3), HeartbeatAction::None);
         assert_eq!(c.state_at(t3), "Dormant");
     }
 

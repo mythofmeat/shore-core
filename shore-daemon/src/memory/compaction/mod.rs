@@ -437,9 +437,8 @@ impl CompactionManager {
     /// Compensating-delete rollback for a failed compaction.
     ///
     /// Iterates the created list in reverse and removes each resource:
-    /// - changelog rows (SQLite)
-    /// - entry rows (SQLite, including FK cleanup)
-    /// - vector index entries (LanceDB, best-effort)
+    /// - markdown memory files
+    /// - DREAMS.md changelog entries where possible
     ///
     /// Errors during cleanup are logged at WARN level and skipped so that
     /// rollback continues regardless of individual failures.

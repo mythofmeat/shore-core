@@ -93,8 +93,6 @@ pub enum CompactionError {
     PrivateConversation,
     #[error("insufficient messages")]
     InsufficientMessages,
-    #[error("indexing: {0}")]
-    Indexing(String),
     #[error("conversation: {0}")]
     ConversationManager(String),
     #[error("markdown store: {0}")]
@@ -114,19 +112,6 @@ pub trait CompactionLlm: Send + Sync {
         &self,
         prompt: &str,
     ) -> Pin<Box<dyn Future<Output = Result<String, CompactionError>> + Send + '_>>;
-}
-
-/// Legacy vector indexer trait retained temporarily for test/support code.
-pub trait VectorIndexer: Send + Sync {
-    fn index_entry(
-        &self,
-        entry_id: &str,
-        text: &str,
-    ) -> Pin<Box<dyn Future<Output = Result<(), CompactionError>> + Send + '_>>;
-
-    fn remove_entry(&self, _entry_id: &str) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
-        Box::pin(async {})
-    }
 }
 
 /// Conversation lifecycle management — archive old messages and retain recent ones.

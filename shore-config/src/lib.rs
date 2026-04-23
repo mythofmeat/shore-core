@@ -446,10 +446,9 @@ fn validate_config(app: &AppConfig, catalog: &ModelCatalog) -> Result<(), Config
         ("defaults.model", app.defaults.model.as_deref()),
         ("defaults.tool_model", app.defaults.tool_model.as_deref()),
         (
-            "defaults.memory_agent",
-            app.defaults.memory_agent.as_deref(),
+            "defaults.memory_query",
+            app.defaults.memory_query.as_deref(),
         ),
-        ("defaults.collation", app.defaults.collation.as_deref()),
     ] {
         validate_model_ref(catalog, field, value)?;
     }
@@ -602,9 +601,9 @@ allowed_hosts = ["127.0.0.1"]
 [behavior.autonomy]
 enabled = true
 
-[behavior.autonomy.interiority]
+[behavior.autonomy.heartbeat]
 enabled = false
-fallback_interiority_interval = "30m"
+fallback_heartbeat_interval = "30m"
 
 [behavior.tool_use.tools]
 roll_dice = false
@@ -629,14 +628,14 @@ model_id = "claude-opus-4-6"
         assert_eq!(loaded.app.daemon.addr, "127.0.0.1:9999");
         assert_eq!(loaded.app.daemon.allowed_hosts, vec!["127.0.0.1"]);
         assert!(loaded.app.behavior.autonomy.enabled);
-        assert!(!loaded.app.behavior.autonomy.interiority.enabled);
+        assert!(!loaded.app.behavior.autonomy.heartbeat.enabled);
         assert_eq!(
             loaded
                 .app
                 .behavior
                 .autonomy
-                .interiority
-                .fallback_interiority_interval,
+                .heartbeat
+                .fallback_heartbeat_interval,
             ConfigDuration::from_secs(1800)
         );
         assert!(!loaded.app.behavior.tool_use.tools.roll_dice());
@@ -659,20 +658,18 @@ model_id = "claude-opus-4-6"
         // All defaults should be filled in.
         assert!(loaded.app.defaults.stream);
         assert!(!loaded.app.behavior.autonomy.enabled);
-        assert!(loaded.app.behavior.autonomy.interiority.enabled);
+        assert!(loaded.app.behavior.autonomy.heartbeat.enabled);
         assert_eq!(
             loaded
                 .app
                 .behavior
                 .autonomy
-                .interiority
-                .fallback_interiority_interval,
+                .heartbeat
+                .fallback_heartbeat_interval,
             ConfigDuration::from_secs(3600)
         );
         assert!(loaded.app.behavior.tool_use.enabled);
         assert!(loaded.app.memory.compaction.enabled);
-        assert!(!loaded.app.memory.collation.enabled);
-        assert!(!loaded.app.memory.collation.auto_run);
         assert_eq!(loaded.app.daemon.addr, "127.0.0.1:7320"); // default
         assert!(!loaded.app.daemon.unsafe_allow_remote_access);
         assert!(loaded.app.advanced.editor.is_none());
@@ -1034,8 +1031,8 @@ model = "sonnet"
 [behavior.autonomy]
 enabled = false
 
-[behavior.autonomy.interiority]
-fallback_interiority_interval = "1h"
+[behavior.autonomy.heartbeat]
+fallback_heartbeat_interval = "1h"
 
 [chat.anthropic.sonnet]
 model_id = "claude-sonnet-4-6"
@@ -1054,8 +1051,8 @@ model = "opus"
 [behavior.autonomy]
 enabled = true
 
-[behavior.autonomy.interiority]
-fallback_interiority_interval = "30m"
+[behavior.autonomy.heartbeat]
+fallback_heartbeat_interval = "30m"
 "#,
             ),
         ]);
@@ -1071,8 +1068,8 @@ fallback_interiority_interval = "30m"
                 .app
                 .behavior
                 .autonomy
-                .interiority
-                .fallback_interiority_interval,
+                .heartbeat
+                .fallback_heartbeat_interval,
             ConfigDuration::from_secs(3600)
         );
 
@@ -1085,8 +1082,8 @@ fallback_interiority_interval = "30m"
                 .app
                 .behavior
                 .autonomy
-                .interiority
-                .fallback_interiority_interval,
+                .heartbeat
+                .fallback_heartbeat_interval,
             ConfigDuration::from_secs(1800)
         );
 

@@ -22,7 +22,7 @@
    directly in Rust using `reqwest`. No separate process or TypeScript runtime.
 5. **Separate binaries** for daemon, CLI/TUI, and each bridge —
    independent development, deployment, and restart.
-6. **Build it right from the start** — incorporate planned redesigns (interiority,
+6. **Build it right from the start** — incorporate planned redesigns (heartbeat,
    private conversations) into the V2 architecture rather than porting V1 bugs.
 
 ---
@@ -42,7 +42,7 @@
 │  shore-mx    │───────────▶│                     │     │           │
 │  (bridge)    │◀───────────│  ┌─────────────┐    │     │           │
 └──────────────┘            │  │ Autonomy     │◀──┘     │           │
-                            │  │ (interiority,│         │           │
+                            │  │ (heartbeat,│         │           │
                             │  │  cache)      │    ┌────▼───────┐   │
                             │  └─────────────┘    │ LLM Client  │   │
                             │                     │ (reqwest,    │──── LLM APIs
@@ -50,8 +50,8 @@
                             │                     │  OpenAI,     │   │
                             │  ┌───────────────┐  │  Gemini,     │   │
                             │  │  Memory        │  │  etc.)       │   │
-                            │  │  (SQLite, RAG, │  └─────────────┘   │
-                            │  │   LanceDB)     │                    │
+                            │  │  (Markdown)     │  └─────────────┘   │
+                            │  │                  │                    │
                             │  └───────────────┘                    │
                             └──────────────────────────────────────┘
 ```
@@ -83,8 +83,8 @@ repairing each other and protocol drift follows.
 | Scope | Owns |
 |------|------|
 | Daemon-global state | transport/server wiring, loaded global config baseline, diagnostics services, notification services, and other long-lived process services shared by every session |
-| Session state | selected character, active model override, session token counters, in-flight generation handle, and session-local memory shell sessions |
-| Character state | conversation engine, persisted conversation files, character definitions, character-scoped memory DB/vector-store handles, and autonomy state keyed by character |
+| Session state | selected character, active model override, session token counters, and in-flight generation handle |
+| Character state | conversation engine, persisted conversation files, character definitions, character-scoped markdown memory, and autonomy state keyed by character |
 | Request-local state | `rid`, selected-character snapshot at dispatch time, request kind, effective config snapshot, direct response sender, and per-request generation parameters |
 
 Ownership rule:
@@ -425,8 +425,6 @@ thing, bare verb/noun when unambiguous.
 | `memory` | `query?` | No arg = status; with arg = search memories |
 | `toggle_private` | — | Toggle private mode on active conversation → server re-sends `history` |
 | `compact` | `dry_run?` | Trigger compaction |
-| `collate` | `full?` | Run 5-phase collation pipeline (backfill → collate → tidy → normalize → decay). `full=true` loops until stable |
-| `memory_purge` | `older_than?` | Delete old superseded entries (default 30d) |
 | `toggle_autonomy` | — | Toggle autonomy pause/resume |
 | `config` | `section?` | Show effective configuration |
 
@@ -445,10 +443,7 @@ These commands exist in V1 but are deferred to post-launch. The generic
 | `chat_search` | Nice to have |
 | `msg_insert` | Rare operation |
 | `msg_detach` | Edge case |
-| ~~`memory_collate`~~ | ~~Runs automatically~~ (implemented as `collate` command + auto-trigger) |
-| `memory_reindex` | Maintenance op |
 | `memory_import` | Add later |
-| `memory_shell` | Interactive memory sessions (requires additional protocol messages) |
 | `images_list` | Add when image tools ship |
 | `images_import` | Add when image tools ship |
 
@@ -487,11 +482,9 @@ binary in the workspace.
 | **Server** | Accept connections (Unix/TCP), route requests, broadcast push messages | `tokio`, `serde_json` |
 | **Engine** | Per-character conversation state machine: prompt assembly, tool loop, message persistence | — |
 | **LLM Client** | Native provider integrations via `shore-llm-client` crate (Anthropic, OpenAI-compat, Gemini, DeepSeek, ZhipuAI, Z.AI) | `reqwest` |
-| **Memory** | SQLite database (entries, entities, flags, changelog), CRUD operations | `rusqlite` |
-| **RAG** | Vector search (LanceDB) + BM25 keyword retrieval + embedding via HTTP | `lancedb`, custom BM25 |
-| **Compaction** | Conversation → memory entries (via LLM). Proactive idle timer fires at `idle_trigger_minutes` after last activity — no waiting for next user message. | — |
-| **Collation** | 5-phase memory pipeline: timestamp backfill → collate (merge) → tidy (split) → normalize entities → confidence decay. Embedding-driven clustering groups related entries before LLM calls. `collated_at` watermark tracks processing state. | — |
-| **Interiority** | Timer-based autonomous turns with full tool access (see §13.1) | — |
+| **Memory** | Markdown files under each character's `memories/` directory, plus direct read/write/search/list tools | — |
+| **Compaction** | Conversation → markdown memory updates (via LLM). Proactive idle timer fires after last activity — no waiting for next user message. | — |
+| **Heartbeat** | Timer-based autonomous turns with full tool access (see §13.1) | — |
 | **Cache Keepalive** | Anthropic prompt cache TTL refresh pings | — |
 | **Activity Tracker** | Session tempo, hour histograms, engagement scoring | — |
 | **Config** | TOML loading (config.toml + models.toml), validation, defaults | `toml`, `serde` |
@@ -511,13 +504,12 @@ Runtime refresh is explicit rather than ambient.
 - Character definitions (`character.md`) and user definitions (`user.md`) are
   read from disk on demand, so edits to those files are visible on the next
   request that reads them.
-- The daemon caches discovered character names, merged per-character configs,
-  and opened `MemoryDB` / `VectorStore` handles in the process.
+- The daemon caches discovered character names and merged per-character configs
+  in the process.
 - `config_reset` is the explicit invalidation boundary for those process caches.
   A successful reset reloads `config.toml` from the daemon's current config
-  directory, clears session runtime overrides and memory-shell sessions, rescans
-  `characters/`, drops the merged per-character config cache, and closes cached
-  DB/vector-store handles so they reopen from disk on demand.
+  directory, clears session runtime overrides, rescans `characters/`, and drops
+  the merged per-character config cache.
 - Character engines are retained for characters that still exist so live
   in-memory conversation state is preserved. Engines for deleted characters are
   dropped during `config_reset`; the next request for that character fails until
@@ -555,21 +547,18 @@ shore-daemon/
 │   │
 │   ├── memory/
 │   │   ├── mod.rs              # Memory manager (high-level operations)
-│   │   ├── db.rs               # SQLite schema, CRUD, migrations
-│   │   ├── rag.rs              # RAG pipeline (vector + BM25 + scoring)
-│   │   ├── vectorstore.rs      # LanceDB integration
-│   │   ├── compaction.rs       # Conversation → entries (library)
-│   │   ├── compaction_impls.rs # Production CompactionLlm/VectorIndexer/ConversationManager
-│   │   ├── collation.rs        # 4-phase dedup pipeline (library)
-│   │   ├── collation_impls.rs  # Production CollationLlm (JSON parsing)
-│   │   ├── agent.rs            # Memory agent (with caller identity awareness)
-│   │   ├── search.rs           # Full-text search
-│   │   └── importer.rs         # File import to entries
+│   │   ├── markdown_store.rs   # Markdown read/write/search/list
+│   │   ├── markdown_query.rs   # Markdown memory Q&A
+│   │   ├── memory_llm.rs       # LLM abstraction for memory Q&A
+│   │   ├── compaction/         # Conversation → markdown memory (library)
+│   │   ├── compaction_impls.rs # Production CompactionLlm/ConversationManager
 │   │
 │   ├── autonomy/
-│   │   ├── mod.rs              # Master autonomy controller
-│   │   ├── interiority.rs      # Interiority clock (dual-deadline timer + dormancy)
+│   │   ├── mod.rs              # Autonomy status/events and heartbeat manager
+│   │   ├── heartbeat.rs        # Heartbeat clock (deadline timer + dormancy)
 │   │   └── activity.rs         # Activity tracker (tempo, histograms)
+│   │
+│   ├── cache_keepalive.rs      # Anthropic prompt-cache keepalive scheduler
 │   │
 │   ├── config/
 │   │   ├── mod.rs              # Config loading, resolution, validation
@@ -587,7 +576,7 @@ shore-daemon/
 │   │   ├── mod.rs              # Command dispatch table (18 flat commands, see §3.7)
 │   │   ├── navigation.rs       # list_characters, switch_character, list_chats, switch_chat, new_chat
 │   │   ├── conversation.rs     # swipe, log, edit, delete
-│   │   └── state.rs            # status, list_models, switch_model, memory, toggle_private, compact, collate, toggle_autonomy, config, config_reset
+│   │   └── state.rs            # status, list_models, switch_model, memory, toggle_private, compact, toggle_autonomy, config, config_reset
 │   │
 │   └── types.rs                # Shared daemon-internal types
 ```
@@ -741,7 +730,7 @@ profile.
 Tools are categorized read-only or mutating in `gating.rs`. Categories cover
 status, logs, usage, config, character switching, model selection, memory
 operations, message send/regen, log follow (bounded read), and debug
-interiority controls. The full list is in `shore-mcp/README.md`.
+heartbeat controls. The full list is in `shore-mcp/README.md`.
 
 #### Boundary with shore-client
 
@@ -854,13 +843,7 @@ $XDG_CONFIG_HOME/shore/            (~/.config/shore/)
 ├── user.md                        # Default user definition
 ├── prompts/                       # Default prompt templates
 │   ├── system.md
-│   ├── post_session.md
-│   ├── social_need.md
-│   ├── deferred.md
-│   ├── compact.md
-│   ├── collate.md
-│   ├── tidy.md
-│   └── normalize_entities.md
+│   └── compact.md
 └── characters/
     └── {character}/
         ├── character.md           # Character definition
@@ -952,9 +935,8 @@ Loaded by daemon on startup. Key changes from V1:
 
 - `[behavior.autonomy]` section replaces scattered autonomy knobs:
   - `enabled` (bool)
-- `[behavior.autonomy.interiority]` — interiority config (interval, jitter, max idle ticks)
+- `[behavior.autonomy.heartbeat]` — heartbeat config (fallback interval, dormancy, latency floor, tool-round cap)
 - `[memory.compaction]` — compaction triggers
-- `[memory.collation]` — collation settings
 - `[connections.matrix]` — replaces `matrix_external` and `matrix_embedded`
   (single section, mode determined by config present)
 - `[connections.telegram]` and `[connections.discord]` — reserved for future use
@@ -1035,52 +1017,11 @@ allowed_hosts = ["100.64.0.2"]
 
 ---
 
-## 9. SQLite Schema
+## 9. SQLite Migration
 
-Carried forward from V1, but `entries` is now a shadow index for markdown
-memories rather than the primary store.
-
-### Tables
-
-**entries** — Shadow retrieval/index row for memory files and legacy entries
-| Column | Type | Description |
-|--------|------|-------------|
-| id | TEXT PK | `YYYYMMDD_HHMMSS_N` |
-| memory_type | TEXT | `episodic` / `semantic` |
-| source | TEXT | `summary` / `import` / ... |
-| reason | TEXT | `compaction` / `collation` / `tidy_split` / ... |
-| status | TEXT | `active` / `protected` / `superseded` |
-| confidence | REAL | 0.0–1.0 |
-| summary_text | TEXT | Full indexed text or summary |
-| topic_tags | TEXT | Comma-separated |
-| topic_key | TEXT | Inferred topic cluster |
-| start_timestamp | TEXT | ISO timestamp |
-| end_timestamp | TEXT | ISO timestamp |
-| message_count | INT | Messages condensed |
-| source_entry_ids | TEXT | Comma-separated parent IDs |
-| related_entry_ids | TEXT | Comma-separated linked IDs |
-| superseded_by | TEXT | Replacement entry ID |
-| created_at | TEXT | ISO timestamp |
-| updated_at | TEXT | ISO timestamp |
-| entry_type | TEXT | `""` / `"image"` |
-| image_path | TEXT | Filesystem path if image |
-| collated_at | TEXT | Last collation pipeline timestamp (empty = never) |
-| file_path | TEXT | Relative path in `{character}/memories/` for markdown-backed rows |
-
-**entities** — Entity registry (entity_id INT PK, name TEXT UNIQUE NOCASE,
-type TEXT, description TEXT, created_at TEXT, updated_at TEXT)
-
-**entry_entities** — Many-to-many (entry_id TEXT, entity_id INT)
-
-**changelog** — Audit log (changelog_id INT PK, operation TEXT, description
-TEXT, timestamp TEXT)
-
-**changelog_entries** / **changelog_entities** — Junction tables
-
-**flags** — Issue tracking (flag_id INT PK, entry_id TEXT FK, flag_type TEXT,
-reason TEXT, resolved_at TEXT, resolution TEXT, created_at TEXT)
-
-**collation_skip** — ~~Optimization~~ Legacy table, no longer used by collation pipeline (replaced by `collated_at` column on entries)
+SQLite memory tables are no longer part of the Rust runtime. Existing V1
+`memory.db` files are migrated by `scripts/migrate-memory.py`, which exports
+entries to markdown files under the character's `memories/` directory.
 
 ---
 
@@ -1091,7 +1032,7 @@ reason TEXT, resolved_at TEXT, resolution TEXT, created_at TEXT)
 | Feature | V1 File(s) | V2 Module | Notes |
 |---------|------------|-----------|-------|
 | Conversation state machine | engine.py | engine/mod.rs | |
-| Prompt assembly | engine_prompt.py | engine/prompt.rs | No interiority context injection |
+| Prompt assembly | engine_prompt.py | engine/prompt.rs | No heartbeat context injection |
 | Message CRUD | engine_messages.py | engine/messages.rs | |
 | Conversation lifecycle | engine_conversations.py, conversations.py | engine/conversations.rs | Adds private flag |
 | Tool use loop | tool_use.py | engine/tools.rs | |
@@ -1105,17 +1046,13 @@ reason TEXT, resolved_at TEXT, resolution TEXT, created_at TEXT)
 | Provider trait + factory | providers/_base.py, _factory.py | **shore-llm-client** | |
 | Provider-level retry | llm_retry.py | **shore-llm-client** (reqwest) | 429, 503, transient |
 | Model selector | model_selector.py | engine/mod.rs (inline) | |
-| Memory DB (SQLite) | db.py | memory/db.rs | |
-| RAG pipeline | rag.py | memory/rag.rs | |
-| Vector store (LanceDB) | vectorstore.py | memory/vectorstore.rs | |
-| Compaction | compaction.py | memory/compaction.rs | Skips private conversations |
-| Collation (4 phases) | collation.py | memory/collation.rs | |
+| Markdown memory store | memory.py, db.py | memory/markdown_store.rs | Markdown files are the runtime store |
+| Markdown memory Q&A | memory query pipeline | memory/markdown_query.rs, memory/memory_llm.rs | LLM-assisted answers over markdown |
+| Compaction | compaction.py | memory/compaction.rs | Skips private conversations; writes markdown |
 | Memory manager | memory.py | memory/mod.rs | |
-| Memory agent | memory_agent.py | memory/agent.rs | Fix: caller identity awareness |
-| Full-text search | search.py | memory/search.rs | |
-| File importer | importer.py | memory/importer.rs | |
-| Heartbeat scheduler | heartbeat.py | autonomy/interiority.rs | **Replaced** by interiority system (see §13.1) |
-| Cache keepalive | cache_keepalive.py | autonomy/interiority.rs | **Merged** into unified interiority (see §13.1) |
+| SQLite migration exporter | importer.py | scripts/migrate-memory.py | One-way SQLite entries to markdown |
+| Heartbeat scheduler | heartbeat.py | autonomy/heartbeat.rs | OpenClaw-style heartbeat loop |
+| Cache keepalive | cache_keepalive.py | cache_keepalive.rs | Anthropic prompt-cache cost-saving subsystem |
 | Activity tracker | activity_tracker.py | autonomy/activity.rs | Fix: lower data threshold |
 | Server | server.py | server/mod.rs | |
 | Command dispatch | commands.py | commands/*.rs | 18 flat commands (see §3.7) |
@@ -1153,10 +1090,10 @@ reason TEXT, resolved_at TEXT, resolution TEXT, created_at TEXT)
 
 | V1 Feature | Disposition |
 |------------|-------------|
-| **Interiority scheduler** (interiority.py) | **Removed** — journal and story generation cut entirely |
-| **Interiority generation** (engine_interiority.py) | **Removed** |
-| **Interiority data dir** (journal/, stories/) | **Removed** |
-| **Interiority config** ([autonomy.interiority]) | **Removed** |
+| Legacy heartbeat probability machine / journal / story generator | Replaced by OpenClaw-style `autonomy/heartbeat.rs` ticks |
+| SQLite runtime memory DB, vector retrieval, and RAG pipeline | Removed — runtime memory is markdown-only |
+| Memory collation pipeline | Removed — compaction writes markdown directly |
+| Memory shell / purge / reindex commands | Removed |
 | Telegram bot (interfaces/telegram.py) | **Deferred** to post-launch |
 | Discord bot (interfaces/discord.py) | **Deferred** to post-launch |
 | ChatInterface protocol (interfaces/__init__.py) | Replaced by SWP |
@@ -1209,14 +1146,8 @@ default template directory that is installed alongside the binary.
 |----------|---------|
 | `system.md` | Base system prompt |
 | `compact.md` | Compaction prompt |
-| `collate.md` | Collation merge prompt |
-| `tidy.md` | Collation tidy-split prompt |
-| `normalize_entities.md` | Entity normalization prompt |
-| `post_session.md` | **New** — post-session probe (character chooses time or declines) |
-| `deferred.md` | **New** — deferred message delivery (character recalls why they chose this time) |
-| `social_need.md` | **New** — spontaneous social-need probe (no scheduling instructions) |
 
-**Removed templates:** `heartbeat.md` (replaced by post_session/deferred/social_need split), `nudge.md`, `journal.md`, `story.md`
+**Removed templates:** `collate.md`, `tidy.md`, `normalize_entities.md`, `heartbeat.md`, `nudge.md`, `journal.md`, `story.md`
 
 ### 11.1 Template Upgrade Management
 
@@ -1255,10 +1186,8 @@ LLM during conversation:
 
 | Tool | Description | Dependencies |
 |------|-------------|-------------|
-| `memory` | Semantic search + save | Memory/RAG subsystem |
+| `memory` | LLM-assisted markdown memory Q&A | Markdown memory |
 | `send_image` | Send image from memory | Filesystem |
-| `list_images` | List image memories (optional `query` for semantic search via RAG, top-32) | Memory DB + RAG |
-| `recall_image` | View image at full resolution | Filesystem |
 | `generate_image` | DALL-E 3 / Flux generation | HTTP (OpenAI-compat endpoint) |
 | `web_search` | Search the web | HTTP (Tavily API) |
 | `fetch_url` | Read a webpage | HTTP |
@@ -1276,22 +1205,17 @@ The `exec` tool parses its input into argv and runs an allowlisted executable
 directly; shell syntax (`;`, pipes, redirects, command substitution) is not
 part of the contract.
 
-**Memory agent identity fix:** The memory agent must be told whether its caller
-is `{{char}}` (during agentic tool calls) or `{{user}}` (during interactive
-`memory shell` sessions). V1 bug: the agent couldn't resolve first-person
-pronouns in character queries.
-
 ---
 
 ## 13. Autonomy Subsystems
 
-### 13.1 Interiority — Autonomous Character Turns
+### 13.1 Heartbeat — Autonomous Character Turns
 
-The V1 heartbeat (5-state probability machine) is replaced by the unified
-interiority system. Characters get periodic "turns to self" — full agentic
+The V1 heartbeat probability machine is replaced by an OpenClaw-style
+heartbeat system. Characters get periodic "turns to self" — full agentic
 turns with the same tool set as normal conversation, running a real multi-turn
-tool loop within each tick. Cache refresh is unified into the same timer — no
-separate keepalive system.
+tool loop within each tick. Cache keepalive is separate: it is an Anthropic
+prompt-cache cost-saving subsystem, not an autonomy behavior.
 
 #### Design
 
@@ -1307,7 +1231,7 @@ separate keepalive system.
           OR silent >= 48h
                  │
             ┌────▼──────┐
-            │ Abandoned   │  next_wake_at = None
+            │  Dormant    │  next_wake_at = None
             └────┬──────┘  cache_keepalive.set_next_wake(None)
                  │
            user message
@@ -1323,13 +1247,13 @@ separate keepalive system.
 
 #### Deadline-Based Clock
 
-`InteriorityClock` is a pure deadline holder. The character drives its own
-cadence via `set_next_wake` during interiority ticks. The clock holds the
+`HeartbeatClock` is a pure deadline holder. The character drives its own
+cadence via `set_next_wake` during heartbeat ticks. The clock holds the
 deadline, applies bounds (1h–48h), and stops ticking when the abandonment
 guard trips.
 
 If the character doesn't call `set_next_wake`, the clock falls back to
-`default_interval` (from `interval_secs` config).
+`fallback_heartbeat_interval`.
 
 #### Cache Keepalive
 
@@ -1341,52 +1265,33 @@ it also clears `CacheKeepalive::next_wake`.
 
 #### Recap System
 
-Characters write first-person notes via `<recap>` tags during interiority
-ticks (last-wins semantics, same as `<sendMessage>`). Every completed tick
-persists its recap as a `Role::System` message in the character's
-`active.jsonl`, spliced in at the tick's start timestamp via
-`MessageStore::insert_by_timestamp` — the splice handles the race where a
-user message lands during tick wrap-up. Because recaps are first-class
-messages, they survive compaction (archived into segment files like any
-other message) rather than being re-synthesized from a sidecar on every
-payload.
-
-`recaps.jsonl` is retained as a per-character sidecar log — it preserves
-`tick_id` correlation for debugging — but is no longer read by the payload
-path. The interiority system prompt's `{recent_thread_block}` reads the
-three most recent `Role::System` messages from `active.jsonl` and renders
-them as the character's "where you left off" context.
-
-On the wire, each recap reaches the model as a user turn:
-`convert_inline_system_messages` (Anthropic path, `providers/anthropic.rs`)
-wraps `role:"system"` in `<system_instruction>…</system_instruction>` and
-merges into the preceding user turn if one exists. OpenAI-path translation
-(`providers/openai.rs`) applies the same wrap defensively — some
-OpenRouter-routed backends reject raw inline system. The top-level system
-prompt (passed in `request.system`) is unaffected; only mid-history System
-messages get wrapped.
+Characters write first-person notes via `<recap>` tags during heartbeat
+ticks (last-wins semantics, same as `<sendMessage>`). Completed recaps are
+appended to `memories/daily/YYYY-MM-DD.md` with a heartbeat source label.
+The next heartbeat prompt reads recent daily notes as "where you left off"
+context. There is no separate heartbeat journal/story store.
 
 #### States
 
 | State | Description |
 |-------|-------------|
-| `Active` | Character has a scheduled wake time. Full interiority ticks fire when the deadline arrives. Cache keepalive pings fire independently. |
-| `Abandoned` | `ticks_without_user >= max_idle_ticks` OR `time_since_last_user >= max_silent_secs`. No further ticks. Wakes on next user message. |
+| `Active` | Character has a scheduled wake time. Full heartbeat ticks fire when the deadline arrives. Cache keepalive pings fire independently. |
+| `Dormant` | `ticks_without_user >= dormant_after_heartbeat_turns` OR `time_since_last_user >= dormant_after_idle_time`. No further ticks. Wakes on next user message. |
 
-#### Tool Loop (`execute_unified_tick`)
+#### Tool Loop (`execute_heartbeat_tick`)
 
-Each interiority tick clones the last conversation request, appends the
-interiority prompt as a user message, then runs a real multi-turn tool loop:
+Each heartbeat tick clones the last conversation request, appends the
+heartbeat prompt as a user message, then runs a real multi-turn tool loop:
 `generate()` → extract tool_use → dispatch tools → feed results back →
 `generate()` again, up to `min(max_iterations, 6)` iterations.
 
 Tool loop messages are **ephemeral** — they do not persist to `active.jsonl`
 or mutate the cached `last_request`. Only `<sendMessage>` content (if the
 character chooses to message the user) gets persisted to the conversation log.
-All tool activity is logged to the interiority ring buffer, visible via
+All tool activity is logged to the heartbeat ring buffer, visible via
 `shore log --heartbeat`.
 
-The first `generate()` call uses `CallType::Interiority`; subsequent calls
+The first `generate()` call uses `CallType::Heartbeat`; subsequent calls
 in the same tick use `CallType::ToolLoop` for cost tracking.
 
 #### Key Properties
@@ -1395,30 +1300,31 @@ in the same tick use `CallType::ToolLoop` for cost tracking.
   tool. The clock enforces [1h, 48h] bounds.
 - **Real tool loop**: The character sees tool results within the same tick,
   enabling genuine exploration (web search → read results → compose message).
-- **Identical tool set**: Preserves Anthropic prompt cache — system prompt and
-  tool definitions are identical to normal conversation (plus `set_next_wake`).
+- **Stable tool set**: Preserves Anthropic prompt cache by keeping normal and
+  heartbeat tool definitions stable.
 - **Ephemeral loop messages**: Tool loop messages don't pollute the conversation
   log. The conversation only sees autonomous messages the character sends.
 - **Decoupled cache keepalive**: Cache pings are a separate subsystem with
   break-even economics. Guard-trip propagation stops pings when the character
-  is abandoned.
+  goes dormant.
 - **Recap continuity**: `<recap>` tags provide cross-tick memory that survives
-  compaction. Injected into conversation history at time-gap boundaries.
+  compaction by writing heartbeat notes to markdown memory.
 
 #### Config
 
 ```toml
-[behavior.autonomy.interiority]
+[behavior.autonomy.heartbeat]
 enabled = true           # default: true
-interval_secs = 7200     # default: 3600 (1 hour) — fallback when character doesn't set_next_wake
-max_idle_ticks = 3       # abandon after 3 ticks with no user
-max_silent_secs = 172800 # 48h wall-clock silence guard
-min_wake_secs = 3600     # floor for on_user_message deadline (1h default)
+fallback_heartbeat_interval = "1h"
+dormant_after_heartbeat_turns = 3
+dormant_after_idle_time = "48h"
+minimum_heartbeat_latency = "1h"
+max_tool_rounds = 12
 ```
 
 #### Persisted State (v4)
 
-State is saved to `autonomy.json` per character. Version bumped from 3→4.
+State is saved to `autonomy_state.json` per character. Version bumped from 3→4.
 Fields: `ticks_without_user` (u32), `next_wake_at` (RFC3339, optional),
 `last_user_at` (RFC3339, optional). Instant recovery on restart converts
 RFC3339 back to `Instant` via delta from wall clock. V3 state files are
@@ -1655,19 +1561,19 @@ Runtime:
 | Commands | Nested groups (`chat list`, `model switch`, ...) | Flat `verb_noun` names (`list_chats`, `switch_model`, ...) |
 | Server responses | Streaming + non-streaming paths | Always-stream (one code path for clients) |
 | State sync | Clients parse command output | Server pushes `history` on any state change |
-| Heartbeat | 3-mode (session/inter-session/deferred) | Interiority system (timer + agentic turns) |
+| Heartbeat | 3-mode (session/inter-session/deferred) | Heartbeat system (timer + agentic turns) |
 | Session idle | Measured from last user message | `max(last_user, last_assistant)` + 3-min floor |
 | Compaction trigger | Reactive (on next user message) | Proactive background timer |
-| Interiority | Journal + story generation | **Redesigned** — autonomous turns with full tool access |
+| Heartbeat | Journal + story generation | **Redesigned** — autonomous turns with full tool access |
 | Private conversations | Not supported | Full memory isolation |
 | Relay server | Separate process | Eliminated — native TCP on daemon |
 | Chat platforms | Telegram, Discord, Matrix (all in-process) | Matrix only at launch (out-of-process) |
 | Template upgrades | Manual | Manifest-tracked (auto-update stock, preserve user edits) |
-| Vector store | LanceDB Python SDK | LanceDB Rust SDK (native) |
+| Memory store | SQLite + vector DB | Markdown files |
 | E2E encryption | matrix-nio + libolm | matrix-sdk native crypto |
 | Inline images | Not supported | kitty/iTerm2 protocol rendering |
 | Activity heatmap | Global histogram only | Weekday-aware, per-day filtering |
-| Memory agent | Confused by first-person pronouns | Caller identity awareness |
+| Memory query | DB-backed retrieval stack | Markdown file Q&A |
 
 ---
 
@@ -1693,11 +1599,9 @@ JSONL, config) are compatible — V2 reads V1 data.
 - [ ] Command dispatch (basic set: send, regen, log, status, tokens, model)
 - [ ] **Milestone: daemon can hold a basic conversation**
 
-### Phase 3: Memory & RAG
-- [ ] SQLite layer (rusqlite, full schema)
-- [ ] LanceDB integration (Rust native)
-- [ ] BM25 implementation
-- [ ] RAG pipeline (vector + BM25 + lifecycle scoring)
+### Phase 3: Markdown Memory
+- [ ] Markdown memory store and tools
+- [ ] SQLite-to-markdown export script
 - [ ] Compaction (with private conversation awareness)
 - [ ] Collation (4 phases)
 - [ ] Memory agent (with caller identity fix)
@@ -1706,7 +1610,7 @@ JSONL, config) are compatible — V2 reads V1 data.
 
 ### Phase 4: Autonomy
 - [ ] Activity tracker (with lowered threshold)
-- [x] Interiority system (replaces heartbeat)
+- [x] Heartbeat system
 - [ ] Cache keepalive
 - [ ] Autonomy commands (pause, resume, status)
 - [ ] **Milestone: character reaches out autonomously**
@@ -1740,9 +1644,9 @@ These are noted for architectural awareness — V2 should not block them, but
 does not implement them.
 
 ### Group Chats (characters messaging each other)
-Characters can choose to message another character during interiority ticks.
+Characters can choose to message another character during heartbeat ticks.
 Messages work like an inbox/outbox — the response happens during the
-*recipient's* interiority tick. User can observe and participate in group chats.
+*recipient's* heartbeat tick. User can observe and participate in group chats.
 **Architectural impact:** daemon needs inter-character message routing. The SWP
 protocol doesn't need changes (this is all daemon-internal).
 

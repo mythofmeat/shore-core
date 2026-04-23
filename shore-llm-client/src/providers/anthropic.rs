@@ -1599,14 +1599,14 @@ mod tests {
             .contains("<system_instruction>wrap up now</system_instruction>"));
     }
 
-    /// Regression: trailing system message (the interiority case) must
+    /// Regression: trailing system message (the heartbeat case) must
     /// produce a final *user* turn so the model generates a fresh response.
     /// Previously a synthetic `assistant: "Understood."` was appended,
     /// creating an unintentional prefill that caused verbatim-identical
-    /// output across interiority ticks.
+    /// output across heartbeat ticks.
     #[test]
     fn test_trailing_system_message_no_prefill() {
-        // Simulates the interiority tick: conversation ends with assistant,
+        // Simulates the heartbeat tick: conversation ends with assistant,
         // then a system message is appended as the final message.
         let messages = vec![
             json!({"role": "user", "content": "How are you?"}),

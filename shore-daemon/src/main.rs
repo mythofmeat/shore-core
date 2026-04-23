@@ -300,7 +300,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         llm_client.reconstruct_cache_state(&character, 3600);
     }
 
-    // Provide the autonomy manager with resources for interiority/keepalive execution.
+    // Provide the autonomy manager with resources for heartbeat/keepalive execution.
     autonomy.set_resources(
         llm_client.clone(),
         push_tx.clone(),
@@ -326,7 +326,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         autonomy: autonomy.clone(),
         llm_client: llm_client.clone(),
         diagnostics: diagnostics.clone(),
-        memory_shell_sessions: std::collections::HashMap::new(),
     };
 
     let live_speak = Arc::new(AtomicBool::new(false));

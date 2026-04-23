@@ -1,6 +1,6 @@
 //! Daemon-side push notification service.
 //!
-//! Fires notifications for autonomous events (interiority messages, cache warnings,
+//! Fires notifications for autonomous events (heartbeat messages, cache warnings,
 //! compaction completion, errors) via configurable backends:
 //! notify-send (Linux desktop), ntfy (mobile push), or custom shell commands.
 

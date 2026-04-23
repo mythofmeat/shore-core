@@ -64,11 +64,11 @@ pub fn config_check(ctx: &CommandContext) -> CommandResult {
         }
     }
 
-    // Check: memory agent model reference
-    if let Some(ref ma) = ctx.config.app.defaults.memory_agent {
+    // Check: memory memory model reference
+    if let Some(ref ma) = ctx.config.app.defaults.memory_query {
         if ctx.config.models.find_model(ma).is_err() {
             warnings.push(format!(
-                "Default memory_agent \"{ma}\" not found in catalog"
+                "Default memory_query \"{ma}\" not found in catalog"
             ));
         }
     }
@@ -176,9 +176,7 @@ pub fn config_reset(ctx: &mut CommandContext) -> CommandResult {
     let config_path = ctx.config.dirs.config.join("config.toml");
     match shore_config::load_config(Some(&config_path)) {
         Ok(fresh) => {
-            let cleared_memory_shell_sessions = ctx.memory_shell_sessions.len();
             ctx.active_model = None;
-            ctx.memory_shell_sessions.clear();
             ctx.autonomy.reload_runtime_config(fresh.clone());
             ctx.config = fresh;
             info!(path = %config_path.display(), "Configuration reloaded from disk");
@@ -188,7 +186,6 @@ pub fn config_reset(ctx: &mut CommandContext) -> CommandResult {
                 "config_path": config_path.display().to_string(),
                 "invalidated": {
                     "runtime_overrides": true,
-                    "memory_shell_sessions": cleared_memory_shell_sessions,
                 }
             }))
         }

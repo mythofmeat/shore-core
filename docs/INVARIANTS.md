@@ -69,7 +69,7 @@ _Empty. Add new invariant drafts here as future features are introduced or exist
 **Must not:**
 - Compaction must not require a separate collation pass for correctness.
 
-**Notes:** The old collation config is compatibility-only; memory maintenance now happens through markdown edits during normal tool use and compaction.
+**Notes:** Memory maintenance happens through markdown edits during normal tool use and compaction.
 
 ---
 
@@ -89,7 +89,7 @@ _Empty. Add new invariant drafts here as future features are introduced or exist
 
 **Goal:** Two distinct surfaces serving different needs:
 
-- **Scratchpad** — a literal workspace. Entirely self-authored by the character, used during interiority sessions for ideas and projects-in-progress. It is the character's own creative space, not a second memory store.
+- **Scratchpad** — a literal workspace. Entirely self-authored by the character, used during heartbeat sessions for ideas and projects-in-progress. It is the character's own creative space, not a second memory store.
 - **Memory** — the character's metaphorical brain. The substrate for continuity, coherence, and factual remembrance across compactions, without inflating the context window and degrading performance.
 
 Memory is *who the character is* over time; scratchpad is *what the character is working on*.
@@ -103,7 +103,7 @@ Memory is *who the character is* over time; scratchpad is *what the character is
 **Goal:** Cost-saving and ethical. A character that keeps making background API calls for an absent user is burning money on nobody, and a user returning to a pile of "where are you?" messages from the character feels awful. Dormancy caps both: bounded autonomous activity while the user is away, re-enabled on return.
 
 **Must:**
-- Dormant = no autonomous LLM calls. Interiority ticks stop. The character wakes only when the user sends a message.
+- Dormant = no autonomous LLM calls. Heartbeat ticks stop. The character wakes only when the user sends a message.
 - Dormant → active is triggered by user engagement, not by a timer.
 - The character itself cannot choose to go dormant.
 
@@ -111,9 +111,9 @@ Memory is *who the character is* over time; scratchpad is *what the character is
 
 ---
 
-### Interiority tick recap
+### Heartbeat tick recap
 
-**Goal:** Every interiority tick ends with a short written recap of what the character thought about and what it plans to follow up on, so the next tick starts with narrative continuity instead of cold-starting. Without recaps, each tick is an island — the character reflects, decides nothing persists, and the next tick has to rebuild context from scratch. Recaps are the thread that makes the character's private life feel like an ongoing inner life rather than a series of disconnected prompts.
+**Goal:** Every heartbeat tick ends with a short written recap of what the character thought about and what it plans to follow up on, so the next tick starts with narrative continuity instead of cold-starting. Without recaps, each tick is an island — the character reflects, decides nothing persists, and the next tick has to rebuild context from scratch. Recaps are the thread that makes the character's private life feel like an ongoing inner life rather than a series of disconnected prompts.
 
 **Must:**
 - Every tick produces a recap, whether or not it produced a user-facing message.
@@ -121,18 +121,18 @@ Memory is *who the character is* over time; scratchpad is *what the character is
 
 ---
 
-### Minimum interiority latency floor
+### Minimum heartbeat latency floor
 
 **Goal:** Prevent ticks from firing immediately after the character just said something. Right after a reply there's nothing new to think about — a tick seconds later would rehash or invent. The floor enforces breathing room so ticks occur when there's genuine space for the character to have done something "offscreen," which is both cheaper (no gratuitous ticks) and more believable (no obsessive rumination seconds after the turn). It also guards against API call spamming.
 
 **Must:**
-- No interiority tick fires within the floor duration after the last assistant message.
+- No heartbeat tick fires within the floor duration after the last assistant message.
 
 ---
 
 ### Max tool rounds per tick
 
-**Goal:** A safety ceiling on any single interiority tick. Without it, a character that starts a deep investigation can spin up arbitrarily many tool rounds before producing anything useful — burning cost, blocking the next tick, and collapsing the tick model into "always thinking." The cap forces every tick to wrap up after a bounded amount of work, with any continuation happening in the next tick.
+**Goal:** A safety ceiling on any single heartbeat tick. Without it, a character that starts a deep investigation can spin up arbitrarily many tool rounds before producing anything useful — burning cost, blocking the next tick, and collapsing the tick model into "always thinking." The cap forces every tick to wrap up after a bounded amount of work, with any continuation happening in the next tick.
 
 **Must:**
 - No tick exceeds the cap on tool rounds.
@@ -145,23 +145,20 @@ Memory is *who the character is* over time; scratchpad is *what the character is
 **Goal:** Two redundant metrics for the same invariant — bound how much autonomous activity the character performs against an unresponsive user. Whichever trips first wins. The tick-count path catches "character is being chatty at someone who isn't replying"; the wall-clock path catches "user has just been silently away." Together they cap both the pestering-on-return problem and the burning-money-on-nobody problem described in the active/dormant invariant.
 
 **Must:**
-- Both `dormant_after_interiority_turns` and `dormant_after_idle_time` are evaluated; crossing either sends the character dormant.
+- Both `dormant_after_heartbeat_turns` and `dormant_after_idle_time` are evaluated; crossing either sends the character dormant.
 
 ---
 
-### Image tool family (send / recall / list / remember / generate)
+### Image tool family (send / generate)
 
-**Goal:** Images are a first-class artifact the character interacts with much like memory entries — it can archive them, list them, look back at them, show them, or create new ones. The five tools partition by *direction and purpose* so the character can choose cheap operations (list, recall) over expensive ones (generate) and keep a clean mental model of "is this for me to see or for the user to see."
+**Goal:** Images are a first-class artifact the character can show to the user or create during conversation.
 
 **Per-tool responsibilities:**
 - `send_image` — outbound: deliver an image from storage into the user's view as part of the reply.
-- `recall_image` — inbound to character: load an image back into the character's own context so it can *see* it again (introspection, not delivery).
-- `list_images` — catalog access: enumerate or search image memories without loading any.
-- `remember_image` — archive: save an image into memory with a contextual description. Used for both user-shared images and character-generated ones the character wants to keep.
 - `generate_image` — create a new image.
 
 **Must:**
-- `send_image` puts the image in the user's view; `recall_image` puts it in the character's own context. Neither subsumes the other.
+- `send_image` must only send files the character can access through the configured image directory.
 
 ---
 

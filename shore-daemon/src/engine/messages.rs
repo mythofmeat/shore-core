@@ -115,7 +115,7 @@ impl MessageStore {
     /// new message's timestamp. Falls back to append if either timestamp is
     /// unparseable (no silent reordering of malformed data).
     ///
-    /// Needed for out-of-band writers (e.g. an interiority tick completing
+    /// Needed for out-of-band writers (e.g. a heartbeat tick completing
     /// while a user message has already landed via the handler) — the
     /// resulting chronology stays consistent.
     pub fn insert_by_timestamp(&mut self, msg: Message) -> Result<(), EngineError> {

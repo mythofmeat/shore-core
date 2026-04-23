@@ -46,7 +46,7 @@ pub fn content_block_to_api_json(block: &ContentBlock) -> Option<Value> {
 ///
 /// Unlike [`content_block_to_api_json`], this includes all blocks regardless
 /// of validity for API submission. Used for internal message reconstruction
-/// (e.g. memory agent tool loops, researcher conversations).
+/// (e.g. memory query tool loops, memory query conversations).
 pub fn content_block_to_json(block: &ContentBlock) -> Value {
     match block {
         ContentBlock::Text { text } => json!({"type": "text", "text": text}),

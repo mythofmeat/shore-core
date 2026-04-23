@@ -3,7 +3,6 @@ pub mod navigation;
 pub mod state;
 pub mod usage;
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -15,9 +14,6 @@ use tracing::{debug, info, warn};
 
 use crate::autonomy::manager::AutonomyManager;
 use crate::engine::{ConversationEngine, EngineError};
-use crate::memory::agent::AgentSearchContext;
-use crate::memory::compaction_impls::resolve_embed_config;
-use crate::memory::vectorstore::VectorStore;
 use shore_config::models::ResolvedModel;
 use shore_config::LoadedConfig;
 use shore_diagnostics::Diagnostics;
@@ -30,15 +26,6 @@ pub struct SessionTokens {
     pub output: u32,
     pub cache_read: u32,
     pub cache_write: u32,
-}
-
-/// Legacy memory shell state retained only so config reset and session cleanup
-/// can clear stale clients from older sessions. The shell command itself is
-/// removed in markdown-only memory mode.
-pub struct MemoryShellSession {
-    pub history: Vec<serde_json::Value>,
-    pub character: String,
-    pub model: ResolvedModel,
 }
 
 /// Shared state for command handlers (does not own the engine).
@@ -63,21 +50,19 @@ pub struct CommandContext {
     pub llm_client: LedgerClient,
     /// In-memory diagnostics ring buffers.
     pub diagnostics: Arc<Mutex<Diagnostics>>,
-    /// Active memory shell sessions, keyed by session ID.
-    pub memory_shell_sessions: HashMap<String, MemoryShellSession>,
 }
 
 /// Convenience type for command handler results.
 pub type CommandResult = Result<serde_json::Value, (ErrorCode, String)>;
 
-/// Resolve the agent model: configured `memory_agent` → active model → first chat model.
+/// Resolve the memory model: configured `memory_query` → active model → first chat model.
 ///
-/// Used by memory queries and memory shell.
-pub fn resolve_agent_model(ctx: &CommandContext) -> Result<ResolvedModel, (ErrorCode, String)> {
+/// Used by memory queries.
+pub fn resolve_memory_model(ctx: &CommandContext) -> Result<ResolvedModel, (ErrorCode, String)> {
     ctx.config
         .app
         .defaults
-        .memory_agent
+        .memory_query
         .as_deref()
         .and_then(|name| ctx.config.models.find_model(name).ok())
         .or_else(|| {
@@ -90,56 +75,9 @@ pub fn resolve_agent_model(ctx: &CommandContext) -> Result<ResolvedModel, (Error
         .ok_or_else(|| (ErrorCode::InternalError, "No model configured".to_string()))
 }
 
-/// Build the memory directory path for a character.
+/// Build the legacy memory directory path for a character.
 pub fn memory_dir(ctx: &CommandContext, char_name: &str) -> PathBuf {
     ctx.data_dir.join(char_name).join("memory")
-}
-
-/// Build a semantic search context for a character (graceful: returns None
-/// if no embedding model is configured or the vector store can't be opened).
-pub async fn setup_search_context(
-    ctx: &CommandContext,
-    char_name: &str,
-) -> Option<AgentSearchContext> {
-    let embed_config = resolve_embed_config(
-        ctx.config.app.defaults.embedding.as_deref(),
-        &ctx.config.models.embedding,
-    )
-    .ok()?;
-    let vs_path = memory_dir(ctx, char_name).join("vectorstore");
-    let vs = VectorStore::open(&vs_path, embed_config.dimensions)
-        .await
-        .ok()?;
-    Some(AgentSearchContext::new(
-        Arc::new(vs),
-        ctx.llm_client.inner().clone(),
-        embed_config,
-    ))
-}
-
-/// Open a vector store with embedding config for a character (error-returning variant).
-///
-/// Unlike `setup_search_context()` which returns `Option` for graceful degradation,
-/// this propagates errors for callers that need diagnostics (e.g. compaction, reindex).
-pub async fn open_embed_and_vectorstore(
-    ctx: &CommandContext,
-    char_name: &str,
-) -> Result<(VectorStore, crate::memory::compaction_impls::EmbedConfig), (ErrorCode, String)> {
-    let embed_config = resolve_embed_config(
-        ctx.config.app.defaults.embedding.as_deref(),
-        &ctx.config.models.embedding,
-    )
-    .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
-    let vs_path = memory_dir(ctx, char_name).join("vectorstore");
-    let store = VectorStore::open(&vs_path, embed_config.dimensions)
-        .await
-        .map_err(|e| {
-            (
-                ErrorCode::InternalError,
-                format!("Failed to open vector store: {e}"),
-            )
-        })?;
-    Ok((store, embed_config))
 }
 
 /// Dispatch a command to the appropriate handler.
@@ -175,20 +113,15 @@ pub async fn dispatch(
         "set_reasoning_effort" => state::set_reasoning_effort(ctx, &cmd.args),
         "memory_changelog" => state::memory_changelog(engine, ctx, &cmd.args),
         "memory" => state::memory(engine, ctx, &cmd.args).await,
-        "memory_shell_start" => state::memory_shell_start(engine, ctx, &cmd.args).await,
-        "memory_shell_query" => state::memory_shell_query(ctx, &cmd.args).await,
-        "memory_shell_end" => state::memory_shell_end(ctx, &cmd.args),
         "compact" => state::compact(engine, ctx, &cmd.args).await,
-        "memory_purge" => state::memory_purge(engine, ctx, &cmd.args).await,
         "config" => state::config(ctx, &cmd.args),
         "config_check" => state::config_check(ctx),
-        "memory_reindex" => state::memory_reindex(engine, ctx).await,
         "config_reset" => state::config_reset(ctx),
         "diagnostics" => state::diagnostics(ctx, &cmd.args),
         "heartbeat_log" => state::heartbeat_log(engine, ctx, &cmd.args),
-        "interiority_tick_now" => state::interiority_tick_now(engine, ctx),
-        "interiority_set_dormant" => state::interiority_set_dormant(engine, ctx),
-        "interiority_set_active" => state::interiority_set_active(engine, ctx),
+        "heartbeat_tick_now" => state::heartbeat_tick_now(engine, ctx),
+        "heartbeat_set_dormant" => state::heartbeat_set_dormant(engine, ctx),
+        "heartbeat_set_active" => state::heartbeat_set_active(engine, ctx),
         "usage" => usage::usage(ctx, &cmd.args).await,
 
         _ => Err((
@@ -284,7 +217,6 @@ mod tests {
             )
             .unwrap(),
             diagnostics: Arc::new(Mutex::new(Diagnostics::default())),
-            memory_shell_sessions: HashMap::new(),
         };
         (engine, ctx, push_rx)
     }

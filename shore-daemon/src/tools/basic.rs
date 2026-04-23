@@ -41,7 +41,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "set_next_wake",
-            description: "Schedule when your next interiority tick (a private moment while {{user}} is away) should occur. Call this at the end of an interiority tick to express your own sense of pacing — soon if you're mid-thought and want to continue, later if you're settled and content, whenever feels right. This tool is only meaningful during interiority ticks; calling it from a regular chat turn is rejected. Accepts hours from now (clamped between 1 and 48) and a short reason-note to your future self about why you chose this timing.",
+            description: "Schedule when your next heartbeat tick (a private moment while {{user}} is away) should occur. Call this at the end of a heartbeat tick to express your own sense of pacing — soon if you're mid-thought and want to continue, later if you're settled and content, whenever feels right. This tool is only meaningful during heartbeat ticks; calling it from a regular chat turn is rejected. Accepts hours from now (clamped between 1 and 48) and a short reason-note to your future self about why you chose this timing.",
             parameters: json!({
                 "type": "object",
                 "properties": {

@@ -1,7 +1,6 @@
 //! Production implementations of the compaction traits.
 //!
 //! `RealCompactionLlm` — sends prompts to shore-llm via `LlmClient`, returns raw text.
-//! `RealVectorIndexer` — embeds text via shore-llm's `/v1/embed` and stores in LanceDB.
 //! `RealConversationManager` — archives with retention and writes recap.
 
 use std::future::Future;
@@ -16,99 +15,8 @@ use uuid::Uuid;
 use crate::engine::segments::{CompactionManifest, SegmentEntry};
 use shore_config::models::ResolvedModel;
 use shore_ledger::{CallType, LedgerClient};
-use shore_llm_client::LlmClient;
 
-use super::compaction::{
-    CompactionError, CompactionLlm, ConversationManager, RetentionParams, VectorIndexer,
-};
-use super::vectorstore::VectorStore;
-
-// ---------------------------------------------------------------------------
-// Embedding configuration
-// ---------------------------------------------------------------------------
-
-/// Resolved embedding model configuration extracted from raw TOML catalog.
-#[derive(Debug, Clone)]
-pub struct EmbedConfig {
-    pub provider: String,
-    pub model_id: String,
-    pub api_key: String,
-    pub base_url: Option<String>,
-    /// Embedding vector dimensions (defaults to 1536).
-    pub dimensions: i32,
-}
-
-/// Resolve embedding config from the raw TOML catalog entry.
-///
-/// Looks up the default embedding profile name, finds the raw TOML entry,
-/// extracts `model_id` and provider, and resolves the API key from the
-/// environment.
-pub fn resolve_embed_config(
-    default_name: Option<&str>,
-    embedding_catalog: &std::collections::BTreeMap<String, toml::Value>,
-) -> Result<EmbedConfig, CompactionError> {
-    // Determine which embedding profile to use.
-    let profile_name = default_name
-        .or_else(|| embedding_catalog.keys().next().map(|s| s.as_str()))
-        .ok_or_else(|| CompactionError::Indexing("no embedding model configured".to_string()))?;
-
-    let entry = embedding_catalog.get(profile_name).ok_or_else(|| {
-        CompactionError::Indexing(format!(
-            "embedding profile '{}' not found in model catalog",
-            profile_name
-        ))
-    })?;
-
-    let model_id = entry
-        .get("model_id")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            CompactionError::Indexing(format!(
-                "embedding profile '{}' is missing model_id",
-                profile_name
-            ))
-        })?
-        .to_string();
-
-    // Provider is the parent table key in full config, but in raw TOML it may
-    // be stored as a field. Fall back to "openai" (most embedding models).
-    let provider = entry
-        .get("provider")
-        .and_then(|v| v.as_str())
-        .unwrap_or("openai")
-        .to_string();
-
-    // Resolve API key from environment.
-    let api_key_env = entry
-        .get("api_key_env")
-        .and_then(|v| v.as_str())
-        .unwrap_or("OPENAI_API_KEY");
-
-    let api_key = std::env::var(api_key_env).map_err(|_| {
-        CompactionError::Indexing(format!(
-            "embedding API key env var '{}' is not set",
-            api_key_env
-        ))
-    })?;
-
-    let base_url = entry
-        .get("base_url")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-
-    let dimensions = entry
-        .get("dimensions")
-        .and_then(|v| v.as_integer())
-        .unwrap_or(1536) as i32;
-
-    Ok(EmbedConfig {
-        provider,
-        model_id,
-        api_key,
-        base_url,
-        dimensions,
-    })
-}
+use super::compaction::{CompactionError, CompactionLlm, ConversationManager, RetentionParams};
 
 // ---------------------------------------------------------------------------
 // Image generation configuration
@@ -273,80 +181,6 @@ impl CompactionLlm for RealCompactionLlm {
         })
     }
 }
-
-// ---------------------------------------------------------------------------
-// RealVectorIndexer
-// ---------------------------------------------------------------------------
-
-/// Production `VectorIndexer` that embeds text via shore-llm and stores
-/// vectors in a LanceDB-backed `VectorStore`.
-pub struct RealVectorIndexer {
-    store: VectorStore,
-    client: LlmClient,
-    embed_config: EmbedConfig,
-}
-
-impl RealVectorIndexer {
-    pub fn new(store: VectorStore, client: LlmClient, embed_config: EmbedConfig) -> Self {
-        Self {
-            store,
-            client,
-            embed_config,
-        }
-    }
-}
-
-impl VectorIndexer for RealVectorIndexer {
-    fn index_entry(
-        &self,
-        entry_id: &str,
-        text: &str,
-    ) -> Pin<Box<dyn Future<Output = Result<(), CompactionError>> + Send + '_>> {
-        let entry_id = entry_id.to_string();
-        let text = text.to_string();
-
-        Box::pin(async move {
-            debug!(entry_id = %entry_id, "compaction: starting embed");
-            let t0 = std::time::Instant::now();
-            let embedding = self
-                .client
-                .embed(
-                    &self.embed_config.provider,
-                    &self.embed_config.model_id,
-                    &self.embed_config.api_key,
-                    self.embed_config.base_url.as_deref(),
-                    &[text.as_str()],
-                )
-                .await
-                .map_err(|e| CompactionError::Indexing(e.to_string()))?;
-            debug!(entry_id = %entry_id, elapsed = ?t0.elapsed(), "compaction: embed done");
-
-            let vec = embedding
-                .first()
-                .ok_or_else(|| CompactionError::Indexing("empty embedding response".to_string()))?;
-
-            self.store
-                .index_entry(&entry_id, vec)
-                .await
-                .map_err(|e| CompactionError::Indexing(e.to_string()))?;
-
-            Ok(())
-        })
-    }
-
-    fn remove_entry(&self, entry_id: &str) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
-        let entry_id = entry_id.to_string();
-        Box::pin(async move {
-            if let Err(e) = self.store.delete_entry(&entry_id).await {
-                tracing::warn!(entry_id = %entry_id, error = %e, "compaction rollback: failed to remove vector index entry");
-            }
-        })
-    }
-}
-
-// ---------------------------------------------------------------------------
-// RealConversationManager
-// ---------------------------------------------------------------------------
 
 /// Production `ConversationManager` that archives conversations to segment
 /// files with message retention and recap writing.

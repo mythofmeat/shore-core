@@ -18,6 +18,8 @@ Decision:
 - Autonomous heartbeat recaps no longer write `recaps.jsonl` or inject hidden
   `Role::System` recap messages into `active.jsonl`; they append to
   `memories/daily/YYYY-MM-DD.md` instead.
+- Heartbeat is the term for autonomous private ticks. Cache keepalive remains a
+  separate Anthropic prompt-cache cost-saving subsystem, not an autonomy feature.
 - Image memory was dropped instead of ported. The remaining image tools are the
   minimal non-memory surface: `send_image` and `generate_image`.
 
@@ -203,7 +205,7 @@ own memory structure.
   `shore config autonomy.enabled true/false` (5.41).
 
 - **`shore cache suppress/unsuppress`** (5.48/5.49) — Removed. Cache refresh
-  is now handled by the unified interiority system (no separate keepalive).
+  is now handled by the unified heartbeat system (no separate keepalive).
 
 - **CLI image commands** (5.50 list, 5.51 import, 5.52 describe) — Removed.
   Superseded by in-context image tools (`send_image`, `list_images`,
@@ -280,9 +282,9 @@ platform branches when there's real demand.
 
 ## Failed Concepts (not porting)
 
-- **Interiority — journal writing** (2.4) — Failed concept in V1. Replaced by the new interiority system (autonomous turns with full tool access).
-- **Interiority — story writing** (2.5) — Failed concept in V1. Replaced by the new interiority system.
-- **Interiority scheduling** (2.6) — Replaced by InteriorityClock (simple timer + dormancy).
+- **Heartbeat — journal writing** (2.4) — Failed concept in V1. Replaced by the new heartbeat system (autonomous turns with full tool access).
+- **Heartbeat — story writing** (2.5) — Failed concept in V1. Replaced by the new heartbeat system.
+- **Heartbeat scheduling** (2.6) — Replaced by HeartbeatClock (simple timer + dormancy).
 
 ## Compaction: Turn-Based Semantics (2026-03-31)
 
@@ -427,37 +429,37 @@ A single holistic call lets the LLM see all candidates + nearby context and make
 
 **Trade-off:** The single prompt is larger (candidates + context entries), increasing token cost per call. Accepted because: (a) the multi-phase approach made 3 separate LLM calls anyway, (b) context entries provide critical disambiguation that prevents data corruption, (c) batch_limit caps total candidates per run. Entity normalization is permanently dropped — the risk of incorrect merges (christina→christine) outweighs the benefit of consistent naming.
 
-### Interiority System — Replace Heartbeat (2026-04-01)
+### Heartbeat System — Replace Heartbeat (2026-04-01)
 
-**Decision:** Replace the 5-state heartbeat probability machine with a simple interiority system that gives characters periodic autonomous turns with full tool access.
+**Decision:** Replace the 5-state heartbeat probability machine with a simple heartbeat system that gives characters periodic autonomous turns with full tool access.
 
 **Changes made:**
 - Deleted `heartbeat.rs`, `timing.rs`, `time_parse.rs` from `shore-daemon/src/autonomy/`
-- New `interiority.rs`: `InteriorityClock` with two states (Active, Dormant), timer with jitter, dormancy counter
+- New `heartbeat.rs`: `HeartbeatClock` with two states (Active, Dormant), timer with jitter, dormancy counter
 - New `scratchpad.rs` in `shore-daemon/src/tools/`: 4 tools (`scratchpad_list`, `scratchpad_read`, `scratchpad_write`, `scratchpad_delete`) with path traversal protection
-- Rewrote `autonomy/manager.rs`: `execute_interiority_tick()` reads conversation from `active.jsonl`, builds full prompt with identical tool set, sends to LLM, extracts optional `<sendMessage>` tags for user-visible output
-- Replaced `AutonomyConfig` fields: removed `personality`, `max_unanswered`, `max_deferral_hours`, `heartbeat`; added `interiority: InteriorityConfig`
-- Replaced `CapabilitiesConfig`: `heartbeat_enabled` → `interiority_enabled`, added `scratchpad_enabled`
+- Rewrote `autonomy/manager.rs`: `execute_heartbeat_tick()` reads conversation from `active.jsonl`, builds full prompt with identical tool set, sends to LLM, extracts optional `<sendMessage>` tags for user-visible output
+- Replaced `AutonomyConfig` fields: removed `personality`, `max_unanswered`, `max_deferral_hours`, `heartbeat`; added `heartbeat: HeartbeatConfig`
+- Replaced `CapabilitiesConfig`: `heartbeat_enabled` → `heartbeat_enabled`, added `scratchpad_enabled`
 - Updated CLI output, persisted state (version 1→2), all downstream consumers
 
-**Why:** The 5-state heartbeat was overengineered — complex scheduling heuristics (τ computation, engagement scores, heatmaps, social need bars, time parsing from natural language) for a simple goal: "the character should sometimes do things on its own." The interiority system achieves the same goal with a timer + dormancy counter. Additionally, the heartbeat used separate, simpler prompts that couldn't leverage the character's full tool set. Interiority ticks use the identical system prompt and tool definitions as normal conversation, preserving Anthropic prompt cache.
+**Why:** The 5-state heartbeat was overengineered — complex scheduling heuristics (τ computation, engagement scores, heatmaps, social need bars, time parsing from natural language) for a simple goal: "the character should sometimes do things on its own." The heartbeat system achieves the same goal with a timer + dormancy counter. Additionally, the heartbeat used separate, simpler prompts that couldn't leverage the character's full tool set. Heartbeat ticks use the identical system prompt and tool definitions as normal conversation, preserving Anthropic prompt cache.
 
-**Trade-off:** The interiority system has no adaptive timing — it doesn't speed up during active conversation or slow down during quiet periods. The timer is fixed (with jitter). This is intentionally simpler. If adaptive timing proves necessary, it can be layered on top of the InteriorityClock without changing the fundamental architecture.
+**Trade-off:** The heartbeat system has no adaptive timing — it doesn't speed up during active conversation or slow down during quiet periods. The timer is fixed (with jitter). This is intentionally simpler. If adaptive timing proves necessary, it can be layered on top of the HeartbeatClock without changing the fundamental architecture.
 
-### Unified Interiority — Replace Keepalive (2026-04-03)
+### Unified Heartbeat — Replace Keepalive (2026-04-03)
 
-**Decision:** Delete `CacheKeepaliveScheduler` entirely. Merge cache refresh into InteriorityClock via dual deadlines and a rolling JSONL journal for tick-to-tick continuity. One LLM call per tick.
+**Decision:** Delete `CacheKeepaliveScheduler` entirely. Merge cache refresh into HeartbeatClock via dual deadlines and a rolling JSONL journal for tick-to-tick continuity. One LLM call per tick.
 
 **Changes made:**
 - Deleted `cache_keepalive.rs` (832 LOC — 4-state machine, coordination logic, `snap_to_deadline`)
-- New `interiority_journal.rs`: `JournalEntry` types (Thought, ToolCall, ToolResult, MessageSent), JSONL file I/O, rendering, budget truncation, atomic compaction
-- `InteriorityClock` now tracks two deadlines: `next_tick_at` (full interiority) and `next_cache_ping_at` (bare cache refresh). Full tick resets both. Returns `RunTick`, `RunDormantPing`, or `None`
+- New `heartbeat_journal.rs`: `JournalEntry` types (Thought, ToolCall, ToolResult, MessageSent), JSONL file I/O, rendering, budget truncation, atomic compaction
+- `HeartbeatClock` now tracks two deadlines: `next_tick_at` (full heartbeat) and `next_cache_ping_at` (bare cache refresh). Full tick resets both. Returns `RunTick`, `RunDormantPing`, or `None`
 - New `execute_unified_tick()`: reads journal → renders into prompt → ONE Opus call → parses response into journal entries → appends → compacts if oversized
 - New `execute_dormant_ping()`: bare `max_tokens=1` call, no journal, no prompt changes
-- Removed `coordinate_interiority_keepalive()`, `notify_api_response()`, keepalive config from handler
+- Removed `coordinate_heartbeat_keepalive()`, `notify_api_response()`, keepalive config from handler
 - `ensure_state` takes `cache_ttl_secs: Option<u64>` instead of `CacheKeepaliveConfig`
 - Persisted state version 2→3 (drops `cache_ping_count`)
-- Removed `max_tool_rounds` from `InteriorityConfig` (tool calls now spread across ticks via journal)
+- Removed `max_tool_rounds` from `HeartbeatConfig` (tool calls now spread across ticks via journal)
 
 **Why:** The old system had two separate timers with fragile coordination (`snap_to_deadline` was effectively a no-op during Pinging state). The tool-use loop cost 3-4 Opus calls per tick (~$2.40/day). The keepalive state machine (Monitoring→Active→Pinging→Stopped) was complex for what it did. The unified system achieves the same goals — autonomous thinking + cache refresh — with one call per tick and zero coordination code. ~3.5x cost reduction.
 
@@ -596,19 +598,19 @@ A single holistic call lets the LLM see all candidates + nearby context and make
 
 **Why:** OpenRouter reports 5-minute cache TTL prices. Shore uses 1-hour cache TTL for Anthropic. The 1h write price is 4x the 5m price. This is a stable relationship defined by Anthropic's pricing structure.
 
-## Interiority: Real Tool Loop Replaces Journal System (2026-04-05)
+## Heartbeat: Real Tool Loop Replaces Journal System (2026-04-05)
 
-**Decision:** Replaced the 1-call-per-tick interiority architecture (with JSONL journal for cross-tick continuity) with a real multi-turn tool loop within each tick.
+**Decision:** Replaced the 1-call-per-tick heartbeat architecture (with JSONL journal for cross-tick continuity) with a real multi-turn tool loop within each tick.
 
 **Problem:** The journal-based approach caused the model to fixate on scratchpad journaling. The full conversation context plus rendered journal steered the model toward processing/introspection rather than using diverse tools (web_search, generate_image, memory, etc.). The model never saw tool results within the same tick, so it had no feedback loop.
 
 **What changed:**
-- Deleted `interiority_journal.rs` module (JSONL read/write/render/compact)
+- Deleted `heartbeat_journal.rs` module (JSONL read/write/render/compact)
 - Removed `journal_path` field from `AutonomyState`
 - Rewrote `execute_unified_tick` to run a real `generate()` → dispatch → feed back loop, up to `min(max_iterations, 6)` iterations per tick
-- First call uses `CallType::Interiority`, subsequent calls use `CallType::ToolLoop`
+- First call uses `CallType::Heartbeat`, subsequent calls use `CallType::ToolLoop`
 - Tool loop messages are ephemeral — only `<sendMessage>` content persists to `active.jsonl`
-- All tool activity logged to the interiority ring buffer for `shore log --heartbeat`
+- All tool activity logged to the heartbeat ring buffer for `shore log --heartbeat`
 
 **Trade-offs:**
 - Cost increase: ~$23/month extra (multiple generate() calls per tick instead of one)
@@ -656,25 +658,25 @@ Decoupled wire protocol (SDK) from endpoint identity (provider) in `shore-llm-cl
 - Users can now override SDK per model: `[chat.openrouter."anthropic/claude-opus"] sdk = "anthropic"`
 - Both approaches work: override sdk on an openrouter model, or override base_url/api_key on an anthropic model
 
-## Interiority: Deadline Holder with Self-Scheduling (2026-04-08)
+## Heartbeat: Deadline Holder with Self-Scheduling (2026-04-08)
 
-**Decision:** Replaced the fixed-interval Active/Dormant state machine with a deadline-based `InteriorityClock` that lets characters self-schedule via `set_next_wake` tool, decoupled cache keepalive into its own subsystem, and added a recap system for inner-life continuity.
+**Decision:** Replaced the fixed-interval Active/Dormant state machine with a deadline-based `HeartbeatClock` that lets characters self-schedule via `set_next_wake` tool, decoupled cache keepalive into its own subsystem, and added a recap system for inner-life continuity.
 
 **What changed:**
-- `InteriorityClock` rewritten: pure deadline holder + dual abandonment guard (`ticks_without_user >= 3` OR wall-clock silence >= 48h). No more `InteriorityState` enum.
-- `CacheKeepalive` (new module): independent 59min ping cycle with 18h break-even gate. No longer entangled with interiority tick scheduling.
+- `HeartbeatClock` rewritten: pure deadline holder + dual abandonment guard (`ticks_without_user >= 3` OR wall-clock silence >= 48h). No more `HeartbeatState` enum.
+- `CacheKeepalive` (new module): independent 59min ping cycle with 18h break-even gate. No longer entangled with heartbeat tick scheduling.
 - `RecapStore` (new module): JSONL sidecar (`recaps.jsonl`) for character first-person recap entries via `<recap>` tag.
-- `set_next_wake` tool: injected into interiority tick tool list, intercepted before `dispatch_tool`. Characters schedule their own cadence (clamped to 1h–48h).
-- Dynamic `INTERIORITY_PROMPT`: replaces static constant, includes recent thread context from recaps or ring buffer.
+- `set_next_wake` tool: injected into heartbeat tick tool list, intercepted before `dispatch_tool`. Characters schedule their own cadence (clamped to 1h–48h).
+- Dynamic `HEARTBEAT_PROMPT`: replaces static constant, includes recent thread context from recaps or ring buffer.
 - Recap injection in `trim_messages`: recap entries appear alongside time-gap markers in conversation history.
 - `PersistedState` v4: RFC3339 timestamps for `next_wake_at` and `last_user_at`, enabling restart recovery.
 - `on_user_message` uses `max()` semantics: `next_wake_at = max(existing, now + min_wake_secs)`. Character-scheduled deadlines are preserved.
-- Removed: `InteriorityState` enum, `jitter_factor`, `cache_refresh_interval_secs`, `RunDormantPing` variant from `InteriorityAction`.
-- Added config: `dormant_after_idle_time` (48h default), `minimum_interiority_latency` (1h default, configurable for testing).
+- Removed: `HeartbeatState` enum, `jitter_factor`, `cache_refresh_interval_secs`, `RunDormantPing` variant from `HeartbeatAction`.
+- Added config: `dormant_after_idle_time` (48h default), `minimum_heartbeat_latency` (1h default, configurable for testing).
 
 **Why:**
 - The old system treated characters as passive tick recipients. The redesign gives characters agency over their own inner life cadence.
-- Cache keepalive was entangled with interiority state transitions, causing unnecessary complexity and coupling.
+- Cache keepalive was entangled with heartbeat state transitions, causing unnecessary complexity and coupling.
 - The journal system (removed in prior decision) left a gap in cross-tick continuity. Recaps fill this gap with first-person notes that survive compaction.
 
 **Trade-offs:**
@@ -689,11 +691,11 @@ Bare integers in TOML are interpreted as seconds for backwards compatibility wit
 config generation. Internally stored as milliseconds to support sub-second precision
 (used by `retry_backoff`).
 
-Renamed interiority fields for clarity:
-- `interval_secs` → `fallback_interiority_interval`
-- `max_idle_ticks` → `dormant_after_interiority_turns`
+Renamed heartbeat fields for clarity:
+- `interval_secs` → `fallback_heartbeat_interval`
+- `max_idle_ticks` → `dormant_after_heartbeat_turns`
 - `max_silent_secs` → `dormant_after_idle_time`
-- `min_wake_secs` → `minimum_interiority_latency`
+- `min_wake_secs` → `minimum_heartbeat_latency`
 
 Also renamed across other config sections:
 - `idle_trigger_minutes` → `idle_trigger`
@@ -704,7 +706,7 @@ Also renamed across other config sections:
 **Why:**
 - Raw numeric fields with `_secs` / `_minutes` suffixes were confusing — users had to mentally convert units and the naming was inconsistent.
 - systemd-style strings (`"1h"`, `"30m"`) are self-documenting in config files.
-- Interiority field names were opaque (`interval_secs`, `max_silent_secs`) — new names describe what happens from the user's perspective.
+- Heartbeat field names were opaque (`interval_secs`, `max_silent_secs`) — new names describe what happens from the user's perspective.
 
 **Trade-offs:**
 - Breaking config change: old field names will fail to parse (`deny_unknown_fields`). Users must update config files.
@@ -775,19 +777,19 @@ allowlist, not authentication or TLS.
 
 **Bug:** When the abandonment guard tripped, it cleared `next_wake_at`. On the next tick, step 1 unconditionally bootstrapped a new deadline from the stale `last_anchor`, causing it to immediately re-trip — infinite log-spam loop every tick.
 
-**Fix:** Added `is_abandoned(now)` check in step 1 of `InteriorityClock::tick()`. Once abandoned, the clock stays dormant until `reset_on_user_message()` clears the counter. Introduced `is_dormant()` as the public accessor, and made user-facing status/log output report the unified state label `Dormant` for tick-count dormancy, silent-duration dormancy, and forced dormancy.
+**Fix:** Added `is_abandoned(now)` check in step 1 of `HeartbeatClock::tick()`. Once abandoned, the clock stays dormant until `reset_on_user_message()` clears the counter. Introduced `is_dormant()` as the public accessor, and made user-facing status/log output report the unified state label `Dormant` for tick-count dormancy, silent-duration dormancy, and forced dormancy.
 
 **Debug commands:** Replaced the single hidden `shore debug force-tick` with three explicit debug commands using snake_case naming (`#[command(rename_all = "snake_case")]`), and unhid the `debug` subcommand:
 
-- `shore debug interiority_tick_now` — schedules immediate tick, warns if dormant
-- `shore debug interiority_status_dormant` — forces dormant, reverts on user message
-- `shore debug interiority_status_active` — forces active, reverts naturally via guard
+- `shore debug heartbeat_tick_now` — schedules immediate tick, warns if dormant
+- `shore debug heartbeat_status_dormant` — forces dormant, reverts on user message
+- `shore debug heartbeat_status_active` — forces active, reverts naturally via guard
 
 Snake_case was chosen over kebab-case for debug commands to visually distinguish them from normal CLI commands and signal "direct internal access, use with care". This also simplifies the SWP mapping since CLI and wire names are identical under `rename_all = "snake_case"`.
 
-`InteriorityClock` methods split: `force_wake()` (deadline only, no counter reset), `force_dormant()` (sets counter to max, clears deadline), `force_active()` (resets counter + last_user_at + deadline). The old monolithic `force_wake` that did everything was replaced because each debug command maps to a single primitive.
+`HeartbeatClock` methods split: `force_wake()` (deadline only, no counter reset), `force_dormant()` (sets counter to max, clears deadline), `force_active()` (resets counter + last_user_at + deadline). The old monolithic `force_wake` that did everything was replaced because each debug command maps to a single primitive.
 
-**Compromise:** `interiority_tick_now` on a dormant clock sets the deadline but the tick will be suppressed by the guard. This is intentional — it's a debug tool and the user gets a warning. Silently auto-activating would mask the state.
+**Compromise:** `heartbeat_tick_now` on a dormant clock sets the deadline but the tick will be suppressed by the guard. This is intentional — it's a debug tool and the user gets a warning. Silently auto-activating would mask the state.
 
 Extracted `shore-daemon/src/server/` (~1.3K LOC) into a standalone `shore-daemon-server`
 workspace crate. The server module had zero internal dependencies on other daemon modules,
@@ -1071,7 +1073,7 @@ Measured on 2026-04-17: ~$1.12 of pure waste from re-sending ~10.7K
 accumulated thinking tokens across 94 calls. The fix applies at two
 serialisation points: `handler/task.rs` when building the initial request,
 and `handler/persistence.rs` when building the `last_request` snapshot
-the autonomy/interiority subsystem uses. Both strip the same way so the
+the autonomy/heartbeat subsystem uses. Both strip the same way so the
 cache prefix stays consistent across user-turn and autonomy-tick paths.
 
 **Cache invalidation trade-off**: switching stripping on causes one-time
@@ -1135,16 +1137,16 @@ five constructor sites (`CommandContext`, `SessionState`,
 struct to reduce the diff but rejected — the field count on these
 structs is already large and the `None` default is uniform.
 
-## Interiority Recap Persistence in active.jsonl (2026-04-19)
+## Heartbeat Recap Persistence in active.jsonl (2026-04-19)
 
-**Decision:** Interiority tick recaps (the character's `<recap>` block) are
+**Decision:** Heartbeat tick recaps (the character's `<recap>` block) are
 now persisted as `Role::System` messages in `active.jsonl` at tick completion,
 not re-injected ephemerally from a `recaps.jsonl` sidecar each turn.
 
 **Why:** Two linked bugs in the prior ephemeral-injection design:
 
 1. **Autonomous-ping gating.** `trim_messages` advanced `prev_ts` on every
-   message regardless of role. When an interiority tick produced an autonomous
+   message regardless of role. When a heartbeat tick produced an autonomous
    ping (assistant message), the tick's recap — timestamped before the ping —
    fell outside the gap measured between the ping and the next user message,
    and was silently dropped.
@@ -1164,7 +1166,7 @@ segments by compaction like any other message, and they persist naturally.
 **Trade-offs:**
 - `recaps.jsonl` is retained as a sidecar log for `tick_id` correlation
   in debugging, but is no longer read by the payload path.
-- The interiority prompt's `{recent_thread_block}` now reads the three most
+- The heartbeat prompt's `{recent_thread_block}` now reads the three most
   recent `Role::System` messages from `active.jsonl` (previously read
   `recaps.jsonl` directly). Single source of truth.
 - On the wire, recaps reach the model via `convert_inline_system_messages`
@@ -1191,15 +1193,15 @@ tokens on every request.
 **Result:**
 - **Capabilities block** (`engine/prompt.rs:build_capabilities_block`)
   restructured into markdown-style sections (`### Memory database`,
-  `### Interiority`, `### Image creation`, `### Web access`) with
+  `### Heartbeat`, `### Image creation`, `### Web access`) with
   sub-bullets flowing under their parent section (saved images under Memory,
-  scratchpad under Interiority). Bullets are pure stance — no tool names or
+  scratchpad under Heartbeat). Bullets are pure stance — no tool names or
   parameters — with the exception of tools that have no other way to be
   surfaced (e.g. `generate_image`).
 - **Tool descriptions** trimmed across the board. `set_next_wake` in
   particular was rewritten from a stance-heavy "express your own sense of
   pacing…continue any unfinished work" to a single mechanical line; the
-  stance moved into the interiority system prompt (`build_interiority_prompt`),
+  stance moved into the heartbeat system prompt (`build_heartbeat_prompt`),
   which only loads during ticks. `set_next_wake` is in the base tool set on
   every request for cache stability (see CHANGELOG:132), so its description
   is part of the cached prefix and should not carry tick-specific posture.
@@ -1222,7 +1224,7 @@ than permanently in the cached system prefix when no image is in play.
 Scopes token cost to events that matter, at the cost of slightly more
 tokens per image-bearing message.
 
-**Interiority prompt rewrite:** Ephemerality statement ("thoughts and tool
+**Heartbeat prompt rewrite:** Ephemerality statement ("thoughts and tool
 use are logged") was misleading — intermediate tick thoughts are never
 persisted anywhere the character sees next tick, and tool-use ring-buffer
 events are only for operator diagnostics. Rewrote to accurately describe
@@ -1234,7 +1236,7 @@ mandatory in the prompt text, matching the daemon's wrap-up enforcement.
 
 ### 2026-04-20 — API payload logging switched from single JSONL to per-call JSON files
 
-The `api_payload_logging` flag in `[advanced]` used to append every outbound request to a single ever-growing `{data_dir}/api_payloads.jsonl`. Responses were never logged at all — the feature's doc comment claimed "request/response" but the code only ever called `log_payload("request", ...)`. That made the flag nearly useless for diagnosing a failed call: you could see what we sent but not what came back (or what error surfaced), which is exactly the case we needed it for when Shore's interiority wrap-up started dying on provider moderation rejections.
+The `api_payload_logging` flag in `[advanced]` used to append every outbound request to a single ever-growing `{data_dir}/api_payloads.jsonl`. Responses were never logged at all — the feature's doc comment claimed "request/response" but the code only ever called `log_payload("request", ...)`. That made the flag nearly useless for diagnosing a failed call: you could see what we sent but not what came back (or what error surfaced), which is exactly the case we needed it for when Shore's heartbeat wrap-up started dying on provider moderation rejections.
 
 Rewritten to write per-call JSON files under `{data_dir}/debug/api_logs/`:
 - `{call_id}.json` — the outbound request (api_key redacted).

@@ -1,6 +1,6 @@
 //! Shared tool context — canonical `ToolContext` implementation.
 //!
-//! Both the message handler and interiority ticks construct a `SharedToolContext`
+//! Both the message handler and heartbeat ticks construct a `SharedToolContext`
 //! with their caller-specific wiring. Adding a new `ToolContext` method requires
 //! updating this struct + impl (one place) instead of two separate copies.
 
@@ -10,9 +10,9 @@ use shore_config::app::SearchConfig;
 use shore_config::models::ResolvedModel;
 use shore_llm_client::LlmClient;
 
-use crate::memory::agent_llm::{AgentLlm, RealAgentLlm};
 use crate::memory::compaction_impls::ImageGenConfig;
 use crate::memory::markdown_store::MarkdownMemoryStore;
+use crate::memory::memory_llm::{MemoryLlm, RealMemoryLlm};
 
 use super::ToolContext;
 
@@ -22,11 +22,11 @@ use super::ToolContext;
 
 /// Shared tool context holding all dependencies needed by tool handlers.
 ///
-/// Used directly by interiority ticks. Wrapped by `HandlerToolContext` in the
+/// Used directly by heartbeat ticks. Wrapped by `HandlerToolContext` in the
 /// message handler (which adds `AutonomyManager` access).
 pub(crate) struct SharedToolContext {
-    pub(crate) agent_llm: RealAgentLlm,
-    pub(crate) agent_model_val: ResolvedModel,
+    pub(crate) memory_llm: RealMemoryLlm,
+    pub(crate) memory_model_val: ResolvedModel,
     pub(crate) image_dir_val: String,
     pub(crate) llm_client_val: LlmClient,
     pub(crate) image_gen_config_val: Option<ImageGenConfig>,
@@ -43,11 +43,11 @@ pub(crate) struct SharedToolContext {
 }
 
 impl ToolContext for SharedToolContext {
-    fn agent_llm(&self) -> &dyn AgentLlm {
-        &self.agent_llm
+    fn memory_llm(&self) -> &dyn MemoryLlm {
+        &self.memory_llm
     }
-    fn agent_model(&self) -> &ResolvedModel {
-        &self.agent_model_val
+    fn memory_model(&self) -> &ResolvedModel {
+        &self.memory_model_val
     }
     fn image_dir(&self) -> &str {
         &self.image_dir_val
