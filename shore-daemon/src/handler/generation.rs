@@ -82,6 +82,7 @@ use crate::memory::markdown_store::MarkdownMemoryStore;
 use crate::memory::memory_llm::RealMemoryLlm;
 use crate::tools::context::SharedToolContext;
 use shore_config::LoadedConfig;
+use shore_config::{character_memory_dir, character_workspace_dir};
 use shore_ledger::CallType;
 use shore_llm_client::retry::{self, RetryDecision, RetryPolicy};
 use shore_llm_client::stream::StreamConsumer;
@@ -203,19 +204,15 @@ pub(super) async fn run_tool_phase(
 
     let character_data_dir = data_dir.join(char_name);
     let config_dir = &effective_config.dirs.config;
+    let workspace_dir = character_workspace_dir(config_dir, char_name);
+    let memory_dir = character_memory_dir(config_dir, char_name);
 
-    // Bootstrap protected workspace files from config so the assistant
-    // can read and edit them during the conversation.
-    if let Err(e) = crate::memory::deferred_edits::bootstrap_workspace_files(
+    if let Err(e) = crate::memory::deferred_edits::ensure_active_prompt_snapshot(
         &character_data_dir,
         config_dir,
         char_name,
     ) {
-        warn!(
-            character = %char_name,
-            error = %e,
-            "Failed to bootstrap workspace files"
-        );
+        warn!(character = %char_name, error = %e, "Failed to prepare active prompt snapshot");
     }
 
     let tool_ctx = HandlerToolContext {
@@ -238,12 +235,8 @@ pub(super) async fn run_tool_phase(
                 .join("scratchpad")
                 .to_string_lossy()
                 .into_owned(),
-            workspace_dir_val: character_data_dir
-                .join("workspace")
-                .to_string_lossy()
-                .into_owned(),
-            markdown_store_val: MarkdownMemoryStore::open_sync(character_data_dir.join("memories"))
-                .ok(),
+            workspace_dir_val: workspace_dir.to_string_lossy().into_owned(),
+            markdown_store_val: MarkdownMemoryStore::open_sync(memory_dir).ok(),
             memory_access_allowed_val: effective_config.app.behavior.tool_use.tools.memory(),
             memory_read_allowed_val: effective_config.app.behavior.tool_use.tools.memory_read(),
             memory_write_allowed_val: effective_config.app.behavior.tool_use.tools.memory_write(),

@@ -113,7 +113,7 @@ pub trait ToolContext: Sync {
         None
     }
 
-    // Whether memory tools and the workspace `memories/...` namespace may be
+    // Whether memory tools and the workspace `memory/...` namespace may be
     // used in this conversation.
     fn memory_access_allowed(&self) -> bool {
         true
@@ -274,7 +274,7 @@ fn ensure_workspace_memory_access(
 
     if !allowed {
         Err(ToolError::InvalidArgs(
-            "workspace access to memories/... is disabled for this conversation".into(),
+            "workspace access to memory/... is disabled for this conversation".into(),
         ))
     } else {
         Ok(())
@@ -283,9 +283,9 @@ fn ensure_workspace_memory_access(
 
 fn path_requests_memories_namespace(path: &str) -> bool {
     let normalized = path.trim().trim_start_matches('/').trim_start_matches('\\');
-    normalized == "memories"
-        || normalized.starts_with("memories/")
-        || normalized.starts_with("memories\\")
+    normalized == "memory"
+        || normalized.starts_with("memory/")
+        || normalized.starts_with("memory\\")
 }
 
 // ---------------------------------------------------------------------------
@@ -357,9 +357,14 @@ pub fn dispatch_tool<'a>(
                     .unwrap_or("")
                     .to_string();
                 let mut result = workspace::handle_write(input, ctx.workspace_dir()).await?;
-                if crate::memory::deferred_edits::is_protected_path(&path) {
+                if let Some(deferred_path) =
+                    crate::memory::deferred_edits::normalize_protected_path(&path)
+                {
                     ctx.defer_edit(&path);
+                    result["protected_file"] = serde_json::json!(true);
                     result["deferred_until_compaction"] = serde_json::json!(true);
+                    result["deferred_path"] = serde_json::json!(deferred_path);
+                    result["prompt_reload_required"] = serde_json::json!(true);
                 }
                 Ok(result)
             }
@@ -371,9 +376,14 @@ pub fn dispatch_tool<'a>(
                     .unwrap_or("")
                     .to_string();
                 let mut result = workspace::handle_edit(input, ctx.workspace_dir()).await?;
-                if crate::memory::deferred_edits::is_protected_path(&path) {
+                if let Some(deferred_path) =
+                    crate::memory::deferred_edits::normalize_protected_path(&path)
+                {
                     ctx.defer_edit(&path);
+                    result["protected_file"] = serde_json::json!(true);
                     result["deferred_until_compaction"] = serde_json::json!(true);
+                    result["deferred_path"] = serde_json::json!(deferred_path);
+                    result["prompt_reload_required"] = serde_json::json!(true);
                 }
                 Ok(result)
             }
@@ -541,7 +551,7 @@ mod tests {
     }
 
     #[test]
-    fn granular_memory_write_toggle_hides_memories_namespace_for_writes() {
+    fn granular_memory_write_toggle_hides_memory_namespace_for_writes() {
         let mut toggles = ToolToggles::default();
         toggles.set("memory_write", false);
 
@@ -555,8 +565,8 @@ mod tests {
             .find(|d| d["name"] == "write")
             .expect("write present");
 
-        assert!(read["description"].as_str().unwrap().contains("memories"));
-        assert!(!write["description"].as_str().unwrap().contains("memories"));
+        assert!(read["description"].as_str().unwrap().contains("memory"));
+        assert!(!write["description"].as_str().unwrap().contains("memory/..."));
         assert!(defs.iter().all(|d| d["name"] != "memory_write"));
         assert!(defs.iter().all(|d| d["name"] != "exec"));
     }
@@ -674,7 +684,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_dispatch_rejects_memories_namespace_when_access_disabled() {
+    async fn test_dispatch_rejects_memory_namespace_when_access_disabled() {
         let tmp = tempfile::tempdir().unwrap();
         let ws = tmp.path().join("workspace");
         tokio::fs::create_dir_all(&ws).await.unwrap();
@@ -685,7 +695,7 @@ mod tests {
 
         let result = dispatch_tool(
             "read",
-            serde_json::json!({"path": "memories/people/ren.md"}),
+            serde_json::json!({"path": "memory/people/ren.md"}),
             &ctx,
         )
         .await;
@@ -693,7 +703,7 @@ mod tests {
         let err = result.unwrap_err();
         assert!(
             matches!(err, ToolError::InvalidArgs(_)),
-            "memories namespace should be blocked, got: {err}"
+            "memory namespace should be blocked, got: {err}"
         );
     }
 
@@ -729,7 +739,7 @@ mod tests {
 
         let result = dispatch_tool(
             "write",
-            serde_json::json!({"path": "memories/people/ren.md", "content": "blocked"}),
+            serde_json::json!({"path": "memory/people/ren.md", "content": "blocked"}),
             &ctx,
         )
         .await;
@@ -737,7 +747,7 @@ mod tests {
 
         let result = dispatch_tool(
             "read",
-            serde_json::json!({"path": "memories/people/ren.md"}),
+            serde_json::json!({"path": "memory/people/ren.md"}),
             &ctx,
         )
         .await;

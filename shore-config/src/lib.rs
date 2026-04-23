@@ -171,6 +171,34 @@ impl LoadedConfig {
     }
 }
 
+pub const CHARACTER_WORKSPACE_DIR: &str = "workspace";
+pub const SOUL_FILE: &str = "SOUL.md";
+pub const USER_FILE: &str = "USER.md";
+pub const AGENTS_FILE: &str = "AGENTS.md";
+pub const TOOLS_FILE: &str = "TOOLS.md";
+pub const HEARTBEAT_FILE: &str = "HEARTBEAT.md";
+pub const MEMORY_DIR: &str = "memory";
+
+/// Return `characters/{name}/`.
+pub fn character_config_dir(config_dir: &Path, character_name: &str) -> PathBuf {
+    config_dir.join("characters").join(character_name)
+}
+
+/// Return `characters/{name}/workspace/`.
+pub fn character_workspace_dir(config_dir: &Path, character_name: &str) -> PathBuf {
+    character_config_dir(config_dir, character_name).join(CHARACTER_WORKSPACE_DIR)
+}
+
+/// Return `characters/{name}/workspace/{name}`.
+pub fn character_workspace_file(config_dir: &Path, character_name: &str, name: &str) -> PathBuf {
+    character_workspace_dir(config_dir, character_name).join(name)
+}
+
+/// Return `characters/{name}/workspace/memory/`.
+pub fn character_memory_dir(config_dir: &Path, character_name: &str) -> PathBuf {
+    character_workspace_dir(config_dir, character_name).join(MEMORY_DIR)
+}
+
 /// Load and validate daemon configuration.
 ///
 /// Resolution order:
@@ -406,7 +434,7 @@ fn create_default_config(config_dir: &Path) {
 # See examples/config.toml for all available options.
 #
 # Characters are discovered from the characters/ directory.
-# Create characters/<name>/character.md to define a character.
+# Create characters/<name>/workspace/SOUL.md to define a character.
 #
 # Models are configured inline under [chat.<provider>.<model>].
 # You can also use `include = ["extra.toml"]` or conf.d/*.toml for modular config.
@@ -472,21 +500,25 @@ fn validate_model_ref(
     Ok(())
 }
 
-/// Load character definition from `characters/{name}/character.md`.
+/// Load character definition from `characters/{name}/workspace/SOUL.md`,
+/// with a legacy fallback to `character.md`.
 pub fn load_character_definition(config_dir: &Path, character_name: &str) -> Option<String> {
-    let path = config_dir
-        .join("characters")
-        .join(character_name)
-        .join("character.md");
-    match std::fs::read_to_string(&path) {
+    let new_path = character_workspace_file(config_dir, character_name, SOUL_FILE);
+    if let Ok(content) = std::fs::read_to_string(&new_path) {
+        info!(character = character_name, path = %new_path.display(), "Loaded character definition");
+        return Some(content);
+    }
+
+    let legacy_path = character_config_dir(config_dir, character_name).join("character.md");
+    match std::fs::read_to_string(&legacy_path) {
         Ok(content) => {
-            info!(character = character_name, "Loaded character definition");
+            info!(character = character_name, path = %legacy_path.display(), "Loaded legacy character definition");
             Some(content)
         }
         Err(_) => {
             warn!(
                 character = character_name,
-                path = %path.display(),
+                path = %new_path.display(),
                 "No character definition found"
             );
             None
@@ -494,14 +526,11 @@ pub fn load_character_definition(config_dir: &Path, character_name: &str) -> Opt
     }
 }
 
-/// Resolve user definition: character-specific user.md → global user.md.
+/// Resolve user definition from `characters/{name}/workspace/USER.md`, with a
+/// legacy fallback to `characters/{name}/user.md`.
 pub fn resolve_user_definition(config_dir: &Path, character_name: &str) -> Option<String> {
-    // 1. Character-specific user.md
-    let char_user = config_dir
-        .join("characters")
-        .join(character_name)
-        .join("user.md");
-    if let Ok(content) = std::fs::read_to_string(&char_user) {
+    let workspace_user = character_workspace_file(config_dir, character_name, USER_FILE);
+    if let Ok(content) = std::fs::read_to_string(&workspace_user) {
         info!(
             character = character_name,
             "Using character-specific user definition"
@@ -509,10 +538,9 @@ pub fn resolve_user_definition(config_dir: &Path, character_name: &str) -> Optio
         return Some(content);
     }
 
-    // 2. Global user.md
-    let global_user = config_dir.join("user.md");
-    if let Ok(content) = std::fs::read_to_string(&global_user) {
-        info!("Using global user definition");
+    let legacy_user = character_config_dir(config_dir, character_name).join("user.md");
+    if let Ok(content) = std::fs::read_to_string(&legacy_user) {
+        info!(character = character_name, "Using legacy character-specific user definition");
         return Some(content);
     }
 
@@ -522,7 +550,7 @@ pub fn resolve_user_definition(config_dir: &Path, character_name: &str) -> Optio
 /// Discover available characters by scanning `characters/` directory.
 ///
 /// Returns the names of all subdirectories under `{config_dir}/characters/`
-/// that contain a `character.md` file.
+/// that contain either `workspace/SOUL.md` or the legacy `character.md`.
 pub fn discover_characters(config_dir: &Path) -> Vec<String> {
     let chars_dir = config_dir.join("characters");
     let entries = match std::fs::read_dir(&chars_dir) {
@@ -534,7 +562,9 @@ pub fn discover_characters(config_dir: &Path) -> Vec<String> {
     for entry in entries.flatten() {
         if entry.path().is_dir() {
             let name = entry.file_name().to_string_lossy().to_string();
-            if entry.path().join("character.md").exists() {
+            if entry.path().join(CHARACTER_WORKSPACE_DIR).join(SOUL_FILE).exists()
+                || entry.path().join("character.md").exists()
+            {
                 names.push(name);
             }
         }
@@ -939,7 +969,7 @@ c = 4
     #[test]
     fn character_definition_loaded() {
         let tmp = setup_config_dir(&[(
-            "characters/TestChar/character.md",
+            "characters/TestChar/workspace/SOUL.md",
             "You are TestChar, a helpful assistant.",
         )]);
 
@@ -953,9 +983,8 @@ c = 4
     #[test]
     fn user_definition_character_specific_overrides_global() {
         let tmp = setup_config_dir(&[
-            ("user.md", "Global user definition"),
             (
-                "characters/TestChar/user.md",
+                "characters/TestChar/workspace/USER.md",
                 "Character-specific user definition",
             ),
         ]);
@@ -965,17 +994,20 @@ c = 4
     }
 
     #[test]
-    fn user_definition_falls_back_to_global() {
-        let tmp = setup_config_dir(&[("user.md", "Global user definition")]);
+    fn user_definition_uses_legacy_character_file() {
+        let tmp = setup_config_dir(&[(
+            "characters/TestChar/user.md",
+            "Legacy character-specific user definition",
+        )]);
 
         let def = resolve_user_definition(tmp.path(), "TestChar");
-        assert_eq!(def.as_deref(), Some("Global user definition"));
+        assert_eq!(def.as_deref(), Some("Legacy character-specific user definition"));
     }
 
     #[test]
     fn discover_characters_finds_valid_chars() {
         let tmp = setup_config_dir(&[
-            ("characters/Alice/character.md", "Alice character"),
+            ("characters/Alice/workspace/SOUL.md", "Alice character"),
             ("characters/Bob/character.md", "Bob character"),
             ("characters/EmptyDir/.gitkeep", ""), // no character.md
         ]);

@@ -68,17 +68,18 @@ pub async fn run_compaction(
 
     let mgr = CompactionManager::new(effective.app.memory.compaction.clone());
 
-    // Load existing recap for folding.
-    let recap_path = character_dir.join("memory").join("recap.md");
+    // Load existing recent-memory digest for folding.
+    let recap_path = crate::memory::deferred_edits::recent_memory_digest_path(&character_dir);
     let existing_recap = tokio::fs::read_to_string(&recap_path).await.ok();
 
     let display_name = effective.app.defaults.resolve_display_name();
 
     // Open markdown memory store for existing-memory context and file writes.
-    let markdown_store =
-        crate::memory::markdown_store::MarkdownMemoryStore::open(character_dir.join("memories"))
-            .await
-            .ok();
+    let markdown_store = crate::memory::markdown_store::MarkdownMemoryStore::open(
+        shore_config::character_memory_dir(&effective.dirs.config, character),
+    )
+    .await
+    .ok();
 
     let outcome = mgr
         .compact(

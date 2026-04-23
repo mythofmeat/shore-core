@@ -12,26 +12,25 @@ The core Shore mental model: you aren't chatting with a generic LLM, you're talk
 
 ### How to use
 
-Characters live in `~/.config/shore/characters/<Name>/`. The presence of a `character.md` file makes a character discoverable — no config entry needed.
+Characters live in `~/.config/shore/characters/<Name>/workspace/`. The presence of a `SOUL.md` file makes a character discoverable — no config entry needed.
 
 **Required file:**
 
-- `character.md` — describes personality, background, behavior. Injected into the system prompt as a dedicated block.
+- `SOUL.md` — describes personality, background, behavior. Injected into the system prompt as a dedicated block.
 
 **Optional files:**
 
-- `user.md` — describes who *you* are, from this character's perspective. Falls back to the global `~/.config/shore/user.md`.
-- `prompts/system.md` — overrides the system prompt template. Falls back to global, then to the built-in default.
+- `USER.md` — describes who *you* are, from this character's perspective.
+- `AGENTS.md` — overrides the main system prompt template. Falls back to the built-in default if absent.
+- `TOOLS.md` — extra tool-use guidance injected as its own system block.
+- `HEARTBEAT.md` — heartbeat-only guidance injected during heartbeat ticks, not normal chat turns.
+- `memory/**/*.md` — durable markdown memory files curated by compaction and file tools.
 
-**Resolution order** for `user.md` and `system.md`:
-
-1. Character-specific: `characters/<Name>/user.md` or `characters/<Name>/prompts/system.md`
-2. Global fallback: `~/.config/shore/user.md` or `~/.config/shore/prompts/system.md`
-3. (System prompt only) built-in default: `You are {{char}}, in conversation with {{user}}.`
+Shore migrates old `character.md`, `user.md`, and `prompts/system.md` layouts into the workspace automatically on first load. The old global `~/.config/shore/user.md` is used only as a one-time seed during migration.
 
 ### Template variables
 
-Anywhere in `character.md`, `user.md`, or `system.md`:
+Anywhere in `SOUL.md`, `USER.md`, `AGENTS.md`, or `TOOLS.md`:
 
 | Variable                            | Value                                       |
 | ----------------------------------- | ------------------------------------------- |
@@ -63,7 +62,7 @@ Shore runs against real LLM APIs. You can use different models for different ope
 
 ### Why it exists
 
-A serious AI character does a lot of background work: summarizing conversations into memory, running tool-use loops, periodically reflecting via heartbeat ticks, looking things up, writing embeddings. If every one of those jobs used the same big model, cost and latency would be miserable. Per-operation model slots let you pay for quality where it matters and speed where it doesn't.
+A serious AI character does a lot of background work: summarizing conversations into memory, running tool-use loops, periodically reflecting via heartbeat ticks, and looking things up. If every one of those jobs used the same big model, cost and latency would be miserable. Per-operation model slots let you pay for quality where it matters and speed where it doesn't.
 
 ### Supported providers
 

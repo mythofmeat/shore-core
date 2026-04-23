@@ -45,25 +45,6 @@ pub fn config_check(ctx: &CommandContext) -> CommandResult {
         ));
     }
 
-    // Check: embedding models
-    if ctx.config.models.embedding.is_empty() {
-        warnings.push(
-            "No embedding models configured. Memory vector search will be unavailable.".into(),
-        );
-    } else {
-        info.push(format!(
-            "{} embedding model(s) configured",
-            ctx.config.models.embedding.len()
-        ));
-    }
-
-    // Check: default embedding reference
-    if let Some(ref emb) = ctx.config.app.defaults.embedding {
-        if !ctx.config.models.embedding.contains_key(emb.as_str()) {
-            warnings.push(format!("Default embedding \"{emb}\" not found in catalog"));
-        }
-    }
-
     // Check: memory memory model reference
     if let Some(ref ma) = ctx.config.app.defaults.memory_query {
         if ctx.config.models.find_model(ma).is_err() {
@@ -102,7 +83,7 @@ pub fn config_check(ctx: &CommandContext) -> CommandResult {
         "data_dir": ctx.config.dirs.data.display().to_string(),
         "chat_models": ctx.config.models.chat.len(),
         "tool_models": ctx.config.models.tools.len(),
-        "embedding_models": ctx.config.models.embedding.len(),
+        "memory_mode": "markdown",
     }))
 }
 

@@ -75,9 +75,9 @@ pub fn resolve_memory_model(ctx: &CommandContext) -> Result<ResolvedModel, (Erro
         .ok_or_else(|| (ErrorCode::InternalError, "No model configured".to_string()))
 }
 
-/// Build the legacy memory directory path for a character.
+/// Build the active prompt directory path for a character.
 pub fn memory_dir(ctx: &CommandContext, char_name: &str) -> PathBuf {
-    ctx.data_dir.join(char_name).join("memory")
+    crate::memory::deferred_edits::active_prompt_dir(&ctx.data_dir.join(char_name))
 }
 
 /// Dispatch a command to the appropriate handler.

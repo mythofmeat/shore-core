@@ -39,12 +39,19 @@ pub fn status(engine: &ConversationEngine, ctx: &CommandContext) -> CommandResul
         .or(ctx.config.app.defaults.model.as_deref());
 
     let tokens = lock_or_recover("command session tokens", &ctx.session_tokens);
+    let character_data_dir = ctx.config.dirs.data.join(engine.character_name());
+    let pending_deferred_edits =
+        crate::memory::deferred_edits::pending_deferred_edit_paths(&character_data_dir)
+            .unwrap_or_default();
     Ok(json!({
         "character": engine.character_name(),
         "message_count": engine.message_count(),
         "active_model": effective_model,
         "config_dir": ctx.config.dirs.config.display().to_string(),
         "data_dir": ctx.config.dirs.data.display().to_string(),
+        "memory_mode": "markdown",
+        "pending_deferred_edit_count": pending_deferred_edits.len(),
+        "pending_deferred_edits": pending_deferred_edits,
         "tokens": {
             "input": tokens.input,
             "output": tokens.output,

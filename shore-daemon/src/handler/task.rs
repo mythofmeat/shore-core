@@ -4,6 +4,7 @@ use std::time::Instant;
 
 use serde_json::{json, Value};
 use shore_config::models::Sdk;
+use shore_config::{AGENTS_FILE, SOUL_FILE, TOOLS_FILE, USER_FILE};
 use shore_protocol::types::{ContentBlock, Message, Role};
 use tracing::{debug, info, instrument};
 
@@ -190,17 +191,29 @@ pub(super) async fn handle_generation(
         ctx.autonomy.notify_user_message(&char_name, turn_count);
     }
 
-    let (character_definition, user_definition) = {
-        let registry = ctx.registry.lock().await;
-        (
-            registry.character_definition(&char_name),
-            registry.user_definition(&char_name),
-        )
-    };
-
     let messages = engine_arc.lock().await.messages().to_vec();
 
     let character_data_dir = data_dir.join(&char_name);
+    if let Err(e) = crate::memory::deferred_edits::ensure_active_prompt_snapshot(
+        &character_data_dir,
+        &effective_config.dirs.config,
+        &char_name,
+    ) {
+        debug!(character = %char_name, error = %e, "failed to ensure active prompt snapshot");
+    }
+
+    let character_definition =
+        crate::memory::deferred_edits::load_active_prompt_file(&character_data_dir, SOUL_FILE);
+    let user_definition =
+        crate::memory::deferred_edits::load_active_prompt_file(&character_data_dir, USER_FILE);
+    let system_prompt =
+        crate::memory::deferred_edits::load_active_prompt_file(&character_data_dir, AGENTS_FILE);
+    let tools_guidance =
+        crate::memory::deferred_edits::load_active_prompt_file(&character_data_dir, TOOLS_FILE);
+    let recent_memory_digest = crate::memory::deferred_edits::load_active_prompt_file(
+        &character_data_dir,
+        crate::memory::deferred_edits::RECENT_MEMORY_DIGEST_FILE,
+    );
     let display_name = effective_config.app.defaults.resolve_display_name();
     let tool_toggles = &effective_config.app.behavior.tool_use.tools;
     let capabilities = CapabilitiesConfig {
@@ -213,13 +226,14 @@ pub(super) async fn handle_generation(
     };
 
     let prompt_result = prompt::assemble_prompt(&PromptParams {
-        config_dir: &effective_config.dirs.config,
         character_name: &char_name,
         display_name: &display_name,
+        system_prompt: system_prompt.as_deref(),
+        tools_guidance: tools_guidance.as_deref(),
         character_definition: character_definition.as_deref(),
         user_definition: user_definition.as_deref(),
+        recent_memory_digest: recent_memory_digest.as_deref(),
         is_private: false,
-        character_data_dir: &character_data_dir,
         messages: &messages,
         max_context_tokens: resolved.max_context_tokens,
         max_output_tokens: resolved.max_tokens,

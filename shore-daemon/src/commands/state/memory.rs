@@ -12,16 +12,17 @@ use crate::memory::compaction_impls::{RealCompactionLlm, RealConversationManager
 use crate::memory::markdown_query;
 use crate::memory::markdown_store::MarkdownMemoryStore;
 use crate::memory::memory_llm::RealMemoryLlm;
+use shore_config::character_memory_dir;
 use shore_config::resolve_prompt_template;
 use shore_ledger::CallType;
 
-use crate::commands::{memory_dir, resolve_memory_model, CommandContext, CommandResult};
+use crate::commands::{resolve_memory_model, CommandContext, CommandResult};
 
 async fn open_markdown_store(
     ctx: &CommandContext,
     char_name: &str,
 ) -> Result<MarkdownMemoryStore, (ErrorCode, String)> {
-    MarkdownMemoryStore::open(ctx.data_dir.join(char_name).join("memories"))
+    MarkdownMemoryStore::open(character_memory_dir(&ctx.config.dirs.config, char_name))
         .await
         .map_err(|e| {
             (
@@ -41,9 +42,13 @@ pub fn memory_changelog(
 
     let char_name = engine.character_name();
     let dreams_path = ctx
-        .data_dir
+        .config
+        .dirs
+        .config
+        .join("characters")
         .join(char_name)
-        .join("memories")
+        .join("workspace")
+        .join("memory")
         .join("DREAMS.md");
     if !dreams_path.exists() {
         return Ok(json!({ "changelog": [], "character": char_name }));
@@ -252,7 +257,8 @@ pub async fn compact(
 
     let mgr = CompactionManager::new(ctx.config.app.memory.compaction.clone());
 
-    let recap_path = memory_dir(ctx, &char_name).join("recap.md");
+    let recap_path =
+        crate::memory::deferred_edits::recent_memory_digest_path(&ctx.config.dirs.data.join(&char_name));
     let existing_recap = std::fs::read_to_string(&recap_path).ok();
 
     let active_content = std::fs::read_to_string(engine.character_dir().join("active.jsonl"))
@@ -266,7 +272,7 @@ pub async fn compact(
     let display_name = ctx.config.app.defaults.resolve_display_name();
 
     let markdown_store = crate::memory::markdown_store::MarkdownMemoryStore::open(
-        engine.character_dir().join("memories"),
+        character_memory_dir(&ctx.config.dirs.config, &char_name),
     )
     .await
     .ok();
