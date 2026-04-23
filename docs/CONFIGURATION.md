@@ -192,8 +192,8 @@ exec = true                # allowlisted workspace commands
 
 **When to change:**
 - Set `enabled = false` to disable tool use entirely.
-- Set `memory = false` to disable all memory tools and block `memories/...` access through workspace tools.
-- Granular `memory_read` / `memory_write` also gate workspace `memories/...` reads and writes; `exec` is hidden unless both are enabled.
+- Set `memory = false` to disable all memory tools and block `memory/...` access through workspace tools.
+- Granular `memory_read` / `memory_write` also gate workspace `memory/...` reads and writes; `exec` is hidden unless both are enabled.
 - Drop individual tool toggles to `false` when you want the character to not have access (e.g. `generate_image = false` if you don't have image-gen credits).
 - Lower `max_iterations` if the character is going in circles; raise it if complex tasks need more rounds.
 

@@ -130,8 +130,8 @@ pub trait ToolContext: Sync {
         ""
     }
 
-    /// Queue a deferred edit for a protected file (character.md, user.md,
-    /// prompts/system.md). Called by the tool dispatch layer after a
+    /// Queue a deferred edit for a protected workspace bootstrap file
+    /// (SOUL.md, USER.md, AGENTS.md, TOOLS.md, HEARTBEAT.md). Called by the tool dispatch layer after a
     /// successful write or edit to a protected path. The actual copy to
     /// the config dir happens at the next compaction boundary.
     fn defer_edit(&self, _path: &str) {}
@@ -566,7 +566,10 @@ mod tests {
             .expect("write present");
 
         assert!(read["description"].as_str().unwrap().contains("memory"));
-        assert!(!write["description"].as_str().unwrap().contains("memory/..."));
+        assert!(!write["description"]
+            .as_str()
+            .unwrap()
+            .contains("memory/..."));
         assert!(defs.iter().all(|d| d["name"] != "memory_write"));
         assert!(defs.iter().all(|d| d["name"] != "exec"));
     }

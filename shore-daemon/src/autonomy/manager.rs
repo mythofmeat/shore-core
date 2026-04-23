@@ -1026,11 +1026,7 @@ async fn execute_idle_compaction(character: &str, ctx: &TickContext) {
 /// This intentionally follows the OpenClaw-style pattern: a small checklist,
 /// recent daily notes, and explicit "do nothing if nothing needs doing"
 /// guidance instead of an always-expanding narrative prompt.
-fn build_heartbeat_prompt(
-    recent_notes: &str,
-    user_name: &str,
-    default_interval: &str,
-) -> String {
+fn build_heartbeat_prompt(recent_notes: &str, user_name: &str, default_interval: &str) -> String {
     let recent_block = if recent_notes.is_empty() {
         String::new()
     } else {
@@ -1089,9 +1085,9 @@ async fn load_recent_daily_notes(memory_dir: &Path) -> String {
         match crate::memory::markdown_store::MarkdownMemoryStore::open(memory_dir.to_path_buf())
             .await
         {
-        Ok(store) => store,
-        Err(_) => return String::new(),
-    };
+            Ok(store) => store,
+            Err(_) => return String::new(),
+        };
 
     let notes = match crate::memory::markdown_query::recent_daily_notes(&store, 3).await {
         Ok(notes) => notes,
@@ -1369,7 +1365,8 @@ async fn execute_heartbeat_tick(
     } else {
         format!("{} minutes", default_interval_secs / 60)
     };
-    let recent_notes = load_recent_daily_notes(&character_memory_dir(&lc.dirs.config, character)).await;
+    let recent_notes =
+        load_recent_daily_notes(&character_memory_dir(&lc.dirs.config, character)).await;
     let heartbeat_instructions =
         load_heartbeat_instructions(&character_data_dir).replace("{user}", &user_name);
     let heartbeat_prompt = build_heartbeat_prompt(&recent_notes, &user_name, &default_interval_str);
@@ -1675,11 +1672,8 @@ async fn execute_heartbeat_tick(
     if let Some(recap) = recap_text {
         info!(character, recap = %truncate_summary(&recap, 200), "Heartbeat: recap written");
         let preview = truncate_summary(&recap, 80);
-        match crate::memory::markdown_store::MarkdownMemoryStore::open(
-            data_dir.join(character).join("memories"),
-        )
-        .await
-        {
+        let memory_dir = character_memory_dir(&lc.dirs.config, character);
+        match crate::memory::markdown_store::MarkdownMemoryStore::open(memory_dir).await {
             Ok(store) => match crate::memory::markdown_query::append_daily_note(
                 &store,
                 tick_started_at,

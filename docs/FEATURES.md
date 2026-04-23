@@ -151,10 +151,10 @@ A character without durable memory is a parrot. Shore characters accumulate cont
 Shore keeps each character's long-term memory as markdown under:
 
 ```text
-$XDG_DATA_HOME/shore/<Character>/memories/
+$XDG_CONFIG_HOME/shore/characters/<Character>/workspace/memory/
 ```
 
-The assistant can work with those files through memory tools (`memory_read`, `memory_write`, `memory_search`, `memory_list`) and through workspace file tools using the `memories/...` prefix when memory access is enabled. The only SQLite migration path is `scripts/migrate-memory.py`.
+The assistant can work with those files through memory tools (`memory_read`, `memory_write`, `memory_search`, `memory_list`) and through workspace file tools using the `memory/...` prefix when memory access is enabled. The only SQLite migration path is `scripts/migrate-memory.py`.
 
 ### Compaction
 
@@ -174,7 +174,7 @@ shore memory --direct "doom"          # direct text-search result formatting
 shore memory compact                  # compact old conversation into markdown memory
 ```
 
-For direct inspection, open the character's `memories/` directory or ask the character to use `memory_list`, `memory_read`, `memory_write`, and `memory_search`. The old interactive memory shell, collation, purge, and reindex commands are removed.
+For direct inspection, open the character's `workspace/memory/` directory or ask the character to use `memory_list`, `memory_read`, `memory_write`, and `memory_search`. The old interactive memory shell, collation, purge, and reindex commands are removed.
 
 See [`CONFIGURATION.md` — `[memory]`](CONFIGURATION.md#memory) for tunables.
 

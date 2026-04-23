@@ -2,10 +2,6 @@ use super::{ToolCategory, ToolContext, ToolDef, ToolError};
 use crate::memory::markdown_query;
 use serde_json::{json, Value};
 
-fn truncate_chars(text: &str, limit: usize) -> String {
-    text.chars().take(limit).collect()
-}
-
 // ---------------------------------------------------------------------------
 // Tool definitions
 // ---------------------------------------------------------------------------
@@ -29,7 +25,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "memory_read",
-            description: "Read the full content of a single memory file by its relative path from your memories directory. Use this AFTER `memory_search` points you to a relevant file, or when you already know the exact path and need the complete content. Do not use this for discovery — use `memory_search` or `memory_list` first.",
+            description: "Read the full content of a single memory file by its relative path from your memory directory. Use this AFTER `memory_search` points you to a relevant file, or when you already know the exact path and need the complete content. Do not use this for discovery — use `memory_search` or `memory_list` first.",
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -44,7 +40,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "memory_write",
-            description: "Write or overwrite a memory file in your memories directory. Use this to save new facts, update existing memory files, or reorganize your knowledge. Prefer updating existing files over creating new ones. Auto-creates parent directories.",
+            description: "Write or overwrite a memory file in your memory directory. Use this to save new facts, update existing memory files, or reorganize your knowledge. Prefer updating existing files over creating new ones. Auto-creates parent directories.",
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -78,7 +74,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "memory_list",
-            description: "List all memory files in your memories directory, optionally filtered by a subdirectory. Use this to get an overview of what memories you have, to discover files in a specific category, or when you're unsure whether a topic has already been saved.",
+            description: "List all memory files in your memory directory, optionally filtered by a subdirectory. Use this to get an overview of what memories you have, to discover files in a specific category, or when you're unsure whether a topic has already been saved.",
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -188,12 +184,8 @@ pub async fn handle_memory_search(input: Value, ctx: &dyn ToolContext) -> Result
     let hits: Vec<Value> = results
         .into_iter()
         .map(|entry| {
-            // Truncate content to a reasonable excerpt for the LLM
-            let excerpt = if entry.content.chars().count() > 400 {
-                format!("{}...", truncate_chars(&entry.content, 400))
-            } else {
-                entry.content.clone()
-            };
+            let excerpt =
+                crate::memory::markdown_query::excerpt_for_query(&entry.content, query, 400);
             json!({
                 "path": entry.path,
                 "excerpt": excerpt,
