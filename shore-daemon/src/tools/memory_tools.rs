@@ -1,28 +1,6 @@
 use super::{ToolCategory, ToolContext, ToolDef, ToolError};
-use crate::memory::agent::RealAgentIndexer;
+use crate::memory::markdown_query;
 use serde_json::{json, Value};
-
-fn build_indexer<'a>(
-    search_ctx: Option<&'a crate::memory::agent::AgentSearchContext>,
-) -> Option<RealAgentIndexer<'a>> {
-    search_ctx.map(RealAgentIndexer::new)
-}
-
-async fn sync_markdown_store(ctx: &dyn ToolContext, reason: &str) -> Result<(), ToolError> {
-    let search_ctx = ctx.search_context();
-    let real_indexer = build_indexer(search_ctx);
-    let indexer = real_indexer
-        .as_ref()
-        .map(|i| i as &dyn crate::memory::agent::AgentIndexer);
-
-    if let Some(store) = ctx.markdown_store() {
-        crate::memory::markdown_index::sync_store_changes(ctx.memory_db(), store, indexer, reason)
-            .await
-            .map_err(ToolError::Io)?;
-    }
-
-    Ok(())
-}
 
 fn truncate_chars(text: &str, limit: usize) -> String {
     text.chars().take(limit).collect()
@@ -36,7 +14,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
     vec![
         ToolDef {
             name: "memory",
-            description: "Advanced memory query through a researcher agent — use this for complex, multi-step memory investigations that require reasoning across many entries, or for updates that need structured database operations. For simple lookups, prefer `memory_search` followed by `memory_read`. For saving facts, prefer `memory_write`. This tool is powerful but slower; reach for the direct file tools first.",
+            description: "Synthesize an answer from your markdown memory files. Use this when a question needs reasoning across several files after direct file search would be cumbersome. It reads your memory files and answers from them only; for explicit file discovery, prefer `memory_search` + `memory_read`, and for saving facts, prefer `memory_write`.",
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -47,7 +25,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
                 },
                 "required": ["request"]
             }),
-            category: ToolCategory::MemoryWrite,
+            category: ToolCategory::MemoryRead,
         },
         ToolDef {
             name: "memory_read",
@@ -120,62 +98,26 @@ pub fn tool_defs() -> Vec<ToolDef> {
 // Handlers
 // ---------------------------------------------------------------------------
 
-/// Handle the `memory` tool — search or save via the memory researcher/agent.
-///
-/// Routing (matching V1):
-/// 1. If researcher available → researcher.research(request, ...)
-/// 2. Else → agent.ask(request, ...)
-///
-/// Returns the synthesis text as the tool result (natural language, same as V1).
+/// Handle the `memory` tool — answer a question from markdown files only.
 pub async fn handle_memory(input: Value, ctx: &dyn ToolContext) -> Result<Value, ToolError> {
     let request = input
         .get("request")
         .and_then(|v| v.as_str())
         .ok_or_else(|| ToolError::InvalidArgs("missing 'request' field".to_string()))?;
 
-    sync_markdown_store(ctx, "memory_tool_sync").await?;
-
-    let agent = ctx.memory_agent();
-    let db = ctx.memory_db();
-    let agent_llm = ctx.agent_llm();
-    let agent_model = ctx.agent_model();
-    let search_ctx = ctx.search_context();
-    // Build a real indexer from the search context when available; falls back to None.
-    let real_indexer = build_indexer(search_ctx);
-    let indexer = real_indexer
-        .as_ref()
-        .map(|i| i as &dyn crate::memory::agent::AgentIndexer);
-
-    let result_text = if let Some(researcher) = ctx.memory_researcher() {
-        // Tier 2: cheap model drives the inner agent
-        let researcher_llm = ctx
-            .researcher_llm()
-            .ok_or_else(|| ToolError::InvalidArgs("researcher LLM not configured".into()))?;
-        let researcher_model = ctx
-            .researcher_model()
-            .ok_or_else(|| ToolError::InvalidArgs("researcher model not configured".into()))?;
-
-        researcher
-            .research(
-                request,
-                researcher_llm,
-                researcher_model,
-                agent,
-                agent_llm,
-                agent_model,
-                db,
-                indexer,
-                search_ctx,
-            )
-            .await
-            .map_err(ToolError::Agent)?
-    } else {
-        // Direct agent query (no researcher)
-        agent
-            .ask(request, agent_llm, db, indexer, search_ctx, agent_model)
-            .await
-            .map_err(ToolError::Agent)?
-    };
+    let store = ctx
+        .markdown_store()
+        .ok_or_else(|| ToolError::InvalidArgs("markdown memory store not available".to_string()))?;
+    let result_text = markdown_query::answer_query(
+        request,
+        ctx.character_name(),
+        "the user",
+        store,
+        ctx.agent_llm(),
+        ctx.agent_model(),
+    )
+    .await
+    .map_err(|e| ToolError::Io(e.to_string()))?;
 
     Ok(json!(result_text))
 }
@@ -223,21 +165,6 @@ pub async fn handle_memory_write(input: Value, ctx: &dyn ToolContext) -> Result<
         .write(path, content)
         .await
         .map_err(|e| ToolError::Io(e.to_string()))?;
-
-    let search_ctx = ctx.search_context();
-    let real_indexer = build_indexer(search_ctx);
-    let indexer = real_indexer
-        .as_ref()
-        .map(|i| i as &dyn crate::memory::agent::AgentIndexer);
-    crate::memory::markdown_index::sync_markdown_entry_content(
-        ctx.memory_db(),
-        indexer,
-        path,
-        content,
-        "memory_write",
-    )
-    .await
-    .map_err(ToolError::Io)?;
 
     Ok(json!({"status": "written", "path": path, "bytes": content.len()}))
 }
@@ -339,22 +266,32 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_memory_returns_text() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = MarkdownMemoryStore::open(tmp.path().join("memories"))
+            .await
+            .unwrap();
+        store
+            .write("people/user.md", "# User\n\n- Likes chocolate")
+            .await
+            .unwrap();
+
         let agent_llm = MockAgentLlm::new(vec![AgentLlmResponse {
-            text: "No relevant memories found.".into(),
+            text: "The user likes chocolate.".into(),
             content_blocks: vec![ContentBlock::Text {
-                text: "No relevant memories found.".into(),
+                text: "The user likes chocolate.".into(),
             }],
             finish_reason: "end_turn".into(),
         }]);
 
-        let ctx = TestToolContext::new().with_agent_llm(agent_llm);
+        let ctx = TestToolContext::new()
+            .with_agent_llm(agent_llm)
+            .with_markdown_store(store);
 
         let result = handle_memory(json!({"request": "What do I like?"}), &ctx)
             .await
             .unwrap();
 
-        // New handler returns synthesis text, not structured JSON
-        assert_eq!(result.as_str().unwrap(), "No relevant memories found.");
+        assert_eq!(result.as_str().unwrap(), "The user likes chocolate.");
     }
 
     #[tokio::test]
@@ -363,70 +300,6 @@ mod tests {
 
         let result = handle_memory(json!({}), &ctx).await;
         assert!(matches!(result, Err(ToolError::InvalidArgs(_))));
-    }
-
-    #[tokio::test]
-    async fn test_handle_memory_with_researcher() {
-        use crate::memory::researcher::MemoryResearcher;
-        use crate::test_support::test_model;
-
-        // Researcher LLM: calls ask_memory_agent, then synthesizes.
-        let researcher_llm = MockAgentLlm::new(vec![
-            AgentLlmResponse {
-                text: String::new(),
-                content_blocks: vec![ContentBlock::ToolUse {
-                    id: "tu_1".into(),
-                    name: "ask_memory_agent".into(),
-                    input: serde_json::json!({"question": "What does Alice like?"}),
-                }],
-                finish_reason: "tool_use".into(),
-            },
-            AgentLlmResponse {
-                text: "Alice likes chocolate.".into(),
-                content_blocks: vec![ContentBlock::Text {
-                    text: "Alice likes chocolate.".into(),
-                }],
-                finish_reason: "end_turn".into(),
-            },
-        ]);
-
-        // Agent LLM: responds when the researcher queries the inner agent.
-        let agent_llm = MockAgentLlm::new(vec![AgentLlmResponse {
-            text: "Alice likes chocolate according to entry e1.".into(),
-            content_blocks: vec![ContentBlock::Text {
-                text: "Alice likes chocolate according to entry e1.".into(),
-            }],
-            finish_reason: "end_turn".into(),
-        }]);
-
-        let researcher = MemoryResearcher::new(String::new(), String::new());
-
-        let ctx = TestToolContext::new()
-            .with_agent_llm(agent_llm)
-            .with_researcher(researcher, researcher_llm, test_model());
-
-        let result = handle_memory(json!({"request": "What does Alice like?"}), &ctx)
-            .await
-            .unwrap();
-
-        assert!(result.as_str().unwrap().contains("chocolate"));
-    }
-
-    #[tokio::test]
-    async fn test_handle_memory_researcher_missing_llm() {
-        use crate::memory::researcher::MemoryResearcher;
-
-        // Build context with researcher but NO researcher LLM.
-        let mut ctx = TestToolContext::new();
-        ctx.researcher = Some(MemoryResearcher::new(String::new(), String::new()));
-        // researcher_llm_val and researcher_model_val remain None.
-
-        let result = handle_memory(json!({"request": "test"}), &ctx).await;
-        assert!(
-            matches!(result, Err(ToolError::InvalidArgs(_))),
-            "Expected InvalidArgs for missing researcher LLM, got {:?}",
-            result
-        );
     }
 
     // -- Markdown memory tools tests ------------------------------------------
@@ -451,16 +324,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(read["content"], "# Alice\n\nLikes chocolate.");
-        let shadow = ctx
-            .db
-            .get_entry_by_file_path("people/alice.md")
-            .unwrap()
-            .unwrap();
-        assert_eq!(shadow.summary_text, "# Alice\n\nLikes chocolate.");
     }
 
     #[tokio::test]
-    async fn test_handle_memory_syncs_markdown_store_before_query() {
+    async fn test_handle_memory_reads_existing_markdown_files() {
         let tmp = tempfile::tempdir().unwrap();
         let store = MarkdownMemoryStore::open(tmp.path().join("memories"))
             .await
@@ -485,13 +352,7 @@ mod tests {
         handle_memory(json!({"request": "What does Alice like?"}), &ctx)
             .await
             .unwrap();
-
-        let shadow = ctx
-            .db
-            .get_entry_by_file_path("people/alice.md")
-            .unwrap()
-            .unwrap();
-        assert_eq!(shadow.summary_text, "# Alice\n\nLikes chocolate.");
+        assert_eq!(ctx.agent_llm.call_count(), 1);
     }
 
     #[tokio::test]

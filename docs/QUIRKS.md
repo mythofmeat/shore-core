@@ -32,6 +32,8 @@ Scope guardrails:
 
 - **Sliding message breakpoints require a pinned system anchor.** Using `cache_depth_turns` alone (without any `cache_pinned_position`) causes intermittent full prefix rewrites — `cache_read_tokens=0` with a full `cache_creation_tokens` despite byte-identical prefix content. This affects all depths except depth=0. Adding any pinned system breakpoint (`[0]` or `[-1]`) completely fixes it. This is undocumented; SillyTavern works because it always includes system-level breakpoints. See `docs/PROMPT_CACHING.md` for full test results.
 
+- **`{{date}}` / `{{time}}` are intentionally blank in the base system prompt.** Shore now blanks those placeholders in `assemble_prompt()` to keep the cached prefix stable across turns. If a character needs the current time, it must use `check_time` or a heartbeat-only prompt. This is deliberate, not a template bug.
+
 ## Image Handling
 
 - **Anthropic 1h cache TTL pricing differs from OpenRouter's reported 5m prices.** OpenRouter's `/api/v1/models` endpoint reports cache_write prices for the 5-minute TTL. Shore uses the 1-hour TTL (configured via `cache_ttl = "1h"`), where cache_write costs are 2x input price (5-minute price is 1.25x input). The PricingEngine hardcodes this multiplier (`ANTHROPIC_1H_CACHE_WRITE_MULTIPLIER = 1.6`). If Anthropic changes the relationship between TTL tiers, this multiplier needs updating.

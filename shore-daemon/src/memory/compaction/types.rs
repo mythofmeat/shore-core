@@ -42,7 +42,7 @@ pub enum CompactionOutcome {
 /// Result of an actual compaction.
 #[derive(Debug)]
 pub struct CompactionResult {
-    pub entries_created: Vec<String>,
+    pub memory_files_written: Vec<String>,
     pub conversation_id: String,
     pub new_conversation_id: String,
     pub message_count: usize,
@@ -87,8 +87,6 @@ pub struct RetentionParams {
 pub enum CompactionError {
     #[error("llm: {0}")]
     Llm(String),
-    #[error("db: {0}")]
-    Db(String),
     #[error("parse: {0}")]
     Parse(String),
     #[error("private conversation: skipped")]
@@ -118,7 +116,7 @@ pub trait CompactionLlm: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Result<String, CompactionError>> + Send + '_>>;
 }
 
-/// Vector indexer for newly created entries.
+/// Legacy vector indexer trait retained temporarily for test/support code.
 pub trait VectorIndexer: Send + Sync {
     fn index_entry(
         &self,
@@ -126,8 +124,6 @@ pub trait VectorIndexer: Send + Sync {
         text: &str,
     ) -> Pin<Box<dyn Future<Output = Result<(), CompactionError>> + Send + '_>>;
 
-    /// Remove a previously indexed entry. Used for rollback on compaction failure.
-    /// Default no-op — impls that support deletion should override.
     fn remove_entry(&self, _entry_id: &str) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
         Box::pin(async {})
     }

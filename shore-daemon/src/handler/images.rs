@@ -10,20 +10,12 @@ use tracing::{info, warn};
 
 /// Format the text annotation that accompanies a user-uploaded image in
 /// the conversation. The annotation does two jobs at once: it tells the
-/// character where the image landed on disk, AND it instructs the
-/// character to save the image to memory with context via `remember_image`.
-///
-/// Bundling the instruction into the annotation (instead of carrying it in
-/// the always-on `<capabilities>` block) scopes the nudge to the moment
-/// it's relevant — nothing about remembering images appears in the cached
-/// prefix when no image has been shared.
+/// character where the image landed on disk, and reminds them that the file
+/// can be referenced later by path if they want to send it back.
 pub(crate) fn format_image_annotation(rel_path: &str) -> String {
     format!(
         "[Attached image saved as: {rel_path}]\n\
-         When the user shares an image with you, you should add it to your memories with a description \
-         capturing context: who shared it, why, what it means, etc. Use the path above with remember_image. \
-         The conversational context is the most valuable part — 'a photo of Alex's cat Whiskers' is far \
-         better than 'a photo of a cat'."
+         If you want to reference this image again later, use the saved path above with `send_image`."
     )
 }
 

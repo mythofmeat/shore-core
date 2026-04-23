@@ -68,7 +68,6 @@ pub struct CapabilitiesConfig {
     pub interiority_enabled: bool,
     pub scratchpad_enabled: bool,
     pub memory_enabled: bool,
-    pub image_memory_enabled: bool,
     pub send_image_enabled: bool,
     pub generate_image_enabled: bool,
     pub web_search_enabled: bool,
@@ -79,7 +78,6 @@ impl CapabilitiesConfig {
         self.interiority_enabled
             || self.scratchpad_enabled
             || self.memory_enabled
-            || self.image_memory_enabled
             || self.send_image_enabled
             || self.generate_image_enabled
             || self.web_search_enabled
@@ -183,13 +181,12 @@ pub fn assemble_prompt(params: &PromptParams<'_>) -> AssembledPrompt {
         .unwrap_or(DEFAULT_MAX_OUTPUT_TOKENS);
 
     // ── 1. Build template variables ───────────────────────────────────
-    let now = Local::now();
     let mut vars = HashMap::new();
     vars.insert("char".into(), params.character_name.to_string());
     vars.insert("character_name".into(), params.character_name.to_string());
     vars.insert("user".into(), params.display_name.to_string());
-    vars.insert("date".into(), now.format("%A, %Y-%m-%d").to_string());
-    vars.insert("time".into(), now.format("%H:%M").to_string());
+    vars.insert("date".into(), String::new());
+    vars.insert("time".into(), String::new());
 
     // ── 2. Resolve and render system template ─────────────────────────
     let custom_template =
@@ -730,7 +727,6 @@ mod tests {
             interiority_enabled: true,
             scratchpad_enabled: true,
             memory_enabled: true,
-            image_memory_enabled: true,
             send_image_enabled: true,
             generate_image_enabled: true,
             web_search_enabled: true,
@@ -1248,7 +1244,7 @@ mod tests {
     }
 
     #[test]
-    fn assemble_prompt_has_date_time() {
+    fn assemble_prompt_blanks_date_time_for_cache_stability() {
         let tmp = TempDir::new().unwrap();
         let data_dir = tmp.path().join("data");
 
@@ -1265,11 +1261,9 @@ mod tests {
         let result = assemble_prompt(&params);
 
         let system_text = &result.system[0].content;
-        // Should not contain literal template tags.
         assert!(!system_text.contains("{{date}}"));
         assert!(!system_text.contains("{{time}}"));
-        // Should contain a year (proving substitution happened).
-        assert!(system_text.contains("202"));
+        assert_eq!(system_text, "Today is  at .");
     }
 
     #[test]

@@ -81,12 +81,10 @@ mod tests {
 }
 
 use crate::engine::tools;
-use crate::memory::agent::{AgentSearchContext, CallerIdentity, MemoryAgent};
 use crate::memory::agent_llm::RealAgentLlm;
-use crate::memory::compaction_impls::resolve_embed_config;
+use crate::memory::compaction_impls::resolve_image_gen_config;
 use crate::memory::markdown_store::MarkdownMemoryStore;
-use crate::memory::researcher::MemoryResearcher;
-use crate::tools::context::{NoopRag, SharedToolContext};
+use crate::tools::context::SharedToolContext;
 use shore_config::LoadedConfig;
 use shore_ledger::CallType;
 use shore_llm_client::retry::{self, RetryDecision, RetryPolicy};
@@ -187,7 +185,7 @@ pub(super) async fn stream_with_retry(
 }
 
 /// Phase 11: Set up tool context and run the tool loop.
-#[instrument(skip(ctx, effective_config, agent_model, researcher_model, character_definition, user_definition, request, result), fields(char = char_name))]
+#[instrument(skip(ctx, effective_config, agent_model, _researcher_model, _character_definition, _user_definition, request, result), fields(char = char_name))]
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn run_tool_phase(
     ctx: &GenContext,
@@ -195,64 +193,18 @@ pub(super) async fn run_tool_phase(
     char_name: &str,
     effective_config: &LoadedConfig,
     agent_model: &shore_config::models::ResolvedModel,
-    researcher_model: &Option<shore_config::models::ResolvedModel>,
-    character_definition: &Option<String>,
-    user_definition: &Option<String>,
+    _researcher_model: &Option<shore_config::models::ResolvedModel>,
+    _character_definition: &Option<String>,
+    _user_definition: &Option<String>,
     request: &mut shore_llm_client::types::LlmRequest,
     result: shore_llm_client::types::StreamResult,
 ) -> Result<tools::ToolLoopResult, Box<dyn std::error::Error + Send + Sync>> {
     debug!(character = char_name, "run_tool_phase starting");
-    let memory_db = {
-        let mut registry = ctx.registry.lock().await;
-        match registry.get_or_open_db(char_name) {
-            Ok(db) => db,
-            Err(e) => {
-                warn!(
-                    character = char_name,
-                    error = %e,
-                    "Failed to open memory DB — memory tools disabled for this turn"
-                );
-                return Ok(tools::ToolLoopResult {
-                    result,
-                    intermediate_messages: vec![],
-                });
-            }
-        }
-    };
-
-    let char_def = character_definition.clone().unwrap_or_default();
-    let user_def = user_definition.clone().unwrap_or_default();
-
-    let image_gen_config = crate::memory::compaction_impls::resolve_image_gen_config(
+    let image_gen_config = resolve_image_gen_config(
         effective_config.app.defaults.image_generation.as_deref(),
         &effective_config.models.image_generation,
     )
     .ok();
-
-    // Build semantic search context (graceful: None if no embedding model configured).
-    let search_ctx = match resolve_embed_config(
-        effective_config.app.defaults.embedding.as_deref(),
-        &effective_config.models.embedding,
-    ) {
-        Ok(embed_config) => {
-            let mut registry = ctx.registry.lock().await;
-            match registry
-                .get_or_open_vs(char_name, embed_config.dimensions)
-                .await
-            {
-                Ok(vs) => Some(AgentSearchContext::new(
-                    vs,
-                    ctx.llm_client.inner().clone(),
-                    embed_config,
-                )),
-                Err(e) => {
-                    warn!("Failed to open vector store for semantic search: {e}");
-                    None
-                }
-            }
-        }
-        Err(_) => None,
-    };
 
     let character_data_dir = data_dir.join(char_name);
     let config_dir = &effective_config.dirs.config;
@@ -273,31 +225,12 @@ pub(super) async fn run_tool_phase(
 
     let tool_ctx = HandlerToolContext {
         inner: SharedToolContext {
-            db: memory_db,
-            agent: MemoryAgent::one_shot(
-                CallerIdentity::Char,
-                char_name,
-                &effective_config.app.defaults.resolve_display_name(),
-            ),
             agent_llm: RealAgentLlm::new(
                 ctx.llm_client.clone(),
                 char_name.to_owned(),
                 CallType::MemoryAgent,
             ),
             agent_model_val: agent_model.clone(),
-            researcher: researcher_model
-                .as_ref()
-                .map(|_| MemoryResearcher::new(char_def, user_def)),
-            researcher_llm_val: researcher_model.as_ref().map(|_| {
-                RealAgentLlm::new(
-                    ctx.llm_client.clone(),
-                    char_name.to_owned(),
-                    CallType::Researcher,
-                )
-            }),
-            researcher_model_val: researcher_model.clone(),
-            rag: NoopRag,
-            search_ctx,
             image_dir_val: character_data_dir
                 .join("images")
                 .to_string_lossy()

@@ -38,11 +38,8 @@ use tracing::{debug, error, info};
 use crate::autonomy::manager::AutonomyManager;
 use crate::characters::CharacterRegistry;
 use crate::commands::{CommandContext, MemoryShellSession, SessionTokens};
-use crate::memory::agent::{AgentSearchContext, MemoryAgent};
 use crate::memory::agent_llm::AgentLlm;
 use crate::memory::compaction_impls::ImageGenConfig;
-use crate::memory::db::MemoryDB;
-use crate::memory::researcher::MemoryResearcher;
 use crate::notifications::{NotificationEvent, NotificationService};
 use crate::tools::context::SharedToolContext;
 use crate::tools::ToolContext;
@@ -59,35 +56,11 @@ pub(super) struct HandlerToolContext {
 }
 
 impl ToolContext for HandlerToolContext {
-    fn memory_db(&self) -> &MemoryDB {
-        self.inner.memory_db()
-    }
-    fn memory_agent(&self) -> &MemoryAgent {
-        self.inner.memory_agent()
-    }
     fn agent_llm(&self) -> &dyn AgentLlm {
         self.inner.agent_llm()
     }
     fn agent_model(&self) -> &shore_config::models::ResolvedModel {
         self.inner.agent_model()
-    }
-    fn researcher_llm(&self) -> Option<&dyn AgentLlm> {
-        self.inner.researcher_llm()
-    }
-    fn researcher_model(&self) -> Option<&shore_config::models::ResolvedModel> {
-        self.inner.researcher_model()
-    }
-    fn memory_researcher(&self) -> Option<&MemoryResearcher> {
-        self.inner.memory_researcher()
-    }
-    fn indexer(&self) -> Option<&dyn crate::memory::agent::types::AgentIndexer> {
-        self.inner.indexer()
-    }
-    fn search_context(&self) -> Option<&AgentSearchContext> {
-        self.inner.search_context()
-    }
-    fn rag(&self) -> &dyn crate::memory::agent::AgentRag {
-        self.inner.rag()
     }
     fn image_dir(&self) -> &str {
         self.inner.image_dir()

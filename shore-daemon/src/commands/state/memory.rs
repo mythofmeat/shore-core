@@ -4,44 +4,24 @@ use shore_protocol::types::{ContentBlock, Role};
 use tracing::{debug, info};
 
 use crate::engine::ConversationEngine;
-use crate::memory::agent::{CallerIdentity, MemoryAgent, RealAgentIndexer};
 use crate::memory::agent_llm::RealAgentLlm;
 use crate::memory::compaction::{
     CompactionError, CompactionManager, CompactionOutcome, ConversationMessage,
     DEFAULT_COMPACT_PROMPT,
 };
-use crate::memory::compaction_impls::{
-    RealCompactionLlm, RealConversationManager, RealVectorIndexer,
-};
-use crate::memory::db::MemoryDB;
-use crate::memory::researcher::MemoryResearcher;
+use crate::memory::compaction_impls::{RealCompactionLlm, RealConversationManager};
+use crate::memory::markdown_query;
+use crate::memory::markdown_store::MarkdownMemoryStore;
 use shore_config::resolve_prompt_template;
 use shore_ledger::CallType;
 
-use crate::commands::{
-    memory_dir, open_embed_and_vectorstore, resolve_agent_model, setup_search_context,
-    CommandContext, CommandResult, MemoryShellSession,
-};
+use crate::commands::{memory_dir, resolve_agent_model, CommandContext, CommandResult};
 
-/// Build the memory DB path for a character and open it.
-fn open_memory_db(ctx: &CommandContext, char_name: &str) -> Result<MemoryDB, (ErrorCode, String)> {
-    let db_path = memory_dir(ctx, char_name).join("memory.db");
-    MemoryDB::open(&db_path).map_err(|e| {
-        (
-            ErrorCode::InternalError,
-            format!("Failed to open memory DB: {e}"),
-        )
-    })
-}
-
-async fn sync_markdown_memories(
+async fn open_markdown_store(
     ctx: &CommandContext,
     char_name: &str,
-    db: &MemoryDB,
-    indexer: Option<&dyn crate::memory::agent::AgentIndexer>,
-    reason: &str,
-) -> Result<(), (ErrorCode, String)> {
-    let store = crate::memory::markdown_store::MarkdownMemoryStore::open(
+    ) -> Result<MarkdownMemoryStore, (ErrorCode, String)> {
+    MarkdownMemoryStore::open(
         ctx.data_dir.join(char_name).join("memories"),
     )
     .await
@@ -50,18 +30,7 @@ async fn sync_markdown_memories(
             ErrorCode::InternalError,
             format!("Failed to open markdown store: {e}"),
         )
-    })?;
-
-    crate::memory::markdown_index::sync_store_changes(db, &store, indexer, reason)
-        .await
-        .map_err(|e| {
-            (
-                ErrorCode::InternalError,
-                format!("Failed to sync markdown memories: {e}"),
-            )
-        })?;
-
-    Ok(())
+    })
 }
 
 /// Show recent memory changelog entries.
@@ -73,36 +42,48 @@ pub fn memory_changelog(
     let limit = args.get("limit").and_then(|v| v.as_i64()).unwrap_or(20);
 
     let char_name = engine.character_name();
-    let db_path = memory_dir(ctx, char_name).join("memory.db");
-
-    if !db_path.exists() {
+    let dreams_path = ctx.data_dir.join(char_name).join("memories").join("DREAMS.md");
+    if !dreams_path.exists() {
         return Ok(json!({ "changelog": [], "character": char_name }));
     }
 
-    let db = open_memory_db(ctx, char_name)?;
-
-    let records = db
-        .get_recent_changelog(limit)
-        .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
-
-    let entries: Vec<serde_json::Value> = records
-        .iter()
-        .map(|r| {
-            json!({
-                "id": r.changelog_id,
-                "operation": r.operation,
-                "description": r.description,
-                "timestamp": r.timestamp,
-            })
+    let content = std::fs::read_to_string(&dreams_path)
+        .map_err(|e| (ErrorCode::InternalError, format!("failed to read DREAMS.md: {e}")))?;
+    let mut sections = content
+        .split("\n## ")
+        .filter_map(|section| {
+            let trimmed = section.trim();
+            if trimmed.is_empty() || trimmed == "# Dreams" {
+                return None;
+            }
+            let prefixed = if trimmed.starts_with("## ") {
+                trimmed.to_string()
+            } else {
+                format!("## {trimmed}")
+            };
+            let mut lines = prefixed.lines();
+            let heading = lines.next()?.trim_start_matches("## ").trim();
+            let description = lines.collect::<Vec<_>>().join("\n").trim().to_string();
+            let (timestamp, operation) = heading
+                .split_once(" - ")
+                .map(|(ts, op)| (ts.to_string(), op.to_string()))
+                .unwrap_or_else(|| (String::new(), heading.to_string()));
+            Some(json!({
+                "timestamp": timestamp,
+                "operation": operation,
+                "description": description,
+            }))
         })
-        .collect();
+        .collect::<Vec<_>>();
+    sections.reverse();
+    sections.truncate(limit.max(0) as usize);
 
     debug!(
         character = char_name,
-        count = entries.len(),
+        count = sections.len(),
         "Memory changelog queried"
     );
-    Ok(json!({ "changelog": entries, "character": char_name }))
+    Ok(json!({ "changelog": sections, "character": char_name }))
 }
 
 /// Memory command: status (no query) or agent query (with query).
@@ -121,7 +102,7 @@ pub async fn memory(
         .unwrap_or(false);
 
     match query {
-        None => memory_status(engine, ctx),
+        None => memory_status(engine, ctx).await,
         Some(q) => {
             debug!(
                 character = engine.character_name(),
@@ -135,44 +116,30 @@ pub async fn memory(
 }
 
 /// Return memory entry/entity counts for the current character.
-fn memory_status(engine: &ConversationEngine, ctx: &CommandContext) -> CommandResult {
+async fn memory_status(engine: &ConversationEngine, ctx: &CommandContext) -> CommandResult {
     let char_name = engine.character_name();
-    let db_path = memory_dir(ctx, char_name).join("memory.db");
-
-    if !db_path.exists() {
-        return Ok(json!({
-            "character": char_name,
-            "entries": 0,
-            "entities": 0,
-            "active_entries": 0,
-        }));
-    }
-
-    let db = open_memory_db(ctx, char_name)?;
-
-    let entries = db
-        .count_entries()
-        .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
-    let entities = db
-        .count_entities()
-        .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
-    let active = db
-        .count_entries_by_status("active")
+    let store = open_markdown_store(ctx, char_name).await?;
+    let status = markdown_query::memory_status(&store)
+        .await
         .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
 
     debug!(
         character = char_name,
-        entries, entities, active, "Memory status queried"
+        entries = status.total_files,
+        daily = status.daily_files,
+        images = status.image_files,
+        "Memory status queried"
     );
     Ok(json!({
         "character": char_name,
-        "entries": entries,
-        "entities": entities,
-        "active_entries": active,
+        "entries": status.total_files,
+        "curated_files": status.topic_files,
+        "daily_files": status.daily_files,
+        "image_files": status.image_files,
     }))
 }
 
-/// Run a memory query through the researcher->agent pipeline.
+/// Run a memory query against markdown files.
 async fn memory_query(
     engine: &ConversationEngine,
     ctx: &CommandContext,
@@ -180,78 +147,29 @@ async fn memory_query(
     direct: bool,
 ) -> CommandResult {
     let char_name = engine.character_name();
-    let db = open_memory_db(ctx, char_name)?;
+    let store = open_markdown_store(ctx, char_name).await?;
     let agent_model = resolve_agent_model(ctx)?;
-
-    let display_name = ctx.config.app.defaults.resolve_display_name();
-    let agent = MemoryAgent::one_shot(CallerIdentity::User, &display_name, char_name);
     let agent_llm = RealAgentLlm::new(
         ctx.llm_client.clone(),
         char_name.to_string(),
         CallType::MemoryAgent,
     );
 
-    let search_ctx = setup_search_context(ctx, char_name).await;
-    let real_indexer = search_ctx.as_ref().map(RealAgentIndexer::new);
-    let indexer = real_indexer
-        .as_ref()
-        .map(|i| i as &dyn crate::memory::agent::AgentIndexer);
-
-    sync_markdown_memories(ctx, char_name, &db, indexer, "memory_command_sync").await?;
-
-    let researcher_model = if direct {
-        None
-    } else {
-        ctx.config
-            .app
-            .defaults
-            .tool_model
-            .as_deref()
-            .and_then(|name| ctx.config.models.find_model(name).ok())
-            .cloned()
-    };
-
-    let result = if let Some(ref r_model) = researcher_model {
-        let char_def = shore_config::load_character_definition(&ctx.config.dirs.config, char_name)
-            .unwrap_or_default();
-        let user_def = shore_config::resolve_user_definition(&ctx.config.dirs.config, char_name)
-            .unwrap_or_default();
-        let researcher = MemoryResearcher::new(char_def, user_def);
-        let researcher_llm = RealAgentLlm::new(
-            ctx.llm_client.clone(),
-            char_name.to_string(),
-            CallType::Researcher,
-        );
-
-        researcher
-            .research(
-                query,
-                &researcher_llm,
-                r_model,
-                &agent,
-                &agent_llm,
-                &agent_model,
-                &db,
-                indexer,
-                search_ctx.as_ref(),
-            )
+    let result = if direct {
+        let hits = store
+            .search_text(query)
             .await
-            .map_err(|e| {
-                (
-                    ErrorCode::InternalError,
-                    format!("Memory query failed: {e}"),
-                )
-            })?
+            .map_err(|e| (ErrorCode::InternalError, format!("Memory query failed: {e}")))?;
+        markdown_query::format_direct_response(query, &hits)
     } else {
-        agent
-            .ask(
-                query,
-                &agent_llm,
-                &db,
-                indexer,
-                search_ctx.as_ref(),
-                &agent_model,
-            )
+        markdown_query::answer_query(
+            query,
+            char_name,
+            &ctx.config.app.defaults.resolve_display_name(),
+            &store,
+            &agent_llm,
+            &agent_model,
+        )
             .await
             .map_err(|e| {
                 (
@@ -268,124 +186,34 @@ async fn memory_query(
     }))
 }
 
-/// Start a new memory shell session.
+/// Legacy memory shell removed in markdown-only memory mode.
 pub async fn memory_shell_start(
-    engine: &ConversationEngine,
-    ctx: &mut CommandContext,
+    _engine: &ConversationEngine,
+    _ctx: &mut CommandContext,
     _args: &serde_json::Value,
 ) -> CommandResult {
-    let char_name = engine.character_name().to_string();
-    let agent_model = resolve_agent_model(ctx)?;
-
-    let display_name = ctx.config.app.defaults.resolve_display_name();
-    let agent = MemoryAgent::interactive(CallerIdentity::User, &display_name, &char_name);
-
-    let session_id = uuid::Uuid::new_v4().to_string();
-    ctx.memory_shell_sessions.insert(
-        session_id.clone(),
-        MemoryShellSession {
-            agent,
-            history: Vec::new(),
-            character: char_name.clone(),
-            model: agent_model,
-        },
-    );
-
-    info!(character = %char_name, session_id = %session_id, "Memory shell session started");
-    Ok(json!({
-        "session_id": session_id,
-        "character": char_name,
-    }))
+    Err((
+        ErrorCode::InvalidRequest,
+        "memory shell was removed; use `shore memory <query>` or the markdown file tools instead"
+            .to_string(),
+    ))
 }
 
-/// Process a query within an existing memory shell session.
 pub async fn memory_shell_query(
-    ctx: &mut CommandContext,
-    args: &serde_json::Value,
+    _ctx: &mut CommandContext,
+    _args: &serde_json::Value,
 ) -> CommandResult {
-    let session_id = args
-        .get("session_id")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| (ErrorCode::InvalidRequest, "Missing session_id".to_string()))?;
-
-    let input = args
-        .get("input")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| (ErrorCode::InvalidRequest, "Missing input".to_string()))?
-        .to_string();
-
-    let char_name = ctx
-        .memory_shell_sessions
-        .get(session_id)
-        .ok_or_else(|| (ErrorCode::NotFound, "Session not found".to_string()))?
-        .character
-        .clone();
-
-    let db = open_memory_db(ctx, &char_name)?;
-    let agent_llm = RealAgentLlm::new(
-        ctx.llm_client.clone(),
-        char_name.clone(),
-        CallType::MemoryAgent,
-    );
-    let search_ctx = setup_search_context(ctx, &char_name).await;
-    let real_indexer = search_ctx.as_ref().map(RealAgentIndexer::new);
-    let indexer = real_indexer
-        .as_ref()
-        .map(|i| i as &dyn crate::memory::agent::AgentIndexer);
-
-    sync_markdown_memories(ctx, &char_name, &db, indexer, "memory_shell_sync").await?;
-
-    let session = ctx
-        .memory_shell_sessions
-        .get_mut(session_id)
-        .ok_or_else(|| (ErrorCode::NotFound, "Session not found".to_string()))?;
-
-    let mutations = session
-        .agent
-        .run_query(
-            &input,
-            &mut session.history,
-            &agent_llm,
-            &db,
-            indexer,
-            search_ctx.as_ref(),
-            &session.model,
-            None,
-        )
-        .await
-        .map_err(|e| (ErrorCode::InternalError, format!("Memory agent error: {e}")))?;
-
-    let response = session
-        .history
-        .last()
-        .and_then(|msg| msg.get("content"))
-        .and_then(|c| c.as_str())
-        .unwrap_or("")
-        .to_string();
-
-    debug!(
-        session_id,
-        mutations,
-        response_len = response.len(),
-        "Memory shell query complete"
-    );
-    Ok(json!({
-        "response": response,
-        "mutations": mutations,
-    }))
+    Err((
+        ErrorCode::InvalidRequest,
+        "memory shell was removed; use markdown memory files directly".to_string(),
+    ))
 }
 
-/// End a memory shell session.
-pub fn memory_shell_end(ctx: &mut CommandContext, args: &serde_json::Value) -> CommandResult {
-    let session_id = args
-        .get("session_id")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| (ErrorCode::InvalidRequest, "Missing session_id".to_string()))?;
-
-    ctx.memory_shell_sessions.remove(session_id);
-
-    info!(session_id, "Memory shell session ended");
-    Ok(json!({ "ok": true }))
+pub fn memory_shell_end(_ctx: &mut CommandContext, _args: &serde_json::Value) -> CommandResult {
+    Err((
+        ErrorCode::InvalidRequest,
+        "memory shell was removed; nothing to close".to_string(),
+    ))
 }
 
 /// Run compaction on the current character's conversation.
@@ -434,8 +262,6 @@ pub async fn compact(
 
     info!(character = %char_name, message_count = messages.len(), dry_run, "Compaction started");
 
-    let db = open_memory_db(ctx, &char_name)?;
-
     let prompt_template =
         resolve_prompt_template(&ctx.config.dirs.config, &char_name, "compact.md")
             .unwrap_or_else(|| DEFAULT_COMPACT_PROMPT.to_string());
@@ -443,10 +269,7 @@ pub async fn compact(
     let model = resolve_compaction_model(&ctx.config)
         .ok_or_else(|| (ErrorCode::InternalError, "No model configured".to_string()))?;
 
-    let (store, embed_config) = open_embed_and_vectorstore(ctx, &char_name).await?;
-
     let llm = RealCompactionLlm::new(ctx.llm_client.clone(), model, char_name.clone());
-    let indexer = RealVectorIndexer::new(store, ctx.llm_client.inner().clone(), embed_config);
     let conv_mgr = RealConversationManager::new(engine.character_dir());
 
     let mgr = CompactionManager::new(ctx.config.app.memory.compaction.clone());
@@ -481,8 +304,6 @@ pub async fn compact(
             &char_name,
             &display_name,
             &llm,
-            &db,
-            &indexer,
             &conv_mgr,
             markdown_store.as_ref(),
             dry_run,
@@ -495,7 +316,7 @@ pub async fn compact(
         CompactionOutcome::Compacted(result) => {
             info!(
                 character = %char_name,
-                entries_created = result.entries_created.len(),
+                entries_created = result.memory_files_written.len(),
                 message_count = result.message_count,
                 retained_count = result.retained_count,
                 "Compaction complete"
@@ -522,8 +343,7 @@ pub async fn compact(
             Ok(json!({
                 "status": "compacted",
                 "character": char_name,
-                "entries_created": result.entries_created.len(),
-                "entry_ids": result.entries_created,
+                "memory_files_written": result.memory_files_written,
                 "message_count": result.message_count,
                 "retained_count": result.retained_count,
                 "retained_turns": result.retained_turns,
@@ -600,192 +420,25 @@ pub fn resolve_compaction_model(
         .cloned()
 }
 
-/// Purge old superseded entries to reclaim space.
+/// Legacy purge removed in markdown-only memory mode.
 pub async fn memory_purge(
-    engine: &mut ConversationEngine,
-    ctx: &CommandContext,
-    args: &serde_json::Value,
+    _engine: &mut ConversationEngine,
+    _ctx: &CommandContext,
+    _args: &serde_json::Value,
 ) -> CommandResult {
-    let char_name = engine.character_name().to_string();
-    let older_than_str = args
-        .get("older_than")
-        .and_then(|v| v.as_str())
-        .unwrap_or("30d");
-
-    let days = parse_duration_days(older_than_str).ok_or_else(|| {
-        (
-            ErrorCode::InvalidRequest,
-            format!("Invalid duration: {older_than_str}. Use format like '30d' or '7d'."),
-        )
-    })?;
-
-    let db = open_memory_db(ctx, &char_name)?;
-
-    let cutoff = (chrono::Local::now() - chrono::Duration::days(days)).to_rfc3339();
-
-    let superseded = db
-        .get_entries_by_status("superseded")
-        .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
-
-    let mut deleted = 0u64;
-    let mut skipped_image = 0u64;
-    let mut skipped_no_replacement = 0u64;
-
-    let cutoff_dt = chrono::DateTime::parse_from_rfc3339(&cutoff).ok();
-
-    for entry in &superseded {
-        let dominated_by_cutoff = match (
-            chrono::DateTime::parse_from_rfc3339(&entry.updated_at),
-            &cutoff_dt,
-        ) {
-            (Ok(entry_dt), Some(cutoff_ref)) => entry_dt < *cutoff_ref,
-            _ => entry.updated_at.as_str() < cutoff.as_str(),
-        };
-        if !dominated_by_cutoff {
-            continue;
-        }
-
-        if !entry.image_path.is_empty() {
-            skipped_image += 1;
-            continue;
-        }
-
-        if entry.superseded_by.is_empty() {
-            skipped_no_replacement += 1;
-            continue;
-        }
-
-        let replacements_ok = entry
-            .superseded_by
-            .split(',')
-            .map(|id| id.trim())
-            .filter(|id| !id.is_empty())
-            .all(|id| {
-                db.get_entry(id)
-                    .ok()
-                    .flatten()
-                    .map(|e| e.status == "active")
-                    .unwrap_or(false)
-            });
-
-        if !replacements_ok {
-            skipped_no_replacement += 1;
-            continue;
-        }
-
-        let log_id = db
-            .append_changelog(
-                "purge",
-                &format!(
-                    "Purge superseded entry: {} (replaced by {})",
-                    entry.id, entry.superseded_by
-                ),
-            )
-            .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
-        let _ = db.link_changelog_entry(log_id, &entry.id);
-
-        db.delete_entry(&entry.id)
-            .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
-
-        deleted += 1;
-    }
-
-    if deleted > 0 {
-        db.vacuum()
-            .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
-    }
-
-    info!(
-        character = %char_name,
-        deleted,
-        skipped_image,
-        skipped_no_replacement,
-        older_than = older_than_str,
-        "Memory purge complete"
-    );
-    Ok(json!({
-        "status": "purged",
-        "character": char_name,
-        "deleted": deleted,
-        "skipped_image": skipped_image,
-        "skipped_no_replacement": skipped_no_replacement,
-        "older_than": older_than_str,
-    }))
+    Err((
+        ErrorCode::InvalidRequest,
+        "memory_purge was removed; markdown memories are edited directly instead".to_string(),
+    ))
 }
 
-fn parse_duration_days(s: &str) -> Option<i64> {
-    let s = s.trim();
-    if let Some(stripped) = s.strip_suffix('d') {
-        stripped.parse::<i64>().ok().filter(|&d| d > 0)
-    } else {
-        s.parse::<i64>().ok().filter(|&d| d > 0)
-    }
-}
-
-/// Rebuild FTS and vector indexes from existing memory entries.
+/// Legacy reindex removed in markdown-only memory mode.
 pub async fn memory_reindex(engine: &ConversationEngine, ctx: &CommandContext) -> CommandResult {
     let char_name = engine.character_name().to_string();
-
-    let db = open_memory_db(ctx, &char_name)?;
-
-    let entries = db.get_entries_by_status("active").map_err(|e| {
-        (
-            ErrorCode::InternalError,
-            format!("Failed to load entries: {e}"),
-        )
-    })?;
-
-    if entries.is_empty() {
-        return Ok(json!({ "reindexed": 0, "message": "No active entries to reindex" }));
-    }
-
-    info!(character = %char_name, entries = entries.len(), "Memory reindex started");
-
-    db.rebuild_fts().map_err(|e| {
-        (
-            ErrorCode::InternalError,
-            format!("Failed to rebuild FTS: {e}"),
-        )
-    })?;
-
-    let (store, embed_config) = open_embed_and_vectorstore(ctx, &char_name).await?;
-
-    const EMBED_BATCH_SIZE: usize = 50;
-    let mut embeddings: Vec<Vec<f32>> = Vec::with_capacity(entries.len());
-    for chunk in entries.chunks(EMBED_BATCH_SIZE) {
-        let texts: Vec<&str> = chunk.iter().map(|e| e.summary_text.as_str()).collect();
-        let batch = ctx
-            .llm_client
-            .inner()
-            .embed(
-                &embed_config.provider,
-                &embed_config.model_id,
-                &embed_config.api_key,
-                embed_config.base_url.as_deref(),
-                &texts,
-            )
-            .await
-            .map_err(|e| (ErrorCode::InternalError, format!("Embedding failed: {e}")))?;
-        embeddings.extend(batch);
-    }
-
-    let pairs: Vec<(&str, &[f32])> = entries
-        .iter()
-        .zip(embeddings.iter())
-        .map(|(e, v)| (e.id.as_str(), v.as_slice()))
-        .collect();
-
-    store.reindex(&pairs).await.map_err(|e| {
-        (
-            ErrorCode::InternalError,
-            format!("Vector reindex failed: {e}"),
-        )
-    })?;
-
-    info!(character = %char_name, reindexed = entries.len(), "Memory reindex complete");
+    let _ = ctx;
     Ok(json!({
-        "reindexed": entries.len(),
-        "message": format!("Reindexed {} entries (FTS + vector)", entries.len()),
+        "character": char_name,
+        "message": "memory_reindex is unnecessary in the markdown-only memory system"
     }))
 }
 

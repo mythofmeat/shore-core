@@ -175,12 +175,13 @@ pub async fn run_tool_loop(
                 Err(e) => (e.to_string(), true, None),
             };
 
-            // `send_image` produces a structured result whose `path` should
+            // `send_image` and `generate_image` produce structured results
+            // whose `path` should
             // surface as an actual image attachment, not just a tool-result
             // string. Attach it to the assistant message that issued the call
             // (so log replay renders it inline) and broadcast a SendImage event
             // for live clients (TUI image cache, matrix bridge collector).
-            if !is_error && tool_use.name == "send_image" {
+            if !is_error && (tool_use.name == "send_image" || tool_use.name == "generate_image") {
                 if let Some(value) = &ok_value {
                     if let Some(path) = value.get("path").and_then(|v| v.as_str()) {
                         let caption = value

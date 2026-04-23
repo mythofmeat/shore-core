@@ -6,12 +6,12 @@ pub use background::run_compaction;
 pub use parser::{parse_compaction_response, MemoryFileOp, DEFAULT_COMPACT_PROMPT};
 pub use types::*;
 
-use crate::memory::db::{Entry, MemoryDB};
+use crate::memory::markdown_query;
 use crate::memory::markdown_store::MarkdownMemoryStore;
 use std::sync::Arc;
 use tokio::sync::Notify;
 use tokio::time::Duration;
-use tracing::{debug, info, instrument};
+use tracing::{debug, info, instrument, warn};
 
 // ---------------------------------------------------------------------------
 // CompactionManager
@@ -23,12 +23,8 @@ pub struct CompactionManager {
 }
 
 struct CompactionWriteState {
-    entry_id: String,
-    changelog_id: Option<i64>,
-    was_indexed: bool,
-    markdown_path: Option<String>,
+    markdown_path: String,
     previous_markdown: Option<String>,
-    previous_entry: Option<Entry>,
 }
 
 impl CompactionManager {
@@ -173,7 +169,7 @@ impl CompactionManager {
     /// and memory entries from the compacted messages.
     ///
     /// If `dry_run` is true, returns what would be created without side effects.
-    #[instrument(skip(self, messages, active_content, prompt_template, existing_recap, llm, db, indexer, conversation_mgr, markdown_store), fields(char = char_name, user = user_name, msg_count = messages.len(), dry_run))]
+    #[instrument(skip(self, messages, active_content, prompt_template, existing_recap, llm, conversation_mgr, markdown_store), fields(char = char_name, user = user_name, msg_count = messages.len(), dry_run))]
     #[allow(clippy::too_many_arguments)]
     pub async fn compact(
         &self,
@@ -186,8 +182,6 @@ impl CompactionManager {
         char_name: &str,
         user_name: &str,
         llm: &dyn CompactionLlm,
-        db: &MemoryDB,
-        indexer: &dyn VectorIndexer,
         conversation_mgr: &dyn ConversationManager,
         markdown_store: Option<&MarkdownMemoryStore>,
         dry_run: bool,
@@ -267,122 +261,34 @@ impl CompactionManager {
         }
 
         // Track created resources for compensating deletes on failure.
+        let store = markdown_store.ok_or_else(|| {
+            CompactionError::MarkdownStore("markdown memory store not available".to_string())
+        })?;
+
         let mut created: Vec<CompactionWriteState> = Vec::new();
-        let mut db_entry_elapsed = std::time::Duration::ZERO;
-        let mut vector_index_elapsed = std::time::Duration::ZERO;
         let mut markdown_elapsed = std::time::Duration::ZERO;
 
         for op in &file_ops {
-            let previous_markdown = if let Some(store) = markdown_store {
-                match store.read(&op.path).await {
-                    Ok(entry) => Some(entry.content),
-                    Err(crate::memory::markdown_store::MarkdownStoreError::NotFound(_)) => None,
-                    Err(e) => return Err(CompactionError::MarkdownStore(e.to_string())),
-                }
-            } else {
-                None
+            let previous_markdown = match store.read(&op.path).await {
+                Ok(entry) => Some(entry.content),
+                Err(crate::memory::markdown_store::MarkdownStoreError::NotFound(_)) => None,
+                Err(e) => return Err(CompactionError::MarkdownStore(e.to_string())),
             };
-            let previous_entry = db
-                .get_entry_by_file_path(&op.path)
-                .map_err(|e| CompactionError::Db(e.to_string()))?;
-            let entry_id = previous_entry
-                .as_ref()
-                .map(|entry| entry.id.clone())
-                .unwrap_or_else(|| crate::memory::markdown_index::entry_id_for_path(&op.path));
             created.push(CompactionWriteState {
-                entry_id: entry_id.clone(),
-                changelog_id: None,
-                was_indexed: false,
-                markdown_path: markdown_store.map(|_| op.path.clone()),
+                markdown_path: op.path.clone(),
                 previous_markdown,
-                previous_entry,
             });
 
-            // Write markdown file first (new primary storage).
             let md_started = std::time::Instant::now();
-            if let Some(store) = markdown_store {
-                if let Err(e) = store.write(&op.path, &op.content).await {
-                    Self::rollback_compaction(&created, db, indexer, markdown_store).await;
-                    return Err(CompactionError::MarkdownStore(e.to_string()));
-                }
-                debug!(entry_id, path = %op.path, elapsed = ?md_started.elapsed(), "compaction: markdown entry written");
+            if let Err(e) = store.write(&op.path, &op.content).await {
+                Self::rollback_compaction(&created, store).await;
+                return Err(CompactionError::MarkdownStore(e.to_string()));
             }
+            debug!(path = %op.path, elapsed = ?md_started.elapsed(), "compaction: markdown entry written");
             markdown_elapsed += md_started.elapsed();
-
-            let db_entry_started = std::time::Instant::now();
-            let mut entry = match crate::memory::markdown_index::upsert_markdown_entry(
-                db,
-                &op.path,
-                &op.content,
-                "compaction",
-            ) {
-                Ok((entry, _)) => entry,
-                Err(e) => {
-                    Self::rollback_compaction(&created, db, indexer, markdown_store).await;
-                    return Err(CompactionError::Db(e.to_string()));
-                }
-            };
-            entry.message_count = split_at as i64;
-            if let Err(e) = db.update_entry(&entry) {
-                Self::rollback_compaction(&created, db, indexer, markdown_store).await;
-                return Err(CompactionError::Db(e.to_string()));
-            }
-            if let Some(state) = created.last_mut() {
-                state.entry_id = entry.id.clone();
-            }
-            if entry.created_at.is_empty() || entry.updated_at.is_empty() {
-                Self::rollback_compaction(&created, db, indexer, markdown_store).await;
-                return Err(CompactionError::Db(
-                    "markdown shadow entry missing timestamps".into(),
-                ));
-            }
-            let db_elapsed = db_entry_started.elapsed();
-            db_entry_elapsed += db_elapsed;
-            debug!(entry_id = %entry.id, elapsed = ?db_elapsed, "compaction: DB entry upserted");
-
-            let vector_index_started = std::time::Instant::now();
-            if let Err(e) = indexer.index_entry(&entry.id, &entry.summary_text).await {
-                Self::rollback_compaction(&created, db, indexer, markdown_store).await;
-                return Err(e);
-            }
-            let index_elapsed = vector_index_started.elapsed();
-            vector_index_elapsed += index_elapsed;
-            debug!(entry_id = %entry.id, elapsed = ?index_elapsed, "compaction: vector entry indexed");
-            created.last_mut().unwrap().was_indexed = true;
-
-            let cl_id = match db.append_changelog(
-                "compaction",
-                &format!(
-                    "Compacted conversation {} into memory file {}",
-                    conversation_id, op.path
-                ),
-            ) {
-                Ok(id) => id,
-                Err(e) => {
-                    Self::rollback_compaction(&created, db, indexer, markdown_store).await;
-                    return Err(CompactionError::Db(e.to_string()));
-                }
-            };
-            created.last_mut().unwrap().changelog_id = Some(cl_id);
-
-            if let Err(e) = db.link_changelog_entry(cl_id, &entry.id) {
-                Self::rollback_compaction(&created, db, indexer, markdown_store).await;
-                return Err(CompactionError::Db(e.to_string()));
-            }
         }
-        debug!(
-            entries = file_ops.len(),
-            elapsed = ?db_entry_elapsed,
-            "compaction: DB entry loop complete"
-        );
-        debug!(
-            entries = file_ops.len(),
-            elapsed = ?vector_index_elapsed,
-            "compaction: vector indexing loop complete"
-        );
 
         // Archive compacted messages, retain recent, write recap.
-        // This is the final step — if it fails, roll back all SQLite and vector store writes.
         let retained = messages.len() - split_at;
         let archive_started = std::time::Instant::now();
         let new_conversation_id = match conversation_mgr
@@ -398,7 +304,7 @@ impl CompactionManager {
         {
             Ok(id) => id,
             Err(e) => {
-                Self::rollback_compaction(&created, db, indexer, markdown_store).await;
+                Self::rollback_compaction(&created, store).await;
                 return Err(e);
             }
         };
@@ -408,14 +314,29 @@ impl CompactionManager {
             "compaction: archive/retain done"
         );
 
-        let entry_ids: Vec<String> = created.iter().map(|state| state.entry_id.clone()).collect();
-        let markdown_paths: Vec<String> = created
-            .into_iter()
-            .filter_map(|state| state.markdown_path)
-            .collect();
+        let markdown_paths: Vec<String> = created.iter().map(|state| state.markdown_path.clone()).collect();
+        let dream_body = format!(
+            "Compacted {} messages from `{conversation_id}`.\n\nUpdated memory files:\n{}",
+            split_at,
+            markdown_paths
+                .iter()
+                .map(|path| format!("- `{path}`"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        if let Err(e) = markdown_query::append_dream_entry(
+            store,
+            chrono::Local::now().fixed_offset(),
+            "compaction",
+            &dream_body,
+        )
+        .await
+        {
+            warn!(error = %e, "compaction: failed to append DREAMS.md entry");
+        }
 
         info!(
-            entries_created = entry_ids.len(),
+            entries_created = markdown_paths.len(),
             markdown_files = markdown_paths.len(),
             conversation_id,
             retained,
@@ -423,7 +344,7 @@ impl CompactionManager {
             "Compaction complete"
         );
         Ok(CompactionOutcome::Compacted(CompactionResult {
-            entries_created: entry_ids,
+            memory_files_written: markdown_paths.clone(),
             conversation_id: conversation_id.to_string(),
             new_conversation_id,
             message_count: split_at,
@@ -445,58 +366,22 @@ impl CompactionManager {
     /// rollback continues regardless of individual failures.
     async fn rollback_compaction(
         created: &[CompactionWriteState],
-        db: &MemoryDB,
-        indexer: &dyn VectorIndexer,
-        markdown_store: Option<&MarkdownMemoryStore>,
+        markdown_store: &MarkdownMemoryStore,
     ) {
         use tracing::warn;
         for state in created.iter().rev() {
-            if let Some(store) = markdown_store {
-                if let Some(path) = state.markdown_path.as_deref() {
-                    match &state.previous_markdown {
-                        Some(previous) => {
-                            if let Err(e) = store.write(path, previous).await {
-                                warn!(entry_id = %state.entry_id, path, error = %e, "rollback: failed to restore markdown entry");
-                            }
-                        }
-                        None => match store.delete(path).await {
-                            Ok(()) => {}
-                            Err(crate::memory::markdown_store::MarkdownStoreError::NotFound(_)) => {
-                            }
-                            Err(e) => {
-                                warn!(entry_id = %state.entry_id, path, error = %e, "rollback: failed to delete markdown entry");
-                            }
-                        },
+            match &state.previous_markdown {
+                Some(previous) => {
+                    if let Err(e) = markdown_store.write(&state.markdown_path, previous).await {
+                        warn!(path = %state.markdown_path, error = %e, "rollback: failed to restore markdown entry");
                     }
                 }
-            }
-            if let Some(cl_id) = state.changelog_id {
-                if let Err(e) = db.delete_changelog(cl_id) {
-                    warn!(entry_id = %state.entry_id, cl_id, error = %e, "rollback: failed to delete changelog");
-                }
-            }
-            match &state.previous_entry {
-                Some(previous_entry) => {
-                    if let Err(e) = db.update_entry(previous_entry) {
-                        warn!(entry_id = %state.entry_id, error = %e, "rollback: failed to restore entry");
+                None => match markdown_store.delete(&state.markdown_path).await {
+                    Ok(()) => {}
+                    Err(crate::memory::markdown_store::MarkdownStoreError::NotFound(_)) => {}
+                    Err(e) => {
+                        warn!(path = %state.markdown_path, error = %e, "rollback: failed to delete markdown entry");
                     }
-                }
-                None => {
-                    if let Err(e) = db.delete_entry(&state.entry_id) {
-                        warn!(entry_id = %state.entry_id, error = %e, "rollback: failed to delete entry");
-                    }
-                }
-            }
-            if state.was_indexed {
-                if let Some(previous_entry) = &state.previous_entry {
-                    if let Err(e) = indexer
-                        .index_entry(&state.entry_id, &previous_entry.summary_text)
-                        .await
-                    {
-                        warn!(entry_id = %state.entry_id, error = %e, "rollback: failed to restore vector entry");
-                    }
-                } else {
-                    indexer.remove_entry(&state.entry_id).await;
                 }
             }
         }
@@ -570,36 +455,6 @@ mod tests {
         ) -> Pin<Box<dyn Future<Output = Result<String, CompactionError>> + Send + '_>> {
             let result = Ok(self.response.clone());
             Box::pin(async move { result })
-        }
-    }
-
-    struct MockIndexer {
-        indexed: StdMutex<Vec<(String, String)>>,
-    }
-
-    impl MockIndexer {
-        fn new() -> Self {
-            Self {
-                indexed: StdMutex::new(Vec::new()),
-            }
-        }
-
-        fn indexed_entries(&self) -> Vec<(String, String)> {
-            self.indexed.lock().unwrap().clone()
-        }
-    }
-
-    impl VectorIndexer for MockIndexer {
-        fn index_entry(
-            &self,
-            entry_id: &str,
-            text: &str,
-        ) -> Pin<Box<dyn Future<Output = Result<(), CompactionError>> + Send + '_>> {
-            self.indexed
-                .lock()
-                .unwrap()
-                .push((entry_id.to_string(), text.to_string()));
-            Box::pin(async { Ok(()) })
         }
     }
 
@@ -708,54 +563,6 @@ mod tests {
                     "simulated archive failure".to_string(),
                 ))
             })
-        }
-    }
-
-    struct FailingIndexer {
-        fail_on: usize,
-        call_count: StdMutex<usize>,
-        removed: StdMutex<Vec<String>>,
-    }
-
-    impl FailingIndexer {
-        fn new(fail_on: usize) -> Self {
-            Self {
-                fail_on,
-                call_count: StdMutex::new(0),
-                removed: StdMutex::new(Vec::new()),
-            }
-        }
-
-        fn removed_entries(&self) -> Vec<String> {
-            self.removed.lock().unwrap().clone()
-        }
-    }
-
-    impl VectorIndexer for FailingIndexer {
-        fn index_entry(
-            &self,
-            entry_id: &str,
-            _text: &str,
-        ) -> Pin<Box<dyn Future<Output = Result<(), CompactionError>> + Send + '_>> {
-            let mut count = self.call_count.lock().unwrap();
-            *count += 1;
-            let should_fail = *count == self.fail_on;
-            drop(count);
-            let _entry_id = entry_id;
-            Box::pin(async move {
-                if should_fail {
-                    Err(CompactionError::Indexing(
-                        "simulated index failure".to_string(),
-                    ))
-                } else {
-                    Ok(())
-                }
-            })
-        }
-
-        fn remove_entry(&self, entry_id: &str) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
-            self.removed.lock().unwrap().push(entry_id.to_string());
-            Box::pin(async {})
         }
     }
 
@@ -1046,15 +853,17 @@ They discussed daily activities and the user's beverage preferences.
     // -- Tests: compaction with retention -------------------------------------
 
     #[tokio::test]
-    async fn test_compact_creates_entries() {
-        let db = MemoryDB::open_in_memory().unwrap();
+    async fn test_compact_writes_markdown_files_and_dream_entry() {
         let llm = MockLlm {
             response: make_xml_response(),
         };
-        let indexer = MockIndexer::new();
         let conv_mgr = MockConversationMgr::new("new-conv-1");
         let mgr = CompactionManager::new(make_config_with_keep(2));
         let messages = make_messages(10);
+        let tmp = tempfile::tempdir().unwrap();
+        let store = MarkdownMemoryStore::open(tmp.path().join("memories"))
+            .await
+            .unwrap();
 
         let result = mgr
             .compact(
@@ -1067,10 +876,8 @@ They discussed daily activities and the user's beverage preferences.
                 "TestChar",
                 "TestUser",
                 &llm,
-                &db,
-                &indexer,
                 &conv_mgr,
-                None,
+                Some(&store),
                 false,
                 None,
             )
@@ -1079,106 +886,33 @@ They discussed daily activities and the user's beverage preferences.
 
         match result {
             CompactionOutcome::Compacted(r) => {
-                assert_eq!(r.entries_created.len(), 2);
+                assert_eq!(r.memory_files_written.len(), 2);
                 assert_eq!(r.conversation_id, "conv-1");
                 assert_eq!(r.new_conversation_id, "new-conv-1");
                 assert_eq!(r.message_count, 6);
                 assert_eq!(r.retained_count, 4);
                 assert!(r.recap_generated);
-
-                for id in &r.entries_created {
-                    let entry = db.get_entry(id).unwrap().unwrap();
-                    assert_eq!(entry.reason, "compaction");
-                    assert_eq!(entry.source, "markdown_store");
-                    assert_eq!(entry.status, "active");
-                    assert_eq!(entry.message_count, 6);
-                }
             }
             _ => panic!("Expected Compacted outcome"),
         }
-    }
 
-    #[tokio::test]
-    async fn test_compact_indexes_to_vector_store() {
-        let db = MemoryDB::open_in_memory().unwrap();
-        let llm = MockLlm {
-            response: make_xml_response(),
-        };
-        let indexer = MockIndexer::new();
-        let conv_mgr = MockConversationMgr::new("new-conv-1");
-        let mgr = CompactionManager::new(make_config_with_keep(2));
-
-        mgr.compact(
-            "conv-1",
-            &make_messages(10),
-            "",
-            false,
-            DEFAULT_COMPACT_PROMPT,
-            None,
-            "TestChar",
-            "TestUser",
-            &llm,
-            &db,
-            &indexer,
-            &conv_mgr,
-            None,
-            false,
-            None,
-        )
-        .await
-        .unwrap();
-
-        let indexed = indexer.indexed_entries();
-        assert_eq!(indexed.len(), 2);
-        assert!(indexed[0].1.contains("User discussed their day"));
-        assert!(indexed[1].1.contains("User prefers tea"));
-    }
-
-    #[tokio::test]
-    async fn test_compact_records_changelog() {
-        let db = MemoryDB::open_in_memory().unwrap();
-        let llm = MockLlm {
-            response: make_xml_response(),
-        };
-        let indexer = MockIndexer::new();
-        let conv_mgr = MockConversationMgr::new("new-conv-1");
-        let mgr = CompactionManager::new(make_config_with_keep(2));
-
-        mgr.compact(
-            "conv-1",
-            &make_messages(10),
-            "",
-            false,
-            DEFAULT_COMPACT_PROMPT,
-            None,
-            "TestChar",
-            "TestUser",
-            &llm,
-            &db,
-            &indexer,
-            &conv_mgr,
-            None,
-            false,
-            None,
-        )
-        .await
-        .unwrap();
-
-        let logs = db.get_recent_changelog(10).unwrap();
-        assert_eq!(logs.len(), 2);
-        assert!(logs.iter().all(|l| l.operation == "compaction"));
-        assert!(logs.iter().all(|l| l.description.contains("conv-1")));
+        assert!(store.read("daily/2026-03-25.md").await.is_ok());
+        assert!(store.read("preferences/beverages.md").await.is_ok());
+        let dreams = store.read("DREAMS.md").await.unwrap();
+        assert!(dreams.content.contains("Compacted 6 messages"));
     }
 
     #[tokio::test]
     async fn test_compact_archives_with_retention() {
-        let db = MemoryDB::open_in_memory().unwrap();
         let llm = MockLlm {
             response: make_xml_response(),
         };
-        let indexer = MockIndexer::new();
         let conv_mgr = MockConversationMgr::new("new-conv-2");
         let mgr = CompactionManager::new(make_config_with_keep(3));
+        let tmp = tempfile::tempdir().unwrap();
+        let store = MarkdownMemoryStore::open(tmp.path().join("memories"))
+            .await
+            .unwrap();
 
         let result = mgr
             .compact(
@@ -1191,10 +925,8 @@ They discussed daily activities and the user's beverage preferences.
                 "TestChar",
                 "TestUser",
                 &llm,
-                &db,
-                &indexer,
                 &conv_mgr,
-                None,
+                Some(&store),
                 false,
                 None,
             )
@@ -1217,14 +949,15 @@ They discussed daily activities and the user's beverage preferences.
 
     #[tokio::test]
     async fn test_compact_with_keep_turns_zero_retains_nothing() {
-        let db = MemoryDB::open_in_memory().unwrap();
         let llm = MockLlm {
             response: make_xml_response(),
         };
-        let indexer = MockIndexer::new();
         let conv_mgr = MockConversationMgr::new("new-conv-zero");
-        // Config default is non-zero — the override must win.
         let mgr = CompactionManager::new(make_config_with_keep(2));
+        let tmp = tempfile::tempdir().unwrap();
+        let store = MarkdownMemoryStore::open(tmp.path().join("memories"))
+            .await
+            .unwrap();
 
         let result = mgr
             .compact(
@@ -1237,10 +970,8 @@ They discussed daily activities and the user's beverage preferences.
                 "TestChar",
                 "TestUser",
                 &llm,
-                &db,
-                &indexer,
                 &conv_mgr,
-                None,
+                Some(&store),
                 false,
                 Some(0),
             )
@@ -1249,33 +980,26 @@ They discussed daily activities and the user's beverage preferences.
 
         match result {
             CompactionOutcome::Compacted(r) => {
-                assert_eq!(r.message_count, 10, "all messages should be compacted");
-                assert_eq!(r.retained_count, 0, "nothing should be retained");
-                assert_eq!(r.retained_turns, 0, "retained_turns must reflect override");
-                assert!(r.recap_generated, "recap must still be generated");
-                assert_eq!(r.entries_created.len(), 2);
+                assert_eq!(r.message_count, 10);
+                assert_eq!(r.retained_count, 0);
+                assert_eq!(r.retained_turns, 0);
+                assert_eq!(r.memory_files_written.len(), 2);
             }
             _ => panic!("Expected Compacted outcome"),
         }
-
-        let calls = conv_mgr.archived_calls();
-        assert_eq!(calls.len(), 1);
-        assert_eq!(
-            calls[0].1, 0,
-            "archive_and_retain must be called with keep_last_n=0"
-        );
     }
 
     #[tokio::test]
     async fn test_compact_keep_turns_override_beats_config() {
-        let db = MemoryDB::open_in_memory().unwrap();
         let llm = MockLlm {
             response: make_xml_response(),
         };
-        let indexer = MockIndexer::new();
         let conv_mgr = MockConversationMgr::new("new-conv-override");
-        // Config default would retain 4 messages; override Some(3) should retain 6.
         let mgr = CompactionManager::new(make_config_with_keep(2));
+        let tmp = tempfile::tempdir().unwrap();
+        let store = MarkdownMemoryStore::open(tmp.path().join("memories"))
+            .await
+            .unwrap();
 
         let result = mgr
             .compact(
@@ -1288,10 +1012,8 @@ They discussed daily activities and the user's beverage preferences.
                 "TestChar",
                 "TestUser",
                 &llm,
-                &db,
-                &indexer,
                 &conv_mgr,
-                None,
+                Some(&store),
                 false,
                 Some(3),
             )
@@ -1300,29 +1022,24 @@ They discussed daily activities and the user's beverage preferences.
 
         match result {
             CompactionOutcome::Compacted(r) => {
-                assert_eq!(
-                    r.retained_count, 6,
-                    "override of 3 turns should retain 6 messages, not config's 4"
-                );
+                assert_eq!(r.retained_count, 6);
                 assert_eq!(r.retained_turns, 3);
             }
             _ => panic!("Expected Compacted outcome"),
         }
-
-        let calls = conv_mgr.archived_calls();
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].1, 6);
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn test_compaction_archive_boundary_keeps_executor_responsive() {
-        let db = MemoryDB::open_in_memory().unwrap();
         let llm = MockLlm {
             response: make_xml_response(),
         };
-        let indexer = MockIndexer::new();
         let (conv_mgr, entered_rx, release_tx) = BlockingConversationMgr::new("new-conv-3");
         let mgr = CompactionManager::new(make_config_with_keep(2));
+        let tmp = tempfile::tempdir().unwrap();
+        let store = MarkdownMemoryStore::open(tmp.path().join("memories"))
+            .await
+            .unwrap();
 
         let compaction = tokio::spawn(async move {
             mgr.compact(
@@ -1335,10 +1052,8 @@ They discussed daily activities and the user's beverage preferences.
                 "TestChar",
                 "TestUser",
                 &llm,
-                &db,
-                &indexer,
                 &conv_mgr,
-                None,
+                Some(&store),
                 false,
                 None,
             )
@@ -1357,24 +1072,19 @@ They discussed daily activities and the user's beverage preferences.
             sibling_ran_clone.store(true, Ordering::SeqCst);
         });
 
-        // This is a regression harness for the spawn_blocking boundary around
-        // archive/retain. On a current-thread runtime, a future that blocked the
-        // executor inline would starve this sibling task until release.
         tokio::time::timeout(Duration::from_millis(250), sibling_task)
             .await
             .expect("sibling task should stay responsive during compaction")
             .unwrap();
         assert!(sibling_ran.load(Ordering::SeqCst));
 
-        release_tx
-            .send(())
-            .expect("test release signal should still be connected");
+        release_tx.send(()).unwrap();
 
         let result = compaction.await.unwrap().unwrap();
         match result {
             CompactionOutcome::Compacted(r) => {
                 assert_eq!(r.new_conversation_id, "new-conv-3");
-                assert_eq!(r.entries_created.len(), 2);
+                assert_eq!(r.memory_files_written.len(), 2);
             }
             _ => panic!("Expected Compacted outcome"),
         }
@@ -1382,13 +1092,15 @@ They discussed daily activities and the user's beverage preferences.
 
     #[tokio::test]
     async fn test_private_conversation_skips_compaction() {
-        let db = MemoryDB::open_in_memory().unwrap();
         let llm = MockLlm {
             response: make_xml_response(),
         };
-        let indexer = MockIndexer::new();
         let conv_mgr = MockConversationMgr::new("new-conv-1");
         let mgr = CompactionManager::new(CompactionConfig::default());
+        let tmp = tempfile::tempdir().unwrap();
+        let store = MarkdownMemoryStore::open(tmp.path().join("memories"))
+            .await
+            .unwrap();
 
         let result = mgr
             .compact(
@@ -1401,31 +1113,28 @@ They discussed daily activities and the user's beverage preferences.
                 "TestChar",
                 "TestUser",
                 &llm,
-                &db,
-                &indexer,
                 &conv_mgr,
-                None,
+                Some(&store),
                 false,
                 None,
             )
             .await;
 
         assert!(matches!(result, Err(CompactionError::PrivateConversation)));
-
-        assert!(db.get_entries_by_status("active").unwrap().is_empty());
-        assert!(indexer.indexed_entries().is_empty());
         assert!(conv_mgr.archived_calls().is_empty());
     }
 
     #[tokio::test]
     async fn test_compact_dry_run() {
-        let db = MemoryDB::open_in_memory().unwrap();
         let llm = MockLlm {
             response: make_xml_response(),
         };
-        let indexer = MockIndexer::new();
         let conv_mgr = MockConversationMgr::new("new-conv-1");
         let mgr = CompactionManager::new(make_config_with_keep(2));
+        let tmp = tempfile::tempdir().unwrap();
+        let store = MarkdownMemoryStore::open(tmp.path().join("memories"))
+            .await
+            .unwrap();
 
         let result = mgr
             .compact(
@@ -1438,10 +1147,8 @@ They discussed daily activities and the user's beverage preferences.
                 "TestChar",
                 "TestUser",
                 &llm,
-                &db,
-                &indexer,
                 &conv_mgr,
-                None,
+                Some(&store),
                 true,
                 None,
             )
@@ -1459,20 +1166,21 @@ They discussed daily activities and the user's beverage preferences.
             _ => panic!("Expected DryRun outcome"),
         }
 
-        assert!(db.get_entries_by_status("active").unwrap().is_empty());
-        assert!(indexer.indexed_entries().is_empty());
+        assert!(store.read("daily/2026-03-25.md").await.is_err());
         assert!(conv_mgr.archived_calls().is_empty());
     }
 
     #[tokio::test]
     async fn test_compact_empty_messages() {
-        let db = MemoryDB::open_in_memory().unwrap();
         let llm = MockLlm {
             response: String::new(),
         };
-        let indexer = MockIndexer::new();
         let conv_mgr = MockConversationMgr::new("new-conv-1");
         let mgr = CompactionManager::new(CompactionConfig::default());
+        let tmp = tempfile::tempdir().unwrap();
+        let store = MarkdownMemoryStore::open(tmp.path().join("memories"))
+            .await
+            .unwrap();
 
         let result = mgr
             .compact(
@@ -1485,10 +1193,8 @@ They discussed daily activities and the user's beverage preferences.
                 "TestChar",
                 "TestUser",
                 &llm,
-                &db,
-                &indexer,
                 &conv_mgr,
-                None,
+                Some(&store),
                 false,
                 None,
             )
@@ -1499,13 +1205,15 @@ They discussed daily activities and the user's beverage preferences.
 
     #[tokio::test]
     async fn test_compact_fewer_than_keep_recent_turns() {
-        let db = MemoryDB::open_in_memory().unwrap();
         let llm = MockLlm {
             response: String::new(),
         };
-        let indexer = MockIndexer::new();
         let conv_mgr = MockConversationMgr::new("new-conv-1");
         let mgr = CompactionManager::new(make_config_with_keep(10));
+        let tmp = tempfile::tempdir().unwrap();
+        let store = MarkdownMemoryStore::open(tmp.path().join("memories"))
+            .await
+            .unwrap();
 
         let result = mgr
             .compact(
@@ -1518,10 +1226,8 @@ They discussed daily activities and the user's beverage preferences.
                 "TestChar",
                 "TestUser",
                 &llm,
-                &db,
-                &indexer,
                 &conv_mgr,
-                None,
+                Some(&store),
                 false,
                 None,
             )
@@ -1596,124 +1302,10 @@ They discussed daily activities and the user's beverage preferences.
     // -- Tests: rollback on failure -------------------------------------------
 
     #[tokio::test]
-    async fn test_compact_rollback_on_archive_failure() {
-        let db = MemoryDB::open_in_memory().unwrap();
+    async fn test_compact_rollback_restores_overwritten_markdown() {
         let llm = MockLlm {
             response: make_xml_response(),
         };
-        let indexer = MockIndexer::new();
-        let conv_mgr = FailingConversationMgr;
-        let mgr = CompactionManager::new(make_config_with_keep(2));
-
-        let result = mgr
-            .compact(
-                "conv-1",
-                &make_messages(10),
-                "",
-                false,
-                DEFAULT_COMPACT_PROMPT,
-                None,
-                "TestChar",
-                "TestUser",
-                &llm,
-                &db,
-                &indexer,
-                &conv_mgr,
-                None,
-                false,
-                None,
-            )
-            .await;
-
-        assert!(
-            matches!(result, Err(CompactionError::ConversationManager(_))),
-            "expected ConversationManager error, got {:?}",
-            result
-        );
-
-        // The key invariant: no entries should remain after rollback.
-        let entries = db.get_entries_by_status("active").unwrap();
-        assert!(
-            entries.is_empty(),
-            "rollback should remove all created entries; found {} entries",
-            entries.len()
-        );
-
-        // Changelog should also be clean.
-        let logs = db.get_recent_changelog(100).unwrap();
-        assert!(
-            logs.is_empty(),
-            "rollback should remove all created changelog records; found {} records",
-            logs.len()
-        );
-    }
-
-    #[tokio::test]
-    async fn test_compact_rollback_on_index_failure() {
-        let db = MemoryDB::open_in_memory().unwrap();
-        let llm = MockLlm {
-            response: make_xml_response(),
-        };
-        // Fail on the second index_entry call (first entry indexes, second fails).
-        let indexer = FailingIndexer::new(2);
-        let conv_mgr = MockConversationMgr::new("new-conv-1");
-        let mgr = CompactionManager::new(make_config_with_keep(2));
-
-        let result = mgr
-            .compact(
-                "conv-1",
-                &make_messages(10),
-                "",
-                false,
-                DEFAULT_COMPACT_PROMPT,
-                None,
-                "TestChar",
-                "TestUser",
-                &llm,
-                &db,
-                &indexer,
-                &conv_mgr,
-                None,
-                false,
-                None,
-            )
-            .await;
-
-        assert!(
-            matches!(result, Err(CompactionError::Indexing(_))),
-            "expected Indexing error, got {:?}",
-            result
-        );
-
-        // No entries should remain.
-        let entries = db.get_entries_by_status("active").unwrap();
-        assert!(
-            entries.is_empty(),
-            "rollback should remove all created entries; found {} entries",
-            entries.len()
-        );
-
-        // The first entry was indexed before the second failed — it should have been removed.
-        let removed = indexer.removed_entries();
-        assert!(
-            !removed.is_empty(),
-            "rollback should have called remove_entry for the first indexed entry"
-        );
-
-        // archive_and_retain should NOT have been called.
-        assert!(
-            conv_mgr.archived_calls().is_empty(),
-            "archive_and_retain should not be called after rollback"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_compact_rollback_restores_overwritten_markdown_and_shadow_entry() {
-        let db = MemoryDB::open_in_memory().unwrap();
-        let llm = MockLlm {
-            response: make_xml_response(),
-        };
-        let indexer = MockIndexer::new();
         let conv_mgr = FailingConversationMgr;
         let mgr = CompactionManager::new(make_config_with_keep(2));
         let tmp = tempfile::tempdir().unwrap();
@@ -1726,13 +1318,6 @@ They discussed daily activities and the user's beverage preferences.
             .write("preferences/beverages.md", original)
             .await
             .unwrap();
-        crate::memory::markdown_index::upsert_markdown_entry(
-            &db,
-            "preferences/beverages.md",
-            original,
-            "seed",
-        )
-        .unwrap();
 
         let result = mgr
             .compact(
@@ -1745,8 +1330,6 @@ They discussed daily activities and the user's beverage preferences.
                 "TestChar",
                 "TestUser",
                 &llm,
-                &db,
-                &indexer,
                 &conv_mgr,
                 Some(&store),
                 false,
@@ -1754,18 +1337,9 @@ They discussed daily activities and the user's beverage preferences.
             )
             .await;
 
-        assert!(matches!(
-            result,
-            Err(CompactionError::ConversationManager(_))
-        ));
+        assert!(matches!(result, Err(CompactionError::ConversationManager(_))));
 
         let restored = store.read("preferences/beverages.md").await.unwrap();
         assert_eq!(restored.content, original);
-
-        let shadow = db
-            .get_entry_by_file_path("preferences/beverages.md")
-            .unwrap()
-            .unwrap();
-        assert_eq!(shadow.summary_text, original);
     }
 }

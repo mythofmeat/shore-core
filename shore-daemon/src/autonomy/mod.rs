@@ -2,7 +2,6 @@ pub mod activity;
 pub mod cache_keepalive;
 pub mod interiority;
 pub mod manager;
-pub mod recap_store;
 
 use std::collections::VecDeque;
 
@@ -61,7 +60,7 @@ pub enum InteriorityEventKind {
     Timeout,
     /// Dormant bare ping sent to keep cache warm.
     DormantPing,
-    /// A `<recap>` was captured from the tick and persisted to `recaps.jsonl`.
+    /// A `<recap>` was captured from the tick and persisted to markdown daily notes.
     RecapWritten,
     /// Tick finished without a recap, even after the forced wrap-up call.
     RecapMissing,

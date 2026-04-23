@@ -877,11 +877,10 @@ $XDG_DATA_HOME/shore/              (~/.local/share/shore/)
 ├── prompts.manifest.json          # Tracks stock vs user-modified templates
 └── {character}/
     ├── memories/                  # Markdown memory files (source of truth)
+    │   ├── daily/                 # Heartbeat / private-moment notes
+    │   └── DREAMS.md              # Compaction / reflection audit trail
     ├── memory/
-    │   ├── memory.db              # SQLite shadow index + changelog metadata
-    │   ├── vectorstore/           # LanceDB shadow index for retrieval
     │   ├── recap.md               # Rolling narrative recap (generated)
-    │   └── changelog.md           # Audit trail (generated, configurable path)
     ├── conversations/
     │   ├── manifest.json          # Conversation index (includes private flag)
     │   └── {conv_id}.jsonl        # Message history
@@ -897,18 +896,16 @@ $XDG_DATA_HOME/shore/              (~/.local/share/shore/)
 Everything under `{character}/` is self-contained. You can back up, move, or
 delete a character's data by operating on a single directory.
 
-### 7.2.1 Markdown Memory Shadow Index
+### 7.2.1 Markdown Memory Layout
 
-- `memories/` is the authoritative long-term memory store.
-- `memory/memory.db` and `memory/vectorstore/` remain as a retrieval/indexing
-  compatibility layer for the memory agent, CLI memory commands, changelog,
-  FTS, and semantic search.
-- SQLite `entries.file_path` links a shadow row back to the markdown file that
-  produced it.
-- `memory_write`, workspace writes to `memories/...`, and compaction all update
-  the markdown file first and then upsert the shadow SQLite/vector entries.
-- Compaction rollback restores the prior markdown file contents, prior SQLite
-  row, and prior vector entry when later archive/index/changelog work fails.
+- `memories/` is the only runtime memory store.
+- Durable curated memory lives in normal markdown files under `memories/`.
+- Short-lived autonomous/heartbeat notes accumulate in `memories/daily/`.
+- `memories/DREAMS.md` is the human-auditable log of compaction/reflection
+  passes.
+- `memory/recap.md` remains the rolling recap injected into the main prompt at
+  compaction boundaries.
+- There is no normal-operation SQLite/vector retrieval layer behind these files.
 
 Matrix bridge state lives under the character it belongs to, not in a separate
 top-level `matrix/` directory.

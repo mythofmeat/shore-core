@@ -5,7 +5,46 @@ replaced by better alternatives or because they don't fit the V2 architecture.
 
 Add items here as decisions are made.
 
+## Markdown-Only Memory + Heartbeat Notes (2026-04-23)
+
+The previous branch kept SQLite/LanceDB as a shadow retrieval layer behind the
+markdown memory files. That transitional architecture has been removed.
+
+Decision:
+- Normal memory reads, writes, search, compaction, and CLI memory queries now
+  operate directly on markdown files under `{character}/memories/`.
+- Compaction writes markdown files, updates `memory/recap.md`, archives the
+  conversation tail, and appends a markdown audit entry to `memories/DREAMS.md`.
+- Autonomous heartbeat recaps no longer write `recaps.jsonl` or inject hidden
+  `Role::System` recap messages into `active.jsonl`; they append to
+  `memories/daily/YYYY-MM-DD.md` instead.
+- Image memory was dropped instead of ported. The remaining image tools are the
+  minimal non-memory surface: `send_image` and `generate_image`.
+
+Rationale: the shadow-index design preserved the old retrieval stack, but it
+also preserved its architectural complexity and split-brain risk. The new goal
+is a literal file-backed memory model much closer to OpenClaw/Letta: one
+inspectable store, one compaction path, one heartbeat note format.
+
+## Stable Base Prompt Prefix (2026-04-23)
+
+The base system prompt and capability blocks are part of the long-lived cached
+prefix. Allowing `{{date}}` / `{{time}}` to interpolate there mutates that
+prefix every turn and defeats prompt caching.
+
+Decision:
+- `assemble_prompt` now blanks `{{date}}` and `{{time}}` in the base system
+  blocks instead of rendering the live clock.
+- Time-sensitive behavior belongs in explicit tool calls (`check_time`) or
+  ephemeral heartbeat prompts, not in the cached main prompt.
+
+Rationale: cache stability is a system-level invariant, and a dynamic clock in
+the pinned prefix violates it by design.
+
 ## Markdown Memory Shadow Index + Safe Rollback (2026-04-22)
+
+Superseded by "Markdown-Only Memory + Heartbeat Notes" above. The shadow-index
+transition was a stepping stone and is no longer the intended architecture.
 
 The markdown store is now the source of truth, but the existing memory agent,
 FTS queries, vector search, and changelog machinery still depend on SQLite and

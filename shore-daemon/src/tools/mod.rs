@@ -8,12 +8,8 @@ pub mod web;
 pub mod workspace;
 
 use crate::autonomy::manager::AutonomyManager;
-use crate::memory::agent::types::{AgentIndexer, AgentSearchContext};
-use crate::memory::agent::{AgentError, AgentRag, MemoryAgent};
 use crate::memory::agent_llm::AgentLlm;
 use crate::memory::compaction_impls::ImageGenConfig;
-use crate::memory::db::MemoryDB;
-use crate::memory::researcher::MemoryResearcher;
 use serde_json::Value;
 use shore_config::models::ResolvedModel;
 use shore_llm_client::LlmClient;
@@ -30,9 +26,9 @@ use std::pin::Pin;
 /// the tool list so the LLM cannot read or write to memory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolCategory {
-    /// Memory write tools (memory save, send_image, generate_image).
+    /// Memory write tools.
     MemoryWrite,
-    /// Memory read tools (list_images w/ RAG, recall_image).
+    /// Memory read tools.
     MemoryRead,
     /// Web/HTTP tools — always available.
     Web,
@@ -68,8 +64,6 @@ pub struct ToolDef {
 pub enum ToolError {
     #[error("invalid args: {0}")]
     InvalidArgs(String),
-    #[error("agent: {0}")]
-    Agent(#[from] AgentError),
     #[error("{0}: not yet implemented")]
     NotImplemented(String),
     #[error("io: {0}")]
@@ -87,28 +81,14 @@ pub enum ToolError {
 /// Requires `Sync` so that `&dyn ToolContext` is `Send`, enabling tool handlers
 /// to hold the reference across `.await` points in `Send` futures.
 pub trait ToolContext: Sync {
-    fn memory_db(&self) -> &MemoryDB;
-    fn memory_agent(&self) -> &MemoryAgent;
     fn agent_llm(&self) -> &dyn AgentLlm;
     fn agent_model(&self) -> &ResolvedModel;
-    fn researcher_llm(&self) -> Option<&dyn AgentLlm>;
-    fn researcher_model(&self) -> Option<&ResolvedModel>;
-    fn memory_researcher(&self) -> Option<&MemoryResearcher>;
-    fn indexer(&self) -> Option<&dyn AgentIndexer>;
     fn image_dir(&self) -> &str;
     fn llm_client(&self) -> Option<&LlmClient>;
     fn image_gen_config(&self) -> Option<&ImageGenConfig>;
 
-    // Legacy RAG — kept for image tools until they're migrated
-    fn rag(&self) -> &dyn AgentRag;
-
     // Web search configuration
     fn search_config(&self) -> &shore_config::app::SearchConfig;
-
-    // Semantic search context (vector + BM25 + embeddings)
-    fn search_context(&self) -> Option<&AgentSearchContext> {
-        None
-    }
 
     // Autonomy access — used by activity heatmap tool
     fn autonomy_manager(&self) -> Option<&AutonomyManager> {
@@ -205,51 +185,6 @@ pub fn available_tools(is_private: bool, toggles: &shore_config::app::ToolToggle
         .collect()
 }
 
-fn memory_relative_path(path: &str) -> Option<&str> {
-    let normalized = path.trim_start_matches('/').trim_start_matches('\\');
-    let relative = normalized.strip_prefix("memories/")?;
-    if relative.is_empty() {
-        None
-    } else {
-        Some(relative)
-    }
-}
-
-async fn sync_memory_file_after_workspace_write(
-    ctx: &dyn ToolContext,
-    path: &str,
-    reason: &str,
-) -> Result<(), ToolError> {
-    let Some(relative_path) = memory_relative_path(path) else {
-        return Ok(());
-    };
-    let Some(store) = ctx.markdown_store() else {
-        return Ok(());
-    };
-
-    let entry = store
-        .read(relative_path)
-        .await
-        .map_err(|e| ToolError::Io(e.to_string()))?;
-    let real_indexer = ctx
-        .search_context()
-        .map(crate::memory::agent::RealAgentIndexer::new);
-    let indexer = real_indexer
-        .as_ref()
-        .map(|i| i as &dyn crate::memory::agent::AgentIndexer);
-
-    crate::memory::markdown_index::sync_markdown_entry_content(
-        ctx.memory_db(),
-        indexer,
-        relative_path,
-        &entry.content,
-        reason,
-    )
-    .await
-    .map(|_| ())
-    .map_err(ToolError::Io)
-}
-
 // ---------------------------------------------------------------------------
 // Tool dispatch
 // ---------------------------------------------------------------------------
@@ -269,9 +204,6 @@ pub fn dispatch_tool<'a>(
             "memory_search" => memory_tools::handle_memory_search(input, ctx).await,
             "memory_list" => memory_tools::handle_memory_list(input, ctx).await,
             "send_image" => images::handle_send_image(input, ctx).await,
-            "list_images" => images::handle_list_images(input, ctx).await,
-            "recall_image" => images::handle_recall_image(input, ctx).await,
-            "remember_image" => images::handle_remember_image(input, ctx).await,
             "generate_image" => images::handle_generate_image(input, ctx).await,
             // Web tools
             "web_search" => web::handle_web_search(input, ctx).await,
@@ -307,7 +239,6 @@ pub fn dispatch_tool<'a>(
                     ctx.defer_edit(&path);
                     result["deferred_until_compaction"] = serde_json::json!(true);
                 }
-                sync_memory_file_after_workspace_write(ctx, &path, "workspace_write").await?;
                 Ok(result)
             }
             "edit" => {
@@ -321,7 +252,6 @@ pub fn dispatch_tool<'a>(
                     ctx.defer_edit(&path);
                     result["deferred_until_compaction"] = serde_json::json!(true);
                 }
-                sync_memory_file_after_workspace_write(ctx, &path, "workspace_edit").await?;
                 Ok(result)
             }
             "list_files" => workspace::handle_list_files(input, ctx.workspace_dir()).await,
@@ -385,8 +315,8 @@ mod tests {
     #[test]
     fn test_all_tools_returns_expected_count() {
         let tools = all_tools();
-        // memory(5) + images(5) + web(2) + activity(1) + basic(2) + scratchpad(4) + workspace(5) = 25
-        assert_eq!(tools.len(), 25);
+        // memory(5) + images(2) + web(2) + activity(1) + basic(3) + scratchpad(4) + workspace(5) = 22
+        assert_eq!(tools.len(), 22);
     }
 
     #[test]
@@ -421,16 +351,13 @@ mod tests {
         assert!(!private_names.contains(&"memory_write"));
         assert!(!private_names.contains(&"memory_search"));
         assert!(!private_names.contains(&"memory_list"));
-        assert!(!private_names.contains(&"send_image"));
-        assert!(!private_names.contains(&"list_images"));
-        assert!(!private_names.contains(&"recall_image"));
-        assert!(!private_names.contains(&"generate_image"));
-        assert!(!private_names.contains(&"remember_image"));
 
         // Web and other tools should remain.
         assert!(private_names.contains(&"web_search"));
         assert!(private_names.contains(&"fetch_url"));
         assert!(private_names.contains(&"activity_heatmap"));
+        assert!(private_names.contains(&"send_image"));
+        assert!(private_names.contains(&"generate_image"));
     }
 
     #[test]
@@ -446,7 +373,7 @@ mod tests {
         assert!(!names.contains(&"web_search"));
         assert!(names.contains(&"memory"));
         assert!(names.contains(&"check_time"));
-        assert_eq!(tools.len(), 23); // 25 - 2 disabled
+        assert_eq!(tools.len(), 20); // 22 - 2 disabled
     }
 
     #[test]

@@ -5,6 +5,7 @@ pub mod compaction_impls;
 pub mod db;
 pub mod deferred_edits;
 pub mod markdown_index;
+pub mod markdown_query;
 pub mod markdown_store;
 pub mod rag;
 pub mod researcher;

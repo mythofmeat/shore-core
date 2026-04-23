@@ -22,18 +22,13 @@ use tracing::{debug, error, info, warn};
 use super::activity::ActivityTracker;
 use super::cache_keepalive::{CacheKeepalive, CacheKeepaliveAction};
 use super::interiority::{InteriorityAction, InteriorityClock};
-use super::recap_store::{RecapEntry, RecapStore};
 use super::{AutonomyStatus, InteriorityEventKind, InteriorityLog};
 use crate::characters::CharacterRegistry;
-use crate::memory::agent::{AgentSearchContext, CallerIdentity};
 use crate::memory::agent_llm::RealAgentLlm;
-use crate::memory::compaction_impls::{resolve_embed_config, resolve_image_gen_config};
-use crate::memory::db::MemoryDB;
-use crate::memory::researcher::MemoryResearcher;
-use crate::memory::vectorstore::VectorStore;
+use crate::memory::compaction_impls::resolve_image_gen_config;
 use crate::notifications::{NotificationEvent, NotificationService};
 use crate::tools as tool_system;
-use crate::tools::context::{NoopRag, SharedToolContext};
+use crate::tools::context::SharedToolContext;
 use shore_config::app::{AutonomyConfig, CompactionConfig};
 use shore_config::LoadedConfig;
 use shore_diagnostics::truncate_summary;
@@ -1022,29 +1017,35 @@ async fn execute_idle_compaction(character: &str, ctx: &TickContext) {
 // Unified interiority tick executor
 // ---------------------------------------------------------------------------
 
-/// Build the dynamic interiority prompt. Includes the recent thread block,
-/// user name, default interval, and documentation for `<recap>` and `<sendMessage>`.
+/// Build the dynamic heartbeat prompt.
+///
+/// This intentionally follows the OpenClaw-style pattern: a small checklist,
+/// recent daily notes, and explicit "do nothing if nothing needs doing"
+/// guidance instead of an always-expanding narrative prompt.
 fn build_interiority_prompt(
-    recent_thread: &str,
+    recent_notes: &str,
+    heartbeat_instructions: &str,
     user_name: &str,
     default_interval: &str,
 ) -> String {
-    let recent_block = if recent_thread.is_empty() {
+    let recent_block = if recent_notes.is_empty() {
         String::new()
     } else {
-        format!("\n{recent_thread}\n")
+        format!("\n{recent_notes}\n")
     };
 
     format!(
         "\
-[This is a private moment between conversations. No one is watching — you are \
-alone with your thoughts and your tools. This is your time to exist as yourself.
+[This is a heartbeat check between conversations. Treat it like a quiet maintenance turn: \
+look for anything unfinished, worth following up on, or worth writing down. If nothing \
+needs doing, say HEARTBEAT_OK, write a brief <recap>, and stop.
 {recent_block}
-You have real tools and you can do real things with them: search the web, \
-fetch pages, search and write memories, write to your scratchpad, generate \
-images, check the time. Reach for whatever serves what you actually want to \
-do right now. Don't perform productivity — if what you want is to sit with \
-a thought and write it down, do that.
+Current heartbeat instructions:
+
+{heartbeat_instructions}
+
+You have real tools and can search or write markdown memories, use your \
+scratchpad, check the web, generate images, and schedule the next wake.
 
 In addition, you can:
 
@@ -1062,54 +1063,55 @@ You have the ability to autonomously and spontaneously send messages to \
 to {user_name}.
 
 Before ending your response, ensure you write a recap for yourself. Wrap a \
-brief first-person note in <recap>...</recap> detailing what you did, and \
-what you want to pick up next time. This is for you: it will surface in \
-your context at your next private moment and when {user_name} next \
-messages, so you can remember what you were up to. You decide whether to \
-share it with them or not.
+brief first-person note in <recap>...</recap> describing what you checked, \
+what you changed, and what should happen next. This note is written to your \
+daily markdown notes for later heartbeat turns.
 
 Thoughts, tool-use results, and any text in your response that is not part \
 of the `<recap>` or `<sendMessage>` tags are ephemeral and will be lost. If \
 you want to carry something forward, write it down.
 
-Changes you make to the memory database or to your scratchpad will persist, \
-but you'll need to call the relevant tool to retrieve them again. Make sure \
-to note in your `<recap>` where relevant information lives — which memory \
-entry or which scratchpad file — so you can find it next time.]"
+Changes you make to markdown memory files or to your scratchpad will persist. \
+If nothing needs doing right now, prefer a short HEARTBEAT_OK over busywork.]"
     )
 }
 
-/// Build the `{recent_thread_block}` from recent System messages in the
-/// active conversation.
-///
-/// Single source of truth: `active.jsonl`. Every completed interiority tick
-/// persists its `<recap>` as a `Role::System` message (see
-/// `execute_unified_tick`), so this function reads the most recent three and
-/// renders them as the character's "where you left off" context.
-///
-/// Returns an empty string if there are no recaps (first-ever tick, or a
-/// freshly-reset conversation). The `InteriorityLog` ring buffer is kept for
-/// operator-facing diagnostics (`shore log --heartbeat`) but is deliberately
-/// not consulted here — surfacing raw tool-use events as a fallback trained
-/// the character to treat them as a second narrative channel, duplicating
-/// the recap's job.
-fn build_recent_thread(messages: &[Message]) -> String {
-    let recent_recaps: Vec<&Message> = messages
-        .iter()
-        .rev()
-        .filter(|m| m.role == Role::System)
-        .take(3)
-        .collect();
+fn default_heartbeat_instructions() -> &'static str {
+    "# HEARTBEAT\n\n- Check whether anything from recent daily notes needs follow-up.\n- Check whether you promised {user} anything that still matters.\n- If nothing needs action, respond HEARTBEAT_OK."
+}
 
-    if recent_recaps.is_empty() {
+fn load_heartbeat_instructions(character_data_dir: &Path) -> String {
+    let path = character_data_dir.join("workspace").join("HEARTBEAT.md");
+    std::fs::read_to_string(path)
+        .ok()
+        .filter(|content| !content.trim().is_empty())
+        .unwrap_or_else(|| default_heartbeat_instructions().to_string())
+}
+
+async fn load_recent_daily_notes(character_data_dir: &Path) -> String {
+    let store = match crate::memory::markdown_store::MarkdownMemoryStore::open(
+        character_data_dir.join("memories"),
+    )
+    .await
+    {
+        Ok(store) => store,
+        Err(_) => return String::new(),
+    };
+
+    let notes = match crate::memory::markdown_query::recent_daily_notes(&store, 3).await {
+        Ok(notes) => notes,
+        Err(_) => return String::new(),
+    };
+    if notes.is_empty() {
         return String::new();
     }
 
-    let mut lines = vec!["Where you left off:".to_string()];
-    for msg in recent_recaps.iter().rev() {
-        lines.push(format!(" · {}", msg.content));
+    let mut lines = vec!["Recent daily notes:".to_string()];
+    for note in notes.iter().rev() {
+        lines.push(format!("## {}", note.path));
+        lines.push(truncate_summary(&note.content, 500));
     }
-    lines.join("\n")
+    lines.join("\n\n")
 }
 
 /// Rebuild an `LlmRequest` from the compacted conversation on disk.
@@ -1161,7 +1163,6 @@ fn rebuild_request_from_disk(
         interiority_enabled: config.app.behavior.autonomy.interiority.enabled,
         scratchpad_enabled: tool_toggles.scratchpad_read() || tool_toggles.scratchpad_write(),
         memory_enabled: tool_toggles.memory(),
-        image_memory_enabled: tool_toggles.recall_image(),
         send_image_enabled: tool_toggles.send_image(),
         generate_image_enabled: tool_toggles.generate_image(),
         web_search_enabled: tool_toggles.web_search(),
@@ -1328,13 +1329,8 @@ async fn execute_unified_tick(
 
     apply_interiority_model_override(&mut request, lc, character);
 
-    // Build the dynamic interiority prompt.
-    let recap_path = data_dir.join(character).join("recaps.jsonl");
-    let active_messages =
-        crate::engine::messages::MessageStore::load(data_dir.join(character).join("active.jsonl"))
-            .ok()
-            .map(|s| s.messages().to_vec())
-            .unwrap_or_default();
+    // Build the dynamic heartbeat prompt.
+    let character_data_dir = data_dir.join(character);
     let user_name = lc.app.defaults.resolve_display_name();
     let default_interval_secs = lc
         .app
@@ -1354,9 +1350,15 @@ async fn execute_unified_tick(
     } else {
         format!("{} minutes", default_interval_secs / 60)
     };
-    let recent_thread = build_recent_thread(&active_messages);
-    let interiority_prompt =
-        build_interiority_prompt(&recent_thread, &user_name, &default_interval_str);
+    let recent_notes = load_recent_daily_notes(&character_data_dir).await;
+    let heartbeat_instructions = load_heartbeat_instructions(&character_data_dir);
+    let heartbeat_instructions = heartbeat_instructions.replace("{user}", &user_name);
+    let interiority_prompt = build_interiority_prompt(
+        &recent_notes,
+        &heartbeat_instructions,
+        &user_name,
+        &default_interval_str,
+    );
 
     // Append the interiority prompt as a system-role message. The Anthropic
     // provider auto-wraps inline system messages in <system_instruction> tags
@@ -1654,84 +1656,39 @@ async fn execute_unified_tick(
     if let Some(recap) = recap_text {
         info!(character, recap = %truncate_summary(&recap, 200), "Interiority: recap written");
         let preview = truncate_summary(&recap, 80);
-        let recap_for_active = recap.clone();
-        let entry = RecapEntry {
-            timestamp: tick_started_at,
-            tick_id: format!("tick_{}", uuid::Uuid::new_v4()),
-            recap,
-        };
-        let mut store = RecapStore::load(&recap_path);
-        match store.append(entry) {
-            Ok(()) => {
-                // Persist as a Role::System message in active.jsonl so the
-                // recap survives compaction and appears in future payloads at
-                // its chronological position. The Anthropic provider wraps
-                // inline System messages in <system_instruction> and emits as
-                // a user turn (convert_inline_system_messages in
-                // providers/anthropic.rs). OpenAI-family providers accept
-                // role:"system" mid-history.
-                //
-                // insert_by_timestamp (not append) because a user message
-                // might have landed via the handler while the tick was
-                // wrapping up — the recap's tick_started_at is earlier than
-                // that user message, so it must splice before it.
-                let recap_msg = Message {
-                    msg_id: format!("m_{}", uuid::Uuid::new_v4()),
-                    role: Role::System,
-                    content: recap_for_active.clone(),
-                    images: vec![],
-                    content_blocks: vec![ContentBlock::Text {
-                        text: recap_for_active,
-                    }],
-                    alt_index: None,
-                    alt_count: None,
-                    timestamp: tick_started_at.to_rfc3339(),
-                };
-
-                if let Some(reg) = registry {
-                    let engine_arc = {
-                        let mut r = reg.lock().await;
-                        r.get_or_create(character)
-                    };
-                    match engine_arc {
-                        Ok(engine_arc) => {
-                            let mut engine = engine_arc.lock().await;
-                            if let Err(e) = engine.insert_message_by_timestamp(recap_msg) {
-                                error!(
-                                    character,
-                                    error = %e,
-                                    "Failed to persist recap to active.jsonl via engine"
-                                );
-                            }
-                        }
-                        Err(e) => {
-                            error!(
-                                character,
-                                error = %e,
-                                "Failed to get engine for recap persistence"
-                            );
-                        }
-                    }
-                } else {
-                    error!(
-                        character,
-                        "No registry available, recap not persisted to active.jsonl"
+        match crate::memory::markdown_store::MarkdownMemoryStore::open(data_dir.join(character).join("memories")).await {
+            Ok(store) => match crate::memory::markdown_query::append_daily_note(
+                &store,
+                tick_started_at,
+                "heartbeat",
+                &recap,
+            )
+            .await
+            {
+                Ok(path) => {
+                    let mut s = lock_state(state);
+                    s.interiority_log.push(
+                        InteriorityEventKind::RecapWritten,
+                        format!("Heartbeat note saved to {path}: {preview}"),
                     );
+                    s.mark_dirty();
                 }
-
-                let mut s = lock_state(state);
-                s.interiority_log.push(
-                    InteriorityEventKind::RecapWritten,
-                    format!("Recap saved: {preview}"),
-                );
-                s.mark_dirty();
-            }
+                Err(e) => {
+                    warn!(character, error = %e, "Interiority: failed to persist heartbeat note");
+                    let mut s = lock_state(state);
+                    s.interiority_log.push(
+                        InteriorityEventKind::RecapMissing,
+                        format!("Heartbeat note persist failed: {e}"),
+                    );
+                    s.mark_dirty();
+                }
+            },
             Err(e) => {
-                warn!(character, error = %e, "Interiority: failed to persist recap");
+                warn!(character, error = %e, "Interiority: failed to open markdown store for heartbeat note");
                 let mut s = lock_state(state);
                 s.interiority_log.push(
                     InteriorityEventKind::RecapMissing,
-                    format!("Recap persist failed: {e}"),
+                    format!("Heartbeat note store open failed: {e}"),
                 );
                 s.mark_dirty();
             }
@@ -1851,16 +1808,6 @@ async fn build_tool_context(
 ) -> Option<SharedToolContext> {
     let char_dir = data_dir.join(character);
 
-    // Memory DB.
-    let db_path = char_dir.join("memory").join("memory.db");
-    let db = match MemoryDB::open(&db_path) {
-        Ok(db) => db,
-        Err(e) => {
-            warn!(character, error = %e, "Interiority: failed to open memory DB");
-            return None;
-        }
-    };
-
     // Agent model (use memory_agent config if set, else default model).
     let agent_model_name = config.app.defaults.memory_agent.as_deref().or(config
         .app
@@ -1869,66 +1816,21 @@ async fn build_tool_context(
         .as_deref())?;
     let agent_model = config.models.find_model(agent_model_name).ok()?;
 
-    // Researcher model (optional).
-    let researcher_model = config
-        .app
-        .defaults
-        .tool_model
-        .as_deref()
-        .and_then(|name| config.models.find_model(name).ok())
-        .cloned();
-
-    // Semantic search context (graceful: None if no embedding model).
-    let search_ctx = match resolve_embed_config(
-        config.app.defaults.embedding.as_deref(),
-        &config.models.embedding,
-    ) {
-        Ok(embed_config) => {
-            let vs_path = char_dir.join("memory").join("vectorstore");
-            VectorStore::open(&vs_path, embed_config.dimensions)
-                .await
-                .ok()
-                .map(|vs| {
-                    AgentSearchContext::new(Arc::new(vs), client.inner().clone(), embed_config)
-                })
-        }
-        Err(_) => None,
-    };
-
     let image_gen_config = resolve_image_gen_config(
         config.app.defaults.image_generation.as_deref(),
         &config.models.image_generation,
     )
     .ok();
 
-    let display_name = config.app.defaults.resolve_display_name();
-
     debug!(
         character,
-        has_search = search_ctx.is_some(),
         has_image_gen = image_gen_config.is_some(),
-        has_researcher = researcher_model.is_some(),
         "Interiority: tool context built"
     );
 
     Some(SharedToolContext {
-        db: Arc::new(db),
-        agent: crate::memory::agent::MemoryAgent::one_shot(
-            CallerIdentity::Char,
-            character,
-            &display_name,
-        ),
         agent_llm: RealAgentLlm::new(client.clone(), character.to_string(), CallType::MemoryAgent),
         agent_model_val: agent_model.clone(),
-        researcher: researcher_model
-            .as_ref()
-            .map(|_| MemoryResearcher::new(String::new(), String::new())),
-        researcher_llm_val: researcher_model.as_ref().map(|_| {
-            RealAgentLlm::new(client.clone(), character.to_string(), CallType::Researcher)
-        }),
-        researcher_model_val: researcher_model,
-        rag: NoopRag,
-        search_ctx,
         image_dir_val: char_dir.join("images").to_string_lossy().into_owned(),
         llm_client_val: client.inner().clone(),
         image_gen_config_val: image_gen_config,

@@ -5,7 +5,8 @@
 //! without a `<recap>` (iteration cap, soft deadline, or natural early exit),
 //! the manager makes one more non-streaming `generate()` call with an
 //! explicit wrap-up system message asking for a recap, and persists any
-//! `<recap>` it produces to `{data_dir}/{character}/recaps.jsonl`.
+//! `<recap>` it produces to a markdown daily note under
+//! `{data_dir}/{character}/memories/daily/`.
 //!
 //! Permitted under the testing-policy Rule 2 (trait/HTTP doubles upstream of
 //! shore-llm-client) — the autonomy manager is the caller under test, and the
@@ -18,10 +19,31 @@ use shore_test_harness::{TestConfigBuilder, TestHarness};
 
 const CHARACTER: &str = "TestChar";
 
+fn daily_notes_contain(data_dir: &std::path::Path, needle: &str) -> bool {
+    let daily_dir = data_dir.join(CHARACTER).join("memories").join("daily");
+    let Ok(entries) = std::fs::read_dir(&daily_dir) else {
+        return false;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("md") {
+            continue;
+        }
+        if std::fs::read_to_string(&path)
+            .ok()
+            .is_some_and(|content| content.contains(needle))
+        {
+            return true;
+        }
+    }
+
+    false
+}
+
 /// Cap `max_tool_rounds` at 1 and queue a single `tool_use` response so the
 /// only loop iteration hits the cap. The wrap-up call then receives a text
-/// response with a `<recap>`, which the manager must persist to
-/// `recaps.jsonl`.
+/// response with a `<recap>`, which the manager must persist to a daily note.
 fn init_tracing() {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(
@@ -91,16 +113,11 @@ async fn wrap_up_persists_recap_when_iteration_cap_is_hit() {
     //    so we spin until the recap lands or a generous virtual-time budget
     //    expires. Each iteration yields + sleeps 10ms; under paused time
     //    this advances the virtual clock when the runtime is otherwise idle.
-    let recap_path = harness.data_dir.join(CHARACTER).join("recaps.jsonl");
     let mut found = false;
     for _ in 0..500 {
-        if recap_path.exists() {
-            if let Ok(content) = std::fs::read_to_string(&recap_path) {
-                if content.contains(expected_recap) {
-                    found = true;
-                    break;
-                }
-            }
+        if daily_notes_contain(&harness.data_dir, expected_recap) {
+            found = true;
+            break;
         }
         tokio::task::yield_now().await;
         tokio::time::sleep(Duration::from_millis(10)).await;
@@ -108,16 +125,10 @@ async fn wrap_up_persists_recap_when_iteration_cap_is_hit() {
 
     tokio::time::resume();
 
-    // 5. Assert the wrap-up recap was persisted. The `recaps.jsonl` file is
-    //    JSONL — one `RecapEntry` per line — so contains() is enough to prove
-    //    the tick's wrap-up call reached the mock AND its response drove a
-    //    successful persist.
     assert!(
         found,
-        "expected wrap-up recap {expected_recap:?} in {}, existed={} contents={:?}",
-        recap_path.display(),
-        recap_path.exists(),
-        std::fs::read_to_string(&recap_path).ok(),
+        "expected wrap-up recap {expected_recap:?} in a daily markdown note under {}",
+        harness.data_dir.join(CHARACTER).join("memories").join("daily").display(),
     );
 
     harness.shutdown().await;
@@ -170,16 +181,11 @@ async fn wrap_up_persists_recap_on_natural_exit_without_recap() {
     tokio::time::pause();
     tokio::time::advance(Duration::from_secs(15)).await;
 
-    let recap_path = harness.data_dir.join(CHARACTER).join("recaps.jsonl");
     let mut found = false;
     for _ in 0..500 {
-        if recap_path.exists() {
-            if let Ok(content) = std::fs::read_to_string(&recap_path) {
-                if content.contains(expected_recap) {
-                    found = true;
-                    break;
-                }
-            }
+        if daily_notes_contain(&harness.data_dir, expected_recap) {
+            found = true;
+            break;
         }
         tokio::task::yield_now().await;
         tokio::time::sleep(Duration::from_millis(10)).await;
@@ -189,10 +195,7 @@ async fn wrap_up_persists_recap_on_natural_exit_without_recap() {
 
     assert!(
         found,
-        "expected natural-exit wrap-up recap {expected_recap:?} in {}, existed={} contents={:?}",
-        recap_path.display(),
-        recap_path.exists(),
-        std::fs::read_to_string(&recap_path).ok(),
+        "expected natural-exit wrap-up recap {expected_recap:?} in a daily markdown note",
     );
 
     harness.shutdown().await;
@@ -260,14 +263,11 @@ async fn wrap_up_sees_final_assistant_turn_after_tool_use_then_natural_exit() {
     // Wait for the wrap-up's recap to land on disk — that's the signal that
     // all three tick calls have been consumed by the mock and we can read
     // `received_requests()` for assertions.
-    let recap_path = harness.data_dir.join(CHARACTER).join("recaps.jsonl");
     let mut recap_landed = false;
     for _ in 0..500 {
-        if let Ok(content) = std::fs::read_to_string(&recap_path) {
-            if content.contains(expected_recap) {
-                recap_landed = true;
-                break;
-            }
+        if daily_notes_contain(&harness.data_dir, expected_recap) {
+            recap_landed = true;
+            break;
         }
         tokio::task::yield_now().await;
         tokio::time::sleep(Duration::from_millis(10)).await;
@@ -325,14 +325,10 @@ async fn wrap_up_sees_final_assistant_turn_after_tool_use_then_natural_exit() {
     harness.shutdown().await;
 }
 
-/// A completed interiority tick must persist its recap to `active.jsonl` as a
-/// `Role::System` message so the recap survives compaction and the next
-/// payload sees it at its natural chronological position. This replaces the
-/// old ephemeral re-injection from `recaps.jsonl` in `trim_messages`.
+/// A completed interiority tick must persist its recap to a daily markdown note
+/// instead of injecting a hidden `Role::System` message into `active.jsonl`.
 #[tokio::test]
-async fn tick_recap_persists_as_system_message_in_active_jsonl() {
-    use shore_protocol::types::{Message, Role};
-
+async fn tick_recap_persists_to_daily_markdown_note() {
     init_tracing();
     let mut harness = TestHarness::boot_with(
         TestConfigBuilder::new()
@@ -365,24 +361,10 @@ async fn tick_recap_persists_as_system_message_in_active_jsonl() {
     tokio::time::advance(Duration::from_secs(15)).await;
 
     let active_path = harness.data_dir.join(CHARACTER).join("active.jsonl");
-    let mut found_system_recap = false;
+    let mut found_daily_recap = false;
     for _ in 0..500 {
-        if let Ok(content) = std::fs::read_to_string(&active_path) {
-            for line in content.lines() {
-                let line = line.trim();
-                if line.is_empty() {
-                    continue;
-                }
-                if let Ok(mut msg) = serde_json::from_str::<Message>(line) {
-                    msg.normalize();
-                    if msg.role == Role::System && msg.content.contains(expected_recap) {
-                        found_system_recap = true;
-                        break;
-                    }
-                }
-            }
-        }
-        if found_system_recap {
+        if daily_notes_contain(&harness.data_dir, expected_recap) {
+            found_daily_recap = true;
             break;
         }
         tokio::task::yield_now().await;
@@ -392,10 +374,15 @@ async fn tick_recap_persists_as_system_message_in_active_jsonl() {
     tokio::time::resume();
 
     assert!(
-        found_system_recap,
-        "expected a Role::System message containing {expected_recap:?} in {}; contents={:?}",
-        active_path.display(),
-        std::fs::read_to_string(&active_path).ok(),
+        found_daily_recap,
+        "expected a daily markdown note containing {expected_recap:?} under {}",
+        harness.data_dir.join(CHARACTER).join("memories").join("daily").display(),
+    );
+
+    let active_content = std::fs::read_to_string(&active_path).unwrap();
+    assert!(
+        !active_content.contains(expected_recap),
+        "heartbeat recaps should no longer be injected into active.jsonl"
     );
 
     harness.shutdown().await;

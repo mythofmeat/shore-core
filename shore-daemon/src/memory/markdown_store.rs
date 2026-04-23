@@ -150,17 +150,24 @@ impl MarkdownMemoryStore {
         Ok(())
     }
 
-    /// Simple text search across all entries. Returns entries whose content
-    /// contains the query string (case-insensitive).
+    /// Ranked text search across all entries.
+    ///
+    /// Scores path/title/content matches using the full query and individual
+    /// query tokens so markdown-only retrieval can stay usable without a shadow
+    /// DB/vector layer.
     pub async fn search_text(&self, query: &str) -> Result<Vec<MarkdownEntry>, MarkdownStoreError> {
         let all = self.list_all().await?;
         let q = query.to_lowercase();
-        let mut results = Vec::new();
+        let terms = tokenize_query(&q);
+        let mut scored = Vec::new();
         for entry in all {
-            if entry.content.to_lowercase().contains(&q) {
-                results.push(entry);
+            let score = entry_search_score(&entry, &q, &terms);
+            if score > 0 {
+                scored.push((score, entry));
             }
         }
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.path.cmp(&b.1.path)));
+        let results = scored.into_iter().map(|(_, entry)| entry).collect();
         Ok(results)
     }
 
@@ -277,6 +284,49 @@ fn sanitize_filename(name: &str) -> String {
             _ => '-',
         })
         .collect()
+}
+
+fn tokenize_query(query: &str) -> Vec<&str> {
+    query
+        .split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
+        .filter(|term| term.len() >= 2)
+        .collect()
+}
+
+fn entry_search_score(entry: &MarkdownEntry, query: &str, terms: &[&str]) -> usize {
+    let path = entry.path.to_lowercase();
+    let content = entry.content.to_lowercase();
+    let title = entry
+        .content
+        .lines()
+        .find(|line| line.trim_start().starts_with('#'))
+        .unwrap_or_default()
+        .to_lowercase();
+
+    let mut score = 0;
+    if path.contains(query) {
+        score += 50;
+    }
+    if title.contains(query) {
+        score += 40;
+    }
+    if content.contains(query) {
+        score += 30;
+    }
+
+    for term in terms {
+        if path.contains(term) {
+            score += 12;
+        }
+        if title.contains(term) {
+            score += 10;
+        }
+        if content.contains(term) {
+            score += 4;
+        }
+    }
+
+    score
 }
 
 // ---------------------------------------------------------------------------
