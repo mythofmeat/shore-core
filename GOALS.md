@@ -36,6 +36,10 @@ Anthropic's cache system is unique. `shore` is optimized for Anthropic's 1 hour 
 
 Keeping context low while providing a long-term memory system similar to openclaw/letta. Allowing the character to update its memories that are simple git-diffable markdown files in a workspace the character has access to. This extends to giving the character the ability to update its *own* system prompt, character/user definitions, and tool descriptions.
 
+### Dreaming
+
+Similar to openclaw's dreaming system, a daily period of self-limited cleanup, updating, curation of memories and files in the workspace.
+
 
 ## Heartbeat/Autonomy
 
