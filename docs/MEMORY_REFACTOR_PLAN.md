@@ -267,11 +267,8 @@ the permanent dispatch table.
 
 ## Open Questions
 
-1. **How does OpenClaw handle memory maintenance?** Need to research their prompts or source.
-2. **Should we keep any SQLite at all?** Vector store metadata could be in SQLite or a simple JSON manifest.
-3. **How do we handle large memory files?** If the assistant writes a 10,000-line `ren.md`, embedding the whole thing is fine, but returning it in RAG might be noisy. We may need chunking.
-4. **What is the right `edit` tool format?** Find-and-replace? Unified diff? OpenClaw's `apply_patch`?
-5. **Should `exec` require approval?** OpenClaw has configurable exec approvals. We probably want the same.
+1. **How do we handle very large memory files?** Compaction currently receives a bounded snapshot. If a single file grows huge, we may need file chunking or targeted search inside compaction.
+2. **Should `exec` require approval?** OpenClaw has configurable exec approvals. Shore currently uses an allowlist and hides/rejects `exec` when memory access is disabled or private.
 
 ---
 
@@ -280,7 +277,7 @@ the permanent dispatch table.
 - [x] `shore send` → assistant can `read` and `write` files in its workspace.
 - [x] `shore memory compact` → assistant reviews conversation and updates its own `.md` files.
 - [x] `shore memory search "doom"` → returns excerpts from markdown files.
-- [ ] No SQLite `entries` table reads during normal operation. (Pending: switch memory agent to read markdown instead of SQLite)
+- [x] No SQLite `entries` table reads during normal operation. Legacy SQLite/vector modules remain for migration, compatibility tests, and historical benchmarks.
 - [x] Character self-edits to `character.md` are deferred and applied at compaction.
 - [ ] Assistant uses memory tools in ≥80% of relevant turns (benchmarked).
 - [x] `scripts/migrate-memory.py` exports existing SQLite entries to markdown files.
@@ -300,5 +297,5 @@ All phases complete:
 - Phase 6: Deferred Character Self-Edits
 - Phase 7: SQLite-to-Markdown Migration Script
 
-Next action: Full integration test and benchmark of memory tool use in
-conversations (success criterion: ≥80% retrieval rate in benchmark).
+Next action: Benchmark memory tool use in realistic conversations (success
+criterion: ≥80% retrieval rate in benchmark).

@@ -10,6 +10,7 @@ use tracing::debug;
 /// Placeholders:
 /// - `{{char}}`, `{{user}}` — character and user names
 /// - `{{conversation}}` — formatted conversation messages
+/// - `{{existing_memories}}` — bounded snapshot of current markdown memories
 /// - `{{#if recap}}...{{/if}}` — conditional block for existing recap
 /// - `{{recap}}` — existing recap text (inside conditional)
 pub const DEFAULT_COMPACT_PROMPT: &str = r#"You are {{char}}. This conversation with {{user}} is about to be archived and your active context will be cleared. Before that happens, you must save anything important to your long-term memory files.
@@ -17,11 +18,16 @@ pub const DEFAULT_COMPACT_PROMPT: &str = r#"You are {{char}}. This conversation 
 You have access to your memories directory. Use the <memory> section below to write or update markdown files. Be concise and organized.
 
 Guidelines:
-- Prefer updating existing files over creating new ones
+- Prefer updating existing files over creating new ones. Use the existing memory snapshot below to merge new information into the right files.
 - Use clear filenames and folder structure (e.g., people/{{user}}.md, topics/gaming/doom.md)
 - Each file should have a heading and bullet points
 - Include timestamps or session context when relevant
 - If {{user}} corrected previous information, update the file rather than appending
+
+Existing memory files:
+<existing_memories>
+{{existing_memories}}
+</existing_memories>
 
 Your response MUST contain two parts, in this order:
 

@@ -354,9 +354,7 @@ pub enum MemoryCommand {
     /// Compact conversation into memory entries, then run collation.
     /// Optional positional: number of recent user turns to retain
     /// (0 = retain none — leaves only the system prompt + recap).
-    Compact {
-        keep_turns: Option<u32>,
-    },
+    Compact { keep_turns: Option<u32> },
 
     /// Show recent memory changelog entries
     Changelog {
@@ -1056,9 +1054,10 @@ mod tests {
         let cli = parse(&["memory", "compact", "0"]);
         match &cli.command {
             CliCommand::Memory {
-                subcommand: Some(MemoryCommand::Compact {
-                    keep_turns: Some(0),
-                }),
+                subcommand:
+                    Some(MemoryCommand::Compact {
+                        keep_turns: Some(0),
+                    }),
                 ..
             } => {}
             other => panic!("expected Memory Compact keep_turns=0, got: {other:?}"),
@@ -1070,9 +1069,10 @@ mod tests {
         let cli = parse(&["memory", "compact", "8"]);
         match &cli.command {
             CliCommand::Memory {
-                subcommand: Some(MemoryCommand::Compact {
-                    keep_turns: Some(8),
-                }),
+                subcommand:
+                    Some(MemoryCommand::Compact {
+                        keep_turns: Some(8),
+                    }),
                 ..
             } => {}
             other => panic!("expected Memory Compact keep_turns=8, got: {other:?}"),
@@ -1693,7 +1693,8 @@ mod tests {
         let (_cmd, args) = to_swp_command(&cli.command).unwrap();
         assert_eq!(args["call_type"], "message");
         assert!(
-            args["by_call_type"].is_null() || args["by_call_type"] == serde_json::Value::Bool(false),
+            args["by_call_type"].is_null()
+                || args["by_call_type"] == serde_json::Value::Bool(false),
             "filter value should not imply breakdown flag",
         );
     }

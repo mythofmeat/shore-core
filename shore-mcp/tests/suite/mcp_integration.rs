@@ -105,22 +105,29 @@ async fn shore_mcp_initializes_and_calls_tools_against_real_daemon() {
     )
     .await
     .unwrap();
-    let init_resp = tokio::time::timeout(Duration::from_secs(5), recv_jsonrpc_response(&mut reader))
-        .await
-        .expect("initialize timed out")
-        .expect("initialize read failed");
+    let init_resp =
+        tokio::time::timeout(Duration::from_secs(5), recv_jsonrpc_response(&mut reader))
+            .await
+            .expect("initialize timed out")
+            .expect("initialize read failed");
     assert_eq!(init_resp["id"], 1);
-    assert!(init_resp.get("result").is_some(), "no result in initialize response");
+    assert!(
+        init_resp.get("result").is_some(),
+        "no result in initialize response"
+    );
 
     // 2. tools/list — verify representative tools are advertised.
     send_jsonrpc(&mut stdin, "tools/list", 2, serde_json::json!({}))
         .await
         .unwrap();
-    let list_resp = tokio::time::timeout(Duration::from_secs(5), recv_jsonrpc_response(&mut reader))
-        .await
-        .expect("tools/list timed out")
-        .expect("tools/list read failed");
-    let tools = list_resp["result"]["tools"].as_array().expect("tools array");
+    let list_resp =
+        tokio::time::timeout(Duration::from_secs(5), recv_jsonrpc_response(&mut reader))
+            .await
+            .expect("tools/list timed out")
+            .expect("tools/list read failed");
+    let tools = list_resp["result"]["tools"]
+        .as_array()
+        .expect("tools array");
     let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
     for required in &["status", "character_list", "send", "log_tail"] {
         assert!(
@@ -138,12 +145,16 @@ async fn shore_mcp_initializes_and_calls_tools_against_real_daemon() {
     )
     .await
     .unwrap();
-    let status_resp = tokio::time::timeout(Duration::from_secs(10), recv_jsonrpc_response(&mut reader))
-        .await
-        .expect("status timed out")
-        .expect("status read failed");
+    let status_resp =
+        tokio::time::timeout(Duration::from_secs(10), recv_jsonrpc_response(&mut reader))
+            .await
+            .expect("status timed out")
+            .expect("status read failed");
     assert_eq!(status_resp["id"], 3);
-    assert!(status_resp.get("error").is_none(), "status errored: {status_resp}");
+    assert!(
+        status_resp.get("error").is_none(),
+        "status errored: {status_resp}"
+    );
 
     // 4. send — mutating, should fire thanks to --allow-main-writes.
     send_jsonrpc(
@@ -157,12 +168,16 @@ async fn shore_mcp_initializes_and_calls_tools_against_real_daemon() {
     )
     .await
     .unwrap();
-    let send_resp = tokio::time::timeout(Duration::from_secs(30), recv_jsonrpc_response(&mut reader))
-        .await
-        .expect("send timed out")
-        .expect("send read failed");
+    let send_resp =
+        tokio::time::timeout(Duration::from_secs(30), recv_jsonrpc_response(&mut reader))
+            .await
+            .expect("send timed out")
+            .expect("send read failed");
     assert_eq!(send_resp["id"], 4);
-    assert!(send_resp.get("error").is_none(), "send errored: {send_resp}");
+    assert!(
+        send_resp.get("error").is_none(),
+        "send errored: {send_resp}"
+    );
     let content_text = send_resp["result"]["content"][0]["text"]
         .as_str()
         .expect("text content");

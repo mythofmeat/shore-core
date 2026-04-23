@@ -35,6 +35,9 @@ pub(crate) struct SharedToolContext {
     pub(crate) scratchpad_dir_val: String,
     pub(crate) workspace_dir_val: String,
     pub(crate) markdown_store_val: Option<MarkdownMemoryStore>,
+    pub(crate) memory_access_allowed_val: bool,
+    pub(crate) memory_read_allowed_val: bool,
+    pub(crate) memory_write_allowed_val: bool,
     pub(crate) config_dir_val: String,
     pub(crate) character_data_dir_val: String,
 }
@@ -69,6 +72,15 @@ impl ToolContext for SharedToolContext {
     }
     fn markdown_store(&self) -> Option<&MarkdownMemoryStore> {
         self.markdown_store_val.as_ref()
+    }
+    fn memory_access_allowed(&self) -> bool {
+        self.memory_access_allowed_val
+    }
+    fn memory_read_allowed(&self) -> bool {
+        self.memory_read_allowed_val
+    }
+    fn memory_write_allowed(&self) -> bool {
+        self.memory_write_allowed_val
     }
     fn config_dir(&self) -> &str {
         &self.config_dir_val

@@ -39,55 +39,49 @@ _Empty. Add new invariant drafts here as future features are introduced or exist
 
 ## Invariants
 
-### Memory: compaction vs. collation as separate passes
+### Memory: markdown is the durable store
 
-**Goal:** Compaction turns transient conversation into durable, retrievable facts without loss. Collation keeps the accumulated memory store coherent over time so it doesn't degrade into a slurry of near-duplicates. They're separate because they operate on different inputs (fresh conversation turns vs. existing entries) on different cadences, and entangling them would make either one harder to tune or skip independently.
+**Goal:** Long-term memory is inspectable, editable, and recoverable as ordinary markdown files, not opaque database rows.
 
 **Must:**
-- Compaction must not silently drop content — anything non-trivial in the hot log either lands in memory or is explicitly ephemeral.
-- Collation must be idempotent (running twice ≈ running once).
-- Collation may discard low-signal detail, but must do so *losslessly*: superseded entries are preserved and downranked, not deleted.
-- Collation must be safe to disable — skipping it degrades retrieval quality over time, but doesn't corrupt the store or break compaction.
-- Compaction should prefer to run during idle time, but MUST run between turns even mid-conversation if the context or turn-count threshold is exceeded (it's a safety fallback, not forbidden mid-conversation).
+- Normal runtime reads and writes use `{character}/memories/**/*.md`.
+- Memory tools must be able to list, read, search, and overwrite markdown files directly.
+- Disabling memory must disable all `memory*` tools and block workspace access to the `memories/...` namespace.
+- Private conversations must not expose memory tools or memory files.
 
 **Must not:**
-- The two must not be coupled such that compaction's correctness depends on collation having recently run.
+- New runtime memory features must not depend on the legacy SQLite/vector memory agent.
 
-**Notes:** "Losslessly" for collation means information-preserving *at the level of the store as a whole*, via superseded-and-downranked entries — not that any single entry is immutable.
-
----
-
-### Memory: parallel vector + FTS indexes
-
-**Goal:** Every memory query must find both the *fuzzy/semantic* match ("that thing Ren said about the doom launcher") and the *exact* match (a specific name, filename, or phrase), because either index alone misses a whole class of correct retrieval. The character shouldn't have to care which kind of recall it's asking for.
-
-**Must:**
-- Every query hits both indexes; results are merged.
-
-**Notes:** Ranking policy, write atomicity, and sync-reconciliation are implementation concerns, not invariants — optimize as needed so long as the goal above holds.
+**Notes:** The legacy SQLite/vector modules are retained for compatibility, migration, tests, and old benchmarks only.
 
 ---
 
-### Memory interaction pipeline (chat → researcher → agent)
+### Memory: compaction maintains markdown
 
-**Goal:** Three tiers with distinct responsibilities, not one monolithic memory tool on the chat model:
-
-1. **Chat model** — exposes one natural-language tool that asks the researcher. Does not see the 9 memory tools, the DB schema, or the save/dedup logic.
-2. **Memory researcher** (cheap tier) — takes a natural-language ask, chases leads across multiple agent queries, cross-references, and returns a factual briefing. Neutral voice, no character. For save/update asks, pre-searches so the agent has deduplication context.
-3. **Memory agent** (cheap tier, smallest) — sole executor of memory DB operations via the 9 tools. Every read and write passes through it; every caller (researcher, compaction, CLI shell) funnels through the same chokepoint.
-
-The split exists to:
-- Keep the chat model's tool surface small and its prompt-cacheable prefix stable — memory prompts and logic don't pollute the chat model's system prompt, which would be catastrophic for Anthropic cache hit rates.
-- Delegate memory work to cheap models rather than the expensive chat model.
-- Let the memory store self-heal: the researcher's search-before-save step feeds the agent enough context to deduplicate or supersede existing entries instead of blindly creating new ones.
-- Allow each tier to have its own system prompt without cross-contaminating the others' caches.
+**Goal:** Compaction turns transient conversation into durable markdown memory without losing important continuity.
 
 **Must:**
-- The chat model sees exactly one NL tool for memory interaction — never the 9 memory tools directly.
-- The researcher must return factual briefings, not character voice (no advice, no speculation, no roleplay).
-- For save/update requests, the researcher must search first before asking the agent to write.
-- The memory agent is the only component that mutates the memory store.
-- Each tier has its own system prompt; the chat model's prefix must not change when memory prompts change.
+- Compaction must not silently drop non-trivial content from the hot log.
+- Compaction should see a bounded snapshot of existing markdown memory before writing, so it can merge or update files instead of blindly creating duplicates.
+- Compaction should prefer idle time, but must still be allowed between turns when context or turn-count thresholds require it.
+- Recent conversation turns must remain verbatim according to `keep_recent_turns`.
+
+**Must not:**
+- Compaction must not require a separate collation pass for correctness.
+
+**Notes:** The old collation config is compatibility-only; memory maintenance now happens through markdown edits during normal tool use and compaction.
+
+---
+
+### Memory interaction pipeline
+
+**Goal:** The character can use memory as files when it needs precision, and as an assisted markdown query when it needs synthesis.
+
+**Must:**
+- Direct memory file tools expose clear paths and markdown content.
+- The natural-language `memory` tool answers from markdown files only.
+- Writes to memory should prefer updating existing files over creating near-duplicate files.
+- Memory access must be consistently gated across memory tools, workspace file tools, and private-mode tool lists.
 
 ---
 
@@ -96,26 +90,13 @@ The split exists to:
 **Goal:** Two distinct surfaces serving different needs:
 
 - **Scratchpad** — a literal workspace. Entirely self-authored by the character, used during interiority sessions for ideas and projects-in-progress. It is the character's own creative space, not a second memory store.
-- **Memory** — the character's metaphorical brain. The substrate for continuity, coherence, and factual remembrance across compactions and collations, without inflating the context window and degrading performance.
+- **Memory** — the character's metaphorical brain. The substrate for continuity, coherence, and factual remembrance across compactions, without inflating the context window and degrading performance.
 
 Memory is *who the character is* over time; scratchpad is *what the character is working on*.
 
 **Must:**
 - The scratchpad is character-authored — the user does not edit it directly. It is the character's, not a shared filesystem.
 - Scratchpad content is not auto-injected into the prompt; it enters context only when the character explicitly reads it.
-
----
-
-### Interactive memory shell
-
-**Goal:** A direct pipe from the operator to the memory agent, outside any conversational context. Lets you inspect, query, save, and edit memory entries without driving the character through a conversation to do it — so operator-level maintenance (seeding, fixing, exploring) doesn't have to be performed through the character's persona.
-
-**Must:**
-- The memory shell drives the memory agent directly — it does not go through the chat model or the character's conversation log.
-
-**Notes:** Entries created via the shell are not distinguished from compaction-authored entries. The user has considered the question and doesn't currently see a need to differentiate; if a need emerges later, this is where to revisit it.
-
----
 
 ### Autonomy: active vs. dormant phases
 

@@ -7,9 +7,7 @@ use tracing::{debug, error, instrument, warn};
 /// OpenAI/Anthropic-style `reasoning_effort` set to any non-null value.
 /// Used by both the primary stream call and the tool-loop re-entry to
 /// tag ledger rows and SSE metadata consistently.
-pub(super) fn thinking_enabled_from_request(
-    request: &shore_llm_client::types::LlmRequest,
-) -> bool {
+pub(super) fn thinking_enabled_from_request(request: &shore_llm_client::types::LlmRequest) -> bool {
     thinking_enabled_from_provider_options(request.provider_options.as_ref())
 }
 
@@ -21,9 +19,7 @@ fn thinking_enabled_from_provider_options(opts: Option<&serde_json::Value>) -> b
         .get("budget_tokens")
         .and_then(|v| v.as_u64())
         .is_some_and(|b| b > 0);
-    let effort_on = opts
-        .get("reasoning_effort")
-        .is_some_and(|v| !v.is_null());
+    let effort_on = opts.get("reasoning_effort").is_some_and(|v| !v.is_null());
     budget_on || effort_on
 }
 
@@ -247,10 +243,11 @@ pub(super) async fn run_tool_phase(
                 .join("workspace")
                 .to_string_lossy()
                 .into_owned(),
-            markdown_store_val: MarkdownMemoryStore::open_sync(
-                character_data_dir.join("memories"),
-            )
-            .ok(),
+            markdown_store_val: MarkdownMemoryStore::open_sync(character_data_dir.join("memories"))
+                .ok(),
+            memory_access_allowed_val: effective_config.app.behavior.tool_use.tools.memory(),
+            memory_read_allowed_val: effective_config.app.behavior.tool_use.tools.memory_read(),
+            memory_write_allowed_val: effective_config.app.behavior.tool_use.tools.memory_write(),
             config_dir_val: config_dir.to_string_lossy().into_owned(),
             character_data_dir_val: character_data_dir.to_string_lossy().into_owned(),
         },

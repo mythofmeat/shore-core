@@ -49,7 +49,9 @@ impl ShoreMcpHandler {
             Some(n) => json!({ "name": n }),
             None => json!({}),
         };
-        let data = self.run_cmd("character_info", "character_info", args).await?;
+        let data = self
+            .run_cmd("character_info", "character_info", args)
+            .await?;
         Self::json_result(data)
     }
 

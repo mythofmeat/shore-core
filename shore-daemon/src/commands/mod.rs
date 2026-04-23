@@ -15,7 +15,7 @@ use tracing::{debug, info, warn};
 
 use crate::autonomy::manager::AutonomyManager;
 use crate::engine::{ConversationEngine, EngineError};
-use crate::memory::agent::{AgentSearchContext, MemoryAgent};
+use crate::memory::agent::AgentSearchContext;
 use crate::memory::compaction_impls::resolve_embed_config;
 use crate::memory::vectorstore::VectorStore;
 use shore_config::models::ResolvedModel;
@@ -32,9 +32,10 @@ pub struct SessionTokens {
     pub cache_write: u32,
 }
 
-/// An active memory shell session.
+/// Legacy memory shell state retained only so config reset and session cleanup
+/// can clear stale clients from older sessions. The shell command itself is
+/// removed in markdown-only memory mode.
 pub struct MemoryShellSession {
-    pub agent: MemoryAgent,
     pub history: Vec<serde_json::Value>,
     pub character: String,
     pub model: ResolvedModel,

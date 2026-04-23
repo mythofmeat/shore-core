@@ -671,7 +671,8 @@ model_id = "claude-opus-4-6"
         );
         assert!(loaded.app.behavior.tool_use.enabled);
         assert!(loaded.app.memory.compaction.enabled);
-        assert!(loaded.app.memory.collation.enabled);
+        assert!(!loaded.app.memory.collation.enabled);
+        assert!(!loaded.app.memory.collation.auto_run);
         assert_eq!(loaded.app.daemon.addr, "127.0.0.1:7320"); // default
         assert!(!loaded.app.daemon.unsafe_allow_remote_access);
         assert!(loaded.app.advanced.editor.is_none());

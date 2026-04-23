@@ -100,7 +100,11 @@ impl ShoreMcpHandler {
         Parameters(p): Parameters<LogHeartbeatParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let data = self
-            .run_cmd("log_heartbeat", "heartbeat_log", json!({ "count": p.count }))
+            .run_cmd(
+                "log_heartbeat",
+                "heartbeat_log",
+                json!({ "count": p.count }),
+            )
             .await?;
         Self::json_result(data)
     }

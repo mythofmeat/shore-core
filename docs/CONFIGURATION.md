@@ -95,7 +95,6 @@ display_name = "Your Name"    # fills `{{user}}` in templates
 # stream = true
 # tool_model = "mistral-small"
 # memory_agent = "mistral-small"
-# collation = "mistral-small"
 # compaction = "mistral-small"
 # interiority = "claude-sonnet"
 # embedding = "text-large"
@@ -105,9 +104,8 @@ display_name = "Your Name"    # fills `{{user}}` in templates
 **Per-operation model slots** let you run heavy work (the main conversation) on one model and cheap background work on another. Each slot, if omitted, falls back to `model`:
 
 - `tool_model` — used when the character is invoking tools (web search, memory, etc.)
-- `memory_agent` — the small model that drives the memory query/save loop
-- `collation` — memory entry merge/split/normalize
-- `compaction` — conversation summarization into memory
+- `memory_agent` — the small model used for markdown memory question answering
+- `compaction` — conversation summarization into markdown memory
 - `interiority` — the "private moment" autonomous ticks
 - `embedding` — which embedding profile to use (see `[chat.<provider>.<alias>]` with an embedding model)
 - `image_generation` — which model handles `generate_image`
@@ -170,10 +168,11 @@ max_iterations = 10   # max tool-call rounds per turn before forcing a final res
 
 [behavior.tool_use.tools]
 memory = true
+memory_read = true
+memory_write = true
+memory_search = true
+memory_list = true
 send_image = true
-list_images = true
-recall_image = true
-remember_image = true      # save user-shared images to memory with context
 generate_image = true
 web_search = true
 fetch_url = true
@@ -184,10 +183,17 @@ scratchpad_list = true     # browse the character's persistent scratchpad
 scratchpad_read = true
 scratchpad_write = true
 scratchpad_delete = true
+read = true                # workspace file read
+write = true               # workspace file write
+edit = true                # workspace file edit
+list_files = true          # workspace file listing
+exec = true                # allowlisted workspace commands
 ```
 
 **When to change:**
 - Set `enabled = false` to disable tool use entirely.
+- Set `memory = false` to disable all memory tools and block `memories/...` access through workspace tools.
+- Granular `memory_read` / `memory_write` also gate workspace `memories/...` reads and writes; `exec` is hidden unless both are enabled.
 - Drop individual tool toggles to `false` when you want the character to not have access (e.g. `generate_image = false` if you don't have image-gen credits).
 - Lower `max_iterations` if the character is going in circles; raise it if complex tasks need more rounds.
 
@@ -207,9 +213,9 @@ See [`examples/config.toml`](../examples/config.toml) for every tool-use option.
 
 ## `[memory]`
 
-Controls the memory subsystem's background work. Memory itself is always on — these tables tune *when compaction and collation run*, not whether memory exists.
+Controls the memory subsystem's background work. Runtime memory is markdown-only and controlled by the `memory*` tool toggles above. This table tunes when old conversation turns are compacted into memory files.
 
-See [FEATURES.md — Memory](FEATURES.md#memory) for what compaction and collation are.
+See [FEATURES.md — Memory](FEATURES.md#memory) for the runtime memory model.
 
 ### `[memory.compaction]`
 
@@ -225,7 +231,7 @@ max_context_tokens = 200000 # force compaction when last turn's prompt
 keep_recent_turns = 2      # user turns retained verbatim after compaction
 ```
 
-Compaction condenses old conversation turns into durable memory entries. `idle_trigger` is how long the session must be idle before compaction kicks in; `min_turns` / `max_turns` bracket when it's allowed to run; `keep_recent_turns` controls how much recent conversation stays verbatim.
+Compaction condenses old conversation turns into durable markdown memory files. Before writing, the compaction model sees a bounded snapshot of existing memory files so it can merge and update instead of blindly creating duplicates. `idle_trigger` is how long the session must be idle before compaction kicks in; `min_turns` / `max_turns` bracket when it's allowed to run; `keep_recent_turns` controls how much recent conversation stays verbatim.
 
 `max_context_tokens` is a cost-driven trigger complementary to `max_turns`: per-turn content varies wildly (heavy-thinking turns are several times larger than light chat), so turn count is a poor proxy for context cost. The trigger fires when the just-completed turn's prompt tokens cross the threshold (still floored by `min_turns` to prevent thrash). The default **200000** acts as a context-window safety net (matching Claude 4.x's 200K ceiling) rather than a cost optimiser. For actual cost savings on Opus 4.7, lower it to around **30000** — the per-call cost curve has an elbow near 30K where median cost roughly doubles. Tune for your model and conversation shape; recorded call sizes are in the ledger CSV (`shore usage --export-csv`). Set to `0` to disable entirely.
 
@@ -248,14 +254,7 @@ a future provider or model you're testing needs the old behavior.
 
 ### `[memory.collation]`
 
-```toml
-[memory.collation]
-enabled = true
-auto_run = true     # run automatically after each compaction
-batch_limit = 10    # maximum memory entries processed per run
-```
-
-Collation periodically merges, splits, and normalizes memory entries so related facts coalesce and contradictions get reconciled. `auto_run = true` chains a collation pass onto every compaction; `batch_limit` caps how much work a single pass does.
+This table is legacy compatibility only in markdown memory mode. Shore no longer runs the old SQLite collation pass; compaction updates markdown files directly.
 
 See [`examples/config.toml`](../examples/config.toml) for every memory option.
 

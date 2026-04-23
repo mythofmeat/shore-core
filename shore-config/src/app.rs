@@ -339,15 +339,35 @@ pub struct ToolToggles(BTreeMap<String, bool>);
 impl ToolToggles {
     /// Check whether a tool is enabled by name. Absent keys default to enabled.
     pub fn is_enabled(&self, name: &str) -> bool {
-        self.0.get(name).copied().unwrap_or(true)
+        let enabled = self.0.get(name).copied().unwrap_or(true);
+        if is_memory_tool_name(name) && name != "memory" && !self.memory_group_enabled() {
+            return false;
+        }
+        enabled
     }
 
     pub fn set(&mut self, tool: &str, enabled: bool) {
         self.0.insert(tool.to_string(), enabled);
     }
 
+    fn memory_group_enabled(&self) -> bool {
+        self.0.get("memory").copied().unwrap_or(true)
+    }
+
     pub fn memory(&self) -> bool {
-        self.is_enabled("memory")
+        self.memory_group_enabled()
+    }
+    pub fn memory_read(&self) -> bool {
+        self.is_enabled("memory_read")
+    }
+    pub fn memory_write(&self) -> bool {
+        self.is_enabled("memory_write")
+    }
+    pub fn memory_search(&self) -> bool {
+        self.is_enabled("memory_search")
+    }
+    pub fn memory_list(&self) -> bool {
+        self.is_enabled("memory_list")
     }
     pub fn send_image(&self) -> bool {
         self.is_enabled("send_image")
@@ -391,6 +411,13 @@ impl ToolToggles {
     pub fn scratchpad_delete(&self) -> bool {
         self.is_enabled("scratchpad_delete")
     }
+}
+
+fn is_memory_tool_name(name: &str) -> bool {
+    matches!(
+        name,
+        "memory" | "memory_read" | "memory_write" | "memory_search" | "memory_list"
+    )
 }
 
 // ── [behavior.tool_use.search] ───────────────────────────────────────────
@@ -845,7 +872,8 @@ mod tests {
         assert_eq!(config.behavior.autonomy.interiority.max_tool_rounds, 12);
         assert!(config.behavior.tool_use.enabled);
         assert!(config.memory.compaction.enabled);
-        assert!(config.memory.collation.enabled);
+        assert!(!config.memory.collation.enabled);
+        assert!(!config.memory.collation.auto_run);
         // Tool toggles default to true.
         assert!(config.behavior.tool_use.tools.is_enabled("memory"));
         assert!(config.behavior.tool_use.tools.is_enabled("roll_dice"));
@@ -1176,10 +1204,29 @@ homeserver = "https://matrix.example.com"
         // Disable memory.
         toggles.set("memory", false);
         assert!(!toggles.memory());
+        assert!(!toggles.memory_read());
+        assert!(!toggles.memory_write());
+        assert!(!toggles.memory_search());
+        assert!(!toggles.memory_list());
+        assert!(!toggles.is_enabled("memory_search"));
 
         // Re-enable.
         toggles.set("memory", true);
         assert!(toggles.memory());
+        assert!(toggles.is_enabled("memory_search"));
+    }
+
+    #[test]
+    fn tool_toggles_parent_memory_overrides_child_tools() {
+        let mut toggles = ToolToggles::default();
+        toggles.set("memory_search", false);
+        assert!(toggles.memory());
+        assert!(!toggles.memory_search());
+        assert!(toggles.memory_read());
+
+        toggles.set("memory_search", true);
+        toggles.set("memory", false);
+        assert!(!toggles.memory_search());
     }
 
     #[test]

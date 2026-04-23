@@ -103,9 +103,7 @@ pub async fn answer_query(
 Use only the provided markdown memory files. If the files do not support a claim, \
 say you couldn't find it. Do not invent facts. Prefer a short direct answer."
     );
-    let user = format!(
-        "Question:\n{request}\n\nRelevant memory files:\n{memory_dump}"
-    );
+    let user = format!("Question:\n{request}\n\nRelevant memory files:\n{memory_dump}");
 
     let response = llm
         .generate(

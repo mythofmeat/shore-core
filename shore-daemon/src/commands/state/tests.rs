@@ -485,11 +485,6 @@ fn config_reset_clears_active_model_and_reloads() {
     ctx.memory_shell_sessions.insert(
         "shell-1".into(),
         crate::commands::MemoryShellSession {
-            agent: crate::memory::agent::MemoryAgent::interactive(
-                crate::memory::agent::CallerIdentity::User,
-                "TestChar",
-                "User",
-            ),
             history: vec![],
             character: "TestChar".into(),
             model: sample_models().first_chat_model().cloned().unwrap(),
@@ -516,10 +511,7 @@ async fn memory_reindex_reports_not_needed() {
     let (engine, ctx, _rx) = make_ctx(&tmp);
 
     let result = memory_reindex(&engine, &ctx).await.unwrap();
-    assert!(result["message"]
-        .as_str()
-        .unwrap()
-        .contains("unnecessary"));
+    assert!(result["message"].as_str().unwrap().contains("unnecessary"));
 }
 
 #[test]

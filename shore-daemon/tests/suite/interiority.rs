@@ -128,7 +128,12 @@ async fn wrap_up_persists_recap_when_iteration_cap_is_hit() {
     assert!(
         found,
         "expected wrap-up recap {expected_recap:?} in a daily markdown note under {}",
-        harness.data_dir.join(CHARACTER).join("memories").join("daily").display(),
+        harness
+            .data_dir
+            .join(CHARACTER)
+            .join("memories")
+            .join("daily")
+            .display(),
     );
 
     harness.shutdown().await;
@@ -376,7 +381,12 @@ async fn tick_recap_persists_to_daily_markdown_note() {
     assert!(
         found_daily_recap,
         "expected a daily markdown note containing {expected_recap:?} under {}",
-        harness.data_dir.join(CHARACTER).join("memories").join("daily").display(),
+        harness
+            .data_dir
+            .join(CHARACTER)
+            .join("memories")
+            .join("daily")
+            .display(),
     );
 
     let active_content = std::fs::read_to_string(&active_path).unwrap();

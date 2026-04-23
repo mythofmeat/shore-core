@@ -37,11 +37,7 @@ impl ShoreMcpHandler {
     ) -> Result<CallToolResult, ErrorData> {
         let key = p.key.unwrap_or_default();
         let data = self
-            .run_cmd(
-                "config_get",
-                "config",
-                json!({ "key": key, "value": null }),
-            )
+            .run_cmd("config_get", "config", json!({ "key": key, "value": null }))
             .await?;
         Self::json_result(data)
     }

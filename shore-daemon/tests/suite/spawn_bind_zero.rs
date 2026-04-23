@@ -49,10 +49,9 @@ async fn spawned_daemon_registers_resolved_port_when_bound_to_zero() {
         if let Ok(bytes) = std::fs::read(&registry_path) {
             if let Ok(entries) = serde_json::from_slice::<serde_json::Value>(&bytes) {
                 if let Some(arr) = entries.as_array() {
-                    if let Some(entry) = arr
-                        .iter()
-                        .find(|e| e.get("id").and_then(|v| v.as_str()) == Some(instance_id.as_str()))
-                    {
+                    if let Some(entry) = arr.iter().find(|e| {
+                        e.get("id").and_then(|v| v.as_str()) == Some(instance_id.as_str())
+                    }) {
                         if let Some(addr) = entry.get("addr").and_then(|v| v.as_str()) {
                             break addr.to_string();
                         }

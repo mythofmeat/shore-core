@@ -113,6 +113,18 @@ pub trait ToolContext: Sync {
         None
     }
 
+    // Whether memory tools and the workspace `memories/...` namespace may be
+    // used in this conversation.
+    fn memory_access_allowed(&self) -> bool {
+        true
+    }
+    fn memory_read_allowed(&self) -> bool {
+        self.memory_access_allowed()
+    }
+    fn memory_write_allowed(&self) -> bool {
+        self.memory_access_allowed()
+    }
+
     // Config directory for deferred character self-edits
     fn config_dir(&self) -> &str {
         ""
@@ -163,9 +175,14 @@ pub fn render_tool_defs(
     available_tools(is_private, toggles)
         .iter()
         .map(|t| {
+            let memory_namespace_available =
+                workspace_memory_namespace_available(t.name, is_private, toggles);
+            let description =
+                workspace::description_for_memory_access(t.name, memory_namespace_available)
+                    .unwrap_or(t.description);
             serde_json::json!({
                 "name": t.name,
-                "description": crate::engine::prompt::render_template(t.description, &vars),
+                "description": crate::engine::prompt::render_template(description, &vars),
                 "input_schema": t.parameters.clone(),
             })
         })
@@ -174,15 +191,101 @@ pub fn render_tool_defs(
 
 /// Returns tool definitions available for the current privacy mode and tool toggles.
 pub fn available_tools(is_private: bool, toggles: &shore_config::app::ToolToggles) -> Vec<ToolDef> {
+    let exec_can_reach_memory = !is_private && toggles.memory_read() && toggles.memory_write();
     all_tools()
         .into_iter()
         .filter(|t| {
             if is_private && !t.category.allowed_in_private() {
                 return false;
             }
+            if !exec_can_reach_memory && t.name == "exec" {
+                return false;
+            }
             toggles.is_enabled(t.name)
         })
         .collect()
+}
+
+fn workspace_memory_namespace_available(
+    name: &str,
+    is_private: bool,
+    toggles: &shore_config::app::ToolToggles,
+) -> bool {
+    if is_private {
+        return false;
+    }
+    match name {
+        "read" | "list_files" => toggles.memory_read(),
+        "write" => toggles.memory_write(),
+        "edit" => toggles.memory_read() && toggles.memory_write(),
+        _ => toggles.memory(),
+    }
+}
+
+fn ensure_memory_read_access(ctx: &dyn ToolContext) -> Result<(), ToolError> {
+    if ctx.memory_read_allowed() {
+        Ok(())
+    } else {
+        Err(ToolError::InvalidArgs(
+            "memory read access is disabled for this conversation".into(),
+        ))
+    }
+}
+
+fn ensure_memory_write_access(ctx: &dyn ToolContext) -> Result<(), ToolError> {
+    if ctx.memory_write_allowed() {
+        Ok(())
+    } else {
+        Err(ToolError::InvalidArgs(
+            "memory write access is disabled for this conversation".into(),
+        ))
+    }
+}
+
+fn ensure_workspace_memory_access(
+    name: &str,
+    input: &Value,
+    ctx: &dyn ToolContext,
+) -> Result<(), ToolError> {
+    let touches_memories = input
+        .get("path")
+        .and_then(|v| v.as_str())
+        .is_some_and(path_requests_memories_namespace);
+
+    if !touches_memories && name != "exec" {
+        return Ok(());
+    }
+
+    if name == "exec" {
+        if ctx.memory_read_allowed() && ctx.memory_write_allowed() {
+            return Ok(());
+        }
+        return Err(ToolError::InvalidArgs(
+            "exec is unavailable when memory access is disabled".into(),
+        ));
+    }
+
+    let allowed = match name {
+        "read" | "list_files" => ctx.memory_read_allowed(),
+        "write" => ctx.memory_write_allowed(),
+        "edit" => ctx.memory_read_allowed() && ctx.memory_write_allowed(),
+        _ => true,
+    };
+
+    if !allowed {
+        Err(ToolError::InvalidArgs(
+            "workspace access to memories/... is disabled for this conversation".into(),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn path_requests_memories_namespace(path: &str) -> bool {
+    let normalized = path.trim().trim_start_matches('/').trim_start_matches('\\');
+    normalized == "memories"
+        || normalized.starts_with("memories/")
+        || normalized.starts_with("memories\\")
 }
 
 // ---------------------------------------------------------------------------
@@ -198,11 +301,26 @@ pub fn dispatch_tool<'a>(
     Box::pin(async move {
         match name {
             // Memory tools
-            "memory" => memory_tools::handle_memory(input, ctx).await,
-            "memory_read" => memory_tools::handle_memory_read(input, ctx).await,
-            "memory_write" => memory_tools::handle_memory_write(input, ctx).await,
-            "memory_search" => memory_tools::handle_memory_search(input, ctx).await,
-            "memory_list" => memory_tools::handle_memory_list(input, ctx).await,
+            "memory" => {
+                ensure_memory_read_access(ctx)?;
+                memory_tools::handle_memory(input, ctx).await
+            }
+            "memory_read" => {
+                ensure_memory_read_access(ctx)?;
+                memory_tools::handle_memory_read(input, ctx).await
+            }
+            "memory_write" => {
+                ensure_memory_write_access(ctx)?;
+                memory_tools::handle_memory_write(input, ctx).await
+            }
+            "memory_search" => {
+                ensure_memory_read_access(ctx)?;
+                memory_tools::handle_memory_search(input, ctx).await
+            }
+            "memory_list" => {
+                ensure_memory_read_access(ctx)?;
+                memory_tools::handle_memory_list(input, ctx).await
+            }
             "send_image" => images::handle_send_image(input, ctx).await,
             "generate_image" => images::handle_generate_image(input, ctx).await,
             // Web tools
@@ -227,8 +345,12 @@ pub fn dispatch_tool<'a>(
                 scratchpad::handle_scratchpad_delete(input, ctx.scratchpad_dir()).await
             }
             // Workspace tools
-            "read" => workspace::handle_read(input, ctx.workspace_dir()).await,
+            "read" => {
+                ensure_workspace_memory_access(name, &input, ctx)?;
+                workspace::handle_read(input, ctx.workspace_dir()).await
+            }
             "write" => {
+                ensure_workspace_memory_access(name, &input, ctx)?;
                 let path = input
                     .get("path")
                     .and_then(|v| v.as_str())
@@ -242,6 +364,7 @@ pub fn dispatch_tool<'a>(
                 Ok(result)
             }
             "edit" => {
+                ensure_workspace_memory_access(name, &input, ctx)?;
                 let path = input
                     .get("path")
                     .and_then(|v| v.as_str())
@@ -254,8 +377,14 @@ pub fn dispatch_tool<'a>(
                 }
                 Ok(result)
             }
-            "list_files" => workspace::handle_list_files(input, ctx.workspace_dir()).await,
-            "exec" => workspace::handle_exec(input, ctx.workspace_dir()).await,
+            "list_files" => {
+                ensure_workspace_memory_access(name, &input, ctx)?;
+                workspace::handle_list_files(input, ctx.workspace_dir()).await
+            }
+            "exec" => {
+                ensure_workspace_memory_access(name, &input, ctx)?;
+                workspace::handle_exec(input, ctx.workspace_dir()).await
+            }
             // set_next_wake is in the base tool set for cache stability but
             // only handled during interiority ticks (intercepted in manager.rs).
             "set_next_wake" => Err(ToolError::InvalidArgs(
@@ -377,6 +506,62 @@ mod tests {
     }
 
     #[test]
+    fn memory_toggle_disables_all_memory_tools_and_exec() {
+        let mut toggles = ToolToggles::default();
+        toggles.set("memory", false);
+
+        let tools = available_tools(false, &toggles);
+        let names: Vec<&str> = tools.iter().map(|t| t.name).collect();
+
+        assert!(!names.contains(&"memory"));
+        assert!(!names.contains(&"memory_read"));
+        assert!(!names.contains(&"memory_write"));
+        assert!(!names.contains(&"memory_search"));
+        assert!(!names.contains(&"memory_list"));
+        assert!(!names.contains(&"exec"));
+        assert!(names.contains(&"read"));
+        assert!(names.contains(&"write"));
+        assert!(names.contains(&"edit"));
+        assert!(names.contains(&"list_files"));
+    }
+
+    #[test]
+    fn render_tool_defs_hides_memories_namespace_when_memory_disabled() {
+        let mut toggles = ToolToggles::default();
+        toggles.set("memory", false);
+
+        let defs = render_tool_defs(false, &toggles, "qifei", "ren");
+        let read = defs
+            .iter()
+            .find(|d| d["name"] == "read")
+            .expect("read present");
+        let desc = read["description"].as_str().unwrap();
+        assert!(!desc.contains("memories"));
+        assert!(defs.iter().all(|d| d["name"] != "exec"));
+    }
+
+    #[test]
+    fn granular_memory_write_toggle_hides_memories_namespace_for_writes() {
+        let mut toggles = ToolToggles::default();
+        toggles.set("memory_write", false);
+
+        let defs = render_tool_defs(false, &toggles, "qifei", "ren");
+        let read = defs
+            .iter()
+            .find(|d| d["name"] == "read")
+            .expect("read present");
+        let write = defs
+            .iter()
+            .find(|d| d["name"] == "write")
+            .expect("write present");
+
+        assert!(read["description"].as_str().unwrap().contains("memories"));
+        assert!(!write["description"].as_str().unwrap().contains("memories"));
+        assert!(defs.iter().all(|d| d["name"] != "memory_write"));
+        assert!(defs.iter().all(|d| d["name"] != "exec"));
+    }
+
+    #[test]
     fn test_tool_category_allowed_in_private() {
         assert!(!ToolCategory::MemoryWrite.allowed_in_private());
         assert!(!ToolCategory::MemoryRead.allowed_in_private());
@@ -473,6 +658,93 @@ mod tests {
                 "memory should reach handler, got: {e}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_rejects_memory_when_access_disabled() {
+        let ctx = TestToolContext::new().with_memory_access_allowed(false);
+        let result =
+            dispatch_tool("memory_search", serde_json::json!({"query": "tea"}), &ctx).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, ToolError::InvalidArgs(_)),
+            "memory disabled should return InvalidArgs, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_rejects_memories_namespace_when_access_disabled() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("workspace");
+        tokio::fs::create_dir_all(&ws).await.unwrap();
+        let ws_str = ws.to_string_lossy().to_string();
+        let ctx = TestToolContext::new()
+            .with_memory_access_allowed(false)
+            .with_workspace_dir(&ws_str);
+
+        let result = dispatch_tool(
+            "read",
+            serde_json::json!({"path": "memories/people/ren.md"}),
+            &ctx,
+        )
+        .await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, ToolError::InvalidArgs(_)),
+            "memories namespace should be blocked, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_allows_workspace_when_memory_access_disabled() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("workspace");
+        tokio::fs::create_dir_all(&ws).await.unwrap();
+        let ws_str = ws.to_string_lossy().to_string();
+        let ctx = TestToolContext::new()
+            .with_memory_access_allowed(false)
+            .with_workspace_dir(&ws_str);
+
+        let result = dispatch_tool(
+            "write",
+            serde_json::json!({"path": "notes.md", "content": "ok"}),
+            &ctx,
+        )
+        .await
+        .unwrap();
+        assert_eq!(result["bytes_written"], 2);
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_rejects_memory_write_namespace_when_write_disabled() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("workspace");
+        tokio::fs::create_dir_all(&ws).await.unwrap();
+        let ws_str = ws.to_string_lossy().to_string();
+        let ctx = TestToolContext::new()
+            .with_memory_write_allowed(false)
+            .with_workspace_dir(&ws_str);
+
+        let result = dispatch_tool(
+            "write",
+            serde_json::json!({"path": "memories/people/ren.md", "content": "blocked"}),
+            &ctx,
+        )
+        .await;
+        assert!(result.is_err());
+
+        let result = dispatch_tool(
+            "read",
+            serde_json::json!({"path": "memories/people/ren.md"}),
+            &ctx,
+        )
+        .await;
+        assert!(
+            !matches!(result, Err(ToolError::InvalidArgs(_))),
+            "read access should still be gated independently from write access"
+        );
     }
 
     #[tokio::test]

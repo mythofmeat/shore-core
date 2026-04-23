@@ -30,7 +30,11 @@ fn default_mode_uses_persistent_test_paths() {
     assert_eq!(profile.kind, ProfileKind::PersistentTest);
     assert!(profile.is_test());
     // Must export all three env vars.
-    let keys: Vec<_> = profile.env_overrides.iter().map(|(k, _)| k.clone()).collect();
+    let keys: Vec<_> = profile
+        .env_overrides
+        .iter()
+        .map(|(k, _)| k.clone())
+        .collect();
     assert!(keys.contains(&"SHORE_CONFIG_DIR".to_string()));
     assert!(keys.contains(&"SHORE_DATA_DIR".to_string()));
     assert!(keys.contains(&"SHORE_RUNTIME_DIR".to_string()));
@@ -58,5 +62,8 @@ fn ephemeral_mode_uses_tempdir() {
 
     assert_eq!(profile.kind, ProfileKind::Ephemeral);
     assert!(profile.is_test());
-    assert!(profile.tempdir.is_some(), "ephemeral profile must own a tempdir");
+    assert!(
+        profile.tempdir.is_some(),
+        "ephemeral profile must own a tempdir"
+    );
 }

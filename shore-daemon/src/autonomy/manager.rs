@@ -933,7 +933,10 @@ async fn execute_idle_compaction(character: &str, ctx: &TickContext) {
         None => return,
     };
 
-    info!(character, "Autonomy tick: running idle-triggered compaction");
+    info!(
+        character,
+        "Autonomy tick: running idle-triggered compaction"
+    );
 
     match crate::memory::compaction::run_compaction(
         character,
@@ -1656,7 +1659,11 @@ async fn execute_unified_tick(
     if let Some(recap) = recap_text {
         info!(character, recap = %truncate_summary(&recap, 200), "Interiority: recap written");
         let preview = truncate_summary(&recap, 80);
-        match crate::memory::markdown_store::MarkdownMemoryStore::open(data_dir.join(character).join("memories")).await {
+        match crate::memory::markdown_store::MarkdownMemoryStore::open(
+            data_dir.join(character).join("memories"),
+        )
+        .await
+        {
             Ok(store) => match crate::memory::markdown_query::append_daily_note(
                 &store,
                 tick_started_at,
@@ -1842,6 +1849,9 @@ async fn build_tool_context(
             char_dir.join("memories"),
         )
         .ok(),
+        memory_access_allowed_val: config.app.behavior.tool_use.tools.memory(),
+        memory_read_allowed_val: config.app.behavior.tool_use.tools.memory_read(),
+        memory_write_allowed_val: config.app.behavior.tool_use.tools.memory_write(),
         config_dir_val: config.dirs.config.to_string_lossy().into_owned(),
         character_data_dir_val: char_dir.to_string_lossy().into_owned(),
     })

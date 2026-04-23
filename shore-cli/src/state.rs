@@ -124,7 +124,10 @@ pub fn write_reasoning_effort_override(value: Option<&str>) -> std::io::Result<(
         std::fs::create_dir_all(parent)?;
     }
     let body = value.unwrap_or("off");
-    debug!(value = body, "Writing active reasoning_effort override to state file");
+    debug!(
+        value = body,
+        "Writing active reasoning_effort override to state file"
+    );
     std::fs::write(&path, body)
 }
 
@@ -149,10 +152,7 @@ pub fn clear_reasoning_effort_override() -> std::io::Result<()> {
 /// The daemon's answer wins because it is authoritative: the client may
 /// have sent no character and let the daemon auto-select, in which case
 /// only the daemon knows what got attached.
-pub fn resolve_display_character(
-    daemon_selected: Option<&str>,
-    requested: Option<&str>,
-) -> String {
+pub fn resolve_display_character(daemon_selected: Option<&str>, requested: Option<&str>) -> String {
     daemon_selected
         .filter(|s| !s.is_empty())
         .or(requested.filter(|s| !s.is_empty()))

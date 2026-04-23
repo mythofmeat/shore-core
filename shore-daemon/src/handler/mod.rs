@@ -89,6 +89,15 @@ impl ToolContext for HandlerToolContext {
     fn markdown_store(&self) -> Option<&crate::memory::markdown_store::MarkdownMemoryStore> {
         self.inner.markdown_store()
     }
+    fn memory_access_allowed(&self) -> bool {
+        self.inner.memory_access_allowed()
+    }
+    fn memory_read_allowed(&self) -> bool {
+        self.inner.memory_read_allowed()
+    }
+    fn memory_write_allowed(&self) -> bool {
+        self.inner.memory_write_allowed()
+    }
     fn config_dir(&self) -> &str {
         self.inner.config_dir()
     }
@@ -242,10 +251,7 @@ impl MessageHandler {
                     );
                     if let ClientMessage::SetLiveSpeak(ref toggle) = msg {
                         let prev = self.live_speak.swap(toggle.enabled, Ordering::Relaxed);
-                        info!(
-                            enabled = toggle.enabled,
-                            prev, "Live TTS toggled"
-                        );
+                        info!(enabled = toggle.enabled, prev, "Live TTS toggled");
                         let _ = self
                             .session_router
                             .send_to_session(
@@ -262,11 +268,10 @@ impl MessageHandler {
 
                     if let ClientMessage::Speak(ref speak) = msg {
                         let Some(tts_client) = self.tts_client.clone() else {
-                            let _ =
-                                self.push_tx.send(ServerMessage::AudioError(SwpAudioError {
-                                    rid: speak.rid.clone(),
-                                    message: "TTS not configured".into(),
-                                }));
+                            let _ = self.push_tx.send(ServerMessage::AudioError(SwpAudioError {
+                                rid: speak.rid.clone(),
+                                message: "TTS not configured".into(),
+                            }));
                             continue;
                         };
                         let push_tx = self.push_tx.clone();
@@ -286,12 +291,10 @@ impl MessageHandler {
                             .await
                             {
                                 error!(error = %e, "TTS speak failed");
-                                let _ = push_tx.send(ServerMessage::AudioError(
-                                    SwpAudioError {
-                                        rid,
-                                        message: e.to_string(),
-                                    },
-                                ));
+                                let _ = push_tx.send(ServerMessage::AudioError(SwpAudioError {
+                                    rid,
+                                    message: e.to_string(),
+                                }));
                             }
                         });
                         continue;

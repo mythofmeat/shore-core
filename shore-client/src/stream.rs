@@ -1,4 +1,6 @@
-use shore_protocol::server_msg::{ServerMessage, StreamChunk, StreamEnd, StreamStart, ToolCall, ToolResult};
+use shore_protocol::server_msg::{
+    ServerMessage, StreamChunk, StreamEnd, StreamStart, ToolCall, ToolResult,
+};
 use shore_protocol::types::StreamMetadata;
 use tracing::{debug, trace, warn};
 

@@ -387,12 +387,18 @@ fn print_model_reset(data: &serde_json::Value) {
 fn print_reasoning_effort(data: &serde_json::Value) {
     let effective = match data.get("effective") {
         Some(v) if v.is_null() => "off".to_string(),
-        Some(v) => v.as_str().map(String::from).unwrap_or_else(|| v.to_string()),
+        Some(v) => v
+            .as_str()
+            .map(String::from)
+            .unwrap_or_else(|| v.to_string()),
         None => "(unknown)".to_string(),
     };
     let config_default = match data.get("config_default") {
         Some(v) if v.is_null() => "(unset)".to_string(),
-        Some(v) => v.as_str().map(String::from).unwrap_or_else(|| v.to_string()),
+        Some(v) => v
+            .as_str()
+            .map(String::from)
+            .unwrap_or_else(|| v.to_string()),
         None => "(unknown)".to_string(),
     };
 
@@ -401,13 +407,19 @@ fn print_reasoning_effort(data: &serde_json::Value) {
         Some(v) if v.is_null() => "(none, using config)".to_string(),
         Some(obj) if obj.is_object() => match obj.get("value") {
             Some(x) if x.is_null() => "forced off".to_string(),
-            Some(x) => x.as_str().map(String::from).unwrap_or_else(|| x.to_string()),
+            Some(x) => x
+                .as_str()
+                .map(String::from)
+                .unwrap_or_else(|| x.to_string()),
             None => "(set)".to_string(),
         },
         _ => "(unknown)".to_string(),
     };
 
-    let changed = data.get("changed").and_then(|v| v.as_bool()).unwrap_or(false);
+    let changed = data
+        .get("changed")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     if changed {
         println!("Reasoning effort updated.");
     }

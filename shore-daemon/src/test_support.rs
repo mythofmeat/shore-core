@@ -57,6 +57,10 @@ pub struct TestToolContext {
     pub autonomy_mgr: Option<AutonomyManager>,
     pub character_name_val: String,
     pub markdown_store_val: Option<MarkdownMemoryStore>,
+    pub memory_access_allowed_val: bool,
+    pub memory_read_allowed_val: bool,
+    pub memory_write_allowed_val: bool,
+    pub workspace_dir_val: String,
 }
 
 impl TestToolContext {
@@ -70,6 +74,10 @@ impl TestToolContext {
             autonomy_mgr: None,
             character_name_val: String::new(),
             markdown_store_val: None,
+            memory_access_allowed_val: true,
+            memory_read_allowed_val: true,
+            memory_write_allowed_val: true,
+            workspace_dir_val: String::new(),
         }
     }
 
@@ -95,6 +103,32 @@ impl TestToolContext {
     /// Set a markdown memory store.
     pub fn with_markdown_store(mut self, store: MarkdownMemoryStore) -> Self {
         self.markdown_store_val = Some(store);
+        self
+    }
+
+    /// Allow or deny memory access for dispatch-layer tests.
+    pub fn with_memory_access_allowed(mut self, allowed: bool) -> Self {
+        self.memory_access_allowed_val = allowed;
+        self.memory_read_allowed_val = allowed;
+        self.memory_write_allowed_val = allowed;
+        self
+    }
+
+    /// Allow or deny memory read access for dispatch-layer tests.
+    pub fn with_memory_read_allowed(mut self, allowed: bool) -> Self {
+        self.memory_read_allowed_val = allowed;
+        self
+    }
+
+    /// Allow or deny memory write access for dispatch-layer tests.
+    pub fn with_memory_write_allowed(mut self, allowed: bool) -> Self {
+        self.memory_write_allowed_val = allowed;
+        self
+    }
+
+    /// Set a workspace directory for workspace dispatch tests.
+    pub fn with_workspace_dir(mut self, dir: &str) -> Self {
+        self.workspace_dir_val = dir.to_string();
         self
     }
 }
@@ -126,6 +160,18 @@ impl ToolContext for TestToolContext {
     }
     fn markdown_store(&self) -> Option<&MarkdownMemoryStore> {
         self.markdown_store_val.as_ref()
+    }
+    fn memory_access_allowed(&self) -> bool {
+        self.memory_access_allowed_val
+    }
+    fn memory_read_allowed(&self) -> bool {
+        self.memory_read_allowed_val
+    }
+    fn memory_write_allowed(&self) -> bool {
+        self.memory_write_allowed_val
+    }
+    fn workspace_dir(&self) -> &str {
+        &self.workspace_dir_val
     }
     fn config_dir(&self) -> &str {
         ""

@@ -19,9 +19,8 @@
 [defaults]
 model = "claude-sonnet"            # Must match a key in [chat.*.*] below
 # tool_model = "mistral-small"      # Model for tool-use calls
-# memory_agent = "mistral-small"    # Model for memory agent queries
-# collation = "mistral-small"       # Model for memory collation (merge/split/normalize)
-# compaction = "mistral-small"      # Model for conversation compaction (summarization)
+# memory_agent = "mistral-small"    # Model for markdown memory Q&A
+# compaction = "mistral-small"      # Model for conversation compaction into markdown memory
 # interiority = "claude-sonnet"     # Model for autonomous interiority ticks
 # embedding = "text-large"          # Embedding profile
 # image_generation = "gemini-flash" # Image generation profile
@@ -54,10 +53,11 @@ model = "claude-sonnet"            # Must match a key in [chat.*.*] below
 # Per-tool toggles — all enabled by default; set to false to disable.
 # [behavior.tool_use.tools]
 # memory = true
+# memory_read = true
+# memory_write = true
+# memory_search = true
+# memory_list = true
 # send_image = true
-# list_images = true
-# recall_image = true
-# remember_image = true      # Save user-shared images to memory with context
 # generate_image = true
 # web_search = true
 # fetch_url = true
@@ -68,6 +68,11 @@ model = "claude-sonnet"            # Must match a key in [chat.*.*] below
 # scratchpad_read = true     # Read a scratchpad file
 # scratchpad_write = true    # Write a scratchpad file
 # scratchpad_delete = true   # Delete a scratchpad file
+# read = true                # Read workspace files; memory=false blocks memories/... access
+# write = true               # Write workspace files; protected character files defer to compaction
+# edit = true                # Edit workspace files
+# list_files = true          # List workspace files
+# exec = true                # Allowlisted workspace commands; hidden when memory read/write is disabled or private
 
 # [behavior.tool_use.search]
 # api_key_env = "TAVILY_API_KEY"  # Env var holding the Tavily API key
@@ -97,11 +102,11 @@ model = "claude-sonnet"            # Must match a key in [chat.*.*] below
 #                               # blocks from history assistant messages.
 #                               # Set true to restore pre-2026-04-18 behavior.
 
-# Collation — periodically re-synthesises the memory store for quality.
+# Collation — legacy compatibility only in markdown memory mode.
 # [memory.collation]
-# enabled = true
-# auto_run = true   # Run automatically after each compaction
-# batch_limit = 10  # Maximum memory entries processed per collation run
+# enabled = false
+# auto_run = false
+# batch_limit = 10
 
 # ── Notifications ────────────────────────────────────────────────────────
 

@@ -74,7 +74,7 @@ pub async fn run_compaction(
 
     let display_name = effective.app.defaults.resolve_display_name();
 
-    // Open markdown memory store (best-effort — compaction proceeds without it).
+    // Open markdown memory store for existing-memory context and file writes.
     let markdown_store =
         crate::memory::markdown_store::MarkdownMemoryStore::open(character_dir.join("memories"))
             .await

@@ -152,8 +152,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── Notification service ──────────────────────────────────────────
     let notifier = NotificationService::new(loaded.app.notifications.clone());
 
-    let instance_id = instance_id_override
-        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let instance_id = instance_id_override.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
     for warning in remote_access_warnings {
         warn!(
@@ -639,12 +638,7 @@ mod tests {
 
     #[test]
     fn cli_parses_instance_id_flag() {
-        let cli = Cli::try_parse_from([
-            "shore-daemon",
-            "--instance-id",
-            "shore-mcp-test",
-        ])
-        .unwrap();
+        let cli = Cli::try_parse_from(["shore-daemon", "--instance-id", "shore-mcp-test"]).unwrap();
         assert_eq!(cli.instance_id.as_deref(), Some("shore-mcp-test"));
     }
 

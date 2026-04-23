@@ -1,5 +1,13 @@
 # Shore V2 — Architecture Plan
 
+> Status note: this document still contains historical V2 planning material.
+> The active memory path is markdown-first (`{character}/memories/**/*.md`);
+> the legacy SQLite/vector memory agent remains for compatibility, migration,
+> tests, and benchmarks rather than new runtime behavior. Treat
+> [`FEATURES.md`](FEATURES.md#memory), [`CONFIGURATION.md`](CONFIGURATION.md#memory),
+> and [`INVARIANTS.md`](INVARIANTS.md#memory-markdown-is-the-durable-store) as
+> authoritative for current memory behavior.
+
 ## 1. Design Goals
 
 1. **Discrete, modular services** with hard boundaries and a formalized wire

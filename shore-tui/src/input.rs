@@ -708,10 +708,12 @@ fn parse_command(app: &mut App, input: &str) -> Action {
             "on" => {
                 app.live_speak = true;
                 app.set_status("Live TTS enabled");
-                Action::Send(ConnCommand::Send(ClientMessage::SetLiveSpeak(SetLiveSpeak {
-                    rid: None,
-                    enabled: true,
-                })))
+                Action::Send(ConnCommand::Send(ClientMessage::SetLiveSpeak(
+                    SetLiveSpeak {
+                        rid: None,
+                        enabled: true,
+                    },
+                )))
             }
             "off" => {
                 app.live_speak = false;
@@ -719,10 +721,12 @@ fn parse_command(app: &mut App, input: &str) -> Action {
                     player.stop();
                 }
                 app.set_status("Live TTS disabled");
-                Action::Send(ConnCommand::Send(ClientMessage::SetLiveSpeak(SetLiveSpeak {
-                    rid: None,
-                    enabled: false,
-                })))
+                Action::Send(ConnCommand::Send(ClientMessage::SetLiveSpeak(
+                    SetLiveSpeak {
+                        rid: None,
+                        enabled: false,
+                    },
+                )))
             }
             "stop" => {
                 if let Some(ref mut player) = app.audio_player {
@@ -736,9 +740,7 @@ fn parse_command(app: &mut App, input: &str) -> Action {
                 msg_id: None,
             }))),
             _ => {
-                app.set_status(
-                    "usage: :speak [on|off|stop]  (bare :speak plays the last message)",
-                );
+                app.set_status("usage: :speak [on|off|stop]  (bare :speak plays the last message)");
                 Action::Redraw
             }
         },

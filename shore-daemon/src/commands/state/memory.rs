@@ -20,17 +20,15 @@ use crate::commands::{memory_dir, resolve_agent_model, CommandContext, CommandRe
 async fn open_markdown_store(
     ctx: &CommandContext,
     char_name: &str,
-    ) -> Result<MarkdownMemoryStore, (ErrorCode, String)> {
-    MarkdownMemoryStore::open(
-        ctx.data_dir.join(char_name).join("memories"),
-    )
-    .await
-    .map_err(|e| {
-        (
-            ErrorCode::InternalError,
-            format!("Failed to open markdown store: {e}"),
-        )
-    })
+) -> Result<MarkdownMemoryStore, (ErrorCode, String)> {
+    MarkdownMemoryStore::open(ctx.data_dir.join(char_name).join("memories"))
+        .await
+        .map_err(|e| {
+            (
+                ErrorCode::InternalError,
+                format!("Failed to open markdown store: {e}"),
+            )
+        })
 }
 
 /// Show recent memory changelog entries.
@@ -42,13 +40,21 @@ pub fn memory_changelog(
     let limit = args.get("limit").and_then(|v| v.as_i64()).unwrap_or(20);
 
     let char_name = engine.character_name();
-    let dreams_path = ctx.data_dir.join(char_name).join("memories").join("DREAMS.md");
+    let dreams_path = ctx
+        .data_dir
+        .join(char_name)
+        .join("memories")
+        .join("DREAMS.md");
     if !dreams_path.exists() {
         return Ok(json!({ "changelog": [], "character": char_name }));
     }
 
-    let content = std::fs::read_to_string(&dreams_path)
-        .map_err(|e| (ErrorCode::InternalError, format!("failed to read DREAMS.md: {e}")))?;
+    let content = std::fs::read_to_string(&dreams_path).map_err(|e| {
+        (
+            ErrorCode::InternalError,
+            format!("failed to read DREAMS.md: {e}"),
+        )
+    })?;
     let mut sections = content
         .split("\n## ")
         .filter_map(|section| {
@@ -156,10 +162,12 @@ async fn memory_query(
     );
 
     let result = if direct {
-        let hits = store
-            .search_text(query)
-            .await
-            .map_err(|e| (ErrorCode::InternalError, format!("Memory query failed: {e}")))?;
+        let hits = store.search_text(query).await.map_err(|e| {
+            (
+                ErrorCode::InternalError,
+                format!("Memory query failed: {e}"),
+            )
+        })?;
         markdown_query::format_direct_response(query, &hits)
     } else {
         markdown_query::answer_query(
@@ -170,13 +178,13 @@ async fn memory_query(
             &agent_llm,
             &agent_model,
         )
-            .await
-            .map_err(|e| {
-                (
-                    ErrorCode::InternalError,
-                    format!("Memory query failed: {e}"),
-                )
-            })?
+        .await
+        .map_err(|e| {
+            (
+                ErrorCode::InternalError,
+                format!("Memory query failed: {e}"),
+            )
+        })?
     };
 
     Ok(json!({

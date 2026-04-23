@@ -47,8 +47,7 @@ async fn connect(
         let _ = old_tx.send(ConnCommand::Shutdown).await;
     }
 
-    let (cmd_tx, mut event_rx) =
-        spawn_connection(addr, None, CLIENT_TYPE, CLIENT_NAME, character);
+    let (cmd_tx, mut event_rx) = spawn_connection(addr, None, CLIENT_TYPE, CLIENT_NAME, character);
     *guard = Some(cmd_tx);
     drop(guard);
 
@@ -145,8 +144,7 @@ fn emit<T: Serialize + Clone>(app: &AppHandle, event: &str, payload: T) {
 #[cfg(not(target_os = "linux"))]
 fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     let show = MenuItem::with_id(app, "show", "Show Shore", true, None::<&str>)?;
-    let disconnect_item =
-        MenuItem::with_id(app, "disconnect", "Disconnect", true, None::<&str>)?;
+    let disconnect_item = MenuItem::with_id(app, "disconnect", "Disconnect", true, None::<&str>)?;
     let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&show, &disconnect_item, &quit_item])?;
 
@@ -211,9 +209,7 @@ pub fn run() {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| {
-                    tracing_subscriber::EnvFilter::new("info,shore_gui_lib=debug")
-                }),
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,shore_gui_lib=debug")),
         )
         .init();
 

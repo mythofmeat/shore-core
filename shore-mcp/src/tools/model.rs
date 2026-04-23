@@ -25,17 +25,12 @@ pub struct ModelResetParams {}
 
 #[tool_router(router = model_router, vis = "pub")]
 impl ShoreMcpHandler {
-    #[tool(
-        name = "model_list",
-        description = "List all available models."
-    )]
+    #[tool(name = "model_list", description = "List all available models.")]
     pub async fn tool_model_list(
         &self,
         Parameters(_p): Parameters<ModelListParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let data = self
-            .run_cmd("model_list", "list_models", json!({}))
-            .await?;
+        let data = self.run_cmd("model_list", "list_models", json!({})).await?;
         Self::json_result(data)
     }
 
@@ -77,7 +72,9 @@ impl ShoreMcpHandler {
         &self,
         Parameters(_p): Parameters<ModelResetParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let data = self.run_cmd("model_reset", "reset_model", json!({})).await?;
+        let data = self
+            .run_cmd("model_reset", "reset_model", json!({}))
+            .await?;
         Self::json_result(data)
     }
 }

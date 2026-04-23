@@ -59,8 +59,10 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         SWPConnection::connect(&addr, "cli", "shore-cli", character.clone()).await?;
 
     // Prefer the daemon's authoritative answer over the local request.
-    let display_character =
-        state::resolve_display_character(history.selected_character.as_deref(), character.as_deref());
+    let display_character = state::resolve_display_character(
+        history.selected_character.as_deref(),
+        character.as_deref(),
+    );
     // Stash so incidental messages inside `recv_command_data` can label
     // themselves correctly without threading the name through every call site.
     let _ = SESSION_DISPLAY_CHARACTER.set(display_character.clone());
@@ -362,11 +364,10 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         // decision into the client state file. Without this the choice
         // is lost as soon as the one-shot CLI session exits.
         CliCommand::Model {
-            reset: true,
-            json,
-            ..
+            reset: true, json, ..
         } => {
-            conn.send_command("reset_model", serde_json::json!({})).await?;
+            conn.send_command("reset_model", serde_json::json!({}))
+                .await?;
             let data = recv_command_data(&mut conn).await?;
             state::clear_active_model()?;
             if *json {
@@ -398,32 +399,34 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         // the state file after the daemon acks, mirroring the `shore model`
         // path. A one-shot CLI connection loses session state otherwise.
         CliCommand::Reasoning { value, reset, json } => {
-            let (args, persist_after_success): (serde_json::Value, Box<dyn FnOnce() -> std::io::Result<()>>) =
-                if *reset {
-                    (
-                        serde_json::json!({ "clear": true }),
-                        Box::new(state::clear_reasoning_effort_override),
-                    )
-                } else if let Some(v) = value.as_deref() {
-                    let normalized = v.trim().to_ascii_lowercase();
-                    let persist: Box<dyn FnOnce() -> std::io::Result<()>> = match normalized.as_str() {
-                        "off" | "none" | "null" | "disable" | "disabled" | "unset" => {
-                            Box::new(|| state::write_reasoning_effort_override(None))
-                        }
-                        "" => Box::new(state::clear_reasoning_effort_override),
-                        _ => {
-                            let owned = v.trim().to_string();
-                            Box::new(move || state::write_reasoning_effort_override(Some(&owned)))
-                        }
-                    };
-                    (serde_json::json!({ "value": v }), persist)
-                } else {
-                    // Read-only: no state-file write.
-                    (
-                        serde_json::json!({}),
-                        Box::new(|| Ok::<(), std::io::Error>(())),
-                    )
+            let (args, persist_after_success): (
+                serde_json::Value,
+                Box<dyn FnOnce() -> std::io::Result<()>>,
+            ) = if *reset {
+                (
+                    serde_json::json!({ "clear": true }),
+                    Box::new(state::clear_reasoning_effort_override),
+                )
+            } else if let Some(v) = value.as_deref() {
+                let normalized = v.trim().to_ascii_lowercase();
+                let persist: Box<dyn FnOnce() -> std::io::Result<()>> = match normalized.as_str() {
+                    "off" | "none" | "null" | "disable" | "disabled" | "unset" => {
+                        Box::new(|| state::write_reasoning_effort_override(None))
+                    }
+                    "" => Box::new(state::clear_reasoning_effort_override),
+                    _ => {
+                        let owned = v.trim().to_string();
+                        Box::new(move || state::write_reasoning_effort_override(Some(&owned)))
+                    }
                 };
+                (serde_json::json!({ "value": v }), persist)
+            } else {
+                // Read-only: no state-file write.
+                (
+                    serde_json::json!({}),
+                    Box::new(|| Ok::<(), std::io::Error>(())),
+                )
+            };
 
             conn.send_command("set_reasoning_effort", args).await?;
             let data = recv_command_data(&mut conn).await?;
@@ -787,11 +790,8 @@ async fn recv_streaming_response(
                 output::print_stream_end(end);
                 // If live-speak is enabled on the daemon, an AudioStart
                 // follows shortly. Wait briefly for it; otherwise return.
-                if let Ok(Ok(ServerMessage::AudioStart(start))) = tokio::time::timeout(
-                    std::time::Duration::from_millis(500),
-                    conn.recv(),
-                )
-                .await
+                if let Ok(Ok(ServerMessage::AudioStart(start))) =
+                    tokio::time::timeout(std::time::Duration::from_millis(500), conn.recv()).await
                 {
                     play_audio_stream(conn, start.sample_rate, start.channels).await;
                 }
@@ -879,19 +879,14 @@ async fn handle_speak(
         None => None,
     };
 
-    conn.send(&ClientMessage::Speak(SpeakMsg {
-        rid: None,
-        msg_id,
-    }))
-    .await?;
+    conn.send(&ClientMessage::Speak(SpeakMsg { rid: None, msg_id }))
+        .await?;
 
     recv_audio_response(conn).await
 }
 
 /// Receive and play a TTS audio stream from the daemon.
-async fn recv_audio_response(
-    conn: &mut SWPConnection,
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn recv_audio_response(conn: &mut SWPConnection) -> Result<(), Box<dyn std::error::Error>> {
     loop {
         let msg = conn.recv().await?;
         match msg {

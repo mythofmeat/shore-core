@@ -25,21 +25,9 @@ enum ToolClass {
 fn classify(tool: &str) -> ToolClass {
     match tool {
         // ── read-only ──────────────────────────────────────────────
-        "status"
-        | "status_diagnostics"
-        | "log_tail"
-        | "log_show"
-        | "log_heartbeat"
-        | "log_follow"
-        | "usage"
-        | "config_get"
-        | "config_check"
-        | "config_path"
-        | "character_list"
-        | "character_info"
-        | "model_list"
-        | "model_info"
-        | "memory_query"
+        "status" | "status_diagnostics" | "log_tail" | "log_show" | "log_heartbeat"
+        | "log_follow" | "usage" | "config_get" | "config_check" | "config_path"
+        | "character_list" | "character_info" | "model_list" | "model_info" | "memory_query"
         | "memory_changelog" => ToolClass::ReadOnly,
 
         // ── mutating ───────────────────────────────────────────────

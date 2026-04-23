@@ -95,7 +95,9 @@ async fn test_markdown_memory_compaction_end_to_end() {
     let active = active_jsonl(&messages);
     std::fs::write(char_dir.join("active.jsonl"), &active).unwrap();
 
-    let store = MarkdownMemoryStore::open(char_dir.join("memories")).await.unwrap();
+    let store = MarkdownMemoryStore::open(char_dir.join("memories"))
+        .await
+        .unwrap();
     let conv_mgr = RealConversationManager::new(&char_dir);
     let llm = MockCompactionLlm::with_entries(&[
         (
@@ -143,10 +145,8 @@ async fn test_markdown_memory_compaction_end_to_end() {
     let recap = std::fs::read_to_string(char_dir.join("memory").join("recap.md")).unwrap();
     assert!(recap.contains("Test recap of the conversation."));
 
-    let direct = markdown_query::format_direct_response(
-        "ramen",
-        &store.search_text("ramen").await.unwrap(),
-    );
+    let direct =
+        markdown_query::format_direct_response("ramen", &store.search_text("ramen").await.unwrap());
     assert!(direct.contains("people/user.md"));
 }
 
@@ -155,9 +155,12 @@ async fn test_compaction_rejects_private_conversation() {
     let tmp = TempDir::new().unwrap();
     let char_dir = tmp.path().join("Shore");
     std::fs::create_dir_all(&char_dir).unwrap();
-    let store = MarkdownMemoryStore::open(char_dir.join("memories")).await.unwrap();
+    let store = MarkdownMemoryStore::open(char_dir.join("memories"))
+        .await
+        .unwrap();
     let conv_mgr = RealConversationManager::new(&char_dir);
-    let llm = MockCompactionLlm::with_entries(&[("people/user.md", "# User\n\n- Should not exist")]);
+    let llm =
+        MockCompactionLlm::with_entries(&[("people/user.md", "# User\n\n- Should not exist")]);
     let mgr = CompactionManager::new(CompactionConfig::default());
 
     let result = mgr

@@ -183,10 +183,7 @@ fn override_to_json(o: &Option<Option<String>>) -> serde_json::Value {
     }
 }
 
-fn effective_value(
-    o: &Option<Option<String>>,
-    default: &Option<String>,
-) -> serde_json::Value {
+fn effective_value(o: &Option<Option<String>>, default: &Option<String>) -> serde_json::Value {
     match o {
         None => default
             .clone()

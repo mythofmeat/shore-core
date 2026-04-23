@@ -9,7 +9,9 @@ use tracing::{debug, info, instrument};
 
 use crate::autonomy::parse_cache_ttl_secs;
 use crate::engine::prompt::{self, CapabilitiesConfig, PromptParams};
-use crate::handler::generation::{run_tool_phase, stream_with_retry, thinking_enabled_from_request};
+use crate::handler::generation::{
+    run_tool_phase, stream_with_retry, thinking_enabled_from_request,
+};
 use crate::handler::images::{embed_image_data, ingest_images};
 use crate::handler::persistence::persist_and_notify;
 use crate::handler::resize::warm_image_cache;

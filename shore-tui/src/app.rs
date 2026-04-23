@@ -587,12 +587,7 @@ impl App {
         // storm emitting the same reason over and over). If the tail entry
         // is already a matching System, bump its count in place instead of
         // appending a new entry.
-        if let Some(ConversationEntry::System {
-            content,
-            count,
-            ..
-        }) = self.entries.last_mut()
-        {
+        if let Some(ConversationEntry::System { content, count, .. }) = self.entries.last_mut() {
             if *content == msg {
                 *count = count.saturating_add(1);
                 if self.auto_scroll {
@@ -877,6 +872,9 @@ mod tests {
         app.clear_system_entries();
         assert_eq!(app.entries.len(), 2);
         assert!(matches!(app.entries[0], ConversationEntry::User { .. }));
-        assert!(matches!(app.entries[1], ConversationEntry::Assistant { .. }));
+        assert!(matches!(
+            app.entries[1],
+            ConversationEntry::Assistant { .. }
+        ));
     }
 }

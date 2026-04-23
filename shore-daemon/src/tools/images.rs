@@ -52,7 +52,10 @@ pub fn tool_defs() -> Vec<ToolDef> {
     ]
 }
 
-fn resolve_image_path(input_path: &str, ctx: &dyn ToolContext) -> Result<std::path::PathBuf, ToolError> {
+fn resolve_image_path(
+    input_path: &str,
+    ctx: &dyn ToolContext,
+) -> Result<std::path::PathBuf, ToolError> {
     let full_path = std::path::Path::new(ctx.image_dir()).join(input_path);
     if !full_path.exists() {
         return Err(ToolError::Io(format!(

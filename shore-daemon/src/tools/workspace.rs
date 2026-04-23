@@ -128,6 +128,23 @@ pub fn tool_defs() -> Vec<ToolDef> {
     ]
 }
 
+pub(super) fn description_for_memory_access(
+    name: &str,
+    memory_namespace_available: bool,
+) -> Option<&'static str> {
+    if memory_namespace_available {
+        return None;
+    }
+
+    match name {
+        "read" => Some("Read the contents of a file in your workspace. Paths without a prefix are resolved under workspace/. Returns the file content as text; use offset and limit for large files."),
+        "write" => Some("Write or overwrite a file in your workspace. Bare paths resolve under workspace/. Parent directories are created automatically. Overwrites without confirmation."),
+        "edit" => Some("Edit an existing workspace file by replacing specific text. Bare paths resolve under workspace/. Each replacement must match the old_string exactly, including whitespace and newlines."),
+        "list_files" => Some("List files and directories under a path in your workspace. Bare paths resolve under workspace/. Returns each entry's name, type, and size."),
+        _ => None,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Path resolution
 // ---------------------------------------------------------------------------

@@ -13,6 +13,9 @@ use tokio::sync::Notify;
 use tokio::time::Duration;
 use tracing::{debug, info, instrument, warn};
 
+const EXISTING_MEMORY_CONTEXT_MAX_FILES: usize = 24;
+const EXISTING_MEMORY_CONTEXT_MAX_CHARS_PER_FILE: usize = 1_800;
+
 // ---------------------------------------------------------------------------
 // CompactionManager
 // ---------------------------------------------------------------------------
@@ -25,6 +28,17 @@ pub struct CompactionManager {
 struct CompactionWriteState {
     markdown_path: String,
     previous_markdown: Option<String>,
+}
+
+fn truncate_chars(text: &str, limit: usize) -> String {
+    text.chars().take(limit).collect()
+}
+
+fn escape_attr(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 impl CompactionManager {
@@ -89,13 +103,15 @@ impl CompactionManager {
 
     /// Build a compaction prompt from a template and conversation messages.
     ///
-    /// Replaces `{{conversation}}` with formatted messages, handles the
-    /// `{{#if recap}}...{{/if}}` conditional block, and substitutes
-    /// `{{char}}` / `{{user}}` with the provided names.
+    /// Replaces `{{conversation}}` with formatted messages, replaces
+    /// `{{existing_memories}}` with a bounded markdown-memory snapshot,
+    /// handles the `{{#if recap}}...{{/if}}` conditional block, and
+    /// substitutes `{{char}}` / `{{user}}` with the provided names.
     pub fn build_prompt(
         template: &str,
         messages: &[ConversationMessage],
         existing_recap: Option<&str>,
+        existing_memories: Option<&str>,
         char_name: &str,
         user_name: &str,
     ) -> String {
@@ -108,6 +124,10 @@ impl CompactionManager {
         }
 
         let mut result = template.replace("{{conversation}}", &conversation_text);
+        let existing_memories_text = existing_memories
+            .filter(|m| !m.trim().is_empty())
+            .unwrap_or("No existing memory files were available.");
+        result = result.replace("{{existing_memories}}", existing_memories_text);
 
         // Handle {{#if recap}}...{{/if}} conditional block.
         if let (Some(if_start), Some(endif_pos)) =
@@ -144,6 +164,53 @@ impl CompactionManager {
         result = result.replace("{{user}}", user_name);
 
         result
+    }
+
+    async fn build_existing_memory_context(markdown_store: Option<&MarkdownMemoryStore>) -> String {
+        let Some(store) = markdown_store else {
+            return "No existing memory files were available.".to_string();
+        };
+
+        let entries = match store.list_all().await {
+            Ok(entries) => entries,
+            Err(e) => {
+                warn!(error = %e, "compaction: failed to read existing memory files");
+                return format!("Existing memory files could not be loaded: {e}");
+            }
+        };
+
+        let mut entries: Vec<_> = entries
+            .into_iter()
+            .filter(|entry| entry.path != "DREAMS.md")
+            .collect();
+        entries.sort_by(|a, b| a.path.cmp(&b.path));
+
+        if entries.is_empty() {
+            return "No existing memory files yet.".to_string();
+        }
+
+        let total = entries.len();
+        let mut context = String::new();
+        for entry in entries.into_iter().take(EXISTING_MEMORY_CONTEXT_MAX_FILES) {
+            context.push_str(&format!("<file path=\"{}\">\n", escape_attr(&entry.path)));
+            context.push_str(&truncate_chars(
+                &entry.content,
+                EXISTING_MEMORY_CONTEXT_MAX_CHARS_PER_FILE,
+            ));
+            if entry.content.chars().count() > EXISTING_MEMORY_CONTEXT_MAX_CHARS_PER_FILE {
+                context.push_str("\n...[truncated]");
+            }
+            context.push_str("\n</file>\n\n");
+        }
+
+        if total > EXISTING_MEMORY_CONTEXT_MAX_FILES {
+            context.push_str(&format!(
+                "{} additional memory files omitted from this snapshot.\n",
+                total - EXISTING_MEMORY_CONTEXT_MAX_FILES
+            ));
+        }
+
+        context.trim_end().to_string()
     }
 
     fn dedupe_file_ops(file_ops: Vec<MemoryFileOp>) -> Vec<MemoryFileOp> {
@@ -219,11 +286,20 @@ impl CompactionManager {
             "Conversation split for compaction"
         );
 
+        if !dry_run && markdown_store.is_none() {
+            return Err(CompactionError::MarkdownStore(
+                "markdown memory store not available".to_string(),
+            ));
+        }
+
+        let existing_memory_context = Self::build_existing_memory_context(markdown_store).await;
+
         // Build and send prompt to LLM (only compacted messages, not retained).
         let prompt = Self::build_prompt(
             prompt_template,
             compacted_part,
             existing_recap,
+            Some(&existing_memory_context),
             char_name,
             user_name,
         );
@@ -314,7 +390,10 @@ impl CompactionManager {
             "compaction: archive/retain done"
         );
 
-        let markdown_paths: Vec<String> = created.iter().map(|state| state.markdown_path.clone()).collect();
+        let markdown_paths: Vec<String> = created
+            .iter()
+            .map(|state| state.markdown_path.clone())
+            .collect();
         let dream_body = format!(
             "Compacted {} messages from `{conversation_id}`.\n\nUpdated memory files:\n{}",
             split_at,
@@ -382,7 +461,7 @@ impl CompactionManager {
                     Err(e) => {
                         warn!(path = %state.markdown_path, error = %e, "rollback: failed to delete markdown entry");
                     }
-                }
+                },
             }
         }
     }
@@ -453,6 +532,35 @@ mod tests {
             &self,
             _prompt: &str,
         ) -> Pin<Box<dyn Future<Output = Result<String, CompactionError>> + Send + '_>> {
+            let result = Ok(self.response.clone());
+            Box::pin(async move { result })
+        }
+    }
+
+    struct CapturingLlm {
+        response: String,
+        prompt: StdMutex<Option<String>>,
+    }
+
+    impl CapturingLlm {
+        fn new(response: String) -> Self {
+            Self {
+                response,
+                prompt: StdMutex::new(None),
+            }
+        }
+
+        fn prompt(&self) -> Option<String> {
+            self.prompt.lock().unwrap().clone()
+        }
+    }
+
+    impl CompactionLlm for CapturingLlm {
+        fn summarize(
+            &self,
+            prompt: &str,
+        ) -> Pin<Box<dyn Future<Output = Result<String, CompactionError>> + Send + '_>> {
+            *self.prompt.lock().unwrap() = Some(prompt.to_string());
             let result = Ok(self.response.clone());
             Box::pin(async move { result })
         }
@@ -637,6 +745,7 @@ They discussed daily activities and the user's beverage preferences.
             "Template:\n{{conversation}}",
             &messages,
             None,
+            None,
             "Char",
             "User",
         );
@@ -654,6 +763,7 @@ They discussed daily activities and the user's beverage preferences.
             template,
             &messages,
             Some("Previous events."),
+            None,
             "Char",
             "User",
         );
@@ -667,11 +777,49 @@ They discussed daily activities and the user's beverage preferences.
         let messages = make_messages(2);
         let template = "Before\n{{#if recap}}RECAP: {{recap}}{{/if}}\nAfter\n{{conversation}}";
 
-        let prompt = CompactionManager::build_prompt(template, &messages, None, "Char", "User");
+        let prompt =
+            CompactionManager::build_prompt(template, &messages, None, None, "Char", "User");
         assert!(!prompt.contains("RECAP"));
         assert!(!prompt.contains("{{#if recap}}"));
         assert!(prompt.contains("Before"));
         assert!(prompt.contains("After"));
+    }
+
+    #[test]
+    fn test_build_prompt_includes_existing_memories() {
+        let messages = make_messages(2);
+        let template = "Existing:\n{{existing_memories}}\nConversation:\n{{conversation}}";
+
+        let prompt = CompactionManager::build_prompt(
+            template,
+            &messages,
+            None,
+            Some("<file path=\"people/User.md\">\n# User\n</file>"),
+            "Char",
+            "User",
+        );
+
+        assert!(prompt.contains("people/User.md"));
+        assert!(!prompt.contains("{{existing_memories}}"));
+    }
+
+    #[tokio::test]
+    async fn test_build_existing_memory_context_reads_markdown_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = MarkdownMemoryStore::open(tmp.path().join("memories"))
+            .await
+            .unwrap();
+        store
+            .write("people/User.md", "# User\n\n- Likes tea.")
+            .await
+            .unwrap();
+        store.write("DREAMS.md", "# Dreams").await.unwrap();
+
+        let context = CompactionManager::build_existing_memory_context(Some(&store)).await;
+
+        assert!(context.contains("people/User.md"));
+        assert!(context.contains("Likes tea"));
+        assert!(!context.contains("DREAMS.md"));
     }
 
     // -- Tests: helper methods ------------------------------------------------
@@ -900,6 +1048,48 @@ They discussed daily activities and the user's beverage preferences.
         assert!(store.read("preferences/beverages.md").await.is_ok());
         let dreams = store.read("DREAMS.md").await.unwrap();
         assert!(dreams.content.contains("Compacted 6 messages"));
+    }
+
+    #[tokio::test]
+    async fn test_compact_prompt_includes_existing_markdown_context() {
+        let llm = CapturingLlm::new(make_xml_response());
+        let conv_mgr = MockConversationMgr::new("new-conv-context");
+        let mgr = CompactionManager::new(make_config_with_keep(2));
+        let messages = make_messages(10);
+        let tmp = tempfile::tempdir().unwrap();
+        let store = MarkdownMemoryStore::open(tmp.path().join("memories"))
+            .await
+            .unwrap();
+        store
+            .write(
+                "people/TestUser.md",
+                "# TestUser\n\n- Already likes green tea.",
+            )
+            .await
+            .unwrap();
+
+        mgr.compact(
+            "conv-context",
+            &messages,
+            "",
+            false,
+            DEFAULT_COMPACT_PROMPT,
+            None,
+            "TestChar",
+            "TestUser",
+            &llm,
+            &conv_mgr,
+            Some(&store),
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let prompt = llm.prompt().expect("prompt captured");
+        assert!(prompt.contains("people/TestUser.md"));
+        assert!(prompt.contains("Already likes green tea"));
+        assert!(!prompt.contains("{{existing_memories}}"));
     }
 
     #[tokio::test]
@@ -1337,7 +1527,10 @@ They discussed daily activities and the user's beverage preferences.
             )
             .await;
 
-        assert!(matches!(result, Err(CompactionError::ConversationManager(_))));
+        assert!(matches!(
+            result,
+            Err(CompactionError::ConversationManager(_))
+        ));
 
         let restored = store.read("preferences/beverages.md").await.unwrap();
         assert_eq!(restored.content, original);

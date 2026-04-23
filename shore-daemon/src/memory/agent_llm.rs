@@ -127,8 +127,7 @@ impl AgentLlm for RealAgentLlm {
                 {
                     Ok(resp) => {
                         let text = resp.extract_text();
-                        let empty_output =
-                            resp.content_blocks.is_empty() && text.trim().is_empty();
+                        let empty_output = resp.content_blocks.is_empty() && text.trim().is_empty();
                         let filtered = resp.finish_reason == "content_filter"
                             || resp.finish_reason == "refusal";
 

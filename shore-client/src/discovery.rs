@@ -59,12 +59,11 @@ fn read_instances_from_path(path: &Path) -> Result<Vec<InstanceEntry>> {
     if data.trim().is_empty() {
         return Ok(Vec::new());
     }
-    let entries: InstancesFile = serde_json::from_str(&data).map_err(|e| {
-        ClientError::Discovery {
+    let entries: InstancesFile =
+        serde_json::from_str(&data).map_err(|e| ClientError::Discovery {
             kind: DiscoveryKind::RegistryCorrupt,
             message: format!("corrupt instances registry {}: {e}", path.display()),
-        }
-    })?;
+        })?;
     let total = entries.len();
     let live: Vec<_> = entries.into_iter().filter(entry_alive).collect();
     debug!(total, live = live.len(), "discovered daemon instances");

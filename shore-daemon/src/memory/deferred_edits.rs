@@ -6,20 +6,41 @@ use std::path::Path;
 /// invalidation.
 const PROTECTED_PATHS: &[&str] = &["character.md", "user.md", "prompts/system.md"];
 
-/// Check whether a workspace-relative path is a protected file.
-pub fn is_protected_path(path: &str) -> bool {
-    let normalized = path
+/// Normalize a workspace path to one of the protected config-relative paths.
+pub fn normalize_protected_path(path: &str) -> Option<String> {
+    let mut normalized = path
+        .trim()
         .trim_start_matches('/')
         .trim_start_matches('\\')
-        .strip_prefix("workspace/")
-        .unwrap_or(path.trim_start_matches('/').trim_start_matches('\\'));
-    PROTECTED_PATHS.iter().any(|&p| normalized == p)
+        .replace('\\', "/");
+
+    while let Some(rest) = normalized.strip_prefix("./") {
+        normalized = rest.to_string();
+    }
+
+    if let Some(rest) = normalized.strip_prefix("workspace/") {
+        normalized = rest.to_string();
+    }
+
+    PROTECTED_PATHS
+        .iter()
+        .any(|&protected| normalized == protected)
+        .then_some(normalized)
+}
+
+/// Check whether a workspace-relative path is a protected file.
+pub fn is_protected_path(path: &str) -> bool {
+    normalize_protected_path(path).is_some()
 }
 
 /// Queue a deferred edit for a protected file.
 ///
 /// Writes a JSON line to `{character_data_dir}/deferred_edits.jsonl`.
 pub fn queue_deferred_edit(character_data_dir: &Path, path: &str) -> io::Result<()> {
+    let Some(path) = normalize_protected_path(path) else {
+        return Ok(());
+    };
+
     let queue_path = character_data_dir.join("deferred_edits.jsonl");
     let mut file = std::fs::OpenOptions::new()
         .create(true)
@@ -72,21 +93,21 @@ pub fn apply_deferred_edits(
                 continue;
             }
         };
-        let path = entry.get("path").and_then(|v| v.as_str()).unwrap_or("");
-        if path.is_empty() {
+        let raw_path = entry.get("path").and_then(|v| v.as_str()).unwrap_or("");
+        let Some(path) = normalize_protected_path(raw_path) else {
             continue;
-        }
+        };
 
-        let src = workspace_dir.join(path);
+        let src = workspace_dir.join(&path);
         if !src.exists() {
             tracing::debug!(
-                path = %path,
+                path = %raw_path,
                 "Deferred edit source missing in workspace, skipping"
             );
             continue;
         }
 
-        let dst = char_config_dir.join(path);
+        let dst = char_config_dir.join(&path);
         if let Some(parent) = dst.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -144,6 +165,9 @@ mod tests {
     #[test]
     fn test_is_protected_path() {
         assert!(is_protected_path("character.md"));
+        assert!(is_protected_path("workspace/character.md"));
+        assert!(is_protected_path("/workspace/prompts/system.md"));
+        assert!(is_protected_path(r"workspace\user.md"));
         assert!(is_protected_path("user.md"));
         assert!(is_protected_path("prompts/system.md"));
         assert!(!is_protected_path("notes.md"));
@@ -168,7 +192,7 @@ mod tests {
         std::fs::write(ws.join("prompts/system.md"), "new system").unwrap();
 
         // Queue edits
-        queue_deferred_edit(&char_dir, "character.md").unwrap();
+        queue_deferred_edit(&char_dir, "workspace/character.md").unwrap();
         queue_deferred_edit(&char_dir, "user.md").unwrap();
 
         // Apply
@@ -188,6 +212,19 @@ mod tests {
 
         // Queue file removed
         assert!(!char_dir.join("deferred_edits.jsonl").exists());
+    }
+
+    #[test]
+    fn test_queue_stores_normalized_protected_path() {
+        let tmp = TempDir::new().unwrap();
+        let char_dir = tmp.path().join("char");
+
+        std::fs::create_dir_all(&char_dir).unwrap();
+        queue_deferred_edit(&char_dir, "workspace/prompts/system.md").unwrap();
+
+        let queue = std::fs::read_to_string(char_dir.join("deferred_edits.jsonl")).unwrap();
+        let entry: serde_json::Value = serde_json::from_str(queue.trim()).unwrap();
+        assert_eq!(entry["path"], "prompts/system.md");
     }
 
     #[test]
