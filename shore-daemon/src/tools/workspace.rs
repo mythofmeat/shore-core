@@ -1,7 +1,7 @@
 //! Workspace filesystem tools — read, write, edit, list, exec.
 //!
 //! These tools give the assistant access to a real filesystem workspace
-//! (`{character}/workspace/`) and its memories directory (`{character}/memories/`),
+//! (`{character}/workspace/`) and its memory directory (`{character}/workspace/memory/`),
 //! mirroring OpenClaw's model of agent-curated files.
 
 use std::path::{Path, PathBuf};
@@ -18,13 +18,13 @@ pub fn tool_defs() -> Vec<ToolDef> {
     vec![
         ToolDef {
             name: "read",
-            description: "Read the contents of a file in your workspace or memories. Paths without a prefix are resolved under workspace/. Use `memories/...` to access the memories directory. Returns the file content as text; use offset and limit for large files.",
+            description: "Read the contents of a file in your workspace or memory directory. Paths without a prefix are resolved under workspace/. Use `memory/...` to access durable memory files. Returns the file content as text; use offset and limit for large files.",
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Relative path. Bare paths resolve under workspace/. Use `workspace/...` or `memories/...` for an explicit root."
+                        "description": "Relative path. Bare paths resolve under workspace/. Use `workspace/...` or `memory/...` for an explicit root."
                     },
                     "offset": {
                         "type": "number",
@@ -41,13 +41,13 @@ pub fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "write",
-            description: "Write or overwrite a file in your workspace or memories. Bare paths resolve under workspace/. Use `memories/...` to write memory files. Parent directories are created automatically. Overwrites without confirmation.",
+            description: "Write or overwrite a file in your workspace or memory directory. Bare paths resolve under workspace/. Use `memory/...` to write durable memory files. Parent directories are created automatically. Overwrites without confirmation.",
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Relative path. Bare paths resolve under workspace/. Use `workspace/...` or `memories/...` for an explicit root."
+                        "description": "Relative path. Bare paths resolve under workspace/. Use `workspace/...` or `memory/...` for an explicit root."
                     },
                     "content": {
                         "type": "string",
@@ -60,13 +60,13 @@ pub fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "edit",
-            description: "Edit an existing file by replacing specific text. Bare paths resolve under workspace/. Use `memories/...` to edit memory files. Each replacement must match the old_string exactly, including whitespace and newlines.",
+            description: "Edit an existing file by replacing specific text. Bare paths resolve under workspace/. Use `memory/...` to edit durable memory files. Each replacement must match the old_string exactly, including whitespace and newlines.",
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Relative path. Bare paths resolve under workspace/. Use `workspace/...` or `memories/...` for an explicit root."
+                        "description": "Relative path. Bare paths resolve under workspace/. Use `workspace/...` or `memory/...` for an explicit root."
                     },
                     "edits": {
                         "type": "array",
@@ -93,13 +93,13 @@ pub fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "list_files",
-            description: "List files and directories under a path in your workspace or memories. Bare paths resolve under workspace/. Use `memories/...` to inspect memory files. Returns each entry's name, type, and size.",
+            description: "List files and directories under a path in your workspace or memory directory. Bare paths resolve under workspace/. Use `memory/...` to inspect durable memory files. Returns each entry's name, type, and size.",
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Relative directory path. Bare paths resolve under workspace/. Use `workspace/...` or `memories/...` for an explicit root. Omit for workspace root."
+                        "description": "Relative directory path. Bare paths resolve under workspace/. Use `workspace/...` or `memory/...` for an explicit root. Omit for workspace root."
                     }
                 },
                 "required": []
@@ -160,18 +160,15 @@ fn resolve_roots(workspace_dir: &str, relative: &str) -> Result<(PathBuf, String
     }
 
     let workspace_root = PathBuf::from(workspace_dir);
-    let character_root = workspace_root.parent().ok_or_else(|| {
-        ToolError::InvalidArgs("workspace root has no character data directory".into())
-    })?;
 
     let (root, stripped) = if relative == "workspace" {
         (workspace_root, String::new())
     } else if let Some(rest) = relative.strip_prefix("workspace/") {
         (workspace_root, rest.to_string())
-    } else if relative == "memories" {
-        (character_root.join("memories"), String::new())
-    } else if let Some(rest) = relative.strip_prefix("memories/") {
-        (character_root.join("memories"), rest.to_string())
+    } else if relative == "memory" {
+        (workspace_root.join("memory"), String::new())
+    } else if let Some(rest) = relative.strip_prefix("memory/") {
+        (workspace_root.join("memory"), rest.to_string())
     } else {
         (workspace_root, relative.to_string())
     };
@@ -800,17 +797,17 @@ mod tests {
         let ws_str = ws.to_string_lossy().to_string();
 
         handle_write(
-            json!({"path": "memories/people/ren.md", "content": "# Ren\n\nLikes tea."}),
+            json!({"path": "memory/people/ren.md", "content": "# Ren\n\nLikes tea."}),
             &ws_str,
         )
         .await
         .unwrap();
 
-        let result = handle_read(json!({"path": "memories/people/ren.md"}), &ws_str)
+        let result = handle_read(json!({"path": "memory/people/ren.md"}), &ws_str)
             .await
             .unwrap();
         assert_eq!(result["content"], "# Ren\n\nLikes tea.");
-        assert!(tmp.path().join("memories/people/ren.md").exists());
+        assert!(tmp.path().join("workspace/memory/people/ren.md").exists());
     }
 
     #[test]

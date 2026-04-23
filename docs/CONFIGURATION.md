@@ -4,25 +4,27 @@ Where every Shore setting lives, what it does, and when to change it. For the ex
 
 ## Orientation
 
-Shore reads all configuration from `$XDG_CONFIG_HOME/shore/` (defaults to `~/.config/shore/`). A minimal install needs one file (`config.toml`) and one character directory (`characters/<Name>/character.md`).
+Shore reads all configuration from `$XDG_CONFIG_HOME/shore/` (defaults to `~/.config/shore/`). A minimal install needs one file (`config.toml`) and one character workspace (`characters/<Name>/workspace/SOUL.md`).
 
 ### Directory layout
 
 ```
 ~/.config/shore/
 ├── config.toml                  # main configuration — required
-├── user.md                      # who you are (global fallback) — optional
-├── prompts/
-│   └── system.md                # system prompt template (global fallback) — optional
 └── characters/
     └── <CharacterName>/
-        ├── character.md         # required (presence enables discovery)
-        ├── user.md              # character-specific override — optional
-        └── prompts/
-            └── system.md        # character-specific system prompt — optional
+        ├── config.toml          # character-specific config override — optional
+        └── workspace/
+            ├── SOUL.md          # required (presence enables discovery)
+            ├── USER.md          # character-specific user context — optional
+            ├── AGENTS.md        # system prompt template override — optional
+            ├── TOOLS.md         # extra tool-use guidance — optional
+            ├── HEARTBEAT.md     # heartbeat-only guidance — optional
+            └── memory/
+                └── ...          # durable markdown memory files
 ```
 
-Characters are discovered by scanning `characters/` for subdirectories containing `character.md`. No config entry is needed to register a character.
+Characters are discovered by scanning `characters/` for subdirectories containing `workspace/SOUL.md`. No config entry is needed to register a character. Legacy `character.md` layouts are auto-migrated on first load.
 
 ### Splitting configuration across files
 
@@ -97,7 +99,6 @@ display_name = "Your Name"    # fills `{{user}}` in templates
 # memory_query = "mistral-small"
 # compaction = "mistral-small"
 # heartbeat = "claude-sonnet"
-# embedding = "text-large"
 # image_generation = "gemini-flash"
 ```
 
@@ -107,7 +108,6 @@ display_name = "Your Name"    # fills `{{user}}` in templates
 - `memory_query` — the small model used for markdown memory question answering
 - `compaction` — conversation summarization into markdown memory
 - `heartbeat` — the "private moment" autonomous ticks
-- `embedding` — which embedding profile to use (see `[chat.<provider>.<alias>]` with an embedding model)
 - `image_generation` — which model handles `generate_image`
 
 Any value passed here must match an alias declared under `[chat.<provider>.<alias>]`.

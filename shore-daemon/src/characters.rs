@@ -53,6 +53,16 @@ impl CharacterRegistry {
         global_config: LoadedConfig,
     ) -> Self {
         let available = discover_characters(&config_dir);
+        for name in &available {
+            let character_data_dir = data_dir.join(name);
+            if let Err(e) = crate::memory::deferred_edits::ensure_active_prompt_snapshot(
+                &character_data_dir,
+                &config_dir,
+                name,
+            ) {
+                warn!(character = %name, error = %e, "Failed to prepare character workspace");
+            }
+        }
         info!(
             characters = ?available,
             "Discovered {} character(s)",
@@ -78,6 +88,16 @@ impl CharacterRegistry {
     /// Re-scan the characters directory for changes.
     pub fn refresh(&mut self) {
         self.available = discover_characters(&self.config_dir);
+        for name in &self.available {
+            let character_data_dir = self.data_dir.join(name);
+            if let Err(e) = crate::memory::deferred_edits::ensure_active_prompt_snapshot(
+                &character_data_dir,
+                &self.config_dir,
+                name,
+            ) {
+                warn!(character = %name, error = %e, "Failed to prepare character workspace");
+            }
+        }
     }
 
     /// Check whether a character exists in the available list.
@@ -169,6 +189,16 @@ impl CharacterRegistry {
     pub fn reload_runtime_state(&mut self, config: LoadedConfig) -> RuntimeReloadSummary {
         let available_before = self.available.clone();
         let available_after = discover_characters(&self.config_dir);
+        for name in &available_after {
+            let character_data_dir = self.data_dir.join(name);
+            if let Err(e) = crate::memory::deferred_edits::ensure_active_prompt_snapshot(
+                &character_data_dir,
+                &self.config_dir,
+                name,
+            ) {
+                warn!(character = %name, error = %e, "Failed to prepare character workspace");
+            }
+        }
         let available_after_set: HashSet<String> = available_after.iter().cloned().collect();
 
         let removed_engines: Vec<String> = self
@@ -245,7 +275,7 @@ pub enum CharacterError {
         name: String,
         available: Vec<String>,
     },
-    #[error("no characters available — create one at characters/<name>/character.md")]
+    #[error("no characters available — create one at characters/<name>/workspace/SOUL.md")]
     NoneAvailable,
     #[error("multiple characters available ({available:?}) — specify one with --character or SHORE_CHARACTER")]
     AmbiguousSelection { available: Vec<String> },

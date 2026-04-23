@@ -22,9 +22,6 @@ uuid = { version = "1", features = ["v4"] }
 chrono = "0.4"
 rand = "0.8"
 rusqlite = { workspace = true }
-lancedb = "0.27"
-arrow-array = "57"
-arrow-schema = "57"
 dashmap = { workspace = true }
 futures = "0.3"
 reqwest = { version = "0.12", features = ["json", "stream"] }

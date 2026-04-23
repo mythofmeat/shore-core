@@ -142,7 +142,10 @@ async fn test_markdown_memory_compaction_end_to_end() {
     let dreams = store.read("DREAMS.md").await.unwrap();
     assert!(dreams.content.contains("Updated memory files"));
 
-    let recap = std::fs::read_to_string(char_dir.join("memory").join("recap.md")).unwrap();
+    let recap = std::fs::read_to_string(
+        shore_daemon::memory::deferred_edits::recent_memory_digest_path(&char_dir),
+    )
+    .unwrap();
     assert!(recap.contains("Test recap of the conversation."));
 
     let direct =

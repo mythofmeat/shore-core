@@ -44,9 +44,9 @@ _Empty. Add new invariant drafts here as future features are introduced or exist
 **Goal:** Long-term memory is inspectable, editable, and recoverable as ordinary markdown files, not opaque database rows.
 
 **Must:**
-- Normal runtime reads and writes use `{character}/memories/**/*.md`.
+- Normal runtime reads and writes use `characters/{character}/workspace/memory/**/*.md`.
 - Memory tools must be able to list, read, search, and overwrite markdown files directly.
-- Disabling memory must disable all `memory*` tools and block workspace access to the `memories/...` namespace.
+- Disabling memory must disable all `memory*` tools and block workspace access to the `memory/...` namespace.
 - Private conversations must not expose memory tools or memory files.
 
 **Must not:**

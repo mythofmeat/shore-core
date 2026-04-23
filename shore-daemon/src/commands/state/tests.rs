@@ -301,7 +301,14 @@ async fn memory_status_with_db() {
     let tmp = TempDir::new().unwrap();
     let (engine, ctx, _rx) = make_ctx(&tmp);
 
-    let memories = ctx.data_dir.join("TestChar").join("memories");
+    let memories = ctx
+        .config
+        .dirs
+        .config
+        .join("characters")
+        .join("TestChar")
+        .join("workspace")
+        .join("memory");
     std::fs::create_dir_all(memories.join("people")).unwrap();
     std::fs::write(memories.join("people/test.md"), "# Test\n\n- likes tea\n").unwrap();
 

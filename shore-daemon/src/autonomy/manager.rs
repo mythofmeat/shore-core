@@ -32,6 +32,10 @@ use crate::tools as tool_system;
 use crate::tools::context::SharedToolContext;
 use shore_config::app::{AutonomyConfig, CompactionConfig};
 use shore_config::LoadedConfig;
+use shore_config::{
+    character_memory_dir, character_workspace_dir, AGENTS_FILE, HEARTBEAT_FILE, SOUL_FILE,
+    TOOLS_FILE, USER_FILE,
+};
 use shore_diagnostics::truncate_summary;
 use shore_ledger::{CallType, LedgerClient};
 use shore_llm_client::types::LlmRequest;
@@ -1024,7 +1028,6 @@ async fn execute_idle_compaction(character: &str, ctx: &TickContext) {
 /// guidance instead of an always-expanding narrative prompt.
 fn build_heartbeat_prompt(
     recent_notes: &str,
-    heartbeat_instructions: &str,
     user_name: &str,
     default_interval: &str,
 ) -> String {
@@ -1040,10 +1043,6 @@ fn build_heartbeat_prompt(
 look for anything unfinished, worth following up on, or worth writing down. If nothing \
 needs doing, say HEARTBEAT_OK, write a brief <recap>, and stop.
 {recent_block}
-Current heartbeat instructions:
-
-{heartbeat_instructions}
-
 You have real tools and can search or write markdown memories, use your \
 scratchpad, check the web, generate images, and schedule the next wake.
 
@@ -1081,19 +1080,15 @@ fn default_heartbeat_instructions() -> &'static str {
 }
 
 fn load_heartbeat_instructions(character_data_dir: &Path) -> String {
-    let path = character_data_dir.join("workspace").join("HEARTBEAT.md");
-    std::fs::read_to_string(path)
-        .ok()
-        .filter(|content| !content.trim().is_empty())
+    crate::memory::deferred_edits::load_active_prompt_file(character_data_dir, HEARTBEAT_FILE)
         .unwrap_or_else(|| default_heartbeat_instructions().to_string())
 }
 
-async fn load_recent_daily_notes(character_data_dir: &Path) -> String {
-    let store = match crate::memory::markdown_store::MarkdownMemoryStore::open(
-        character_data_dir.join("memories"),
-    )
-    .await
-    {
+async fn load_recent_daily_notes(memory_dir: &Path) -> String {
+    let store =
+        match crate::memory::markdown_store::MarkdownMemoryStore::open(memory_dir.to_path_buf())
+            .await
+        {
         Ok(store) => store,
         Err(_) => return String::new(),
     };
@@ -1154,9 +1149,25 @@ fn rebuild_request_from_disk(
         .or_else(|| config.models.first_chat_model())?;
 
     let display_name = config.app.defaults.resolve_display_name();
+    if let Err(e) = crate::memory::deferred_edits::ensure_active_prompt_snapshot(
+        &char_dir,
+        &config.dirs.config,
+        character,
+    ) {
+        warn!(character, error = %e, "Heartbeat rebuild: failed to ensure active prompt snapshot");
+    }
     let character_definition =
-        shore_config::load_character_definition(&config.dirs.config, character);
-    let user_definition = shore_config::resolve_user_definition(&config.dirs.config, character);
+        crate::memory::deferred_edits::load_active_prompt_file(&char_dir, SOUL_FILE);
+    let user_definition =
+        crate::memory::deferred_edits::load_active_prompt_file(&char_dir, USER_FILE);
+    let system_prompt =
+        crate::memory::deferred_edits::load_active_prompt_file(&char_dir, AGENTS_FILE);
+    let tools_guidance =
+        crate::memory::deferred_edits::load_active_prompt_file(&char_dir, TOOLS_FILE);
+    let recent_memory_digest = crate::memory::deferred_edits::load_active_prompt_file(
+        &char_dir,
+        crate::memory::deferred_edits::RECENT_MEMORY_DIGEST_FILE,
+    );
 
     let tool_toggles = &config.app.behavior.tool_use.tools;
     let capabilities = CapabilitiesConfig {
@@ -1169,13 +1180,14 @@ fn rebuild_request_from_disk(
     };
 
     let prompt_result = prompt::assemble_prompt(&PromptParams {
-        config_dir: &config.dirs.config,
         character_name: character,
         display_name: &display_name,
+        system_prompt: system_prompt.as_deref(),
+        tools_guidance: tools_guidance.as_deref(),
         character_definition: character_definition.as_deref(),
         user_definition: user_definition.as_deref(),
+        recent_memory_digest: recent_memory_digest.as_deref(),
         is_private: false,
-        character_data_dir: &char_dir,
         messages: store.messages(),
         max_context_tokens: resolved.max_context_tokens,
         max_output_tokens: resolved.max_tokens,
@@ -1331,6 +1343,13 @@ async fn execute_heartbeat_tick(
 
     // Build the dynamic heartbeat prompt.
     let character_data_dir = data_dir.join(character);
+    if let Err(e) = crate::memory::deferred_edits::ensure_active_prompt_snapshot(
+        &character_data_dir,
+        &lc.dirs.config,
+        character,
+    ) {
+        warn!(character, error = %e, "Heartbeat: failed to prepare active prompt snapshot");
+    }
     let user_name = lc.app.defaults.resolve_display_name();
     let default_interval_secs = lc
         .app
@@ -1350,15 +1369,15 @@ async fn execute_heartbeat_tick(
     } else {
         format!("{} minutes", default_interval_secs / 60)
     };
-    let recent_notes = load_recent_daily_notes(&character_data_dir).await;
-    let heartbeat_instructions = load_heartbeat_instructions(&character_data_dir);
-    let heartbeat_instructions = heartbeat_instructions.replace("{user}", &user_name);
-    let heartbeat_prompt = build_heartbeat_prompt(
-        &recent_notes,
-        &heartbeat_instructions,
-        &user_name,
-        &default_interval_str,
-    );
+    let recent_notes = load_recent_daily_notes(&character_memory_dir(&lc.dirs.config, character)).await;
+    let heartbeat_instructions =
+        load_heartbeat_instructions(&character_data_dir).replace("{user}", &user_name);
+    let heartbeat_prompt = build_heartbeat_prompt(&recent_notes, &user_name, &default_interval_str);
+
+    request.messages.push(json!({
+        "role": "system",
+        "content": heartbeat_instructions,
+    }));
 
     // Append the heartbeat prompt as a system-role message. The Anthropic
     // provider auto-wraps inline system messages in <system_instruction> tags
@@ -1845,9 +1864,11 @@ async fn build_tool_context(
         search_config_val: config.app.behavior.tool_use.search.clone(),
         character_name_val: character.to_string(),
         scratchpad_dir_val: char_dir.join("scratchpad").to_string_lossy().into_owned(),
-        workspace_dir_val: char_dir.join("workspace").to_string_lossy().into_owned(),
+        workspace_dir_val: character_workspace_dir(&config.dirs.config, character)
+            .to_string_lossy()
+            .into_owned(),
         markdown_store_val: crate::memory::markdown_store::MarkdownMemoryStore::open_sync(
-            char_dir.join("memories"),
+            character_memory_dir(&config.dirs.config, character),
         )
         .ok(),
         memory_access_allowed_val: config.app.behavior.tool_use.tools.memory(),
