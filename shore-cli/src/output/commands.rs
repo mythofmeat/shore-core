@@ -149,6 +149,27 @@ pub fn print_status(data: &serde_json::Value, character_name: &str) {
         write_row(&mut out, "Messages", &count.to_string());
     }
 
+    let pending_deferred_edit_count = data["pending_deferred_edit_count"].as_u64().unwrap_or(0);
+    if pending_deferred_edit_count > 0 {
+        let paths: Vec<&str> = data["pending_deferred_edits"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|path| path.as_str())
+            .collect();
+        let label = if pending_deferred_edit_count == 1 {
+            "1 pending".to_string()
+        } else {
+            format!("{pending_deferred_edit_count} pending")
+        };
+        let detail = if paths.is_empty() {
+            label
+        } else {
+            format!("{label}: {}", paths.join(", "))
+        };
+        write_row(&mut out, "Prompt Edits", &detail);
+    }
+
     // Memory info (if present in the response).
     if let Some(mem) = data.get("memory") {
         let total = mem["total_entries"].as_u64().unwrap_or(0);
@@ -1162,6 +1183,8 @@ mod tests {
             "character": "Sable",
             "message_count": 142,
             "active_model": "claude-sonnet-4-20250514",
+            "pending_deferred_edit_count": 2,
+            "pending_deferred_edits": ["SOUL.md", "TOOLS.md"],
             "tokens": {
                 "input": 12450,
                 "output": 3218,
