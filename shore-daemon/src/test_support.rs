@@ -1,21 +1,15 @@
 //! Shared test mocks and builders for shore-daemon tests.
 //!
-//! This module consolidates duplicated test infrastructure (MockRag,
-//! test_model, TestToolContext) so each test file can import from a
+//! This module consolidates duplicated test infrastructure
+//! (test_model, TestToolContext) so each test file can import from a
 //! single source.
 
-use std::future::Future;
-use std::pin::Pin;
-
 use crate::autonomy::manager::AutonomyManager;
-use crate::memory::agent::types::{AgentError, AgentIndexer, AgentRag, RagHit};
-use crate::memory::agent::{CallerIdentity, MemoryAgent};
-use crate::memory::agent_llm::{AgentLlm, MockAgentLlm};
 use crate::memory::compaction_impls::ImageGenConfig;
-use crate::memory::db::MemoryDB;
-use crate::memory::researcher::MemoryResearcher;
+use crate::memory::markdown_store::MarkdownMemoryStore;
+use crate::memory::retrieval::EmbeddingConfig;
 use crate::tools::ToolContext;
-use shore_config::app::SearchConfig;
+use shore_config::app::{RetrievalConfig, SearchConfig};
 use shore_config::models::{ResolvedModel, Sdk};
 use shore_llm_client::LlmClient;
 
@@ -52,88 +46,48 @@ pub fn test_model() -> ResolvedModel {
     }
 }
 
-// ── MockRag ─────────────────────────────────────────────────────────────
-
-/// Mock RAG implementation with configurable results.
-pub struct MockRag {
-    pub results: Vec<RagHit>,
-}
-
-impl MockRag {
-    pub fn empty() -> Self {
-        Self { results: vec![] }
-    }
-
-    pub fn with_results(results: Vec<RagHit>) -> Self {
-        Self { results }
-    }
-}
-
-impl AgentRag for MockRag {
-    fn query(
-        &self,
-        _query: &str,
-        _top_k: usize,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<RagHit>, AgentError>> + Send + '_>> {
-        let result = Ok(self.results.clone());
-        Box::pin(async move { result })
-    }
-}
-
 // ── TestToolContext ─────────────────────────────────────────────────────
 
 /// Shared `ToolContext` implementation for unit tests.
-///
-/// Supports optional researcher configuration via `with_researcher()`.
 pub struct TestToolContext {
-    pub db: MemoryDB,
-    pub agent: MemoryAgent,
-    pub agent_llm: MockAgentLlm,
     pub model: ResolvedModel,
-    pub rag: MockRag,
     pub image_dir_val: String,
-    pub researcher: Option<MemoryResearcher>,
-    pub researcher_llm_val: Option<MockAgentLlm>,
-    pub researcher_model_val: Option<ResolvedModel>,
     pub search_config_val: SearchConfig,
     pub autonomy_mgr: Option<AutonomyManager>,
     pub character_name_val: String,
+    pub markdown_store_val: Option<MarkdownMemoryStore>,
+    pub retrieval_config_val: RetrievalConfig,
+    pub embedding_config_val: Option<EmbeddingConfig>,
+    pub memory_index_path_val: Option<std::path::PathBuf>,
+    pub memory_access_allowed_val: bool,
+    pub memory_read_allowed_val: bool,
+    pub memory_write_allowed_val: bool,
+    pub workspace_dir_val: String,
 }
 
 impl TestToolContext {
-    /// Create a default test context with empty rag and no researcher.
+    /// Create a default test context.
     pub fn new() -> Self {
         Self {
-            db: MemoryDB::open_in_memory().unwrap(),
-            agent: MemoryAgent::one_shot(CallerIdentity::Char, "Test", "User"),
-            agent_llm: MockAgentLlm::new(vec![]),
             model: test_model(),
-            rag: MockRag::empty(),
             image_dir_val: "/tmp/test_images".to_string(),
-            researcher: None,
-            researcher_llm_val: None,
-            researcher_model_val: None,
             search_config_val: SearchConfig::default(),
             autonomy_mgr: None,
             character_name_val: String::new(),
+            markdown_store_val: None,
+            retrieval_config_val: RetrievalConfig::default(),
+            embedding_config_val: None,
+            memory_index_path_val: None,
+            memory_access_allowed_val: true,
+            memory_read_allowed_val: true,
+            memory_write_allowed_val: true,
+            workspace_dir_val: String::new(),
         }
-    }
-
-    /// Create with a custom agent LLM (for canned responses).
-    pub fn with_agent_llm(mut self, llm: MockAgentLlm) -> Self {
-        self.agent_llm = llm;
-        self
     }
 
     /// Set a custom image directory.
     pub fn with_image_dir(mut self, dir: &str) -> Self {
         self.image_dir_val = dir.to_string();
-        self
-    }
-
-    /// Set custom RAG results.
-    pub fn with_rag(mut self, results: Vec<RagHit>) -> Self {
-        self.rag = MockRag::with_results(results);
         self
     }
 
@@ -144,48 +98,51 @@ impl TestToolContext {
         self
     }
 
-    /// Configure researcher with its own LLM and model.
-    pub fn with_researcher(
-        mut self,
-        researcher: MemoryResearcher,
-        llm: MockAgentLlm,
-        model: ResolvedModel,
-    ) -> Self {
-        self.researcher = Some(researcher);
-        self.researcher_llm_val = Some(llm);
-        self.researcher_model_val = Some(model);
+    /// Set a markdown memory store.
+    pub fn with_markdown_store(mut self, store: MarkdownMemoryStore) -> Self {
+        self.markdown_store_val = Some(store);
+        self
+    }
+
+    /// Allow or deny memory access for dispatch-layer tests.
+    pub fn with_memory_access_allowed(mut self, allowed: bool) -> Self {
+        self.memory_access_allowed_val = allowed;
+        self.memory_read_allowed_val = allowed;
+        self.memory_write_allowed_val = allowed;
+        self
+    }
+
+    /// Allow or deny memory read access for dispatch-layer tests.
+    pub fn with_memory_read_allowed(mut self, allowed: bool) -> Self {
+        self.memory_read_allowed_val = allowed;
+        self
+    }
+
+    /// Allow or deny memory write access for dispatch-layer tests.
+    pub fn with_memory_write_allowed(mut self, allowed: bool) -> Self {
+        self.memory_write_allowed_val = allowed;
+        self
+    }
+
+    /// Set a workspace directory for workspace dispatch tests.
+    pub fn with_workspace_dir(mut self, dir: &str) -> Self {
+        self.workspace_dir_val = dir.to_string();
+        self
+    }
+
+    pub fn with_retrieval_config(mut self, config: RetrievalConfig) -> Self {
+        self.retrieval_config_val = config;
         self
     }
 }
 
+impl Default for TestToolContext {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ToolContext for TestToolContext {
-    fn memory_db(&self) -> &MemoryDB {
-        &self.db
-    }
-    fn memory_agent(&self) -> &MemoryAgent {
-        &self.agent
-    }
-    fn agent_llm(&self) -> &dyn AgentLlm {
-        &self.agent_llm
-    }
-    fn agent_model(&self) -> &ResolvedModel {
-        &self.model
-    }
-    fn researcher_llm(&self) -> Option<&dyn AgentLlm> {
-        self.researcher_llm_val.as_ref().map(|l| l as &dyn AgentLlm)
-    }
-    fn researcher_model(&self) -> Option<&ResolvedModel> {
-        self.researcher_model_val.as_ref()
-    }
-    fn memory_researcher(&self) -> Option<&MemoryResearcher> {
-        self.researcher.as_ref()
-    }
-    fn indexer(&self) -> Option<&dyn AgentIndexer> {
-        None
-    }
-    fn rag(&self) -> &dyn AgentRag {
-        &self.rag
-    }
     fn image_dir(&self) -> &str {
         &self.image_dir_val
     }
@@ -204,33 +161,32 @@ impl ToolContext for TestToolContext {
     fn character_name(&self) -> &str {
         &self.character_name_val
     }
-}
-
-// ── make_image_entry ────────────────────────────────────────────────────
-
-/// Build a memory `Entry` with memory_type "image" for testing image tools.
-pub fn make_image_entry(id: &str, summary: &str, image_path: &str) -> crate::memory::db::Entry {
-    let now = chrono::Local::now().to_rfc3339();
-    crate::memory::db::Entry {
-        id: id.to_string(),
-        memory_type: "image".to_string(),
-        source: "user".to_string(),
-        reason: "upload".to_string(),
-        status: "active".to_string(),
-        confidence: 1.0,
-        summary_text: summary.to_string(),
-        topic_tags: "image".to_string(),
-        topic_key: "images".to_string(),
-        start_timestamp: now.clone(),
-        end_timestamp: now.clone(),
-        message_count: 0,
-        source_entry_ids: String::new(),
-        related_entry_ids: String::new(),
-        superseded_by: String::new(),
-        created_at: now.clone(),
-        updated_at: now,
-        entry_type: String::new(),
-        image_path: image_path.to_string(),
-        collated_at: String::new(),
+    fn markdown_store(&self) -> Option<&MarkdownMemoryStore> {
+        self.markdown_store_val.as_ref()
     }
+    fn memory_retrieval_config(&self) -> &RetrievalConfig {
+        &self.retrieval_config_val
+    }
+    fn embedding_config(&self) -> Option<&EmbeddingConfig> {
+        self.embedding_config_val.as_ref()
+    }
+    fn memory_index_path(&self) -> Option<&std::path::Path> {
+        self.memory_index_path_val.as_deref()
+    }
+    fn memory_access_allowed(&self) -> bool {
+        self.memory_access_allowed_val
+    }
+    fn memory_read_allowed(&self) -> bool {
+        self.memory_read_allowed_val
+    }
+    fn memory_write_allowed(&self) -> bool {
+        self.memory_write_allowed_val
+    }
+    fn workspace_dir(&self) -> &str {
+        &self.workspace_dir_val
+    }
+    fn config_dir(&self) -> &str {
+        ""
+    }
+    fn defer_edit(&self, _path: &str) {}
 }

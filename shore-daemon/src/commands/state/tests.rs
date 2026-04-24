@@ -1,7 +1,6 @@
 use super::*;
 use crate::commands::CommandContext;
 use crate::engine::ConversationEngine;
-use crate::memory::db::MemoryDB;
 use serde_json::json;
 use shore_config::models::ModelCatalog;
 use shore_protocol::server_msg::ServerMessage;
@@ -70,7 +69,6 @@ fn make_ctx_with_models(
         diagnostics: std::sync::Arc::new(std::sync::Mutex::new(
             shore_diagnostics::Diagnostics::default(),
         )),
-        memory_shell_sessions: std::collections::HashMap::new(),
     };
     (engine, ctx, push_rx)
 }
@@ -117,12 +115,12 @@ fn status_returns_state() {
         assert_eq!(result["character"], "TestChar");
         assert_eq!(result["message_count"], 0);
         assert_eq!(result["active_model"], "claude-sonnet");
-        assert_eq!(result["autonomy"]["interiority_state"], "Active");
+        assert_eq!(result["autonomy"]["heartbeat_state"], "Active");
     });
 }
 
 #[test]
-fn status_reports_dormant_interiority() {
+fn status_reports_dormant_heartbeat() {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -133,12 +131,10 @@ fn status_reports_dormant_interiority() {
         let (engine, ctx, _rx) = make_ctx(&tmp);
 
         ctx.autonomy.ensure_state(engine.character_name(), None);
-        assert!(ctx
-            .autonomy
-            .interiority_set_dormant(engine.character_name()));
+        assert!(ctx.autonomy.heartbeat_set_dormant(engine.character_name()));
 
         let result = status(&engine, &ctx).unwrap();
-        assert_eq!(result["autonomy"]["interiority_state"], "Dormant");
+        assert_eq!(result["autonomy"]["heartbeat_state"], "Dormant");
     });
 }
 
@@ -167,8 +163,7 @@ fn list_models_empty() {
 #[test]
 fn list_models_excludes_tool_models() {
     // Regression: list_models previously merged chat AND tools into one
-    // flat list. Tool-only profiles (e.g. a function-calling sidecar model
-    // used for memory collation) are not meant to be user-selectable chat
+    // flat list. Tool-only profiles are not meant to be user-selectable chat
     // targets, and they pollute the UI in `shore models list` /
     // auto-completions.
     let tmp = TempDir::new().unwrap();
@@ -289,54 +284,38 @@ fn model_info_not_found() {
 }
 
 #[tokio::test]
-async fn memory_status_no_db() {
+async fn memory_status_no_files() {
     let tmp = TempDir::new().unwrap();
     let (engine, ctx, _rx) = make_ctx(&tmp);
 
     let result = memory(&engine, &ctx, &json!({})).await.unwrap();
     assert_eq!(result["character"], "TestChar");
     assert_eq!(result["entries"], 0);
-    assert_eq!(result["entities"], 0);
-    assert_eq!(result["active_entries"], 0);
+    assert_eq!(result["curated_files"], 0);
+    assert_eq!(result["daily_files"], 0);
+    assert_eq!(result["image_files"], 0);
 }
 
 #[tokio::test]
-async fn memory_status_with_db() {
+async fn memory_status_with_markdown_files() {
     let tmp = TempDir::new().unwrap();
     let (engine, ctx, _rx) = make_ctx(&tmp);
 
-    let db_dir = ctx.data_dir.join("TestChar").join("memory");
-    std::fs::create_dir_all(&db_dir).unwrap();
-    let db = MemoryDB::open(&db_dir.join("memory.db")).unwrap();
-    db.create_entry(&crate::memory::db::Entry {
-        id: "test_1".into(),
-        memory_type: "semantic".into(),
-        source: "test".into(),
-        reason: "test".into(),
-        status: "active".into(),
-        confidence: 0.9,
-        summary_text: "Test entry".into(),
-        topic_tags: "test".into(),
-        topic_key: "test".into(),
-        start_timestamp: String::new(),
-        end_timestamp: String::new(),
-        message_count: 0,
-        source_entry_ids: String::new(),
-        related_entry_ids: String::new(),
-        superseded_by: String::new(),
-        created_at: "2026-01-01T00:00:00Z".into(),
-        updated_at: "2026-01-01T00:00:00Z".into(),
-        entry_type: String::new(),
-        image_path: String::new(),
-        collated_at: String::new(),
-    })
-    .unwrap();
-    drop(db);
+    let memories = ctx
+        .config
+        .dirs
+        .config
+        .join("characters")
+        .join("TestChar")
+        .join("workspace")
+        .join("memory");
+    std::fs::create_dir_all(memories.join("people")).unwrap();
+    std::fs::write(memories.join("people/test.md"), "# Test\n\n- likes tea\n").unwrap();
 
     let result = memory(&engine, &ctx, &json!({})).await.unwrap();
     assert_eq!(result["character"], "TestChar");
     assert_eq!(result["entries"], 1);
-    assert_eq!(result["active_entries"], 1);
+    assert_eq!(result["curated_files"], 1);
 }
 
 #[tokio::test]
@@ -361,21 +340,6 @@ async fn compact_empty_conversation_returns_error() {
     let (code, msg) = result.unwrap_err();
     assert_eq!(code, shore_protocol::error::ErrorCode::InvalidRequest);
     assert!(msg.contains("No messages"));
-}
-
-#[tokio::test]
-async fn collate_no_model_returns_error() {
-    let tmp = TempDir::new().unwrap();
-    let (mut engine, ctx, _rx) = make_ctx(&tmp);
-
-    let db_dir = ctx.data_dir.join("TestChar").join("memory");
-    std::fs::create_dir_all(&db_dir).unwrap();
-    let _db = MemoryDB::open(&db_dir.join("memory.db")).unwrap();
-
-    let result = collate(&mut engine, &ctx, &json!({})).await;
-    assert!(result.is_err());
-    let (code, _msg) = result.unwrap_err();
-    assert_eq!(code, shore_protocol::error::ErrorCode::InternalError);
 }
 
 #[test]
@@ -499,91 +463,6 @@ fn test_reset_model_clears_override() {
     assert!(ctx.active_model.is_none());
 }
 
-#[tokio::test]
-async fn memory_purge_deletes_old_superseded_entries() {
-    use crate::memory::db::Entry;
-
-    let tmp = TempDir::new().unwrap();
-    let (mut engine, ctx, _rx) = make_ctx(&tmp);
-
-    let mem_dir = ctx.data_dir.join("TestChar").join("memory");
-    std::fs::create_dir_all(&mem_dir).unwrap();
-    let db = MemoryDB::open(&mem_dir.join("memory.db")).unwrap();
-
-    let old_ts = "2020-01-01T00:00:00Z".to_string();
-    let recent_ts = chrono::Local::now().to_rfc3339();
-    let empty = String::new();
-
-    let make_entry =
-        |id: &str, status: &str, superseded_by: &str, image_path: &str, ts: &str| Entry {
-            id: id.into(),
-            memory_type: "observation".into(),
-            source: "test".into(),
-            reason: empty.clone(),
-            status: status.into(),
-            confidence: 1.0,
-            summary_text: format!("Entry {id}"),
-            topic_tags: empty.clone(),
-            topic_key: empty.clone(),
-            start_timestamp: empty.clone(),
-            end_timestamp: empty.clone(),
-            message_count: 0,
-            source_entry_ids: empty.clone(),
-            related_entry_ids: empty.clone(),
-            superseded_by: superseded_by.into(),
-            created_at: ts.into(),
-            updated_at: ts.into(),
-            entry_type: empty.clone(),
-            image_path: image_path.into(),
-            collated_at: empty.clone(),
-        };
-
-    db.create_entry(&make_entry("active-1", "active", "", "", &old_ts))
-        .unwrap();
-    db.create_entry(&make_entry(
-        "old-superseded",
-        "superseded",
-        "active-1",
-        "",
-        &old_ts,
-    ))
-    .unwrap();
-    db.create_entry(&make_entry(
-        "recent-superseded",
-        "superseded",
-        "active-1",
-        "",
-        &recent_ts,
-    ))
-    .unwrap();
-    db.create_entry(&make_entry(
-        "image-superseded",
-        "superseded",
-        "active-1",
-        "/some/image.png",
-        &old_ts,
-    ))
-    .unwrap();
-    db.create_entry(&make_entry("no-replacement", "superseded", "", "", &old_ts))
-        .unwrap();
-
-    drop(db);
-
-    let result = memory_purge(&mut engine, &ctx, &json!({"older_than": "1d"}))
-        .await
-        .unwrap();
-
-    assert_eq!(result["deleted"], 1);
-    assert_eq!(result["skipped_image"], 1);
-    assert_eq!(result["skipped_no_replacement"], 1);
-
-    let db = MemoryDB::open(&mem_dir.join("memory.db")).unwrap();
-    assert!(db.get_entry("old-superseded").unwrap().is_none());
-    assert!(db.get_entry("recent-superseded").unwrap().is_some());
-    assert!(db.get_entry("image-superseded").unwrap().is_some());
-    assert!(db.get_entry("no-replacement").unwrap().is_some());
-}
-
 #[test]
 fn config_reset_clears_active_model_and_reloads() {
     let tmp = TempDir::new().unwrap();
@@ -598,19 +477,6 @@ fn config_reset_clears_active_model_and_reloads() {
 
     ctx.active_model = Some("custom-override".into());
     ctx.config.app.defaults.stream = true;
-    ctx.memory_shell_sessions.insert(
-        "shell-1".into(),
-        crate::commands::MemoryShellSession {
-            agent: crate::memory::agent::MemoryAgent::interactive(
-                crate::memory::agent::CallerIdentity::User,
-                "TestChar",
-                "User",
-            ),
-            history: vec![],
-            character: "TestChar".into(),
-            model: sample_models().first_chat_model().cloned().unwrap(),
-        },
-    );
 
     let result = config_reset(&mut ctx).unwrap();
 
@@ -620,88 +486,6 @@ fn config_reset_clears_active_model_and_reloads() {
         !ctx.config.app.defaults.stream,
         "config should be reloaded from ctx.config.dirs.config"
     );
-    assert!(
-        ctx.memory_shell_sessions.is_empty(),
-        "memory shell sessions should be cleared because they hold stale runtime state"
-    );
-}
-
-#[tokio::test]
-async fn memory_reindex_empty_returns_zero() {
-    let tmp = TempDir::new().unwrap();
-    let (engine, ctx, _rx) = make_ctx(&tmp);
-
-    let db_dir = ctx.data_dir.join("TestChar").join("memory");
-    std::fs::create_dir_all(&db_dir).unwrap();
-    let _db = MemoryDB::open(&db_dir.join("memory.db")).unwrap();
-
-    let result = memory_reindex(&engine, &ctx).await.unwrap();
-    assert_eq!(result["reindexed"], 0);
-    assert!(result["message"]
-        .as_str()
-        .unwrap()
-        .contains("No active entries"));
-}
-
-#[tokio::test]
-#[ignore = "Requires OPENROUTER_SHORE_EMBEDDING"]
-async fn memory_reindex_rebuilds_fts_and_vectors() {
-    if std::env::var("OPENROUTER_SHORE_EMBEDDING").is_err() {
-        panic!("OPENROUTER_SHORE_EMBEDDING not set");
-    }
-
-    let tmp = TempDir::new().unwrap();
-
-    let embed_toml: toml::Table = r#"
-[text-embed]
-model_id = "openai/text-embedding-3-small"
-provider = "openai"
-api_key_env = "OPENROUTER_SHORE_EMBEDDING"
-base_url = "https://openrouter.ai/api/v1"
-dimensions = 1536
-"#
-    .parse()
-    .unwrap();
-    let models = ModelCatalog::from_sections(None, None, Some(&embed_toml), None).unwrap();
-    let (engine, ctx, _rx) = make_ctx_with_models(&tmp, models);
-
-    let db_dir = ctx.data_dir.join("TestChar").join("memory");
-    std::fs::create_dir_all(&db_dir).unwrap();
-    let db = MemoryDB::open(&db_dir.join("memory.db")).unwrap();
-
-    for i in 0..3 {
-        db.create_entry(&crate::memory::db::Entry {
-            id: format!("entry_{i}"),
-            memory_type: "semantic".into(),
-            source: "test".into(),
-            reason: "reindex test".into(),
-            status: "active".into(),
-            confidence: 0.9,
-            summary_text: format!("Test memory entry number {i} about various topics"),
-            topic_tags: "test".into(),
-            topic_key: "test".into(),
-            start_timestamp: String::new(),
-            end_timestamp: String::new(),
-            message_count: 0,
-            source_entry_ids: String::new(),
-            related_entry_ids: String::new(),
-            superseded_by: String::new(),
-            created_at: "2026-01-01T00:00:00Z".into(),
-            updated_at: "2026-01-01T00:00:00Z".into(),
-            entry_type: String::new(),
-            image_path: String::new(),
-            collated_at: String::new(),
-        })
-        .unwrap();
-    }
-    drop(db);
-
-    let result = memory_reindex(&engine, &ctx).await.unwrap();
-    assert_eq!(result["reindexed"], 3);
-    assert!(result["message"]
-        .as_str()
-        .unwrap()
-        .contains("Reindexed 3 entries"));
 }
 
 #[test]
@@ -737,9 +521,15 @@ fn set_reasoning_effort_bare_read_shows_state() {
     ctx.active_model = Some("claude-sonnet".into());
 
     let result = set_reasoning_effort(&mut ctx, &json!({})).unwrap();
-    assert!(result.get("changed").is_none(), "bare read must not mark changed");
+    assert!(
+        result.get("changed").is_none(),
+        "bare read must not mark changed"
+    );
     assert!(result["override"].is_null(), "no override by default");
-    assert!(result["effective"].is_null(), "no config default, no override → null");
+    assert!(
+        result["effective"].is_null(),
+        "no config default, no override → null"
+    );
     assert!(ctx.reasoning_effort_override.is_none());
 }
 
@@ -748,8 +538,7 @@ fn set_reasoning_effort_sets_string_value() {
     let tmp = TempDir::new().unwrap();
     let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
 
-    let result =
-        set_reasoning_effort(&mut ctx, &json!({ "value": "high" })).unwrap();
+    let result = set_reasoning_effort(&mut ctx, &json!({ "value": "high" })).unwrap();
     assert_eq!(result["changed"], true);
     assert_eq!(result["effective"], "high");
     assert_eq!(ctx.reasoning_effort_override, Some(Some("high".into())));
@@ -760,11 +549,8 @@ fn set_reasoning_effort_null_forces_off() {
     let tmp = TempDir::new().unwrap();
     let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
 
-    let result = set_reasoning_effort(
-        &mut ctx,
-        &json!({ "value": serde_json::Value::Null }),
-    )
-    .unwrap();
+    let result =
+        set_reasoning_effort(&mut ctx, &json!({ "value": serde_json::Value::Null })).unwrap();
     assert_eq!(result["changed"], true);
     assert!(result["effective"].is_null(), "forced off");
     assert_eq!(ctx.reasoning_effort_override, Some(None));
@@ -778,8 +564,7 @@ fn set_reasoning_effort_off_sentinel_forces_off() {
     // Each of these should collapse to "force off" (override = Some(None)).
     for sentinel in ["off", "OFF", "none", "disable", "disabled", "unset"] {
         ctx.reasoning_effort_override = Some(Some("high".into())); // reset
-        let result =
-            set_reasoning_effort(&mut ctx, &json!({ "value": sentinel })).unwrap();
+        let result = set_reasoning_effort(&mut ctx, &json!({ "value": sentinel })).unwrap();
         assert_eq!(
             ctx.reasoning_effort_override,
             Some(None),
@@ -821,7 +606,10 @@ fn set_reasoning_effort_rejects_non_string_non_null_value() {
 
     let err = set_reasoning_effort(&mut ctx, &json!({ "value": 7 })).unwrap_err();
     assert_eq!(err.0, shore_protocol::error::ErrorCode::InvalidRequest);
-    assert!(ctx.reasoning_effort_override.is_none(), "rejected input must not mutate state");
+    assert!(
+        ctx.reasoning_effort_override.is_none(),
+        "rejected input must not mutate state"
+    );
 }
 
 #[test]

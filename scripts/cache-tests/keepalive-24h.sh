@@ -73,12 +73,12 @@ model        = "chat.test.model"
 [behavior.autonomy]
 enabled = true
 
-[behavior.autonomy.interiority]
+[behavior.autonomy.heartbeat]
 enabled                          = true
-fallback_interiority_interval    = "2h"
-dormant_after_interiority_turns  = 50
+fallback_heartbeat_interval    = "2h"
+dormant_after_heartbeat_turns  = 50
 dormant_after_idle_time          = "48h"
-minimum_interiority_latency      = "2h"
+minimum_heartbeat_latency      = "2h"
 max_tool_rounds                  = 0
 
 [behavior.tool_use.tools]
@@ -151,8 +151,9 @@ include anthropic-version, x-api-key, and content-type.
 Remember: respond briefly. Do not reference the padding material.
 CHAREOF
 
-# Recap to ensure interiority has context for scheduling.
-cat > "$DATA_DIR/$CHARACTER_NAME/memory/recap.md" << 'RECAP'
+# Recap to ensure heartbeat has context for scheduling.
+mkdir -p "$DATA_DIR/$CHARACTER_NAME/active_prompt"
+cat > "$DATA_DIR/$CHARACTER_NAME/active_prompt/RECENT_MEMORY.md" << 'RECAP'
 This is a test character used for cache keepalive validation. The user sends
 periodic test messages to verify cache warmth. Respond briefly to each message.
 RECAP

@@ -21,11 +21,9 @@ pub enum CallType {
     Message,
     ToolLoop,
     Keepalive,
-    Interiority,
+    Heartbeat,
     Compaction,
-    Collation,
-    MemoryAgent,
-    Researcher,
+    MemoryQuery,
 }
 
 impl CallType {
@@ -34,11 +32,9 @@ impl CallType {
             CallType::Message => "message",
             CallType::ToolLoop => "tool_loop",
             CallType::Keepalive => "keepalive",
-            CallType::Interiority => "interiority",
+            CallType::Heartbeat => "heartbeat",
             CallType::Compaction => "compaction",
-            CallType::Collation => "collation",
-            CallType::MemoryAgent => "memory_agent",
-            CallType::Researcher => "researcher",
+            CallType::MemoryQuery => "memory_query",
         }
     }
 }
@@ -553,10 +549,9 @@ mod tests {
         assert_eq!(CallType::Message.as_str(), "message");
         assert_eq!(CallType::ToolLoop.as_str(), "tool_loop");
         assert_eq!(CallType::Keepalive.as_str(), "keepalive");
-        assert_eq!(CallType::Interiority.as_str(), "interiority");
+        assert_eq!(CallType::Heartbeat.as_str(), "heartbeat");
         assert_eq!(CallType::Compaction.as_str(), "compaction");
-        assert_eq!(CallType::MemoryAgent.as_str(), "memory_agent");
-        assert_eq!(CallType::Researcher.as_str(), "researcher");
+        assert_eq!(CallType::MemoryQuery.as_str(), "memory_query");
     }
 
     #[test]

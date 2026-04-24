@@ -115,7 +115,7 @@ impl MessageStore {
     /// new message's timestamp. Falls back to append if either timestamp is
     /// unparseable (no silent reordering of malformed data).
     ///
-    /// Needed for out-of-band writers (e.g. an interiority tick completing
+    /// Needed for out-of-band writers (e.g. a heartbeat tick completing
     /// while a user message has already landed via the handler) — the
     /// resulting chronology stays consistent.
     pub fn insert_by_timestamp(&mut self, msg: Message) -> Result<(), EngineError> {
@@ -615,7 +615,11 @@ mod tests {
             .append(make_msg_ts("m1", Role::User, "2026-04-19T10:00:00+10:00"))
             .unwrap();
         store
-            .append(make_msg_ts("m2", Role::Assistant, "2026-04-19T10:05:00+10:00"))
+            .append(make_msg_ts(
+                "m2",
+                Role::Assistant,
+                "2026-04-19T10:05:00+10:00",
+            ))
             .unwrap();
 
         // New message with the latest timestamp should land at the end.
@@ -623,11 +627,7 @@ mod tests {
             .insert_by_timestamp(make_msg_ts("m3", Role::System, "2026-04-19T10:30:00+10:00"))
             .unwrap();
 
-        let ids: Vec<&str> = store
-            .messages()
-            .iter()
-            .map(|m| m.msg_id.as_str())
-            .collect();
+        let ids: Vec<&str> = store.messages().iter().map(|m| m.msg_id.as_str()).collect();
         assert_eq!(ids, vec!["m1", "m2", "m3"]);
     }
 
@@ -641,7 +641,11 @@ mod tests {
         // captures tick_started_at earlier, but the user message lands
         // first. The recap should splice before the user message.
         store
-            .append(make_msg_ts("m_user1", Role::User, "2026-04-19T10:00:00+10:00"))
+            .append(make_msg_ts(
+                "m_user1",
+                Role::User,
+                "2026-04-19T10:00:00+10:00",
+            ))
             .unwrap();
         store
             .append(make_msg_ts(
@@ -651,7 +655,11 @@ mod tests {
             ))
             .unwrap();
         store
-            .append(make_msg_ts("m_user2", Role::User, "2026-04-19T10:30:00+10:00"))
+            .append(make_msg_ts(
+                "m_user2",
+                Role::User,
+                "2026-04-19T10:30:00+10:00",
+            ))
             .unwrap();
 
         // Recap timestamped at 10:20 (between assistant and user2).
@@ -663,11 +671,7 @@ mod tests {
             ))
             .unwrap();
 
-        let ids: Vec<&str> = store
-            .messages()
-            .iter()
-            .map(|m| m.msg_id.as_str())
-            .collect();
+        let ids: Vec<&str> = store.messages().iter().map(|m| m.msg_id.as_str()).collect();
         assert_eq!(ids, vec!["m_user1", "m_assistant1", "m_recap", "m_user2"]);
 
         // Persisted in correct order.
@@ -690,18 +694,18 @@ mod tests {
             .append(make_msg_ts("m1", Role::User, "2026-04-19T10:00:00+10:00"))
             .unwrap();
         store
-            .append(make_msg_ts("m2", Role::Assistant, "2026-04-19T10:05:00+10:00"))
+            .append(make_msg_ts(
+                "m2",
+                Role::Assistant,
+                "2026-04-19T10:05:00+10:00",
+            ))
             .unwrap();
 
         store
             .insert_by_timestamp(make_msg_ts("m0", Role::System, "2026-04-19T09:00:00+10:00"))
             .unwrap();
 
-        let ids: Vec<&str> = store
-            .messages()
-            .iter()
-            .map(|m| m.msg_id.as_str())
-            .collect();
+        let ids: Vec<&str> = store.messages().iter().map(|m| m.msg_id.as_str()).collect();
         assert_eq!(ids, vec!["m0", "m1", "m2"]);
     }
 
@@ -720,11 +724,7 @@ mod tests {
             .insert_by_timestamp(make_msg_ts("m2", Role::System, "2026-04-19T01:30:00+00:00"))
             .unwrap();
 
-        let ids: Vec<&str> = store
-            .messages()
-            .iter()
-            .map(|m| m.msg_id.as_str())
-            .collect();
+        let ids: Vec<&str> = store.messages().iter().map(|m| m.msg_id.as_str()).collect();
         assert_eq!(ids, vec!["m1", "m2"]);
     }
 
@@ -742,11 +742,7 @@ mod tests {
             .insert_by_timestamp(make_msg_ts("m_bad", Role::System, "not-a-timestamp"))
             .unwrap();
 
-        let ids: Vec<&str> = store
-            .messages()
-            .iter()
-            .map(|m| m.msg_id.as_str())
-            .collect();
+        let ids: Vec<&str> = store.messages().iter().map(|m| m.msg_id.as_str()).collect();
         assert_eq!(ids, vec!["m1", "m_bad"]);
     }
 

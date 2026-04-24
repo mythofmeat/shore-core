@@ -1,5 +1,7 @@
 //! Stream retry and tool-phase execution for the generation pipeline.
 
+#![allow(clippy::items_after_test_module)]
+
 use tracing::{debug, error, instrument, warn};
 
 /// True when the request has extended thinking / reasoning enabled via
@@ -7,9 +9,7 @@ use tracing::{debug, error, instrument, warn};
 /// OpenAI/Anthropic-style `reasoning_effort` set to any non-null value.
 /// Used by both the primary stream call and the tool-loop re-entry to
 /// tag ledger rows and SSE metadata consistently.
-pub(super) fn thinking_enabled_from_request(
-    request: &shore_llm_client::types::LlmRequest,
-) -> bool {
+pub(super) fn thinking_enabled_from_request(request: &shore_llm_client::types::LlmRequest) -> bool {
     thinking_enabled_from_provider_options(request.provider_options.as_ref())
 }
 
@@ -21,9 +21,7 @@ fn thinking_enabled_from_provider_options(opts: Option<&serde_json::Value>) -> b
         .get("budget_tokens")
         .and_then(|v| v.as_u64())
         .is_some_and(|b| b > 0);
-    let effort_on = opts
-        .get("reasoning_effort")
-        .is_some_and(|v| !v.is_null());
+    let effort_on = opts.get("reasoning_effort").is_some_and(|v| !v.is_null());
     budget_on || effort_on
 }
 
@@ -81,12 +79,12 @@ mod tests {
 }
 
 use crate::engine::tools;
-use crate::memory::agent::{AgentSearchContext, CallerIdentity, MemoryAgent};
-use crate::memory::agent_llm::RealAgentLlm;
-use crate::memory::compaction_impls::resolve_embed_config;
-use crate::memory::researcher::MemoryResearcher;
-use crate::tools::context::{NoopRag, SharedToolContext};
+use crate::memory::compaction_impls::resolve_image_gen_config;
+use crate::memory::markdown_store::MarkdownMemoryStore;
+use crate::memory::retrieval::resolve_embedding_config;
+use crate::tools::context::SharedToolContext;
 use shore_config::LoadedConfig;
+use shore_config::{character_memory_dir, character_workspace_dir};
 use shore_ledger::CallType;
 use shore_llm_client::retry::{self, RetryDecision, RetryPolicy};
 use shore_llm_client::stream::StreamConsumer;
@@ -186,102 +184,46 @@ pub(super) async fn stream_with_retry(
 }
 
 /// Phase 11: Set up tool context and run the tool loop.
-#[instrument(skip(ctx, effective_config, agent_model, researcher_model, character_definition, user_definition, request, result), fields(char = char_name))]
+#[instrument(skip(ctx, effective_config, _character_definition, _user_definition, request, result), fields(char = char_name))]
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn run_tool_phase(
     ctx: &GenContext,
     data_dir: &std::path::Path,
     char_name: &str,
     effective_config: &LoadedConfig,
-    agent_model: &shore_config::models::ResolvedModel,
-    researcher_model: &Option<shore_config::models::ResolvedModel>,
-    character_definition: &Option<String>,
-    user_definition: &Option<String>,
+    _character_definition: &Option<String>,
+    _user_definition: &Option<String>,
     request: &mut shore_llm_client::types::LlmRequest,
     result: shore_llm_client::types::StreamResult,
 ) -> Result<tools::ToolLoopResult, Box<dyn std::error::Error + Send + Sync>> {
     debug!(character = char_name, "run_tool_phase starting");
-    let memory_db = {
-        let mut registry = ctx.registry.lock().await;
-        match registry.get_or_open_db(char_name) {
-            Ok(db) => db,
-            Err(e) => {
-                warn!(
-                    character = char_name,
-                    error = %e,
-                    "Failed to open memory DB — memory tools disabled for this turn"
-                );
-                return Ok(tools::ToolLoopResult {
-                    result,
-                    intermediate_messages: vec![],
-                });
-            }
-        }
-    };
-
-    let char_def = character_definition.clone().unwrap_or_default();
-    let user_def = user_definition.clone().unwrap_or_default();
-
-    let image_gen_config = crate::memory::compaction_impls::resolve_image_gen_config(
+    let image_gen_config = resolve_image_gen_config(
         effective_config.app.defaults.image_generation.as_deref(),
         &effective_config.models.image_generation,
     )
     .ok();
 
-    // Build semantic search context (graceful: None if no embedding model configured).
-    let search_ctx = match resolve_embed_config(
+    let character_data_dir = data_dir.join(char_name);
+    let config_dir = &effective_config.dirs.config;
+    let workspace_dir = character_workspace_dir(config_dir, char_name);
+    let memory_dir = character_memory_dir(config_dir, char_name);
+    let embedding_config = resolve_embedding_config(
         effective_config.app.defaults.embedding.as_deref(),
         &effective_config.models.embedding,
+    )
+    .ok();
+
+    if let Err(e) = crate::memory::deferred_edits::ensure_active_prompt_snapshot(
+        &character_data_dir,
+        config_dir,
+        char_name,
     ) {
-        Ok(embed_config) => {
-            let mut registry = ctx.registry.lock().await;
-            match registry
-                .get_or_open_vs(char_name, embed_config.dimensions)
-                .await
-            {
-                Ok(vs) => Some(AgentSearchContext::new(
-                    vs,
-                    ctx.llm_client.inner().clone(),
-                    embed_config,
-                )),
-                Err(e) => {
-                    warn!("Failed to open vector store for semantic search: {e}");
-                    None
-                }
-            }
-        }
-        Err(_) => None,
-    };
+        warn!(character = %char_name, error = %e, "Failed to prepare active prompt snapshot");
+    }
 
     let tool_ctx = HandlerToolContext {
         inner: SharedToolContext {
-            db: memory_db,
-            agent: MemoryAgent::one_shot(
-                CallerIdentity::Char,
-                char_name,
-                &effective_config.app.defaults.resolve_display_name(),
-            ),
-            agent_llm: RealAgentLlm::new(
-                ctx.llm_client.clone(),
-                char_name.to_owned(),
-                CallType::MemoryAgent,
-            ),
-            agent_model_val: agent_model.clone(),
-            researcher: researcher_model
-                .as_ref()
-                .map(|_| MemoryResearcher::new(char_def, user_def)),
-            researcher_llm_val: researcher_model.as_ref().map(|_| {
-                RealAgentLlm::new(
-                    ctx.llm_client.clone(),
-                    char_name.to_owned(),
-                    CallType::Researcher,
-                )
-            }),
-            researcher_model_val: researcher_model.clone(),
-            rag: NoopRag,
-            search_ctx,
-            image_dir_val: data_dir
-                .join(char_name)
+            image_dir_val: character_data_dir
                 .join("images")
                 .to_string_lossy()
                 .into_owned(),
@@ -289,11 +231,20 @@ pub(super) async fn run_tool_phase(
             image_gen_config_val: image_gen_config,
             search_config_val: effective_config.app.behavior.tool_use.search.clone(),
             character_name_val: char_name.to_owned(),
-            scratchpad_dir_val: data_dir
-                .join(char_name)
+            scratchpad_dir_val: character_data_dir
                 .join("scratchpad")
                 .to_string_lossy()
                 .into_owned(),
+            workspace_dir_val: workspace_dir.to_string_lossy().into_owned(),
+            markdown_store_val: MarkdownMemoryStore::open_sync(memory_dir).ok(),
+            memory_retrieval_config_val: effective_config.app.memory.retrieval.clone(),
+            embedding_config_val: embedding_config,
+            memory_index_path_val: character_data_dir.join("memory_index.json"),
+            memory_access_allowed_val: effective_config.app.behavior.tool_use.tools.memory(),
+            memory_read_allowed_val: effective_config.app.behavior.tool_use.tools.memory_read(),
+            memory_write_allowed_val: effective_config.app.behavior.tool_use.tools.memory_write(),
+            config_dir_val: config_dir.to_string_lossy().into_owned(),
+            character_data_dir_val: character_data_dir.to_string_lossy().into_owned(),
         },
         autonomy_val: ctx.autonomy.clone(),
     };

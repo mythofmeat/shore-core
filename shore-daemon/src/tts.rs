@@ -4,9 +4,7 @@
 use base64::Engine as _;
 use reqwest::Client;
 use shore_config::app::TtsConfig;
-use shore_protocol::server_msg::{
-    AudioChunk, AudioEnd, AudioError, AudioStart, ServerMessage,
-};
+use shore_protocol::server_msg::{AudioChunk, AudioEnd, AudioError, AudioStart, ServerMessage};
 use tokio::sync::broadcast;
 use tracing::{debug, error, info};
 

@@ -3,11 +3,11 @@
 //! Modes:
 //!   cargo run --example ab_thinking                         # simple single-turn
 //!   cargo run --example ab_thinking -- --realistic          # character + tools + multi-turn
-//!   cargo run --example ab_thinking -- --interiority        # exact interiority prompt + tools
+//!   cargo run --example ab_thinking -- --heartbeat        # exact heartbeat prompt + tools
 //!
 //! Options:
 //!   --effort <high|max>   (default: max)
-//!   --runs <N>            (default: 1, or unlimited for --interiority)
+//!   --runs <N>            (default: 1, or unlimited for --heartbeat)
 
 use serde_json::json;
 use shore_config::models::{ResolvedModel, Sdk};
@@ -72,39 +72,6 @@ fn all_tool_defs() -> Vec<serde_json::Value> {
                     "caption": { "type": "string", "description": "Optional caption for the image." }
                 },
                 "required": ["path"]
-            }
-        }),
-        json!({
-            "name": "list_images",
-            "description": "List image memories. Optionally pass a query for semantic search via RAG (top-32).",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "query": { "type": "string", "description": "Optional natural language query to search image memories." }
-                }
-            }
-        }),
-        json!({
-            "name": "recall_image",
-            "description": "View an image at full resolution by path or entry ID.",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "path": { "type": "string", "description": "Path or entry ID (e.g. 'img_...') of the image to view." }
-                },
-                "required": ["path"]
-            }
-        }),
-        json!({
-            "name": "remember_image",
-            "description": "Save a user-shared image to memory with a contextual description.",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "path": { "type": "string", "description": "Relative path to the image in storage (from the [Attached image saved as: ...] annotation)." },
-                    "description": { "type": "string", "description": "Rich contextual description — who shared it, why, what it means." }
-                },
-                "required": ["path", "description"]
             }
         }),
         json!({
@@ -223,9 +190,9 @@ fn all_tool_defs() -> Vec<serde_json::Value> {
     ]
 }
 
-// ── The exact interiority prompt from manager.rs ────────────────────────
+// ── The exact heartbeat prompt from manager.rs ────────────────────────
 
-const INTERIORITY_PROMPT: &str = "\
+const HEARTBEAT_PROMPT: &str = "\
 [This is a private moment between conversations. No one is reading this — you are alone \
 with your thoughts and your tools. This is your time to exist as yourself.\n\
 \n\
@@ -301,11 +268,11 @@ fn realistic_conversation() -> (
     (system, messages, Some(all_tool_defs()))
 }
 
-/// Interiority mode: exact production setup. Character system prompt + all tools +
-/// a short conversation history, then the interiority prompt injected as system msg.
+/// Heartbeat mode: exact production setup. Character system prompt + all tools +
+/// a short conversation history, then the heartbeat prompt injected as system msg.
 /// If `with_rut` is true, appends a fake journal showing several ticks of scratchpad-only
 /// activity, simulating the rut the user observed in production.
-fn interiority_conversation(
+fn heartbeat_conversation(
     with_rut: bool,
 ) -> (
     serde_json::Value,
@@ -334,7 +301,7 @@ fn interiority_conversation(
         }
     ]);
 
-    // Build the interiority prompt, optionally with accumulated journal
+    // Build the heartbeat prompt, optionally with accumulated journal
     let prompt_text = if with_rut {
         // Simulate 4 prior ticks of scratchpad-only activity (exact journal format)
         let journal = concat!(
@@ -364,9 +331,9 @@ fn interiority_conversation(
             "[2026-04-05T20:00:00-07:00] tool_call: scratchpad_write({\"path\":\"notes.md\",\"content\":\"# Notes\\n- Ren is working on cache invalidation\\n- Want to look into generative art\\n- Thinking about consciousness and IIT\\n- Should look up reaction-diffusion patterns\"})\n",
             "[2026-04-05T20:00:00-07:00] → File written: notes.md (156 bytes)\n",
         );
-        format!("{INTERIORITY_PROMPT}\n\nYour recent activity log:\n{journal}")
+        format!("{HEARTBEAT_PROMPT}\n\nYour recent activity log:\n{journal}")
     } else {
-        INTERIORITY_PROMPT.to_string()
+        HEARTBEAT_PROMPT.to_string()
     };
 
     let messages = vec![
@@ -487,7 +454,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let args: Vec<String> = std::env::args().collect();
-    let interiority = args.iter().any(|a| a == "--interiority");
+    let heartbeat = args.iter().any(|a| a == "--heartbeat");
     let rut = args.iter().any(|a| a == "--rut");
     let realistic = args.iter().any(|a| a == "--realistic");
 
@@ -496,7 +463,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .position(|a| a == "--runs")
         .and_then(|i| args.get(i + 1))
         .and_then(|s| s.parse().ok())
-        .unwrap_or(if interiority || rut { 20 } else { 1 });
+        .unwrap_or(if heartbeat || rut { 20 } else { 1 });
 
     let effort = args
         .iter()
@@ -507,13 +474,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = LlmClient::new();
 
     let (system, messages, tools) = if rut {
-        println!("=== RUT mode: interiority + 4 ticks of scratchpad-only journal history ===");
+        println!("=== RUT mode: heartbeat + 4 ticks of scratchpad-only journal history ===");
         println!("=== Will run until non-scratchpad tool is used (max {runs} runs) ===\n");
-        interiority_conversation(true)
-    } else if interiority {
-        println!("=== INTERIORITY mode: exact production prompt + all 15 tools (no journal) ===");
+        heartbeat_conversation(true)
+    } else if heartbeat {
+        println!("=== HEARTBEAT mode: exact production prompt + all tools (no journal) ===");
         println!("=== Will run until non-scratchpad tool is used (max {runs} runs) ===\n");
-        interiority_conversation(false)
+        heartbeat_conversation(false)
     } else if realistic {
         println!("=== REALISTIC mode ===");
         realistic_conversation()
@@ -554,7 +521,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let resp = client.generate(&request).await?;
         let tools_used = print_result(&format!("Run {run} — effort={effort}"), &resp);
 
-        if interiority || rut {
+        if heartbeat || rut {
             let has_non_scratchpad = tools_used
                 .iter()
                 .any(|t| !scratchpad_names.contains(t.as_str()));

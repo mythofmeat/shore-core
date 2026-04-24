@@ -1,4 +1,11 @@
-letterboxd integration
+# Letterboxd Plugin Idea
 
-- hard to do because there is no api. what options are there?
-- could download and update a csv file but that's lame...
+Status: idea, not current implementation.
+
+Expose recent films, ratings, watchlist entries, and reviews as a tool. This should be a context source, not a second memory store.
+
+Constraints:
+
+- read-only unless explicit user/character action writes a markdown memory note
+- cache external responses
+- keep output small and easy for the model to cite

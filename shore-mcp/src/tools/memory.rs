@@ -10,29 +10,14 @@ use crate::handler::ShoreMcpHandler;
 #[derive(Deserialize, JsonSchema, Debug)]
 pub struct MemoryQueryParams {
     pub query: String,
-    /// Skip the researcher and query the memory agent directly.
-    #[serde(default)]
-    pub direct: bool,
 }
 
 #[derive(Deserialize, JsonSchema, Debug, Default)]
 pub struct MemoryCompactParams {
     /// Optional override for retained user turns at the tail of active.jsonl.
-    /// 0 = retain none (full pipeline runs, recap becomes the only carry-forward).
+    /// 0 = retain none (full pipeline runs, compaction digest becomes the carry-forward).
     /// Omitted = use the configured default.
     pub keep_turns: Option<u32>,
-}
-
-#[derive(Deserialize, JsonSchema, Debug, Default)]
-pub struct MemoryCollateParams {
-    #[serde(default)]
-    pub full: bool,
-    pub limit: Option<u32>,
-}
-
-#[derive(Deserialize, JsonSchema, Debug)]
-pub struct MemoryPurgeParams {
-    pub older_than: String,
 }
 
 #[derive(Deserialize, JsonSchema, Debug)]
@@ -45,76 +30,35 @@ fn default_changelog_limit() -> u32 {
     20
 }
 
-#[derive(Deserialize, JsonSchema, Debug, Default)]
-pub struct MemoryReindexParams {}
-
 #[tool_router(router = memory_router, vis = "pub")]
 impl ShoreMcpHandler {
     #[tool(
         name = "memory_query",
-        description = "Query the memory system via the researcher (or directly with direct=true). Read-only."
+        description = "Search markdown memory files and return matching paths with excerpts. Read-only."
     )]
     pub async fn tool_memory_query(
         &self,
         Parameters(p): Parameters<MemoryQueryParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let data = self
-            .run_cmd(
-                "memory_query",
-                "memory",
-                json!({ "query": p.query, "direct": p.direct }),
-            )
+            .run_cmd("memory_query", "memory", json!({ "query": p.query }))
             .await?;
         Self::json_result(data)
     }
 
     #[tool(
         name = "memory_compact",
-        description = "Trigger a memory compaction pass. Optional keep_turns overrides retained user turns (0 = retain none, leaving only the system prompt + recap). Mutating — refused on main without --allow-main-writes."
+        description = "Trigger a memory compaction pass. Optional keep_turns overrides retained user turns (0 = retain none, leaving only the system prompt and compaction digest). Mutating — refused on main without --allow-main-writes."
     )]
     pub async fn tool_memory_compact(
         &self,
         Parameters(p): Parameters<MemoryCompactParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let mut args = json!({ "collate": true });
+        let mut args = json!({});
         if let Some(n) = p.keep_turns {
             args["keep_turns"] = json!(n);
         }
         let data = self.run_cmd("memory_compact", "compact", args).await?;
-        Self::json_result(data)
-    }
-
-    #[tool(
-        name = "memory_collate",
-        description = "Run a memory collation pass. Mutating — refused on main without --allow-main-writes."
-    )]
-    pub async fn tool_memory_collate(
-        &self,
-        Parameters(p): Parameters<MemoryCollateParams>,
-    ) -> Result<CallToolResult, ErrorData> {
-        let mut args = json!({ "full": p.full });
-        if let Some(l) = p.limit {
-            args["limit"] = json!(l);
-        }
-        let data = self.run_cmd("memory_collate", "collate", args).await?;
-        Self::json_result(data)
-    }
-
-    #[tool(
-        name = "memory_purge",
-        description = "Purge memory entries older than the given cutoff. Mutating — refused on main without --allow-main-writes."
-    )]
-    pub async fn tool_memory_purge(
-        &self,
-        Parameters(p): Parameters<MemoryPurgeParams>,
-    ) -> Result<CallToolResult, ErrorData> {
-        let data = self
-            .run_cmd(
-                "memory_purge",
-                "memory_purge",
-                json!({ "older_than": p.older_than }),
-            )
-            .await?;
         Self::json_result(data)
     }
 
@@ -132,20 +76,6 @@ impl ShoreMcpHandler {
                 "memory_changelog",
                 json!({ "limit": p.limit }),
             )
-            .await?;
-        Self::json_result(data)
-    }
-
-    #[tool(
-        name = "memory_reindex",
-        description = "Rebuild memory indices. Mutating — refused on main without --allow-main-writes."
-    )]
-    pub async fn tool_memory_reindex(
-        &self,
-        Parameters(_p): Parameters<MemoryReindexParams>,
-    ) -> Result<CallToolResult, ErrorData> {
-        let data = self
-            .run_cmd("memory_reindex", "memory_reindex", json!({}))
             .await?;
         Self::json_result(data)
     }

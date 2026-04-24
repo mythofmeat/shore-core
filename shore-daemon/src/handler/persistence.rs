@@ -83,7 +83,7 @@ pub(super) async fn persist_and_notify(
         let content = derive_content_from_blocks(&content_blocks);
 
         // Include the assistant response in last_request so the
-        // interiority system sees a complete conversation ending on an
+        // heartbeat system sees a complete conversation ending on an
         // assistant turn — not the user turn that triggered this call.
         // The turn has just ended (finish_reason != tool_use), so from the
         // perspective of any future request this entire message list is

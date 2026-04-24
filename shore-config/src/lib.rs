@@ -171,6 +171,34 @@ impl LoadedConfig {
     }
 }
 
+pub const CHARACTER_WORKSPACE_DIR: &str = "workspace";
+pub const SOUL_FILE: &str = "SOUL.md";
+pub const USER_FILE: &str = "USER.md";
+pub const AGENTS_FILE: &str = "AGENTS.md";
+pub const TOOLS_FILE: &str = "TOOLS.md";
+pub const HEARTBEAT_FILE: &str = "HEARTBEAT.md";
+pub const MEMORY_DIR: &str = "memory";
+
+/// Return `characters/{name}/`.
+pub fn character_config_dir(config_dir: &Path, character_name: &str) -> PathBuf {
+    config_dir.join("characters").join(character_name)
+}
+
+/// Return `characters/{name}/workspace/`.
+pub fn character_workspace_dir(config_dir: &Path, character_name: &str) -> PathBuf {
+    character_config_dir(config_dir, character_name).join(CHARACTER_WORKSPACE_DIR)
+}
+
+/// Return `characters/{name}/workspace/{name}`.
+pub fn character_workspace_file(config_dir: &Path, character_name: &str, name: &str) -> PathBuf {
+    character_workspace_dir(config_dir, character_name).join(name)
+}
+
+/// Return `characters/{name}/workspace/memory/`.
+pub fn character_memory_dir(config_dir: &Path, character_name: &str) -> PathBuf {
+    character_workspace_dir(config_dir, character_name).join(MEMORY_DIR)
+}
+
 /// Load and validate daemon configuration.
 ///
 /// Resolution order:
@@ -406,7 +434,7 @@ fn create_default_config(config_dir: &Path) {
 # See examples/config.toml for all available options.
 #
 # Characters are discovered from the characters/ directory.
-# Create characters/<name>/character.md to define a character.
+# Create characters/<name>/workspace/SOUL.md to define a character.
 #
 # Models are configured inline under [chat.<provider>.<model>].
 # You can also use `include = ["extra.toml"]` or conf.d/*.toml for modular config.
@@ -415,7 +443,6 @@ fn create_default_config(config_dir: &Path) {
 
 # [defaults]
 # model = "opus"              # must match a model key below
-# tool_model = "mistral-small"
 
 # [chat.anthropic]
 # sdk = "anthropic"
@@ -442,18 +469,32 @@ fn create_default_config(config_dir: &Path) {
 /// Validate cross-field config constraints.
 fn validate_config(app: &AppConfig, catalog: &ModelCatalog) -> Result<(), ConfigError> {
     // Validate model references exist in the catalog.
-    for (field, value) in [
-        ("defaults.model", app.defaults.model.as_deref()),
-        ("defaults.tool_model", app.defaults.tool_model.as_deref()),
-        (
-            "defaults.memory_agent",
-            app.defaults.memory_agent.as_deref(),
-        ),
-        ("defaults.collation", app.defaults.collation.as_deref()),
-    ] {
-        validate_model_ref(catalog, field, value)?;
-    }
+    validate_model_ref(catalog, "defaults.model", app.defaults.model.as_deref())?;
 
+    validate_daily_cron(&app.memory.dreaming.frequency)?;
+
+    Ok(())
+}
+
+fn validate_daily_cron(expr: &str) -> Result<(), ConfigError> {
+    let parts: Vec<&str> = expr.split_whitespace().collect();
+    if parts.len() != 5 {
+        return Err(ConfigError::Validation(format!(
+            "memory.dreaming.frequency must be a five-field cron expression, got {expr:?}"
+        )));
+    }
+    let minute = parts[0].parse::<u8>().ok();
+    let hour = parts[1].parse::<u8>().ok();
+    if minute.is_none_or(|m| m > 59)
+        || hour.is_none_or(|h| h > 23)
+        || parts[2] != "*"
+        || parts[3] != "*"
+        || parts[4] != "*"
+    {
+        return Err(ConfigError::Validation(format!(
+            "memory.dreaming.frequency currently supports daily cron of the form \"M H * * *\", got {expr:?}"
+        )));
+    }
     Ok(())
 }
 
@@ -473,21 +514,25 @@ fn validate_model_ref(
     Ok(())
 }
 
-/// Load character definition from `characters/{name}/character.md`.
+/// Load character definition from `characters/{name}/workspace/SOUL.md`,
+/// with a legacy fallback to `character.md`.
 pub fn load_character_definition(config_dir: &Path, character_name: &str) -> Option<String> {
-    let path = config_dir
-        .join("characters")
-        .join(character_name)
-        .join("character.md");
-    match std::fs::read_to_string(&path) {
+    let new_path = character_workspace_file(config_dir, character_name, SOUL_FILE);
+    if let Ok(content) = std::fs::read_to_string(&new_path) {
+        info!(character = character_name, path = %new_path.display(), "Loaded character definition");
+        return Some(content);
+    }
+
+    let legacy_path = character_config_dir(config_dir, character_name).join("character.md");
+    match std::fs::read_to_string(&legacy_path) {
         Ok(content) => {
-            info!(character = character_name, "Loaded character definition");
+            info!(character = character_name, path = %legacy_path.display(), "Loaded legacy character definition");
             Some(content)
         }
         Err(_) => {
             warn!(
                 character = character_name,
-                path = %path.display(),
+                path = %new_path.display(),
                 "No character definition found"
             );
             None
@@ -495,14 +540,11 @@ pub fn load_character_definition(config_dir: &Path, character_name: &str) -> Opt
     }
 }
 
-/// Resolve user definition: character-specific user.md → global user.md.
+/// Resolve user definition from `characters/{name}/workspace/USER.md`, with a
+/// legacy fallback to `characters/{name}/user.md`.
 pub fn resolve_user_definition(config_dir: &Path, character_name: &str) -> Option<String> {
-    // 1. Character-specific user.md
-    let char_user = config_dir
-        .join("characters")
-        .join(character_name)
-        .join("user.md");
-    if let Ok(content) = std::fs::read_to_string(&char_user) {
+    let workspace_user = character_workspace_file(config_dir, character_name, USER_FILE);
+    if let Ok(content) = std::fs::read_to_string(&workspace_user) {
         info!(
             character = character_name,
             "Using character-specific user definition"
@@ -510,10 +552,12 @@ pub fn resolve_user_definition(config_dir: &Path, character_name: &str) -> Optio
         return Some(content);
     }
 
-    // 2. Global user.md
-    let global_user = config_dir.join("user.md");
-    if let Ok(content) = std::fs::read_to_string(&global_user) {
-        info!("Using global user definition");
+    let legacy_user = character_config_dir(config_dir, character_name).join("user.md");
+    if let Ok(content) = std::fs::read_to_string(&legacy_user) {
+        info!(
+            character = character_name,
+            "Using legacy character-specific user definition"
+        );
         return Some(content);
     }
 
@@ -523,7 +567,7 @@ pub fn resolve_user_definition(config_dir: &Path, character_name: &str) -> Optio
 /// Discover available characters by scanning `characters/` directory.
 ///
 /// Returns the names of all subdirectories under `{config_dir}/characters/`
-/// that contain a `character.md` file.
+/// that contain either `workspace/SOUL.md` or the legacy `character.md`.
 pub fn discover_characters(config_dir: &Path) -> Vec<String> {
     let chars_dir = config_dir.join("characters");
     let entries = match std::fs::read_dir(&chars_dir) {
@@ -535,7 +579,13 @@ pub fn discover_characters(config_dir: &Path) -> Vec<String> {
     for entry in entries.flatten() {
         if entry.path().is_dir() {
             let name = entry.file_name().to_string_lossy().to_string();
-            if entry.path().join("character.md").exists() {
+            if entry
+                .path()
+                .join(CHARACTER_WORKSPACE_DIR)
+                .join(SOUL_FILE)
+                .exists()
+                || entry.path().join("character.md").exists()
+            {
                 names.push(name);
             }
         }
@@ -602,9 +652,9 @@ allowed_hosts = ["127.0.0.1"]
 [behavior.autonomy]
 enabled = true
 
-[behavior.autonomy.interiority]
+[behavior.autonomy.heartbeat]
 enabled = false
-fallback_interiority_interval = "30m"
+fallback_heartbeat_interval = "30m"
 
 [behavior.tool_use.tools]
 roll_dice = false
@@ -629,14 +679,14 @@ model_id = "claude-opus-4-6"
         assert_eq!(loaded.app.daemon.addr, "127.0.0.1:9999");
         assert_eq!(loaded.app.daemon.allowed_hosts, vec!["127.0.0.1"]);
         assert!(loaded.app.behavior.autonomy.enabled);
-        assert!(!loaded.app.behavior.autonomy.interiority.enabled);
+        assert!(!loaded.app.behavior.autonomy.heartbeat.enabled);
         assert_eq!(
             loaded
                 .app
                 .behavior
                 .autonomy
-                .interiority
-                .fallback_interiority_interval,
+                .heartbeat
+                .fallback_heartbeat_interval,
             ConfigDuration::from_secs(1800)
         );
         assert!(!loaded.app.behavior.tool_use.tools.roll_dice());
@@ -659,24 +709,44 @@ model_id = "claude-opus-4-6"
         // All defaults should be filled in.
         assert!(loaded.app.defaults.stream);
         assert!(!loaded.app.behavior.autonomy.enabled);
-        assert!(loaded.app.behavior.autonomy.interiority.enabled);
+        assert!(loaded.app.behavior.autonomy.heartbeat.enabled);
         assert_eq!(
             loaded
                 .app
                 .behavior
                 .autonomy
-                .interiority
-                .fallback_interiority_interval,
+                .heartbeat
+                .fallback_heartbeat_interval,
             ConfigDuration::from_secs(3600)
         );
         assert!(loaded.app.behavior.tool_use.enabled);
         assert!(loaded.app.memory.compaction.enabled);
-        assert!(loaded.app.memory.collation.enabled);
+        assert!(!loaded.app.memory.dreaming.enabled);
+        assert_eq!(loaded.app.memory.dreaming.frequency, "0 3 * * *");
+        assert_eq!(loaded.app.memory.dreaming.max_tool_rounds, 12);
         assert_eq!(loaded.app.daemon.addr, "127.0.0.1:7320"); // default
         assert!(!loaded.app.daemon.unsafe_allow_remote_access);
         assert!(loaded.app.advanced.editor.is_none());
         assert!(loaded.app.advanced.max_retries.is_none());
         assert!(loaded.app.advanced.retry_backoff.is_none());
+    }
+
+    #[test]
+    fn invalid_dreaming_frequency_fails_validation() {
+        let tmp = setup_config_dir(&[(
+            "config.toml",
+            r#"
+[memory.dreaming]
+frequency = "sometimes"
+"#,
+        )]);
+
+        let config_path = tmp.path().join("config.toml");
+        let err = load_config(Some(&config_path)).unwrap_err();
+        assert!(
+            err.to_string().contains("memory.dreaming.frequency"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -941,7 +1011,7 @@ c = 4
     #[test]
     fn character_definition_loaded() {
         let tmp = setup_config_dir(&[(
-            "characters/TestChar/character.md",
+            "characters/TestChar/workspace/SOUL.md",
             "You are TestChar, a helpful assistant.",
         )]);
 
@@ -954,30 +1024,33 @@ c = 4
 
     #[test]
     fn user_definition_character_specific_overrides_global() {
-        let tmp = setup_config_dir(&[
-            ("user.md", "Global user definition"),
-            (
-                "characters/TestChar/user.md",
-                "Character-specific user definition",
-            ),
-        ]);
+        let tmp = setup_config_dir(&[(
+            "characters/TestChar/workspace/USER.md",
+            "Character-specific user definition",
+        )]);
 
         let def = resolve_user_definition(tmp.path(), "TestChar");
         assert_eq!(def.as_deref(), Some("Character-specific user definition"));
     }
 
     #[test]
-    fn user_definition_falls_back_to_global() {
-        let tmp = setup_config_dir(&[("user.md", "Global user definition")]);
+    fn user_definition_uses_legacy_character_file() {
+        let tmp = setup_config_dir(&[(
+            "characters/TestChar/user.md",
+            "Legacy character-specific user definition",
+        )]);
 
         let def = resolve_user_definition(tmp.path(), "TestChar");
-        assert_eq!(def.as_deref(), Some("Global user definition"));
+        assert_eq!(
+            def.as_deref(),
+            Some("Legacy character-specific user definition")
+        );
     }
 
     #[test]
     fn discover_characters_finds_valid_chars() {
         let tmp = setup_config_dir(&[
-            ("characters/Alice/character.md", "Alice character"),
+            ("characters/Alice/workspace/SOUL.md", "Alice character"),
             ("characters/Bob/character.md", "Bob character"),
             ("characters/EmptyDir/.gitkeep", ""), // no character.md
         ]);
@@ -1033,8 +1106,8 @@ model = "sonnet"
 [behavior.autonomy]
 enabled = false
 
-[behavior.autonomy.interiority]
-fallback_interiority_interval = "1h"
+[behavior.autonomy.heartbeat]
+fallback_heartbeat_interval = "1h"
 
 [chat.anthropic.sonnet]
 model_id = "claude-sonnet-4-6"
@@ -1053,8 +1126,8 @@ model = "opus"
 [behavior.autonomy]
 enabled = true
 
-[behavior.autonomy.interiority]
-fallback_interiority_interval = "30m"
+[behavior.autonomy.heartbeat]
+fallback_heartbeat_interval = "30m"
 "#,
             ),
         ]);
@@ -1070,8 +1143,8 @@ fallback_interiority_interval = "30m"
                 .app
                 .behavior
                 .autonomy
-                .interiority
-                .fallback_interiority_interval,
+                .heartbeat
+                .fallback_heartbeat_interval,
             ConfigDuration::from_secs(3600)
         );
 
@@ -1084,8 +1157,8 @@ fallback_interiority_interval = "30m"
                 .app
                 .behavior
                 .autonomy
-                .interiority
-                .fallback_interiority_interval,
+                .heartbeat
+                .fallback_heartbeat_interval,
             ConfigDuration::from_secs(1800)
         );
 

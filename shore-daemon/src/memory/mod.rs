@@ -1,11 +1,14 @@
-pub mod agent;
-pub mod agent_llm;
-pub mod collation;
-pub mod collation_impls;
+//! Memory subsystem.
+//!
+//! Active memory for characters is markdown-first:
+//! - runtime memory tools use [`markdown_store`] and [`markdown_query`]
+//! - compaction writes markdown files directly
+//! - protected character/user/system edits are staged by [`deferred_edits`]
+
 pub mod compaction;
 pub mod compaction_impls;
-pub mod db;
-pub mod rag;
-pub mod researcher;
-pub mod search;
-pub mod vectorstore;
+pub mod deferred_edits;
+pub mod dreaming;
+pub mod markdown_query;
+pub mod markdown_store;
+pub mod retrieval;

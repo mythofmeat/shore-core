@@ -8,6 +8,7 @@ use tracing::{debug, info};
 
 use crate::commands::{self, CommandContext};
 use crate::handshake::build_session_history_snapshot;
+use crate::runtime_state::{load_active_model, save_active_model};
 
 use super::{GenContext, MessageHandler};
 
@@ -94,13 +95,12 @@ impl MessageHandler {
         // models` succeed even on a multi-character config where no
         // character has been selected yet.
         if cmd.name == "list_characters" || cmd.name == "list_models" {
-            let (active_model, reasoning_effort_override, session_tokens, memory_shell_sessions) = {
+            let (active_model, reasoning_effort_override, session_tokens) = {
                 let session = self.session_state_mut(session_id);
                 (
                     session.active_model.clone(),
                     session.reasoning_effort_override.clone(),
                     session.session_tokens.clone(),
-                    std::mem::take(&mut session.memory_shell_sessions),
                 )
             };
             let ctx = CommandContext {
@@ -113,12 +113,10 @@ impl MessageHandler {
                 autonomy: self.cmd_ctx.autonomy.clone(),
                 llm_client: self.cmd_ctx.llm_client.clone(),
                 diagnostics: self.cmd_ctx.diagnostics.clone(),
-                memory_shell_sessions,
             };
             let result = commands::dispatch_characterless(&ctx, cmd);
             {
                 let session = self.session_state_mut(session_id);
-                session.memory_shell_sessions = ctx.memory_shell_sessions;
                 session.active_model = ctx.active_model.clone();
                 session.reasoning_effort_override = ctx.reasoning_effort_override.clone();
             }
@@ -138,7 +136,7 @@ impl MessageHandler {
             };
         }
 
-        let (engine_arc, effective_config) = {
+        let (char_name, engine_arc, effective_config) = {
             let mut registry = self.registry.lock().await;
 
             let char_name =
@@ -168,16 +166,17 @@ impl MessageHandler {
                 }
             };
 
-            (engine_arc, effective_config)
+            (char_name, engine_arc, effective_config)
         };
 
-        let (active_model, reasoning_effort_override, session_tokens, memory_shell_sessions) = {
+        let character_data_dir = self.cmd_ctx.data_dir.join(&char_name);
+        let persisted_active_model = load_active_model(&character_data_dir);
+
+        let (reasoning_effort_override, session_tokens) = {
             let session = self.session_state_mut(session_id);
             (
-                session.active_model.clone(),
                 session.reasoning_effort_override.clone(),
                 session.session_tokens.clone(),
-                std::mem::take(&mut session.memory_shell_sessions),
             )
         };
 
@@ -185,13 +184,12 @@ impl MessageHandler {
             config: effective_config,
             push_tx: self.push_tx.clone(),
             data_dir: self.cmd_ctx.data_dir.clone(),
-            active_model,
+            active_model: persisted_active_model,
             reasoning_effort_override,
             session_tokens,
             autonomy: self.cmd_ctx.autonomy.clone(),
             llm_client: self.cmd_ctx.llm_client.clone(),
             diagnostics: self.cmd_ctx.diagnostics.clone(),
-            memory_shell_sessions,
         };
 
         let mut result = commands::dispatch(engine_arc.clone(), &mut cmd_ctx, cmd)
@@ -199,12 +197,18 @@ impl MessageHandler {
             .with_rid(meta.rid.clone());
         let active_model_after_command = cmd_ctx.active_model.clone();
         let reasoning_effort_after_command = cmd_ctx.reasoning_effort_override.clone();
+        if let Err(e) = save_active_model(&character_data_dir, active_model_after_command.clone()) {
+            tracing::warn!(
+                character = %char_name,
+                error = %e,
+                "Failed to persist active model"
+            );
+        }
 
         {
             let session = self.session_state_mut(session_id);
             session.active_model = active_model_after_command.clone();
             session.reasoning_effort_override = reasoning_effort_after_command;
-            session.memory_shell_sessions = cmd_ctx.memory_shell_sessions;
         }
 
         if cmd.name == "config_reset" {
@@ -232,9 +236,6 @@ impl MessageHandler {
                 output.data["invalidated"]["character_discovery"] =
                     json!(summary.character_discovery_changed);
                 output.data["invalidated"]["merged_character_configs"] = json!(true);
-                output.data["invalidated"]["memory_db_handles"] = json!(summary.dropped_db_handles);
-                output.data["invalidated"]["vector_store_handles"] =
-                    json!(summary.dropped_vector_stores);
                 output.data["invalidated"]["removed_character_engines"] =
                     json!(summary.dropped_engines);
             }
@@ -256,7 +257,7 @@ impl MessageHandler {
                     let snapshot = build_session_history_snapshot(
                         self.registry.clone(),
                         Some(selected.clone()),
-                        active_model_after_command.clone(),
+                        None,
                     )
                     .await;
 

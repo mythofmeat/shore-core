@@ -95,20 +95,19 @@ async fn make_handler(
         diagnostics: Arc::new(std::sync::Mutex::new(
             shore_diagnostics::Diagnostics::default(),
         )),
-        memory_shell_sessions: std::collections::HashMap::new(),
     };
 
-    let handler = MessageHandler::new(
-        Arc::new(Mutex::new(registry)),
+    let handler = MessageHandler::new(MessageHandlerDeps {
+        registry: Arc::new(Mutex::new(registry)),
         cmd_ctx,
-        ledger_client,
-        push_tx.clone(),
+        llm_client: ledger_client,
+        push_tx: push_tx.clone(),
         session_router,
         autonomy,
-        NotificationService::new(Default::default()),
-        Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        None,
-    );
+        notifier: NotificationService::new(Default::default()),
+        live_speak: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        tts_client: None,
+    });
 
     (handler, push_rx, direct_rx)
 }
@@ -282,13 +281,10 @@ async fn config_reset_refreshes_registry_runtime_state() {
     )
     .unwrap();
 
-    let (old_db, old_vs) = {
+    {
         let mut registry = handler.registry.lock().await;
         assert!(!registry.effective_config("Alice").app.defaults.stream);
-        let old_db = registry.get_or_open_db("Alice").unwrap();
-        let old_vs = registry.get_or_open_vs("Alice", 3).await.unwrap();
-        (old_db, old_vs)
-    };
+    }
 
     std::fs::create_dir_all(tmp.path().join("config").join("characters").join("Bob")).unwrap();
     std::fs::write(
@@ -322,23 +318,15 @@ async fn config_reset_refreshes_registry_runtime_state() {
         ServerMessage::CommandOutput(output) => {
             assert_eq!(output.name, "config_reset");
             assert_eq!(output.data["invalidated"]["character_discovery"], true);
-            assert_eq!(output.data["invalidated"]["memory_db_handles"], 1);
-            assert_eq!(output.data["invalidated"]["vector_store_handles"], 1);
         }
         other => panic!("Expected CommandOutput, got {:?}", other),
     }
 
-    let (new_db, new_vs) = {
+    {
         let mut registry = handler.registry.lock().await;
         assert!(registry.has_character("Bob"));
         assert!(registry.effective_config("Alice").app.defaults.stream);
-        let new_db = registry.get_or_open_db("Alice").unwrap();
-        let new_vs = registry.get_or_open_vs("Alice", 3).await.unwrap();
-        (new_db, new_vs)
-    };
-
-    assert!(!Arc::ptr_eq(&old_db, &new_db));
-    assert!(!Arc::ptr_eq(&old_vs, &new_vs));
+    }
 }
 
 #[tokio::test]
@@ -690,20 +678,19 @@ async fn make_handler_with_models(
         diagnostics: Arc::new(std::sync::Mutex::new(
             shore_diagnostics::Diagnostics::default(),
         )),
-        memory_shell_sessions: std::collections::HashMap::new(),
     };
 
-    let handler = MessageHandler::new(
-        Arc::new(Mutex::new(registry)),
+    let handler = MessageHandler::new(MessageHandlerDeps {
+        registry: Arc::new(Mutex::new(registry)),
         cmd_ctx,
-        ledger_client,
-        push_tx.clone(),
+        llm_client: ledger_client,
+        push_tx: push_tx.clone(),
         session_router,
         autonomy,
-        NotificationService::new(Default::default()),
-        Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        None,
-    );
+        notifier: NotificationService::new(Default::default()),
+        live_speak: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        tts_client: None,
+    });
 
     (handler, push_rx, direct_rx)
 }

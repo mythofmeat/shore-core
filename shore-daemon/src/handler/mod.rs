@@ -37,12 +37,8 @@ use tracing::{debug, error, info};
 
 use crate::autonomy::manager::AutonomyManager;
 use crate::characters::CharacterRegistry;
-use crate::commands::{CommandContext, MemoryShellSession, SessionTokens};
-use crate::memory::agent::{AgentSearchContext, MemoryAgent};
-use crate::memory::agent_llm::AgentLlm;
+use crate::commands::{CommandContext, SessionTokens};
 use crate::memory::compaction_impls::ImageGenConfig;
-use crate::memory::db::MemoryDB;
-use crate::memory::researcher::MemoryResearcher;
 use crate::notifications::{NotificationEvent, NotificationService};
 use crate::tools::context::SharedToolContext;
 use crate::tools::ToolContext;
@@ -59,36 +55,6 @@ pub(super) struct HandlerToolContext {
 }
 
 impl ToolContext for HandlerToolContext {
-    fn memory_db(&self) -> &MemoryDB {
-        self.inner.memory_db()
-    }
-    fn memory_agent(&self) -> &MemoryAgent {
-        self.inner.memory_agent()
-    }
-    fn agent_llm(&self) -> &dyn AgentLlm {
-        self.inner.agent_llm()
-    }
-    fn agent_model(&self) -> &shore_config::models::ResolvedModel {
-        self.inner.agent_model()
-    }
-    fn researcher_llm(&self) -> Option<&dyn AgentLlm> {
-        self.inner.researcher_llm()
-    }
-    fn researcher_model(&self) -> Option<&shore_config::models::ResolvedModel> {
-        self.inner.researcher_model()
-    }
-    fn memory_researcher(&self) -> Option<&MemoryResearcher> {
-        self.inner.memory_researcher()
-    }
-    fn indexer(&self) -> Option<&dyn crate::memory::agent::types::AgentIndexer> {
-        self.inner.indexer()
-    }
-    fn search_context(&self) -> Option<&AgentSearchContext> {
-        self.inner.search_context()
-    }
-    fn rag(&self) -> &dyn crate::memory::agent::AgentRag {
-        self.inner.rag()
-    }
     fn image_dir(&self) -> &str {
         self.inner.image_dir()
     }
@@ -109,6 +75,36 @@ impl ToolContext for HandlerToolContext {
     }
     fn scratchpad_dir(&self) -> &str {
         self.inner.scratchpad_dir()
+    }
+    fn workspace_dir(&self) -> &str {
+        self.inner.workspace_dir()
+    }
+    fn markdown_store(&self) -> Option<&crate::memory::markdown_store::MarkdownMemoryStore> {
+        self.inner.markdown_store()
+    }
+    fn memory_retrieval_config(&self) -> &shore_config::app::RetrievalConfig {
+        self.inner.memory_retrieval_config()
+    }
+    fn embedding_config(&self) -> Option<&crate::memory::retrieval::EmbeddingConfig> {
+        self.inner.embedding_config()
+    }
+    fn memory_index_path(&self) -> Option<&std::path::Path> {
+        self.inner.memory_index_path()
+    }
+    fn memory_access_allowed(&self) -> bool {
+        self.inner.memory_access_allowed()
+    }
+    fn memory_read_allowed(&self) -> bool {
+        self.inner.memory_read_allowed()
+    }
+    fn memory_write_allowed(&self) -> bool {
+        self.inner.memory_write_allowed()
+    }
+    fn config_dir(&self) -> &str {
+        self.inner.config_dir()
+    }
+    fn defer_edit(&self, path: &str) {
+        self.inner.defer_edit(path);
     }
 }
 
@@ -145,20 +141,7 @@ struct SessionState {
     active_model: Option<String>,
     reasoning_effort_override: Option<Option<String>>,
     session_tokens: Arc<std::sync::Mutex<SessionTokens>>,
-    memory_shell_sessions: HashMap<String, MemoryShellSession>,
     generation_handle: Option<tokio::task::JoinHandle<()>>,
-}
-
-impl SessionState {
-    fn new() -> Self {
-        Self {
-            active_model: None,
-            reasoning_effort_override: None,
-            session_tokens: Arc::new(std::sync::Mutex::new(SessionTokens::default())),
-            memory_shell_sessions: HashMap::new(),
-            generation_handle: None,
-        }
-    }
 }
 
 /// The message processing handler.
@@ -180,36 +163,36 @@ pub struct MessageHandler {
     sessions: HashMap<SessionId, SessionState>,
 }
 
+pub struct MessageHandlerDeps {
+    pub registry: Arc<Mutex<CharacterRegistry>>,
+    pub cmd_ctx: CommandContext,
+    pub llm_client: LedgerClient,
+    pub push_tx: broadcast::Sender<ServerMessage>,
+    pub session_router: SessionRouter,
+    pub autonomy: AutonomyManager,
+    pub notifier: NotificationService,
+    pub live_speak: Arc<AtomicBool>,
+    pub tts_client: Option<TtsClient>,
+}
+
 impl MessageHandler {
-    pub fn new(
-        registry: Arc<Mutex<CharacterRegistry>>,
-        cmd_ctx: CommandContext,
-        llm_client: LedgerClient,
-        push_tx: broadcast::Sender<ServerMessage>,
-        session_router: SessionRouter,
-        autonomy: AutonomyManager,
-        notifier: NotificationService,
-        live_speak: Arc<AtomicBool>,
-        tts_client: Option<TtsClient>,
-    ) -> Self {
+    pub fn new(deps: MessageHandlerDeps) -> Self {
         Self {
-            registry,
-            cmd_ctx,
-            llm_client,
-            push_tx,
-            session_router,
-            autonomy,
-            notifier,
-            live_speak,
-            tts_client,
+            registry: deps.registry,
+            cmd_ctx: deps.cmd_ctx,
+            llm_client: deps.llm_client,
+            push_tx: deps.push_tx,
+            session_router: deps.session_router,
+            autonomy: deps.autonomy,
+            notifier: deps.notifier,
+            live_speak: deps.live_speak,
+            tts_client: deps.tts_client,
             sessions: HashMap::new(),
         }
     }
 
     fn session_state_mut(&mut self, session_id: SessionId) -> &mut SessionState {
-        self.sessions
-            .entry(session_id)
-            .or_insert_with(SessionState::new)
+        self.sessions.entry(session_id).or_default()
     }
 
     /// Run the message processing loop. Blocks until the route channel closes.
@@ -257,10 +240,7 @@ impl MessageHandler {
                     );
                     if let ClientMessage::SetLiveSpeak(ref toggle) = msg {
                         let prev = self.live_speak.swap(toggle.enabled, Ordering::Relaxed);
-                        info!(
-                            enabled = toggle.enabled,
-                            prev, "Live TTS toggled"
-                        );
+                        info!(enabled = toggle.enabled, prev, "Live TTS toggled");
                         let _ = self
                             .session_router
                             .send_to_session(
@@ -277,11 +257,10 @@ impl MessageHandler {
 
                     if let ClientMessage::Speak(ref speak) = msg {
                         let Some(tts_client) = self.tts_client.clone() else {
-                            let _ =
-                                self.push_tx.send(ServerMessage::AudioError(SwpAudioError {
-                                    rid: speak.rid.clone(),
-                                    message: "TTS not configured".into(),
-                                }));
+                            let _ = self.push_tx.send(ServerMessage::AudioError(SwpAudioError {
+                                rid: speak.rid.clone(),
+                                message: "TTS not configured".into(),
+                            }));
                             continue;
                         };
                         let push_tx = self.push_tx.clone();
@@ -301,12 +280,10 @@ impl MessageHandler {
                             .await
                             {
                                 error!(error = %e, "TTS speak failed");
-                                let _ = push_tx.send(ServerMessage::AudioError(
-                                    SwpAudioError {
-                                        rid,
-                                        message: e.to_string(),
-                                    },
-                                ));
+                                let _ = push_tx.send(ServerMessage::AudioError(SwpAudioError {
+                                    rid,
+                                    message: e.to_string(),
+                                }));
                             }
                         });
                         continue;
@@ -383,12 +360,12 @@ impl MessageHandler {
                         Some(tx) => tx,
                         None => continue,
                     };
-                    let (active_model, reasoning_effort_override) = {
+                    let active_model = crate::runtime_state::load_active_model(
+                        &self.cmd_ctx.data_dir.join(&char_name),
+                    );
+                    let reasoning_effort_override = {
                         let session = self.session_state_mut(meta.session.session_id);
-                        (
-                            session.active_model.clone(),
-                            session.reasoning_effort_override.clone(),
-                        )
+                        session.reasoning_effort_override.clone()
                     };
                     let gen = self.gen_context(meta.session.session_id, direct_tx.clone());
                     let notifier = self.notifier.clone();

@@ -1,4 +1,4 @@
-use std::io::{self, IsTerminal, Read as _, Write as _};
+use std::io::{self, IsTerminal, Read as _};
 use std::sync::OnceLock;
 
 use shore_client::audio::AudioPlayer;
@@ -59,8 +59,10 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         SWPConnection::connect(&addr, "cli", "shore-cli", character.clone()).await?;
 
     // Prefer the daemon's authoritative answer over the local request.
-    let display_character =
-        state::resolve_display_character(history.selected_character.as_deref(), character.as_deref());
+    let display_character = state::resolve_display_character(
+        history.selected_character.as_deref(),
+        character.as_deref(),
+    );
     // Stash so incidental messages inside `recv_command_data` can label
     // themselves correctly without threading the name through every call site.
     let _ = SESSION_DISPLAY_CHARACTER.set(display_character.clone());
@@ -352,21 +354,14 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
-        CliCommand::Memory {
-            subcommand: Some(crate::cli::MemoryCommand::Shell),
-            ..
-        } => {
-            run_memory_shell(&mut conn).await?;
-        }
         // Intercept model switch/reset so we can mirror the daemon's
         // decision into the client state file. Without this the choice
         // is lost as soon as the one-shot CLI session exits.
         CliCommand::Model {
-            reset: true,
-            json,
-            ..
+            reset: true, json, ..
         } => {
-            conn.send_command("reset_model", serde_json::json!({})).await?;
+            conn.send_command("reset_model", serde_json::json!({}))
+                .await?;
             let data = recv_command_data(&mut conn).await?;
             state::clear_active_model()?;
             if *json {
@@ -398,32 +393,34 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         // the state file after the daemon acks, mirroring the `shore model`
         // path. A one-shot CLI connection loses session state otherwise.
         CliCommand::Reasoning { value, reset, json } => {
-            let (args, persist_after_success): (serde_json::Value, Box<dyn FnOnce() -> std::io::Result<()>>) =
-                if *reset {
-                    (
-                        serde_json::json!({ "clear": true }),
-                        Box::new(state::clear_reasoning_effort_override),
-                    )
-                } else if let Some(v) = value.as_deref() {
-                    let normalized = v.trim().to_ascii_lowercase();
-                    let persist: Box<dyn FnOnce() -> std::io::Result<()>> = match normalized.as_str() {
-                        "off" | "none" | "null" | "disable" | "disabled" | "unset" => {
-                            Box::new(|| state::write_reasoning_effort_override(None))
-                        }
-                        "" => Box::new(state::clear_reasoning_effort_override),
-                        _ => {
-                            let owned = v.trim().to_string();
-                            Box::new(move || state::write_reasoning_effort_override(Some(&owned)))
-                        }
-                    };
-                    (serde_json::json!({ "value": v }), persist)
-                } else {
-                    // Read-only: no state-file write.
-                    (
-                        serde_json::json!({}),
-                        Box::new(|| Ok::<(), std::io::Error>(())),
-                    )
+            let (args, persist_after_success): (
+                serde_json::Value,
+                Box<dyn FnOnce() -> std::io::Result<()>>,
+            ) = if *reset {
+                (
+                    serde_json::json!({ "clear": true }),
+                    Box::new(state::clear_reasoning_effort_override),
+                )
+            } else if let Some(v) = value.as_deref() {
+                let normalized = v.trim().to_ascii_lowercase();
+                let persist: Box<dyn FnOnce() -> std::io::Result<()>> = match normalized.as_str() {
+                    "off" | "none" | "null" | "disable" | "disabled" | "unset" => {
+                        Box::new(|| state::write_reasoning_effort_override(None))
+                    }
+                    "" => Box::new(state::clear_reasoning_effort_override),
+                    _ => {
+                        let owned = v.trim().to_string();
+                        Box::new(move || state::write_reasoning_effort_override(Some(&owned)))
+                    }
                 };
+                (serde_json::json!({ "value": v }), persist)
+            } else {
+                // Read-only: no state-file write.
+                (
+                    serde_json::json!({}),
+                    Box::new(|| Ok::<(), std::io::Error>(())),
+                )
+            };
 
             conn.send_command("set_reasoning_effort", args).await?;
             let data = recv_command_data(&mut conn).await?;
@@ -613,77 +610,6 @@ fn handle_create_character(name: &str) -> Result<(), Box<dyn std::error::Error>>
     Ok(())
 }
 
-/// Run an interactive memory shell session.
-async fn run_memory_shell(conn: &mut SWPConnection) -> Result<(), Box<dyn std::error::Error>> {
-    // Start the session.
-    conn.send_command("memory_shell_start", serde_json::json!({}))
-        .await?;
-    let start_data = recv_command_data(conn).await?;
-    let session_id = start_data["session_id"]
-        .as_str()
-        .ok_or("missing session_id in response")?
-        .to_string();
-    let character = start_data["character"].as_str().unwrap_or("unknown");
-
-    info!(session_id, character, "Memory shell session started");
-    output::print_memory_shell_welcome(character);
-
-    let stdin = io::stdin();
-    let mut line_buf = String::new();
-
-    loop {
-        // Print prompt.
-        eprint!("memory> ");
-        io::stderr().flush().ok();
-
-        line_buf.clear();
-        let bytes = stdin.read_line(&mut line_buf)?;
-
-        // EOF (ctrl-d).
-        if bytes == 0 {
-            eprintln!();
-            break;
-        }
-
-        let input = line_buf.trim();
-
-        if input.is_empty() {
-            continue;
-        }
-
-        if input == "/quit" || input == "/exit" {
-            break;
-        }
-
-        // Send query.
-        conn.send_command(
-            "memory_shell_query",
-            serde_json::json!({
-                "session_id": session_id,
-                "input": input,
-            }),
-        )
-        .await?;
-
-        let data = recv_command_data(conn).await?;
-        let response = data["response"].as_str().unwrap_or("");
-        let mutations = data["mutations"].as_str().unwrap_or("");
-
-        output::print_memory_shell_response(response, mutations);
-    }
-
-    // End the session.
-    info!(session_id, "Memory shell session ended");
-    conn.send_command(
-        "memory_shell_end",
-        serde_json::json!({ "session_id": session_id }),
-    )
-    .await?;
-    let _ = recv_command_data(conn).await;
-
-    Ok(())
-}
-
 /// Resolve the Shore config directory.
 fn config_dir() -> std::path::PathBuf {
     shore_config::config_dir()
@@ -787,11 +713,8 @@ async fn recv_streaming_response(
                 output::print_stream_end(end);
                 // If live-speak is enabled on the daemon, an AudioStart
                 // follows shortly. Wait briefly for it; otherwise return.
-                if let Ok(Ok(ServerMessage::AudioStart(start))) = tokio::time::timeout(
-                    std::time::Duration::from_millis(500),
-                    conn.recv(),
-                )
-                .await
+                if let Ok(Ok(ServerMessage::AudioStart(start))) =
+                    tokio::time::timeout(std::time::Duration::from_millis(500), conn.recv()).await
                 {
                     play_audio_stream(conn, start.sample_rate, start.channels).await;
                 }
@@ -879,19 +802,14 @@ async fn handle_speak(
         None => None,
     };
 
-    conn.send(&ClientMessage::Speak(SpeakMsg {
-        rid: None,
-        msg_id,
-    }))
-    .await?;
+    conn.send(&ClientMessage::Speak(SpeakMsg { rid: None, msg_id }))
+        .await?;
 
     recv_audio_response(conn).await
 }
 
 /// Receive and play a TTS audio stream from the daemon.
-async fn recv_audio_response(
-    conn: &mut SWPConnection,
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn recv_audio_response(conn: &mut SWPConnection) -> Result<(), Box<dyn std::error::Error>> {
     loop {
         let msg = conn.recv().await?;
         match msg {
@@ -1221,7 +1139,6 @@ mod tests {
         let cli = test_cli(CliCommand::Memory {
             subcommand: Some(crate::cli::MemoryCommand::Compact { keep_turns: None }),
             query: None,
-            direct: false,
             json: false,
         });
         let received = execute_with_mock(cli, command_response("compact")).await;
@@ -1229,7 +1146,7 @@ mod tests {
         match received {
             ClientMessage::Command(c) => {
                 assert_eq!(c.name, "compact");
-                assert_eq!(c.args["collate"], true);
+                assert_eq!(c.args, serde_json::json!({}));
             }
             other => panic!("expected Command, got: {other:?}"),
         }
@@ -1242,7 +1159,6 @@ mod tests {
         let cli = test_cli(CliCommand::Memory {
             subcommand: None,
             query: Some("recent topics".into()),
-            direct: false,
             json: false,
         });
         let received = execute_with_mock(cli, command_response("memory")).await;

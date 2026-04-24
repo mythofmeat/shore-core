@@ -12,8 +12,8 @@ use super::{
 // Status formatter -- human-readable dashboard
 // ---------------------------------------------------------------------------
 
-/// Translate an interiority state string to a human-readable description.
-fn interiority_description(state: &str, ticks: u64, max_ticks: u64) -> String {
+/// Translate a heartbeat state string to a human-readable description.
+fn heartbeat_description(state: &str, ticks: u64, max_ticks: u64) -> String {
     match state {
         "Active" if ticks == 0 => "active \u{2014} in conversation".to_string(),
         "Active" => format!("active \u{2014} idle {ticks}/{max_ticks} ticks"),
@@ -149,17 +149,25 @@ pub fn print_status(data: &serde_json::Value, character_name: &str) {
         write_row(&mut out, "Messages", &count.to_string());
     }
 
-    // Memory info (if present in the response).
-    if let Some(mem) = data.get("memory") {
-        let total = mem["total_entries"].as_u64().unwrap_or(0);
-        let active = mem["active_entries"].as_u64().unwrap_or(0);
-        if total > 0 {
-            write_row(
-                &mut out,
-                "Memory",
-                &format!("{total} entries ({active} active)"),
-            );
-        }
+    let pending_deferred_edit_count = data["pending_deferred_edit_count"].as_u64().unwrap_or(0);
+    if pending_deferred_edit_count > 0 {
+        let paths: Vec<&str> = data["pending_deferred_edits"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|path| path.as_str())
+            .collect();
+        let label = if pending_deferred_edit_count == 1 {
+            "1 pending".to_string()
+        } else {
+            format!("{pending_deferred_edit_count} pending")
+        };
+        let detail = if paths.is_empty() {
+            label
+        } else {
+            format!("{label}: {}", paths.join(", "))
+        };
+        write_row(&mut out, "Prompt Edits", &detail);
     }
 
     let _ = writeln!(out);
@@ -184,18 +192,18 @@ pub fn print_status(data: &serde_json::Value, character_name: &str) {
             let suffix = if paused { "paused" } else { "" };
             write_section_header(&mut out, "Autonomy", suffix, width);
 
-            let int_state = autonomy["interiority_state"].as_str().unwrap_or("Active");
+            let int_state = autonomy["heartbeat_state"].as_str().unwrap_or("Active");
             let ticks = autonomy["ticks_without_user"].as_u64().unwrap_or(0);
-            let max_ticks = autonomy["dormant_after_interiority_turns"]
+            let max_ticks = autonomy["dormant_after_heartbeat_turns"]
                 .as_u64()
                 .unwrap_or(3);
-            let description = interiority_description(int_state, ticks, max_ticks);
+            let description = heartbeat_description(int_state, ticks, max_ticks);
 
-            // Interiority row: description + state label.
+            // Heartbeat row: description + state label.
             if use_color() {
                 let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
             }
-            let _ = write!(out, "  {:<13}", "Interiority");
+            let _ = write!(out, "  {:<13}", "Heartbeat");
             if use_color() {
                 let _ = crossterm::execute!(out, ResetColor);
             }
@@ -252,10 +260,8 @@ pub fn format_command(name: &str, data: &serde_json::Value) {
         "set_reasoning_effort" => print_reasoning_effort(data),
         "memory" => print_memory(data),
         "compact" => print_compact_result(data),
-        "collate" => print_collate_result(data),
-        "memory_purge" => print_purge_result(data),
         "memory_changelog" => print_changelog(data),
-        "memory_reindex" => print_reindex(data),
+        "memory_dream" => print_memory_dream(data),
         "config" => print_config(data),
         "config_check" => print_config_check(data),
         "config_reset" => print_config_reset(data),
@@ -264,11 +270,58 @@ pub fn format_command(name: &str, data: &serde_json::Value) {
         "inject_system" => println!("System instruction injected."),
         "diagnostics" => print_diagnostics(data),
         "usage" => print_usage(data),
-        "interiority_tick_now" => print_interiority_tick_now(data),
-        "interiority_set_dormant" => print_interiority_status_change(data, "dormant"),
-        "interiority_set_active" => print_interiority_status_change(data, "active"),
+        "heartbeat_tick_now" => print_heartbeat_tick_now(data),
+        "heartbeat_set_dormant" => print_heartbeat_status_change(data, "dormant"),
+        "heartbeat_set_active" => print_heartbeat_status_change(data, "active"),
         _ => print_command_output_fallback(name, data),
     }
+}
+
+fn print_memory_dream(data: &serde_json::Value) {
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    let width = term_width();
+    let char_name = data["character"].as_str().unwrap_or("?");
+    write_section_header(&mut out, "Dreaming", char_name, width);
+
+    if data.get("state_path").is_some() {
+        write_row(
+            &mut out,
+            "Enabled",
+            if data["enabled"].as_bool().unwrap_or(false) {
+                "yes"
+            } else {
+                "no"
+            },
+        );
+        write_row(
+            &mut out,
+            "Frequency",
+            data["frequency"].as_str().unwrap_or("?"),
+        );
+        write_row(
+            &mut out,
+            "Due",
+            if data["due"].as_bool().unwrap_or(false) {
+                "yes"
+            } else {
+                "no"
+            },
+        );
+        if let Some(last) = data["last_run_at"].as_str() {
+            write_row(&mut out, "Last run", last);
+        }
+    } else if data["status"].as_str() == Some("not_due") {
+        write_row(&mut out, "Status", "not due");
+    } else {
+        let dry = data["dry_run"].as_bool().unwrap_or(false);
+        write_row(&mut out, "Status", if dry { "dry run" } else { "ran" });
+        let candidates = data["candidates"].as_array().map_or(0, Vec::len);
+        let promoted = data["promoted"].as_array().map_or(0, Vec::len);
+        write_row(&mut out, "Candidates", &candidates.to_string());
+        write_row(&mut out, "Promoted", &promoted.to_string());
+    }
+    let _ = writeln!(out);
 }
 
 fn print_command_output_fallback(name: &str, data: &serde_json::Value) {
@@ -287,7 +340,7 @@ fn print_command_output_fallback(name: &str, data: &serde_json::Value) {
     }
 }
 
-fn print_interiority_tick_now(data: &serde_json::Value) {
+fn print_heartbeat_tick_now(data: &serde_json::Value) {
     let character = data["character"].as_str().unwrap_or("?");
     println!("Tick scheduled for {character}.");
     if let Some(warning) = data["warning"].as_str() {
@@ -298,9 +351,9 @@ fn print_interiority_tick_now(data: &serde_json::Value) {
     }
 }
 
-fn print_interiority_status_change(data: &serde_json::Value, status: &str) {
+fn print_heartbeat_status_change(data: &serde_json::Value, status: &str) {
     let character = data["character"].as_str().unwrap_or("?");
-    println!("Interiority forced {status} for {character}.");
+    println!("Heartbeat forced {status} for {character}.");
 }
 
 /// Print edit confirmation.
@@ -387,12 +440,18 @@ fn print_model_reset(data: &serde_json::Value) {
 fn print_reasoning_effort(data: &serde_json::Value) {
     let effective = match data.get("effective") {
         Some(v) if v.is_null() => "off".to_string(),
-        Some(v) => v.as_str().map(String::from).unwrap_or_else(|| v.to_string()),
+        Some(v) => v
+            .as_str()
+            .map(String::from)
+            .unwrap_or_else(|| v.to_string()),
         None => "(unknown)".to_string(),
     };
     let config_default = match data.get("config_default") {
         Some(v) if v.is_null() => "(unset)".to_string(),
-        Some(v) => v.as_str().map(String::from).unwrap_or_else(|| v.to_string()),
+        Some(v) => v
+            .as_str()
+            .map(String::from)
+            .unwrap_or_else(|| v.to_string()),
         None => "(unknown)".to_string(),
     };
 
@@ -401,13 +460,19 @@ fn print_reasoning_effort(data: &serde_json::Value) {
         Some(v) if v.is_null() => "(none, using config)".to_string(),
         Some(obj) if obj.is_object() => match obj.get("value") {
             Some(x) if x.is_null() => "forced off".to_string(),
-            Some(x) => x.as_str().map(String::from).unwrap_or_else(|| x.to_string()),
+            Some(x) => x
+                .as_str()
+                .map(String::from)
+                .unwrap_or_else(|| x.to_string()),
             None => "(set)".to_string(),
         },
         _ => "(unknown)".to_string(),
     };
 
-    let changed = data.get("changed").and_then(|v| v.as_bool()).unwrap_or(false);
+    let changed = data
+        .get("changed")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     if changed {
         println!("Reasoning effort updated.");
     }
@@ -543,16 +608,19 @@ fn print_memory(data: &serde_json::Value) {
     let char_name = data["character"].as_str().unwrap_or("?");
     write_section_header(&mut out, "Memory", char_name, width);
 
-    let entries = data["entries"].as_u64().unwrap_or(0);
-    let active = data["active_entries"].as_u64().unwrap_or(0);
-    let entities = data["entities"].as_u64().unwrap_or(0);
+    let files = data["entries"].as_u64().unwrap_or(0);
+    let curated = data["curated_files"].as_u64().unwrap_or(0);
+    let daily = data["daily_files"].as_u64().unwrap_or(0);
+    let images = data["image_files"].as_u64().unwrap_or(0);
 
-    if entries > 0 {
-        write_row(&mut out, "Entries", &format!("{entries} ({active} active)"));
-    } else {
-        write_row(&mut out, "Entries", "0");
+    write_row(&mut out, "Files", &files.to_string());
+    if files > 0 {
+        write_row(
+            &mut out,
+            "Breakdown",
+            &format!("{curated} curated, {daily} daily, {images} images"),
+        );
     }
-    write_row(&mut out, "Entities", &entities.to_string());
     let _ = writeln!(out);
 }
 
@@ -591,7 +659,7 @@ fn print_changelog(data: &serde_json::Value) {
 
                 let op_color = match op {
                     s if s.starts_with("create") || s.starts_with("compaction") => Color::Green,
-                    s if s.starts_with("update") || s.starts_with("collation") => Color::DarkYellow,
+                    s if s.starts_with("update") => Color::DarkYellow,
                     s if s.starts_with("supersede")
                         || s.starts_with("delete")
                         || s.starts_with("decay") =>
@@ -650,151 +718,6 @@ fn print_compact_result(data: &serde_json::Value) {
         if data["recap_generated"].as_bool().unwrap_or(false) {
             write_row(&mut out, "Recap", "generated");
         }
-    }
-
-    // Collation results (if present).
-    if let Some(collation) = data.get("collation").filter(|v| !v.is_null()) {
-        let _ = writeln!(out);
-        write_section_header(&mut out, "Collation", "", width);
-
-        let tidy_splits = collation["tidy_splits"].as_u64().unwrap_or(0);
-        let tidy_new = collation["tidy_new_entries"].as_u64().unwrap_or(0);
-        if tidy_splits > 0 {
-            write_row(
-                &mut out,
-                "Tidy",
-                &format!("{tidy_splits} splits \u{2192} {tidy_new} new"),
-            );
-        }
-
-        let merges = collation["collate_merges"].as_u64().unwrap_or(0);
-        let merge_new = collation["collate_new_entries"].as_u64().unwrap_or(0);
-        if merges > 0 {
-            write_row(
-                &mut out,
-                "Merge",
-                &format!("{merges} merges \u{2192} {merge_new} new"),
-            );
-        }
-
-        let normalized = collation["entities_normalized"].as_u64().unwrap_or(0);
-        if normalized > 0 {
-            write_row(&mut out, "Normalize", &format!("{normalized} entities"));
-        }
-
-        let decayed = collation["entries_decayed"].as_u64().unwrap_or(0);
-        if decayed > 0 {
-            write_row(&mut out, "Decay", &format!("{decayed} entries"));
-        }
-
-        let skipped = collation["entries_skipped"].as_u64().unwrap_or(0);
-        if skipped > 0 {
-            write_row(&mut out, "Skipped", &format!("{skipped} entries"));
-        }
-    }
-    let _ = writeln!(out);
-}
-
-/// Print reindex result.
-fn print_reindex(data: &serde_json::Value) {
-    let msg = data["message"].as_str().unwrap_or("Reindex complete");
-    println!("{msg}");
-}
-
-/// Print standalone collation result.
-fn print_collate_result(data: &serde_json::Value) {
-    let stdout = io::stdout();
-    let mut out = stdout.lock();
-    let width = term_width();
-
-    let char_name = data["character"].as_str().unwrap_or("unknown");
-    let passes = data["passes"].as_u64().unwrap_or(1);
-
-    write_section_header(&mut out, "Collation", char_name, width);
-
-    if passes > 1 {
-        write_row(&mut out, "Passes", &format!("{passes}"));
-    }
-
-    let backfilled = data["timestamps_backfilled"].as_u64().unwrap_or(0);
-    if backfilled > 0 {
-        write_row(&mut out, "Backfill", &format!("{backfilled} timestamps"));
-    }
-
-    let tidy_splits = data["tidy_splits"].as_u64().unwrap_or(0);
-    let tidy_new = data["tidy_new_entries"].as_u64().unwrap_or(0);
-    if tidy_splits > 0 {
-        write_row(
-            &mut out,
-            "Tidy",
-            &format!("{tidy_splits} splits \u{2192} {tidy_new} new"),
-        );
-    }
-
-    let merges = data["collate_merges"].as_u64().unwrap_or(0);
-    let merge_new = data["collate_new_entries"].as_u64().unwrap_or(0);
-    if merges > 0 {
-        write_row(
-            &mut out,
-            "Merge",
-            &format!("{merges} merges \u{2192} {merge_new} new"),
-        );
-    }
-
-    let normalized = data["entities_normalized"].as_u64().unwrap_or(0);
-    if normalized > 0 {
-        write_row(&mut out, "Normalize", &format!("{normalized} entities"));
-    }
-
-    let decayed = data["entries_decayed"].as_u64().unwrap_or(0);
-    if decayed > 0 {
-        write_row(&mut out, "Decay", &format!("{decayed} entries"));
-    }
-
-    let skipped = data["entries_skipped"].as_u64().unwrap_or(0);
-    if skipped > 0 {
-        write_row(&mut out, "Skipped", &format!("{skipped} entries"));
-    }
-
-    if tidy_splits == 0 && merges == 0 && normalized == 0 && decayed == 0 && backfilled == 0 {
-        write_row(&mut out, "Result", "no changes");
-    }
-
-    let _ = writeln!(out);
-}
-
-/// Print purge result.
-fn print_purge_result(data: &serde_json::Value) {
-    let stdout = io::stdout();
-    let mut out = stdout.lock();
-    let width = term_width();
-
-    let char_name = data["character"].as_str().unwrap_or("unknown");
-    let older_than = data["older_than"].as_str().unwrap_or("?");
-
-    write_section_header(&mut out, "Purge", char_name, width);
-
-    write_row(&mut out, "Threshold", &format!("older than {older_than}"));
-
-    let deleted = data["deleted"].as_u64().unwrap_or(0);
-    write_row(&mut out, "Deleted", &format!("{deleted} entries"));
-
-    let skipped_image = data["skipped_image"].as_u64().unwrap_or(0);
-    if skipped_image > 0 {
-        write_row(
-            &mut out,
-            "Skipped (image)",
-            &format!("{skipped_image} entries"),
-        );
-    }
-
-    let skipped_no_repl = data["skipped_no_replacement"].as_u64().unwrap_or(0);
-    if skipped_no_repl > 0 {
-        write_row(
-            &mut out,
-            "Skipped (no repl)",
-            &format!("{skipped_no_repl} entries"),
-        );
     }
 
     let _ = writeln!(out);
@@ -1228,17 +1151,17 @@ mod tests {
     use crate::output::set_color_enabled;
 
     #[test]
-    fn interiority_description_maps_states() {
+    fn heartbeat_description_maps_states() {
         assert_eq!(
-            interiority_description("Active", 0, 3),
+            heartbeat_description("Active", 0, 3),
             "active \u{2014} in conversation"
         );
         assert_eq!(
-            interiority_description("Active", 2, 3),
+            heartbeat_description("Active", 2, 3),
             "active \u{2014} idle 2/3 ticks"
         );
         assert_eq!(
-            interiority_description("Dormant", 4, 3),
+            heartbeat_description("Dormant", 4, 3),
             "dormant \u{2014} waiting for you"
         );
     }
@@ -1250,6 +1173,8 @@ mod tests {
             "character": "Sable",
             "message_count": 142,
             "active_model": "claude-sonnet-4-20250514",
+            "pending_deferred_edit_count": 2,
+            "pending_deferred_edits": ["SOUL.md", "TOOLS.md"],
             "tokens": {
                 "input": 12450,
                 "output": 3218,
@@ -1258,9 +1183,9 @@ mod tests {
             },
             "autonomy": {
                 "paused": false,
-                "interiority_state": "Active",
+                "heartbeat_state": "Active",
                 "ticks_without_user": 1,
-                "dormant_after_interiority_turns": 3,
+                "dormant_after_heartbeat_turns": 3,
                 "effective_interval_secs": 3540,
             }
         });
@@ -1287,9 +1212,9 @@ mod tests {
             "active_model": "test-model",
             "autonomy": {
                 "paused": true,
-                "interiority_state": "Active",
+                "heartbeat_state": "Active",
                 "ticks_without_user": 0,
-                "dormant_after_interiority_turns": 3,
+                "dormant_after_heartbeat_turns": 3,
                 "effective_interval_secs": 3600,
             }
         });
@@ -1365,12 +1290,12 @@ mod tests {
         assert!(matches!(classification_color("unknown"), Color::White));
     }
 
-    // ── interiority_description edge cases ──────────────────────────
+    // ── heartbeat_description edge cases ──────────────────────────
 
     #[test]
-    fn interiority_description_unknown_state() {
+    fn heartbeat_description_unknown_state() {
         // Unknown states pass through as-is.
-        assert_eq!(interiority_description("CustomState", 0, 8), "CustomState");
+        assert_eq!(heartbeat_description("CustomState", 0, 8), "CustomState");
     }
 
     // ── format_command dispatch ─────────────────────────────────────
@@ -1379,7 +1304,6 @@ mod tests {
     fn format_command_dispatches_known_commands() {
         set_color_enabled(false);
         // These should all run without panic and hit their formatters.
-        format_command("memory_reindex", &serde_json::json!({"message": "done"}));
         format_command("config_reset", &serde_json::json!({"message": "reloaded"}));
         format_command("inject_system", &serde_json::json!({}));
         format_command("edit", &serde_json::json!({"ref": "m42"}));

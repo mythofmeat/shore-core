@@ -1,4 +1,7 @@
 use serde_json::json;
+use shore_config::{
+    character_workspace_dir, AGENTS_FILE, HEARTBEAT_FILE, SOUL_FILE, TOOLS_FILE, USER_FILE,
+};
 use shore_protocol::error::ErrorCode;
 use shore_protocol::types::CharacterInfo;
 use tracing::{debug, info};
@@ -8,19 +11,13 @@ use crate::engine::ConversationEngine;
 
 /// List available characters by scanning the config characters directory.
 pub fn list_characters(engine: &ConversationEngine, ctx: &CommandContext) -> CommandResult {
-    let characters_dir = ctx.config.dirs.config.join("characters");
     let mut characters = vec![CharacterInfo {
         name: engine.character_name().to_string(),
     }];
 
-    if let Ok(entries) = std::fs::read_dir(&characters_dir) {
-        for entry in entries.flatten() {
-            if entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if name != engine.character_name() {
-                    characters.push(CharacterInfo { name });
-                }
-            }
+    for name in shore_config::discover_characters(&ctx.config.dirs.config) {
+        if name != engine.character_name() {
+            characters.push(CharacterInfo { name });
         }
     }
 
@@ -31,17 +28,11 @@ pub fn list_characters(engine: &ConversationEngine, ctx: &CommandContext) -> Com
 /// List characters without requiring an active engine (for use before
 /// character resolution, e.g. when multiple characters are available).
 pub fn list_characters_standalone(ctx: &CommandContext) -> CommandResult {
-    let characters_dir = ctx.config.dirs.config.join("characters");
-    let mut characters = Vec::new();
-
-    if let Ok(entries) = std::fs::read_dir(&characters_dir) {
-        for entry in entries.flatten() {
-            if entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
-                let name = entry.file_name().to_string_lossy().to_string();
-                characters.push(CharacterInfo { name });
-            }
-        }
-    }
+    let mut characters: Vec<CharacterInfo> =
+        shore_config::discover_characters(&ctx.config.dirs.config)
+            .into_iter()
+            .map(|name| CharacterInfo { name })
+            .collect();
 
     // Also check data dir for characters that have data but no config dir.
     if let Ok(entries) = std::fs::read_dir(&ctx.data_dir) {
@@ -59,8 +50,7 @@ pub fn list_characters_standalone(ctx: &CommandContext) -> CommandResult {
     Ok(json!({ "characters": characters }))
 }
 
-/// Show detailed info about a character: definition path, user.md presence,
-/// prompt override files, and a preview of the character definition.
+/// Show detailed info about a character's workspace bootstrap files.
 pub fn character_info(
     engine: &ConversationEngine,
     ctx: &CommandContext,
@@ -78,7 +68,8 @@ pub fn character_info(
         return Err((ErrorCode::NotFound, format!("Character not found: {name}")));
     }
 
-    let definition_path = char_dir.join("character.md");
+    let workspace_dir = character_workspace_dir(&ctx.config.dirs.config, name);
+    let definition_path = workspace_dir.join(SOUL_FILE);
     let has_definition = definition_path.exists();
     let definition_preview = if has_definition {
         std::fs::read_to_string(&definition_path)
@@ -88,46 +79,43 @@ pub fn character_info(
         None
     };
 
-    let user_path = char_dir.join("user.md");
-    let has_user_definition = user_path.exists();
-
-    // Scan for prompt override files.
-    let prompts_dir = char_dir.join("prompts");
-    let prompt_overrides: Vec<String> = if prompts_dir.exists() {
-        std::fs::read_dir(&prompts_dir)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .filter(|e| e.file_type().map(|ft| ft.is_file()).unwrap_or(false))
-            .map(|e| e.file_name().to_string_lossy().to_string())
-            .collect()
-    } else {
-        vec![]
-    };
+    let bootstrap_files = [
+        SOUL_FILE,
+        USER_FILE,
+        AGENTS_FILE,
+        TOOLS_FILE,
+        HEARTBEAT_FILE,
+    ]
+    .into_iter()
+    .filter(|name| workspace_dir.join(name).exists())
+    .map(str::to_string)
+    .collect::<Vec<_>>();
 
     let config_override_path = char_dir.join("config.toml");
     let has_config_override = config_override_path.exists();
 
     let data_dir = ctx.data_dir.join(name);
     let has_data = data_dir.exists();
+    let pending_deferred_edits =
+        crate::memory::deferred_edits::pending_deferred_edit_paths(&data_dir).unwrap_or_default();
 
     debug!(
         character = name,
         has_definition,
-        has_user_definition,
         has_config_override,
-        prompt_override_count = prompt_overrides.len(),
+        bootstrap_file_count = bootstrap_files.len(),
         "Character info queried"
     );
     Ok(json!({
         "name": name,
         "active": name == engine.character_name(),
         "config_dir": char_dir.display().to_string(),
+        "workspace_dir": workspace_dir.display().to_string(),
         "has_definition": has_definition,
         "definition_preview": definition_preview,
-        "has_user_definition": has_user_definition,
+        "bootstrap_files": bootstrap_files,
         "has_config_override": has_config_override,
-        "prompt_overrides": prompt_overrides,
+        "pending_deferred_edits": pending_deferred_edits,
         "data_dir": data_dir.display().to_string(),
         "has_data": has_data,
     }))
@@ -218,7 +206,6 @@ mod tests {
             diagnostics: std::sync::Arc::new(std::sync::Mutex::new(
                 shore_diagnostics::Diagnostics::default(),
             )),
-            memory_shell_sessions: std::collections::HashMap::new(),
         };
         (engine, ctx, push_rx)
     }
@@ -241,10 +228,25 @@ mod tests {
 
         // Create character directories.
         let chars_dir = tmp.path().join("config").join("characters");
-        std::fs::create_dir_all(chars_dir.join("Alice")).unwrap();
-        std::fs::create_dir_all(chars_dir.join("Bob")).unwrap();
+        std::fs::create_dir_all(chars_dir.join("Alice").join("workspace")).unwrap();
+        std::fs::create_dir_all(chars_dir.join("Bob").join("workspace")).unwrap();
         // Active character directory (should be deduped).
-        std::fs::create_dir_all(chars_dir.join("TestChar")).unwrap();
+        std::fs::create_dir_all(chars_dir.join("TestChar").join("workspace")).unwrap();
+        std::fs::write(
+            chars_dir.join("Alice").join("workspace").join("SOUL.md"),
+            "Alice",
+        )
+        .unwrap();
+        std::fs::write(
+            chars_dir.join("Bob").join("workspace").join("SOUL.md"),
+            "Bob",
+        )
+        .unwrap();
+        std::fs::write(
+            chars_dir.join("TestChar").join("workspace").join("SOUL.md"),
+            "Test",
+        )
+        .unwrap();
 
         let result = list_characters(&engine, &ctx).unwrap();
         let chars = result["characters"].as_array().unwrap();
@@ -310,12 +312,18 @@ mod tests {
             .join("characters")
             .join("TestChar");
         std::fs::create_dir_all(&char_dir).unwrap();
-        std::fs::write(char_dir.join("character.md"), "You are a test character.").unwrap();
-        std::fs::write(char_dir.join("user.md"), "The user likes tests.").unwrap();
+        let workspace_dir = char_dir.join("workspace");
+        std::fs::create_dir_all(&workspace_dir).unwrap();
+        std::fs::write(workspace_dir.join("SOUL.md"), "You are a test character.").unwrap();
+        std::fs::write(workspace_dir.join("USER.md"), "The user likes tests.").unwrap();
 
         let result = character_info(&engine, &ctx, &json!({})).unwrap();
         assert!(result["has_definition"].as_bool().unwrap());
-        assert!(result["has_user_definition"].as_bool().unwrap());
+        assert!(result["bootstrap_files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v == "USER.md"));
         assert!(result["definition_preview"]
             .as_str()
             .unwrap()
@@ -338,18 +346,17 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let (engine, ctx, _rx) = make_ctx(&tmp);
 
-        let prompts_dir = tmp
+        let workspace_dir = tmp
             .path()
             .join("config")
             .join("characters")
             .join("TestChar")
-            .join("prompts");
-        std::fs::create_dir_all(&prompts_dir).unwrap();
-        std::fs::write(prompts_dir.join("system.md"), "override").unwrap();
+            .join("workspace");
+        std::fs::create_dir_all(&workspace_dir).unwrap();
+        std::fs::write(workspace_dir.join("AGENTS.md"), "override").unwrap();
 
         let result = character_info(&engine, &ctx, &json!({})).unwrap();
-        let overrides = result["prompt_overrides"].as_array().unwrap();
-        assert_eq!(overrides.len(), 1);
-        assert_eq!(overrides[0], "system.md");
+        let bootstrap_files = result["bootstrap_files"].as_array().unwrap();
+        assert!(bootstrap_files.iter().any(|v| v == "AGENTS.md"));
     }
 }

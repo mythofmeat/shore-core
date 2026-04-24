@@ -358,8 +358,7 @@ pub async fn check_room_exists(
 ) -> RoomStatus {
     let client = reqwest::Client::new();
     let encoded = urlencoding::encode(room_id);
-    let url =
-        format!("{homeserver_url}/_matrix/client/v3/rooms/{encoded}/state/m.room.create");
+    let url = format!("{homeserver_url}/_matrix/client/v3/rooms/{encoded}/state/m.room.create");
     let resp = match client.get(&url).bearer_auth(access_token).send().await {
         Ok(r) => r,
         Err(e) => return RoomStatus::Unknown(format!("room check request: {e}")),

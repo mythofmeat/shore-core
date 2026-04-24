@@ -97,10 +97,7 @@ pub const MCP_INSTANCE_ID: &str = "shore-mcp-test";
 ///     - If found, attach.
 ///     - Otherwise, spawn a shore-daemon child process with
 ///       `--instance-id=MCP_INSTANCE_ID`, wait for registration, then attach.
-pub async fn attach(
-    profile: &ResolvedProfile,
-    cli: &Cli,
-) -> anyhow::Result<SWPConnection> {
+pub async fn attach(profile: &ResolvedProfile, cli: &Cli) -> anyhow::Result<SWPConnection> {
     // 1. Export env overrides BEFORE any discovery or spawn.
     for (k, v) in &profile.env_overrides {
         std::env::set_var(k, v);
@@ -108,13 +105,8 @@ pub async fn attach(
 
     // 2. Explicit --daemon-addr wins.
     if let Some(addr) = &cli.daemon_addr {
-        let (conn, _hello, _history) = SWPConnection::connect(
-            &ServerAddr(addr.clone()),
-            "mcp",
-            "shore-mcp",
-            None,
-        )
-        .await?;
+        let (conn, _hello, _history) =
+            SWPConnection::connect(&ServerAddr(addr.clone()), "mcp", "shore-mcp", None).await?;
         return Ok(conn);
     }
 
@@ -148,9 +140,7 @@ pub async fn attach(
 fn is_spawnable_discovery_miss(kind: DiscoveryKind) -> bool {
     matches!(
         kind,
-        DiscoveryKind::RegistryMissing
-            | DiscoveryKind::RegistryEmpty
-            | DiscoveryKind::NoMatch,
+        DiscoveryKind::RegistryMissing | DiscoveryKind::RegistryEmpty | DiscoveryKind::NoMatch,
     )
 }
 
@@ -243,10 +233,7 @@ fn build_env_overrides(base: &std::path::Path) -> Vec<(String, String)> {
             "SHORE_CONFIG_DIR".into(),
             config.to_string_lossy().into_owned(),
         ),
-        (
-            "SHORE_DATA_DIR".into(),
-            data.to_string_lossy().into_owned(),
-        ),
+        ("SHORE_DATA_DIR".into(), data.to_string_lossy().into_owned()),
         (
             "SHORE_RUNTIME_DIR".into(),
             runtime.to_string_lossy().into_owned(),

@@ -44,7 +44,7 @@ fn translate_messages(request: &LlmRequest) -> Vec<Value> {
             // String content — simple pass-through.
             Some(Value::String(s)) => match role {
                 // Inline system messages mid-history (from injection,
-                // interiority recaps) get wrapped in <system_instruction>
+                // heartbeat recaps) get wrapped in <system_instruction>
                 // and emitted as user turns. Some OpenRouter-routed backends
                 // reject raw role:"system" mid-conversation; the wrapper is
                 // defensive and mirrors convert_inline_system_messages in
@@ -1017,7 +1017,7 @@ mod tests {
 
     // ── Inline system-role messages mid-history ────────────────────────
     //
-    // Inline system messages (from /inject-system-message, interiority
+    // Inline system messages (from /inject-system-message, heartbeat
     // recaps) are wrapped in <system_instruction>...</system_instruction>
     // and emitted as user turns — defensive for OR-routed backends that
     // reject raw role:"system" mid-conversation. Mirrors

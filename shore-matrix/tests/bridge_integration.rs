@@ -378,7 +378,7 @@ fn command_output_renders_as_formatted_message() {
             "character": "Alice",
             "model": "claude-3-opus",
             "tokens": { "input": 1000, "output": 500 },
-            "interiority": "Active"
+            "heartbeat": "Active"
         }),
         rid: None,
     };
@@ -389,7 +389,7 @@ fn command_output_renders_as_formatted_message() {
 
     assert!(formatted.starts_with("**status**"));
     assert!(formatted.contains("\"character\": \"Alice\""));
-    assert!(formatted.contains("\"interiority\": \"Active\""));
+    assert!(formatted.contains("\"heartbeat\": \"Active\""));
 }
 
 /// Verifies error messages include code and message.
@@ -630,7 +630,7 @@ fn homeserver_embedded_config_pipeline() {
 
 #[test]
 fn health_status_variants_are_distinct() {
-    let statuses = vec![
+    let statuses = [
         HealthStatus::Healthy,
         HealthStatus::Unhealthy,
         HealthStatus::NotRunning,
@@ -734,7 +734,7 @@ fn full_bridge_message_flow() {
             data: serde_json::json!({
                 "character": "Alice",
                 "model": "claude-3-opus",
-                "interiority": "Active",
+                "heartbeat": "Active",
                 "social_need": 0.7,
                 "tau": 3600.0,
             }),

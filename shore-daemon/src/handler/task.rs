@@ -4,12 +4,15 @@ use std::time::Instant;
 
 use serde_json::{json, Value};
 use shore_config::models::Sdk;
+use shore_config::{AGENTS_FILE, SOUL_FILE, TOOLS_FILE, USER_FILE};
 use shore_protocol::types::{ContentBlock, Message, Role};
 use tracing::{debug, info, instrument};
 
 use crate::autonomy::parse_cache_ttl_secs;
 use crate::engine::prompt::{self, CapabilitiesConfig, PromptParams};
-use crate::handler::generation::{run_tool_phase, stream_with_retry, thinking_enabled_from_request};
+use crate::handler::generation::{
+    run_tool_phase, stream_with_retry, thinking_enabled_from_request,
+};
 use crate::handler::images::{embed_image_data, ingest_images};
 use crate::handler::persistence::persist_and_notify;
 use crate::handler::resize::warm_image_cache;
@@ -108,9 +111,7 @@ pub(super) async fn handle_generation(
             .ok_or("No model configured")?,
     };
     // Apply the per-session `reasoning_effort` override (if any) by
-    // cloning the resolved model and patching the field. The override
-    // deliberately does NOT touch agent_model / researcher_model — those
-    // are separate roles with their own configured defaults.
+    // cloning the resolved model and patching the field for this request.
     let resolved_owned;
     let resolved: &shore_config::models::ResolvedModel =
         if let Some(new_effort) = reasoning_effort_override.as_ref() {
@@ -128,23 +129,6 @@ pub(super) async fn handle_generation(
         override_active = reasoning_effort_override.is_some(),
         "model resolved"
     );
-
-    let agent_model = effective_config
-        .app
-        .defaults
-        .memory_agent
-        .as_deref()
-        .and_then(|name| effective_config.models.find_model(name).ok())
-        .unwrap_or(resolved)
-        .clone();
-
-    let researcher_model = effective_config
-        .app
-        .defaults
-        .tool_model
-        .as_deref()
-        .and_then(|name| effective_config.models.find_model(name).ok())
-        .cloned();
 
     let cache_ttl_secs = resolved.cache_ttl.as_deref().and_then(parse_cache_ttl_secs);
     let is_new_autonomy_state =
@@ -196,37 +180,49 @@ pub(super) async fn handle_generation(
         ctx.autonomy.notify_user_message(&char_name, turn_count);
     }
 
-    let (character_definition, user_definition) = {
-        let registry = ctx.registry.lock().await;
-        (
-            registry.character_definition(&char_name),
-            registry.user_definition(&char_name),
-        )
-    };
-
     let messages = engine_arc.lock().await.messages().to_vec();
 
     let character_data_dir = data_dir.join(&char_name);
+    if let Err(e) = crate::memory::deferred_edits::ensure_active_prompt_snapshot(
+        &character_data_dir,
+        &effective_config.dirs.config,
+        &char_name,
+    ) {
+        debug!(character = %char_name, error = %e, "failed to ensure active prompt snapshot");
+    }
+
+    let character_definition =
+        crate::memory::deferred_edits::load_active_prompt_file(&character_data_dir, SOUL_FILE);
+    let user_definition =
+        crate::memory::deferred_edits::load_active_prompt_file(&character_data_dir, USER_FILE);
+    let system_prompt =
+        crate::memory::deferred_edits::load_active_prompt_file(&character_data_dir, AGENTS_FILE);
+    let tools_guidance =
+        crate::memory::deferred_edits::load_active_prompt_file(&character_data_dir, TOOLS_FILE);
+    let recent_memory_digest = crate::memory::deferred_edits::load_active_prompt_file(
+        &character_data_dir,
+        crate::memory::deferred_edits::RECENT_MEMORY_DIGEST_FILE,
+    );
     let display_name = effective_config.app.defaults.resolve_display_name();
     let tool_toggles = &effective_config.app.behavior.tool_use.tools;
     let capabilities = CapabilitiesConfig {
-        interiority_enabled: effective_config.app.behavior.autonomy.interiority.enabled,
+        heartbeat_enabled: effective_config.app.behavior.autonomy.heartbeat.enabled,
         scratchpad_enabled: tool_toggles.scratchpad_read() || tool_toggles.scratchpad_write(),
         memory_enabled: tool_toggles.memory(),
-        image_memory_enabled: tool_toggles.recall_image(),
         send_image_enabled: tool_toggles.send_image(),
         generate_image_enabled: tool_toggles.generate_image(),
         web_search_enabled: tool_toggles.web_search(),
     };
 
     let prompt_result = prompt::assemble_prompt(&PromptParams {
-        config_dir: &effective_config.dirs.config,
         character_name: &char_name,
         display_name: &display_name,
+        system_prompt: system_prompt.as_deref(),
+        tools_guidance: tools_guidance.as_deref(),
         character_definition: character_definition.as_deref(),
         user_definition: user_definition.as_deref(),
+        recent_memory_digest: recent_memory_digest.as_deref(),
         is_private: false,
-        character_data_dir: &character_data_dir,
         messages: &messages,
         max_context_tokens: resolved.max_context_tokens,
         max_output_tokens: resolved.max_tokens,
@@ -315,8 +311,6 @@ pub(super) async fn handle_generation(
                 &data_dir,
                 &char_name,
                 &effective_config,
-                &agent_model,
-                &researcher_model,
                 &character_definition,
                 &user_definition,
                 &mut request,
@@ -420,6 +414,22 @@ pub(super) async fn handle_generation(
             {
                 Ok(retained_count) => {
                     engine.reload().map_err(|e| e.to_string())?;
+
+                    // Apply deferred character self-edits now that the cache
+                    // has been bust by the engine reload.
+                    let character_data_dir = data_dir.join(&char_name);
+                    if let Err(e) = crate::memory::deferred_edits::apply_deferred_edits(
+                        &character_data_dir,
+                        &effective_config.dirs.config,
+                        &char_name,
+                    ) {
+                        tracing::warn!(
+                            character = %char_name,
+                            error = %e,
+                            "Failed to apply deferred edits after inline compaction"
+                        );
+                    }
+
                     ctx.autonomy
                         .notify_compaction_complete(&char_name, retained_count);
                     info!(

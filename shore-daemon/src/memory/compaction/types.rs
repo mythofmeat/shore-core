@@ -42,24 +42,28 @@ pub enum CompactionOutcome {
 /// Result of an actual compaction.
 #[derive(Debug)]
 pub struct CompactionResult {
-    pub entries_created: Vec<String>,
+    pub memory_files_written: Vec<String>,
     pub conversation_id: String,
     pub new_conversation_id: String,
     pub message_count: usize,
     pub retained_count: usize,
     pub retained_turns: usize,
     pub recap_generated: bool,
+    /// Paths of markdown files written during compaction.
+    pub markdown_paths: Vec<String>,
 }
 
 /// Result of a dry-run compaction.
 #[derive(Debug)]
 pub struct DryRunResult {
     pub would_create_entries: usize,
-    pub entries_preview: Vec<CompactedEntry>,
+    pub file_ops_preview: Vec<crate::memory::compaction::parser::MemoryFileOp>,
     pub message_count: usize,
     pub retained_count: usize,
     pub retained_turns: usize,
     pub recap_preview: Option<String>,
+    /// Paths of markdown files that would be written.
+    pub markdown_preview: Vec<String>,
 }
 
 /// Parameters for archiving with message retention.
@@ -67,7 +71,8 @@ pub struct DryRunResult {
 pub struct RetentionParams {
     /// Number of messages to keep from the end of active.jsonl.
     pub keep_last_n: usize,
-    /// Recap text to write to memory/recap.md (None = leave untouched).
+    /// Recent-memory digest text to write to the active prompt snapshot
+    /// (None = leave untouched).
     pub recap: Option<String>,
     /// Pre-read content of active.jsonl at the time messages were parsed.
     /// Eliminates the TOCTOU race where the file could change between
@@ -83,18 +88,16 @@ pub struct RetentionParams {
 pub enum CompactionError {
     #[error("llm: {0}")]
     Llm(String),
-    #[error("db: {0}")]
-    Db(String),
     #[error("parse: {0}")]
     Parse(String),
     #[error("private conversation: skipped")]
     PrivateConversation,
     #[error("insufficient messages")]
     InsufficientMessages,
-    #[error("indexing: {0}")]
-    Indexing(String),
     #[error("conversation: {0}")]
     ConversationManager(String),
+    #[error("markdown store: {0}")]
+    MarkdownStore(String),
 }
 
 // ---------------------------------------------------------------------------
@@ -110,21 +113,6 @@ pub trait CompactionLlm: Send + Sync {
         &self,
         prompt: &str,
     ) -> Pin<Box<dyn Future<Output = Result<String, CompactionError>> + Send + '_>>;
-}
-
-/// Vector indexer for newly created entries.
-pub trait VectorIndexer: Send + Sync {
-    fn index_entry(
-        &self,
-        entry_id: &str,
-        text: &str,
-    ) -> Pin<Box<dyn Future<Output = Result<(), CompactionError>> + Send + '_>>;
-
-    /// Remove a previously indexed entry. Used for rollback on compaction failure.
-    /// Default no-op — impls that support deletion should override.
-    fn remove_entry(&self, _entry_id: &str) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
-        Box::pin(async {})
-    }
 }
 
 /// Conversation lifecycle management — archive old messages and retain recent ones.

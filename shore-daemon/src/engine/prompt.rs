@@ -1,11 +1,8 @@
 use std::collections::HashMap;
-use std::path::Path;
 
 use chrono::{DateTime, FixedOffset, Local};
 use shore_protocol::types::{ContentBlock, ImageRef, Message, Role};
 use tracing::{debug, warn};
-
-use shore_config::resolve_prompt_template;
 
 /// Default context window size when not specified in model config.
 const DEFAULT_MAX_CONTEXT_TOKENS: usize = 200_000;
@@ -22,7 +19,8 @@ const TIME_GAP_THRESHOLD_SECS: f64 = 1800.0; // 30 minutes
 /// Built-in system prompt template used when no override is found on disk.
 ///
 /// This is intentionally minimal — character/user definitions, capabilities,
-/// and recap are injected as separate system blocks by `assemble_prompt`.
+/// and recent-memory digest are injected as separate system blocks by
+/// `assemble_prompt`.
 const BUILTIN_SYSTEM_TEMPLATE: &str = "\
 You are {{char}}, in conversation with {{user}}.
 This is a text conversation. Communicate directly rather than narrating actions or using roleplay formatting.
@@ -65,10 +63,9 @@ pub struct AssembledPrompt {
 /// config tree into prompt assembly.
 #[derive(Debug, Clone, Default)]
 pub struct CapabilitiesConfig {
-    pub interiority_enabled: bool,
+    pub heartbeat_enabled: bool,
     pub scratchpad_enabled: bool,
     pub memory_enabled: bool,
-    pub image_memory_enabled: bool,
     pub send_image_enabled: bool,
     pub generate_image_enabled: bool,
     pub web_search_enabled: bool,
@@ -76,10 +73,9 @@ pub struct CapabilitiesConfig {
 
 impl CapabilitiesConfig {
     pub fn any_enabled(&self) -> bool {
-        self.interiority_enabled
+        self.heartbeat_enabled
             || self.scratchpad_enabled
             || self.memory_enabled
-            || self.image_memory_enabled
             || self.send_image_enabled
             || self.generate_image_enabled
             || self.web_search_enabled
@@ -100,16 +96,32 @@ pub fn build_capabilities_block(config: &CapabilitiesConfig) -> Option<String> {
         return None;
     }
 
-    Some(
-        "**Tool usage**\n\
-         \n\
-         You have a number of tools available to help you during the \
-         conversation. You're encouraged to use them freely. Reaching for a \
+    let mut parts = vec![
+        "**Tool usage**".to_string(),
+        String::new(),
+        "You have a number of tools available to help you during the \
+         conversation. You're encouraged to use them freely — reaching for a \
          tool is in-character and enhances the conversation rather than \
          interrupting it. Each tool's own description covers when it's useful. \
          Please use your memory tools often."
             .to_string(),
-    )
+    ];
+
+    if config.memory_enabled {
+        parts.push(String::new());
+        parts.push(
+            "**Memory retrieval**\n\
+             \n\
+             Before making a factual claim about {{user}} or past conversations, \
+             search your memories with `memory_search` or `memory_read`. \
+             Do not guess facts you could verify. If `memory_search` returns \
+             a relevant file, call `memory_read` to get the full content \
+             before answering."
+                .to_string(),
+        );
+    }
+
+    Some(parts.join("\n"))
 }
 
 // ---------------------------------------------------------------------------
@@ -118,20 +130,22 @@ pub fn build_capabilities_block(config: &CapabilitiesConfig) -> Option<String> {
 
 /// Parameters required for prompt assembly.
 pub struct PromptParams<'a> {
-    /// Config directory for template resolution.
-    pub config_dir: &'a Path,
     /// Character name.
     pub character_name: &'a str,
     /// Resolved display name for the user (from config or $USER).
     pub display_name: &'a str,
-    /// Character definition (from character.md).
+    /// Active AGENTS.md content, or None to use the built-in default.
+    pub system_prompt: Option<&'a str>,
+    /// Active TOOLS.md guidance.
+    pub tools_guidance: Option<&'a str>,
+    /// Character definition (from SOUL.md).
     pub character_definition: Option<&'a str>,
-    /// User definition (from user.md).
+    /// User definition (from USER.md).
     pub user_definition: Option<&'a str>,
+    /// Recent-memory digest compiled at the last compaction boundary.
+    pub recent_memory_digest: Option<&'a str>,
     /// Whether this is a private conversation.
     pub is_private: bool,
-    /// Data directory for the character (e.g. `$XDG_DATA_HOME/shore/{character}/`).
-    pub character_data_dir: &'a Path,
     /// Conversation messages (full history).
     pub messages: &'a [Message],
     /// Maximum context tokens (total context window). `None` uses default.
@@ -147,14 +161,15 @@ pub struct PromptParams<'a> {
 // Prompt assembly
 // ---------------------------------------------------------------------------
 
-/// Assemble the complete prompt from templates, definitions, memory, and history.
+/// Assemble the complete prompt from active snapshot content and history.
 ///
 /// Produces multiple system blocks matching V1's structure:
-/// 1. Rendered system.md template
-/// 2. `<capabilities>` block (if tools enabled)
-/// 3. `<{char}>` character definition (if present)
-/// 4. `<{user}>` user definition (if present)
-/// 5. `<{char}_recap>` with framing text (if present, not private)
+/// 1. Rendered AGENTS.md template (or built-in default)
+/// 2. TOOLS.md guidance (if present)
+/// 3. `<capabilities>` block (if tools enabled)
+/// 4. `<{char}>` character definition (if present)
+/// 5. `<{user}>` user definition (if present)
+/// 6. `<recent_memory>` block (if present, not private)
 ///
 /// Then trims conversation history to fit the token budget.
 pub fn assemble_prompt(params: &PromptParams<'_>) -> AssembledPrompt {
@@ -168,26 +183,23 @@ pub fn assemble_prompt(params: &PromptParams<'_>) -> AssembledPrompt {
         .unwrap_or(DEFAULT_MAX_OUTPUT_TOKENS);
 
     // ── 1. Build template variables ───────────────────────────────────
-    let now = Local::now();
     let mut vars = HashMap::new();
     vars.insert("char".into(), params.character_name.to_string());
     vars.insert("character_name".into(), params.character_name.to_string());
     vars.insert("user".into(), params.display_name.to_string());
-    vars.insert("date".into(), now.format("%A, %Y-%m-%d").to_string());
-    vars.insert("time".into(), now.format("%H:%M").to_string());
+    vars.insert("date".into(), String::new());
+    vars.insert("time".into(), String::new());
 
     // ── 2. Resolve and render system template ─────────────────────────
-    let custom_template =
-        resolve_prompt_template(params.config_dir, params.character_name, "system.md");
-    let using_builtin = custom_template.is_none();
-    let template = custom_template.unwrap_or_else(|| BUILTIN_SYSTEM_TEMPLATE.to_string());
+    let using_builtin = params.system_prompt.is_none();
+    let template = params.system_prompt.unwrap_or(BUILTIN_SYSTEM_TEMPLATE);
     debug!(
         character = %params.character_name,
         builtin_template = using_builtin,
         "assembling prompt"
     );
 
-    let rendered_system = render_template(&template, &vars);
+    let rendered_system = render_template(template, &vars);
 
     // ── 3. Build system blocks ────────────────────────────────────────
     let mut system = Vec::new();
@@ -198,7 +210,15 @@ pub fn assemble_prompt(params: &PromptParams<'_>) -> AssembledPrompt {
         content: rendered_system,
     });
 
-    // Block 2: capabilities (if any tools enabled).
+    // Block 2: TOOLS.md guidance.
+    if let Some(tools_guidance) = params.tools_guidance.filter(|s| !s.is_empty()) {
+        system.push(SystemBlock {
+            label: "tools_guidance".into(),
+            content: tools_guidance.to_string(),
+        });
+    }
+
+    // Block 3: capabilities (if any tools enabled).
     // Rendered through the same template pipeline as the main system block
     // so {{char}}, {{user}}, {{date}}, {{time}} resolve inside capability
     // bullets. Keep the bullets date/time-free to preserve cache stability.
@@ -211,7 +231,7 @@ pub fn assemble_prompt(params: &PromptParams<'_>) -> AssembledPrompt {
         }
     }
 
-    // Block 3: character definition.
+    // Block 4: character definition.
     if let Some(char_def) = params.character_definition.filter(|s| !s.is_empty()) {
         let tag = xml_tag_from_name(params.character_name, "character");
         system.push(SystemBlock {
@@ -220,7 +240,7 @@ pub fn assemble_prompt(params: &PromptParams<'_>) -> AssembledPrompt {
         });
     }
 
-    // Block 4: user definition.
+    // Block 5: user definition.
     if let Some(user_def) = params.user_definition.filter(|s| !s.is_empty()) {
         let tag = xml_tag_from_name(params.display_name, "user");
         system.push(SystemBlock {
@@ -229,19 +249,16 @@ pub fn assemble_prompt(params: &PromptParams<'_>) -> AssembledPrompt {
         });
     }
 
-    // Block 5: recap (suppressed for private conversations).
+    // Block 6: recent memory digest (suppressed for private conversations).
     if !params.is_private {
-        if let Some(recap) = load_recap(params.character_data_dir) {
-            let char_tag = xml_tag_from_name(params.character_name, "character");
+        if let Some(digest) = params.recent_memory_digest.filter(|s| !s.is_empty()) {
             system.push(SystemBlock {
-                label: "recap".into(),
+                label: "recent_memory".into(),
                 content: format!(
-                    "<{char_tag}_recap> \n\
-                     The following is a brief recap of recent conversations. \
-                     This recap is not exhaustive and only covers a short period of time. \
-                     Much more detailed information can be found within your memory database.\n\n\
-                     {recap}\n\
-                     </{char_tag}_recap>"
+                    "<recent_memory>\n\
+                     The following is a compact digest of your most recent durable memories.\n\n\
+                     {digest}\n\
+                     </recent_memory>"
                 ),
             });
         }
@@ -255,7 +272,10 @@ pub fn assemble_prompt(params: &PromptParams<'_>) -> AssembledPrompt {
             .filter(|s| !s.is_empty())
             .is_some(),
         has_user_def = params.user_definition.filter(|s| !s.is_empty()).is_some(),
-        has_recap = !params.is_private,
+        has_recent_memory = params
+            .recent_memory_digest
+            .filter(|s| !s.is_empty())
+            .is_some(),
         "system blocks assembled"
     );
 
@@ -387,12 +407,6 @@ pub fn xml_tag_from_name(name: &str, fallback: &str) -> String {
     }
 }
 
-/// Load the recap from `{character_data_dir}/memory/recap.md`.
-fn load_recap(character_data_dir: &Path) -> Option<String> {
-    let path = character_data_dir.join("memory").join("recap.md");
-    std::fs::read_to_string(path).ok().filter(|s| !s.is_empty())
-}
-
 /// Estimate token count from text using a character-based heuristic.
 fn estimate_tokens(text: &str) -> usize {
     // Rough approximation: ~4 characters per token.
@@ -491,7 +505,7 @@ fn trim_messages(messages: &[Message], token_budget: usize) -> Vec<PromptMessage
     // Walk forward, tracking the previous timestamp. When the gap between
     // consecutive messages exceeds the threshold, prepend a marker like
     // `[6 hours later · 9:14 PM]` to the next user message's content.
-    // Interiority recaps are no longer injected here — they're persisted
+    // Heartbeat recaps are no longer injected here — they're persisted
     // as Role::System messages in active.jsonl by the tick itself, so they
     // already sit at their natural chronological position in the history.
     let mut prev_ts: Option<DateTime<FixedOffset>> = None;
@@ -554,7 +568,6 @@ fn is_tool_loop_msg_prompt(msg: &PromptMessage) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
 
     fn make_msg(role: Role, content: &str) -> Message {
         Message {
@@ -577,19 +590,16 @@ mod tests {
         vars
     }
 
-    fn make_params<'a>(
-        tmp: &'a TempDir,
-        data_dir: &'a Path,
-        messages: &'a [Message],
-    ) -> PromptParams<'a> {
+    fn make_params<'a>(messages: &'a [Message]) -> PromptParams<'a> {
         PromptParams {
-            config_dir: tmp.path(),
             character_name: "TestChar",
             display_name: "TestUser",
+            system_prompt: None,
+            tools_guidance: None,
             character_definition: None,
             user_definition: None,
+            recent_memory_digest: None,
             is_private: false,
-            character_data_dir: data_dir,
             messages,
             max_context_tokens: None,
             max_output_tokens: None,
@@ -713,10 +723,9 @@ mod tests {
         })
         .unwrap();
         let all_flags = build_capabilities_block(&CapabilitiesConfig {
-            interiority_enabled: true,
+            heartbeat_enabled: true,
             scratchpad_enabled: true,
             memory_enabled: true,
-            image_memory_enabled: true,
             send_image_enabled: true,
             generate_image_enabled: true,
             web_search_enabled: true,
@@ -1082,22 +1091,20 @@ mod tests {
 
     #[test]
     fn assemble_prompt_basic() {
-        let tmp = TempDir::new().unwrap();
-        let data_dir = tmp.path().join("data");
-
         let messages = vec![
             make_msg(Role::User, "Hello"),
             make_msg(Role::Assistant, "Hi!"),
         ];
 
         let params = PromptParams {
-            config_dir: tmp.path(),
             character_name: "TestChar",
             display_name: "TestUser",
+            system_prompt: None,
+            tools_guidance: None,
             character_definition: Some("A friendly test character."),
             user_definition: Some("A developer."),
+            recent_memory_digest: None,
             is_private: false,
-            character_data_dir: &data_dir,
             messages: &messages,
             max_context_tokens: Some(200_000),
             max_output_tokens: Some(4096),
@@ -1132,21 +1139,10 @@ mod tests {
 
     #[test]
     fn assemble_prompt_uses_custom_template() {
-        let tmp = TempDir::new().unwrap();
-        let data_dir = tmp.path().join("data");
-
-        // Write a custom global system template — using {{character_name}} for compat.
-        let prompts_dir = tmp.path().join("prompts");
-        std::fs::create_dir_all(&prompts_dir).unwrap();
-        std::fs::write(
-            prompts_dir.join("system.md"),
-            "Custom prompt for {{character_name}}.",
-        )
-        .unwrap();
-
         let params = PromptParams {
             display_name: "User",
-            ..make_params(&tmp, &data_dir, &[])
+            system_prompt: Some("Custom prompt for {{character_name}}."),
+            ..make_params(&[])
         };
 
         let result = assemble_prompt(&params);
@@ -1160,9 +1156,6 @@ mod tests {
         // like the main system block, so any future {{char}} / {{user}} usage
         // in the stance text must resolve. Today the stance has no placeholders,
         // so this is a forward-compat check.
-        let tmp = TempDir::new().unwrap();
-        let data_dir = tmp.path().join("data");
-
         let caps = CapabilitiesConfig {
             memory_enabled: true,
             ..Default::default()
@@ -1171,7 +1164,7 @@ mod tests {
             display_name: "Sam",
             character_name: "Ada",
             capabilities: Some(&caps),
-            ..make_params(&tmp, &data_dir, &[])
+            ..make_params(&[])
         };
         let result = assemble_prompt(&params);
         let caps_block = result
@@ -1191,85 +1184,57 @@ mod tests {
 
     #[test]
     fn assemble_prompt_character_template_overrides_global() {
-        let tmp = TempDir::new().unwrap();
-        let data_dir = tmp.path().join("data");
-
-        let global_prompts = tmp.path().join("prompts");
-        std::fs::create_dir_all(&global_prompts).unwrap();
-        std::fs::write(global_prompts.join("system.md"), "Global template.").unwrap();
-
-        let char_prompts = tmp
-            .path()
-            .join("characters")
-            .join("TestChar")
-            .join("prompts");
-        std::fs::create_dir_all(&char_prompts).unwrap();
-        std::fs::write(
-            char_prompts.join("system.md"),
-            "Character-specific template.",
-        )
-        .unwrap();
-
-        let params = make_params(&tmp, &data_dir, &[]);
+        let params = PromptParams {
+            system_prompt: Some("Character-specific template."),
+            ..make_params(&[])
+        };
         let result = assemble_prompt(&params);
         assert_eq!(result.system[0].content, "Character-specific template.");
     }
 
     #[test]
-    fn assemble_prompt_injects_recap() {
-        let tmp = TempDir::new().unwrap();
-        let data_dir = tmp.path().join("data");
-
-        let memory_dir = data_dir.join("memory");
-        std::fs::create_dir_all(&memory_dir).unwrap();
-        std::fs::write(memory_dir.join("recap.md"), "We talked about Rust.").unwrap();
-
-        let params = make_params(&tmp, &data_dir, &[]);
+    fn assemble_prompt_injects_recent_memory_digest() {
+        let params = PromptParams {
+            recent_memory_digest: Some("We talked about Rust."),
+            ..make_params(&[])
+        };
         let result = assemble_prompt(&params);
 
-        let recap_block = result.system.iter().find(|b| b.label == "recap").unwrap();
-        assert!(recap_block.content.contains("We talked about Rust."));
-        assert!(recap_block.content.contains("close third person"));
-        assert!(recap_block.content.contains("<testchar_recap>"));
+        let digest_block = result
+            .system
+            .iter()
+            .find(|b| b.label == "recent_memory")
+            .unwrap();
+        assert!(digest_block.content.contains("We talked about Rust."));
+        assert!(digest_block
+            .content
+            .contains("most recent durable memories"));
+        assert!(digest_block.content.contains("<recent_memory>"));
     }
 
     #[test]
-    fn assemble_prompt_has_date_time() {
-        let tmp = TempDir::new().unwrap();
-        let data_dir = tmp.path().join("data");
-
-        // Use a template that references {{date}} and {{time}}.
-        let prompts_dir = tmp.path().join("prompts");
-        std::fs::create_dir_all(&prompts_dir).unwrap();
-        std::fs::write(
-            prompts_dir.join("system.md"),
-            "Today is {{date}} at {{time}}.",
-        )
-        .unwrap();
-
-        let params = make_params(&tmp, &data_dir, &[]);
+    fn assemble_prompt_blanks_date_time_for_cache_stability() {
+        let params = PromptParams {
+            system_prompt: Some("Today is {{date}} at {{time}}."),
+            ..make_params(&[])
+        };
         let result = assemble_prompt(&params);
 
         let system_text = &result.system[0].content;
-        // Should not contain literal template tags.
         assert!(!system_text.contains("{{date}}"));
         assert!(!system_text.contains("{{time}}"));
-        // Should contain a year (proving substitution happened).
-        assert!(system_text.contains("202"));
+        assert_eq!(system_text, "Today is  at .");
     }
 
     #[test]
     fn assemble_prompt_with_capabilities() {
-        let tmp = TempDir::new().unwrap();
-        let data_dir = tmp.path().join("data");
-
         let caps = CapabilitiesConfig {
             memory_enabled: true,
             ..Default::default()
         };
         let params = PromptParams {
             capabilities: Some(&caps),
-            ..make_params(&tmp, &data_dir, &[])
+            ..make_params(&[])
         };
 
         let result = assemble_prompt(&params);
@@ -1280,67 +1245,54 @@ mod tests {
 
     #[test]
     fn assemble_prompt_multi_block_count() {
-        let tmp = TempDir::new().unwrap();
-        let data_dir = tmp.path().join("data");
-
-        let memory_dir = data_dir.join("memory");
-        std::fs::create_dir_all(&memory_dir).unwrap();
-        std::fs::write(memory_dir.join("recap.md"), "Recap text.").unwrap();
-
         let caps = CapabilitiesConfig {
             web_search_enabled: true,
             ..Default::default()
         };
 
         let params = PromptParams {
+            tools_guidance: Some("Use tools carefully."),
             character_definition: Some("A character."),
             user_definition: Some("A user."),
+            recent_memory_digest: Some("Digest"),
             capabilities: Some(&caps),
-            ..make_params(&tmp, &data_dir, &[])
+            ..make_params(&[])
         };
 
         let result = assemble_prompt(&params);
-        // Should have: system, capabilities, character, user, recap = 5 blocks.
-        assert_eq!(result.system.len(), 5);
+        // Should have: system, tools_guidance, capabilities, character, user, recent_memory = 6 blocks.
+        assert_eq!(result.system.len(), 6);
         assert_eq!(result.system[0].label, "system");
-        assert_eq!(result.system[1].label, "capabilities");
-        assert_eq!(result.system[2].label, "character");
-        assert_eq!(result.system[3].label, "user");
-        assert_eq!(result.system[4].label, "recap");
+        assert_eq!(result.system[1].label, "tools_guidance");
+        assert_eq!(result.system[2].label, "capabilities");
+        assert_eq!(result.system[3].label, "character");
+        assert_eq!(result.system[4].label, "user");
+        assert_eq!(result.system[5].label, "recent_memory");
     }
 
     // ── Private conversation suppression ──────────────────────────────
 
     #[test]
-    fn private_conversation_suppresses_recap() {
-        let tmp = TempDir::new().unwrap();
-        let data_dir = tmp.path().join("data");
-
-        let memory_dir = data_dir.join("memory");
-        std::fs::create_dir_all(&memory_dir).unwrap();
-        std::fs::write(memory_dir.join("recap.md"), "We talked about Rust.").unwrap();
-
+    fn private_conversation_suppresses_recent_memory_digest() {
         let params = PromptParams {
+            recent_memory_digest: Some("We talked about Rust."),
             is_private: true,
-            ..make_params(&tmp, &data_dir, &[])
+            ..make_params(&[])
         };
 
         let result = assemble_prompt(&params);
         assert!(
-            result.system.iter().all(|b| b.label != "recap"),
-            "Private conversation should not include recap"
+            result.system.iter().all(|b| b.label != "recent_memory"),
+            "Private conversation should not include recent memory digest"
         );
     }
 
     #[test]
     fn private_conversation_suppresses_memory() {
-        let tmp = TempDir::new().unwrap();
-        let data_dir = tmp.path().join("data");
-
         let params = PromptParams {
             character_definition: Some("Friendly character"),
             is_private: true,
-            ..make_params(&tmp, &data_dir, &[])
+            ..make_params(&[])
         };
 
         let result = assemble_prompt(&params);
@@ -1355,9 +1307,6 @@ mod tests {
 
     #[test]
     fn respects_token_budget() {
-        let tmp = TempDir::new().unwrap();
-        let data_dir = tmp.path().join("data");
-
         let messages: Vec<Message> = (0..100)
             .map(|i| {
                 make_msg(
@@ -1374,7 +1323,7 @@ mod tests {
         let params = PromptParams {
             max_context_tokens: Some(500),
             max_output_tokens: Some(100),
-            ..make_params(&tmp, &data_dir, &messages)
+            ..make_params(&messages)
         };
 
         let result = assemble_prompt(&params);
@@ -1390,11 +1339,8 @@ mod tests {
     }
 
     #[test]
-    fn no_interiority_injection() {
-        let tmp = TempDir::new().unwrap();
-        let data_dir = tmp.path().join("data");
-
-        let params = make_params(&tmp, &data_dir, &[]);
+    fn no_heartbeat_injection() {
+        let params = make_params(&[]);
         let result = assemble_prompt(&params);
         let all_text: String = result
             .system
@@ -1402,7 +1348,7 @@ mod tests {
             .map(|b| b.content.to_lowercase())
             .collect::<Vec<_>>()
             .join(" ");
-        assert!(!all_text.contains("interiority"));
+        assert!(!all_text.contains("heartbeat"));
         assert!(!all_text.contains("journal"));
         assert!(!all_text.contains("story"));
     }
@@ -1505,5 +1451,4 @@ mod tests {
             );
         }
     }
-
 }

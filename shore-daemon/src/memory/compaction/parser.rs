@@ -1,5 +1,5 @@
-use super::types::{CompactedEntry, CompactionError};
-use tracing::{debug, warn};
+use super::types::CompactionError;
+use tracing::debug;
 
 // ---------------------------------------------------------------------------
 // Default prompt template
@@ -10,23 +10,31 @@ use tracing::{debug, warn};
 /// Placeholders:
 /// - `{{char}}`, `{{user}}` — character and user names
 /// - `{{conversation}}` — formatted conversation messages
+/// - `{{existing_memories}}` — bounded snapshot of current markdown memories
 /// - `{{#if recap}}...{{/if}}` — conditional block for existing recap
 /// - `{{recap}}` — existing recap text (inside conditional)
-pub const DEFAULT_COMPACT_PROMPT: &str = r#"You are recording what happened in this specific conversation between {{user}} and {{char}}. Write temporal, narrative entries — events, decisions, what was said, emotional shifts — anchored to this conversation. Do not extract timeless facts or stable preferences; those are handled separately.
+pub const DEFAULT_COMPACT_PROMPT: &str = r#"You are {{char}}. This conversation with {{user}} is about to be archived and your active context will be cleared. Before that happens, you must save anything important to your long-term memory files.
 
-Preserve:
-- Key events and decisions made in this conversation
-- Emotional developments and relationship changes
-- Ongoing threads or unresolved topics
-- Specific details that would be important to remember later
-- If {{user}} corrected or updated previously stated information, note the change explicitly
+You have access to your memories directory. Use the <memory> section below to write or update markdown files. Be concise and organized.
+
+Guidelines:
+- Prefer updating existing files over creating new ones. Use the existing memory snapshot below to merge new information into the right files.
+- Use clear filenames and folder structure (e.g., people/{{user}}.md, topics/gaming/doom.md)
+- Each file should have a heading and bullet points
+- Include timestamps or session context when relevant
+- If {{user}} corrected previous information, update the file rather than appending
+
+Existing memory files:
+<existing_memories>
+{{existing_memories}}
+</existing_memories>
 
 Your response MUST contain two parts, in this order:
 
-1. A single <recap> block — the throughline of the conversation: what happened, how {{char}} felt about it, what matters to them, and where things stand with {{user}}. Written **about {{char}} in close third person, using {{char}}'s own voice and vocabulary** — not "I" but "{{char}}" / "she" / "he" / "they". Cap the whole recap at ~4 paragraphs *after* folding in new events — that is the maximum, not a target. If you are running long, condense older material further rather than dropping it.
+1. A single <recap> block — the throughline of the conversation: what happened, how {{char}} felt about it, what matters to them, and where things stand with {{user}}. Written **about {{char}} in close third person, using {{char}}'s own voice and vocabulary** — not "I" but "{{char}}" / "she" / "he" / "they". Cap the whole recap at ~4 paragraphs. If you are running long, condense older material further rather than dropping it.
 
 {{#if recap}}
-Here is the existing recap from previous compactions. The recap is a rolling throughline across all conversations, not a snapshot of the most recent one. Condense older material to make room for new events, but do not drop it. Earlier threads should shrink to a sentence or a phrase, never disappear. A reader should still be able to trace how {{char}} and {{user}} got to where they are now.
+Here is the existing recap from previous compactions. The recap is a rolling throughline across all conversations, not a snapshot of the most recent one. Condense older material to make room for new events, but do not drop it. Earlier threads should shrink to a sentence or a phrase, never disappear.
 <previous_recap>
 {{recap}}
 </previous_recap>
@@ -36,30 +44,27 @@ Here is the existing recap from previous compactions. The recap is a rolling thr
 [rolling throughline, close third person about {{char}}]
 </recap>
 
-2. One or more <entry> blocks (one per topic discussed).
+2. A <memory> block containing one or more <write> operations.
 
-Each entry should be **atomic** — focused on exactly one topic or event. Prefer more entries with fewer bullets (2-4 each) over fewer entries with many bullets. If your bullets cover different subjects, split them into separate entries. Each entry is embedded as a single vector for retrieval, so mixing unrelated topics in one entry makes it harder to find later.
+Each <write> creates or overwrites a single memory file. The path is relative to your memories directory. The content is pure markdown — no YAML frontmatter.
 
-Both parts are required. Begin with the <recap>, then the <entry> blocks.
+<memory>
+<write path="people/{{user}}.md">
+# {{user}}
 
-<entry>
-<summary>
-- [key fact or event, one per line]
-- [preserve names, dates, specifics]
-- [include emotional context where relevant]
-</summary>
-<topic_tags>
-[comma separated short tags for this topic]
-</topic_tags>
-<entities>
-- name: [entity name], type: [person/place/organization/concept], relation: [brief description of relation to the conversation]
-</entities>
-<memory_type>
-[episodic or semantic — "episodic" for events, conversations, time-bound happenings; "semantic" for stable facts, preferences, traits, relationships]
-</memory_type>
-</entry>
+- Likes tea (mentioned on 2026-04-22)
+- Works in software
+</write>
 
-If the entire conversation covers only one topic, produce a single <entry> block.
+<write path="topics/gaming/doom.md">
+# Doom Speedrunning
+
+- {{user}} plays UV-Max on Plutonia
+- Personal best on MAP01: 1:42
+</write>
+</memory>
+
+If nothing new needs to be saved, output an empty <memory></memory> block.
 
 Conversation:
 {{conversation}}"#;
@@ -83,79 +88,85 @@ pub(super) fn extract_xml_tag(text: &str, tag: &str) -> Option<String> {
     }
 }
 
-/// Extract all occurrences of `<tag>...</tag>` in the text.
-pub(super) fn extract_all_xml_tags(text: &str, tag: &str) -> Vec<String> {
-    let open = format!("<{tag}>");
-    let close = format!("</{tag}>");
-    let mut results = Vec::new();
-    let mut search_from = 0;
-    while let Some(start) = text[search_from..].find(&open) {
-        let abs_start = search_from + start + open.len();
-        if let Some(end) = text[abs_start..].find(&close) {
-            let content = text[abs_start..abs_start + end].trim();
-            if !content.is_empty() {
-                results.push(content.to_string());
-            }
-            search_from = abs_start + end + close.len();
-        } else {
-            break;
-        }
-    }
-    results
+/// A memory file operation extracted from the LLM compaction response.
+#[derive(Debug, Clone)]
+pub struct MemoryFileOp {
+    pub path: String,
+    pub content: String,
 }
 
-/// Parse raw LLM response into recap + entries.
+/// Parse raw LLM response into recap + memory file operations.
 ///
-/// Expected format: `<recap>...</recap>` followed by one or more `<entry>...</entry>` blocks.
-/// Each entry contains `<summary>`, `<topic_tags>`, and `<memory_type>` sub-tags.
+/// Expected format: `<recap>...</recap>` followed by `<memory>` block containing
+/// one or more `<write path="...">` blocks.
 pub fn parse_compaction_response(
     raw: &str,
-) -> Result<(Option<String>, Vec<CompactedEntry>), CompactionError> {
+) -> Result<(Option<String>, Vec<MemoryFileOp>), CompactionError> {
     debug!(response_len = raw.len(), "Parsing compaction LLM response");
     let recap = extract_xml_tag(raw, "recap");
 
-    let entry_blocks = extract_all_xml_tags(raw, "entry");
-    if entry_blocks.is_empty() {
-        warn!(
-            response_len = raw.len(),
-            "No <entry> blocks found in LLM compaction response"
-        );
-        return Err(CompactionError::Parse(
-            "no <entry> blocks found in LLM response".to_string(),
-        ));
-    }
-
-    let mut entries = Vec::new();
-    for block in &entry_blocks {
-        let summary_text = extract_xml_tag(block, "summary").unwrap_or_default();
-        let topic_tags = extract_xml_tag(block, "topic_tags").unwrap_or_default();
-        let memory_type =
-            extract_xml_tag(block, "memory_type").unwrap_or_else(|| "episodic".to_string());
-
-        // Derive topic_key from the first tag.
-        let topic_key = topic_tags
-            .split(',')
-            .next()
-            .unwrap_or("")
-            .trim()
-            .to_lowercase()
-            .replace(' ', "_");
-
-        entries.push(CompactedEntry {
-            memory_type: memory_type.trim().to_string(),
-            summary_text,
-            topic_tags,
-            topic_key,
-            confidence: 0.9,
-        });
-    }
+    let memory_block = extract_xml_tag(raw, "memory").unwrap_or_default();
+    let ops = extract_write_ops(&memory_block);
 
     debug!(
-        entries = entries.len(),
+        ops = ops.len(),
         has_recap = recap.is_some(),
         "Compaction response parsed"
     );
-    Ok((recap, entries))
+    Ok((recap, ops))
+}
+
+/// Extract <write path="...">...</write> blocks from a <memory> section.
+fn extract_write_ops(text: &str) -> Vec<MemoryFileOp> {
+    let mut ops = Vec::new();
+    let mut search_from = 0;
+
+    while let Some(start) = text[search_from..].find("<write ") {
+        let abs_start = search_from + start;
+        // Find path attribute
+        let path_start = match text[abs_start..].find("path=\"") {
+            Some(p) => abs_start + p + 6,
+            None => {
+                search_from = abs_start + 1;
+                continue;
+            }
+        };
+        let path_end = match text[path_start..].find('"') {
+            Some(p) => path_start + p,
+            None => {
+                search_from = abs_start + 1;
+                continue;
+            }
+        };
+        let path = text[path_start..path_end].trim().to_string();
+
+        // Find closing > of the opening tag
+        let content_start = match text[abs_start..].find('>') {
+            Some(p) => abs_start + p + 1,
+            None => {
+                search_from = abs_start + 1;
+                continue;
+            }
+        };
+
+        // Find </write>
+        let close = "</write>";
+        let content_end = match text[content_start..].find(close) {
+            Some(p) => content_start + p,
+            None => {
+                search_from = abs_start + 1;
+                continue;
+            }
+        };
+
+        let content = text[content_start..content_end].trim().to_string();
+        if !path.is_empty() {
+            ops.push(MemoryFileOp { path, content });
+        }
+        search_from = content_end + close.len();
+    }
+
+    ops
 }
 
 // ---------------------------------------------------------------------------
@@ -166,29 +177,27 @@ pub fn parse_compaction_response(
 mod tests {
     use super::*;
 
-    fn make_xml_response() -> String {
+    fn make_memory_response() -> String {
         r#"<recap>
 The assistant had a pleasant conversation with the user about their day and preferences.
 They discussed daily activities and the user's beverage preferences.
 </recap>
 
-<entry>
-<summary>
+<memory>
+<write path="daily/2026-03-25.md">
+# Conversation on 2026-03-25
+
 - User discussed their day
 - They mentioned having a busy morning
-</summary>
-<topic_tags>daily, personal</topic_tags>
-<memory_type>episodic</memory_type>
-</entry>
+</write>
 
-<entry>
-<summary>
+<write path="preferences/beverages.md">
+# Beverage Preferences
+
 - User prefers tea over coffee
 - This is a stable preference
-</summary>
-<topic_tags>preference, food</topic_tags>
-<memory_type>semantic</memory_type>
-</entry>"#
+</write>
+</memory>"#
             .to_string()
     }
 
@@ -221,117 +230,95 @@ They discussed daily activities and the user's beverage preferences.
     }
 
     #[test]
-    fn test_extract_all_xml_tags() {
-        let text = "<entry>first</entry> middle <entry>second</entry>";
-        let results = extract_all_xml_tags(text, "entry");
-        assert_eq!(results, vec!["first", "second"]);
-    }
-
-    #[test]
     fn test_parse_compaction_response() {
-        let raw = make_xml_response();
-        let (recap, entries) = parse_compaction_response(&raw).unwrap();
+        let raw = make_memory_response();
+        let (recap, ops) = parse_compaction_response(&raw).unwrap();
 
         assert!(recap.is_some());
         assert!(recap.unwrap().contains("pleasant conversation"));
-        assert_eq!(entries.len(), 2);
-        assert!(entries[0].summary_text.contains("User discussed their day"));
-        assert_eq!(entries[0].memory_type, "episodic");
-        assert_eq!(entries[0].topic_tags, "daily, personal");
-        assert!(entries[1].summary_text.contains("User prefers tea"));
-        assert_eq!(entries[1].memory_type, "semantic");
+        assert_eq!(ops.len(), 2);
+        assert_eq!(ops[0].path, "daily/2026-03-25.md");
+        assert!(ops[0].content.contains("User discussed their day"));
+        assert_eq!(ops[1].path, "preferences/beverages.md");
+        assert!(ops[1].content.contains("User prefers tea"));
     }
 
     #[test]
-    fn test_parse_compaction_response_no_entries() {
-        let raw = "<recap>Just a recap</recap>";
-        let result = parse_compaction_response(raw);
-        assert!(matches!(result, Err(CompactionError::Parse(_))));
-    }
-
-    #[test]
-    fn test_parse_compaction_response_no_recap() {
-        let raw = r#"<entry>
-<summary>- Something happened</summary>
-<topic_tags>test</topic_tags>
-<memory_type>episodic</memory_type>
-</entry>"#;
-        let (recap, entries) = parse_compaction_response(raw).unwrap();
-        assert!(recap.is_none());
-        assert_eq!(entries.len(), 1);
-    }
-
-    #[test]
-    fn test_parse_empty_topic_tags() {
-        let raw = r#"<entry>
-<summary>User discussed preferences</summary>
-<topic_tags></topic_tags>
-<memory_type>episodic</memory_type>
-</entry>"#;
-        let (_, entries) = parse_compaction_response(raw).unwrap();
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].topic_tags, "");
-        assert_eq!(
-            entries[0].topic_key, "",
-            "empty topic_tags produces empty topic_key"
-        );
-    }
-
-    #[test]
-    fn test_parse_unclosed_summary_tag() {
-        let raw = r#"<entry>
-<summary>Some text that never closes
-<topic_tags>preferences</topic_tags>
-<memory_type>episodic</memory_type>
-</entry>"#;
-        let (_, entries) = parse_compaction_response(raw).unwrap();
-        assert_eq!(entries.len(), 1);
-        assert_eq!(
-            entries[0].summary_text, "",
-            "unclosed summary tag falls to empty default"
-        );
-        assert_eq!(entries[0].topic_tags, "preferences");
-    }
-
-    #[test]
-    fn test_parse_html_entities_passthrough() {
-        let raw = r#"<entry>
-<summary>User said &lt;hello&gt; &amp; goodbye</summary>
-<topic_tags>greetings &amp; farewells</topic_tags>
-<memory_type>episodic</memory_type>
-</entry>"#;
-        let (_, entries) = parse_compaction_response(raw).unwrap();
-        assert_eq!(entries.len(), 1);
-        assert!(entries[0].summary_text.contains("&lt;hello&gt;"));
-        assert!(entries[0].topic_tags.contains("&amp;"));
-    }
-
-    #[test]
-    fn test_parse_prose_with_recap_no_entries() {
+    fn test_parse_empty_memory_block() {
         let raw = r#"<recap>The conversation was about cats</recap>
 
-The user discussed various topics including their preference for cats
-over dogs. They also mentioned enjoying tea in the afternoon."#;
-        let result = parse_compaction_response(raw);
-        assert!(
-            matches!(result, Err(CompactionError::Parse(ref msg)) if msg.contains("no <entry> blocks")),
-            "prose-only response (with recap) should fail with Parse error"
-        );
+<memory></memory>"#;
+        let (recap, ops) = parse_compaction_response(raw).unwrap();
+        assert!(recap.is_some());
+        assert!(ops.is_empty());
     }
 
     #[test]
-    fn test_parse_entry_missing_memory_type() {
-        let raw = r#"<entry>
-<summary>User likes cats</summary>
-<topic_tags>preferences,animals</topic_tags>
-</entry>"#;
-        let (_, entries) = parse_compaction_response(raw).unwrap();
-        assert_eq!(entries.len(), 1);
-        assert_eq!(
-            entries[0].memory_type, "episodic",
-            "missing memory_type defaults to episodic"
-        );
-        assert_eq!(entries[0].summary_text, "User likes cats");
-        assert_eq!(entries[0].topic_key, "preferences");
+    fn test_parse_no_memory_block() {
+        let raw = r#"<recap>The conversation was about cats</recap>"#;
+        let (recap, ops) = parse_compaction_response(raw).unwrap();
+        assert!(recap.is_some());
+        assert!(ops.is_empty());
+    }
+
+    #[test]
+    fn test_parse_no_recap() {
+        let raw = r#"<memory>
+<write path="test.md">
+- Something happened
+</write>
+</memory>"#;
+        let (recap, ops) = parse_compaction_response(raw).unwrap();
+        assert!(recap.is_none());
+        assert_eq!(ops.len(), 1);
+        assert_eq!(ops[0].path, "test.md");
+    }
+
+    #[test]
+    fn test_extract_write_ops_with_nested_xml() {
+        let text = r#"<write path="test.md">
+# Test
+
+- Line with <b>bold</b> text
+</write>"#;
+        let ops = extract_write_ops(text);
+        assert_eq!(ops.len(), 1);
+        assert_eq!(ops[0].path, "test.md");
+        assert!(ops[0].content.contains("<b>bold</b>"));
+    }
+
+    #[test]
+    fn test_extract_write_ops_multiple() {
+        let text = r#"<write path="a.md">Content A</write>
+<write path="b.md">Content B</write>"#;
+        let ops = extract_write_ops(text);
+        assert_eq!(ops.len(), 2);
+        assert_eq!(ops[0].path, "a.md");
+        assert_eq!(ops[0].content, "Content A");
+        assert_eq!(ops[1].path, "b.md");
+        assert_eq!(ops[1].content, "Content B");
+    }
+
+    #[test]
+    fn test_extract_write_ops_malformed_missing_close() {
+        let text = r#"<write path="a.md">Content A"#;
+        let ops = extract_write_ops(text);
+        assert!(ops.is_empty());
+    }
+
+    #[test]
+    fn test_extract_write_ops_malformed_missing_path() {
+        let text = r#"<write>Content A</write>"#;
+        let ops = extract_write_ops(text);
+        assert!(ops.is_empty());
+    }
+
+    #[test]
+    fn test_extract_write_ops_empty_content() {
+        let text = r#"<write path="a.md"></write>"#;
+        let ops = extract_write_ops(text);
+        assert_eq!(ops.len(), 1);
+        assert_eq!(ops[0].path, "a.md");
+        assert_eq!(ops[0].content, "");
     }
 }

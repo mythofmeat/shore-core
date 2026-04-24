@@ -836,11 +836,7 @@ fn draw_input(frame: &mut Frame, app: &App, area: Rect) {
     }
     if app.live_speak {
         block = block.title(
-            Line::from(Span::styled(
-                " [TTS] ",
-                Style::default().fg(Color::Cyan),
-            ))
-            .right_aligned(),
+            Line::from(Span::styled(" [TTS] ", Style::default().fg(Color::Cyan))).right_aligned(),
         );
     }
     let paragraph = Paragraph::new(input_content)
@@ -1772,9 +1768,8 @@ mod scenario_tests {
         let expected_output = meta_phase_1.tokens.output + meta_phase_2.tokens.output;
         let expected_cache = meta_phase_1.tokens.cache_read + meta_phase_2.tokens.cache_read;
         let expected_total_ms = meta_phase_1.timing.total_ms + meta_phase_2.timing.total_ms;
-        let stats_expected = format!(
-            "in:{expected_input} out:{expected_output} cache:{expected_cache}"
-        );
+        let stats_expected =
+            format!("in:{expected_input} out:{expected_output} cache:{expected_cache}");
         assert!(
             f.contains(&stats_expected),
             "expected summed stats '{stats_expected}' in frame\n{f}"
@@ -1876,7 +1871,9 @@ mod scenario_tests {
     // assistant entry with streaming metadata instead of pushing a new one.
     #[test]
     fn scenario_history_then_stream_end_no_duplicate() {
-        use shore_protocol::server_msg::{History, ServerMessage, StreamChunk, StreamEnd, StreamStart};
+        use shore_protocol::server_msg::{
+            History, ServerMessage, StreamChunk, StreamEnd, StreamStart,
+        };
         use shore_protocol::types::{
             ContentBlock, Message, Role, StreamMetadata, TimingInfo, TokenCounts,
         };
@@ -1915,9 +1912,7 @@ mod scenario_tests {
             role: Role::Assistant,
             content: reply.into(),
             images: vec![],
-            content_blocks: vec![ContentBlock::Text {
-                text: reply.into(),
-            }],
+            content_blocks: vec![ContentBlock::Text { text: reply.into() }],
             alt_index: None,
             alt_count: None,
             timestamp: "t2".into(),

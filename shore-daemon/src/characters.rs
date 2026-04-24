@@ -13,8 +13,6 @@ use tokio::sync::{broadcast, Mutex};
 use tracing::{info, warn};
 
 use crate::engine::{ConversationEngine, EngineError};
-use crate::memory::db::MemoryDB;
-use crate::memory::vectorstore::VectorStore;
 use shore_config::{
     discover_characters, load_character_config, load_character_definition, resolve_user_definition,
     LoadedConfig,
@@ -36,10 +34,6 @@ pub struct CharacterRegistry {
     global_config: LoadedConfig,
     /// Cached per-character configs. `Some(config)` = has override, `None` = no override file.
     char_configs: HashMap<String, Option<LoadedConfig>>,
-    /// Cached MemoryDB connections per character (opened once, reused).
-    db_cache: HashMap<String, Arc<MemoryDB>>,
-    /// Cached VectorStore connections per character (opened once, reused).
-    vs_cache: HashMap<String, Arc<VectorStore>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,8 +42,6 @@ pub struct RuntimeReloadSummary {
     pub available_after: usize,
     pub character_discovery_changed: bool,
     pub dropped_engines: usize,
-    pub dropped_db_handles: usize,
-    pub dropped_vector_stores: usize,
 }
 
 impl CharacterRegistry {
@@ -61,6 +53,16 @@ impl CharacterRegistry {
         global_config: LoadedConfig,
     ) -> Self {
         let available = discover_characters(&config_dir);
+        for name in &available {
+            let character_data_dir = data_dir.join(name);
+            if let Err(e) = crate::memory::deferred_edits::ensure_active_prompt_snapshot(
+                &character_data_dir,
+                &config_dir,
+                name,
+            ) {
+                warn!(character = %name, error = %e, "Failed to prepare character workspace");
+            }
+        }
         info!(
             characters = ?available,
             "Discovered {} character(s)",
@@ -75,8 +77,6 @@ impl CharacterRegistry {
             available,
             global_config,
             char_configs: HashMap::new(),
-            db_cache: HashMap::new(),
-            vs_cache: HashMap::new(),
         }
     }
 
@@ -88,6 +88,16 @@ impl CharacterRegistry {
     /// Re-scan the characters directory for changes.
     pub fn refresh(&mut self) {
         self.available = discover_characters(&self.config_dir);
+        for name in &self.available {
+            let character_data_dir = self.data_dir.join(name);
+            if let Err(e) = crate::memory::deferred_edits::ensure_active_prompt_snapshot(
+                &character_data_dir,
+                &self.config_dir,
+                name,
+            ) {
+                warn!(character = %name, error = %e, "Failed to prepare character workspace");
+            }
+        }
     }
 
     /// Check whether a character exists in the available list.
@@ -175,11 +185,20 @@ impl CharacterRegistry {
     ///
     /// This is Shore's process-level invalidation boundary: global config is
     /// replaced, character discovery is re-scanned, merged per-character config
-    /// cache is dropped, memory/vector-store handles are reopened on demand,
-    /// and engines for removed characters are discarded.
+    /// cache is dropped, and engines for removed characters are discarded.
     pub fn reload_runtime_state(&mut self, config: LoadedConfig) -> RuntimeReloadSummary {
         let available_before = self.available.clone();
         let available_after = discover_characters(&self.config_dir);
+        for name in &available_after {
+            let character_data_dir = self.data_dir.join(name);
+            if let Err(e) = crate::memory::deferred_edits::ensure_active_prompt_snapshot(
+                &character_data_dir,
+                &self.config_dir,
+                name,
+            ) {
+                warn!(character = %name, error = %e, "Failed to prepare character workspace");
+            }
+        }
         let available_after_set: HashSet<String> = available_after.iter().cloned().collect();
 
         let removed_engines: Vec<String> = self
@@ -193,12 +212,6 @@ impl CharacterRegistry {
             self.engines.remove(&name);
         }
 
-        let dropped_db_handles = self.db_cache.len();
-        self.db_cache.clear();
-
-        let dropped_vector_stores = self.vs_cache.len();
-        self.vs_cache.clear();
-
         self.global_config = config;
         self.char_configs.clear();
         self.available = available_after;
@@ -208,8 +221,6 @@ impl CharacterRegistry {
             available_after: self.available.len(),
             character_discovery_changed: available_before != self.available,
             dropped_engines,
-            dropped_db_handles,
-            dropped_vector_stores,
         };
 
         info!(
@@ -217,8 +228,6 @@ impl CharacterRegistry {
             available_after = summary.available_after,
             character_discovery_changed = summary.character_discovery_changed,
             dropped_engines = summary.dropped_engines,
-            dropped_db_handles = summary.dropped_db_handles,
-            dropped_vector_stores = summary.dropped_vector_stores,
             "Reloaded character registry runtime state"
         );
 
@@ -228,32 +237,6 @@ impl CharacterRegistry {
     /// Access the global config.
     pub fn global_config(&self) -> &LoadedConfig {
         &self.global_config
-    }
-
-    /// Get or open a cached MemoryDB connection for a character.
-    pub fn get_or_open_db(&mut self, name: &str) -> Result<Arc<MemoryDB>, rusqlite::Error> {
-        if let Some(db) = self.db_cache.get(name) {
-            return Ok(db.clone());
-        }
-        let db_path = self.data_dir.join(name).join("memory").join("memory.db");
-        let db = Arc::new(MemoryDB::open(&db_path)?);
-        self.db_cache.insert(name.to_string(), db.clone());
-        Ok(db)
-    }
-
-    /// Get or open a cached VectorStore connection for a character.
-    pub async fn get_or_open_vs(
-        &mut self,
-        name: &str,
-        dimension: i32,
-    ) -> Result<Arc<VectorStore>, crate::memory::vectorstore::VectorStoreError> {
-        if let Some(vs) = self.vs_cache.get(name) {
-            return Ok(vs.clone());
-        }
-        let vs_path = self.data_dir.join(name).join("memory").join("vectorstore");
-        let vs = Arc::new(VectorStore::open(&vs_path, dimension).await?);
-        self.vs_cache.insert(name.to_string(), vs.clone());
-        Ok(vs)
     }
 
     /// Select a character by name or auto-select if there's only one.
@@ -292,7 +275,7 @@ pub enum CharacterError {
         name: String,
         available: Vec<String>,
     },
-    #[error("no characters available — create one at characters/<name>/character.md")]
+    #[error("no characters available — create one at characters/<name>/workspace/SOUL.md")]
     NoneAvailable,
     #[error("multiple characters available ({available:?}) — specify one with --character or SHORE_CHARACTER")]
     AmbiguousSelection { available: Vec<String> },
@@ -481,7 +464,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reload_runtime_state_refreshes_characters_and_clears_caches() {
+    async fn reload_runtime_state_refreshes_characters_and_config_cache() {
         let tmp = TempDir::new().unwrap();
         let mut reg = make_registry(&tmp, &["Alice"]);
 
@@ -494,8 +477,6 @@ mod tests {
 
         assert!(!reg.effective_config("Alice").app.defaults.stream);
         let old_engine = reg.get_or_create("Alice").unwrap();
-        let old_db = reg.get_or_open_db("Alice").unwrap();
-        let old_vs = reg.get_or_open_vs("Alice", 3).await.unwrap();
 
         let bob_dir = tmp.path().join("config").join("characters").join("Bob");
         std::fs::create_dir_all(&bob_dir).unwrap();
@@ -505,16 +486,10 @@ mod tests {
         let summary = reg.reload_runtime_state(reg.global_config().clone());
         assert_eq!(summary.available_before, 1);
         assert_eq!(summary.available_after, 2);
-        assert_eq!(summary.dropped_db_handles, 1);
-        assert_eq!(summary.dropped_vector_stores, 1);
         assert_eq!(summary.dropped_engines, 0);
         assert!(reg.has_character("Bob"));
         assert!(reg.effective_config("Alice").app.defaults.stream);
 
-        let new_db = reg.get_or_open_db("Alice").unwrap();
-        let new_vs = reg.get_or_open_vs("Alice", 3).await.unwrap();
-        assert!(!Arc::ptr_eq(&old_db, &new_db));
-        assert!(!Arc::ptr_eq(&old_vs, &new_vs));
         assert!(Arc::ptr_eq(
             &old_engine,
             &reg.get_or_create("Alice").unwrap()

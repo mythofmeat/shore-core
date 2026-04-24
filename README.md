@@ -1,53 +1,47 @@
-# Shore V2
+# Shore
 
-Shore is a persistent AI character engine built in Rust. Not a chat wrapper — a daemon that hosts one or more AI characters, remembers everything you've said to them, and lets them speak on their own between your messages when configured.
+Shore is a persistent AI character engine built in Rust. It is not a stateless chat wrapper: a long-running daemon owns character state, conversation history, memory, autonomy, tools, cache accounting, and client connections.
 
-## What makes Shore different
+The project goal is personal and specific: make an AI character chat program that improves on the parts of SillyTavern that hurt, while leaning into long-lived character continuity, inspectable memory, Anthropic cache discipline, and a character that can do useful things with its own time.
 
-Most AI tools start fresh each session. Shore's characters don't — a character you met yesterday remembers yesterday. Memory compacts, condenses, and stays searchable; conversations pick up where they left off; the character has durable continuity.
+For the current branch notes, read [OpenClawify Patch Notes](docs/PATCH_NOTES_OPENCLAWIFY.md).
 
-Shore runs as a persistent daemon. You talk to it from three clients: a **CLI** (`shore`) for quick commands, a **TUI** (`shore-tui`) for sitting in a conversation, and a **Matrix bridge** (`shore matrix`) for reaching characters from any Matrix client. All three share the same character, memory, and conversation state because they all connect to the same daemon.
+## What Matters
 
-Shore supports six LLM providers out of the box: Anthropic, OpenRouter, DeepSeek, Gemini, xAI, and ZhipuAI. You can run different operations — main conversation, memory work, summarization, tool-use — on different models, so you pay for quality where it matters and speed where it doesn't.
-
-With autonomy enabled, characters speak on their own: checking in after a silence, reflecting on past conversations, surfacing old memories at the right moment. Disabled by default; opt in when you're ready.
-
-## A day of use
-
-You say hi to your character in the morning. It replies with a thread it's been thinking about since yesterday (an interiority tick overnight; it wrote a recap before going dormant). Later you ask it about a Doom WAD you mentioned last week — it pulls the right memory, cached from a conversation three days ago. You go heads-down for the afternoon. Around dinner, a scheduled tick fires and the character checks in on its own: *"hey, how'd that thing go?"* — because autonomy is on, and the character remembered you were working on something.
+- **One daemon, many clients.** CLI, TUI, GUI, MCP, and Matrix all talk to the same daemon state.
+- **Markdown memory.** Long-term memory lives under each character's `workspace/memory/` as ordinary files.
+- **Cache-safe prompt edits.** Character self-edits to protected prompt files are staged and only activate at compaction/reload boundaries.
+- **Heartbeat autonomy.** Characters can use private heartbeat ticks to reflect, maintain memory, use tools, schedule the next wake, and optionally send a message.
+- **Tool-rich conversations.** Characters can search memory, read/write workspace files, use web search, generate/send images, inspect activity, roll dice, check time, and use a scratchpad.
+- **Budget awareness.** Usage and cost are recorded in a SQLite ledger; Anthropic prompt-cache behavior is tracked closely.
 
 ## Prerequisites
 
-- **Rust** 1.75+ (stable toolchain)
-- **SQLite** development headers (bundled via `rusqlite`)
-- **Linux** — Shore is Linux-only in practice.
+- Rust stable toolchain
+- Linux in practice
+- SQLite support, via bundled `rusqlite`
+- Provider API keys for the models you configure
 
-## Install
+## Build
 
 ```sh
 cargo build --workspace --release
 ```
 
-Produces five binaries in `target/release/`:
+Main binaries:
 
 | Binary | Purpose |
-| ------ | ------- |
-| `shore-daemon` | Persistent daemon (engine, memory, autonomy, LLM providers) |
-| `shore` | CLI — stateless commands |
-| `shore-tui` | Full terminal UI with a persistent connection |
-| `shore-matrix` | Matrix bridge with embedded homeserver management |
-| `shore-gui` *(if built)* | Desktop GUI client (Tauri + React) |
-| `shore-gui-godot` *(if built)* | Experimental Godot-based GUI (RSI exercise) |
+| --- | --- |
+| `shore-daemon` | persistent daemon |
+| `shore` | CLI client |
+| `shore-tui` | terminal UI |
+| `shore-matrix` | Matrix bridge |
+| `shore-mcp` | debug/development MCP bridge |
+| `shore-gui` | Tauri desktop GUI, if built |
 
-## Quick start
+## Quick Start
 
-1. **Set an API key** (Anthropic shown; see [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md#environment-variables) for others):
-
-```sh
-export ANTHROPIC_API_KEY=sk-ant-...
-```
-
-2. **Create a minimal config** at `~/.config/shore/config.toml`:
+Create `~/.config/shore/config.toml`:
 
 ```toml
 [defaults]
@@ -55,45 +49,58 @@ model = "claude-sonnet"
 
 [chat.anthropic.claude-sonnet]
 model_id = "claude-sonnet-4-6"
+api_key_env = "ANTHROPIC_API_KEY"
+cache_ttl = "1h"
 ```
 
-3. **Create a character**. Easiest way is the scaffolder:
+Create a character workspace:
 
-```sh
-./target/release/shore character --new
+```text
+~/.config/shore/characters/Alice/workspace/
+  SOUL.md
+  USER.md
+  AGENTS.md
+  TOOLS.md
+  HEARTBEAT.md
+  memory/
 ```
 
-Or do it by hand — create `~/.config/shore/characters/Alice/character.md`:
+Minimal `SOUL.md`:
 
 ```markdown
 Alice is a warm, curious companion who loves literature and long conversations.
-She has a dry sense of humour and remembers everything you've told her.
+She remembers the user across time and keeps her own notes carefully.
 ```
 
-4. **Start the daemon and say hello**:
+Start the daemon and send a message:
 
 ```sh
-./target/release/shore-daemon &
-./target/release/shore send "Hello!"
+target/release/shore-daemon &
+target/release/shore send "Hello!"
 ```
 
-## What's next
+Legacy `character.md`, `user.md`, and `prompts/system.md` character layouts are migrated into the workspace on first load.
 
-- **[Features](docs/FEATURES.md)** — every feature explained: characters, memory, autonomy, interiority, tool use, clients (CLI / TUI / Matrix), prompt caching, diagnostics, remote access.
-- **[Configuration](docs/CONFIGURATION.md)** — every config section with purpose, tradeoffs, and worked examples. See also [`examples/config.toml`](examples/config.toml) for the canonical option list.
-- **[Architecture](docs/ARCHITECTURE.md)** — internals, for contributors.
+## Current Docs
+
+- [Goals](GOALS.md) — source of truth for project intent
+- [Features](FEATURES.md) — user-facing behavior
+- [Configuration](CONFIGURATION.md) — config reference
+- [Architecture](ARCHITECTURE.md) — implementation map
+- [Invariants](docs/INVARIANTS.md) — correctness constraints
+- [Quirks](docs/QUIRKS.md) — sharp edges and external weirdness
+- [OpenClawify Patch Notes](docs/PATCH_NOTES_OPENCLAWIFY.md) — what changed on this branch
 
 ## Tests
 
 ```sh
+cargo fmt --all --check
 cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+cargo build --workspace --release
 ```
 
-## Linting
-
-```sh
-cargo clippy --workspace
-```
+Live API verification is intentionally separate because it uses real provider credentials and costs money.
 
 ## License
 

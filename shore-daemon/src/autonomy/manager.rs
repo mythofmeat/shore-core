@@ -1,7 +1,8 @@
 //! AutonomyManager — per-character scheduler state with background tick tasks.
 //!
-//! Each character gets its own tokio task that ticks the interiority clock on a
-//! fixed interval. Interiority ticks double as cache refresh (unified timer).
+//! Each character gets its own tokio task that ticks the heartbeat clock on a
+//! fixed interval. Cache keepalive is a separate cost-saving subsystem driven
+//! from the same background loop.
 //! State is persisted to `{data_dir}/{character}/autonomy_state.json`.
 
 use std::path::{Path, PathBuf};
@@ -20,22 +21,21 @@ use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 
 use super::activity::ActivityTracker;
-use super::cache_keepalive::{CacheKeepalive, CacheKeepaliveAction};
-use super::interiority::{InteriorityAction, InteriorityClock};
-use super::recap_store::{RecapEntry, RecapStore};
-use super::{AutonomyStatus, InteriorityEventKind, InteriorityLog};
+use super::heartbeat::{HeartbeatAction, HeartbeatClock};
+use super::{AutonomyStatus, HeartbeatEventKind, HeartbeatLog};
+use crate::cache_keepalive::{CacheKeepalive, CacheKeepaliveAction};
 use crate::characters::CharacterRegistry;
-use crate::memory::agent::{AgentSearchContext, CallerIdentity};
-use crate::memory::agent_llm::RealAgentLlm;
-use crate::memory::compaction_impls::{resolve_embed_config, resolve_image_gen_config};
-use crate::memory::db::MemoryDB;
-use crate::memory::researcher::MemoryResearcher;
-use crate::memory::vectorstore::VectorStore;
+use crate::memory::compaction_impls::resolve_image_gen_config;
+use crate::memory::retrieval::resolve_embedding_config;
 use crate::notifications::{NotificationEvent, NotificationService};
 use crate::tools as tool_system;
-use crate::tools::context::{NoopRag, SharedToolContext};
+use crate::tools::context::SharedToolContext;
 use shore_config::app::{AutonomyConfig, CompactionConfig};
 use shore_config::LoadedConfig;
+use shore_config::{
+    character_memory_dir, character_workspace_dir, AGENTS_FILE, HEARTBEAT_FILE, SOUL_FILE,
+    TOOLS_FILE, USER_FILE,
+};
 use shore_diagnostics::truncate_summary;
 use shore_ledger::{CallType, LedgerClient};
 use shore_llm_client::types::LlmRequest;
@@ -64,12 +64,12 @@ struct TickContext {
 
 /// All autonomy state for a single character.
 pub struct AutonomyState {
-    pub interiority: InteriorityClock,
+    pub heartbeat: HeartbeatClock,
     pub cache_keepalive: CacheKeepalive,
     pub activity: ActivityTracker,
-    /// Ring buffer of interiority events for `shore log --heartbeat`.
-    pub interiority_log: InteriorityLog,
-    /// Whether autonomy is paused (moved from InteriorityClock).
+    /// Ring buffer of heartbeat events for `shore log --heartbeat`.
+    pub heartbeat_log: HeartbeatLog,
+    /// Whether autonomy is paused (moved from HeartbeatClock).
     paused: bool,
     /// Whether state has changed since last save.
     dirty: bool,
@@ -82,7 +82,7 @@ pub struct AutonomyState {
     /// Set by the idle trigger tick — the handler checks and clears this after
     /// each generation to run compaction inline (synchronously with the handler).
     compaction_pending: bool,
-    /// Cached last LLM request for interiority tick reuse.
+    /// Cached last LLM request for heartbeat tick reuse.
     last_request: Option<LlmRequest>,
 }
 
@@ -148,9 +148,9 @@ fn save_state(data_dir: &Path, character: &str, state: &mut AutonomyState) {
 
     let persisted = PersistedState {
         version: STATE_VERSION,
-        ticks_without_user: state.interiority.ticks_without_user(),
-        next_wake_at: state.interiority.next_wake().map(instant_to_rfc3339),
-        last_user_at: state.interiority.last_user_at().map(instant_to_rfc3339),
+        ticks_without_user: state.heartbeat.ticks_without_user(),
+        next_wake_at: state.heartbeat.next_wake().map(instant_to_rfc3339),
+        last_user_at: state.heartbeat.last_user_at().map(instant_to_rfc3339),
     };
 
     let path = state_path(data_dir, character);
@@ -194,7 +194,7 @@ fn load_state(data_dir: &Path, character: &str) -> Option<PersistedState> {
     }
 }
 
-fn restore_from_persisted(persisted: &PersistedState, interiority: &mut InteriorityClock) {
+fn restore_from_persisted(persisted: &PersistedState, heartbeat: &mut HeartbeatClock) {
     let next_wake = persisted
         .next_wake_at
         .as_deref()
@@ -203,7 +203,7 @@ fn restore_from_persisted(persisted: &PersistedState, interiority: &mut Interior
         .last_user_at
         .as_deref()
         .and_then(rfc3339_to_instant);
-    interiority.restore(persisted.ticks_without_user, next_wake, last_user);
+    heartbeat.restore(persisted.ticks_without_user, next_wake, last_user);
 }
 
 fn sanitize_compaction_config(mut compaction: CompactionConfig) -> CompactionConfig {
@@ -249,7 +249,7 @@ pub struct AutonomyManager {
     compaction: Arc<CompactionConfig>,
     data_dir: PathBuf,
     shutdown_rx: tokio::sync::watch::Receiver<()>,
-    /// LLM client for interiority ticks and cache keepalive pings.
+    /// LLM client for heartbeat ticks and cache keepalive pings.
     llm_client: Option<LedgerClient>,
     /// Broadcast sender for pushing autonomous messages to SWP clients.
     push_tx: Option<broadcast::Sender<ServerMessage>>,
@@ -345,15 +345,15 @@ impl AutonomyManager {
             .map(|c| Arc::new(c.app.behavior.autonomy.clone()))
             .unwrap_or_else(|| self.config.clone());
 
-        // Create interiority clock with config values.
-        let mut interiority = InteriorityClock::with_config(&autonomy_cfg.interiority);
+        // Create heartbeat clock with config values.
+        let mut heartbeat = HeartbeatClock::with_config(&autonomy_cfg.heartbeat);
         // cache_ttl_secs is no longer consumed here — CacheKeepalive handles
         // keepalive pings independently (added in Phase 3).
         let _ = cache_ttl_secs;
 
         // Restore persisted state if available.
         if let Some(persisted) = load_state(&self.data_dir, character) {
-            restore_from_persisted(&persisted, &mut interiority);
+            restore_from_persisted(&persisted, &mut heartbeat);
             info!(character, "Autonomy state restored from disk");
         } else {
             info!(character, "Autonomy state created (no prior state)");
@@ -363,17 +363,17 @@ impl AutonomyManager {
         // If the clock has a next_wake set (restored or bootstrapped), mirror
         // it to the keepalive so it can decide whether to bridge, and prime
         // the ping timer so keepalive pings begin immediately (rather than
-        // waiting for the first user message or interiority tick).
-        if let Some(wake) = interiority.next_wake() {
+        // waiting for the first user message or heartbeat tick).
+        if let Some(wake) = heartbeat.next_wake() {
             cache_keepalive.set_next_wake(Some(wake));
             cache_keepalive.on_cache_warmed(Instant::now());
         }
 
         let state = Arc::new(Mutex::new(AutonomyState {
-            interiority,
+            heartbeat,
             cache_keepalive,
             activity: ActivityTracker::new(),
-            interiority_log: InteriorityLog::new(),
+            heartbeat_log: HeartbeatLog::new(),
             paused: false,
             dirty: false,
             last_compaction_activity: Instant::now(),
@@ -436,19 +436,19 @@ impl AutonomyManager {
     /// Call after a user message is appended.
     pub fn notify_user_message(&self, character: &str, message_count: usize) {
         self.with_state(character, |s| {
-            let was_idle = s.interiority.ticks_without_user() > 0;
+            let was_idle = s.heartbeat.ticks_without_user() > 0;
             let now = Instant::now();
-            s.interiority.on_user_message(now);
+            s.heartbeat.on_user_message(now);
             // Mirror the new wake deadline to the keepalive subsystem.
-            if let Some(wake) = s.interiority.next_wake() {
+            if let Some(wake) = s.heartbeat.next_wake() {
                 s.cache_keepalive.set_next_wake(Some(wake));
             }
             // The user message will trigger an LLM response — cache-warming event.
             s.cache_keepalive.on_cache_warmed(now);
             if was_idle {
                 info!(character, "User returned — resetting idle counter");
-                s.interiority_log.push(
-                    InteriorityEventKind::Wake,
+                s.heartbeat_log.push(
+                    HeartbeatEventKind::Wake,
                     "User returned — idle counter reset",
                 );
             }
@@ -484,12 +484,12 @@ impl AutonomyManager {
         debug!(character, count, "Activity backfilled from history");
     }
 
-    /// Cache the last LLM request for interiority tick reuse.
+    /// Cache the last LLM request for heartbeat tick reuse.
     pub fn notify_last_request(&self, character: &str, request: LlmRequest) {
         self.with_state(character, |s| {
             s.last_request = Some(request);
         });
-        debug!(character, "Cached last LLM request for interiority reuse");
+        debug!(character, "Cached last LLM request for heartbeat reuse");
     }
 
     /// Call after compaction completes successfully. Updates the turn count
@@ -501,7 +501,7 @@ impl AutonomyManager {
         self.with_state(character, |s| {
             s.active_turn_count = new_turn_count;
             // Invalidate the cached request — it contains the pre-compaction
-            // conversation. The next interiority tick will rebuild from disk.
+            // conversation. The next heartbeat tick will rebuild from disk.
             s.last_request = None;
             // Stop keepalive pings — the cached prompt prefix is stale.
             // on_cache_warmed() will re-enable pings on the next real LLM call.
@@ -595,34 +595,34 @@ impl AutonomyManager {
         .unwrap_or(false)
     }
 
-    /// Schedule an immediate interiority tick. Returns Some(dormant) where
+    /// Schedule an immediate heartbeat tick. Returns Some(dormant) where
     /// dormant indicates whether the clock is currently in abandoned state
     /// (meaning the tick will be suppressed). Returns None if no state found.
-    pub fn interiority_tick_now(&self, character: &str) -> Option<bool> {
-        info!(character, "Debug: scheduling immediate interiority tick");
+    pub fn heartbeat_tick_now(&self, character: &str) -> Option<bool> {
+        info!(character, "Debug: scheduling immediate heartbeat tick");
         self.with_state(character, |s| {
-            let dormant = s.interiority.is_dormant(Instant::now());
-            s.interiority.force_wake();
+            let dormant = s.heartbeat.is_dormant(Instant::now());
+            s.heartbeat.force_wake();
             s.mark_dirty();
             dormant
         })
     }
 
-    /// Force interiority into dormant state. Returns true if state was found.
-    pub fn interiority_set_dormant(&self, character: &str) -> bool {
-        info!(character, "Debug: forcing interiority dormant");
+    /// Force heartbeat into dormant state. Returns true if state was found.
+    pub fn heartbeat_set_dormant(&self, character: &str) -> bool {
+        info!(character, "Debug: forcing heartbeat dormant");
         self.with_state(character, |s| {
-            s.interiority.force_dormant();
+            s.heartbeat.force_dormant();
             s.mark_dirty();
         })
         .is_some()
     }
 
-    /// Force interiority into active state. Returns true if state was found.
-    pub fn interiority_set_active(&self, character: &str) -> bool {
-        info!(character, "Debug: forcing interiority active");
+    /// Force heartbeat into active state. Returns true if state was found.
+    pub fn heartbeat_set_active(&self, character: &str) -> bool {
+        info!(character, "Debug: forcing heartbeat active");
         self.with_state(character, |s| {
-            s.interiority.force_active();
+            s.heartbeat.force_active();
             s.mark_dirty();
         })
         .is_some()
@@ -657,21 +657,17 @@ impl AutonomyManager {
     pub fn status(&self, character: &str) -> Option<AutonomyStatus> {
         self.with_state(character, |s| AutonomyStatus {
             paused: s.paused,
-            interiority_state: s.interiority.state_at(Instant::now()).to_string(),
-            ticks_without_user: s.interiority.ticks_without_user(),
-            dormant_after_interiority_turns: s.interiority.max_idle_ticks(),
-            effective_interval_secs: s.interiority.default_interval().as_secs(),
+            heartbeat_state: s.heartbeat.state_at(Instant::now()).to_string(),
+            ticks_without_user: s.heartbeat.ticks_without_user(),
+            dormant_after_heartbeat_turns: s.heartbeat.max_idle_ticks(),
+            effective_interval_secs: s.heartbeat.default_interval().as_secs(),
         })
     }
 
-    /// Return recent interiority events for `shore log --heartbeat`.
-    pub fn heartbeat_log(&self, character: &str, limit: usize) -> Vec<super::InteriorityEvent> {
+    /// Return recent heartbeat events for `shore log --heartbeat`.
+    pub fn heartbeat_log(&self, character: &str, limit: usize) -> Vec<super::HeartbeatEvent> {
         self.with_state(character, |s| {
-            s.interiority_log
-                .recent(limit)
-                .into_iter()
-                .cloned()
-                .collect()
+            s.heartbeat_log.recent(limit).into_iter().cloned().collect()
         })
         .unwrap_or_default()
     }
@@ -703,23 +699,18 @@ impl AutonomyManager {
 /// unless an actual action is triggered, so the overhead is negligible.
 const TICK_INTERVAL: Duration = Duration::from_secs(10);
 
-/// Soft deadline for the interiority tool loop (all iterations combined). The
-/// loop checks this before each iteration and breaks to the wrap-up call if
-/// exceeded. Generous enough that a slow memory agent + slow LLM across
+/// Soft deadline for the heartbeat tool loop (all iterations combined). The
+/// loop checks this before each iteration and ends the tick if
+/// exceeded. Generous enough that a slow memory query + slow LLM across
 /// `max_tool_rounds` iterations normally fits; tight enough that a runaway
 /// loop can't block subsequent ticks for an hour. Per-call HTTP timeouts
 /// (300s, enforced by `LlmClient`) still bound each individual request.
-const INTERIORITY_LOOP_DEADLINE: Duration = Duration::from_secs(30 * 60); // 30 minutes
-
-/// Hard timeout for the forced wrap-up call that closes every tick without a
-/// `<recap>`. Runs in its own `tokio::time::timeout` outside the loop deadline
-/// so a long-running loop can't starve the recap write.
-const INTERIORITY_WRAPUP_TIMEOUT: Duration = Duration::from_secs(5 * 60); // 5 minutes
+const HEARTBEAT_LOOP_DEADLINE: Duration = Duration::from_secs(30 * 60); // 30 minutes
 
 /// Lock the per-character autonomy state, recovering from mutex poisoning
 /// instead of panicking. A poisoned mutex means a previous holder panicked,
 /// but the state inside is still usable — letting the tick loop die would be
-/// worse (no more keepalive, no more interiority, permanent silent failure).
+/// worse (no more keepalive, no more heartbeat, permanent silent failure).
 fn lock_state(m: &Mutex<AutonomyState>) -> std::sync::MutexGuard<'_, AutonomyState> {
     lock_or_recover("autonomy state mutex", m)
 }
@@ -760,33 +751,33 @@ async fn tick_character(character: &str, ctx: &TickContext) {
     let now = Instant::now();
 
     // Collect actions under the lock, then release before any async work.
-    let (int_action, keepalive_action, compaction_needed) = {
+    let (int_action, keepalive_action, compaction_needed, dream_needed) = {
         let mut s = lock_state(&ctx.state);
         debug!(
             character,
-            state = %s.interiority.state_at(now),
-            ticks_without_user = s.interiority.ticks_without_user(),
+            state = %s.heartbeat.state_at(now),
+            ticks_without_user = s.heartbeat.ticks_without_user(),
             turn_count = s.active_turn_count,
             "tick"
         );
 
-        // -- interiority ------------------------------------------------------
-        let int_action = if ctx.config.enabled && ctx.config.interiority.enabled && !s.paused {
-            let had_deadline = s.interiority.next_wake().is_some();
-            let action = s.interiority.tick(now);
+        // -- heartbeat ------------------------------------------------------
+        let int_action = if ctx.config.enabled && ctx.config.heartbeat.enabled && !s.paused {
+            let had_deadline = s.heartbeat.next_wake().is_some();
+            let action = s.heartbeat.tick(now);
 
-            if !matches!(action, InteriorityAction::None) {
+            if !matches!(action, HeartbeatAction::None) {
                 s.mark_dirty();
             }
 
             // Detect guard trip: had a deadline, tick returned None, deadline now cleared.
             if had_deadline
-                && matches!(action, InteriorityAction::None)
-                && s.interiority.next_wake().is_none()
+                && matches!(action, HeartbeatAction::None)
+                && s.heartbeat.next_wake().is_none()
             {
-                let ticks = s.interiority.ticks_without_user();
-                s.interiority_log.push(
-                    InteriorityEventKind::Dormant,
+                let ticks = s.heartbeat.ticks_without_user();
+                s.heartbeat_log.push(
+                    HeartbeatEventKind::Dormant,
                     format!("Abandonment guard tripped (ticks without user: {ticks})"),
                 );
                 // Guard-trip propagation: stop cache keepalive pings.
@@ -794,11 +785,17 @@ async fn tick_character(character: &str, ctx: &TickContext) {
             }
             action
         } else {
-            InteriorityAction::None
+            HeartbeatAction::None
         };
 
         // -- cache keepalive -------------------------------------------------
         let keepalive_action = s.cache_keepalive.tick(now);
+
+        let dream_needed = ctx.config.enabled
+            && ctx
+                .loaded_config
+                .as_ref()
+                .is_some_and(|lc| lc.app.memory.dreaming.enabled);
 
         // -- compaction triggers ---------------------------------------------
         let mut compaction_needed = false;
@@ -833,15 +830,19 @@ async fn tick_character(character: &str, ctx: &TickContext) {
         }
 
         save_state(&ctx.data_dir, character, &mut s);
-        (int_action, keepalive_action, compaction_needed)
+        (
+            int_action,
+            keepalive_action,
+            compaction_needed,
+            dream_needed,
+        )
     };
 
     // Idle-triggered compaction: when the tick has the dependencies it needs
-    // (LLM client, config, notifier, registry), run compaction + cascaded
-    // collation inline so idle periods actually produce the work. When any
-    // dependency is missing (unit-test contexts), fall back to setting the
-    // pending flag so the handler's post-generation path picks it up on the
-    // user's next message.
+    // (LLM client, config, notifier, registry), run compaction inline so idle
+    // periods actually produce the work. When any dependency is missing
+    // (unit-test contexts), fall back to setting the pending flag so the
+    // handler's post-generation path picks it up on the user's next message.
     let mut run_compaction_now = false;
     if compaction_needed {
         let have_deps = ctx.llm_client.is_some()
@@ -861,20 +862,19 @@ async fn tick_character(character: &str, ctx: &TickContext) {
         }
     }
 
-    // -- execute interiority action (async, outside lock) -----------------
-    // No outer tokio::time::timeout wrapper: `execute_unified_tick` enforces
-    // its own budgets — a soft deadline on the tool loop and a separate hard
-    // timeout on the forced wrap-up call — so a slow loop can't starve the
-    // recap write.
+    // -- execute heartbeat action (async, outside lock) -----------------
+    // No outer tokio::time::timeout wrapper: `execute_heartbeat_tick` enforces
+    // its own soft deadline on the tool loop so a slow loop can't starve
+    // later autonomy work.
     match int_action {
-        InteriorityAction::None => {}
-        InteriorityAction::RunTick => {
+        HeartbeatAction::None => {}
+        HeartbeatAction::RunTick => {
             {
                 let mut s = lock_state(&ctx.state);
-                s.interiority_log
-                    .push(InteriorityEventKind::TickFired, "Interiority tick fired");
+                s.heartbeat_log
+                    .push(HeartbeatEventKind::TickFired, "Heartbeat tick fired");
             }
-            execute_unified_tick(
+            execute_heartbeat_tick(
                 character,
                 &ctx.state,
                 &ctx.data_dir,
@@ -895,8 +895,8 @@ async fn tick_character(character: &str, ctx: &TickContext) {
             // Ping actually sent and succeeded — confirm to the keepalive so
             // it schedules the next ping 59 minutes from now.
             s.cache_keepalive.on_cache_warmed(Instant::now());
-            s.interiority_log
-                .push(InteriorityEventKind::DormantPing, "Cache keepalive ping");
+            s.heartbeat_log
+                .push(HeartbeatEventKind::DormantPing, "Cache keepalive ping");
         } else {
             // Ping was skipped (no cached request) or failed. next_ping_at is
             // still in the past, so tick() will return Ping again on the next
@@ -910,6 +910,10 @@ async fn tick_character(character: &str, ctx: &TickContext) {
         execute_idle_compaction(character, ctx).await;
     }
 
+    if dream_needed {
+        execute_scheduled_dream(character, ctx).await;
+    }
+
     // -- final persist (in case async actions dirtied state) ---------------
     {
         let mut s = lock_state(&ctx.state);
@@ -917,10 +921,10 @@ async fn tick_character(character: &str, ctx: &TickContext) {
     }
 }
 
-/// Run compaction + cascaded collation for a character during an autonomy
-/// tick, without waiting for the user's next message. Resets the compaction
-/// state flags and reloads the engine's cached messages on success so the
-/// next turn (or interiority tick) sees the compacted `active.jsonl`.
+/// Run compaction for a character during an autonomy tick, without waiting
+/// for the user's next message. Resets the compaction state flags and reloads
+/// the engine's cached messages on success so the next turn (or heartbeat
+/// tick) sees the compacted `active.jsonl`.
 async fn execute_idle_compaction(character: &str, ctx: &TickContext) {
     let llm_client = match ctx.llm_client.as_ref() {
         Some(c) => c,
@@ -939,7 +943,10 @@ async fn execute_idle_compaction(character: &str, ctx: &TickContext) {
         None => return,
     };
 
-    info!(character, "Autonomy tick: running idle-triggered compaction");
+    info!(
+        character,
+        "Autonomy tick: running idle-triggered compaction"
+    );
 
     match crate::memory::compaction::run_compaction(
         character,
@@ -975,6 +982,23 @@ async fn execute_idle_compaction(character: &str, ctx: &TickContext) {
                 }
             }
 
+            // Apply deferred character self-edits now that the cache has
+            // been bust by the engine reload.
+            let character_data_dir = ctx.data_dir.join(character);
+            if let Some(lc) = ctx.loaded_config.as_deref() {
+                if let Err(e) = crate::memory::deferred_edits::apply_deferred_edits(
+                    &character_data_dir,
+                    &lc.dirs.config,
+                    character,
+                ) {
+                    warn!(
+                        character,
+                        error = %e,
+                        "Idle compaction: failed to apply deferred edits"
+                    );
+                }
+            }
+
             let mut s = lock_state(&ctx.state);
             s.last_request = None;
             s.active_turn_count = retained_count;
@@ -1002,42 +1026,58 @@ async fn execute_idle_compaction(character: &str, ctx: &TickContext) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Unified interiority tick executor
-// ---------------------------------------------------------------------------
-
-/// Build the dynamic interiority prompt. Includes the recent thread block,
-/// user name, default interval, and documentation for `<recap>` and `<sendMessage>`.
-fn build_interiority_prompt(
-    recent_thread: &str,
-    user_name: &str,
-    default_interval: &str,
-) -> String {
-    let recent_block = if recent_thread.is_empty() {
-        String::new()
-    } else {
-        format!("\n{recent_thread}\n")
+async fn execute_scheduled_dream(character: &str, ctx: &TickContext) {
+    let Some(loaded_config) = ctx.loaded_config.as_deref() else {
+        return;
     };
+    let cfg = &loaded_config.app.memory.dreaming;
+    match crate::memory::dreaming::run_sweep(
+        &loaded_config.dirs.config,
+        character,
+        cfg,
+        false,
+        false,
+    )
+    .await
+    {
+        Ok(Some(result)) => {
+            info!(
+                character,
+                candidates = result.candidates.len(),
+                promoted = result.promoted.len(),
+                "Dreaming: scheduled sweep complete"
+            );
+        }
+        Ok(None) => {}
+        Err(e) => {
+            warn!(character, error = %e, "Dreaming: scheduled sweep failed");
+        }
+    }
+}
 
+// ---------------------------------------------------------------------------
+// Heartbeat tick executor
+// ---------------------------------------------------------------------------
+
+/// Build the dynamic heartbeat prompt.
+///
+/// This intentionally keeps heartbeat-specific behavior in HEARTBEAT.md and
+/// only documents the scheduler affordances that the runtime understands.
+fn build_heartbeat_prompt(user_name: &str, default_interval: &str) -> String {
     format!(
         "\
-[This is a private moment between conversations. No one is watching — you are \
-alone with your thoughts and your tools. This is your time to exist as yourself.
-{recent_block}
-You have real tools and you can do real things with them: search the web, \
-fetch pages, search and write memories, write to your scratchpad, generate \
-images, check the time. Reach for whatever serves what you actually want to \
-do right now. Don't perform productivity — if what you want is to sit with \
-a thought and write it down, do that.
+[This is a private heartbeat turn governed by the active HEARTBEAT.md content above. \
+You have real tools and can search or write markdown memories, use your scratchpad, \
+check the web, generate images, and schedule the next wake.
 
 In addition, you can:
 
-- Schedule your next interiority session: use set_next_wake(hours_from_now, \
+- Schedule your next heartbeat session: use set_next_wake(hours_from_now, \
 reason). The minimum is 1 hour, the maximum is 48 hours. Sooner if you want \
 to come back to something, later if you'd rather rest. If you don't \
 schedule, your next moment will arrive in {default_interval}. This is the \
 next opportunity you will have to send {user_name} an autonomous message or \
-to continue any unfinished or ongoing work from this current interiority \
+to continue any unfinished or ongoing work from this current heartbeat \
 session.
 
 - Send a message to {user_name}: wrap it in <sendMessage>...</sendMessage>. \
@@ -1045,55 +1085,22 @@ You have the ability to autonomously and spontaneously send messages to \
 {user_name}. Any text included in the `sendMessage` tags will be delivered \
 to {user_name}.
 
-Before ending your response, ensure you write a recap for yourself. Wrap a \
-brief first-person note in <recap>...</recap> detailing what you did, and \
-what you want to pick up next time. This is for you: it will surface in \
-your context at your next private moment and when {user_name} next \
-messages, so you can remember what you were up to. You decide whether to \
-share it with them or not.
-
 Thoughts, tool-use results, and any text in your response that is not part \
-of the `<recap>` or `<sendMessage>` tags are ephemeral and will be lost. If \
-you want to carry something forward, write it down.
+of `<sendMessage>` tags are private and ephemeral. If you want to carry \
+something forward, write it down with a memory or workspace tool.
 
-Changes you make to the memory database or to your scratchpad will persist, \
-but you'll need to call the relevant tool to retrieve them again. Make sure \
-to note in your `<recap>` where relevant information lives — which memory \
-entry or which scratchpad file — so you can find it next time.]"
+Changes you make to markdown memory files or to your scratchpad will persist. \
+If nothing needs doing right now, respond with HEARTBEAT_OK and stop.]"
     )
 }
 
-/// Build the `{recent_thread_block}` from recent System messages in the
-/// active conversation.
-///
-/// Single source of truth: `active.jsonl`. Every completed interiority tick
-/// persists its `<recap>` as a `Role::System` message (see
-/// `execute_unified_tick`), so this function reads the most recent three and
-/// renders them as the character's "where you left off" context.
-///
-/// Returns an empty string if there are no recaps (first-ever tick, or a
-/// freshly-reset conversation). The `InteriorityLog` ring buffer is kept for
-/// operator-facing diagnostics (`shore log --heartbeat`) but is deliberately
-/// not consulted here — surfacing raw tool-use events as a fallback trained
-/// the character to treat them as a second narrative channel, duplicating
-/// the recap's job.
-fn build_recent_thread(messages: &[Message]) -> String {
-    let recent_recaps: Vec<&Message> = messages
-        .iter()
-        .rev()
-        .filter(|m| m.role == Role::System)
-        .take(3)
-        .collect();
+fn default_heartbeat_instructions() -> &'static str {
+    "# HEARTBEAT\n\n- Use this private turn however seems useful.\n- You may use tools, schedule the next wake, or send {user} a message.\n- If nothing needs action, respond HEARTBEAT_OK."
+}
 
-    if recent_recaps.is_empty() {
-        return String::new();
-    }
-
-    let mut lines = vec!["Where you left off:".to_string()];
-    for msg in recent_recaps.iter().rev() {
-        lines.push(format!(" · {}", msg.content));
-    }
-    lines.join("\n")
+fn load_heartbeat_instructions(character_data_dir: &Path) -> String {
+    crate::memory::deferred_edits::load_active_prompt_file(character_data_dir, HEARTBEAT_FILE)
+        .unwrap_or_else(|| default_heartbeat_instructions().to_string())
 }
 
 /// Rebuild an `LlmRequest` from the compacted conversation on disk.
@@ -1112,17 +1119,17 @@ fn rebuild_request_from_disk(
     let active_path = char_dir.join("active.jsonl");
 
     let store = MessageStore::load(active_path)
-        .map_err(|e| warn!(character, error = %e, "Interiority rebuild: failed to load messages"))
+        .map_err(|e| warn!(character, error = %e, "Heartbeat rebuild: failed to load messages"))
         .ok()?;
     if store.messages().is_empty() {
         return None;
     }
 
-    // Resolve model: defaults.interiority → defaults.model → first chat model.
+    // Resolve model: defaults.heartbeat → defaults.model → first chat model.
     let resolved = config
         .app
         .defaults
-        .interiority
+        .heartbeat
         .as_deref()
         .and_then(|name| config.models.find_model(name).ok())
         .or_else(|| {
@@ -1136,29 +1143,45 @@ fn rebuild_request_from_disk(
         .or_else(|| config.models.first_chat_model())?;
 
     let display_name = config.app.defaults.resolve_display_name();
+    if let Err(e) = crate::memory::deferred_edits::ensure_active_prompt_snapshot(
+        &char_dir,
+        &config.dirs.config,
+        character,
+    ) {
+        warn!(character, error = %e, "Heartbeat rebuild: failed to ensure active prompt snapshot");
+    }
     let character_definition =
-        shore_config::load_character_definition(&config.dirs.config, character);
-    let user_definition = shore_config::resolve_user_definition(&config.dirs.config, character);
+        crate::memory::deferred_edits::load_active_prompt_file(&char_dir, SOUL_FILE);
+    let user_definition =
+        crate::memory::deferred_edits::load_active_prompt_file(&char_dir, USER_FILE);
+    let system_prompt =
+        crate::memory::deferred_edits::load_active_prompt_file(&char_dir, AGENTS_FILE);
+    let tools_guidance =
+        crate::memory::deferred_edits::load_active_prompt_file(&char_dir, TOOLS_FILE);
+    let recent_memory_digest = crate::memory::deferred_edits::load_active_prompt_file(
+        &char_dir,
+        crate::memory::deferred_edits::RECENT_MEMORY_DIGEST_FILE,
+    );
 
     let tool_toggles = &config.app.behavior.tool_use.tools;
     let capabilities = CapabilitiesConfig {
-        interiority_enabled: config.app.behavior.autonomy.interiority.enabled,
+        heartbeat_enabled: config.app.behavior.autonomy.heartbeat.enabled,
         scratchpad_enabled: tool_toggles.scratchpad_read() || tool_toggles.scratchpad_write(),
         memory_enabled: tool_toggles.memory(),
-        image_memory_enabled: tool_toggles.recall_image(),
         send_image_enabled: tool_toggles.send_image(),
         generate_image_enabled: tool_toggles.generate_image(),
         web_search_enabled: tool_toggles.web_search(),
     };
 
     let prompt_result = prompt::assemble_prompt(&PromptParams {
-        config_dir: &config.dirs.config,
         character_name: character,
         display_name: &display_name,
+        system_prompt: system_prompt.as_deref(),
+        tools_guidance: tools_guidance.as_deref(),
         character_definition: character_definition.as_deref(),
         user_definition: user_definition.as_deref(),
+        recent_memory_digest: recent_memory_digest.as_deref(),
         is_private: false,
-        character_data_dir: &char_dir,
         messages: store.messages(),
         max_context_tokens: resolved.max_context_tokens,
         max_output_tokens: resolved.max_tokens,
@@ -1188,33 +1211,33 @@ fn rebuild_request_from_disk(
         Ok(req) => {
             info!(
                 character,
-                "Interiority: rebuilt request from compacted conversation"
+                "Heartbeat: rebuilt request from compacted conversation"
             );
             Some(req)
         }
         Err(e) => {
-            warn!(character, error = %e, "Interiority: failed to rebuild request");
+            warn!(character, error = %e, "Heartbeat: failed to rebuild request");
             None
         }
     }
 }
 
-fn apply_interiority_model_override(
+fn apply_heartbeat_model_override(
     request: &mut LlmRequest,
     config: &LoadedConfig,
     character: &str,
 ) -> bool {
-    let Some(interiority_name) = config.app.defaults.interiority.as_deref() else {
+    let Some(heartbeat_name) = config.app.defaults.heartbeat.as_deref() else {
         return false;
     };
-    let resolved = match config.models.find_model(interiority_name) {
+    let resolved = match config.models.find_model(heartbeat_name) {
         Ok(r) => r,
         Err(e) => {
             warn!(
                 character,
                 error = %e,
-                interiority_model = %interiority_name,
-                "Interiority: configured model not found in catalog"
+                heartbeat_model = %heartbeat_name,
+                "Heartbeat: configured model not found in catalog"
             );
             return false;
         }
@@ -1232,9 +1255,9 @@ fn apply_interiority_model_override(
         Ok(mut new_req) => {
             info!(
                 character,
-                interiority_model = %interiority_name,
+                heartbeat_model = %heartbeat_name,
                 model_id = %new_req.model,
-                "Interiority: using configured interiority model"
+                "Heartbeat: using configured heartbeat model"
             );
             new_req.forensic_character = Some(character.to_owned());
             *request = new_req;
@@ -1244,19 +1267,19 @@ fn apply_interiority_model_override(
             warn!(
                 character,
                 error = %e,
-                interiority_model = %interiority_name,
-                "Interiority: failed to build override request, falling back to chat model"
+                heartbeat_model = %heartbeat_name,
+                "Heartbeat: failed to build override request, falling back to chat model"
             );
             false
         }
     }
 }
 
-/// Execute a unified interiority tick: a real tool loop using non-streaming
+/// Execute a heartbeat tick: a real tool loop using non-streaming
 /// generate() calls. Tool loop messages are ephemeral — only <sendMessage>
 /// output persists to active.jsonl. All activity is logged to the ring buffer
 /// for `shore log --heartbeat`.
-async fn execute_unified_tick(
+async fn execute_heartbeat_tick(
     character: &str,
     state: &Arc<Mutex<AutonomyState>>,
     data_dir: &Path,
@@ -1266,11 +1289,6 @@ async fn execute_unified_tick(
     registry: Option<&Arc<tokio::sync::Mutex<CharacterRegistry>>>,
 ) {
     let Some(client) = llm_client else { return };
-
-    // Captured at tick entry so the recap's persisted position in active.jsonl
-    // reflects when the tick actually started — not when recap-write finally
-    // lands (which could race past a user message that arrived during wrap-up).
-    let tick_started_at = chrono::Local::now().fixed_offset();
 
     // Clone last_request under the lock, then release.
     let mut request = {
@@ -1293,7 +1311,7 @@ async fn execute_unified_tick(
                     None => {
                         info!(
                             character,
-                            "Interiority: skipping tick (no prior conversation)"
+                            "Heartbeat: skipping tick (no prior conversation)"
                         );
                         return;
                     }
@@ -1303,29 +1321,31 @@ async fn execute_unified_tick(
     };
 
     // Clear the stale request ID from the previous user message —
-    // reusing it across interiority iterations can confuse OpenRouter's
+    // reusing it across heartbeat iterations can confuse OpenRouter's
     // routing/dedup and cause unexpected cache misses.
     request.rid = None;
     request.forensic_character = Some(character.to_owned());
 
     let Some(lc) = loaded_config else { return };
 
-    apply_interiority_model_override(&mut request, lc, character);
+    apply_heartbeat_model_override(&mut request, lc, character);
 
-    // Build the dynamic interiority prompt.
-    let recap_path = data_dir.join(character).join("recaps.jsonl");
-    let active_messages =
-        crate::engine::messages::MessageStore::load(data_dir.join(character).join("active.jsonl"))
-            .ok()
-            .map(|s| s.messages().to_vec())
-            .unwrap_or_default();
+    // Build the dynamic heartbeat prompt.
+    let character_data_dir = data_dir.join(character);
+    if let Err(e) = crate::memory::deferred_edits::ensure_active_prompt_snapshot(
+        &character_data_dir,
+        &lc.dirs.config,
+        character,
+    ) {
+        warn!(character, error = %e, "Heartbeat: failed to prepare active prompt snapshot");
+    }
     let user_name = lc.app.defaults.resolve_display_name();
     let default_interval_secs = lc
         .app
         .behavior
         .autonomy
-        .interiority
-        .fallback_interiority_interval
+        .heartbeat
+        .fallback_heartbeat_interval
         .as_secs();
     let default_interval_str = if default_interval_secs >= 3600 && default_interval_secs % 3600 == 0
     {
@@ -1338,67 +1358,62 @@ async fn execute_unified_tick(
     } else {
         format!("{} minutes", default_interval_secs / 60)
     };
-    let recent_thread = build_recent_thread(&active_messages);
-    let interiority_prompt =
-        build_interiority_prompt(&recent_thread, &user_name, &default_interval_str);
+    let heartbeat_instructions =
+        load_heartbeat_instructions(&character_data_dir).replace("{user}", &user_name);
+    let heartbeat_prompt = build_heartbeat_prompt(&user_name, &default_interval_str);
 
-    // Append the interiority prompt as a system-role message. The Anthropic
+    request.messages.push(json!({
+        "role": "system",
+        "content": heartbeat_instructions,
+    }));
+
+    // Append the heartbeat prompt as a system-role message. The Anthropic
     // provider auto-wraps inline system messages in <system_instruction> tags
     // and emits them as a user turn (see convert_inline_system_messages).
     request
         .messages
-        .push(json!({"role": "system", "content": interiority_prompt}));
+        .push(json!({"role": "system", "content": heartbeat_prompt}));
 
     // NOTE: set_next_wake is now in the base tool set (tools/basic.rs)
-    // so the tools array is identical between normal messages and interiority
+    // so the tools array is identical between normal messages and heartbeat
     // ticks. This prevents cache prefix invalidation. Instructions for using
-    // set_next_wake are in the interiority prompt, not the capabilities block.
+    // set_next_wake are in the heartbeat prompt, not the capabilities block.
 
     let tool_ctx = match build_tool_context(character, data_dir, client, lc).await {
         Some(ctx) => ctx,
         None => {
             warn!(
                 character,
-                "Interiority: failed to build tool context, skipping tick"
+                "Heartbeat: failed to build tool context, skipping tick"
             );
             return;
         }
     };
-    let max_iterations = lc.app.behavior.autonomy.interiority.max_tool_rounds;
+    let max_iterations = lc.app.behavior.autonomy.heartbeat.max_tool_rounds;
 
     info!(
         character,
-        max_iterations, "Interiority: executing tool loop tick"
+        max_iterations, "Heartbeat: executing tool loop tick"
     );
 
-    // Collect <sendMessage> and <recap> content across iterations (last-wins).
+    // Collect <sendMessage> content across iterations (last-wins).
     let mut send_message_text: Option<String> = None;
-    let mut recap_text: Option<String> = None;
-    // True iff the loop completed max_iterations with tool_use still outstanding.
-    let mut hit_cap = false;
-    // True iff the loop was stopped early by the soft deadline guard.
-    let mut loop_deadline_hit = false;
-    // True iff at least one LLM call in the loop returned Ok(_). Gates the
-    // wrap-up call so we don't burn a budget trying to recap a tick whose
-    // very first generate() errored (e.g. provider outage).
-    let mut made_progress = false;
 
-    let loop_deadline = std::time::Instant::now() + INTERIORITY_LOOP_DEADLINE;
+    let loop_deadline = std::time::Instant::now() + HEARTBEAT_LOOP_DEADLINE;
 
     for iteration in 0..max_iterations {
         if std::time::Instant::now() >= loop_deadline {
             warn!(
                 character,
                 iteration,
-                loop_deadline_secs = INTERIORITY_LOOP_DEADLINE.as_secs(),
-                "Interiority: tool loop soft deadline reached, breaking to wrap-up"
+                loop_deadline_secs = HEARTBEAT_LOOP_DEADLINE.as_secs(),
+                "Heartbeat: tool loop soft deadline reached, breaking to wrap-up"
             );
-            loop_deadline_hit = true;
             break;
         }
 
         let call_type = if iteration == 0 {
-            CallType::Interiority
+            CallType::Heartbeat
         } else {
             CallType::ToolLoop
         };
@@ -1406,11 +1421,10 @@ async fn execute_unified_tick(
         let resp = match client.generate(&request, call_type, character, false).await {
             Ok(r) => r,
             Err(e) => {
-                error!(character, error = %e, iteration, "Interiority: LLM call failed");
+                error!(character, error = %e, iteration, "Heartbeat: LLM call failed");
                 break;
             }
         };
-        made_progress = true;
 
         info!(
             character,
@@ -1419,7 +1433,7 @@ async fn execute_unified_tick(
             input_tokens = resp.usage.input_tokens,
             output_tokens = resp.usage.output_tokens,
             cache_read = resp.usage.cache_read_tokens,
-            "Interiority: LLM response"
+            "Heartbeat: LLM response"
         );
 
         // Log text blocks.
@@ -1427,28 +1441,23 @@ async fn execute_unified_tick(
             if let ContentBlock::Text { text } = block {
                 if !text.trim().is_empty() {
                     let preview: String = text.chars().take(200).collect();
-                    info!(character, iteration, content = %preview, "Interiority: thought");
+                    info!(character, iteration, content = %preview, "Heartbeat: thought");
                 }
             }
         }
 
-        // Check for <sendMessage> and <recap> in this response (last-wins).
+        // Check for <sendMessage> in this response (last-wins).
         let text = resp.extract_text();
         if let Some(msg) = extract_send_message(&text) {
             send_message_text = Some(msg);
         }
-        if let Some(recap) = extract_recap(&text) {
-            recap_text = Some(recap);
-        }
 
         // Build assistant message from content blocks (filter unsigned thinking)
         // and push it before any exit path. Every successful generate() must
-        // land in the conversation history — otherwise the forced wrap-up call
-        // sees a dangling user: tool_results turn from the previous iteration
-        // with no record of the model's own "I stopped calling tools" signal,
-        // and reliably mistakes the wrap-up nudge for "continue tool-calling".
+        // land in the ephemeral heartbeat history before any exit path, keeping
+        // later tool-loop requests well formed.
         //
-        // Uses content_block_to_api_json (Anthropic path) — interiority always
+        // Uses content_block_to_api_json (Anthropic path) — heartbeat always
         // uses Anthropic models. ZAI would need content_block_to_json.
         let assistant_content: Vec<serde_json::Value> = resp
             .content_blocks
@@ -1480,7 +1489,7 @@ async fn execute_unified_tick(
                 iteration,
                 tool = %name, tool_id = %id,
                 input = %truncate_summary(&input_str, 200),
-                "Interiority: executing tool"
+                "Heartbeat: executing tool"
             );
 
             // Intercept set_next_wake — handled inline, not dispatched.
@@ -1492,10 +1501,10 @@ async fn execute_unified_tick(
                 let now = Instant::now();
                 {
                     let mut s = lock_state(state);
-                    s.interiority.schedule(when, now);
+                    s.heartbeat.schedule(when, now);
                     s.cache_keepalive.set_next_wake(Some(when));
-                    s.interiority_log.push(
-                        InteriorityEventKind::ToolUse,
+                    s.heartbeat_log.push(
+                        HeartbeatEventKind::ToolUse,
                         format!("set_next_wake: {clamped:.1}h — {reason}"),
                     );
                     s.mark_dirty();
@@ -1515,7 +1524,7 @@ async fn execute_unified_tick(
                 iteration,
                 tool = %name, is_error,
                 output = %truncate_summary(&output_str, 200),
-                "Interiority: tool result"
+                "Heartbeat: tool result"
             );
 
             tool_results.push(crate::content_util::build_tool_result_json(
@@ -1527,8 +1536,8 @@ async fn execute_unified_tick(
             // Log to ring buffer (skip set_next_wake — already logged above).
             if name.as_str() != "set_next_wake" {
                 let mut s = lock_state(state);
-                s.interiority_log.push(
-                    InteriorityEventKind::ToolUse,
+                s.heartbeat_log.push(
+                    HeartbeatEventKind::ToolUse,
                     format!("Tool: {name} → {}", truncate_summary(&output_str, 80)),
                 );
             }
@@ -1539,201 +1548,6 @@ async fn execute_unified_tick(
             "role": "user",
             "content": tool_results,
         }));
-
-        // Mark cap-hit only if this was the final iteration and the model
-        // still wanted more tool rounds. The wrap-up call below will then
-        // request a recap before the tick ends.
-        if iteration + 1 == max_iterations {
-            hit_cap = true;
-        }
-    }
-
-    // -- Forced wrap-up call when no recap was captured ------------------------
-    // Every tick that made it to at least one successful generate() must close
-    // with a <recap>. If the model didn't volunteer one during the tool loop —
-    // natural exit, iteration cap, or soft deadline — make one more
-    // generate() call with an explicit "write a recap" system message. Wrapped
-    // in its own hard timeout so a slow or runaway loop can't starve it.
-    //
-    // The pending tool results (if any) are already on `request.messages` from
-    // the last loop iteration; we only add the wrap-up system message. The
-    // system+tools prefix is unchanged, so cache reads on the prefix still
-    // hit.
-    let mut wrapup_failed = false;
-    if recap_text.is_none() && made_progress {
-        let reason = if loop_deadline_hit {
-            "loop deadline reached"
-        } else if hit_cap {
-            "iteration cap hit"
-        } else {
-            "natural exit without recap"
-        };
-        info!(
-            character,
-            reason, "Interiority: no recap from loop, firing wrap-up call"
-        );
-
-        let wrap_up_prompt = "Your private moment is ending. Write a <recap>...</recap> \
-             summarising what you were doing and thinking so you can pick it up next \
-             time — this is required. You can also include a <sendMessage> if there's \
-             something you want to share with the user.";
-
-        request.messages.push(json!({
-            "role": "system",
-            "content": wrap_up_prompt,
-        }));
-
-        let wrap_up_fut = client.generate(&request, CallType::ToolLoop, character, false);
-        match tokio::time::timeout(INTERIORITY_WRAPUP_TIMEOUT, wrap_up_fut).await {
-            Ok(Ok(resp)) => {
-                info!(
-                    character,
-                    finish_reason = %resp.finish_reason,
-                    input_tokens = resp.usage.input_tokens,
-                    output_tokens = resp.usage.output_tokens,
-                    cache_read = resp.usage.cache_read_tokens,
-                    "Interiority: wrap-up response"
-                );
-                let text = resp.extract_text();
-                if let Some(msg) = extract_send_message(&text) {
-                    send_message_text = Some(msg);
-                }
-                if let Some(recap) = extract_recap(&text) {
-                    recap_text = Some(recap);
-                } else {
-                    let preview: String = text.chars().take(500).collect();
-                    warn!(
-                        character,
-                        response_preview = %preview,
-                        "Interiority: wrap-up produced no recap"
-                    );
-                    wrapup_failed = true;
-                }
-            }
-            Ok(Err(e)) => {
-                error!(character, error = %e, "Interiority: wrap-up call failed");
-                wrapup_failed = true;
-            }
-            Err(_) => {
-                error!(
-                    character,
-                    timeout_secs = INTERIORITY_WRAPUP_TIMEOUT.as_secs(),
-                    "Interiority: wrap-up call timed out"
-                );
-                let mut s = lock_state(state);
-                s.interiority_log.push(
-                    InteriorityEventKind::Timeout,
-                    format!(
-                        "Wrap-up call timed out after {}s",
-                        INTERIORITY_WRAPUP_TIMEOUT.as_secs()
-                    ),
-                );
-                s.mark_dirty();
-                wrapup_failed = true;
-            }
-        }
-    }
-
-    // -- Persist <recap> if present, or log a visible failure -----------------
-    if let Some(recap) = recap_text {
-        info!(character, recap = %truncate_summary(&recap, 200), "Interiority: recap written");
-        let preview = truncate_summary(&recap, 80);
-        let recap_for_active = recap.clone();
-        let entry = RecapEntry {
-            timestamp: tick_started_at,
-            tick_id: format!("tick_{}", uuid::Uuid::new_v4()),
-            recap,
-        };
-        let mut store = RecapStore::load(&recap_path);
-        match store.append(entry) {
-            Ok(()) => {
-                // Persist as a Role::System message in active.jsonl so the
-                // recap survives compaction and appears in future payloads at
-                // its chronological position. The Anthropic provider wraps
-                // inline System messages in <system_instruction> and emits as
-                // a user turn (convert_inline_system_messages in
-                // providers/anthropic.rs). OpenAI-family providers accept
-                // role:"system" mid-history.
-                //
-                // insert_by_timestamp (not append) because a user message
-                // might have landed via the handler while the tick was
-                // wrapping up — the recap's tick_started_at is earlier than
-                // that user message, so it must splice before it.
-                let recap_msg = Message {
-                    msg_id: format!("m_{}", uuid::Uuid::new_v4()),
-                    role: Role::System,
-                    content: recap_for_active.clone(),
-                    images: vec![],
-                    content_blocks: vec![ContentBlock::Text {
-                        text: recap_for_active,
-                    }],
-                    alt_index: None,
-                    alt_count: None,
-                    timestamp: tick_started_at.to_rfc3339(),
-                };
-
-                if let Some(reg) = registry {
-                    let engine_arc = {
-                        let mut r = reg.lock().await;
-                        r.get_or_create(character)
-                    };
-                    match engine_arc {
-                        Ok(engine_arc) => {
-                            let mut engine = engine_arc.lock().await;
-                            if let Err(e) = engine.insert_message_by_timestamp(recap_msg) {
-                                error!(
-                                    character,
-                                    error = %e,
-                                    "Failed to persist recap to active.jsonl via engine"
-                                );
-                            }
-                        }
-                        Err(e) => {
-                            error!(
-                                character,
-                                error = %e,
-                                "Failed to get engine for recap persistence"
-                            );
-                        }
-                    }
-                } else {
-                    error!(
-                        character,
-                        "No registry available, recap not persisted to active.jsonl"
-                    );
-                }
-
-                let mut s = lock_state(state);
-                s.interiority_log.push(
-                    InteriorityEventKind::RecapWritten,
-                    format!("Recap saved: {preview}"),
-                );
-                s.mark_dirty();
-            }
-            Err(e) => {
-                warn!(character, error = %e, "Interiority: failed to persist recap");
-                let mut s = lock_state(state);
-                s.interiority_log.push(
-                    InteriorityEventKind::RecapMissing,
-                    format!("Recap persist failed: {e}"),
-                );
-                s.mark_dirty();
-            }
-        }
-    } else if made_progress {
-        // Loop ran (at least one generate() succeeded) but no recap landed,
-        // even after the forced wrap-up. Surface it in the visible log so the
-        // user can tell the difference between "tick didn't run" and "tick
-        // ran but model refused to recap".
-        let detail = if wrapup_failed {
-            "Wrap-up failed to produce a recap".to_string()
-        } else {
-            "Tick ended without a recap".to_string()
-        };
-        let mut s = lock_state(state);
-        s.interiority_log
-            .push(InteriorityEventKind::RecapMissing, detail);
-        s.mark_dirty();
     }
 
     // -- Cache warmed: the tick itself was a cache-warming LLM call -----------
@@ -1741,14 +1555,14 @@ async fn execute_unified_tick(
         let mut s = lock_state(state);
         s.cache_keepalive.on_cache_warmed(Instant::now());
         // Mirror schedule to keepalive (character may have called set_next_wake).
-        if let Some(wake) = s.interiority.next_wake() {
+        if let Some(wake) = s.heartbeat.next_wake() {
             s.cache_keepalive.set_next_wake(Some(wake));
         }
     }
 
     // -- Persist <sendMessage> if present --------------------------------------
     if let Some(user_msg) = send_message_text {
-        info!(character, msg = %truncate_summary(&user_msg, 200), "Interiority: sending message to user");
+        info!(character, msg = %truncate_summary(&user_msg, 200), "Heartbeat: sending message to user");
 
         let content_blocks = vec![ContentBlock::Text {
             text: user_msg.clone(),
@@ -1803,28 +1617,28 @@ async fn execute_unified_tick(
 
         let mut s = lock_state(state);
         let preview: String = msg.content.chars().take(80).collect();
-        s.interiority_log.push(
-            InteriorityEventKind::MessageSent,
+        s.heartbeat_log.push(
+            HeartbeatEventKind::MessageSent,
             format!("Autonomous message sent: {preview}"),
         );
         s.mark_dirty();
     } else {
         let mut s = lock_state(state);
-        s.interiority_log.push(
-            InteriorityEventKind::MessageSkipped,
+        s.heartbeat_log.push(
+            HeartbeatEventKind::MessageSkipped,
             "Tick completed — no message sent".to_string(),
         );
     }
 }
 
 // ---------------------------------------------------------------------------
-// Tool context builder for interiority ticks
+// Tool context builder for heartbeat ticks
 // ---------------------------------------------------------------------------
 
-/// Build a SharedToolContext for interiority ticks.
+/// Build a SharedToolContext for heartbeat ticks.
 ///
 /// Uses the same ingredients as the handler (LlmClient, LoadedConfig, data_dir)
-/// but resolves models with interiority-specific fallbacks. All tools work —
+/// but resolves models with heartbeat-specific fallbacks. All tools work —
 /// memory, images, web, scratchpad. The only gap is AutonomyManager (the
 /// heatmap tool degrades gracefully via the trait default).
 async fn build_tool_context(
@@ -1835,90 +1649,45 @@ async fn build_tool_context(
 ) -> Option<SharedToolContext> {
     let char_dir = data_dir.join(character);
 
-    // Memory DB.
-    let db_path = char_dir.join("memory").join("memory.db");
-    let db = match MemoryDB::open(&db_path) {
-        Ok(db) => db,
-        Err(e) => {
-            warn!(character, error = %e, "Interiority: failed to open memory DB");
-            return None;
-        }
-    };
-
-    // Agent model (use memory_agent config if set, else default model).
-    let agent_model_name = config.app.defaults.memory_agent.as_deref().or(config
-        .app
-        .defaults
-        .model
-        .as_deref())?;
-    let agent_model = config.models.find_model(agent_model_name).ok()?;
-
-    // Researcher model (optional).
-    let researcher_model = config
-        .app
-        .defaults
-        .collation
-        .as_deref()
-        .and_then(|name| config.models.find_model(name).ok())
-        .cloned();
-
-    // Semantic search context (graceful: None if no embedding model).
-    let search_ctx = match resolve_embed_config(
-        config.app.defaults.embedding.as_deref(),
-        &config.models.embedding,
-    ) {
-        Ok(embed_config) => {
-            let vs_path = char_dir.join("memory").join("vectorstore");
-            VectorStore::open(&vs_path, embed_config.dimensions)
-                .await
-                .ok()
-                .map(|vs| {
-                    AgentSearchContext::new(Arc::new(vs), client.inner().clone(), embed_config)
-                })
-        }
-        Err(_) => None,
-    };
-
     let image_gen_config = resolve_image_gen_config(
         config.app.defaults.image_generation.as_deref(),
         &config.models.image_generation,
     )
     .ok();
-
-    let display_name = config.app.defaults.resolve_display_name();
+    let embedding_config = resolve_embedding_config(
+        config.app.defaults.embedding.as_deref(),
+        &config.models.embedding,
+    )
+    .ok();
 
     debug!(
         character,
-        has_search = search_ctx.is_some(),
         has_image_gen = image_gen_config.is_some(),
-        has_researcher = researcher_model.is_some(),
-        "Interiority: tool context built"
+        "Heartbeat: tool context built"
     );
 
     Some(SharedToolContext {
-        db: Arc::new(db),
-        agent: crate::memory::agent::MemoryAgent::one_shot(
-            CallerIdentity::Char,
-            character,
-            &display_name,
-        ),
-        agent_llm: RealAgentLlm::new(client.clone(), character.to_string(), CallType::MemoryAgent),
-        agent_model_val: agent_model.clone(),
-        researcher: researcher_model
-            .as_ref()
-            .map(|_| MemoryResearcher::new(String::new(), String::new())),
-        researcher_llm_val: researcher_model.as_ref().map(|_| {
-            RealAgentLlm::new(client.clone(), character.to_string(), CallType::Researcher)
-        }),
-        researcher_model_val: researcher_model,
-        rag: NoopRag,
-        search_ctx,
         image_dir_val: char_dir.join("images").to_string_lossy().into_owned(),
         llm_client_val: client.inner().clone(),
         image_gen_config_val: image_gen_config,
         search_config_val: config.app.behavior.tool_use.search.clone(),
         character_name_val: character.to_string(),
         scratchpad_dir_val: char_dir.join("scratchpad").to_string_lossy().into_owned(),
+        workspace_dir_val: character_workspace_dir(&config.dirs.config, character)
+            .to_string_lossy()
+            .into_owned(),
+        markdown_store_val: crate::memory::markdown_store::MarkdownMemoryStore::open_sync(
+            character_memory_dir(&config.dirs.config, character),
+        )
+        .ok(),
+        memory_retrieval_config_val: config.app.memory.retrieval.clone(),
+        embedding_config_val: embedding_config,
+        memory_index_path_val: char_dir.join("memory_index.json"),
+        memory_access_allowed_val: config.app.behavior.tool_use.tools.memory(),
+        memory_read_allowed_val: config.app.behavior.tool_use.tools.memory_read(),
+        memory_write_allowed_val: config.app.behavior.tool_use.tools.memory_write(),
+        config_dir_val: config.dirs.config.to_string_lossy().into_owned(),
+        character_data_dir_val: char_dir.to_string_lossy().into_owned(),
     })
 }
 
@@ -1946,11 +1715,6 @@ fn extract_send_message(content: &str) -> Option<String> {
     extract_tag(content, "<sendMessage>", "</sendMessage>")
 }
 
-/// Extract text between `<recap>` and `</recap>` tags (last-wins).
-fn extract_recap(content: &str) -> Option<String> {
-    extract_tag(content, "<recap>", "</recap>")
-}
-
 // ---------------------------------------------------------------------------
 // Dormant ping executor
 // ---------------------------------------------------------------------------
@@ -1975,7 +1739,7 @@ async fn execute_dormant_ping(
             Some(req) => {
                 let mut ping = req.clone();
                 ping.max_tokens = 1;
-                // Clear stale request ID — same reason as execute_unified_tick.
+                // Clear stale request ID — same reason as execute_heartbeat_tick.
                 ping.rid = None;
                 ping.forensic_character = Some(character.to_owned());
                 // The cloned request includes the assistant's last response,
@@ -2007,8 +1771,8 @@ async fn execute_dormant_ping(
                 "Dormant ping: cache refreshed"
             );
             let mut s = lock_state(state);
-            s.interiority_log.push(
-                InteriorityEventKind::DormantPing,
+            s.heartbeat_log.push(
+                HeartbeatEventKind::DormantPing,
                 format!(
                     "Cache refresh ping (cache_read: {}, input: {})",
                     resp.usage.cache_read_tokens, resp.usage.input_tokens
@@ -2156,7 +1920,7 @@ mod tests {
             let mgr = test_manager(tmp.path());
             mgr.ensure_state("alice", None);
             let status = mgr.status("alice").unwrap();
-            assert_eq!(status.interiority_state, "Active");
+            assert_eq!(status.heartbeat_state, "Active");
             assert_eq!(status.ticks_without_user, 0);
         });
     }
@@ -2172,10 +1936,10 @@ mod tests {
         rt.block_on(async {
             let mgr = test_manager(tmp.path());
             mgr.ensure_state("alice", None);
-            assert!(mgr.interiority_set_dormant("alice"));
+            assert!(mgr.heartbeat_set_dormant("alice"));
 
             let status = mgr.status("alice").unwrap();
-            assert_eq!(status.interiority_state, "Dormant");
+            assert_eq!(status.heartbeat_state, "Dormant");
         });
     }
 
@@ -2192,12 +1956,12 @@ mod tests {
             mgr.ensure_state("alice", None);
             mgr.with_state("alice", |s| {
                 let now = Instant::now();
-                s.interiority
+                s.heartbeat
                     .on_user_message(now - Duration::from_secs(3 * 24 * 60 * 60));
             });
 
             let status = mgr.status("alice").unwrap();
-            assert_eq!(status.interiority_state, "Dormant");
+            assert_eq!(status.heartbeat_state, "Dormant");
         });
     }
 
@@ -2261,10 +2025,10 @@ mod tests {
 
         // Create and save.
         let mut state = AutonomyState {
-            interiority: InteriorityClock::with_config(&Default::default()),
+            heartbeat: HeartbeatClock::with_config(&Default::default()),
             cache_keepalive: CacheKeepalive::new(),
             activity: ActivityTracker::new(),
-            interiority_log: InteriorityLog::new(),
+            heartbeat_log: HeartbeatLog::new(),
             paused: false,
             dirty: true,
             last_compaction_activity: Instant::now(),
@@ -2307,7 +2071,7 @@ mod tests {
         assert!(loaded.next_wake_at.is_some());
 
         // Test the full restore path: verify Instant conversion doesn't panic.
-        let mut clock = InteriorityClock::with_config(&Default::default());
+        let mut clock = HeartbeatClock::with_config(&Default::default());
         restore_from_persisted(&loaded, &mut clock);
         assert_eq!(clock.ticks_without_user(), 5);
     }
@@ -2317,10 +2081,10 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let config = test_config();
         let state = Arc::new(Mutex::new(AutonomyState {
-            interiority: InteriorityClock::with_config(&Default::default()),
+            heartbeat: HeartbeatClock::with_config(&Default::default()),
             cache_keepalive: CacheKeepalive::new(),
             activity: ActivityTracker::new(),
-            interiority_log: InteriorityLog::new(),
+            heartbeat_log: HeartbeatLog::new(),
             paused: false,
             dirty: false,
             last_compaction_activity: Instant::now(),
@@ -2332,7 +2096,7 @@ mod tests {
 
         {
             let mut s = lock_state(&state);
-            s.interiority.on_user_message(Instant::now());
+            s.heartbeat.on_user_message(Instant::now());
             s.activity.record_message();
         }
 
@@ -2430,33 +2194,17 @@ mod tests {
             next_wake_at: None,
             last_user_at: None,
         };
-        let mut clock = InteriorityClock::with_config(&Default::default());
+        let mut clock = HeartbeatClock::with_config(&Default::default());
         restore_from_persisted(&persisted, &mut clock);
         assert_eq!(clock.ticks_without_user(), 7);
     }
 
-    // -- extract_tag / extract_recap tests -----------------------------------
+    // -- extract_tag / sendMessage tests -------------------------------------
 
     #[test]
     fn extract_send_message_last_wins() {
         let content = "<sendMessage>first</sendMessage> stuff <sendMessage>second</sendMessage>";
         assert_eq!(extract_send_message(content), Some("second".into()));
-    }
-
-    #[test]
-    fn extract_recap_parses() {
-        assert_eq!(
-            extract_recap("thinking...<recap>I explored something.</recap>...done"),
-            Some("I explored something.".into())
-        );
-        assert_eq!(extract_recap("no tags"), None);
-        assert_eq!(extract_recap("<recap></recap>"), None);
-    }
-
-    #[test]
-    fn extract_recap_last_wins() {
-        let content = "<recap>first note</recap> tools... <recap>revised note</recap>";
-        assert_eq!(extract_recap(content), Some("revised note".into()));
     }
 
     #[test]
@@ -2507,10 +2255,10 @@ mod tests {
         ka.on_cache_warmed(now - Duration::from_secs(60 * 60));
 
         let state = Arc::new(Mutex::new(AutonomyState {
-            interiority: InteriorityClock::with_config(&Default::default()),
+            heartbeat: HeartbeatClock::with_config(&Default::default()),
             cache_keepalive: ka,
             activity: ActivityTracker::new(),
-            interiority_log: InteriorityLog::new(),
+            heartbeat_log: HeartbeatLog::new(),
             paused: false,
             dirty: false,
             last_compaction_activity: now,
@@ -2563,7 +2311,7 @@ mod tests {
 
     #[test]
     fn startup_with_restored_wake_primes_keepalive() {
-        // After daemon restart, if the interiority clock had a next_wake
+        // After daemon restart, if the heartbeat clock had a next_wake
         // restored from persistence, the keepalive timer must be primed
         // so pings start immediately — not wait for the first user message.
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -2605,17 +2353,17 @@ mod tests {
 
     // -- cache prefix stability -----------------------------------------------
 
-    /// The interiority tick must NOT add tools (like `set_next_wake`) to the
+    /// The heartbeat tick must NOT add tools (like `set_next_wake`) to the
     /// request's tools array.  The Anthropic cache prefix order is
     /// tools → system → messages.  Changing the tools array invalidates the
-    /// ENTIRE cache prefix — system AND messages.  Every interiority tick
+    /// ENTIRE cache prefix — system AND messages.  Every heartbeat tick
     /// with a different tools array pays full input price (20× expected).
     ///
     /// The fix is to handle `set_next_wake` via an XML tag in the response
     /// (like `<sendMessage>` and `<recap>` already work), not as a tool.
     #[test]
-    fn interiority_must_not_mutate_tools_array() {
-        // Simulate what execute_unified_tick does: clone last_request,
+    fn heartbeat_must_not_mutate_tools_array() {
+        // Simulate what execute_heartbeat_tick does: clone last_request,
         // then check if tools are modified.
         let original_tools: Vec<serde_json::Value> = vec![
             json!({"name": "check_time", "input_schema": {}}),
@@ -2640,21 +2388,21 @@ mod tests {
         };
 
         // set_next_wake is now in the base tool set (tools/basic.rs),
-        // so execute_unified_tick no longer pushes it at call time.
+        // so execute_heartbeat_tick no longer pushes it at call time.
         // This test documents the invariant: the tools array must be
         // identical to the original conversation's tools to preserve
         // the cache prefix.
         assert_eq!(
             request.tools.as_ref().unwrap().len(),
             original_tools.len(),
-            "Interiority must not add tools to the request. \
+            "Heartbeat must not add tools to the request. \
              Adding set_next_wake changes the tools prefix, which invalidates \
              the ENTIRE Anthropic cache (tools → system → messages). \
              Use an XML tag like <sendMessage> instead."
         );
     }
 
-    // -- interiority model override ------------------------------------------
+    // -- heartbeat model override ------------------------------------------
 
     fn minimal_request(model_id: &str) -> LlmRequest {
         LlmRequest {
@@ -2676,9 +2424,9 @@ mod tests {
     }
 
     fn loaded_config_with_two_chat_models(
-        interiority: Option<&str>,
+        heartbeat: Option<&str>,
         chat_env: &str,
-        interiority_env: &str,
+        heartbeat_env: &str,
     ) -> shore_config::LoadedConfig {
         let chat_toml = format!(
             r#"
@@ -2688,7 +2436,7 @@ api_key_env = "{chat_env}"
 
 [anthropic.slowthink]
 model_id = "claude-opus-slowthink"
-api_key_env = "{interiority_env}"
+api_key_env = "{heartbeat_env}"
 "#
         );
         let chat: toml::Table = chat_toml.parse().unwrap();
@@ -2697,7 +2445,7 @@ api_key_env = "{interiority_env}"
                 .unwrap();
 
         let mut app = shore_config::app::AppConfig::default();
-        app.defaults.interiority = interiority.map(str::to_string);
+        app.defaults.heartbeat = heartbeat.map(str::to_string);
 
         let tmp = tempfile::tempdir().unwrap();
         shore_config::LoadedConfig::new_for_test(
@@ -2712,23 +2460,23 @@ api_key_env = "{interiority_env}"
         )
     }
 
-    /// Regression: `defaults.interiority` was silently ignored on the warm
-    /// path because `execute_unified_tick` reused the cached chat-turn
+    /// Regression: `defaults.heartbeat` was silently ignored on the warm
+    /// path because `execute_heartbeat_tick` reused the cached chat-turn
     /// request without rewriting the model.
-    /// Regression: `defaults.interiority` was silently ignored on the warm
-    /// path because `execute_unified_tick` reused the cached chat-turn
+    /// Regression: `defaults.heartbeat` was silently ignored on the warm
+    /// path because `execute_heartbeat_tick` reused the cached chat-turn
     /// request without rewriting the model.
     #[test]
-    fn interiority_override_swaps_model_when_set() {
-        let chat_env = "INTERIORITY_OVERRIDE_SWAP_CHAT";
-        let int_env = "INTERIORITY_OVERRIDE_SWAP_INT";
+    fn heartbeat_override_swaps_model_when_set() {
+        let chat_env = "HEARTBEAT_OVERRIDE_SWAP_CHAT";
+        let int_env = "HEARTBEAT_OVERRIDE_SWAP_INT";
         std::env::set_var(chat_env, "chat-secret");
         std::env::set_var(int_env, "slowthink-secret");
 
         let config = loaded_config_with_two_chat_models(Some("slowthink"), chat_env, int_env);
         let mut request = minimal_request("claude-sonnet-chat");
 
-        let applied = apply_interiority_model_override(&mut request, &config, "alice");
+        let applied = apply_heartbeat_model_override(&mut request, &config, "alice");
 
         assert!(applied, "override should have been applied");
         assert_eq!(request.model, "claude-opus-slowthink");
@@ -2742,31 +2490,31 @@ api_key_env = "{interiority_env}"
     }
 
     #[test]
-    fn interiority_override_is_noop_when_unset() {
+    fn heartbeat_override_is_noop_when_unset() {
         let config = loaded_config_with_two_chat_models(
             None,
-            "INTERIORITY_OVERRIDE_UNSET_CHAT",
-            "INTERIORITY_OVERRIDE_UNSET_INT",
+            "HEARTBEAT_OVERRIDE_UNSET_CHAT",
+            "HEARTBEAT_OVERRIDE_UNSET_INT",
         );
         let mut request = minimal_request("claude-sonnet-chat");
 
-        let applied = apply_interiority_model_override(&mut request, &config, "alice");
+        let applied = apply_heartbeat_model_override(&mut request, &config, "alice");
 
         assert!(!applied);
         assert_eq!(request.model, "claude-sonnet-chat");
     }
 
     #[test]
-    fn interiority_override_is_noop_when_model_matches() {
-        let chat_env = "INTERIORITY_OVERRIDE_MATCH_CHAT";
-        let int_env = "INTERIORITY_OVERRIDE_MATCH_INT";
+    fn heartbeat_override_is_noop_when_model_matches() {
+        let chat_env = "HEARTBEAT_OVERRIDE_MATCH_CHAT";
+        let int_env = "HEARTBEAT_OVERRIDE_MATCH_INT";
         std::env::set_var(chat_env, "chat-secret");
         std::env::set_var(int_env, "slowthink-secret");
 
         let config = loaded_config_with_two_chat_models(Some("slowthink"), chat_env, int_env);
         let mut request = minimal_request("claude-opus-slowthink");
 
-        let applied = apply_interiority_model_override(&mut request, &config, "alice");
+        let applied = apply_heartbeat_model_override(&mut request, &config, "alice");
 
         assert!(!applied);
         assert_eq!(request.model, "claude-opus-slowthink");
@@ -3021,10 +2769,10 @@ api_key_env = "{interiority_env}"
         };
 
         let state = Arc::new(Mutex::new(AutonomyState {
-            interiority: InteriorityClock::with_config(&Default::default()),
+            heartbeat: HeartbeatClock::with_config(&Default::default()),
             cache_keepalive: CacheKeepalive::new(),
             activity: ActivityTracker::new(),
-            interiority_log: InteriorityLog::new(),
+            heartbeat_log: HeartbeatLog::new(),
             paused: false,
             dirty: false,
             last_compaction_activity: Instant::now() - Duration::from_secs(10),

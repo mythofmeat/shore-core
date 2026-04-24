@@ -27,15 +27,14 @@ _write_config() {
 [defaults]
 display_name = "tester"
 model        = "chat.test.model"
-memory_agent = "chat.test.model"
 embedding    = "qwen3"
 
 [behavior.autonomy]
 enabled = true
 
-[behavior.autonomy.interiority]
+[behavior.autonomy.heartbeat]
 enabled = true
-fallback_interiority_interval = "1h"
+fallback_heartbeat_interval = "1h"
 
 [memory.compaction]
 enabled = true
@@ -80,8 +79,8 @@ if ! grep -q 'OPENROUTER_SHORE_EMBEDDING' "$CONFIG_DIR/.env" 2>/dev/null; then
     fi
 fi
 
-mkdir -p "$DATA_DIR/$CHARACTER_NAME/memory"
-cat > "$DATA_DIR/$CHARACTER_NAME/memory/recap.md" << 'RECAP'
+mkdir -p "$DATA_DIR/$CHARACTER_NAME/active_prompt"
+cat > "$DATA_DIR/$CHARACTER_NAME/active_prompt/RECENT_MEMORY.md" << 'RECAP'
 The user enjoys asking simple math questions.
 RECAP
 

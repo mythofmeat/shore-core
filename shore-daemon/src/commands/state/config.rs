@@ -45,34 +45,6 @@ pub fn config_check(ctx: &CommandContext) -> CommandResult {
         ));
     }
 
-    // Check: embedding models
-    if ctx.config.models.embedding.is_empty() {
-        warnings.push(
-            "No embedding models configured. Memory vector search will be unavailable.".into(),
-        );
-    } else {
-        info.push(format!(
-            "{} embedding model(s) configured",
-            ctx.config.models.embedding.len()
-        ));
-    }
-
-    // Check: default embedding reference
-    if let Some(ref emb) = ctx.config.app.defaults.embedding {
-        if !ctx.config.models.embedding.contains_key(emb.as_str()) {
-            warnings.push(format!("Default embedding \"{emb}\" not found in catalog"));
-        }
-    }
-
-    // Check: memory agent model reference
-    if let Some(ref ma) = ctx.config.app.defaults.memory_agent {
-        if ctx.config.models.find_model(ma).is_err() {
-            warnings.push(format!(
-                "Default memory_agent \"{ma}\" not found in catalog"
-            ));
-        }
-    }
-
     // Check: LLM service configured?
     if ctx.config.app.services.llm.command.is_none() && ctx.config.app.services.llm.socket.is_none()
     {
@@ -102,7 +74,7 @@ pub fn config_check(ctx: &CommandContext) -> CommandResult {
         "data_dir": ctx.config.dirs.data.display().to_string(),
         "chat_models": ctx.config.models.chat.len(),
         "tool_models": ctx.config.models.tools.len(),
-        "embedding_models": ctx.config.models.embedding.len(),
+        "memory_mode": "markdown",
     }))
 }
 
@@ -176,9 +148,7 @@ pub fn config_reset(ctx: &mut CommandContext) -> CommandResult {
     let config_path = ctx.config.dirs.config.join("config.toml");
     match shore_config::load_config(Some(&config_path)) {
         Ok(fresh) => {
-            let cleared_memory_shell_sessions = ctx.memory_shell_sessions.len();
             ctx.active_model = None;
-            ctx.memory_shell_sessions.clear();
             ctx.autonomy.reload_runtime_config(fresh.clone());
             ctx.config = fresh;
             info!(path = %config_path.display(), "Configuration reloaded from disk");
@@ -188,7 +158,6 @@ pub fn config_reset(ctx: &mut CommandContext) -> CommandResult {
                 "config_path": config_path.display().to_string(),
                 "invalidated": {
                     "runtime_overrides": true,
-                    "memory_shell_sessions": cleared_memory_shell_sessions,
                 }
             }))
         }

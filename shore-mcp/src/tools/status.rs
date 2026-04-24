@@ -43,7 +43,11 @@ impl ShoreMcpHandler {
         Parameters(p): Parameters<DiagnosticsParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let data = self
-            .run_cmd("status_diagnostics", "diagnostics", json!({ "count": p.count }))
+            .run_cmd(
+                "status_diagnostics",
+                "diagnostics",
+                json!({ "count": p.count }),
+            )
             .await?;
         Self::json_result(data)
     }

@@ -84,7 +84,6 @@ pub fn switch_model(ctx: &mut CommandContext, args: &serde_json::Value) -> Comma
 /// Reset model to config default.
 pub fn reset_model(ctx: &mut CommandContext) -> CommandResult {
     let previous = ctx.active_model.take();
-    ctx.active_model = ctx.config.app.defaults.model.clone();
     Ok(json!({
         "previous": previous,
         "active": ctx.active_model,
@@ -183,10 +182,7 @@ fn override_to_json(o: &Option<Option<String>>) -> serde_json::Value {
     }
 }
 
-fn effective_value(
-    o: &Option<Option<String>>,
-    default: &Option<String>,
-) -> serde_json::Value {
+fn effective_value(o: &Option<Option<String>>, default: &Option<String>) -> serde_json::Value {
     match o {
         None => default
             .clone()

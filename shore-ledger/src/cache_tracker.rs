@@ -130,14 +130,14 @@ impl CacheTracker {
             };
         }
 
-        // 1b. Track whether this is an interiority/tool_loop call. These
-        // operate on a different message prefix (interiority appends a prompt,
+        // 1b. Track whether this is an heartbeat/tool_loop call. These
+        // operate on a different message prefix (heartbeat appends a prompt,
         // tool loops append tool_result), so their cache_read values are not
         // comparable to the last normal message. We still run TTL expiry and
         // keepalive miss detection, but skip the UnexpectedWrite check and
         // don't update last_cache_read.
         let skip_cache_read_comparison =
-            obs.call_type == "interiority" || obs.call_type == "tool_loop";
+            obs.call_type == "heartbeat" || obs.call_type == "tool_loop";
 
         // 2. TTL expiry: Warm → Cold
         if self.state == CacheState::Warm {
@@ -209,7 +209,7 @@ impl CacheTracker {
         }
 
         // 6. Update internal state — only update cache_read baseline from
-        // normal message calls, not interiority/tool_loop (different prefix).
+        // normal message calls, not heartbeat/tool_loop (different prefix).
         if !skip_cache_read_comparison {
             self.last_cache_read = obs.cache_read_tokens;
         }
@@ -493,14 +493,14 @@ mod tests {
         });
         assert_eq!(tracker.state(), CacheState::Warm);
 
-        // 2 minutes later — TTL expired. Next call is interiority, not keepalive.
+        // 2 minutes later — TTL expired. Next call is heartbeat, not keepalive.
         let result = tracker.observe(&Observation {
             ts: "2026-04-05T12:02:00Z".into(),
             model: "claude-opus-4-6".into(),
             thinking_enabled: true,
             cache_read_tokens: 0,
             cache_write_tokens: 500,
-            call_type: "interiority".into(),
+            call_type: "heartbeat".into(),
         });
         assert_eq!(result.anomaly, Some(Anomaly::KeepaliveMiss));
     }
@@ -558,7 +558,7 @@ mod tests {
             thinking_enabled: true,
             cache_read_tokens: 0,
             cache_write_tokens: 500,
-            call_type: "interiority".into(),
+            call_type: "heartbeat".into(),
         });
         assert!(result.anomaly.is_none());
     }
@@ -573,7 +573,7 @@ mod tests {
             thinking_enabled: true,
             cache_read_tokens: 0,
             cache_write_tokens: 500,
-            call_type: "interiority".into(),
+            call_type: "heartbeat".into(),
         });
         assert!(result.anomaly.is_none());
     }

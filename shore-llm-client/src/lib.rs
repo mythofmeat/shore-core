@@ -174,10 +174,7 @@ impl LlmClient {
     /// `StreamEvent` lines for consumption by the stream consumer. When
     /// debug logging is enabled, the reader is transparently teed to a
     /// per-call response file.
-    pub async fn stream_raw(
-        &self,
-        request: &LlmRequest,
-    ) -> Result<StreamReader, LlmError> {
+    pub async fn stream_raw(&self, request: &LlmRequest) -> Result<StreamReader, LlmError> {
         let request = maybe_sanitize_request(request);
         let body = serde_json::to_string(&*request).map_err(LlmError::Serialize)?;
         let handle = debug_log::log_request(self.payload_log_dir.as_deref(), &request, &body);
@@ -234,7 +231,6 @@ impl LlmClient {
     ) -> Result<ImageGenerateResponse, LlmError> {
         providers::image_generate(&self.http_client, params).await
     }
-
 }
 
 impl Default for LlmClient {

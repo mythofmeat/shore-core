@@ -278,7 +278,7 @@ impl MockLlmServer {
     }
 
     /// Enqueue a non-streaming JSON response containing a `tool_use` block
-    /// (used by `generate()` — e.g. the interiority tick loop).
+    /// (used by `generate()` — e.g. the heartbeat tick loop).
     pub async fn enqueue_json_tool_use(&self, id: &str, name: &str, input: Value) {
         let body = json!({
             "id": "msg_test_json_tool",

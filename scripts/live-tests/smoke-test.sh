@@ -271,7 +271,6 @@ printf "\n${BOLD}Memory commands${RESET}\n"
 run_test "memory (status/query, no args)" $CLI memory
 run_test "memory changelog" $CLI memory changelog
 run_test "memory changelog -n 5" $CLI memory changelog -n 5
-run_test "memory reindex" $CLI memory reindex
 
 # ══════════════════════════════════════════════════════════════════════
 # SECTION 10: Heartbeat log

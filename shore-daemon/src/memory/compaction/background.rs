@@ -11,15 +11,11 @@ pub async fn run_compaction(
     data_dir: &std::path::Path,
     notifier: &crate::notifications::NotificationService,
 ) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
-    use crate::memory::compaction_impls::{
-        resolve_embed_config, RealCompactionLlm, RealConversationManager, RealVectorIndexer,
-    };
-    use crate::memory::db::MemoryDB;
-    use crate::memory::vectorstore::VectorStore;
+    use crate::memory::compaction_impls::{RealCompactionLlm, RealConversationManager};
     use crate::notifications::NotificationEvent;
     use shore_config::{load_character_config, resolve_prompt_template};
     use shore_protocol::types::ContentBlock;
-    use tracing::{info, warn};
+    use tracing::info;
 
     let character_dir = data_dir.join(character);
     let active_path = character_dir.join("active.jsonl");
@@ -53,10 +49,6 @@ pub async fn run_compaction(
         return Ok(0);
     }
 
-    // Open memory DB.
-    let db_path = character_dir.join("memory").join("memory.db");
-    let db = MemoryDB::open(&db_path).map_err(|e| format!("Failed to open memory DB: {e}"))?;
-
     // Resolve effective config: merge per-character overrides over global.
     let effective = load_character_config(config, character)
         .ok()
@@ -67,33 +59,32 @@ pub async fn run_compaction(
     let prompt_template = resolve_prompt_template(&effective.dirs.config, character, "compact.md")
         .unwrap_or_else(|| DEFAULT_COMPACT_PROMPT.to_string());
 
-    let model = crate::commands::state::resolve_compaction_model(&effective)
-        .ok_or("No model configured for background compaction")?;
-
-    // Resolve embedding config.
-    let embed_config = resolve_embed_config(
-        effective.app.defaults.embedding.as_deref(),
-        &effective.models.embedding,
-    )?;
-
-    // Open vector store.
-    let vs_path = character_dir.join("memory").join("vectorstore");
-    let store = VectorStore::open(&vs_path, embed_config.dimensions)
-        .await
-        .map_err(|e| format!("Failed to open vector store: {e}"))?;
+    let active_model = crate::runtime_state::load_character_runtime_state(&character_dir)
+        .ok()
+        .and_then(|state| state.active_model);
+    let model =
+        crate::commands::state::resolve_compaction_model(&effective, active_model.as_deref())
+            .ok_or("No model configured for background compaction")?;
 
     // Create trait implementations.
     let llm = RealCompactionLlm::new(llm_client.clone(), model, character.to_string());
-    let indexer = RealVectorIndexer::new(store, llm_client.inner().clone(), embed_config);
     let conv_mgr = RealConversationManager::new(&character_dir);
 
     let mgr = CompactionManager::new(effective.app.memory.compaction.clone());
 
-    // Load existing recap for folding.
-    let recap_path = character_dir.join("memory").join("recap.md");
+    // Load existing recent-memory digest for folding.
+    let recap_path = crate::memory::deferred_edits::recent_memory_digest_path(&character_dir);
     let existing_recap = tokio::fs::read_to_string(&recap_path).await.ok();
 
     let display_name = effective.app.defaults.resolve_display_name();
+
+    // Open markdown memory store for existing-memory context and file writes.
+    let markdown_store = crate::memory::markdown_store::MarkdownMemoryStore::open(
+        shore_config::character_memory_dir(&effective.dirs.config, character),
+    )
+    .await
+    .ok();
+
     let outcome = mgr
         .compact(
             character,
@@ -105,9 +96,8 @@ pub async fn run_compaction(
             character,
             &display_name,
             &llm,
-            &db,
-            &indexer,
             &conv_mgr,
+            markdown_store.as_ref(),
             false,
             None,
         )
@@ -117,7 +107,7 @@ pub async fn run_compaction(
         CompactionOutcome::Compacted(result) => {
             info!(
                 character = %character,
-                entries = result.entries_created.len(),
+                entries = result.memory_files_written.len(),
                 compacted_messages = result.message_count,
                 retained_turns = result.retained_turns,
                 recap = result.recap_generated,
@@ -129,35 +119,10 @@ pub async fn run_compaction(
                 &format!("Shore — {character}"),
                 &format!(
                     "Compaction complete: {} entries from {} messages",
-                    result.entries_created.len(),
+                    result.memory_files_written.len(),
                     result.message_count
                 ),
             );
-
-            // Run collation after successful compaction if configured.
-            if config.app.memory.collation.enabled && config.app.memory.collation.auto_run {
-                info!(character = %character, "Running auto-collation after compaction");
-                match crate::memory::collation::run_collation(
-                    character, config, llm_client, data_dir,
-                )
-                .await
-                {
-                    Ok(()) => {
-                        notifier.notify(
-                            NotificationEvent::CollationComplete,
-                            &format!("Shore — {character}"),
-                            "Collation complete",
-                        );
-                    }
-                    Err(e) => {
-                        warn!(
-                            character = %character,
-                            error = %e,
-                            "Auto-collation failed"
-                        );
-                    }
-                }
-            }
 
             Ok(result.retained_turns)
         }

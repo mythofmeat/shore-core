@@ -7,7 +7,7 @@ use shore_config::{config_dir, load_config, ConfigError, LoadedConfig};
 use shore_daemon::autonomy::manager::AutonomyManager;
 use shore_daemon::characters::CharacterRegistry;
 use shore_daemon::commands::{CommandContext, SessionTokens};
-use shore_daemon::handler::MessageHandler;
+use shore_daemon::handler::{MessageHandler, MessageHandlerDeps};
 use shore_daemon::handshake::build_handshake_provider;
 use shore_daemon::notifications::NotificationService;
 use shore_daemon::tts::TtsClient;
@@ -77,7 +77,7 @@ enum StartupError {
     LoadConfig {
         path: PathBuf,
         #[source]
-        source: ConfigError,
+        source: Box<ConfigError>,
     },
 
     #[error("Refusing startup for daemon address {addr} (from {bind_addr_source}): {message}")]
@@ -152,8 +152,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── Notification service ──────────────────────────────────────────
     let notifier = NotificationService::new(loaded.app.notifications.clone());
 
-    let instance_id = instance_id_override
-        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let instance_id = instance_id_override.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
     for warning in remote_access_warnings {
         warn!(
@@ -301,7 +300,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         llm_client.reconstruct_cache_state(&character, 3600);
     }
 
-    // Provide the autonomy manager with resources for interiority/keepalive execution.
+    // Provide the autonomy manager with resources for heartbeat/keepalive execution.
     autonomy.set_resources(
         llm_client.clone(),
         push_tx.clone(),
@@ -327,7 +326,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         autonomy: autonomy.clone(),
         llm_client: llm_client.clone(),
         diagnostics: diagnostics.clone(),
-        memory_shell_sessions: std::collections::HashMap::new(),
     };
 
     let live_speak = Arc::new(AtomicBool::new(false));
@@ -342,17 +340,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
-    let mut msg_handler = MessageHandler::new(
-        char_registry,
+    let mut msg_handler = MessageHandler::new(MessageHandlerDeps {
+        registry: char_registry,
         cmd_ctx,
         llm_client,
         push_tx,
         session_router,
-        autonomy.clone(),
+        autonomy: autonomy.clone(),
         notifier,
         live_speak,
         tts_client,
-    );
+    });
 
     // Spawn message handler as a background task.
     let handler_handle = tokio::spawn(async move {
@@ -422,7 +420,7 @@ fn resolve_startup(cli: Cli, env_addr: Option<String>) -> Result<StartupConfig, 
     let loaded = load_config(explicit_config_path.as_deref()).map_err(|source| {
         StartupError::LoadConfig {
             path: config_path_for_errors.clone(),
-            source,
+            source: Box::new(source),
         }
     })?;
     let (bind_addr, bind_addr_source) = resolve_listen_addr(cli.addr, env_addr, &loaded);
@@ -639,12 +637,7 @@ mod tests {
 
     #[test]
     fn cli_parses_instance_id_flag() {
-        let cli = Cli::try_parse_from([
-            "shore-daemon",
-            "--instance-id",
-            "shore-mcp-test",
-        ])
-        .unwrap();
+        let cli = Cli::try_parse_from(["shore-daemon", "--instance-id", "shore-mcp-test"]).unwrap();
         assert_eq!(cli.instance_id.as_deref(), Some("shore-mcp-test"));
     }
 

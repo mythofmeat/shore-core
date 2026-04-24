@@ -82,7 +82,11 @@ fn redact_request(body: &str) -> String {
 ///
 /// Returns `None` if logging is disabled (no directory) or the directory
 /// cannot be created.
-pub fn log_request(data_dir: Option<&Path>, request: &LlmRequest, body: &str) -> Option<CallHandle> {
+pub fn log_request(
+    data_dir: Option<&Path>,
+    request: &LlmRequest,
+    body: &str,
+) -> Option<CallHandle> {
     let dir = api_logs_dir(data_dir?);
     if let Err(e) = std::fs::create_dir_all(&dir) {
         warn!(error = %e, path = %dir.display(), "Failed to create api_logs dir");

@@ -909,7 +909,7 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<Co
                         app.set_status(format!("deleted {count} message(s)"));
                     }
                 }
-                "compact" | "collate" => {
+                "compact" => {
                     let status = co
                         .data
                         .get("status")

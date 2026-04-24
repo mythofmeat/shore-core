@@ -86,20 +86,8 @@ pub struct DefaultsConfig {
     /// Default chat model name (must match a model in config).
     pub model: Option<String>,
 
-    /// Default tool model name (for tool-use calls).
-    pub tool_model: Option<String>,
-
-    /// Default memory agent model name.
-    pub memory_agent: Option<String>,
-
-    /// Default collation model name (for merge/split/normalize decisions).
-    pub collation: Option<String>,
-
-    /// Default compaction model name (for conversation summarization).
-    pub compaction: Option<String>,
-
-    /// Default interiority model name (for autonomous interiority ticks).
-    pub interiority: Option<String>,
+    /// Default heartbeat model name (for autonomous heartbeat ticks).
+    pub heartbeat: Option<String>,
 
     /// Default embedding profile name.
     pub embedding: Option<String>,
@@ -130,11 +118,7 @@ impl Default for DefaultsConfig {
     fn default() -> Self {
         Self {
             model: None,
-            tool_model: None,
-            memory_agent: None,
-            collation: None,
-            compaction: None,
-            interiority: None,
+            heartbeat: None,
             embedding: None,
             image_generation: None,
             display_name: None,
@@ -164,54 +148,54 @@ pub struct AutonomyConfig {
     pub enabled: bool,
 
     #[serde(default)]
-    pub interiority: InteriorityConfig,
+    pub heartbeat: HeartbeatConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-pub struct InteriorityConfig {
-    /// Whether interiority ticks are enabled.
+pub struct HeartbeatConfig {
+    /// Whether heartbeat ticks are enabled.
     #[serde(default = "default_true")]
     pub enabled: bool,
 
-    /// Base interval between interiority ticks.
-    #[serde(default = "default_fallback_interiority_interval")]
-    pub fallback_interiority_interval: ConfigDuration,
+    /// Base interval between heartbeat ticks.
+    #[serde(default = "default_fallback_heartbeat_interval")]
+    pub fallback_heartbeat_interval: ConfigDuration,
 
     /// Consecutive ticks without a user message before the abandonment guard
     /// stops scheduling further ticks (character sleeps until user returns).
-    #[serde(default = "default_dormant_after_interiority_turns")]
-    pub dormant_after_interiority_turns: u32,
+    #[serde(default = "default_dormant_after_heartbeat_turns")]
+    pub dormant_after_heartbeat_turns: u32,
 
     /// Time without a user message before the abandonment guard
     /// stops scheduling further ticks. Default: 48 hours.
     #[serde(default = "default_dormant_after_idle_time")]
     pub dormant_after_idle_time: ConfigDuration,
 
-    /// Minimum time between a user message and the next interiority tick.
+    /// Minimum time between a user message and the next heartbeat tick.
     /// Prevents ticks from firing during active conversation. Default: 1h.
-    #[serde(default = "default_minimum_interiority_latency")]
-    pub minimum_interiority_latency: ConfigDuration,
+    #[serde(default = "default_minimum_heartbeat_latency")]
+    pub minimum_heartbeat_latency: ConfigDuration,
 
-    /// Maximum tool-use rounds per interiority tick.
+    /// Maximum tool-use rounds per heartbeat tick.
     #[serde(default = "default_max_tool_rounds")]
     pub max_tool_rounds: u32,
 }
 
-serde_default!(default_fallback_interiority_interval -> ConfigDuration { ConfigDuration::from_secs(3600) });
-serde_default!(default_dormant_after_interiority_turns -> u32 { 3 });
+serde_default!(default_fallback_heartbeat_interval -> ConfigDuration { ConfigDuration::from_secs(3600) });
+serde_default!(default_dormant_after_heartbeat_turns -> u32 { 3 });
 serde_default!(default_dormant_after_idle_time -> ConfigDuration { ConfigDuration::from_secs(172800) }); // 48 hours
-serde_default!(default_minimum_interiority_latency -> ConfigDuration { ConfigDuration::from_secs(3600) }); // 1 hour
+serde_default!(default_minimum_heartbeat_latency -> ConfigDuration { ConfigDuration::from_secs(3600) }); // 1 hour
 serde_default!(default_max_tool_rounds -> u32 { 12 });
 
-impl Default for InteriorityConfig {
+impl Default for HeartbeatConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            fallback_interiority_interval: default_fallback_interiority_interval(),
-            dormant_after_interiority_turns: default_dormant_after_interiority_turns(),
+            fallback_heartbeat_interval: default_fallback_heartbeat_interval(),
+            dormant_after_heartbeat_turns: default_dormant_after_heartbeat_turns(),
             dormant_after_idle_time: default_dormant_after_idle_time(),
-            minimum_interiority_latency: default_minimum_interiority_latency(),
+            minimum_heartbeat_latency: default_minimum_heartbeat_latency(),
             max_tool_rounds: default_max_tool_rounds(),
         }
     }
@@ -257,34 +241,6 @@ impl Default for CompactionConfig {
             max_turns: default_max_turns(),
             max_context_tokens: default_max_context_tokens(),
             keep_recent_turns: default_keep_recent_turns(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct CollationConfig {
-    /// Whether collation is enabled (gates both auto and manual triggers).
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-
-    /// Whether collation runs automatically after compaction.
-    #[serde(default = "default_true")]
-    pub auto_run: bool,
-
-    /// Maximum entries to process per collation run. Controls LLM cost.
-    #[serde(default = "default_batch_limit")]
-    pub batch_limit: usize,
-}
-
-serde_default!(default_batch_limit -> usize { 10 });
-
-impl Default for CollationConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            auto_run: true,
-            batch_limit: default_batch_limit(),
         }
     }
 }
@@ -335,30 +291,41 @@ pub struct ToolToggles(BTreeMap<String, bool>);
 impl ToolToggles {
     /// Check whether a tool is enabled by name. Absent keys default to enabled.
     pub fn is_enabled(&self, name: &str) -> bool {
-        self.0.get(name).copied().unwrap_or(true)
+        let enabled = self.0.get(name).copied().unwrap_or(true);
+        if is_memory_tool_name(name) && name != "memory" && !self.memory_group_enabled() {
+            return false;
+        }
+        enabled
     }
 
     pub fn set(&mut self, tool: &str, enabled: bool) {
         self.0.insert(tool.to_string(), enabled);
     }
 
+    fn memory_group_enabled(&self) -> bool {
+        self.0.get("memory").copied().unwrap_or(true)
+    }
+
     pub fn memory(&self) -> bool {
-        self.is_enabled("memory")
+        self.memory_group_enabled()
+    }
+    pub fn memory_read(&self) -> bool {
+        self.is_enabled("memory_read")
+    }
+    pub fn memory_write(&self) -> bool {
+        self.is_enabled("memory_write")
+    }
+    pub fn memory_search(&self) -> bool {
+        self.is_enabled("memory_search")
+    }
+    pub fn memory_list(&self) -> bool {
+        self.is_enabled("memory_list")
     }
     pub fn send_image(&self) -> bool {
         self.is_enabled("send_image")
     }
-    pub fn list_images(&self) -> bool {
-        self.is_enabled("list_images")
-    }
-    pub fn recall_image(&self) -> bool {
-        self.is_enabled("recall_image")
-    }
     pub fn generate_image(&self) -> bool {
         self.is_enabled("generate_image")
-    }
-    pub fn remember_image(&self) -> bool {
-        self.is_enabled("remember_image")
     }
     pub fn web_search(&self) -> bool {
         self.is_enabled("web_search")
@@ -387,6 +354,13 @@ impl ToolToggles {
     pub fn scratchpad_delete(&self) -> bool {
         self.is_enabled("scratchpad_delete")
     }
+}
+
+fn is_memory_tool_name(name: &str) -> bool {
+    matches!(
+        name,
+        "memory" | "memory_read" | "memory_write" | "memory_search" | "memory_list"
+    )
 }
 
 // ── [behavior.tool_use.search] ───────────────────────────────────────────
@@ -436,10 +410,42 @@ pub struct MemoryConfig {
     pub compaction: CompactionConfig,
 
     #[serde(default)]
-    pub collation: CollationConfig,
+    pub dreaming: DreamingConfig,
 
     #[serde(default)]
     pub thinking: ThinkingConfig,
+
+    #[serde(default)]
+    pub retrieval: RetrievalConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct DreamingConfig {
+    /// Whether scheduled memory dreaming sweeps are enabled.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Cron-like daily schedule. Shore currently supports `M H * * *`.
+    #[serde(default = "default_dreaming_frequency")]
+    pub frequency: String,
+
+    /// Maximum internal tool-style rounds a future LLM-backed sweep may use.
+    #[serde(default = "default_dreaming_max_tool_rounds")]
+    pub max_tool_rounds: u32,
+}
+
+serde_default!(default_dreaming_frequency -> String { "0 3 * * *".to_string() });
+serde_default!(default_dreaming_max_tool_rounds -> u32 { 12 });
+
+impl Default for DreamingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            frequency: default_dreaming_frequency(),
+            max_tool_rounds: default_dreaming_max_tool_rounds(),
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
@@ -454,6 +460,34 @@ pub struct ThinkingConfig {
     /// 4.x family does not).
     #[serde(default)]
     pub preserve_prior_turns: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RetrievalMode {
+    #[default]
+    Auto,
+    Lexical,
+    Hybrid,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RetrievalConfig {
+    /// Memory search mode. `auto` uses hybrid semantic+lexical retrieval when
+    /// an embedding profile is configured and usable, then falls back to
+    /// lexical search. `lexical` never calls embeddings. `hybrid` requests
+    /// hybrid retrieval but still falls back to lexical on transient failures.
+    #[serde(default)]
+    pub mode: RetrievalMode,
+}
+
+impl Default for RetrievalConfig {
+    fn default() -> Self {
+        Self {
+            mode: RetrievalMode::Auto,
+        }
+    }
 }
 // ── [connections] ───────────────────────────────────────────────────────
 
@@ -692,8 +726,6 @@ pub struct NotificationEventsConfig {
     #[serde(default = "default_true")]
     pub compaction_complete: bool,
     #[serde(default = "default_true")]
-    pub collation_complete: bool,
-    #[serde(default = "default_true")]
     pub error: bool,
     #[serde(default)]
     pub message_complete: bool,
@@ -705,7 +737,6 @@ impl Default for NotificationEventsConfig {
             autonomous_message: true,
             cache_warning: true,
             compaction_complete: true,
-            collation_complete: true,
             error: true,
             message_complete: false,
         }
@@ -811,39 +842,35 @@ mod tests {
         let config = AppConfig::default();
         assert!(config.defaults.stream);
         assert!(!config.behavior.autonomy.enabled);
-        assert!(config.behavior.autonomy.interiority.enabled);
+        assert!(config.behavior.autonomy.heartbeat.enabled);
         assert_eq!(
             config
                 .behavior
                 .autonomy
-                .interiority
-                .fallback_interiority_interval,
+                .heartbeat
+                .fallback_heartbeat_interval,
             ConfigDuration::from_secs(3600)
         );
         assert_eq!(
             config
                 .behavior
                 .autonomy
-                .interiority
-                .dormant_after_interiority_turns,
+                .heartbeat
+                .dormant_after_heartbeat_turns,
             3
         );
         assert_eq!(
-            config.behavior.autonomy.interiority.dormant_after_idle_time,
+            config.behavior.autonomy.heartbeat.dormant_after_idle_time,
             ConfigDuration::from_secs(172800)
         );
         assert_eq!(
-            config
-                .behavior
-                .autonomy
-                .interiority
-                .minimum_interiority_latency,
+            config.behavior.autonomy.heartbeat.minimum_heartbeat_latency,
             ConfigDuration::from_secs(3600)
         );
-        assert_eq!(config.behavior.autonomy.interiority.max_tool_rounds, 12);
+        assert_eq!(config.behavior.autonomy.heartbeat.max_tool_rounds, 12);
         assert!(config.behavior.tool_use.enabled);
         assert!(config.memory.compaction.enabled);
-        assert!(config.memory.collation.enabled);
+        assert_eq!(config.memory.retrieval.mode, RetrievalMode::Auto);
         // Tool toggles default to true.
         assert!(config.behavior.tool_use.tools.is_enabled("memory"));
         assert!(config.behavior.tool_use.tools.is_enabled("roll_dice"));
@@ -851,6 +878,16 @@ mod tests {
         assert!(config.advanced.editor.is_none());
         assert!(config.advanced.max_retries.is_none());
         assert!(config.advanced.retry_backoff.is_none());
+    }
+
+    #[test]
+    fn memory_retrieval_mode_parses() {
+        let toml_str = r#"
+[memory.retrieval]
+mode = "hybrid"
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.memory.retrieval.mode, RetrievalMode::Hybrid);
     }
 
     #[test]
@@ -953,7 +990,6 @@ key = "value"
         assert!(config.notifications.events.autonomous_message);
         assert!(config.notifications.events.cache_warning);
         assert!(config.notifications.events.compaction_complete);
-        assert!(config.notifications.events.collation_complete);
         assert!(config.notifications.events.error);
     }
 
@@ -1175,10 +1211,29 @@ homeserver = "https://matrix.example.com"
         // Disable memory.
         toggles.set("memory", false);
         assert!(!toggles.memory());
+        assert!(!toggles.memory_read());
+        assert!(!toggles.memory_write());
+        assert!(!toggles.memory_search());
+        assert!(!toggles.memory_list());
+        assert!(!toggles.is_enabled("memory_search"));
 
         // Re-enable.
         toggles.set("memory", true);
         assert!(toggles.memory());
+        assert!(toggles.is_enabled("memory_search"));
+    }
+
+    #[test]
+    fn tool_toggles_parent_memory_overrides_child_tools() {
+        let mut toggles = ToolToggles::default();
+        toggles.set("memory_search", false);
+        assert!(toggles.memory());
+        assert!(!toggles.memory_search());
+        assert!(toggles.memory_read());
+
+        toggles.set("memory_search", true);
+        toggles.set("memory", false);
+        assert!(!toggles.memory_search());
     }
 
     #[test]

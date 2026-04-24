@@ -277,9 +277,7 @@ async fn run_embedded(
 
     // 6. Provision admin (first run only)
     if first_run {
-        eprintln!(
-            "shore-matrix: first-run setup — provisioning embedded Matrix homeserver..."
-        );
+        eprintln!("shore-matrix: first-run setup — provisioning embedded Matrix homeserver...");
         let admin_reg = provision_admin(
             &homeserver_url,
             &embedded_state.registration_token,
@@ -306,7 +304,9 @@ async fn run_embedded(
         // username, there's nothing new to create — just print the existing
         // credentials so they can log into their Matrix client.
         if username == &embedded.admin_user {
-            println!("Admin account already provisioned — use these credentials in your Matrix client:");
+            println!(
+                "Admin account already provisioned — use these credentials in your Matrix client:"
+            );
             println!("  User ID:    {}", embedded_state.admin_user_id);
             println!("  Password:   {}", embedded.admin_password);
             println!("  Homeserver: {homeserver_url}");

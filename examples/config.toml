@@ -18,11 +18,7 @@
 
 [defaults]
 model = "claude-sonnet"            # Must match a key in [chat.*.*] below
-# tool_model = "mistral-small"      # Model for tool-use calls
-# memory_agent = "mistral-small"    # Model for memory agent queries
-# collation = "mistral-small"       # Model for memory collation (merge/split/normalize)
-# compaction = "mistral-small"      # Model for conversation compaction (summarization)
-# interiority = "claude-sonnet"     # Model for autonomous interiority ticks
+# heartbeat = "claude-sonnet"     # Model for autonomous heartbeat ticks
 # embedding = "text-large"          # Embedding profile
 # image_generation = "gemini-flash" # Image generation profile
 # display_name = "Your Name"        # {{user}} in templates; falls back to $USER
@@ -35,15 +31,22 @@ model = "claude-sonnet"            # Must match a key in [chat.*.*] below
 # [behavior.autonomy]
 # enabled = false
 
-# Interiority — autonomous "private moment" ticks where the character can reflect,
+# Heartbeat — autonomous "private moment" ticks where the character can reflect,
 # use tools (memory, web search, etc.), and optionally send an unprompted message.
-# [behavior.autonomy.interiority]
+# [behavior.autonomy.heartbeat]
 # enabled = true
-# fallback_interiority_interval = "1h"      # Base cadence when the character doesn't self-schedule
-# dormant_after_interiority_turns = 3       # Consecutive ticks with no user reply before sleeping
+# fallback_heartbeat_interval = "1h"      # Base cadence when the character doesn't self-schedule
+# dormant_after_heartbeat_turns = 3       # Consecutive ticks with no user reply before sleeping
 # dormant_after_idle_time = "48h"           # Hard idle ceiling before sleeping until user returns
-# minimum_interiority_latency = "1h"        # Floor between a user message and the next tick
-# max_tool_rounds = 12                      # Tool-use rounds per tick before a wrap-up recap is forced
+# minimum_heartbeat_latency = "1h"        # Floor between a user message and the next tick
+# max_tool_rounds = 12                      # Tool-use rounds per tick
+
+# Dreaming — opt-in scheduled memory consolidation. Requires
+# [behavior.autonomy].enabled = true, but does not require heartbeat.
+# [memory.dreaming]
+# enabled = false
+# frequency = "0 3 * * *"
+# max_tool_rounds = 12
 
 # ── Tool use ─────────────────────────────────────────────────────────────
 
@@ -54,10 +57,11 @@ model = "claude-sonnet"            # Must match a key in [chat.*.*] below
 # Per-tool toggles — all enabled by default; set to false to disable.
 # [behavior.tool_use.tools]
 # memory = true
+# memory_read = true
+# memory_write = true
+# memory_search = true
+# memory_list = true
 # send_image = true
-# list_images = true
-# recall_image = true
-# remember_image = true      # Save user-shared images to memory with context
 # generate_image = true
 # web_search = true
 # fetch_url = true
@@ -68,6 +72,12 @@ model = "claude-sonnet"            # Must match a key in [chat.*.*] below
 # scratchpad_read = true     # Read a scratchpad file
 # scratchpad_write = true    # Write a scratchpad file
 # scratchpad_delete = true   # Delete a scratchpad file
+# read = true                # Read workspace files; memory=false blocks memory/... access
+# write = true               # Write workspace files; protected character files defer to compaction
+# edit = true                # Edit workspace files
+# list_files = true          # List workspace files
+# exec = true                # Allowlisted, argument-sandboxed workspace commands;
+#                            # hidden when memory read/write is disabled or private
 
 # [behavior.tool_use.search]
 # api_key_env = "TAVILY_API_KEY"  # Env var holding the Tavily API key
@@ -90,18 +100,18 @@ model = "claude-sonnet"            # Must match a key in [chat.*.*] below
 #                            # Opus 4.7 (cost-curve elbow). 0 disables entirely.
 # keep_recent_turns = 2      # User turns to retain verbatim after compaction
 
+# Retrieval — controls how memory_search and LLM-assisted memory queries rank
+# markdown memory files. "auto" uses hybrid semantic+lexical search when an
+# embedding profile is configured and usable, otherwise lexical search.
+# [memory.retrieval]
+# mode = "auto"              # "auto", "lexical", or "hybrid"
+
 # Thinking — controls how extended-thinking blocks from prior turns are
 # handled when building outgoing API requests.
 # [memory.thinking]
 # preserve_prior_turns = false  # default: strip thinking / redacted_thinking
 #                               # blocks from history assistant messages.
 #                               # Set true to restore pre-2026-04-18 behavior.
-
-# Collation — periodically re-synthesises the memory store for quality.
-# [memory.collation]
-# enabled = true
-# auto_run = true   # Run automatically after each compaction
-# batch_limit = 10  # Maximum memory entries processed per collation run
 
 # ── Notifications ────────────────────────────────────────────────────────
 
@@ -123,7 +133,6 @@ model = "claude-sonnet"            # Must match a key in [chat.*.*] below
 # autonomous_message = true
 # cache_warning = true
 # compaction_complete = true
-# collation_complete = true
 # error = true
 # message_complete = false  # Notify when message generation completes
 

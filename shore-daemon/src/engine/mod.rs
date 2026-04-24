@@ -148,7 +148,7 @@ impl ConversationEngine {
     /// Insert a message at its chronological position in the active
     /// conversation, then broadcast a `History` snapshot.
     ///
-    /// Used when the caller may race with normal appends (e.g. an interiority
+    /// Used when the caller may race with normal appends (e.g. a heartbeat
     /// tick that completed while a user message landed first).
     pub fn insert_message_by_timestamp(&mut self, msg: Message) -> Result<(), EngineError> {
         debug!(character = %self.character_name, msg_id = %msg.msg_id, role = ?msg.role, "inserting message by timestamp");
