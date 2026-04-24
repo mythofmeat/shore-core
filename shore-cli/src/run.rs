@@ -1146,7 +1146,7 @@ mod tests {
         match received {
             ClientMessage::Command(c) => {
                 assert_eq!(c.name, "compact");
-                assert!(c.args.get("collate").is_none());
+                assert_eq!(c.args, serde_json::json!({}));
             }
             other => panic!("expected Command, got: {other:?}"),
         }

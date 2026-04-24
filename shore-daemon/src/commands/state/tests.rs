@@ -284,7 +284,7 @@ fn model_info_not_found() {
 }
 
 #[tokio::test]
-async fn memory_status_no_db() {
+async fn memory_status_no_files() {
     let tmp = TempDir::new().unwrap();
     let (engine, ctx, _rx) = make_ctx(&tmp);
 
@@ -297,7 +297,7 @@ async fn memory_status_no_db() {
 }
 
 #[tokio::test]
-async fn memory_status_with_db() {
+async fn memory_status_with_markdown_files() {
     let tmp = TempDir::new().unwrap();
     let (engine, ctx, _rx) = make_ctx(&tmp);
 

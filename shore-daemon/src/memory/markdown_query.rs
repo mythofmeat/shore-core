@@ -53,33 +53,6 @@ pub fn format_direct_response(query: &str, hits: &[MarkdownEntry]) -> String {
     lines.join("\n")
 }
 
-pub async fn append_daily_note(
-    store: &MarkdownMemoryStore,
-    timestamp: chrono::DateTime<chrono::FixedOffset>,
-    heading: &str,
-    body: &str,
-) -> Result<String, MarkdownStoreError> {
-    let date = timestamp.format("%Y-%m-%d").to_string();
-    let time = timestamp.format("%H:%M").to_string();
-    let path = format!("daily/{date}.md");
-    let existing = match store.read(&path).await {
-        Ok(entry) => entry.content,
-        Err(MarkdownStoreError::NotFound(_)) => {
-            format!("# Daily Notes for {date}\n")
-        }
-        Err(e) => return Err(e),
-    };
-
-    let mut updated = existing.trim_end().to_string();
-    if !updated.is_empty() {
-        updated.push_str("\n\n");
-    }
-    updated.push_str(&format!("## {time} - {heading}\n\n{}\n", body.trim()));
-
-    store.write(&path, &updated).await?;
-    Ok(path)
-}
-
 pub async fn append_dream_entry(
     store: &MarkdownMemoryStore,
     timestamp: chrono::DateTime<chrono::FixedOffset>,
@@ -138,21 +111,6 @@ pub async fn recent_dream_entries(
     sections.sort_by_key(|entry| Reverse(entry.clone()));
     sections.truncate(limit);
     Ok(sections)
-}
-
-pub async fn recent_daily_notes(
-    store: &MarkdownMemoryStore,
-    limit: usize,
-) -> Result<Vec<MarkdownEntry>, MarkdownStoreError> {
-    let mut notes = store
-        .list_all()
-        .await?
-        .into_iter()
-        .filter(|entry| entry.path.starts_with("daily/"))
-        .collect::<Vec<_>>();
-    notes.sort_by_key(|entry| Reverse(entry.path.clone()));
-    notes.truncate(limit);
-    Ok(notes)
 }
 
 pub fn truncate_chars(text: &str, limit: usize) -> String {
