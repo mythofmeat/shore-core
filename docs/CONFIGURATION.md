@@ -235,6 +235,21 @@ Compaction condenses old conversation turns into durable markdown memory files. 
 
 `max_context_tokens` is a cost-driven trigger complementary to `max_turns`: per-turn content varies wildly (heavy-thinking turns are several times larger than light chat), so turn count is a poor proxy for context cost. The trigger fires when the just-completed turn's prompt tokens cross the threshold (still floored by `min_turns` to prevent thrash). The default **200000** acts as a context-window safety net (matching Claude 4.x's 200K ceiling) rather than a cost optimiser. For actual cost savings on Opus 4.7, lower it to around **30000** — the per-call cost curve has an elbow near 30K where median cost roughly doubles. Tune for your model and conversation shape; recorded call sizes are in the ledger CSV (`shore usage --export-csv`). Set to `0` to disable entirely.
 
+### `[memory.retrieval]`
+
+```toml
+[memory.retrieval]
+mode = "auto"   # "auto", "lexical", or "hybrid"
+```
+
+Controls how `memory_search` and LLM-assisted memory queries rank markdown memory files.
+
+- `auto` uses hybrid semantic+keyword ranking when `[defaults].embedding` / `[embedding.*]` are configured and usable, otherwise lexical ranking.
+- `lexical` never calls the embeddings API.
+- `hybrid` requests semantic+keyword ranking but falls back to lexical ranking if embeddings are unavailable.
+
+The semantic index is rebuildable and non-authoritative; markdown files under `workspace/memory/` remain the only durable memory store.
+
 ### `[memory.thinking]`
 
 ```toml

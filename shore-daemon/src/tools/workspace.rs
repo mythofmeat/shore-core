@@ -526,7 +526,7 @@ fn is_command_allowed(argv: &[String]) -> bool {
         first_token.as_str()
     };
 
-    DEFAULT_ALLOWLIST.iter().any(|&allowed| allowed == cmd_name)
+    DEFAULT_ALLOWLIST.contains(&cmd_name)
 }
 
 pub async fn handle_exec(input: Value, workspace_dir: &str) -> Result<Value, ToolError> {

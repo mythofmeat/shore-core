@@ -80,6 +80,17 @@ pub async fn answer_query(
         .await
         .map_err(|e| MarkdownQueryError::Store(e.to_string()))?;
 
+    answer_query_from_hits(request, character_name, user_name, hits, llm, model).await
+}
+
+pub async fn answer_query_from_hits(
+    request: &str,
+    character_name: &str,
+    user_name: &str,
+    hits: Vec<MarkdownEntry>,
+    llm: &dyn MemoryLlm,
+    model: &ResolvedModel,
+) -> Result<String, MarkdownQueryError> {
     if hits.is_empty() {
         return Ok("I couldn't find any relevant memory files for that.".to_string());
     }

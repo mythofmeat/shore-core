@@ -284,10 +284,10 @@ impl RealConversationManager {
         if let Some(recap) = &params.recap {
             crate::memory::deferred_edits::write_recent_memory_digest(&self.character_dir, recap)
                 .map_err(|e| {
-                    CompactionError::ConversationManager(format!(
-                        "failed to write recent memory digest: {e}"
-                    ))
-                })?;
+                CompactionError::ConversationManager(format!(
+                    "failed to write recent memory digest: {e}"
+                ))
+            })?;
         }
 
         debug!(
@@ -403,9 +403,10 @@ mod tests {
         )
         .unwrap();
 
-        let recap =
-            std::fs::read_to_string(crate::memory::deferred_edits::recent_memory_digest_path(&dir))
-                .unwrap();
+        let recap = std::fs::read_to_string(
+            crate::memory::deferred_edits::recent_memory_digest_path(dir),
+        )
+        .unwrap();
         assert_eq!(recap, "A recap of events.\n");
     }
 
@@ -416,7 +417,7 @@ mod tests {
 
         // Pre-existing recap.
         std::fs::create_dir_all(dir.join("memory")).unwrap();
-        let recap_path = crate::memory::deferred_edits::recent_memory_digest_path(&dir);
+        let recap_path = crate::memory::deferred_edits::recent_memory_digest_path(dir);
         std::fs::create_dir_all(recap_path.parent().unwrap()).unwrap();
         std::fs::write(recap_path, "old recap").unwrap();
 
@@ -435,9 +436,10 @@ mod tests {
         )
         .unwrap();
 
-        let recap =
-            std::fs::read_to_string(crate::memory::deferred_edits::recent_memory_digest_path(&dir))
-                .unwrap();
+        let recap = std::fs::read_to_string(
+            crate::memory::deferred_edits::recent_memory_digest_path(dir),
+        )
+        .unwrap();
         assert_eq!(recap, "old recap");
     }
 

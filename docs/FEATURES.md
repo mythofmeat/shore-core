@@ -176,6 +176,8 @@ shore memory compact                  # compact old conversation into markdown m
 
 For direct inspection, open the character's `workspace/memory/` directory or ask the character to use `memory_list`, `memory_read`, `memory_write`, and `memory_search`. The old interactive memory shell, collation, purge, and reindex commands are removed.
 
+Memory search is lexical by default and can become hybrid semantic+keyword search when an embedding profile is configured. The embedding index is only a rebuildable accelerator for ranking; markdown remains the source of truth.
+
 See [`CONFIGURATION.md` — `[memory]`](CONFIGURATION.md#memory) for tunables.
 
 ## Autonomy

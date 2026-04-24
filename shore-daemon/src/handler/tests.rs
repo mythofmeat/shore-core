@@ -97,17 +97,17 @@ async fn make_handler(
         )),
     };
 
-    let handler = MessageHandler::new(
-        Arc::new(Mutex::new(registry)),
+    let handler = MessageHandler::new(MessageHandlerDeps {
+        registry: Arc::new(Mutex::new(registry)),
         cmd_ctx,
-        ledger_client,
-        push_tx.clone(),
+        llm_client: ledger_client,
+        push_tx: push_tx.clone(),
         session_router,
         autonomy,
-        NotificationService::new(Default::default()),
-        Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        None,
-    );
+        notifier: NotificationService::new(Default::default()),
+        live_speak: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        tts_client: None,
+    });
 
     (handler, push_rx, direct_rx)
 }
@@ -680,17 +680,17 @@ async fn make_handler_with_models(
         )),
     };
 
-    let handler = MessageHandler::new(
-        Arc::new(Mutex::new(registry)),
+    let handler = MessageHandler::new(MessageHandlerDeps {
+        registry: Arc::new(Mutex::new(registry)),
         cmd_ctx,
-        ledger_client,
-        push_tx.clone(),
+        llm_client: ledger_client,
+        push_tx: push_tx.clone(),
         session_router,
         autonomy,
-        NotificationService::new(Default::default()),
-        Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        None,
-    );
+        notifier: NotificationService::new(Default::default()),
+        live_speak: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        tts_client: None,
+    });
 
     (handler, push_rx, direct_rx)
 }

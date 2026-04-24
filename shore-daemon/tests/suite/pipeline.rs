@@ -144,11 +144,11 @@ async fn test_tool_use_roundtrip() {
     // The second request's messages array should include the tool_result.
     let second_req = &requests[1];
     let messages = second_req.get("messages").and_then(|m| m.as_array());
-    let has_tool_result = messages.map_or(false, |msgs| {
+    let has_tool_result = messages.is_some_and(|msgs| {
         msgs.iter().any(|m| {
             m.get("content")
                 .and_then(|c| c.as_array())
-                .map_or(false, |blocks| {
+                .is_some_and(|blocks| {
                     blocks
                         .iter()
                         .any(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_result"))
@@ -173,7 +173,7 @@ async fn test_tool_use_roundtrip() {
         second_phase
             .raw_messages
             .iter()
-            .map(|m| std::mem::discriminant(m))
+            .map(std::mem::discriminant)
             .collect::<Vec<_>>()
     );
 
@@ -315,7 +315,7 @@ async fn test_request_body_contains_user_message() {
                 block
                     .get("text")
                     .and_then(|t| t.as_str())
-                    .map_or(false, |t| t.contains("Hello test message"))
+                    .is_some_and(|t| t.contains("Hello test message"))
             });
         }
         false

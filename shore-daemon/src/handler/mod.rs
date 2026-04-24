@@ -89,6 +89,15 @@ impl ToolContext for HandlerToolContext {
     fn markdown_store(&self) -> Option<&crate::memory::markdown_store::MarkdownMemoryStore> {
         self.inner.markdown_store()
     }
+    fn memory_retrieval_config(&self) -> &shore_config::app::RetrievalConfig {
+        self.inner.memory_retrieval_config()
+    }
+    fn embedding_config(&self) -> Option<&crate::memory::retrieval::EmbeddingConfig> {
+        self.inner.embedding_config()
+    }
+    fn memory_index_path(&self) -> Option<&std::path::Path> {
+        self.inner.memory_index_path()
+    }
     fn memory_access_allowed(&self) -> bool {
         self.inner.memory_access_allowed()
     }
@@ -142,17 +151,6 @@ struct SessionState {
     generation_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
-impl SessionState {
-    fn new() -> Self {
-        Self {
-            active_model: None,
-            reasoning_effort_override: None,
-            session_tokens: Arc::new(std::sync::Mutex::new(SessionTokens::default())),
-            generation_handle: None,
-        }
-    }
-}
-
 /// The message processing handler.
 ///
 /// Routes commands inline (fast path) and spawns tokio tasks for generation
@@ -172,36 +170,36 @@ pub struct MessageHandler {
     sessions: HashMap<SessionId, SessionState>,
 }
 
+pub struct MessageHandlerDeps {
+    pub registry: Arc<Mutex<CharacterRegistry>>,
+    pub cmd_ctx: CommandContext,
+    pub llm_client: LedgerClient,
+    pub push_tx: broadcast::Sender<ServerMessage>,
+    pub session_router: SessionRouter,
+    pub autonomy: AutonomyManager,
+    pub notifier: NotificationService,
+    pub live_speak: Arc<AtomicBool>,
+    pub tts_client: Option<TtsClient>,
+}
+
 impl MessageHandler {
-    pub fn new(
-        registry: Arc<Mutex<CharacterRegistry>>,
-        cmd_ctx: CommandContext,
-        llm_client: LedgerClient,
-        push_tx: broadcast::Sender<ServerMessage>,
-        session_router: SessionRouter,
-        autonomy: AutonomyManager,
-        notifier: NotificationService,
-        live_speak: Arc<AtomicBool>,
-        tts_client: Option<TtsClient>,
-    ) -> Self {
+    pub fn new(deps: MessageHandlerDeps) -> Self {
         Self {
-            registry,
-            cmd_ctx,
-            llm_client,
-            push_tx,
-            session_router,
-            autonomy,
-            notifier,
-            live_speak,
-            tts_client,
+            registry: deps.registry,
+            cmd_ctx: deps.cmd_ctx,
+            llm_client: deps.llm_client,
+            push_tx: deps.push_tx,
+            session_router: deps.session_router,
+            autonomy: deps.autonomy,
+            notifier: deps.notifier,
+            live_speak: deps.live_speak,
+            tts_client: deps.tts_client,
             sessions: HashMap::new(),
         }
     }
 
     fn session_state_mut(&mut self, session_id: SessionId) -> &mut SessionState {
-        self.sessions
-            .entry(session_id)
-            .or_insert_with(SessionState::new)
+        self.sessions.entry(session_id).or_default()
     }
 
     /// Run the message processing loop. Blocks until the route channel closes.

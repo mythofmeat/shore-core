@@ -423,6 +423,9 @@ pub struct MemoryConfig {
 
     #[serde(default)]
     pub thinking: ThinkingConfig,
+
+    #[serde(default)]
+    pub retrieval: RetrievalConfig,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
@@ -437,6 +440,34 @@ pub struct ThinkingConfig {
     /// 4.x family does not).
     #[serde(default)]
     pub preserve_prior_turns: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RetrievalMode {
+    #[default]
+    Auto,
+    Lexical,
+    Hybrid,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct RetrievalConfig {
+    /// Memory search mode. `auto` uses hybrid semantic+lexical retrieval when
+    /// an embedding profile is configured and usable, then falls back to
+    /// lexical search. `lexical` never calls embeddings. `hybrid` requests
+    /// hybrid retrieval but still falls back to lexical on transient failures.
+    #[serde(default)]
+    pub mode: RetrievalMode,
+}
+
+impl Default for RetrievalConfig {
+    fn default() -> Self {
+        Self {
+            mode: RetrievalMode::Auto,
+        }
+    }
 }
 // ── [connections] ───────────────────────────────────────────────────────
 
@@ -819,6 +850,7 @@ mod tests {
         assert_eq!(config.behavior.autonomy.heartbeat.max_tool_rounds, 12);
         assert!(config.behavior.tool_use.enabled);
         assert!(config.memory.compaction.enabled);
+        assert_eq!(config.memory.retrieval.mode, RetrievalMode::Auto);
         // Tool toggles default to true.
         assert!(config.behavior.tool_use.tools.is_enabled("memory"));
         assert!(config.behavior.tool_use.tools.is_enabled("roll_dice"));
@@ -826,6 +858,16 @@ mod tests {
         assert!(config.advanced.editor.is_none());
         assert!(config.advanced.max_retries.is_none());
         assert!(config.advanced.retry_backoff.is_none());
+    }
+
+    #[test]
+    fn memory_retrieval_mode_parses() {
+        let toml_str = r#"
+[memory.retrieval]
+mode = "hybrid"
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.memory.retrieval.mode, RetrievalMode::Hybrid);
     }
 
     #[test]

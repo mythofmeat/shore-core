@@ -257,8 +257,9 @@ pub async fn compact(
 
     let mgr = CompactionManager::new(ctx.config.app.memory.compaction.clone());
 
-    let recap_path =
-        crate::memory::deferred_edits::recent_memory_digest_path(&ctx.config.dirs.data.join(&char_name));
+    let recap_path = crate::memory::deferred_edits::recent_memory_digest_path(
+        &ctx.config.dirs.data.join(&char_name),
+    );
     let existing_recap = std::fs::read_to_string(&recap_path).ok();
 
     let active_content = std::fs::read_to_string(engine.character_dir().join("active.jsonl"))
@@ -444,8 +445,10 @@ model_id = "minimax-tool"
     }
 
     fn make_config(defaults: DefaultsConfig) -> LoadedConfig {
-        let mut app = AppConfig::default();
-        app.defaults = defaults;
+        let app = AppConfig {
+            defaults,
+            ..AppConfig::default()
+        };
         LoadedConfig::new_for_test(
             app,
             catalog_with_chat_and_tools(),
@@ -509,8 +512,10 @@ model_id = "minimax-tool"
 
     #[test]
     fn compaction_returns_none_with_empty_catalog() {
-        let mut app = AppConfig::default();
-        app.defaults = DefaultsConfig::default();
+        let app = AppConfig {
+            defaults: DefaultsConfig::default(),
+            ..AppConfig::default()
+        };
         let config = LoadedConfig::new_for_test(
             app,
             ModelCatalog::default(),

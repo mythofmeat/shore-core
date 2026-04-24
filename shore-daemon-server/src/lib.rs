@@ -475,18 +475,16 @@ where
     });
     write_message(&mut writer, &history).await?;
     info!(client_id, "Handshake complete");
-    let result = message_loop(
+    let loop_ctx = MessageLoopContext {
         client_id,
-        &mut buf_reader,
-        &mut writer,
-        &ctx.clients,
-        &mut ctx.event_rx,
-        &mut ctx.direct_rx,
-        &ctx.route_tx,
-        &session,
-        &mut ctx.shutdown,
-    )
-    .await;
+        clients: &ctx.clients,
+        event_rx: &mut ctx.event_rx,
+        direct_rx: &mut ctx.direct_rx,
+        route_tx: &ctx.route_tx,
+        session: &session,
+        shutdown: &mut ctx.shutdown,
+    };
+    let result = message_loop(&mut buf_reader, &mut writer, loop_ctx).await;
 
     // Unregister client on disconnect.
     // Hold the write lock across remove + is_empty to prevent two concurrent
@@ -509,16 +507,20 @@ where
 }
 
 /// Main message loop: reads client messages and forwards push messages.
-async fn message_loop<R, W>(
+struct MessageLoopContext<'a> {
     client_id: u64,
+    clients: &'a Arc<RwLock<HashMap<u64, ClientInfo>>>,
+    event_rx: &'a mut broadcast::Receiver<ServerMessage>,
+    direct_rx: &'a mut mpsc::Receiver<ServerMessage>,
+    route_tx: &'a tokio::sync::mpsc::Sender<RoutedMessage>,
+    session: &'a SessionMeta,
+    shutdown: &'a mut tokio::sync::watch::Receiver<()>,
+}
+
+async fn message_loop<R, W>(
     reader: &mut BufReader<R>,
     writer: &mut W,
-    clients: &Arc<RwLock<HashMap<u64, ClientInfo>>>,
-    event_rx: &mut broadcast::Receiver<ServerMessage>,
-    direct_rx: &mut mpsc::Receiver<ServerMessage>,
-    route_tx: &tokio::sync::mpsc::Sender<RoutedMessage>,
-    session: &SessionMeta,
-    shutdown: &mut tokio::sync::watch::Receiver<()>,
+    ctx: MessageLoopContext<'_>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
 where
     R: tokio::io::AsyncRead + Unpin + Send,
@@ -537,12 +539,12 @@ where
                 match msg? {
                     Some(client_msg) => {
                         route_client_message(
-                            client_id,
+                            ctx.client_id,
                             client_msg,
-                            route_tx,
+                            ctx.route_tx,
                             writer,
-                            clients,
-                            session,
+                            ctx.clients,
+                            ctx.session,
                         )
                         .await?;
                     }
@@ -554,7 +556,7 @@ where
             }
 
             // Direct response for this session.
-            msg = direct_rx.recv() => {
+            msg = ctx.direct_rx.recv() => {
                 match msg {
                     Some(server_msg) => {
                         write_message(writer, &server_msg).await?;
@@ -568,20 +570,20 @@ where
             }
 
             // Broadcast event from the event channel.
-            msg = event_rx.recv() => {
+            msg = ctx.event_rx.recv() => {
                 match msg {
                     Ok(server_msg) => {
                         consecutive_lags = 0;
-                        if event_matches_session(clients, client_id, &server_msg).await {
+                        if event_matches_session(ctx.clients, ctx.client_id, &server_msg).await {
                             write_message(writer, &server_msg).await?;
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
                         consecutive_lags += 1;
-                        warn!(client_id, skipped = n, consecutive = consecutive_lags,
+                        warn!(client_id = ctx.client_id, skipped = n, consecutive = consecutive_lags,
                               "Client lagged on broadcast");
                         if consecutive_lags >= MAX_CONSECUTIVE_LAGS {
-                            warn!(client_id, "Disconnecting client after repeated lag");
+                            warn!(client_id = ctx.client_id, "Disconnecting client after repeated lag");
                             break;
                         }
                     }
@@ -592,7 +594,7 @@ where
             }
 
             // Shutdown signal.
-            _ = shutdown.changed() => {
+            _ = ctx.shutdown.changed() => {
                 break;
             }
         }

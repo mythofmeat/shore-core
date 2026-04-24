@@ -198,7 +198,7 @@ pub fn assemble_prompt(params: &PromptParams<'_>) -> AssembledPrompt {
         "assembling prompt"
     );
 
-    let rendered_system = render_template(&template, &vars);
+    let rendered_system = render_template(template, &vars);
 
     // ── 3. Build system blocks ────────────────────────────────────────
     let mut system = Vec::new();
@@ -271,7 +271,10 @@ pub fn assemble_prompt(params: &PromptParams<'_>) -> AssembledPrompt {
             .filter(|s| !s.is_empty())
             .is_some(),
         has_user_def = params.user_definition.filter(|s| !s.is_empty()).is_some(),
-        has_recent_memory = params.recent_memory_digest.filter(|s| !s.is_empty()).is_some(),
+        has_recent_memory = params
+            .recent_memory_digest
+            .filter(|s| !s.is_empty())
+            .is_some(),
         "system blocks assembled"
     );
 
@@ -1202,7 +1205,9 @@ mod tests {
             .find(|b| b.label == "recent_memory")
             .unwrap();
         assert!(digest_block.content.contains("We talked about Rust."));
-        assert!(digest_block.content.contains("most recent durable memories"));
+        assert!(digest_block
+            .content
+            .contains("most recent durable memories"));
         assert!(digest_block.content.contains("<recent_memory>"));
     }
 

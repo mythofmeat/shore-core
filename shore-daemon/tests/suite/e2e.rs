@@ -14,7 +14,7 @@
 //!
 //! Run with: `cargo test --test e2e -- --ignored`
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde_json::json;
@@ -24,7 +24,7 @@ use shore_config::models::ModelCatalog;
 use shore_config::{LoadedConfig, ShoreDirs};
 use shore_daemon::characters::CharacterRegistry;
 use shore_daemon::commands::{CommandContext, SessionTokens};
-use shore_daemon::handler::MessageHandler;
+use shore_daemon::handler::{MessageHandler, MessageHandlerDeps};
 use shore_daemon::handshake::build_handshake_provider;
 use shore_daemon_server::{Server, ServerConfig};
 use shore_ledger::LedgerClient;
@@ -87,14 +87,14 @@ fn check_prerequisites() -> Option<String> {
 
 /// Build a test LoadedConfig with temp directories, Haiku model, and optional
 /// image generation profile.
-fn build_test_config(tmp: &tempfile::TempDir, llm_socket: &PathBuf) -> LoadedConfig {
+fn build_test_config(tmp: &tempfile::TempDir, llm_socket: &Path) -> LoadedConfig {
     build_test_config_inner(tmp, llm_socket, None)
 }
 
 /// Build config with an image generation profile added to the catalog.
 fn build_test_config_with_image_gen(
     tmp: &tempfile::TempDir,
-    llm_socket: &PathBuf,
+    llm_socket: &Path,
     image_gen_toml: &str,
 ) -> LoadedConfig {
     let table: toml::Table = image_gen_toml.parse().unwrap();
@@ -103,7 +103,7 @@ fn build_test_config_with_image_gen(
 
 fn build_test_config_inner(
     tmp: &tempfile::TempDir,
-    llm_socket: &PathBuf,
+    llm_socket: &Path,
     image_gen_table: Option<&toml::Table>,
 ) -> LoadedConfig {
     let config_dir = tmp.path().join("config");
@@ -235,17 +235,17 @@ async fn e2e_conversation_milestone() {
         )),
     };
 
-    let mut msg_handler = MessageHandler::new(
-        char_registry,
+    let mut msg_handler = MessageHandler::new(MessageHandlerDeps {
+        registry: char_registry,
         cmd_ctx,
         llm_client,
-        push_tx.clone(),
+        push_tx: push_tx.clone(),
         session_router,
         autonomy,
-        shore_daemon::notifications::NotificationService::new(Default::default()),
-        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        None,
-    );
+        notifier: shore_daemon::notifications::NotificationService::new(Default::default()),
+        live_speak: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        tts_client: None,
+    });
 
     // Spawn message handler.
     let handler_handle = tokio::spawn(async move {
@@ -723,17 +723,17 @@ impl E2EHarness {
             )),
         };
 
-        let mut msg_handler = MessageHandler::new(
-            char_registry,
+        let mut msg_handler = MessageHandler::new(MessageHandlerDeps {
+            registry: char_registry,
             cmd_ctx,
             llm_client,
-            push_tx.clone(),
+            push_tx: push_tx.clone(),
             session_router,
             autonomy,
-            shore_daemon::notifications::NotificationService::new(Default::default()),
-            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            None,
-        );
+            notifier: shore_daemon::notifications::NotificationService::new(Default::default()),
+            live_speak: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            tts_client: None,
+        });
 
         let handler_handle = tokio::spawn(async move {
             msg_handler.run(route_rx).await;

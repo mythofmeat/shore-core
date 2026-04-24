@@ -10,7 +10,9 @@ pub mod workspace;
 use crate::autonomy::manager::AutonomyManager;
 use crate::memory::compaction_impls::ImageGenConfig;
 use crate::memory::memory_llm::MemoryLlm;
+use crate::memory::retrieval::EmbeddingConfig;
 use serde_json::Value;
+use shore_config::app::RetrievalConfig;
 use shore_config::models::ResolvedModel;
 use shore_llm_client::LlmClient;
 use std::future::Future;
@@ -110,6 +112,20 @@ pub trait ToolContext: Sync {
 
     // Markdown memory store for inspectable memory files
     fn markdown_store(&self) -> Option<&crate::memory::markdown_store::MarkdownMemoryStore> {
+        None
+    }
+
+    // Memory retrieval configuration and optional embedding profile. The
+    // embedding index is non-authoritative; markdown files remain the source
+    // of truth.
+    fn memory_retrieval_config(&self) -> &RetrievalConfig {
+        static DEFAULT: std::sync::OnceLock<RetrievalConfig> = std::sync::OnceLock::new();
+        DEFAULT.get_or_init(RetrievalConfig::default)
+    }
+    fn embedding_config(&self) -> Option<&EmbeddingConfig> {
+        None
+    }
+    fn memory_index_path(&self) -> Option<&std::path::Path> {
         None
     }
 
@@ -286,6 +302,10 @@ fn path_requests_memories_namespace(path: &str) -> bool {
     normalized == "memory"
         || normalized.starts_with("memory/")
         || normalized.starts_with("memory\\")
+        || normalized == "workspace/memory"
+        || normalized == "workspace\\memory"
+        || normalized.starts_with("workspace/memory/")
+        || normalized.starts_with("workspace\\memory\\")
 }
 
 // ---------------------------------------------------------------------------
@@ -708,6 +728,19 @@ mod tests {
             matches!(err, ToolError::InvalidArgs(_)),
             "memory namespace should be blocked, got: {err}"
         );
+
+        let result = dispatch_tool(
+            "read",
+            serde_json::json!({"path": "workspace/memory/people/ren.md"}),
+            &ctx,
+        )
+        .await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, ToolError::InvalidArgs(_)),
+            "workspace/memory namespace should be blocked, got: {err}"
+        );
     }
 
     #[tokio::test]
@@ -743,6 +776,14 @@ mod tests {
         let result = dispatch_tool(
             "write",
             serde_json::json!({"path": "memory/people/ren.md", "content": "blocked"}),
+            &ctx,
+        )
+        .await;
+        assert!(result.is_err());
+
+        let result = dispatch_tool(
+            "write",
+            serde_json::json!({"path": "workspace/memory/people/ren.md", "content": "blocked"}),
             &ctx,
         )
         .await;

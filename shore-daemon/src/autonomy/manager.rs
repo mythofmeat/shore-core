@@ -27,6 +27,7 @@ use crate::cache_keepalive::{CacheKeepalive, CacheKeepaliveAction};
 use crate::characters::CharacterRegistry;
 use crate::memory::compaction_impls::resolve_image_gen_config;
 use crate::memory::memory_llm::RealMemoryLlm;
+use crate::memory::retrieval::resolve_embedding_config;
 use crate::notifications::{NotificationEvent, NotificationService};
 use crate::tools as tool_system;
 use crate::tools::context::SharedToolContext;
@@ -1838,6 +1839,11 @@ async fn build_tool_context(
         &config.models.image_generation,
     )
     .ok();
+    let embedding_config = resolve_embedding_config(
+        config.app.defaults.embedding.as_deref(),
+        &config.models.embedding,
+    )
+    .ok();
 
     debug!(
         character,
@@ -1865,6 +1871,9 @@ async fn build_tool_context(
             character_memory_dir(&config.dirs.config, character),
         )
         .ok(),
+        memory_retrieval_config_val: config.app.memory.retrieval.clone(),
+        embedding_config_val: embedding_config,
+        memory_index_path_val: char_dir.join("memory_index.json"),
         memory_access_allowed_val: config.app.behavior.tool_use.tools.memory(),
         memory_read_allowed_val: config.app.behavior.tool_use.tools.memory_read(),
         memory_write_allowed_val: config.app.behavior.tool_use.tools.memory_write(),

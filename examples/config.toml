@@ -95,6 +95,12 @@ model = "claude-sonnet"            # Must match a key in [chat.*.*] below
 #                            # Opus 4.7 (cost-curve elbow). 0 disables entirely.
 # keep_recent_turns = 2      # User turns to retain verbatim after compaction
 
+# Retrieval — controls how memory_search and LLM-assisted memory queries rank
+# markdown memory files. "auto" uses hybrid semantic+lexical search when an
+# embedding profile is configured and usable, otherwise lexical search.
+# [memory.retrieval]
+# mode = "auto"              # "auto", "lexical", or "hybrid"
+
 # Thinking — controls how extended-thinking blocks from prior turns are
 # handled when building outgoing API requests.
 # [memory.thinking]

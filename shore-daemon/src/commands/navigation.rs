@@ -1,7 +1,9 @@
 use serde_json::json;
+use shore_config::{
+    character_workspace_dir, AGENTS_FILE, HEARTBEAT_FILE, SOUL_FILE, TOOLS_FILE, USER_FILE,
+};
 use shore_protocol::error::ErrorCode;
 use shore_protocol::types::CharacterInfo;
-use shore_config::{character_workspace_dir, AGENTS_FILE, HEARTBEAT_FILE, SOUL_FILE, TOOLS_FILE, USER_FILE};
 use tracing::{debug, info};
 
 use super::{CommandContext, CommandResult};
@@ -26,10 +28,11 @@ pub fn list_characters(engine: &ConversationEngine, ctx: &CommandContext) -> Com
 /// List characters without requiring an active engine (for use before
 /// character resolution, e.g. when multiple characters are available).
 pub fn list_characters_standalone(ctx: &CommandContext) -> CommandResult {
-    let mut characters: Vec<CharacterInfo> = shore_config::discover_characters(&ctx.config.dirs.config)
-        .into_iter()
-        .map(|name| CharacterInfo { name })
-        .collect();
+    let mut characters: Vec<CharacterInfo> =
+        shore_config::discover_characters(&ctx.config.dirs.config)
+            .into_iter()
+            .map(|name| CharacterInfo { name })
+            .collect();
 
     // Also check data dir for characters that have data but no config dir.
     if let Ok(entries) = std::fs::read_dir(&ctx.data_dir) {
@@ -76,11 +79,17 @@ pub fn character_info(
         None
     };
 
-    let bootstrap_files = [SOUL_FILE, USER_FILE, AGENTS_FILE, TOOLS_FILE, HEARTBEAT_FILE]
-        .into_iter()
-        .filter(|name| workspace_dir.join(name).exists())
-        .map(str::to_string)
-        .collect::<Vec<_>>();
+    let bootstrap_files = [
+        SOUL_FILE,
+        USER_FILE,
+        AGENTS_FILE,
+        TOOLS_FILE,
+        HEARTBEAT_FILE,
+    ]
+    .into_iter()
+    .filter(|name| workspace_dir.join(name).exists())
+    .map(str::to_string)
+    .collect::<Vec<_>>();
 
     let config_override_path = char_dir.join("config.toml");
     let has_config_override = config_override_path.exists();
@@ -223,9 +232,21 @@ mod tests {
         std::fs::create_dir_all(chars_dir.join("Bob").join("workspace")).unwrap();
         // Active character directory (should be deduped).
         std::fs::create_dir_all(chars_dir.join("TestChar").join("workspace")).unwrap();
-        std::fs::write(chars_dir.join("Alice").join("workspace").join("SOUL.md"), "Alice").unwrap();
-        std::fs::write(chars_dir.join("Bob").join("workspace").join("SOUL.md"), "Bob").unwrap();
-        std::fs::write(chars_dir.join("TestChar").join("workspace").join("SOUL.md"), "Test").unwrap();
+        std::fs::write(
+            chars_dir.join("Alice").join("workspace").join("SOUL.md"),
+            "Alice",
+        )
+        .unwrap();
+        std::fs::write(
+            chars_dir.join("Bob").join("workspace").join("SOUL.md"),
+            "Bob",
+        )
+        .unwrap();
+        std::fs::write(
+            chars_dir.join("TestChar").join("workspace").join("SOUL.md"),
+            "Test",
+        )
+        .unwrap();
 
         let result = list_characters(&engine, &ctx).unwrap();
         let chars = result["characters"].as_array().unwrap();

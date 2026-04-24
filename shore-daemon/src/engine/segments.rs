@@ -120,7 +120,7 @@ mod tests {
     #[test]
     fn load_without_compaction_json_gives_empty() {
         let tmp = TempDir::new().unwrap();
-        let reader = SegmentReader::load(&tmp.path().to_path_buf()).unwrap();
+        let reader = SegmentReader::load(tmp.path()).unwrap();
         assert_eq!(reader.segment_count(), 0);
         assert_eq!(reader.total_message_count(), 0);
     }
@@ -139,7 +139,7 @@ mod tests {
         let json = serde_json::to_string_pretty(&manifest).unwrap();
         std::fs::write(tmp.path().join("compaction.json"), &json).unwrap();
 
-        let reader = SegmentReader::load(&tmp.path().to_path_buf()).unwrap();
+        let reader = SegmentReader::load(tmp.path()).unwrap();
         assert_eq!(reader.segment_count(), 1);
         assert_eq!(reader.total_message_count(), 10);
     }
@@ -165,7 +165,7 @@ mod tests {
         let json = serde_json::to_string_pretty(&manifest).unwrap();
         std::fs::write(tmp.path().join("compaction.json"), &json).unwrap();
 
-        let reader = SegmentReader::load(&tmp.path().to_path_buf()).unwrap();
+        let reader = SegmentReader::load(tmp.path()).unwrap();
         let msgs = reader.read_segment(0).unwrap();
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].msg_id, "m1");
@@ -175,7 +175,7 @@ mod tests {
     #[test]
     fn read_segment_out_of_bounds() {
         let tmp = TempDir::new().unwrap();
-        let reader = SegmentReader::load(&tmp.path().to_path_buf()).unwrap();
+        let reader = SegmentReader::load(tmp.path()).unwrap();
         assert!(reader.read_segment(0).is_err());
     }
 }
