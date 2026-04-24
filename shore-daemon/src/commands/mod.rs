@@ -14,7 +14,6 @@ use tracing::{debug, info, warn};
 
 use crate::autonomy::manager::AutonomyManager;
 use crate::engine::{ConversationEngine, EngineError};
-use shore_config::models::ResolvedModel;
 use shore_config::LoadedConfig;
 use shore_diagnostics::Diagnostics;
 use shore_ledger::LedgerClient;
@@ -46,7 +45,7 @@ pub struct CommandContext {
     pub session_tokens: Arc<Mutex<SessionTokens>>,
     /// Shared autonomy manager for scheduler state.
     pub autonomy: AutonomyManager,
-    /// LLM client for commands that need model access (e.g. memory query).
+    /// LLM client for commands that need model access.
     pub llm_client: LedgerClient,
     /// In-memory diagnostics ring buffers.
     pub diagnostics: Arc<Mutex<Diagnostics>>,
@@ -54,26 +53,6 @@ pub struct CommandContext {
 
 /// Convenience type for command handler results.
 pub type CommandResult = Result<serde_json::Value, (ErrorCode, String)>;
-
-/// Resolve the memory model: configured `memory_query` → active model → first chat model.
-///
-/// Used by memory queries.
-pub fn resolve_memory_model(ctx: &CommandContext) -> Result<ResolvedModel, (ErrorCode, String)> {
-    ctx.config
-        .app
-        .defaults
-        .memory_query
-        .as_deref()
-        .and_then(|name| ctx.config.models.find_model(name).ok())
-        .or_else(|| {
-            ctx.active_model
-                .as_deref()
-                .and_then(|name| ctx.config.models.find_model(name).ok())
-        })
-        .or_else(|| ctx.config.models.first_chat_model())
-        .cloned()
-        .ok_or_else(|| (ErrorCode::InternalError, "No model configured".to_string()))
-}
 
 /// Build the active prompt directory path for a character.
 pub fn memory_dir(ctx: &CommandContext, char_name: &str) -> PathBuf {

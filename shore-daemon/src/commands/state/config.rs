@@ -45,15 +45,6 @@ pub fn config_check(ctx: &CommandContext) -> CommandResult {
         ));
     }
 
-    // Check: memory memory model reference
-    if let Some(ref ma) = ctx.config.app.defaults.memory_query {
-        if ctx.config.models.find_model(ma).is_err() {
-            warnings.push(format!(
-                "Default memory_query \"{ma}\" not found in catalog"
-            ));
-        }
-    }
-
     // Check: LLM service configured?
     if ctx.config.app.services.llm.command.is_none() && ctx.config.app.services.llm.socket.is_none()
     {

@@ -18,9 +18,6 @@
 
 [defaults]
 model = "claude-sonnet"            # Must match a key in [chat.*.*] below
-# tool_model = "mistral-small"      # Model for tool-use calls
-# memory_query = "mistral-small"    # Model for markdown memory Q&A
-# compaction = "mistral-small"      # Model for conversation compaction into markdown memory
 # heartbeat = "claude-sonnet"     # Model for autonomous heartbeat ticks
 # embedding = "text-large"          # Embedding profile
 # image_generation = "gemini-flash" # Image generation profile

@@ -86,15 +86,6 @@ pub struct DefaultsConfig {
     /// Default chat model name (must match a model in config).
     pub model: Option<String>,
 
-    /// Default tool model name (for tool-use calls).
-    pub tool_model: Option<String>,
-
-    /// Default memory memory model name.
-    pub memory_query: Option<String>,
-
-    /// Default compaction model name (for conversation summarization).
-    pub compaction: Option<String>,
-
     /// Default heartbeat model name (for autonomous heartbeat ticks).
     pub heartbeat: Option<String>,
 
@@ -127,9 +118,6 @@ impl Default for DefaultsConfig {
     fn default() -> Self {
         Self {
             model: None,
-            tool_model: None,
-            memory_query: None,
-            compaction: None,
             heartbeat: None,
             embedding: None,
             image_generation: None,

@@ -443,7 +443,6 @@ fn create_default_config(config_dir: &Path) {
 
 # [defaults]
 # model = "opus"              # must match a model key below
-# tool_model = "mistral-small"
 
 # [chat.anthropic]
 # sdk = "anthropic"
@@ -470,16 +469,7 @@ fn create_default_config(config_dir: &Path) {
 /// Validate cross-field config constraints.
 fn validate_config(app: &AppConfig, catalog: &ModelCatalog) -> Result<(), ConfigError> {
     // Validate model references exist in the catalog.
-    for (field, value) in [
-        ("defaults.model", app.defaults.model.as_deref()),
-        ("defaults.tool_model", app.defaults.tool_model.as_deref()),
-        (
-            "defaults.memory_query",
-            app.defaults.memory_query.as_deref(),
-        ),
-    ] {
-        validate_model_ref(catalog, field, value)?;
-    }
+    validate_model_ref(catalog, "defaults.model", app.defaults.model.as_deref())?;
 
     validate_daily_cron(&app.memory.dreaming.frequency)?;
 

@@ -1,5 +1,4 @@
 use super::{ToolCategory, ToolContext, ToolDef, ToolError};
-use crate::memory::markdown_query;
 use crate::memory::retrieval;
 use serde_json::{json, Value};
 
@@ -9,21 +8,6 @@ use serde_json::{json, Value};
 
 pub fn tool_defs() -> Vec<ToolDef> {
     vec![
-        ToolDef {
-            name: "memory",
-            description: "Synthesize an answer from your markdown memory files. Use this when a question needs reasoning across several files after direct file search would be cumbersome. It reads your memory files and answers from them only; for explicit file discovery, prefer `memory_search` + `memory_read`, and for saving facts, prefer `memory_write`.",
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "request": {
-                        "type": "string",
-                        "description": "Natural-language question to answer from markdown memory files."
-                    }
-                },
-                "required": ["request"]
-            }),
-            category: ToolCategory::MemoryRead,
-        },
         ToolDef {
             name: "memory_read",
             description: "Read the full content of a single memory file by its relative path from your memory directory. Use this AFTER `memory_search` points you to a relevant file, or when you already know the exact path and need the complete content. Do not use this for discovery — use `memory_search` or `memory_list` first.",
@@ -94,52 +78,6 @@ pub fn tool_defs() -> Vec<ToolDef> {
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
-
-/// Handle the `memory` tool — answer a question from markdown files only.
-pub async fn handle_memory(input: Value, ctx: &dyn ToolContext) -> Result<Value, ToolError> {
-    let request = input
-        .get("request")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| ToolError::InvalidArgs("missing 'request' field".to_string()))?;
-
-    let store = ctx
-        .markdown_store()
-        .ok_or_else(|| ToolError::InvalidArgs("markdown memory store not available".to_string()))?;
-    let results = retrieval::search_memory(
-        store,
-        request,
-        &ctx.memory_retrieval_config().mode,
-        ctx.llm_client(),
-        ctx.embedding_config(),
-        ctx.memory_index_path(),
-    )
-    .await
-    .map_err(|e| ToolError::Io(e.to_string()))?;
-
-    let retrieval_mode = results.mode;
-    let semantic_unavailable = results.semantic_unavailable;
-    let hits = results
-        .hits
-        .into_iter()
-        .map(|hit| hit.entry)
-        .collect::<Vec<_>>();
-    let result_text = markdown_query::answer_query_from_hits(
-        request,
-        ctx.character_name(),
-        "the user",
-        hits,
-        ctx.memory_llm(),
-        ctx.memory_model(),
-    )
-    .await
-    .map_err(|e| ToolError::Io(e.to_string()))?;
-
-    Ok(json!({
-        "answer": result_text,
-        "retrieval_mode": retrieval_mode,
-        "semantic_unavailable": semantic_unavailable,
-    }))
-}
 
 /// Read a memory file by relative path.
 pub async fn handle_memory_read(input: Value, ctx: &dyn ToolContext) -> Result<Value, ToolError> {
@@ -281,60 +219,18 @@ pub async fn handle_memory_list(input: Value, ctx: &dyn ToolContext) -> Result<V
 mod tests {
     use super::*;
     use crate::memory::markdown_store::MarkdownMemoryStore;
-    use crate::memory::memory_llm::{MemoryLlmResponse, MockMemoryLlm};
     use crate::test_support::TestToolContext;
     use shore_config::app::{RetrievalConfig, RetrievalMode};
-    use shore_llm_client::types::ContentBlock;
 
     #[test]
     fn test_memory_tool_defs() {
         let defs = tool_defs();
-        assert_eq!(defs.len(), 5);
+        assert_eq!(defs.len(), 4);
         let names: Vec<&str> = defs.iter().map(|d| d.name).collect();
-        assert!(names.contains(&"memory"));
         assert!(names.contains(&"memory_read"));
         assert!(names.contains(&"memory_write"));
         assert!(names.contains(&"memory_search"));
         assert!(names.contains(&"memory_list"));
-    }
-
-    #[tokio::test]
-    async fn test_handle_memory_returns_text() {
-        let tmp = tempfile::tempdir().unwrap();
-        let store = MarkdownMemoryStore::open(tmp.path().join("memories"))
-            .await
-            .unwrap();
-        store
-            .write("people/user.md", "# User\n\n- Likes chocolate")
-            .await
-            .unwrap();
-
-        let memory_llm = MockMemoryLlm::new(vec![MemoryLlmResponse {
-            text: "The user likes chocolate.".into(),
-            content_blocks: vec![ContentBlock::Text {
-                text: "The user likes chocolate.".into(),
-            }],
-            finish_reason: "end_turn".into(),
-        }]);
-
-        let ctx = TestToolContext::new()
-            .with_memory_llm(memory_llm)
-            .with_markdown_store(store);
-
-        let result = handle_memory(json!({"request": "What do I like?"}), &ctx)
-            .await
-            .unwrap();
-
-        assert_eq!(result["answer"], "The user likes chocolate.");
-        assert_eq!(result["retrieval_mode"], "lexical");
-    }
-
-    #[tokio::test]
-    async fn test_handle_memory_missing_request() {
-        let ctx = TestToolContext::new();
-
-        let result = handle_memory(json!({}), &ctx).await;
-        assert!(matches!(result, Err(ToolError::InvalidArgs(_))));
     }
 
     // -- Markdown memory tools tests ------------------------------------------
@@ -359,35 +255,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(read["content"], "# Alice\n\nLikes chocolate.");
-    }
-
-    #[tokio::test]
-    async fn test_handle_memory_reads_existing_markdown_files() {
-        let tmp = tempfile::tempdir().unwrap();
-        let store = MarkdownMemoryStore::open(tmp.path().join("memories"))
-            .await
-            .unwrap();
-        store
-            .write("people/alice.md", "# Alice\n\nLikes chocolate.")
-            .await
-            .unwrap();
-
-        let memory_llm = MockMemoryLlm::new(vec![MemoryLlmResponse {
-            text: "No relevant memories found.".into(),
-            content_blocks: vec![ContentBlock::Text {
-                text: "No relevant memories found.".into(),
-            }],
-            finish_reason: "end_turn".into(),
-        }]);
-
-        let ctx = TestToolContext::new()
-            .with_markdown_store(store)
-            .with_memory_llm(memory_llm);
-
-        handle_memory(json!({"request": "What does Alice like?"}), &ctx)
-            .await
-            .unwrap();
-        assert_eq!(ctx.memory_llm.call_count(), 1);
     }
 
     #[tokio::test]

@@ -132,15 +132,6 @@ pub(super) async fn handle_generation(
         "model resolved"
     );
 
-    let memory_model = effective_config
-        .app
-        .defaults
-        .memory_query
-        .as_deref()
-        .and_then(|name| effective_config.models.find_model(name).ok())
-        .unwrap_or(resolved)
-        .clone();
-
     let cache_ttl_secs = resolved.cache_ttl.as_deref().and_then(parse_cache_ttl_secs);
     let is_new_autonomy_state =
         ctx.autonomy
@@ -322,7 +313,6 @@ pub(super) async fn handle_generation(
                 &data_dir,
                 &char_name,
                 &effective_config,
-                &memory_model,
                 &character_definition,
                 &user_definition,
                 &mut request,

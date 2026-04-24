@@ -49,9 +49,6 @@ Non-loopback binds require `unsafe_allow_remote_access = true`. `allowed_hosts` 
 ```toml
 [defaults]
 model = "claude-sonnet"
-tool_model = "haiku"
-memory_query = "haiku"
-compaction = "haiku"
 heartbeat = "haiku"
 embedding = "text-large"
 image_generation = "image"
@@ -63,10 +60,7 @@ Selectors are aliases declared under `[chat.*]`, `[tools.*]`, `[embedding.*]`, o
 
 Important slots:
 
-- `model` — normal conversation
-- `tool_model` — tool-loop calls when configured
-- `memory_query` — markdown memory Q&A
-- `compaction` — conversation-to-memory compaction
+- `model` — normal conversation and conversation-to-memory compaction
 - `heartbeat` — autonomous heartbeat ticks
 - `embedding` — optional hybrid retrieval profile
 - `image_generation` — image generation profile

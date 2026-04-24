@@ -81,7 +81,6 @@ mod tests {
 use crate::engine::tools;
 use crate::memory::compaction_impls::resolve_image_gen_config;
 use crate::memory::markdown_store::MarkdownMemoryStore;
-use crate::memory::memory_llm::RealMemoryLlm;
 use crate::memory::retrieval::resolve_embedding_config;
 use crate::tools::context::SharedToolContext;
 use shore_config::LoadedConfig;
@@ -185,14 +184,13 @@ pub(super) async fn stream_with_retry(
 }
 
 /// Phase 11: Set up tool context and run the tool loop.
-#[instrument(skip(ctx, effective_config, memory_model, _character_definition, _user_definition, request, result), fields(char = char_name))]
+#[instrument(skip(ctx, effective_config, _character_definition, _user_definition, request, result), fields(char = char_name))]
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn run_tool_phase(
     ctx: &GenContext,
     data_dir: &std::path::Path,
     char_name: &str,
     effective_config: &LoadedConfig,
-    memory_model: &shore_config::models::ResolvedModel,
     _character_definition: &Option<String>,
     _user_definition: &Option<String>,
     request: &mut shore_llm_client::types::LlmRequest,
@@ -225,12 +223,6 @@ pub(super) async fn run_tool_phase(
 
     let tool_ctx = HandlerToolContext {
         inner: SharedToolContext {
-            memory_llm: RealMemoryLlm::new(
-                ctx.llm_client.clone(),
-                char_name.to_owned(),
-                CallType::MemoryQuery,
-            ),
-            memory_model_val: memory_model.clone(),
             image_dir_val: character_data_dir
                 .join("images")
                 .to_string_lossy()

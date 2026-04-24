@@ -10,9 +10,6 @@ use crate::handler::ShoreMcpHandler;
 #[derive(Deserialize, JsonSchema, Debug)]
 pub struct MemoryQueryParams {
     pub query: String,
-    /// Return raw markdown search matches instead of an LLM-synthesized answer.
-    #[serde(default)]
-    pub direct: bool,
 }
 
 #[derive(Deserialize, JsonSchema, Debug, Default)]
@@ -37,18 +34,14 @@ fn default_changelog_limit() -> u32 {
 impl ShoreMcpHandler {
     #[tool(
         name = "memory_query",
-        description = "Query markdown memory. Set direct=true for raw text matches. Read-only."
+        description = "Search markdown memory files and return matching paths with excerpts. Read-only."
     )]
     pub async fn tool_memory_query(
         &self,
         Parameters(p): Parameters<MemoryQueryParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let data = self
-            .run_cmd(
-                "memory_query",
-                "memory",
-                json!({ "query": p.query, "direct": p.direct }),
-            )
+            .run_cmd("memory_query", "memory", json!({ "query": p.query }))
             .await?;
         Self::json_result(data)
     }

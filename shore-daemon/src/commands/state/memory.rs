@@ -11,12 +11,10 @@ use crate::memory::compaction::{
 use crate::memory::compaction_impls::{RealCompactionLlm, RealConversationManager};
 use crate::memory::markdown_query;
 use crate::memory::markdown_store::MarkdownMemoryStore;
-use crate::memory::memory_llm::RealMemoryLlm;
 use shore_config::character_memory_dir;
 use shore_config::resolve_prompt_template;
-use shore_ledger::CallType;
 
-use crate::commands::{resolve_memory_model, CommandContext, CommandResult};
+use crate::commands::{CommandContext, CommandResult};
 
 async fn open_markdown_store(
     ctx: &CommandContext,
@@ -136,7 +134,7 @@ pub async fn memory_dream(
     }
 }
 
-/// Memory command: status (no query) or agent query (with query).
+/// Memory command: status (no query) or direct markdown search (with query).
 pub async fn memory(
     engine: &ConversationEngine,
     ctx: &CommandContext,
@@ -146,21 +144,15 @@ pub async fn memory(
         .get("query")
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty());
-    let direct = args
-        .get("direct")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-
     match query {
         None => memory_status(engine, ctx).await,
         Some(q) => {
             debug!(
                 character = engine.character_name(),
                 query_len = q.len(),
-                direct,
                 "Memory query requested"
             );
-            memory_query(engine, ctx, q, direct).await
+            memory_query(engine, ctx, q).await
         }
     }
 }
@@ -194,42 +186,16 @@ async fn memory_query(
     engine: &ConversationEngine,
     ctx: &CommandContext,
     query: &str,
-    direct: bool,
 ) -> CommandResult {
     let char_name = engine.character_name();
     let store = open_markdown_store(ctx, char_name).await?;
-    let memory_model = resolve_memory_model(ctx)?;
-    let memory_llm = RealMemoryLlm::new(
-        ctx.llm_client.clone(),
-        char_name.to_string(),
-        CallType::MemoryQuery,
-    );
-
-    let result = if direct {
-        let hits = store.search_text(query).await.map_err(|e| {
-            (
-                ErrorCode::InternalError,
-                format!("Memory query failed: {e}"),
-            )
-        })?;
-        markdown_query::format_direct_response(query, &hits)
-    } else {
-        markdown_query::answer_query(
-            query,
-            char_name,
-            &ctx.config.app.defaults.resolve_display_name(),
-            &store,
-            &memory_llm,
-            &memory_model,
+    let hits = store.search_text(query).await.map_err(|e| {
+        (
+            ErrorCode::InternalError,
+            format!("Memory query failed: {e}"),
         )
-        .await
-        .map_err(|e| {
-            (
-                ErrorCode::InternalError,
-                format!("Memory query failed: {e}"),
-            )
-        })?
-    };
+    })?;
+    let result = markdown_query::format_direct_response(query, &hits);
 
     Ok(json!({
         "character": char_name,
@@ -288,7 +254,7 @@ pub async fn compact(
         resolve_prompt_template(&ctx.config.dirs.config, &char_name, "compact.md")
             .unwrap_or_else(|| DEFAULT_COMPACT_PROMPT.to_string());
 
-    let model = resolve_compaction_model(&ctx.config)
+    let model = resolve_compaction_model(&ctx.config, ctx.active_model.as_deref())
         .ok_or_else(|| (ErrorCode::InternalError, "No model configured".to_string()))?;
 
     let llm = RealCompactionLlm::new(ctx.llm_client.clone(), model, char_name.clone());
@@ -412,26 +378,15 @@ fn compaction_err(e: CompactionError) -> (ErrorCode, String) {
 
 /// Resolve the model to use for compaction.
 ///
-/// Chain: `defaults.compaction` → `defaults.memory_query` → `defaults.model` → first chat model.
+/// Chain: active character model → `defaults.model` → first chat model.
 /// Background and interactive compaction entry points depend on this returning
 /// the same value.
 pub fn resolve_compaction_model(
     config: &shore_config::LoadedConfig,
+    active_model: Option<&str>,
 ) -> Option<shore_config::models::ResolvedModel> {
-    config
-        .app
-        .defaults
-        .compaction
-        .as_deref()
+    active_model
         .and_then(|name| config.models.find_model(name).ok())
-        .or_else(|| {
-            config
-                .app
-                .defaults
-                .memory_query
-                .as_deref()
-                .and_then(|name| config.models.find_model(name).ok())
-        })
         .or_else(|| {
             config
                 .app
@@ -448,13 +403,9 @@ pub fn resolve_compaction_model(
 mod resolver_tests {
     //! Regression tests for [`resolve_compaction_model`].
     //!
-    //! Bug history: interactive `/compact` used to call `resolve_memory_model`, which
-    //! consults `defaults.memory_query` — so a user's `defaults.compaction` setting was
-    //! silently ignored by the interactive entry point while the background path honored
-    //! it. Parallel resolvers with no shared helper, no test locking them together.
-    //!
-    //! These tests pin the resolution chain and assert that
-    //! `defaults.compaction` take precedence over `defaults.memory_query`.
+    //! Compaction follows the character's persisted active chat model, then
+    //! falls back through the normal chat default. This keeps manual and
+    //! background compaction aligned without a separate compaction selector.
     //! Don't delete without a matching DECISIONS.md entry.
     use super::resolve_compaction_model;
     use shore_config::app::{AppConfig, DefaultsConfig};
@@ -500,51 +451,40 @@ model_id = "minimax-tool"
         )
     }
 
-    /// The bug this test was written for: compaction must honor `defaults.compaction`
-    /// even when `memory_query` is also set.
     #[test]
-    fn compaction_prefers_defaults_compaction_over_memory_query() {
+    fn compaction_prefers_active_character_model() {
         let config = make_config(DefaultsConfig {
-            compaction: Some("bg".to_string()),
-            memory_query: Some("minimax".to_string()),
             model: Some("primary".to_string()),
             ..DefaultsConfig::default()
         });
-        let model = resolve_compaction_model(&config).expect("resolved");
-        assert_eq!(
-            model.name, "bg",
-            "defaults.compaction must win over memory_query"
-        );
+        let model = resolve_compaction_model(&config, Some("bg")).expect("resolved");
+        assert_eq!(model.name, "bg");
     }
 
     #[test]
-    fn compaction_falls_back_to_memory_query_when_unset() {
+    fn compaction_ignores_unknown_active_model() {
         let config = make_config(DefaultsConfig {
-            compaction: None,
-            memory_query: Some("minimax".to_string()),
             model: Some("primary".to_string()),
             ..DefaultsConfig::default()
         });
-        let model = resolve_compaction_model(&config).expect("resolved");
-        assert_eq!(model.name, "minimax");
+        let model = resolve_compaction_model(&config, Some("missing")).expect("resolved");
+        assert_eq!(model.name, "primary");
     }
 
     #[test]
-    fn compaction_falls_back_to_model_when_compaction_and_memory_query_unset() {
+    fn compaction_falls_back_to_default_model_when_active_unset() {
         let config = make_config(DefaultsConfig {
-            compaction: None,
-            memory_query: None,
             model: Some("primary".to_string()),
             ..DefaultsConfig::default()
         });
-        let model = resolve_compaction_model(&config).expect("resolved");
+        let model = resolve_compaction_model(&config, None).expect("resolved");
         assert_eq!(model.name, "primary");
     }
 
     #[test]
     fn compaction_falls_back_to_first_chat_model_when_nothing_set() {
         let config = make_config(DefaultsConfig::default());
-        let model = resolve_compaction_model(&config).expect("resolved");
+        let model = resolve_compaction_model(&config, None).expect("resolved");
         // first_chat_model returns the first BTreeMap entry: "bg" sorts before "primary".
         assert_eq!(model.name, "bg");
     }
@@ -565,6 +505,6 @@ model_id = "minimax-tool"
                 cache: PathBuf::from("/tmp/resolver-test/cache"),
             },
         );
-        assert!(resolve_compaction_model(&config).is_none());
+        assert!(resolve_compaction_model(&config, None).is_none());
     }
 }

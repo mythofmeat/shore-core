@@ -59,8 +59,12 @@ pub async fn run_compaction(
     let prompt_template = resolve_prompt_template(&effective.dirs.config, character, "compact.md")
         .unwrap_or_else(|| DEFAULT_COMPACT_PROMPT.to_string());
 
-    let model = crate::commands::state::resolve_compaction_model(&effective)
-        .ok_or("No model configured for background compaction")?;
+    let active_model = crate::runtime_state::load_character_runtime_state(&character_dir)
+        .ok()
+        .and_then(|state| state.active_model);
+    let model =
+        crate::commands::state::resolve_compaction_model(&effective, active_model.as_deref())
+            .ok_or("No model configured for background compaction")?;
 
     // Create trait implementations.
     let llm = RealCompactionLlm::new(llm_client.clone(), model, character.to_string());

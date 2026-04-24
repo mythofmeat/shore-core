@@ -192,10 +192,6 @@ pub enum CliCommand {
         /// Query to search memory
         query: Option<String>,
 
-        /// Return raw markdown search matches instead of an LLM-synthesized answer
-        #[arg(long)]
-        direct: bool,
-
         /// Output raw JSON
         #[arg(long)]
         json: bool,
@@ -550,9 +546,7 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
             "memory_dream",
             json!({ "status": status, "dry_run": dry_run, "force": force }),
         )),
-        CliCommand::Memory { query, direct, .. } => {
-            Some(("memory", json!({ "query": query, "direct": direct })))
-        }
+        CliCommand::Memory { query, .. } => Some(("memory", json!({ "query": query }))),
 
         CliCommand::Config { reset: true, .. } => Some(("config_reset", json!({}))),
         CliCommand::Config { check: true, .. } => Some(("config_check", json!({}))),
@@ -1384,7 +1378,6 @@ mod tests {
         let cmd = CliCommand::Memory {
             subcommand: Some(MemoryCommand::Compact { keep_turns: None }),
             query: None,
-            direct: false,
             json: false,
         };
         let (name, args) = to_swp_command(&cmd).unwrap();
@@ -1399,7 +1392,6 @@ mod tests {
                 keep_turns: Some(0),
             }),
             query: None,
-            direct: false,
             json: false,
         };
         let (name, args) = to_swp_command(&cmd).unwrap();
@@ -1412,7 +1404,6 @@ mod tests {
         let cmd = CliCommand::Memory {
             subcommand: Some(MemoryCommand::Changelog { limit: 20 }),
             query: None,
-            direct: false,
             json: false,
         };
         let (name, args) = to_swp_command(&cmd).unwrap();
@@ -1523,19 +1514,16 @@ mod tests {
             CliCommand::Memory {
                 subcommand: None,
                 query: None,
-                direct: false,
                 json: false,
             },
             CliCommand::Memory {
                 subcommand: Some(MemoryCommand::Compact { keep_turns: None }),
                 query: None,
-                direct: false,
                 json: false,
             },
             CliCommand::Memory {
                 subcommand: Some(MemoryCommand::Changelog { limit: 20 }),
                 query: None,
-                direct: false,
                 json: false,
             },
             CliCommand::Config {

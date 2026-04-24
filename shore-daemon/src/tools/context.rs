@@ -7,12 +7,10 @@
 use std::path::Path;
 
 use shore_config::app::{RetrievalConfig, SearchConfig};
-use shore_config::models::ResolvedModel;
 use shore_llm_client::LlmClient;
 
 use crate::memory::compaction_impls::ImageGenConfig;
 use crate::memory::markdown_store::MarkdownMemoryStore;
-use crate::memory::memory_llm::{MemoryLlm, RealMemoryLlm};
 use crate::memory::retrieval::EmbeddingConfig;
 
 use super::ToolContext;
@@ -26,8 +24,6 @@ use super::ToolContext;
 /// Used directly by heartbeat ticks. Wrapped by `HandlerToolContext` in the
 /// message handler (which adds `AutonomyManager` access).
 pub(crate) struct SharedToolContext {
-    pub(crate) memory_llm: RealMemoryLlm,
-    pub(crate) memory_model_val: ResolvedModel,
     pub(crate) image_dir_val: String,
     pub(crate) llm_client_val: LlmClient,
     pub(crate) image_gen_config_val: Option<ImageGenConfig>,
@@ -47,12 +43,6 @@ pub(crate) struct SharedToolContext {
 }
 
 impl ToolContext for SharedToolContext {
-    fn memory_llm(&self) -> &dyn MemoryLlm {
-        &self.memory_llm
-    }
-    fn memory_model(&self) -> &ResolvedModel {
-        &self.memory_model_val
-    }
     fn image_dir(&self) -> &str {
         &self.image_dir_val
     }

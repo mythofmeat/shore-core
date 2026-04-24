@@ -26,7 +26,6 @@ use super::{AutonomyStatus, HeartbeatEventKind, HeartbeatLog};
 use crate::cache_keepalive::{CacheKeepalive, CacheKeepaliveAction};
 use crate::characters::CharacterRegistry;
 use crate::memory::compaction_impls::resolve_image_gen_config;
-use crate::memory::memory_llm::RealMemoryLlm;
 use crate::memory::retrieval::resolve_embedding_config;
 use crate::notifications::{NotificationEvent, NotificationService};
 use crate::tools as tool_system;
@@ -1650,14 +1649,6 @@ async fn build_tool_context(
 ) -> Option<SharedToolContext> {
     let char_dir = data_dir.join(character);
 
-    // Memory query model (use memory_query config if set, else default model).
-    let memory_model_name = config.app.defaults.memory_query.as_deref().or(config
-        .app
-        .defaults
-        .model
-        .as_deref())?;
-    let memory_model = config.models.find_model(memory_model_name).ok()?;
-
     let image_gen_config = resolve_image_gen_config(
         config.app.defaults.image_generation.as_deref(),
         &config.models.image_generation,
@@ -1676,12 +1667,6 @@ async fn build_tool_context(
     );
 
     Some(SharedToolContext {
-        memory_llm: RealMemoryLlm::new(
-            client.clone(),
-            character.to_string(),
-            CallType::MemoryQuery,
-        ),
-        memory_model_val: memory_model.clone(),
         image_dir_val: char_dir.join("images").to_string_lossy().into_owned(),
         llm_client_val: client.inner().clone(),
         image_gen_config_val: image_gen_config,

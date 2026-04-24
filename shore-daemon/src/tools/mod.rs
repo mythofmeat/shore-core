@@ -9,11 +9,9 @@ pub mod workspace;
 
 use crate::autonomy::manager::AutonomyManager;
 use crate::memory::compaction_impls::ImageGenConfig;
-use crate::memory::memory_llm::MemoryLlm;
 use crate::memory::retrieval::EmbeddingConfig;
 use serde_json::Value;
 use shore_config::app::RetrievalConfig;
-use shore_config::models::ResolvedModel;
 use shore_llm_client::LlmClient;
 use std::future::Future;
 use std::pin::Pin;
@@ -83,8 +81,6 @@ pub enum ToolError {
 /// Requires `Sync` so that `&dyn ToolContext` is `Send`, enabling tool handlers
 /// to hold the reference across `.await` points in `Send` futures.
 pub trait ToolContext: Sync {
-    fn memory_llm(&self) -> &dyn MemoryLlm;
-    fn memory_model(&self) -> &ResolvedModel;
     fn image_dir(&self) -> &str;
     fn llm_client(&self) -> Option<&LlmClient>;
     fn image_gen_config(&self) -> Option<&ImageGenConfig>;
@@ -333,10 +329,6 @@ pub fn dispatch_tool<'a>(
     Box::pin(async move {
         match name {
             // Memory tools
-            "memory" => {
-                ensure_memory_read_access(ctx)?;
-                memory_tools::handle_memory(input, ctx).await
-            }
             "memory_read" => {
                 ensure_memory_read_access(ctx)?;
                 memory_tools::handle_memory_read(input, ctx).await
@@ -486,8 +478,8 @@ mod tests {
     #[test]
     fn test_all_tools_returns_expected_count() {
         let tools = all_tools();
-        // memory(5) + images(2) + web(2) + activity(1) + basic(3) + scratchpad(4) + workspace(5) = 22
-        assert_eq!(tools.len(), 22);
+        // memory(4) + images(2) + web(2) + activity(1) + basic(3) + scratchpad(4) + workspace(5) = 21
+        assert_eq!(tools.len(), 21);
     }
 
     #[test]
@@ -517,7 +509,6 @@ mod tests {
         let private_names: Vec<&str> = private.iter().map(|t| t.name).collect();
 
         // Memory tools should be excluded.
-        assert!(!private_names.contains(&"memory"));
         assert!(!private_names.contains(&"memory_read"));
         assert!(!private_names.contains(&"memory_write"));
         assert!(!private_names.contains(&"memory_search"));
@@ -542,9 +533,9 @@ mod tests {
 
         assert!(!names.contains(&"roll_dice"));
         assert!(!names.contains(&"web_search"));
-        assert!(names.contains(&"memory"));
+        assert!(names.contains(&"memory_search"));
         assert!(names.contains(&"check_time"));
-        assert_eq!(tools.len(), 20); // 22 - 2 disabled
+        assert_eq!(tools.len(), 19); // 21 - 2 disabled
     }
 
     #[test]
@@ -555,7 +546,6 @@ mod tests {
         let tools = available_tools(false, &toggles);
         let names: Vec<&str> = tools.iter().map(|t| t.name).collect();
 
-        assert!(!names.contains(&"memory"));
         assert!(!names.contains(&"memory_read"));
         assert!(!names.contains(&"memory_write"));
         assert!(!names.contains(&"memory_search"));
@@ -691,16 +681,16 @@ mod tests {
     async fn test_dispatch_memory_routes_correctly() {
         let ctx = TestToolContext::new();
         let result = dispatch_tool(
-            "memory",
-            serde_json::json!({"request": "search for test"}),
+            "memory_search",
+            serde_json::json!({"query": "search for test"}),
             &ctx,
         )
         .await;
-        // The handler may return Ok or an error from the agent, but NOT NotImplemented.
+        // The handler may return Ok or an error from the store, but NOT NotImplemented.
         if let Err(ref e) = result {
             assert!(
                 !matches!(e, ToolError::NotImplemented(_)),
-                "memory should reach handler, got: {e}"
+                "memory_search should reach handler, got: {e}"
             );
         }
     }

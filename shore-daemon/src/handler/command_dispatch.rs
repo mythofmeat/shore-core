@@ -8,6 +8,7 @@ use tracing::{debug, info};
 
 use crate::commands::{self, CommandContext};
 use crate::handshake::build_session_history_snapshot;
+use crate::runtime_state::{load_active_model, save_active_model};
 
 use super::{GenContext, MessageHandler};
 
@@ -135,7 +136,7 @@ impl MessageHandler {
             };
         }
 
-        let (engine_arc, effective_config) = {
+        let (char_name, engine_arc, effective_config) = {
             let mut registry = self.registry.lock().await;
 
             let char_name =
@@ -165,13 +166,15 @@ impl MessageHandler {
                 }
             };
 
-            (engine_arc, effective_config)
+            (char_name, engine_arc, effective_config)
         };
 
-        let (active_model, reasoning_effort_override, session_tokens) = {
+        let character_data_dir = self.cmd_ctx.data_dir.join(&char_name);
+        let persisted_active_model = load_active_model(&character_data_dir);
+
+        let (reasoning_effort_override, session_tokens) = {
             let session = self.session_state_mut(session_id);
             (
-                session.active_model.clone(),
                 session.reasoning_effort_override.clone(),
                 session.session_tokens.clone(),
             )
@@ -181,7 +184,7 @@ impl MessageHandler {
             config: effective_config,
             push_tx: self.push_tx.clone(),
             data_dir: self.cmd_ctx.data_dir.clone(),
-            active_model,
+            active_model: persisted_active_model,
             reasoning_effort_override,
             session_tokens,
             autonomy: self.cmd_ctx.autonomy.clone(),
@@ -194,6 +197,13 @@ impl MessageHandler {
             .with_rid(meta.rid.clone());
         let active_model_after_command = cmd_ctx.active_model.clone();
         let reasoning_effort_after_command = cmd_ctx.reasoning_effort_override.clone();
+        if let Err(e) = save_active_model(&character_data_dir, active_model_after_command.clone()) {
+            tracing::warn!(
+                character = %char_name,
+                error = %e,
+                "Failed to persist active model"
+            );
+        }
 
         {
             let session = self.session_state_mut(session_id);
@@ -247,7 +257,7 @@ impl MessageHandler {
                     let snapshot = build_session_history_snapshot(
                         self.registry.clone(),
                         Some(selected.clone()),
-                        active_model_after_command.clone(),
+                        None,
                     )
                     .await;
 
