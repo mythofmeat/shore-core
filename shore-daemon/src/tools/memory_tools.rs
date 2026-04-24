@@ -16,7 +16,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
                 "properties": {
                     "request": {
                         "type": "string",
-                        "description": "Natural-language query to search memories, or a statement to save or correct one."
+                        "description": "Natural-language question to answer from markdown memory files."
                     }
                 },
                 "required": ["request"]
@@ -31,7 +31,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Relative path within the memories directory (e.g., 'topics/gaming/doom.md')."
+                        "description": "Relative path within the memory directory (e.g., 'topics/gaming/doom.md')."
                     }
                 },
                 "required": ["path"]
@@ -46,7 +46,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Relative path within the memories directory (e.g., 'people/ren.md')."
+                        "description": "Relative path within the memory directory (e.g., 'people/ren.md')."
                     },
                     "content": {
                         "type": "string",

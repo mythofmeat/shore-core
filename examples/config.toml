@@ -68,7 +68,7 @@ model = "claude-sonnet"            # Must match a key in [chat.*.*] below
 # scratchpad_read = true     # Read a scratchpad file
 # scratchpad_write = true    # Write a scratchpad file
 # scratchpad_delete = true   # Delete a scratchpad file
-# read = true                # Read workspace files; memory=false blocks memories/... access
+# read = true                # Read workspace files; memory=false blocks memory/... access
 # write = true               # Write workspace files; protected character files defer to compaction
 # edit = true                # Edit workspace files
 # list_files = true          # List workspace files

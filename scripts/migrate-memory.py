@@ -3,15 +3,16 @@
 One-time migration: export SQLite memory entries to markdown files.
 
 Usage:
-    python3 scripts/migrate-memory.py <character> [data_dir]
+    python3 scripts/migrate-memory.py <character> [data_dir] [config_dir]
 
 Defaults:
     data_dir: $XDG_DATA_HOME/shore (or ~/.local/share/shore)
+    config_dir: $XDG_CONFIG_HOME/shore (or ~/.config/shore)
 
 Writes:
-    {data_dir}/{character}/memories/migrated/{id}.md
-    {data_dir}/{character}/memories/migrated/{topic_key}_{id}.md  (if topic_key set)
-    {data_dir}/{character}/memories/migrated/.migration_complete   (sentinel)
+    {config_dir}/characters/{character}/workspace/memory/migrated/{id}.md
+    {config_dir}/characters/{character}/workspace/memory/migrated/{topic_key}_{id}.md  (if topic_key set)
+    {config_dir}/characters/{character}/workspace/memory/migrated/.migration_complete   (sentinel)
 
 The SQLite database is NOT modified or deleted.
 """
@@ -28,13 +29,20 @@ def sanitize_filename(name: str) -> str:
     return re.sub(r"[^a-zA-Z0-9\-_]", "-", name)
 
 
-def migrate(character: str, data_dir: str) -> int:
+def migrate(character: str, data_dir: str, config_dir: str) -> int:
     db_path = os.path.join(data_dir, character, "memory", "memory.db")
     if not os.path.exists(db_path):
         print(f"No database found at {db_path}", file=sys.stderr)
         return 0
 
-    out_dir = os.path.join(data_dir, character, "memories", "migrated")
+    out_dir = os.path.join(
+        config_dir,
+        "characters",
+        character,
+        "workspace",
+        "memory",
+        "migrated",
+    )
     os.makedirs(out_dir, exist_ok=True)
 
     conn = sqlite3.connect(db_path)
@@ -90,7 +98,13 @@ def main() -> int:
         xdg_data = os.environ.get("XDG_DATA_HOME", os.path.expanduser("~/.local/share"))
         data_dir = os.path.join(xdg_data, "shore")
 
-    migrate(character, data_dir)
+    if len(sys.argv) >= 4:
+        config_dir = sys.argv[3]
+    else:
+        xdg_config = os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config"))
+        config_dir = os.path.join(xdg_config, "shore")
+
+    migrate(character, data_dir, config_dir)
     return 0
 
 

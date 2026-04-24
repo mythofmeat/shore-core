@@ -10,7 +10,13 @@ use shore_config::{
 
 /// Top-level workspace files that are editable immediately but only become
 /// prompt-active after the next compaction/reload boundary.
-const PROTECTED_PATHS: &[&str] = &[SOUL_FILE, USER_FILE, AGENTS_FILE, TOOLS_FILE, HEARTBEAT_FILE];
+const PROTECTED_PATHS: &[&str] = &[
+    SOUL_FILE,
+    USER_FILE,
+    AGENTS_FILE,
+    TOOLS_FILE,
+    HEARTBEAT_FILE,
+];
 
 /// Persisted snapshot directory under the character data dir.
 const ACTIVE_PROMPT_DIR: &str = "active_prompt";
@@ -171,7 +177,10 @@ pub fn ensure_character_workspace(
         char_config_dir.join("character.md"),
         workspace_dir.join(SOUL_FILE),
     )?;
-    migrate_legacy_file(char_config_dir.join("user.md"), workspace_dir.join(USER_FILE))?;
+    migrate_legacy_file(
+        char_config_dir.join("user.md"),
+        workspace_dir.join(USER_FILE),
+    )?;
     migrate_legacy_file(
         char_config_dir.join("prompts").join("system.md"),
         workspace_dir.join(AGENTS_FILE),
@@ -184,7 +193,10 @@ pub fn ensure_character_workspace(
     }
 
     write_default_if_missing(workspace_dir.join(TOOLS_FILE), DEFAULT_TOOLS_GUIDANCE)?;
-    write_default_if_missing(workspace_dir.join(HEARTBEAT_FILE), DEFAULT_HEARTBEAT_GUIDANCE)?;
+    write_default_if_missing(
+        workspace_dir.join(HEARTBEAT_FILE),
+        DEFAULT_HEARTBEAT_GUIDANCE,
+    )?;
 
     let legacy_memories = character_data_dir.join("memories");
     if legacy_memories.exists() {
@@ -362,13 +374,26 @@ mod tests {
         fs::write(char_config.join("prompts/system.md"), "orig agents").unwrap();
         fs::write(config_dir.join("user.md"), "global user").unwrap();
         fs::create_dir_all(char_dir.join("memories").join("daily")).unwrap();
-        fs::write(char_dir.join("memories").join("daily").join("2026-01-01.md"), "note").unwrap();
+        fs::write(
+            char_dir
+                .join("memories")
+                .join("daily")
+                .join("2026-01-01.md"),
+            "note",
+        )
+        .unwrap();
 
         ensure_character_workspace(&char_dir, &config_dir, "TestChar").unwrap();
 
         let workspace = character_workspace_dir(&config_dir, "TestChar");
-        assert_eq!(fs::read_to_string(workspace.join(SOUL_FILE)).unwrap(), "orig soul");
-        assert_eq!(fs::read_to_string(workspace.join(USER_FILE)).unwrap(), "orig user");
+        assert_eq!(
+            fs::read_to_string(workspace.join(SOUL_FILE)).unwrap(),
+            "orig soul"
+        );
+        assert_eq!(
+            fs::read_to_string(workspace.join(USER_FILE)).unwrap(),
+            "orig user"
+        );
         assert_eq!(
             fs::read_to_string(workspace.join(AGENTS_FILE)).unwrap(),
             "orig agents"
@@ -376,7 +401,10 @@ mod tests {
         assert!(workspace.join(TOOLS_FILE).exists());
         assert!(workspace.join(HEARTBEAT_FILE).exists());
         assert_eq!(
-            fs::read_to_string(character_memory_dir(&config_dir, "TestChar").join("daily/2026-01-01.md")).unwrap(),
+            fs::read_to_string(
+                character_memory_dir(&config_dir, "TestChar").join("daily/2026-01-01.md")
+            )
+            .unwrap(),
             "note"
         );
     }
@@ -403,5 +431,45 @@ mod tests {
             fs::read_to_string(active_prompt_file(&char_dir, SOUL_FILE)).unwrap(),
             "workspace soul"
         );
+    }
+
+    #[test]
+    fn test_protected_edit_stays_deferred_until_apply() {
+        let tmp = TempDir::new().unwrap();
+        let char_dir = tmp.path().join("data").join("TestChar");
+        let config_dir = tmp.path().join("config");
+        let workspace = character_workspace_dir(&config_dir, "TestChar");
+
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(workspace.join(SOUL_FILE), "active soul").unwrap();
+        fs::write(workspace.join(USER_FILE), "active user").unwrap();
+        fs::write(workspace.join(AGENTS_FILE), "active agents").unwrap();
+        fs::write(workspace.join(TOOLS_FILE), "active tools").unwrap();
+        fs::write(workspace.join(HEARTBEAT_FILE), "active heartbeat").unwrap();
+
+        ensure_active_prompt_snapshot(&char_dir, &config_dir, "TestChar").unwrap();
+
+        fs::write(workspace.join(SOUL_FILE), "edited soul").unwrap();
+        queue_deferred_edit(&char_dir, "SOUL.md").unwrap();
+        ensure_active_prompt_snapshot(&char_dir, &config_dir, "TestChar").unwrap();
+
+        assert_eq!(
+            fs::read_to_string(active_prompt_file(&char_dir, SOUL_FILE)).unwrap(),
+            "active soul",
+            "protected workspace edits must not live-activate before apply"
+        );
+        assert_eq!(
+            pending_deferred_edit_paths(&char_dir).unwrap(),
+            vec!["SOUL.md"]
+        );
+
+        apply_deferred_edits(&char_dir, &config_dir, "TestChar").unwrap();
+
+        assert_eq!(
+            fs::read_to_string(active_prompt_file(&char_dir, SOUL_FILE)).unwrap(),
+            "edited soul",
+            "apply_deferred_edits is the activation boundary"
+        );
+        assert!(!char_dir.join("deferred_edits.jsonl").exists());
     }
 }

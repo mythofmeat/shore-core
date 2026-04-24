@@ -45,7 +45,7 @@ pub enum MarkdownStoreError {
 /// A memory entry read from the markdown store.
 #[derive(Debug, Clone)]
 pub struct MarkdownEntry {
-    /// Relative path within the memories directory (e.g., "topics/gaming/doom.md").
+    /// Relative path within the memory directory (e.g., "topics/gaming/doom.md").
     pub path: String,
     /// Full markdown content.
     pub content: String,
