@@ -1,12 +1,11 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use chrono::{DateTime, Datelike, Local, Timelike};
 use serde::{Deserialize, Serialize};
 use shore_config::app::DreamingConfig;
 use shore_config::character_memory_dir;
-use tokio::fs;
 
-use crate::memory::markdown_store::{MarkdownEntry, MarkdownMemoryStore};
+use crate::memory::markdown_store::{MarkdownEntry, MarkdownMemoryStore, MarkdownStoreError};
 
 #[derive(Debug, thiserror::Error)]
 pub enum DreamingError {
@@ -69,7 +68,7 @@ pub async fn dream_status(
         frequency: cfg.frequency.clone(),
         last_run_at: state.last_run_at,
         due,
-        state_path: state_path(&memory_dir).display().to_string(),
+        state_path: memory_dir.join(".dreams/state.json").display().to_string(),
         dreams_path: memory_dir.join("DREAMS.md").display().to_string(),
     })
 }
@@ -115,21 +114,18 @@ pub async fn run_sweep(
         }));
     }
 
-    fs::create_dir_all(memory_dir.join(".dreams"))
-        .await
-        .map_err(|e| DreamingError::Io(e.to_string()))?;
-
     let stamp = Local::now().format("%Y%m%d-%H%M%S").to_string();
     let staged_rel = format!(".dreams/candidates-{stamp}.json");
     let staged_path = memory_dir.join(&staged_rel);
     let staged_json =
         serde_json::to_string_pretty(&candidates).map_err(|e| DreamingError::Io(e.to_string()))?;
-    fs::write(&staged_path, staged_json)
+    store
+        .write(&staged_rel, &staged_json)
         .await
-        .map_err(|e| DreamingError::Io(e.to_string()))?;
+        .map_err(|e| DreamingError::Memory(e.to_string()))?;
 
-    append_dream_report(&memory_dir, &ran_at, &candidates, &promoted).await?;
-    append_memory_promotions(&memory_dir, &ran_at, &promoted).await?;
+    append_dream_report(&store, &ran_at, &candidates, &promoted).await?;
+    append_memory_promotions(&store, &ran_at, &promoted).await?;
 
     let mut state = state;
     state.last_run_at = Some(ran_at.clone());
@@ -187,28 +183,27 @@ fn parse_daily_cron(expr: &str) -> Result<(u32, u32), DreamingError> {
 }
 
 async fn read_state(memory_dir: &Path) -> Result<DreamState, DreamingError> {
-    match fs::read_to_string(state_path(memory_dir)).await {
-        Ok(content) => serde_json::from_str(&content).map_err(|e| DreamingError::Io(e.to_string())),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(DreamState::default()),
-        Err(e) => Err(DreamingError::Io(e.to_string())),
+    let store = MarkdownMemoryStore::open(memory_dir)
+        .await
+        .map_err(|e| DreamingError::Memory(e.to_string()))?;
+    match store.read(".dreams/state.json").await {
+        Ok(entry) => {
+            serde_json::from_str(&entry.content).map_err(|e| DreamingError::Io(e.to_string()))
+        }
+        Err(MarkdownStoreError::NotFound(_)) => Ok(DreamState::default()),
+        Err(e) => Err(DreamingError::Memory(e.to_string())),
     }
 }
 
 async fn write_state(memory_dir: &Path, state: &DreamState) -> Result<(), DreamingError> {
-    let path = state_path(memory_dir);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .await
-            .map_err(|e| DreamingError::Io(e.to_string()))?;
-    }
     let json = serde_json::to_string_pretty(state).map_err(|e| DreamingError::Io(e.to_string()))?;
-    fs::write(path, json)
+    let store = MarkdownMemoryStore::open(memory_dir)
         .await
-        .map_err(|e| DreamingError::Io(e.to_string()))
-}
-
-fn state_path(memory_dir: &Path) -> PathBuf {
-    memory_dir.join(".dreams").join("state.json")
+        .map_err(|e| DreamingError::Memory(e.to_string()))?;
+    store
+        .write(".dreams/state.json", &json)
+        .await
+        .map_err(|e| DreamingError::Memory(e.to_string()))
 }
 
 fn collect_candidates(entries: Vec<MarkdownEntry>) -> Vec<DreamCandidate> {
@@ -253,15 +248,16 @@ fn collect_candidates(entries: Vec<MarkdownEntry>) -> Vec<DreamCandidate> {
 }
 
 async fn append_dream_report(
-    memory_dir: &Path,
+    store: &MarkdownMemoryStore,
     ran_at: &str,
     candidates: &[DreamCandidate],
     promoted: &[String],
 ) -> Result<(), DreamingError> {
-    let path = memory_dir.join("DREAMS.md");
-    let mut body = fs::read_to_string(&path)
-        .await
-        .unwrap_or_else(|_| "# Dreams\n\n".to_string());
+    let mut body = match store.read("DREAMS.md").await {
+        Ok(entry) => entry.content,
+        Err(MarkdownStoreError::NotFound(_)) => "# Dreams\n\n".to_string(),
+        Err(e) => return Err(DreamingError::Memory(e.to_string())),
+    };
     body.push_str(&format!("## {ran_at} - dream sweep\n\n"));
     body.push_str("### Light\n\n");
     if candidates.is_empty() {
@@ -285,36 +281,40 @@ async fn append_dream_report(
         }
         body.push('\n');
     }
-    fs::write(path, body)
+    store
+        .write("DREAMS.md", &body)
         .await
-        .map_err(|e| DreamingError::Io(e.to_string()))
+        .map_err(|e| DreamingError::Memory(e.to_string()))
 }
 
 async fn append_memory_promotions(
-    memory_dir: &Path,
+    store: &MarkdownMemoryStore,
     ran_at: &str,
     promoted: &[String],
 ) -> Result<(), DreamingError> {
     if promoted.is_empty() {
         return Ok(());
     }
-    let path = memory_dir.join("MEMORY.md");
-    let mut body = fs::read_to_string(&path)
-        .await
-        .unwrap_or_else(|_| "# Memory\n\n".to_string());
+    let mut body = match store.read("MEMORY.md").await {
+        Ok(entry) => entry.content,
+        Err(MarkdownStoreError::NotFound(_)) => "# Memory\n\n".to_string(),
+        Err(e) => return Err(DreamingError::Memory(e.to_string())),
+    };
     body.push_str(&format!("## Dream consolidation - {ran_at}\n\n"));
     for item in promoted {
         body.push_str(&format!("- {item}\n"));
     }
     body.push('\n');
-    fs::write(path, body)
+    store
+        .write("MEMORY.md", &body)
         .await
-        .map_err(|e| DreamingError::Io(e.to_string()))
+        .map_err(|e| DreamingError::Memory(e.to_string()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::fs;
 
     #[tokio::test]
     async fn dry_run_does_not_write_files() {
@@ -357,5 +357,61 @@ mod tests {
         assert!(mem.join(".dreams").join("state.json").exists());
         assert!(mem.join("DREAMS.md").exists());
         assert!(mem.join("MEMORY.md").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sweep_rejects_symlinked_dream_report_escape() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_dir = tmp.path().join("config");
+        let mem = character_memory_dir(&cfg_dir, "alice");
+        let outside = tmp.path().join("outside");
+        fs::create_dir_all(&mem).await.unwrap();
+        fs::create_dir_all(&outside).await.unwrap();
+        fs::write(
+            mem.join("notes.md"),
+            "- Alice likes tea and remembers the blue cup.\n",
+        )
+        .await
+        .unwrap();
+        fs::write(outside.join("DREAMS.md"), "outside")
+            .await
+            .unwrap();
+        std::os::unix::fs::symlink(outside.join("DREAMS.md"), mem.join("DREAMS.md")).unwrap();
+
+        let cfg = DreamingConfig::default();
+        assert!(matches!(
+            run_sweep(&cfg_dir, "alice", &cfg, false, true).await,
+            Err(DreamingError::Memory(_))
+        ));
+        assert_eq!(
+            fs::read_to_string(outside.join("DREAMS.md")).await.unwrap(),
+            "outside"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sweep_rejects_symlinked_dream_state_escape() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_dir = tmp.path().join("config");
+        let mem = character_memory_dir(&cfg_dir, "alice");
+        let outside = tmp.path().join("outside");
+        fs::create_dir_all(&mem).await.unwrap();
+        fs::create_dir_all(&outside).await.unwrap();
+        fs::write(
+            mem.join("notes.md"),
+            "- Alice likes tea and remembers the blue cup.\n",
+        )
+        .await
+        .unwrap();
+        std::os::unix::fs::symlink(&outside, mem.join(".dreams")).unwrap();
+
+        let cfg = DreamingConfig::default();
+        assert!(matches!(
+            run_sweep(&cfg_dir, "alice", &cfg, false, true).await,
+            Err(DreamingError::Memory(_))
+        ));
+        assert!(!outside.join("state.json").exists());
     }
 }

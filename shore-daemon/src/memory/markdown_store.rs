@@ -72,7 +72,10 @@ impl MarkdownMemoryStore {
                 .await
                 .map_err(|e| MarkdownStoreError::Io(e.to_string()))?;
         }
-        Ok(Self { base_dir: base })
+        let base_dir = base
+            .canonicalize()
+            .map_err(|e| MarkdownStoreError::Io(e.to_string()))?;
+        Ok(Self { base_dir })
     }
 
     /// Synchronous version of `open` for contexts where async is unavailable.
@@ -81,7 +84,10 @@ impl MarkdownMemoryStore {
         if !base.exists() {
             std::fs::create_dir_all(&base).map_err(|e| MarkdownStoreError::Io(e.to_string()))?;
         }
-        Ok(Self { base_dir: base })
+        let base_dir = base
+            .canonicalize()
+            .map_err(|e| MarkdownStoreError::Io(e.to_string()))?;
+        Ok(Self { base_dir })
     }
 
     /// List all `.md` files in the store, recursively.
@@ -193,6 +199,23 @@ impl MarkdownMemoryStore {
             if is_internal_dream_path(&self.base_dir, &path) {
                 continue;
             }
+            let link_meta = fs::symlink_metadata(&path)
+                .await
+                .map_err(|e| MarkdownStoreError::Io(e.to_string()))?;
+            if link_meta.file_type().is_symlink() {
+                let canonical = path
+                    .canonicalize()
+                    .map_err(|e| MarkdownStoreError::Io(e.to_string()))?;
+                if !canonical.starts_with(&self.base_dir) {
+                    return Err(MarkdownStoreError::PathTraversal(format!(
+                        "symlink escapes memory directory: {}",
+                        path.display()
+                    )));
+                }
+                if canonical.is_dir() {
+                    continue;
+                }
+            }
             let meta = child
                 .metadata()
                 .await
@@ -244,7 +267,35 @@ impl MarkdownMemoryStore {
                 _ => {}
             }
         }
-        Ok(self.base_dir.join(rel))
+        let resolved = self.base_dir.join(rel);
+        self.ensure_resolved_path_inside(&resolved)?;
+        Ok(resolved)
+    }
+
+    fn ensure_resolved_path_inside(&self, resolved: &Path) -> Result<(), MarkdownStoreError> {
+        if let Ok(canonical) = resolved.canonicalize() {
+            if !canonical.starts_with(&self.base_dir) {
+                return Err(MarkdownStoreError::PathTraversal(
+                    "resolved path escapes memory directory".into(),
+                ));
+            }
+            return Ok(());
+        }
+
+        let mut ancestor = resolved;
+        while let Some(parent) = ancestor.parent() {
+            if let Ok(canonical_parent) = parent.canonicalize() {
+                if !canonical_parent.starts_with(&self.base_dir) {
+                    return Err(MarkdownStoreError::PathTraversal(
+                        "resolved path escapes memory directory".into(),
+                    ));
+                }
+                return Ok(());
+            }
+            ancestor = parent;
+        }
+
+        Ok(())
     }
 }
 
@@ -435,5 +486,69 @@ mod tests {
 
         assert!(store.read("../secret.md").await.is_err());
         assert!(store.write("../secret.md", "x").await.is_err());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn rejects_symlink_escape_for_existing_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let memory_dir = tmp.path().join("memories");
+        let outside_dir = tmp.path().join("outside");
+        std::fs::create_dir_all(&outside_dir).unwrap();
+        std::fs::write(outside_dir.join("secret.md"), "secret").unwrap();
+
+        let store = MarkdownMemoryStore::open(&memory_dir).await.unwrap();
+        std::os::unix::fs::symlink(outside_dir.join("secret.md"), memory_dir.join("secret.md"))
+            .unwrap();
+
+        assert!(matches!(
+            store.read("secret.md").await,
+            Err(MarkdownStoreError::PathTraversal(_))
+        ));
+        assert!(matches!(
+            store.write("secret.md", "new secret").await,
+            Err(MarkdownStoreError::PathTraversal(_))
+        ));
+        assert_eq!(
+            std::fs::read_to_string(outside_dir.join("secret.md")).unwrap(),
+            "secret"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn rejects_symlink_escape_for_new_file_under_linked_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let memory_dir = tmp.path().join("memories");
+        let outside_dir = tmp.path().join("outside");
+        std::fs::create_dir_all(&outside_dir).unwrap();
+
+        let store = MarkdownMemoryStore::open(&memory_dir).await.unwrap();
+        std::os::unix::fs::symlink(&outside_dir, memory_dir.join("linked")).unwrap();
+
+        assert!(matches!(
+            store.write("linked/new.md", "new secret").await,
+            Err(MarkdownStoreError::PathTraversal(_))
+        ));
+        assert!(!outside_dir.join("new.md").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn list_all_rejects_symlinked_directory_escape() {
+        let tmp = tempfile::tempdir().unwrap();
+        let memory_dir = tmp.path().join("memories");
+        let outside_dir = tmp.path().join("outside");
+        std::fs::create_dir_all(&outside_dir).unwrap();
+        std::fs::write(outside_dir.join("secret.md"), "secret").unwrap();
+
+        let store = MarkdownMemoryStore::open(&memory_dir).await.unwrap();
+        store.write("inside.md", "inside").await.unwrap();
+        std::os::unix::fs::symlink(&outside_dir, memory_dir.join("linked")).unwrap();
+
+        assert!(matches!(
+            store.list_all().await,
+            Err(MarkdownStoreError::PathTraversal(_))
+        ));
     }
 }
