@@ -2,7 +2,7 @@ This document is meant to concretely write down what *I* as a user want out of t
 
 # What `shore` *is*
 
-`shore` is an attempt to be able to make an AI character chat program, improving on some of the pain points I experienced while using SillyTavern, while keeping things distinctly suited to *my* personal aesthetic and functional preferences. 
+`shore` is an attempt to be able to make an AI character chat program, improving on some of the pain points I experienced while using SillyTavern, while keeping things distinctly suited to *my* personal aesthetic and functional preferences.
 
 
 # What `shore` should be good at:

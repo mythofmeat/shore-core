@@ -6,7 +6,7 @@
 //! the manager makes one more non-streaming `generate()` call with an
 //! explicit wrap-up system message asking for a recap, and persists any
 //! `<recap>` it produces to a markdown daily note under
-//! `{data_dir}/{character}/memories/daily/`.
+//! `characters/{character}/workspace/memory/daily/`.
 //!
 //! Permitted under the testing-policy Rule 2 (trait/HTTP doubles upstream of
 //! shore-llm-client) — the autonomy manager is the caller under test, and the
@@ -19,8 +19,8 @@ use shore_test_harness::{TestConfigBuilder, TestHarness};
 
 const CHARACTER: &str = "TestChar";
 
-fn daily_notes_contain(data_dir: &std::path::Path, needle: &str) -> bool {
-    let daily_dir = data_dir.join(CHARACTER).join("memories").join("daily");
+fn daily_notes_contain(config_dir: &std::path::Path, needle: &str) -> bool {
+    let daily_dir = shore_config::character_memory_dir(config_dir, CHARACTER).join("daily");
     let Ok(entries) = std::fs::read_dir(&daily_dir) else {
         return false;
     };
@@ -115,7 +115,7 @@ async fn wrap_up_persists_recap_when_iteration_cap_is_hit() {
     //    this advances the virtual clock when the runtime is otherwise idle.
     let mut found = false;
     for _ in 0..500 {
-        if daily_notes_contain(&harness.data_dir, expected_recap) {
+        if daily_notes_contain(&harness.config.dirs.config, expected_recap) {
             found = true;
             break;
         }
@@ -128,10 +128,7 @@ async fn wrap_up_persists_recap_when_iteration_cap_is_hit() {
     assert!(
         found,
         "expected wrap-up recap {expected_recap:?} in a daily markdown note under {}",
-        harness
-            .data_dir
-            .join(CHARACTER)
-            .join("memories")
+        shore_config::character_memory_dir(&harness.config.dirs.config, CHARACTER)
             .join("daily")
             .display(),
     );
@@ -188,7 +185,7 @@ async fn wrap_up_persists_recap_on_natural_exit_without_recap() {
 
     let mut found = false;
     for _ in 0..500 {
-        if daily_notes_contain(&harness.data_dir, expected_recap) {
+        if daily_notes_contain(&harness.config.dirs.config, expected_recap) {
             found = true;
             break;
         }
@@ -270,7 +267,7 @@ async fn wrap_up_sees_final_assistant_turn_after_tool_use_then_natural_exit() {
     // `received_requests()` for assertions.
     let mut recap_landed = false;
     for _ in 0..500 {
-        if daily_notes_contain(&harness.data_dir, expected_recap) {
+        if daily_notes_contain(&harness.config.dirs.config, expected_recap) {
             recap_landed = true;
             break;
         }
@@ -368,7 +365,7 @@ async fn tick_recap_persists_to_daily_markdown_note() {
     let active_path = harness.data_dir.join(CHARACTER).join("active.jsonl");
     let mut found_daily_recap = false;
     for _ in 0..500 {
-        if daily_notes_contain(&harness.data_dir, expected_recap) {
+        if daily_notes_contain(&harness.config.dirs.config, expected_recap) {
             found_daily_recap = true;
             break;
         }
@@ -381,10 +378,7 @@ async fn tick_recap_persists_to_daily_markdown_note() {
     assert!(
         found_daily_recap,
         "expected a daily markdown note containing {expected_recap:?} under {}",
-        harness
-            .data_dir
-            .join(CHARACTER)
-            .join("memories")
+        shore_config::character_memory_dir(&harness.config.dirs.config, CHARACTER)
             .join("daily")
             .display(),
     );

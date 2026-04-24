@@ -540,7 +540,10 @@ pub fn resolve_user_definition(config_dir: &Path, character_name: &str) -> Optio
 
     let legacy_user = character_config_dir(config_dir, character_name).join("user.md");
     if let Ok(content) = std::fs::read_to_string(&legacy_user) {
-        info!(character = character_name, "Using legacy character-specific user definition");
+        info!(
+            character = character_name,
+            "Using legacy character-specific user definition"
+        );
         return Some(content);
     }
 
@@ -562,7 +565,11 @@ pub fn discover_characters(config_dir: &Path) -> Vec<String> {
     for entry in entries.flatten() {
         if entry.path().is_dir() {
             let name = entry.file_name().to_string_lossy().to_string();
-            if entry.path().join(CHARACTER_WORKSPACE_DIR).join(SOUL_FILE).exists()
+            if entry
+                .path()
+                .join(CHARACTER_WORKSPACE_DIR)
+                .join(SOUL_FILE)
+                .exists()
                 || entry.path().join("character.md").exists()
             {
                 names.push(name);
@@ -982,12 +989,10 @@ c = 4
 
     #[test]
     fn user_definition_character_specific_overrides_global() {
-        let tmp = setup_config_dir(&[
-            (
-                "characters/TestChar/workspace/USER.md",
-                "Character-specific user definition",
-            ),
-        ]);
+        let tmp = setup_config_dir(&[(
+            "characters/TestChar/workspace/USER.md",
+            "Character-specific user definition",
+        )]);
 
         let def = resolve_user_definition(tmp.path(), "TestChar");
         assert_eq!(def.as_deref(), Some("Character-specific user definition"));
@@ -1001,7 +1006,10 @@ c = 4
         )]);
 
         let def = resolve_user_definition(tmp.path(), "TestChar");
-        assert_eq!(def.as_deref(), Some("Legacy character-specific user definition"));
+        assert_eq!(
+            def.as_deref(),
+            Some("Legacy character-specific user definition")
+        );
     }
 
     #[test]

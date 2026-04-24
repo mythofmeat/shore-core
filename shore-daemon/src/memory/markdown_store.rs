@@ -1,7 +1,7 @@
 //! Markdown memory store — filesystem-based memory entries.
 //!
 //! Replaces the opaque SQLite `entries` table with inspectable, git-diffable
-//! markdown files in `{character}/memories/`.
+//! markdown files in `characters/{character}/workspace/memory/`.
 //!
 //! Each file is pure markdown — no YAML frontmatter, no structured metadata.
 //! The assistant decides the structure: headings, bullet points, nested folders,
@@ -9,7 +9,7 @@
 //!
 //! Directory layout:
 //! ```text
-//! {character}/memories/
+//! characters/{character}/workspace/memory/
 //!   README.md              # Character-curated index
 //!   topics/
 //!     gaming/
@@ -45,7 +45,7 @@ pub enum MarkdownStoreError {
 /// A memory entry read from the markdown store.
 #[derive(Debug, Clone)]
 pub struct MarkdownEntry {
-    /// Relative path within the memories directory (e.g., "topics/gaming/doom.md").
+    /// Relative path within the memory directory (e.g., "topics/gaming/doom.md").
     pub path: String,
     /// Full markdown content.
     pub content: String,

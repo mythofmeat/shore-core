@@ -630,7 +630,7 @@ fn homeserver_embedded_config_pipeline() {
 
 #[test]
 fn health_status_variants_are_distinct() {
-    let statuses = vec![
+    let statuses = [
         HealthStatus::Healthy,
         HealthStatus::Unhealthy,
         HealthStatus::NotRunning,

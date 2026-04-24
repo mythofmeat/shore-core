@@ -1,7 +1,8 @@
 # Shore V2 — Architecture Plan
 
 > Status note: this document still contains historical V2 planning material.
-> The active memory path is markdown-first (`{character}/memories/**/*.md`);
+> The active memory path is markdown-first
+> (`characters/{character}/workspace/memory/**/*.md`);
 > the legacy SQLite/vector memory agent remains for compatibility, migration,
 > tests, and benchmarks rather than new runtime behavior. Treat
 > [`FEATURES.md`](FEATURES.md#memory), [`CONFIGURATION.md`](CONFIGURATION.md#memory),
@@ -482,7 +483,7 @@ binary in the workspace.
 | **Server** | Accept connections (Unix/TCP), route requests, broadcast push messages | `tokio`, `serde_json` |
 | **Engine** | Per-character conversation state machine: prompt assembly, tool loop, message persistence | — |
 | **LLM Client** | Native provider integrations via `shore-llm-client` crate (Anthropic, OpenAI-compat, Gemini, DeepSeek, ZhipuAI, Z.AI) | `reqwest` |
-| **Memory** | Markdown files under each character's `memories/` directory, plus direct read/write/search/list tools | — |
+| **Memory** | Markdown files under each character's `workspace/memory/` directory, plus direct read/write/search/list tools | — |
 | **Compaction** | Conversation → markdown memory updates (via LLM). Proactive idle timer fires after last activity — no waiting for next user message. | — |
 | **Heartbeat** | Timer-based autonomous turns with full tool access (see §13.1) | — |
 | **Cache Keepalive** | Anthropic prompt cache TTL refresh pings | — |
@@ -867,11 +868,13 @@ $XDG_CONFIG_HOME/shore/            (~/.config/shore/)
 $XDG_DATA_HOME/shore/              (~/.local/share/shore/)
 ├── prompts.manifest.json          # Tracks stock vs user-modified templates
 └── {character}/
-    ├── memories/                  # Markdown memory files (source of truth)
-    │   ├── daily/                 # Heartbeat / private-moment notes
-    │   └── DREAMS.md              # Compaction / reflection audit trail
-    ├── memory/
-    │   ├── recap.md               # Rolling narrative recap (generated)
+    ├── active_prompt/             # Cache-stable prompt snapshot
+    │   ├── SOUL.md
+    │   ├── USER.md
+    │   ├── AGENTS.md
+    │   ├── TOOLS.md
+    │   ├── HEARTBEAT.md
+    │   └── RECENT_MEMORY.md       # Rolling narrative digest
     ├── conversations/
     │   ├── manifest.json          # Conversation index (includes private flag)
     │   └── {conv_id}.jsonl        # Message history
@@ -889,13 +892,13 @@ delete a character's data by operating on a single directory.
 
 ### 7.2.1 Markdown Memory Layout
 
-- `memories/` is the only runtime memory store.
-- Durable curated memory lives in normal markdown files under `memories/`.
-- Short-lived autonomous/heartbeat notes accumulate in `memories/daily/`.
-- `memories/DREAMS.md` is the human-auditable log of compaction/reflection
+- `characters/{character}/workspace/memory/` is the only runtime memory store.
+- Durable curated memory lives in normal markdown files under `workspace/memory/`.
+- Short-lived autonomous/heartbeat notes accumulate in `workspace/memory/daily/`.
+- `workspace/memory/DREAMS.md` is the human-auditable log of compaction/reflection
   passes.
-- `memory/recap.md` remains the rolling recap injected into the main prompt at
-  compaction boundaries.
+- `active_prompt/RECENT_MEMORY.md` is the rolling digest injected into the main
+  prompt at compaction boundaries.
 - There is no normal-operation SQLite/vector retrieval layer behind these files.
 
 Matrix bridge state lives under the character it belongs to, not in a separate
@@ -1021,7 +1024,7 @@ allowed_hosts = ["100.64.0.2"]
 
 SQLite memory tables are no longer part of the Rust runtime. Existing V1
 `memory.db` files are migrated by `scripts/migrate-memory.py`, which exports
-entries to markdown files under the character's `memories/` directory.
+entries to markdown files under the character's `workspace/memory/` directory.
 
 ---
 
@@ -1200,7 +1203,7 @@ tools are excluded from the tool list. Memory read tools (RAG) are also
 suppressed. Other tools (web, images, dice, time) remain available.
 
 **Filesystem tool routing:** Bare file-tool paths resolve under `workspace/`.
-The `memories/...` prefix explicitly targets the markdown memory namespace.
+The `memory/...` prefix explicitly targets the markdown memory namespace.
 The `exec` tool parses its input into argv and runs an allowlisted executable
 directly; shell syntax (`;`, pipes, redirects, command substitution) is not
 part of the contract.
@@ -1267,7 +1270,7 @@ it also clears `CacheKeepalive::next_wake`.
 
 Characters write first-person notes via `<recap>` tags during heartbeat
 ticks (last-wins semantics, same as `<sendMessage>`). Completed recaps are
-appended to `memories/daily/YYYY-MM-DD.md` with a heartbeat source label.
+appended to `workspace/memory/daily/YYYY-MM-DD.md` with a heartbeat source label.
 The next heartbeat prompt reads recent daily notes as "where you left off"
 context. There is no separate heartbeat journal/story store.
 

@@ -129,12 +129,7 @@ async fn test_client_disconnect_during_generation() {
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    loop {
-        match timeout(Duration::from_millis(500), harness.conn.recv()).await {
-            Ok(Ok(_)) => continue,
-            _ => break,
-        }
-    }
+    while let Ok(Ok(_)) = timeout(Duration::from_millis(500), harness.conn.recv()).await {}
 
     harness.mock_llm.enqueue_text("daemon is alive").await;
 

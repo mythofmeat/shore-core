@@ -192,8 +192,8 @@ exec = true                # allowlisted workspace commands
 
 **When to change:**
 - Set `enabled = false` to disable tool use entirely.
-- Set `memory = false` to disable all memory tools and block `memories/...` access through workspace tools.
-- Granular `memory_read` / `memory_write` also gate workspace `memories/...` reads and writes; `exec` is hidden unless both are enabled.
+- Set `memory = false` to disable all memory tools and block `memory/...` access through workspace tools.
+- Granular `memory_read` / `memory_write` also gate workspace `memory/...` reads and writes; `exec` is hidden unless both are enabled.
 - Drop individual tool toggles to `false` when you want the character to not have access (e.g. `generate_image = false` if you don't have image-gen credits).
 - Lower `max_iterations` if the character is going in circles; raise it if complex tasks need more rounds.
 
@@ -234,6 +234,21 @@ keep_recent_turns = 2      # user turns retained verbatim after compaction
 Compaction condenses old conversation turns into durable markdown memory files. Before writing, the compaction model sees a bounded snapshot of existing memory files so it can merge and update instead of blindly creating duplicates. `idle_trigger` is how long the session must be idle before compaction kicks in; `min_turns` / `max_turns` bracket when it's allowed to run; `keep_recent_turns` controls how much recent conversation stays verbatim.
 
 `max_context_tokens` is a cost-driven trigger complementary to `max_turns`: per-turn content varies wildly (heavy-thinking turns are several times larger than light chat), so turn count is a poor proxy for context cost. The trigger fires when the just-completed turn's prompt tokens cross the threshold (still floored by `min_turns` to prevent thrash). The default **200000** acts as a context-window safety net (matching Claude 4.x's 200K ceiling) rather than a cost optimiser. For actual cost savings on Opus 4.7, lower it to around **30000** — the per-call cost curve has an elbow near 30K where median cost roughly doubles. Tune for your model and conversation shape; recorded call sizes are in the ledger CSV (`shore usage --export-csv`). Set to `0` to disable entirely.
+
+### `[memory.retrieval]`
+
+```toml
+[memory.retrieval]
+mode = "auto"   # "auto", "lexical", or "hybrid"
+```
+
+Controls how `memory_search` and LLM-assisted memory queries rank markdown memory files.
+
+- `auto` uses hybrid semantic+keyword ranking when `[defaults].embedding` / `[embedding.*]` are configured and usable, otherwise lexical ranking.
+- `lexical` never calls the embeddings API.
+- `hybrid` requests semantic+keyword ranking but falls back to lexical ranking if embeddings are unavailable.
+
+The semantic index is rebuildable and non-authoritative; markdown files under `workspace/memory/` remain the only durable memory store.
 
 ### `[memory.thinking]`
 

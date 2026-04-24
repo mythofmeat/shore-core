@@ -159,8 +159,8 @@ cat /tmp/mcp_out.jsonl | jq .
 # MCP server logs (includes daemon stderr if auto-spawned)
 cat /tmp/shore-mcp.log
 
-# Test profile data dir (markdown files land here)
-ls ~/.local/share/shore-mcp-test/TestChar/memories/
+# Test profile memory files land under the config workspace.
+ls ~/.local/share/shore-mcp-test/config/characters/TestChar/workspace/memory/
 
 # If the daemon got into a bad state, kill and let it respawn:
 pkill -f 'shore-daemon.*shore-mcp-test'

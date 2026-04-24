@@ -1,4 +1,4 @@
-- [ ] can we re-organize this repo in some way? 
+- [ ] can we re-organize this repo in some way?
   - `shore-server` (or `shore-daemon`, or `shore-backend`, i don't really care): this should contain literally all of the backend code that makes the other programs work
     - this includes the llm client stuff, as well as the configuration stuff
     - this should really just be a long-lived daemon that exposes a REST API that the other stuff can use
@@ -11,11 +11,11 @@
     - `shore-gui-godot`
     - `shore-gui`
 
-  - `shore-connectors`: optional hooks into other programs for convenience and external. 
+  - `shore-connectors`: optional hooks into other programs for convenience and external.
     - `shore-matrix`
     - `shore-telegram`
 
   - `shore-dev`: the testing and development suite
     - `shore-mcp`
     - `shore-test-harness`
-    - etc. 
+    - etc.

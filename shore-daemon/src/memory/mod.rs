@@ -11,3 +11,4 @@ pub mod deferred_edits;
 pub mod markdown_query;
 pub mod markdown_store;
 pub mod memory_llm;
+pub mod retrieval;

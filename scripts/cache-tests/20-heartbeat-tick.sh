@@ -61,9 +61,9 @@ TOML
     } > "$model_toml"
 }
 
-# Write a recap so the heartbeat prompt has context.
-mkdir -p "$DATA_DIR/$CHARACTER_NAME/memory"
-cat > "$DATA_DIR/$CHARACTER_NAME/memory/recap.md" << 'RECAP'
+# Write a recent-memory digest so the heartbeat prompt has context.
+mkdir -p "$DATA_DIR/$CHARACTER_NAME/active_prompt"
+cat > "$DATA_DIR/$CHARACTER_NAME/active_prompt/RECENT_MEMORY.md" << 'RECAP'
 The conversation has covered a range of topics so far. The user asked about
 prompt caching and how it works with the Anthropic API. They discussed the
 economics of cache writes versus reads, and explored different breakpoint

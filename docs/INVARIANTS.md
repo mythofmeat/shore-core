@@ -80,6 +80,7 @@ _Empty. Add new invariant drafts here as future features are introduced or exist
 **Must:**
 - Direct memory file tools expose clear paths and markdown content.
 - The natural-language `memory` tool answers from markdown files only.
+- Semantic retrieval indexes, when enabled, are rebuildable ranking aids and must not become an authoritative memory store.
 - Writes to memory should prefer updating existing files over creating near-duplicate files.
 - Memory access must be consistently gated across memory tools, workspace file tools, and private-mode tool lists.
 

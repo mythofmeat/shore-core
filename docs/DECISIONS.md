@@ -12,12 +12,14 @@ markdown memory files. That transitional architecture has been removed.
 
 Decision:
 - Normal memory reads, writes, search, compaction, and CLI memory queries now
-  operate directly on markdown files under `{character}/memories/`.
-- Compaction writes markdown files, updates `memory/recap.md`, archives the
-  conversation tail, and appends a markdown audit entry to `memories/DREAMS.md`.
+  operate directly on markdown files under
+  `characters/{character}/workspace/memory/`.
+- Compaction writes markdown files, updates `active_prompt/RECENT_MEMORY.md`,
+  archives the conversation tail, and appends a markdown audit entry to
+  `workspace/memory/DREAMS.md`.
 - Autonomous heartbeat recaps no longer write `recaps.jsonl` or inject hidden
   `Role::System` recap messages into `active.jsonl`; they append to
-  `memories/daily/YYYY-MM-DD.md` instead.
+  `workspace/memory/daily/YYYY-MM-DD.md` instead.
 - Heartbeat is the term for autonomous private ticks. Cache keepalive remains a
   separate Anthropic prompt-cache cost-saving subsystem, not an autonomy feature.
 - Image memory was dropped instead of ported. The remaining image tools are the
@@ -56,7 +58,7 @@ Decision:
 - Keep SQLite/vectorstore as a shadow retrieval layer rather than deleting it
   immediately.
 - Add `entries.file_path` so a markdown file has a stable shadow row.
-- `memory_write`, workspace writes to `memories/...`, CLI memory queries, and
+- `memory_write`, workspace writes to `memory/...`, CLI memory queries, and
   compaction all sync markdown files into the shadow index.
 - Compaction rollback restores previous markdown content and the previous shadow
   SQLite/vector state instead of blindly deleting whatever path was touched.
@@ -74,7 +76,7 @@ files, and exposed an `exec` tool with an allowlist. Both needed tightening.
 
 Decision:
 - Bare filesystem-tool paths continue to resolve under `workspace/`.
-- `memories/...` is now the explicit namespace for memory files.
+- `memory/...` is now the explicit namespace for memory files.
 - `workspace/...` is accepted as an explicit alias for the default root.
 - `exec` no longer shells out through `sh -c`; it parses argv directly and runs
   an allowlisted executable.
@@ -115,9 +117,10 @@ Phase 7 of the memory refactor. Existing SQLite `entries` must be exported to
 markdown files before the assistant can manage them through its filesystem tools.
 
 Implementation:
-- Standalone Python script: `scripts/migrate-memory.py <character> [data_dir]`.
+- Standalone Python script: `scripts/migrate-memory.py <character> [data_dir] [config_dir]`.
 - Reads all rows from `entries` table via `sqlite3`.
-- Writes one markdown file per entry to `{character}/memories/migrated/`.
+- Writes one markdown file per entry to
+  `characters/{character}/workspace/memory/migrated/`.
 - Writes a sentinel file `migrated/.migration_complete` with timestamp and count.
 - The SQLite database is **not deleted** — rollback is possible by reverting to
 SQLite reads.
@@ -1261,7 +1264,7 @@ Call IDs are `{YYYYMMDDTHHMMSSmmm}-{counter:04}` — sortable, monotonic within 
 
 ### Markdown Memory Store — Phase 2 Integration (2026-04-22)
 
-**Decision:** Wire `MarkdownMemoryStore` into compaction and tool dispatch. Compaction now writes `.md` files to `{character}/memories/compacted/` in addition to SQLite entries. New granular memory tools (`memory_read`, `memory_write`, `memory_search`, `memory_list`) give the assistant direct filesystem access to its memories.
+**Decision:** Wire `MarkdownMemoryStore` into compaction and tool dispatch. Compaction writes `.md` files to `characters/{character}/workspace/memory/`. New granular memory tools (`memory_read`, `memory_write`, `memory_search`, `memory_list`) give the assistant direct filesystem access to its memory files.
 
 **What changed:**
 - Added `MarkdownMemoryStore::open_sync()` for synchronous construction in `ToolContext`
@@ -1271,11 +1274,11 @@ Call IDs are `{YYYYMMDDTHHMMSSmmm}-{counter:04}` — sortable, monotonic within 
   - `memory_write(path, content)` — write or overwrite a memory file
   - `memory_search(query)` — case-insensitive text search across all `.md` files, returns excerpts
   - `memory_list(path?)` — list memory files, optionally filtered by subdirectory
-- Compaction writes markdown BEFORE SQLite. If markdown write fails, full rollback occurs (markdown + SQLite + vectors + changelog)
-- Markdown path derived from `topic_key` → `compacted/{sanitized}.md`; content is `# {topic_key}\n\n{summary}\n` with optional tags/type/session metadata
+- Compaction writes markdown directly and rolls back overwritten markdown files if later archive/retain work fails.
+- Markdown paths are chosen by the compaction model from the existing memory snapshot.
 - `CompactionResult` now includes `markdown_paths: Vec<String>`
 - `CompactionError` gains `MarkdownStore(String)` variant
 
 **Why:** The existing `memory` tool routes through a complex agent/researcher pipeline that queries SQLite and RAG. The new tools give the model direct, explicit control over its memory files — matching OpenClaw's filesystem model and making memory inspectable/git-diffable.
 
-**Trade-off:** During transition, compaction writes BOTH markdown and SQLite. SQLite remains the source of truth for the legacy memory agent. The new tools operate on the markdown store exclusively. Full cutover (dropping SQLite writes) waits until Phase 3 (AI-curated compaction) or Phase 5 (tool-use verification).
+**Trade-off:** The durable runtime store is now markdown-only. Any future indexing must be derived from those files and must not become a second source of truth.

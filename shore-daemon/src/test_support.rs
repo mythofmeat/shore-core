@@ -8,8 +8,9 @@ use crate::autonomy::manager::AutonomyManager;
 use crate::memory::compaction_impls::ImageGenConfig;
 use crate::memory::markdown_store::MarkdownMemoryStore;
 use crate::memory::memory_llm::{MemoryLlm, MockMemoryLlm};
+use crate::memory::retrieval::EmbeddingConfig;
 use crate::tools::ToolContext;
-use shore_config::app::SearchConfig;
+use shore_config::app::{RetrievalConfig, SearchConfig};
 use shore_config::models::{ResolvedModel, Sdk};
 use shore_llm_client::LlmClient;
 
@@ -57,6 +58,9 @@ pub struct TestToolContext {
     pub autonomy_mgr: Option<AutonomyManager>,
     pub character_name_val: String,
     pub markdown_store_val: Option<MarkdownMemoryStore>,
+    pub retrieval_config_val: RetrievalConfig,
+    pub embedding_config_val: Option<EmbeddingConfig>,
+    pub memory_index_path_val: Option<std::path::PathBuf>,
     pub memory_access_allowed_val: bool,
     pub memory_read_allowed_val: bool,
     pub memory_write_allowed_val: bool,
@@ -74,6 +78,9 @@ impl TestToolContext {
             autonomy_mgr: None,
             character_name_val: String::new(),
             markdown_store_val: None,
+            retrieval_config_val: RetrievalConfig::default(),
+            embedding_config_val: None,
+            memory_index_path_val: None,
             memory_access_allowed_val: true,
             memory_read_allowed_val: true,
             memory_write_allowed_val: true,
@@ -131,6 +138,17 @@ impl TestToolContext {
         self.workspace_dir_val = dir.to_string();
         self
     }
+
+    pub fn with_retrieval_config(mut self, config: RetrievalConfig) -> Self {
+        self.retrieval_config_val = config;
+        self
+    }
+}
+
+impl Default for TestToolContext {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ToolContext for TestToolContext {
@@ -160,6 +178,15 @@ impl ToolContext for TestToolContext {
     }
     fn markdown_store(&self) -> Option<&MarkdownMemoryStore> {
         self.markdown_store_val.as_ref()
+    }
+    fn memory_retrieval_config(&self) -> &RetrievalConfig {
+        &self.retrieval_config_val
+    }
+    fn embedding_config(&self) -> Option<&EmbeddingConfig> {
+        self.embedding_config_val.as_ref()
+    }
+    fn memory_index_path(&self) -> Option<&std::path::Path> {
+        self.memory_index_path_val.as_deref()
     }
     fn memory_access_allowed(&self) -> bool {
         self.memory_access_allowed_val

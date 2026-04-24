@@ -9,7 +9,7 @@ use shore_config::LoadedConfig;
 use shore_daemon::autonomy::manager::AutonomyManager;
 use shore_daemon::characters::CharacterRegistry;
 use shore_daemon::commands::{CommandContext, SessionTokens};
-use shore_daemon::handler::MessageHandler;
+use shore_daemon::handler::{MessageHandler, MessageHandlerDeps};
 use shore_daemon::handshake::build_handshake_provider;
 use shore_daemon_server::{Server, ServerConfig};
 use shore_ledger::LedgerClient;
@@ -158,17 +158,17 @@ impl TestHarness {
         let stored_autonomy = autonomy.clone();
 
         // ── Message Handler ──────────────────────────────────────────
-        let mut msg_handler = MessageHandler::new(
-            char_registry,
+        let mut msg_handler = MessageHandler::new(MessageHandlerDeps {
+            registry: char_registry,
             cmd_ctx,
             llm_client,
-            push_tx.clone(),
+            push_tx: push_tx.clone(),
             session_router,
             autonomy,
             notifier,
-            Arc::new(AtomicBool::new(false)),
-            None,
-        );
+            live_speak: Arc::new(AtomicBool::new(false)),
+            tts_client: None,
+        });
 
         // Spawn handler loop.
         let handler_handle = tokio::spawn(async move {

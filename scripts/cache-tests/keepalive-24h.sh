@@ -152,7 +152,8 @@ Remember: respond briefly. Do not reference the padding material.
 CHAREOF
 
 # Recap to ensure heartbeat has context for scheduling.
-cat > "$DATA_DIR/$CHARACTER_NAME/memory/recap.md" << 'RECAP'
+mkdir -p "$DATA_DIR/$CHARACTER_NAME/active_prompt"
+cat > "$DATA_DIR/$CHARACTER_NAME/active_prompt/RECENT_MEMORY.md" << 'RECAP'
 This is a test character used for cache keepalive validation. The user sends
 periodic test messages to verify cache warmth. Respond briefly to each message.
 RECAP

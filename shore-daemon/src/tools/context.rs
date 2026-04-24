@@ -6,13 +6,14 @@
 
 use std::path::Path;
 
-use shore_config::app::SearchConfig;
+use shore_config::app::{RetrievalConfig, SearchConfig};
 use shore_config::models::ResolvedModel;
 use shore_llm_client::LlmClient;
 
 use crate::memory::compaction_impls::ImageGenConfig;
 use crate::memory::markdown_store::MarkdownMemoryStore;
 use crate::memory::memory_llm::{MemoryLlm, RealMemoryLlm};
+use crate::memory::retrieval::EmbeddingConfig;
 
 use super::ToolContext;
 
@@ -35,6 +36,9 @@ pub(crate) struct SharedToolContext {
     pub(crate) scratchpad_dir_val: String,
     pub(crate) workspace_dir_val: String,
     pub(crate) markdown_store_val: Option<MarkdownMemoryStore>,
+    pub(crate) memory_retrieval_config_val: RetrievalConfig,
+    pub(crate) embedding_config_val: Option<EmbeddingConfig>,
+    pub(crate) memory_index_path_val: std::path::PathBuf,
     pub(crate) memory_access_allowed_val: bool,
     pub(crate) memory_read_allowed_val: bool,
     pub(crate) memory_write_allowed_val: bool,
@@ -72,6 +76,15 @@ impl ToolContext for SharedToolContext {
     }
     fn markdown_store(&self) -> Option<&MarkdownMemoryStore> {
         self.markdown_store_val.as_ref()
+    }
+    fn memory_retrieval_config(&self) -> &RetrievalConfig {
+        &self.memory_retrieval_config_val
+    }
+    fn embedding_config(&self) -> Option<&EmbeddingConfig> {
+        self.embedding_config_val.as_ref()
+    }
+    fn memory_index_path(&self) -> Option<&std::path::Path> {
+        Some(&self.memory_index_path_val)
     }
     fn memory_access_allowed(&self) -> bool {
         self.memory_access_allowed_val

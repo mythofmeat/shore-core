@@ -71,7 +71,8 @@ pub struct DryRunResult {
 pub struct RetentionParams {
     /// Number of messages to keep from the end of active.jsonl.
     pub keep_last_n: usize,
-    /// Recap text to write to memory/recap.md (None = leave untouched).
+    /// Recent-memory digest text to write to the active prompt snapshot
+    /// (None = leave untouched).
     pub recap: Option<String>,
     /// Pre-read content of active.jsonl at the time messages were parsed.
     /// Eliminates the TOCTOU race where the file could change between

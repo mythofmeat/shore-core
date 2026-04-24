@@ -10,7 +10,9 @@ pub mod workspace;
 use crate::autonomy::manager::AutonomyManager;
 use crate::memory::compaction_impls::ImageGenConfig;
 use crate::memory::memory_llm::MemoryLlm;
+use crate::memory::retrieval::EmbeddingConfig;
 use serde_json::Value;
+use shore_config::app::RetrievalConfig;
 use shore_config::models::ResolvedModel;
 use shore_llm_client::LlmClient;
 use std::future::Future;
@@ -113,6 +115,20 @@ pub trait ToolContext: Sync {
         None
     }
 
+    // Memory retrieval configuration and optional embedding profile. The
+    // embedding index is non-authoritative; markdown files remain the source
+    // of truth.
+    fn memory_retrieval_config(&self) -> &RetrievalConfig {
+        static DEFAULT: std::sync::OnceLock<RetrievalConfig> = std::sync::OnceLock::new();
+        DEFAULT.get_or_init(RetrievalConfig::default)
+    }
+    fn embedding_config(&self) -> Option<&EmbeddingConfig> {
+        None
+    }
+    fn memory_index_path(&self) -> Option<&std::path::Path> {
+        None
+    }
+
     // Whether memory tools and the workspace `memory/...` namespace may be
     // used in this conversation.
     fn memory_access_allowed(&self) -> bool {
@@ -130,8 +146,8 @@ pub trait ToolContext: Sync {
         ""
     }
 
-    /// Queue a deferred edit for a protected file (character.md, user.md,
-    /// prompts/system.md). Called by the tool dispatch layer after a
+    /// Queue a deferred edit for a protected workspace bootstrap file
+    /// (SOUL.md, USER.md, AGENTS.md, TOOLS.md, HEARTBEAT.md). Called by the tool dispatch layer after a
     /// successful write or edit to a protected path. The actual copy to
     /// the config dir happens at the next compaction boundary.
     fn defer_edit(&self, _path: &str) {}
@@ -286,6 +302,10 @@ fn path_requests_memories_namespace(path: &str) -> bool {
     normalized == "memory"
         || normalized.starts_with("memory/")
         || normalized.starts_with("memory\\")
+        || normalized == "workspace/memory"
+        || normalized == "workspace\\memory"
+        || normalized.starts_with("workspace/memory/")
+        || normalized.starts_with("workspace\\memory\\")
 }
 
 // ---------------------------------------------------------------------------
@@ -566,7 +586,10 @@ mod tests {
             .expect("write present");
 
         assert!(read["description"].as_str().unwrap().contains("memory"));
-        assert!(!write["description"].as_str().unwrap().contains("memory/..."));
+        assert!(!write["description"]
+            .as_str()
+            .unwrap()
+            .contains("memory/..."));
         assert!(defs.iter().all(|d| d["name"] != "memory_write"));
         assert!(defs.iter().all(|d| d["name"] != "exec"));
     }
@@ -705,6 +728,19 @@ mod tests {
             matches!(err, ToolError::InvalidArgs(_)),
             "memory namespace should be blocked, got: {err}"
         );
+
+        let result = dispatch_tool(
+            "read",
+            serde_json::json!({"path": "workspace/memory/people/ren.md"}),
+            &ctx,
+        )
+        .await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, ToolError::InvalidArgs(_)),
+            "workspace/memory namespace should be blocked, got: {err}"
+        );
     }
 
     #[tokio::test]
@@ -740,6 +776,14 @@ mod tests {
         let result = dispatch_tool(
             "write",
             serde_json::json!({"path": "memory/people/ren.md", "content": "blocked"}),
+            &ctx,
+        )
+        .await;
+        assert!(result.is_err());
+
+        let result = dispatch_tool(
+            "write",
+            serde_json::json!({"path": "workspace/memory/people/ren.md", "content": "blocked"}),
             &ctx,
         )
         .await;

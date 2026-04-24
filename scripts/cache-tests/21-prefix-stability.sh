@@ -60,8 +60,8 @@ TOML
     } > "$model_toml"
 }
 
-mkdir -p "$DATA_DIR/$CHARACTER_NAME/memory"
-cat > "$DATA_DIR/$CHARACTER_NAME/memory/recap.md" << 'RECAP'
+mkdir -p "$DATA_DIR/$CHARACTER_NAME/active_prompt"
+cat > "$DATA_DIR/$CHARACTER_NAME/active_prompt/RECENT_MEMORY.md" << 'RECAP'
 The user has been asking math questions. The conversation is casual.
 RECAP
 

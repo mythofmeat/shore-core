@@ -1,10 +1,7 @@
 use super::{ToolCategory, ToolContext, ToolDef, ToolError};
 use crate::memory::markdown_query;
+use crate::memory::retrieval;
 use serde_json::{json, Value};
-
-fn truncate_chars(text: &str, limit: usize) -> String {
-    text.chars().take(limit).collect()
-}
 
 // ---------------------------------------------------------------------------
 // Tool definitions
@@ -20,7 +17,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
                 "properties": {
                     "request": {
                         "type": "string",
-                        "description": "Natural-language query to search memories, or a statement to save or correct one."
+                        "description": "Natural-language question to answer from markdown memory files."
                     }
                 },
                 "required": ["request"]
@@ -29,13 +26,13 @@ pub fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "memory_read",
-            description: "Read the full content of a single memory file by its relative path from your memories directory. Use this AFTER `memory_search` points you to a relevant file, or when you already know the exact path and need the complete content. Do not use this for discovery — use `memory_search` or `memory_list` first.",
+            description: "Read the full content of a single memory file by its relative path from your memory directory. Use this AFTER `memory_search` points you to a relevant file, or when you already know the exact path and need the complete content. Do not use this for discovery — use `memory_search` or `memory_list` first.",
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Relative path within the memories directory (e.g., 'topics/gaming/doom.md')."
+                        "description": "Relative path within the memory directory (e.g., 'topics/gaming/doom.md')."
                     }
                 },
                 "required": ["path"]
@@ -44,13 +41,13 @@ pub fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "memory_write",
-            description: "Write or overwrite a memory file in your memories directory. Use this to save new facts, update existing memory files, or reorganize your knowledge. Prefer updating existing files over creating new ones. Auto-creates parent directories.",
+            description: "Write or overwrite a memory file in your memory directory. Use this to save new facts, update existing memory files, or reorganize your knowledge. Prefer updating existing files over creating new ones. Auto-creates parent directories.",
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Relative path within the memories directory (e.g., 'people/ren.md')."
+                        "description": "Relative path within the memory directory (e.g., 'people/ren.md')."
                     },
                     "content": {
                         "type": "string",
@@ -78,7 +75,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "memory_list",
-            description: "List all memory files in your memories directory, optionally filtered by a subdirectory. Use this to get an overview of what memories you have, to discover files in a specific category, or when you're unsure whether a topic has already been saved.",
+            description: "List all memory files in your memory directory, optionally filtered by a subdirectory. Use this to get an overview of what memories you have, to discover files in a specific category, or when you're unsure whether a topic has already been saved.",
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -108,18 +105,40 @@ pub async fn handle_memory(input: Value, ctx: &dyn ToolContext) -> Result<Value,
     let store = ctx
         .markdown_store()
         .ok_or_else(|| ToolError::InvalidArgs("markdown memory store not available".to_string()))?;
-    let result_text = markdown_query::answer_query(
+    let results = retrieval::search_memory(
+        store,
+        request,
+        &ctx.memory_retrieval_config().mode,
+        ctx.llm_client(),
+        ctx.embedding_config(),
+        ctx.memory_index_path(),
+    )
+    .await
+    .map_err(|e| ToolError::Io(e.to_string()))?;
+
+    let retrieval_mode = results.mode;
+    let semantic_unavailable = results.semantic_unavailable;
+    let hits = results
+        .hits
+        .into_iter()
+        .map(|hit| hit.entry)
+        .collect::<Vec<_>>();
+    let result_text = markdown_query::answer_query_from_hits(
         request,
         ctx.character_name(),
         "the user",
-        store,
+        hits,
         ctx.memory_llm(),
         ctx.memory_model(),
     )
     .await
     .map_err(|e| ToolError::Io(e.to_string()))?;
 
-    Ok(json!(result_text))
+    Ok(json!({
+        "answer": result_text,
+        "retrieval_mode": retrieval_mode,
+        "semantic_unavailable": semantic_unavailable,
+    }))
 }
 
 /// Read a memory file by relative path.
@@ -180,30 +199,44 @@ pub async fn handle_memory_search(input: Value, ctx: &dyn ToolContext) -> Result
         .markdown_store()
         .ok_or_else(|| ToolError::InvalidArgs("markdown memory store not available".to_string()))?;
 
-    let results = store
-        .search_text(query)
-        .await
-        .map_err(|e| ToolError::Io(e.to_string()))?;
+    let results = retrieval::search_memory(
+        store,
+        query,
+        &ctx.memory_retrieval_config().mode,
+        ctx.llm_client(),
+        ctx.embedding_config(),
+        ctx.memory_index_path(),
+    )
+    .await
+    .map_err(|e| ToolError::Io(e.to_string()))?;
 
+    let retrieval_mode = results.mode;
+    let semantic_unavailable = results.semantic_unavailable;
     let hits: Vec<Value> = results
+        .hits
         .into_iter()
-        .map(|entry| {
-            // Truncate content to a reasonable excerpt for the LLM
-            let excerpt = if entry.content.chars().count() > 400 {
-                format!("{}...", truncate_chars(&entry.content, 400))
-            } else {
-                entry.content.clone()
-            };
+        .map(|hit| {
+            let entry = hit.entry;
+            let excerpt =
+                crate::memory::markdown_query::excerpt_for_query(&entry.content, query, 400);
             json!({
                 "path": entry.path,
                 "excerpt": excerpt,
                 "size": entry.size,
                 "modified_at": entry.modified_at,
+                "lexical_score": hit.lexical_score,
+                "semantic_score": hit.semantic_score,
             })
         })
         .collect();
 
-    Ok(json!({"query": query, "results": hits, "count": hits.len()}))
+    Ok(json!({
+        "query": query,
+        "results": hits,
+        "count": hits.len(),
+        "retrieval_mode": retrieval_mode,
+        "semantic_unavailable": semantic_unavailable,
+    }))
 }
 
 /// List memory files, optionally filtered by subdirectory.
@@ -250,6 +283,7 @@ mod tests {
     use crate::memory::markdown_store::MarkdownMemoryStore;
     use crate::memory::memory_llm::{MemoryLlmResponse, MockMemoryLlm};
     use crate::test_support::TestToolContext;
+    use shore_config::app::{RetrievalConfig, RetrievalMode};
     use shore_llm_client::types::ContentBlock;
 
     #[test]
@@ -291,7 +325,8 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(result.as_str().unwrap(), "The user likes chocolate.");
+        assert_eq!(result["answer"], "The user likes chocolate.");
+        assert_eq!(result["retrieval_mode"], "lexical");
     }
 
     #[tokio::test]
@@ -382,6 +417,29 @@ mod tests {
         let results = result["results"].as_array().unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0]["path"], "a.md");
+    }
+
+    #[tokio::test]
+    async fn test_memory_search_hybrid_falls_back_without_client() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = MarkdownMemoryStore::open(tmp.path().join("memories"))
+            .await
+            .unwrap();
+        store
+            .write("people/alice.md", "# Alice\n\nAlice likes chocolate.")
+            .await
+            .unwrap();
+        let ctx = TestToolContext::new()
+            .with_markdown_store(store)
+            .with_retrieval_config(RetrievalConfig {
+                mode: RetrievalMode::Hybrid,
+            });
+
+        let result = handle_memory_search(json!({"query": "chocolate"}), &ctx)
+            .await
+            .unwrap();
+        assert_eq!(result["retrieval_mode"], "lexical");
+        assert!(result["semantic_unavailable"].as_str().is_some());
     }
 
     #[tokio::test]
