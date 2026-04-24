@@ -51,11 +51,11 @@ Live/provider tests use real credentials and cost money. Run them before release
 
 Update docs with architectural changes:
 
-- `docs/FEATURES.md` for user behavior
-- `docs/CONFIGURATION.md` for config changes
-- `docs/ARCHITECTURE.md` for structure and data flow
+- `FEATURES.md` for user behavior
+- `CONFIGURATION.md` for config changes
+- `ARCHITECTURE.md` for structure and data flow
 - `docs/INVARIANTS.md` for correctness constraints
-- `docs/DECISIONS.md` for tradeoffs
+- `DECISIONS.md` for tradeoffs
 - `docs/QUIRKS.md` for surprising behavior
 
 Patch-note worthy user changes should also go in `docs/PATCH_NOTES_OPENCLAWIFY.md` until this branch lands.

@@ -298,14 +298,26 @@ fn ensure_workspace_memory_access(
 }
 
 fn path_requests_memories_namespace(path: &str) -> bool {
-    let normalized = path.trim().trim_start_matches('/').trim_start_matches('\\');
-    normalized == "memory"
-        || normalized.starts_with("memory/")
-        || normalized.starts_with("memory\\")
-        || normalized == "workspace/memory"
-        || normalized == "workspace\\memory"
-        || normalized.starts_with("workspace/memory/")
-        || normalized.starts_with("workspace\\memory\\")
+    let normalized = path
+        .trim()
+        .trim_start_matches(['/', '\\'])
+        .replace('\\', "/");
+    let mut parts = Vec::new();
+    for component in std::path::Path::new(&normalized).components() {
+        match component {
+            std::path::Component::Normal(part) => {
+                parts.push(part.to_string_lossy().to_string());
+            }
+            std::path::Component::CurDir => {}
+            _ => return false,
+        }
+    }
+
+    match parts.as_slice() {
+        [first, ..] if first == "memory" => true,
+        [first, second, ..] if first == "workspace" && second == "memory" => true,
+        _ => false,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -741,6 +753,32 @@ mod tests {
             matches!(err, ToolError::InvalidArgs(_)),
             "workspace/memory namespace should be blocked, got: {err}"
         );
+
+        let result = dispatch_tool(
+            "read",
+            serde_json::json!({"path": "./memory/people/ren.md"}),
+            &ctx,
+        )
+        .await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, ToolError::InvalidArgs(_)),
+            "./memory namespace should be blocked, got: {err}"
+        );
+
+        let result = dispatch_tool(
+            "read",
+            serde_json::json!({"path": "workspace/./memory/people/ren.md"}),
+            &ctx,
+        )
+        .await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, ToolError::InvalidArgs(_)),
+            "workspace/./memory namespace should be blocked, got: {err}"
+        );
     }
 
     #[tokio::test]
@@ -784,6 +822,22 @@ mod tests {
         let result = dispatch_tool(
             "write",
             serde_json::json!({"path": "workspace/memory/people/ren.md", "content": "blocked"}),
+            &ctx,
+        )
+        .await;
+        assert!(result.is_err());
+
+        let result = dispatch_tool(
+            "write",
+            serde_json::json!({"path": "./memory/people/ren.md", "content": "blocked"}),
+            &ctx,
+        )
+        .await;
+        assert!(result.is_err());
+
+        let result = dispatch_tool(
+            "write",
+            serde_json::json!({"path": "workspace/./memory/people/ren.md", "content": "blocked"}),
             &ctx,
         )
         .await;

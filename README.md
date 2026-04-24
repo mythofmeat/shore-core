@@ -84,9 +84,9 @@ Legacy `character.md`, `user.md`, and `prompts/system.md` character layouts are 
 ## Current Docs
 
 - [Goals](GOALS.md) — source of truth for project intent
-- [Features](docs/FEATURES.md) — user-facing behavior
-- [Configuration](docs/CONFIGURATION.md) — config reference
-- [Architecture](docs/ARCHITECTURE.md) — implementation map
+- [Features](FEATURES.md) — user-facing behavior
+- [Configuration](CONFIGURATION.md) — config reference
+- [Architecture](ARCHITECTURE.md) — implementation map
 - [Invariants](docs/INVARIANTS.md) — correctness constraints
 - [Quirks](docs/QUIRKS.md) — sharp edges and external weirdness
 - [OpenClawify Patch Notes](docs/PATCH_NOTES_OPENCLAWIFY.md) — what changed on this branch
