@@ -422,10 +422,42 @@ pub struct MemoryConfig {
     pub compaction: CompactionConfig,
 
     #[serde(default)]
+    pub dreaming: DreamingConfig,
+
+    #[serde(default)]
     pub thinking: ThinkingConfig,
 
     #[serde(default)]
     pub retrieval: RetrievalConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct DreamingConfig {
+    /// Whether scheduled memory dreaming sweeps are enabled.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Cron-like daily schedule. Shore currently supports `M H * * *`.
+    #[serde(default = "default_dreaming_frequency")]
+    pub frequency: String,
+
+    /// Maximum internal tool-style rounds a future LLM-backed sweep may use.
+    #[serde(default = "default_dreaming_max_tool_rounds")]
+    pub max_tool_rounds: u32,
+}
+
+serde_default!(default_dreaming_frequency -> String { "0 3 * * *".to_string() });
+serde_default!(default_dreaming_max_tool_rounds -> u32 { 12 });
+
+impl Default for DreamingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            frequency: default_dreaming_frequency(),
+            max_tool_rounds: default_dreaming_max_tool_rounds(),
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]

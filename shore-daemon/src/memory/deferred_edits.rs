@@ -37,8 +37,8 @@ Use tools when they materially help.
 const DEFAULT_HEARTBEAT_GUIDANCE: &str = "\
 # HEARTBEAT
 
-- Check whether anything from recent memory files needs follow-up.
-- Check whether you promised the user anything that still matters.
+- Use this private turn however seems useful.
+- You may use tools, schedule the next wake, or send the user a message.
 - If nothing needs action, respond HEARTBEAT_OK.
 ";
 

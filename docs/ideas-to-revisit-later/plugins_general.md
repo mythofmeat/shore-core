@@ -1,3 +1,13 @@
-i also have vague plans to make plugins for you to do arbitrary searches on a bunch of shit if you want. my music library, jellyfin to see what i've been watching or am planning to watch, maybe trakt or letterboxd or something? caco so you can look at doom wads and read info, potentially just... read access to my filesystem lmao. so you can just be like: "SHOW ME mcdonalds.webp RIGHT NOW. WHAT IS IT" and i could be like... "ugh fine ok..."
+# Plugin Ideas
 
-maybe this should be a series of mcp servers the the tool model interfaces with? idk what the best architecture would be...
+Status: idea, not current implementation.
+
+A future plugin system should add tools or integrations without changing Shore's core invariants:
+
+- daemon remains authoritative
+- memory remains markdown-first
+- prompt-cache boundaries stay explicit
+- plugin tools obey private-mode and memory gates
+- plugin state is inspectable or clearly isolated
+
+Good first plugin candidates are integrations that enrich character life without owning core state: media libraries, reading logs, music metadata, bookmarks, or local project notes.

@@ -42,7 +42,14 @@ model = "claude-sonnet"            # Must match a key in [chat.*.*] below
 # dormant_after_heartbeat_turns = 3       # Consecutive ticks with no user reply before sleeping
 # dormant_after_idle_time = "48h"           # Hard idle ceiling before sleeping until user returns
 # minimum_heartbeat_latency = "1h"        # Floor between a user message and the next tick
-# max_tool_rounds = 12                      # Tool-use rounds per tick before a wrap-up recap is forced
+# max_tool_rounds = 12                      # Tool-use rounds per tick
+
+# Dreaming — opt-in scheduled memory consolidation. Requires
+# [behavior.autonomy].enabled = true, but does not require heartbeat.
+# [memory.dreaming]
+# enabled = false
+# frequency = "0 3 * * *"
+# max_tool_rounds = 12
 
 # ── Tool use ─────────────────────────────────────────────────────────────
 
@@ -72,7 +79,8 @@ model = "claude-sonnet"            # Must match a key in [chat.*.*] below
 # write = true               # Write workspace files; protected character files defer to compaction
 # edit = true                # Edit workspace files
 # list_files = true          # List workspace files
-# exec = true                # Allowlisted workspace commands; hidden when memory read/write is disabled or private
+# exec = true                # Allowlisted, argument-sandboxed workspace commands;
+#                            # hidden when memory read/write is disabled or private
 
 # [behavior.tool_use.search]
 # api_key_env = "TAVILY_API_KEY"  # Env var holding the Tavily API key

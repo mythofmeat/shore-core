@@ -190,6 +190,9 @@ impl MarkdownMemoryStore {
             .map_err(|e| MarkdownStoreError::Io(e.to_string()))?
         {
             let path = child.path();
+            if is_internal_dream_path(&self.base_dir, &path) {
+                continue;
+            }
             let meta = child
                 .metadata()
                 .await
@@ -243,6 +246,15 @@ impl MarkdownMemoryStore {
         }
         Ok(self.base_dir.join(rel))
     }
+}
+
+fn is_internal_dream_path(base_dir: &Path, path: &Path) -> bool {
+    let rel = path.strip_prefix(base_dir).unwrap_or(path);
+    let mut components = rel.components();
+    matches!(
+        components.next().and_then(|c| c.as_os_str().to_str()),
+        Some(".dreams") | Some("dreaming") | Some("DREAMS.md")
+    )
 }
 
 fn format_modified_at(time: std::time::SystemTime) -> String {
@@ -358,6 +370,32 @@ mod tests {
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].path, "a.md");
         assert_eq!(entries[1].path, "deep/b.md");
+    }
+
+    #[tokio::test]
+    async fn list_all_excludes_dreaming_internal_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = MarkdownMemoryStore::open(tmp.path().join("memories"))
+            .await
+            .unwrap();
+
+        store.write("a.md", "A").await.unwrap();
+        store.write("DREAMS.md", "review").await.unwrap();
+        store
+            .write(".dreams/candidates.md", "internal")
+            .await
+            .unwrap();
+        store
+            .write("dreaming/rem/today.md", "report")
+            .await
+            .unwrap();
+
+        let entries = store.list_all().await.unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].path, "a.md");
+
+        let results = store.search_text("review internal report").await.unwrap();
+        assert!(results.is_empty());
     }
 
     #[tokio::test]

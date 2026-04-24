@@ -97,6 +97,45 @@ pub fn memory_changelog(
     Ok(json!({ "changelog": sections, "character": char_name }))
 }
 
+pub async fn memory_dream(
+    engine: &ConversationEngine,
+    ctx: &CommandContext,
+    args: &serde_json::Value,
+) -> CommandResult {
+    let status = args
+        .get("status")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let dry_run = args
+        .get("dry_run")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+    let char_name = engine.character_name();
+    let cfg = &ctx.config.app.memory.dreaming;
+
+    if status {
+        let status = crate::memory::dreaming::dream_status(&ctx.config.dirs.config, char_name, cfg)
+            .await
+            .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
+        return Ok(json!(status));
+    }
+
+    let result =
+        crate::memory::dreaming::run_sweep(&ctx.config.dirs.config, char_name, cfg, dry_run, force)
+            .await
+            .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
+    match result {
+        Some(result) => Ok(json!(result)),
+        None => Ok(json!({
+            "character": char_name,
+            "status": "not_due",
+            "enabled": cfg.enabled,
+            "frequency": cfg.frequency,
+        })),
+    }
+}
+
 /// Memory command: status (no query) or agent query (with query).
 pub async fn memory(
     engine: &ConversationEngine,

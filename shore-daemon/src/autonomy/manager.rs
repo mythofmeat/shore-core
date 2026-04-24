@@ -701,17 +701,12 @@ impl AutonomyManager {
 const TICK_INTERVAL: Duration = Duration::from_secs(10);
 
 /// Soft deadline for the heartbeat tool loop (all iterations combined). The
-/// loop checks this before each iteration and breaks to the wrap-up call if
+/// loop checks this before each iteration and ends the tick if
 /// exceeded. Generous enough that a slow memory query + slow LLM across
 /// `max_tool_rounds` iterations normally fits; tight enough that a runaway
 /// loop can't block subsequent ticks for an hour. Per-call HTTP timeouts
 /// (300s, enforced by `LlmClient`) still bound each individual request.
 const HEARTBEAT_LOOP_DEADLINE: Duration = Duration::from_secs(30 * 60); // 30 minutes
-
-/// Hard timeout for the forced wrap-up call that closes every tick without a
-/// `<recap>`. Runs in its own `tokio::time::timeout` outside the loop deadline
-/// so a long-running loop can't starve the recap write.
-const HEARTBEAT_WRAPUP_TIMEOUT: Duration = Duration::from_secs(5 * 60); // 5 minutes
 
 /// Lock the per-character autonomy state, recovering from mutex poisoning
 /// instead of panicking. A poisoned mutex means a previous holder panicked,
@@ -757,7 +752,7 @@ async fn tick_character(character: &str, ctx: &TickContext) {
     let now = Instant::now();
 
     // Collect actions under the lock, then release before any async work.
-    let (int_action, keepalive_action, compaction_needed) = {
+    let (int_action, keepalive_action, compaction_needed, dream_needed) = {
         let mut s = lock_state(&ctx.state);
         debug!(
             character,
@@ -797,6 +792,12 @@ async fn tick_character(character: &str, ctx: &TickContext) {
         // -- cache keepalive -------------------------------------------------
         let keepalive_action = s.cache_keepalive.tick(now);
 
+        let dream_needed = ctx.config.enabled
+            && ctx
+                .loaded_config
+                .as_ref()
+                .is_some_and(|lc| lc.app.memory.dreaming.enabled);
+
         // -- compaction triggers ---------------------------------------------
         let mut compaction_needed = false;
         if ctx.config.enabled && ctx.compaction.enabled && !s.compaction_triggered {
@@ -830,7 +831,12 @@ async fn tick_character(character: &str, ctx: &TickContext) {
         }
 
         save_state(&ctx.data_dir, character, &mut s);
-        (int_action, keepalive_action, compaction_needed)
+        (
+            int_action,
+            keepalive_action,
+            compaction_needed,
+            dream_needed,
+        )
     };
 
     // Idle-triggered compaction: when the tick has the dependencies it needs
@@ -859,9 +865,8 @@ async fn tick_character(character: &str, ctx: &TickContext) {
 
     // -- execute heartbeat action (async, outside lock) -----------------
     // No outer tokio::time::timeout wrapper: `execute_heartbeat_tick` enforces
-    // its own budgets — a soft deadline on the tool loop and a separate hard
-    // timeout on the forced wrap-up call — so a slow loop can't starve the
-    // recap write.
+    // its own soft deadline on the tool loop so a slow loop can't starve
+    // later autonomy work.
     match int_action {
         HeartbeatAction::None => {}
         HeartbeatAction::RunTick => {
@@ -904,6 +909,10 @@ async fn tick_character(character: &str, ctx: &TickContext) {
     // -- idle-triggered compaction (async, outside lock) -------------------
     if run_compaction_now {
         execute_idle_compaction(character, ctx).await;
+    }
+
+    if dream_needed {
+        execute_scheduled_dream(character, ctx).await;
     }
 
     // -- final persist (in case async actions dirtied state) ---------------
@@ -1018,30 +1027,49 @@ async fn execute_idle_compaction(character: &str, ctx: &TickContext) {
     }
 }
 
+async fn execute_scheduled_dream(character: &str, ctx: &TickContext) {
+    let Some(loaded_config) = ctx.loaded_config.as_deref() else {
+        return;
+    };
+    let cfg = &loaded_config.app.memory.dreaming;
+    match crate::memory::dreaming::run_sweep(
+        &loaded_config.dirs.config,
+        character,
+        cfg,
+        false,
+        false,
+    )
+    .await
+    {
+        Ok(Some(result)) => {
+            info!(
+                character,
+                candidates = result.candidates.len(),
+                promoted = result.promoted.len(),
+                "Dreaming: scheduled sweep complete"
+            );
+        }
+        Ok(None) => {}
+        Err(e) => {
+            warn!(character, error = %e, "Dreaming: scheduled sweep failed");
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Heartbeat tick executor
 // ---------------------------------------------------------------------------
 
 /// Build the dynamic heartbeat prompt.
 ///
-/// This intentionally follows the OpenClaw-style pattern: a small checklist,
-/// recent daily notes, and explicit "do nothing if nothing needs doing"
-/// guidance instead of an always-expanding narrative prompt.
-fn build_heartbeat_prompt(recent_notes: &str, user_name: &str, default_interval: &str) -> String {
-    let recent_block = if recent_notes.is_empty() {
-        String::new()
-    } else {
-        format!("\n{recent_notes}\n")
-    };
-
+/// This intentionally keeps heartbeat-specific behavior in HEARTBEAT.md and
+/// only documents the scheduler affordances that the runtime understands.
+fn build_heartbeat_prompt(user_name: &str, default_interval: &str) -> String {
     format!(
         "\
-[This is a heartbeat check between conversations. Treat it like a quiet maintenance turn: \
-look for anything unfinished, worth following up on, or worth writing down. If nothing \
-needs doing, say HEARTBEAT_OK, write a brief <recap>, and stop.
-{recent_block}
-You have real tools and can search or write markdown memories, use your \
-scratchpad, check the web, generate images, and schedule the next wake.
+[This is a private heartbeat turn governed by the active HEARTBEAT.md content above. \
+You have real tools and can search or write markdown memories, use your scratchpad, \
+check the web, generate images, and schedule the next wake.
 
 In addition, you can:
 
@@ -1058,52 +1086,22 @@ You have the ability to autonomously and spontaneously send messages to \
 {user_name}. Any text included in the `sendMessage` tags will be delivered \
 to {user_name}.
 
-Before ending your response, ensure you write a recap for yourself. Wrap a \
-brief first-person note in <recap>...</recap> describing what you checked, \
-what you changed, and what should happen next. This note is written to your \
-daily markdown notes for later heartbeat turns.
-
 Thoughts, tool-use results, and any text in your response that is not part \
-of the `<recap>` or `<sendMessage>` tags are ephemeral and will be lost. If \
-you want to carry something forward, write it down.
+of `<sendMessage>` tags are private and ephemeral. If you want to carry \
+something forward, write it down with a memory or workspace tool.
 
 Changes you make to markdown memory files or to your scratchpad will persist. \
-If nothing needs doing right now, prefer a short HEARTBEAT_OK over busywork.]"
+If nothing needs doing right now, respond with HEARTBEAT_OK and stop.]"
     )
 }
 
 fn default_heartbeat_instructions() -> &'static str {
-    "# HEARTBEAT\n\n- Check whether anything from recent daily notes needs follow-up.\n- Check whether you promised {user} anything that still matters.\n- If nothing needs action, respond HEARTBEAT_OK."
+    "# HEARTBEAT\n\n- Use this private turn however seems useful.\n- You may use tools, schedule the next wake, or send {user} a message.\n- If nothing needs action, respond HEARTBEAT_OK."
 }
 
 fn load_heartbeat_instructions(character_data_dir: &Path) -> String {
     crate::memory::deferred_edits::load_active_prompt_file(character_data_dir, HEARTBEAT_FILE)
         .unwrap_or_else(|| default_heartbeat_instructions().to_string())
-}
-
-async fn load_recent_daily_notes(memory_dir: &Path) -> String {
-    let store =
-        match crate::memory::markdown_store::MarkdownMemoryStore::open(memory_dir.to_path_buf())
-            .await
-        {
-            Ok(store) => store,
-            Err(_) => return String::new(),
-        };
-
-    let notes = match crate::memory::markdown_query::recent_daily_notes(&store, 3).await {
-        Ok(notes) => notes,
-        Err(_) => return String::new(),
-    };
-    if notes.is_empty() {
-        return String::new();
-    }
-
-    let mut lines = vec!["Recent daily notes:".to_string()];
-    for note in notes.iter().rev() {
-        lines.push(format!("## {}", note.path));
-        lines.push(truncate_summary(&note.content, 500));
-    }
-    lines.join("\n\n")
 }
 
 /// Rebuild an `LlmRequest` from the compacted conversation on disk.
@@ -1293,11 +1291,6 @@ async fn execute_heartbeat_tick(
 ) {
     let Some(client) = llm_client else { return };
 
-    // Captured at tick entry so the recap's persisted position in active.jsonl
-    // reflects when the tick actually started — not when recap-write finally
-    // lands (which could race past a user message that arrived during wrap-up).
-    let tick_started_at = chrono::Local::now().fixed_offset();
-
     // Clone last_request under the lock, then release.
     let mut request = {
         let s = lock_state(state);
@@ -1366,11 +1359,9 @@ async fn execute_heartbeat_tick(
     } else {
         format!("{} minutes", default_interval_secs / 60)
     };
-    let recent_notes =
-        load_recent_daily_notes(&character_memory_dir(&lc.dirs.config, character)).await;
     let heartbeat_instructions =
         load_heartbeat_instructions(&character_data_dir).replace("{user}", &user_name);
-    let heartbeat_prompt = build_heartbeat_prompt(&recent_notes, &user_name, &default_interval_str);
+    let heartbeat_prompt = build_heartbeat_prompt(&user_name, &default_interval_str);
 
     request.messages.push(json!({
         "role": "system",
@@ -1406,17 +1397,8 @@ async fn execute_heartbeat_tick(
         max_iterations, "Heartbeat: executing tool loop tick"
     );
 
-    // Collect <sendMessage> and <recap> content across iterations (last-wins).
+    // Collect <sendMessage> content across iterations (last-wins).
     let mut send_message_text: Option<String> = None;
-    let mut recap_text: Option<String> = None;
-    // True iff the loop completed max_iterations with tool_use still outstanding.
-    let mut hit_cap = false;
-    // True iff the loop was stopped early by the soft deadline guard.
-    let mut loop_deadline_hit = false;
-    // True iff at least one LLM call in the loop returned Ok(_). Gates the
-    // wrap-up call so we don't burn a budget trying to recap a tick whose
-    // very first generate() errored (e.g. provider outage).
-    let mut made_progress = false;
 
     let loop_deadline = std::time::Instant::now() + HEARTBEAT_LOOP_DEADLINE;
 
@@ -1428,7 +1410,6 @@ async fn execute_heartbeat_tick(
                 loop_deadline_secs = HEARTBEAT_LOOP_DEADLINE.as_secs(),
                 "Heartbeat: tool loop soft deadline reached, breaking to wrap-up"
             );
-            loop_deadline_hit = true;
             break;
         }
 
@@ -1445,7 +1426,6 @@ async fn execute_heartbeat_tick(
                 break;
             }
         };
-        made_progress = true;
 
         info!(
             character,
@@ -1467,21 +1447,16 @@ async fn execute_heartbeat_tick(
             }
         }
 
-        // Check for <sendMessage> and <recap> in this response (last-wins).
+        // Check for <sendMessage> in this response (last-wins).
         let text = resp.extract_text();
         if let Some(msg) = extract_send_message(&text) {
             send_message_text = Some(msg);
         }
-        if let Some(recap) = extract_recap(&text) {
-            recap_text = Some(recap);
-        }
 
         // Build assistant message from content blocks (filter unsigned thinking)
         // and push it before any exit path. Every successful generate() must
-        // land in the conversation history — otherwise the forced wrap-up call
-        // sees a dangling user: tool_results turn from the previous iteration
-        // with no record of the model's own "I stopped calling tools" signal,
-        // and reliably mistakes the wrap-up nudge for "continue tool-calling".
+        // land in the ephemeral heartbeat history before any exit path, keeping
+        // later tool-loop requests well formed.
         //
         // Uses content_block_to_api_json (Anthropic path) — heartbeat always
         // uses Anthropic models. ZAI would need content_block_to_json.
@@ -1574,157 +1549,6 @@ async fn execute_heartbeat_tick(
             "role": "user",
             "content": tool_results,
         }));
-
-        // Mark cap-hit only if this was the final iteration and the model
-        // still wanted more tool rounds. The wrap-up call below will then
-        // request a recap before the tick ends.
-        if iteration + 1 == max_iterations {
-            hit_cap = true;
-        }
-    }
-
-    // -- Forced wrap-up call when no recap was captured ------------------------
-    // Every tick that made it to at least one successful generate() must close
-    // with a <recap>. If the model didn't volunteer one during the tool loop —
-    // natural exit, iteration cap, or soft deadline — make one more
-    // generate() call with an explicit "write a recap" system message. Wrapped
-    // in its own hard timeout so a slow or runaway loop can't starve it.
-    //
-    // The pending tool results (if any) are already on `request.messages` from
-    // the last loop iteration; we only add the wrap-up system message. The
-    // system+tools prefix is unchanged, so cache reads on the prefix still
-    // hit.
-    let mut wrapup_failed = false;
-    if recap_text.is_none() && made_progress {
-        let reason = if loop_deadline_hit {
-            "loop deadline reached"
-        } else if hit_cap {
-            "iteration cap hit"
-        } else {
-            "natural exit without recap"
-        };
-        info!(
-            character,
-            reason, "Heartbeat: no recap from loop, firing wrap-up call"
-        );
-
-        let wrap_up_prompt = "Your private moment is ending. Write a <recap>...</recap> \
-             summarising what you were doing and thinking so you can pick it up next \
-             time — this is required. You can also include a <sendMessage> if there's \
-             something you want to share with the user.";
-
-        request.messages.push(json!({
-            "role": "system",
-            "content": wrap_up_prompt,
-        }));
-
-        let wrap_up_fut = client.generate(&request, CallType::ToolLoop, character, false);
-        match tokio::time::timeout(HEARTBEAT_WRAPUP_TIMEOUT, wrap_up_fut).await {
-            Ok(Ok(resp)) => {
-                info!(
-                    character,
-                    finish_reason = %resp.finish_reason,
-                    input_tokens = resp.usage.input_tokens,
-                    output_tokens = resp.usage.output_tokens,
-                    cache_read = resp.usage.cache_read_tokens,
-                    "Heartbeat: wrap-up response"
-                );
-                let text = resp.extract_text();
-                if let Some(msg) = extract_send_message(&text) {
-                    send_message_text = Some(msg);
-                }
-                if let Some(recap) = extract_recap(&text) {
-                    recap_text = Some(recap);
-                } else {
-                    let preview: String = text.chars().take(500).collect();
-                    warn!(
-                        character,
-                        response_preview = %preview,
-                        "Heartbeat: wrap-up produced no recap"
-                    );
-                    wrapup_failed = true;
-                }
-            }
-            Ok(Err(e)) => {
-                error!(character, error = %e, "Heartbeat: wrap-up call failed");
-                wrapup_failed = true;
-            }
-            Err(_) => {
-                error!(
-                    character,
-                    timeout_secs = HEARTBEAT_WRAPUP_TIMEOUT.as_secs(),
-                    "Heartbeat: wrap-up call timed out"
-                );
-                let mut s = lock_state(state);
-                s.heartbeat_log.push(
-                    HeartbeatEventKind::Timeout,
-                    format!(
-                        "Wrap-up call timed out after {}s",
-                        HEARTBEAT_WRAPUP_TIMEOUT.as_secs()
-                    ),
-                );
-                s.mark_dirty();
-                wrapup_failed = true;
-            }
-        }
-    }
-
-    // -- Persist <recap> if present, or log a visible failure -----------------
-    if let Some(recap) = recap_text {
-        info!(character, recap = %truncate_summary(&recap, 200), "Heartbeat: recap written");
-        let preview = truncate_summary(&recap, 80);
-        let memory_dir = character_memory_dir(&lc.dirs.config, character);
-        match crate::memory::markdown_store::MarkdownMemoryStore::open(memory_dir).await {
-            Ok(store) => match crate::memory::markdown_query::append_daily_note(
-                &store,
-                tick_started_at,
-                "heartbeat",
-                &recap,
-            )
-            .await
-            {
-                Ok(path) => {
-                    let mut s = lock_state(state);
-                    s.heartbeat_log.push(
-                        HeartbeatEventKind::RecapWritten,
-                        format!("Heartbeat note saved to {path}: {preview}"),
-                    );
-                    s.mark_dirty();
-                }
-                Err(e) => {
-                    warn!(character, error = %e, "Heartbeat: failed to persist heartbeat note");
-                    let mut s = lock_state(state);
-                    s.heartbeat_log.push(
-                        HeartbeatEventKind::RecapMissing,
-                        format!("Heartbeat note persist failed: {e}"),
-                    );
-                    s.mark_dirty();
-                }
-            },
-            Err(e) => {
-                warn!(character, error = %e, "Heartbeat: failed to open markdown store for heartbeat note");
-                let mut s = lock_state(state);
-                s.heartbeat_log.push(
-                    HeartbeatEventKind::RecapMissing,
-                    format!("Heartbeat note store open failed: {e}"),
-                );
-                s.mark_dirty();
-            }
-        }
-    } else if made_progress {
-        // Loop ran (at least one generate() succeeded) but no recap landed,
-        // even after the forced wrap-up. Surface it in the visible log so the
-        // user can tell the difference between "tick didn't run" and "tick
-        // ran but model refused to recap".
-        let detail = if wrapup_failed {
-            "Wrap-up failed to produce a recap".to_string()
-        } else {
-            "Tick ended without a recap".to_string()
-        };
-        let mut s = lock_state(state);
-        s.heartbeat_log
-            .push(HeartbeatEventKind::RecapMissing, detail);
-        s.mark_dirty();
     }
 
     // -- Cache warmed: the tick itself was a cache-warming LLM call -----------
@@ -1904,11 +1728,6 @@ fn extract_tag(content: &str, start_tag: &str, end_tag: &str) -> Option<String> 
 /// Extract text between `<sendMessage>` and `</sendMessage>` tags (last-wins).
 fn extract_send_message(content: &str) -> Option<String> {
     extract_tag(content, "<sendMessage>", "</sendMessage>")
-}
-
-/// Extract text between `<recap>` and `</recap>` tags (last-wins).
-fn extract_recap(content: &str) -> Option<String> {
-    extract_tag(content, "<recap>", "</recap>")
 }
 
 // ---------------------------------------------------------------------------
@@ -2395,28 +2214,12 @@ mod tests {
         assert_eq!(clock.ticks_without_user(), 7);
     }
 
-    // -- extract_tag / extract_recap tests -----------------------------------
+    // -- extract_tag / sendMessage tests -------------------------------------
 
     #[test]
     fn extract_send_message_last_wins() {
         let content = "<sendMessage>first</sendMessage> stuff <sendMessage>second</sendMessage>";
         assert_eq!(extract_send_message(content), Some("second".into()));
-    }
-
-    #[test]
-    fn extract_recap_parses() {
-        assert_eq!(
-            extract_recap("thinking...<recap>I explored something.</recap>...done"),
-            Some("I explored something.".into())
-        );
-        assert_eq!(extract_recap("no tags"), None);
-        assert_eq!(extract_recap("<recap></recap>"), None);
-    }
-
-    #[test]
-    fn extract_recap_last_wins() {
-        let content = "<recap>first note</recap> tools... <recap>revised note</recap>";
-        assert_eq!(extract_recap(content), Some("revised note".into()));
     }
 
     #[test]

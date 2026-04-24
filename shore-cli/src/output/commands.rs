@@ -253,6 +253,7 @@ pub fn format_command(name: &str, data: &serde_json::Value) {
         "memory" => print_memory(data),
         "compact" => print_compact_result(data),
         "memory_changelog" => print_changelog(data),
+        "memory_dream" => print_memory_dream(data),
         "config" => print_config(data),
         "config_check" => print_config_check(data),
         "config_reset" => print_config_reset(data),
@@ -266,6 +267,53 @@ pub fn format_command(name: &str, data: &serde_json::Value) {
         "heartbeat_set_active" => print_heartbeat_status_change(data, "active"),
         _ => print_command_output_fallback(name, data),
     }
+}
+
+fn print_memory_dream(data: &serde_json::Value) {
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    let width = term_width();
+    let char_name = data["character"].as_str().unwrap_or("?");
+    write_section_header(&mut out, "Dreaming", char_name, width);
+
+    if data.get("state_path").is_some() {
+        write_row(
+            &mut out,
+            "Enabled",
+            if data["enabled"].as_bool().unwrap_or(false) {
+                "yes"
+            } else {
+                "no"
+            },
+        );
+        write_row(
+            &mut out,
+            "Frequency",
+            data["frequency"].as_str().unwrap_or("?"),
+        );
+        write_row(
+            &mut out,
+            "Due",
+            if data["due"].as_bool().unwrap_or(false) {
+                "yes"
+            } else {
+                "no"
+            },
+        );
+        if let Some(last) = data["last_run_at"].as_str() {
+            write_row(&mut out, "Last run", last);
+        }
+    } else if data["status"].as_str() == Some("not_due") {
+        write_row(&mut out, "Status", "not due");
+    } else {
+        let dry = data["dry_run"].as_bool().unwrap_or(false);
+        write_row(&mut out, "Status", if dry { "dry run" } else { "ran" });
+        let candidates = data["candidates"].as_array().map_or(0, Vec::len);
+        let promoted = data["promoted"].as_array().map_or(0, Vec::len);
+        write_row(&mut out, "Candidates", &candidates.to_string());
+        write_row(&mut out, "Promoted", &promoted.to_string());
+    }
+    let _ = writeln!(out);
 }
 
 fn print_command_output_fallback(name: &str, data: &serde_json::Value) {

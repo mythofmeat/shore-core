@@ -112,6 +112,7 @@ pub async fn dispatch(
         "reset_model" => state::reset_model(ctx),
         "set_reasoning_effort" => state::set_reasoning_effort(ctx, &cmd.args),
         "memory_changelog" => state::memory_changelog(engine, ctx, &cmd.args),
+        "memory_dream" => state::memory_dream(engine, ctx, &cmd.args).await,
         "memory" => state::memory(engine, ctx, &cmd.args).await,
         "compact" => state::compact(engine, ctx, &cmd.args).await,
         "config" => state::config(ctx, &cmd.args),

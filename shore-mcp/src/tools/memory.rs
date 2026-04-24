@@ -18,7 +18,7 @@ pub struct MemoryQueryParams {
 #[derive(Deserialize, JsonSchema, Debug, Default)]
 pub struct MemoryCompactParams {
     /// Optional override for retained user turns at the tail of active.jsonl.
-    /// 0 = retain none (full pipeline runs, recap becomes the only carry-forward).
+    /// 0 = retain none (full pipeline runs, compaction digest becomes the carry-forward).
     /// Omitted = use the configured default.
     pub keep_turns: Option<u32>,
 }
@@ -55,7 +55,7 @@ impl ShoreMcpHandler {
 
     #[tool(
         name = "memory_compact",
-        description = "Trigger a memory compaction pass. Optional keep_turns overrides retained user turns (0 = retain none, leaving only the system prompt + recap). Mutating — refused on main without --allow-main-writes."
+        description = "Trigger a memory compaction pass. Optional keep_turns overrides retained user turns (0 = retain none, leaving only the system prompt and compaction digest). Mutating — refused on main without --allow-main-writes."
     )]
     pub async fn tool_memory_compact(
         &self,

@@ -59,9 +59,9 @@ pub enum HeartbeatEventKind {
     Timeout,
     /// Dormant bare ping sent to keep cache warm.
     DormantPing,
-    /// A `<recap>` was captured from the tick and persisted to markdown daily notes.
+    /// Legacy heartbeat recap event retained for older logs.
     RecapWritten,
-    /// Tick finished without a recap, even after the forced wrap-up call.
+    /// Legacy heartbeat recap-missing event retained for older logs.
     RecapMissing,
 }
 

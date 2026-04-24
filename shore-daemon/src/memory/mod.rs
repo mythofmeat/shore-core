@@ -8,6 +8,7 @@
 pub mod compaction;
 pub mod compaction_impls;
 pub mod deferred_edits;
+pub mod dreaming;
 pub mod markdown_query;
 pub mod markdown_store;
 pub mod memory_llm;

@@ -517,16 +517,109 @@ fn is_command_allowed(argv: &[String]) -> bool {
         return false;
     };
 
-    let cmd_name = if first_token.contains('/') {
-        std::path::Path::new(first_token)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or(first_token)
-    } else {
-        first_token.as_str()
-    };
+    if first_token.contains('/') || first_token.contains('\\') {
+        return false;
+    }
+
+    let cmd_name = first_token.as_str();
 
     DEFAULT_ALLOWLIST.contains(&cmd_name)
+}
+
+fn is_path_like_arg(arg: &str) -> bool {
+    if arg.is_empty() || arg == "-" || arg == "--" {
+        return false;
+    }
+
+    arg.starts_with('/')
+        || arg.starts_with('\\')
+        || arg.starts_with("./")
+        || arg.starts_with("../")
+        || arg.starts_with("~/")
+        || arg.starts_with("~\\")
+        || arg == "."
+        || arg == ".."
+        || arg.contains('/')
+        || arg.contains('\\')
+        || arg.starts_with("file:")
+        || matches!(
+            Path::new(arg).components().next(),
+            Some(std::path::Component::Prefix(_))
+        )
+}
+
+fn validate_exec_path_arg(workspace_dir: &str, arg: &str) -> Result<(), ToolError> {
+    let path = Path::new(arg);
+    for component in path.components() {
+        match component {
+            std::path::Component::ParentDir => {
+                return Err(ToolError::InvalidArgs(format!(
+                    "exec argument escapes workspace: {arg}"
+                )));
+            }
+            std::path::Component::RootDir | std::path::Component::Prefix(_) => {
+                return Err(ToolError::InvalidArgs(format!(
+                    "exec argument uses an absolute path: {arg}"
+                )));
+            }
+            _ => {}
+        }
+    }
+
+    let resolved = resolve_path(workspace_dir, arg)?;
+    let workspace_root = PathBuf::from(workspace_dir)
+        .canonicalize()
+        .map_err(|e| ToolError::Io(format!("workspace unavailable: {e}")))?;
+
+    if let Ok(canonical) = resolved.canonicalize() {
+        if !canonical.starts_with(&workspace_root) {
+            return Err(ToolError::InvalidArgs(format!(
+                "exec argument escapes workspace: {arg}"
+            )));
+        }
+        return Ok(());
+    }
+
+    let mut ancestor = resolved.as_path();
+    while let Some(parent) = ancestor.parent() {
+        if let Ok(canonical_parent) = parent.canonicalize() {
+            if !canonical_parent.starts_with(&workspace_root) {
+                return Err(ToolError::InvalidArgs(format!(
+                    "exec argument escapes workspace: {arg}"
+                )));
+            }
+            return Ok(());
+        }
+        ancestor = parent;
+    }
+
+    Ok(())
+}
+
+fn validate_exec_args(workspace_dir: &str, argv: &[String]) -> Result<(), ToolError> {
+    if workspace_dir.is_empty() {
+        return Err(ToolError::InvalidArgs("workspace not configured".into()));
+    }
+
+    for arg in argv.iter().skip(1) {
+        if arg.starts_with("file:") {
+            return Err(ToolError::InvalidArgs(format!(
+                "exec argument uses a file URL: {arg}"
+            )));
+        }
+
+        if let Some((_, value)) = arg.split_once('=') {
+            if is_path_like_arg(value) {
+                validate_exec_path_arg(workspace_dir, value)?;
+            }
+        }
+
+        if is_path_like_arg(arg) {
+            validate_exec_path_arg(workspace_dir, arg)?;
+        }
+    }
+
+    Ok(())
 }
 
 pub async fn handle_exec(input: Value, workspace_dir: &str) -> Result<Value, ToolError> {
@@ -543,6 +636,8 @@ pub async fn handle_exec(input: Value, workspace_dir: &str) -> Result<Value, Too
             argv[0]
         )));
     }
+
+    validate_exec_args(workspace_dir, &argv)?;
 
     let workdir = input
         .get("workdir")
@@ -816,6 +911,9 @@ mod tests {
         assert!(is_command_allowed(&parse_command("git status").unwrap()));
         assert!(is_command_allowed(&parse_command("rg pattern").unwrap()));
         assert!(!is_command_allowed(
+            &parse_command("/usr/bin/git status").unwrap()
+        ));
+        assert!(!is_command_allowed(
             &parse_command("python3 -c 'print(1)'").unwrap()
         ));
         assert!(parse_command("").is_err());
@@ -847,6 +945,70 @@ mod tests {
 
         let result = handle_exec(json!({"command": "rm -rf /"}), &ws_str).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn exec_rejects_absolute_path_argument() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("workspace");
+        tokio::fs::create_dir_all(&ws).await.unwrap();
+        let ws_str = ws.to_string_lossy().to_string();
+
+        let result = handle_exec(json!({"command": "cat /etc/passwd"}), &ws_str).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn exec_rejects_parent_path_argument() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("workspace");
+        tokio::fs::create_dir_all(&ws).await.unwrap();
+        let ws_str = ws.to_string_lossy().to_string();
+
+        let result = handle_exec(json!({"command": "rg tea ../"}), &ws_str).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn exec_rejects_absolute_workdir_argument() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("workspace");
+        tokio::fs::create_dir_all(&ws).await.unwrap();
+        let ws_str = ws.to_string_lossy().to_string();
+
+        let result = handle_exec(json!({"command": "git -C /tmp status"}), &ws_str).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn exec_rejects_equals_absolute_path_argument() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("workspace");
+        tokio::fs::create_dir_all(&ws).await.unwrap();
+        let ws_str = ws.to_string_lossy().to_string();
+
+        let result = handle_exec(
+            json!({"command": "cargo --manifest-path=/tmp/Cargo.toml test"}),
+            &ws_str,
+        )
+        .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn exec_allows_workspace_relative_path_arguments() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("workspace");
+        tokio::fs::create_dir_all(ws.join("src")).await.unwrap();
+        tokio::fs::write(ws.join("src/note.txt"), "tea")
+            .await
+            .unwrap();
+        let ws_str = ws.to_string_lossy().to_string();
+
+        let result = handle_exec(json!({"command": "cat src/note.txt"}), &ws_str)
+            .await
+            .unwrap();
+        assert_eq!(result["stdout"], "tea");
     }
 
     #[tokio::test]

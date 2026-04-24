@@ -353,7 +353,7 @@ pub enum LogCommand {
 pub enum MemoryCommand {
     /// Compact conversation into markdown memory.
     /// Optional positional: number of recent user turns to retain
-    /// (0 = retain none — leaves only the system prompt + recap).
+    /// (0 = retain none — leaves only the system prompt and compaction digest).
     Compact { keep_turns: Option<u32> },
 
     /// Show recent memory changelog entries
@@ -361,6 +361,21 @@ pub enum MemoryCommand {
         /// Number of entries to show
         #[arg(short = 'n', long, default_value = "20")]
         limit: u32,
+    },
+
+    /// Run or inspect the memory dreaming sweep
+    Dream {
+        /// Show dreaming scheduler state
+        #[arg(long)]
+        status: bool,
+
+        /// Preview a sweep without writing .dreams, DREAMS.md, or MEMORY.md
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Run even when the scheduler says the sweep is not due
+        #[arg(long)]
+        force: bool,
     },
 }
 
@@ -523,6 +538,18 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
             subcommand: Some(MemoryCommand::Changelog { limit }),
             ..
         } => Some(("memory_changelog", json!({ "limit": limit }))),
+        CliCommand::Memory {
+            subcommand:
+                Some(MemoryCommand::Dream {
+                    status,
+                    dry_run,
+                    force,
+                }),
+            ..
+        } => Some((
+            "memory_dream",
+            json!({ "status": status, "dry_run": dry_run, "force": force }),
+        )),
         CliCommand::Memory { query, direct, .. } => {
             Some(("memory", json!({ "query": query, "direct": direct })))
         }
