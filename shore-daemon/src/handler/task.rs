@@ -111,9 +111,7 @@ pub(super) async fn handle_generation(
             .ok_or("No model configured")?,
     };
     // Apply the per-session `reasoning_effort` override (if any) by
-    // cloning the resolved model and patching the field. The override
-    // deliberately does NOT touch the memory-query model, which has its own
-    // configured default.
+    // cloning the resolved model and patching the field for this request.
     let resolved_owned;
     let resolved: &shore_config::models::ResolvedModel =
         if let Some(new_effort) = reasoning_effort_override.as_ref() {

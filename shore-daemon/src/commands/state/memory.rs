@@ -157,7 +157,7 @@ pub async fn memory(
     }
 }
 
-/// Return memory entry/entity counts for the current character.
+/// Return markdown memory file counts for the current character.
 async fn memory_status(engine: &ConversationEngine, ctx: &CommandContext) -> CommandResult {
     let char_name = engine.character_name();
     let store = open_markdown_store(ctx, char_name).await?;

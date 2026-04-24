@@ -44,7 +44,7 @@ These are correctness constraints for Shore. `GOALS.md` is the source of user in
 
 **Must not:**
 
-- Tool use, memory writes, heartbeat recap writes, or ordinary workspace edits must not silently mutate the active prompt prefix.
+- Tool use, memory writes, compaction digest writes, or ordinary workspace edits must not silently mutate the active prompt prefix.
 
 ## Protected Self-Edits
 

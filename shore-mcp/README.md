@@ -33,7 +33,7 @@ The MCP surface mirrors CLI/daemon operations:
 
 - status/config/model/character/usage/log
 - send and regen
-- memory query/compact/status
+- memory query/compact/changelog
 - debug heartbeat commands
 
 Mutating tools are gated by profile mode.

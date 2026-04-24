@@ -170,19 +170,6 @@ pub fn print_status(data: &serde_json::Value, character_name: &str) {
         write_row(&mut out, "Prompt Edits", &detail);
     }
 
-    // Memory info (if present in the response).
-    if let Some(mem) = data.get("memory") {
-        let total = mem["total_entries"].as_u64().unwrap_or(0);
-        let active = mem["active_entries"].as_u64().unwrap_or(0);
-        if total > 0 {
-            write_row(
-                &mut out,
-                "Memory",
-                &format!("{total} entries ({active} active)"),
-            );
-        }
-    }
-
     let _ = writeln!(out);
 
     // -- Clients --
@@ -621,16 +608,19 @@ fn print_memory(data: &serde_json::Value) {
     let char_name = data["character"].as_str().unwrap_or("?");
     write_section_header(&mut out, "Memory", char_name, width);
 
-    let entries = data["entries"].as_u64().unwrap_or(0);
-    let active = data["active_entries"].as_u64().unwrap_or(0);
-    let entities = data["entities"].as_u64().unwrap_or(0);
+    let files = data["entries"].as_u64().unwrap_or(0);
+    let curated = data["curated_files"].as_u64().unwrap_or(0);
+    let daily = data["daily_files"].as_u64().unwrap_or(0);
+    let images = data["image_files"].as_u64().unwrap_or(0);
 
-    if entries > 0 {
-        write_row(&mut out, "Entries", &format!("{entries} ({active} active)"));
-    } else {
-        write_row(&mut out, "Entries", "0");
+    write_row(&mut out, "Files", &files.to_string());
+    if files > 0 {
+        write_row(
+            &mut out,
+            "Breakdown",
+            &format!("{curated} curated, {daily} daily, {images} images"),
+        );
     }
-    write_row(&mut out, "Entities", &entities.to_string());
     let _ = writeln!(out);
 }
 

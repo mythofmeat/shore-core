@@ -54,11 +54,6 @@ pub struct CommandContext {
 /// Convenience type for command handler results.
 pub type CommandResult = Result<serde_json::Value, (ErrorCode, String)>;
 
-/// Build the active prompt directory path for a character.
-pub fn memory_dir(ctx: &CommandContext, char_name: &str) -> PathBuf {
-    crate::memory::deferred_edits::active_prompt_dir(&ctx.data_dir.join(char_name))
-}
-
 /// Dispatch a command to the appropriate handler.
 pub async fn dispatch(
     engine: Arc<tokio::sync::Mutex<ConversationEngine>>,

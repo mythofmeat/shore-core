@@ -56,7 +56,7 @@ Prior completed-turn thinking is stripped by default through `[memory.thinking].
 ## Things That Should Not Bust Cache
 
 - writing markdown memory files
-- appending heartbeat daily notes
+- appending compaction/dreaming memory notes
 - ordinary workspace edits outside protected prompt files
 - tool loop bookkeeping
 - activity tracking

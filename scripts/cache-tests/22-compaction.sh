@@ -27,7 +27,6 @@ _write_config() {
 [defaults]
 display_name = "tester"
 model        = "chat.test.model"
-memory_query = "chat.test.model"
 embedding    = "qwen3"
 
 [behavior.autonomy]
