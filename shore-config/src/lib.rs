@@ -443,7 +443,6 @@ fn create_default_config(config_dir: &Path) {
 
 # [defaults]
 # model = "opus"              # must match a model key below
-# tool_model = "mistral-small"
 
 # [chat.anthropic]
 # sdk = "anthropic"
@@ -470,17 +469,32 @@ fn create_default_config(config_dir: &Path) {
 /// Validate cross-field config constraints.
 fn validate_config(app: &AppConfig, catalog: &ModelCatalog) -> Result<(), ConfigError> {
     // Validate model references exist in the catalog.
-    for (field, value) in [
-        ("defaults.model", app.defaults.model.as_deref()),
-        ("defaults.tool_model", app.defaults.tool_model.as_deref()),
-        (
-            "defaults.memory_query",
-            app.defaults.memory_query.as_deref(),
-        ),
-    ] {
-        validate_model_ref(catalog, field, value)?;
-    }
+    validate_model_ref(catalog, "defaults.model", app.defaults.model.as_deref())?;
 
+    validate_daily_cron(&app.memory.dreaming.frequency)?;
+
+    Ok(())
+}
+
+fn validate_daily_cron(expr: &str) -> Result<(), ConfigError> {
+    let parts: Vec<&str> = expr.split_whitespace().collect();
+    if parts.len() != 5 {
+        return Err(ConfigError::Validation(format!(
+            "memory.dreaming.frequency must be a five-field cron expression, got {expr:?}"
+        )));
+    }
+    let minute = parts[0].parse::<u8>().ok();
+    let hour = parts[1].parse::<u8>().ok();
+    if minute.is_none_or(|m| m > 59)
+        || hour.is_none_or(|h| h > 23)
+        || parts[2] != "*"
+        || parts[3] != "*"
+        || parts[4] != "*"
+    {
+        return Err(ConfigError::Validation(format!(
+            "memory.dreaming.frequency currently supports daily cron of the form \"M H * * *\", got {expr:?}"
+        )));
+    }
     Ok(())
 }
 
@@ -707,11 +721,32 @@ model_id = "claude-opus-4-6"
         );
         assert!(loaded.app.behavior.tool_use.enabled);
         assert!(loaded.app.memory.compaction.enabled);
+        assert!(!loaded.app.memory.dreaming.enabled);
+        assert_eq!(loaded.app.memory.dreaming.frequency, "0 3 * * *");
+        assert_eq!(loaded.app.memory.dreaming.max_tool_rounds, 12);
         assert_eq!(loaded.app.daemon.addr, "127.0.0.1:7320"); // default
         assert!(!loaded.app.daemon.unsafe_allow_remote_access);
         assert!(loaded.app.advanced.editor.is_none());
         assert!(loaded.app.advanced.max_retries.is_none());
         assert!(loaded.app.advanced.retry_backoff.is_none());
+    }
+
+    #[test]
+    fn invalid_dreaming_frequency_fails_validation() {
+        let tmp = setup_config_dir(&[(
+            "config.toml",
+            r#"
+[memory.dreaming]
+frequency = "sometimes"
+"#,
+        )]);
+
+        let config_path = tmp.path().join("config.toml");
+        let err = load_config(Some(&config_path)).unwrap_err();
+        assert!(
+            err.to_string().contains("memory.dreaming.frequency"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

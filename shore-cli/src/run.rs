@@ -1139,7 +1139,6 @@ mod tests {
         let cli = test_cli(CliCommand::Memory {
             subcommand: Some(crate::cli::MemoryCommand::Compact { keep_turns: None }),
             query: None,
-            direct: false,
             json: false,
         });
         let received = execute_with_mock(cli, command_response("compact")).await;
@@ -1147,7 +1146,7 @@ mod tests {
         match received {
             ClientMessage::Command(c) => {
                 assert_eq!(c.name, "compact");
-                assert!(c.args.get("collate").is_none());
+                assert_eq!(c.args, serde_json::json!({}));
             }
             other => panic!("expected Command, got: {other:?}"),
         }
@@ -1160,7 +1159,6 @@ mod tests {
         let cli = test_cli(CliCommand::Memory {
             subcommand: None,
             query: Some("recent topics".into()),
-            direct: false,
             json: false,
         });
         let received = execute_with_mock(cli, command_response("memory")).await;

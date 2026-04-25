@@ -39,7 +39,6 @@ use crate::autonomy::manager::AutonomyManager;
 use crate::characters::CharacterRegistry;
 use crate::commands::{CommandContext, SessionTokens};
 use crate::memory::compaction_impls::ImageGenConfig;
-use crate::memory::memory_llm::MemoryLlm;
 use crate::notifications::{NotificationEvent, NotificationService};
 use crate::tools::context::SharedToolContext;
 use crate::tools::ToolContext;
@@ -56,12 +55,6 @@ pub(super) struct HandlerToolContext {
 }
 
 impl ToolContext for HandlerToolContext {
-    fn memory_llm(&self) -> &dyn MemoryLlm {
-        self.inner.memory_llm()
-    }
-    fn memory_model(&self) -> &shore_config::models::ResolvedModel {
-        self.inner.memory_model()
-    }
     fn image_dir(&self) -> &str {
         self.inner.image_dir()
     }
@@ -367,12 +360,12 @@ impl MessageHandler {
                         Some(tx) => tx,
                         None => continue,
                     };
-                    let (active_model, reasoning_effort_override) = {
+                    let active_model = crate::runtime_state::load_active_model(
+                        &self.cmd_ctx.data_dir.join(&char_name),
+                    );
+                    let reasoning_effort_override = {
                         let session = self.session_state_mut(meta.session.session_id);
-                        (
-                            session.active_model.clone(),
-                            session.reasoning_effort_override.clone(),
-                        )
+                        session.reasoning_effort_override.clone()
                     };
                     let gen = self.gen_context(meta.session.session_id, direct_tx.clone());
                     let notifier = self.notifier.clone();

@@ -7,7 +7,6 @@
 use crate::autonomy::manager::AutonomyManager;
 use crate::memory::compaction_impls::ImageGenConfig;
 use crate::memory::markdown_store::MarkdownMemoryStore;
-use crate::memory::memory_llm::{MemoryLlm, MockMemoryLlm};
 use crate::memory::retrieval::EmbeddingConfig;
 use crate::tools::ToolContext;
 use shore_config::app::{RetrievalConfig, SearchConfig};
@@ -51,7 +50,6 @@ pub fn test_model() -> ResolvedModel {
 
 /// Shared `ToolContext` implementation for unit tests.
 pub struct TestToolContext {
-    pub memory_llm: MockMemoryLlm,
     pub model: ResolvedModel,
     pub image_dir_val: String,
     pub search_config_val: SearchConfig,
@@ -71,7 +69,6 @@ impl TestToolContext {
     /// Create a default test context.
     pub fn new() -> Self {
         Self {
-            memory_llm: MockMemoryLlm::new(vec![]),
             model: test_model(),
             image_dir_val: "/tmp/test_images".to_string(),
             search_config_val: SearchConfig::default(),
@@ -86,12 +83,6 @@ impl TestToolContext {
             memory_write_allowed_val: true,
             workspace_dir_val: String::new(),
         }
-    }
-
-    /// Create with a custom memory LLM (for canned responses).
-    pub fn with_memory_llm(mut self, llm: MockMemoryLlm) -> Self {
-        self.memory_llm = llm;
-        self
     }
 
     /// Set a custom image directory.
@@ -152,12 +143,6 @@ impl Default for TestToolContext {
 }
 
 impl ToolContext for TestToolContext {
-    fn memory_llm(&self) -> &dyn MemoryLlm {
-        &self.memory_llm
-    }
-    fn memory_model(&self) -> &ResolvedModel {
-        &self.model
-    }
     fn image_dir(&self) -> &str {
         &self.image_dir_val
     }

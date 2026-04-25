@@ -8,6 +8,7 @@ use shore_protocol::types::CharacterInfo;
 use tokio::sync::Mutex;
 
 use crate::characters::CharacterRegistry;
+use crate::runtime_state::load_active_model;
 
 pub fn build_handshake_provider(registry: Arc<Mutex<CharacterRegistry>>) -> HandshakeProvider {
     HandshakeProvider {
@@ -49,6 +50,11 @@ pub async fn build_session_history_snapshot(
             .as_deref()
             .map(|name| registry.effective_config(name).clone())
             .unwrap_or_else(|| registry.global_config().clone());
+        let active_model = active_model.or_else(|| {
+            selected_character
+                .as_deref()
+                .and_then(|name| load_active_model(&effective_config.dirs.data.join(name)))
+        });
         let engine = selected_character
             .as_deref()
             .and_then(|name| registry.get_or_create(name).ok());

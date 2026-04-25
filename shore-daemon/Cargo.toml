@@ -21,7 +21,6 @@ clap = { version = "4", features = ["derive"] }
 uuid = { version = "1", features = ["v4"] }
 chrono = "0.4"
 rand = "0.8"
-rusqlite = { workspace = true }
 dashmap = { workspace = true }
 futures = "0.3"
 reqwest = { version = "0.12", features = ["json", "stream"] }

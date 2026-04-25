@@ -17,7 +17,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
     vec![
         ToolDef {
             name: "scratchpad_list",
-            description: "List the files and directories in your scratchpad, optionally under a subdirectory. Your scratchpad is your personal folder on {{user}}'s filesystem — a self-curated space for drafts, notes-in-progress, plans, creative work, or anything you want a private place for. Use this to remember what you've saved, navigate into subdirectories, or get oriented before reading or writing. Returns each entry's name and size. Note that your scratchpad is not a memory system — use `memory` for recall and shared history; the scratchpad is just for your own files.",
+            description: "List the files and directories in your scratchpad, optionally under a subdirectory. Your scratchpad is your personal folder on {{user}}'s filesystem — a self-curated space for drafts, notes-in-progress, plans, creative work, or anything you want a private place for. Use this to remember what you've saved, navigate into subdirectories, or get oriented before reading or writing. Returns each entry's name and size. Note that your scratchpad is not a memory system — use `memory_search`, `memory_read`, and `memory_list` for recall and shared history; the scratchpad is just for your own files.",
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -47,7 +47,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "scratchpad_write",
-            description: "Write or overwrite a file in your scratchpad. Use it for anything you want to come back to later — a draft of a message, a running list, a plan, a piece of creative writing, notes while thinking through something. Parent directories are created automatically, so organising into subfolders is free. Overwrites without confirmation, so if you want to preserve existing content, read it first with `scratchpad_read` and merge it in yourself. This is not a memory system; use `memory` for shared history and recall — the scratchpad is just for your own files.",
+            description: "Write or overwrite a file in your scratchpad. Use it for anything you want to come back to later — a draft of a message, a running list, a plan, a piece of creative writing, notes while thinking through something. Parent directories are created automatically, so organising into subfolders is free. Overwrites without confirmation, so if you want to preserve existing content, read it first with `scratchpad_read` and merge it in yourself. This is not a memory system; use `memory_search`, `memory_read`, and `memory_list` for shared history and recall — the scratchpad is just for your own files.",
             parameters: json!({
                 "type": "object",
                 "properties": {

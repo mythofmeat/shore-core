@@ -1,144 +1,60 @@
 # shore-mcp
 
-An MCP (Model Context Protocol) server that exposes Shore's CLI surface to AI
-clients — primarily Claude Code — for debugging and programmatic use.
+`shore-mcp` exposes Shore's daemon through MCP for development and agent-driven verification.
 
-## Build gate
+It is not a separate Shore backend. It speaks to a Shore daemon using the same SWP path as the CLI/TUI.
 
-`shore-mcp` is **debug-only at runtime**. `main.rs` is `cfg(debug_assertions)`-
-gated, so release builds (`cargo build --workspace --release`) produce a stub
-binary that refuses to run. Dev builds (`cargo build --workspace`) produce a
-working binary — no feature flags required.
+## Profiles
 
-The crate is intentionally excluded from distribution: `contrib/PKGBUILD`
-installs each workspace binary by hand and does not list `shore-mcp`. See
-[docs/DECISIONS.md](../docs/DECISIONS.md) entries "shore-mcp crate added as a
-debug-only MCP server" and "shore-mcp Cargo feature gate removed" for history.
+Default mode uses an isolated persistent test profile:
 
-## Build & run
-
-Workspace aliases (defined in `.cargo/config.toml`) are short-hands for the
-package selector:
-
-```sh
-cargo mcp           # build
-cargo mcp-run       # run with no args (default test profile + spawn)
-cargo mcp-test      # unit tests
-cargo mcp-itest     # integration test against shore-test-harness
-cargo mcp-check     # type-check including tests
+```text
+$XDG_DATA_HOME/shore-mcp-test/
 ```
 
-Manual equivalents are `cargo build -p shore-mcp`, etc.
+Modes:
 
-## Profile modes
+| Mode | Flags | Writes allowed |
+| --- | --- | --- |
+| persistent test | default | yes |
+| ephemeral test | `--ephemeral` | yes, tempdir only |
+| main read-only | `--attach-main` | no mutating tools |
+| main writable | `--attach-main --allow-main-writes` | yes |
 
-`shore-mcp` chooses its target Shore daemon at startup. There are three modes:
+Use main writable mode only when you explicitly intend to mutate the real profile.
 
-| Flag(s)             | Profile             | Daemon                                             | Mutation tools |
-| ------------------- | ------------------- | -------------------------------------------------- | -------------- |
-| _(default)_         | persistent test     | discovered or spawned at `shore-mcp-test`          | allowed        |
-| `--ephemeral`       | fresh tempdir       | spawned, torn down on exit                         | allowed        |
-| `--attach-main`     | user's real profile | discovered via normal `shore-client` discovery     | **refused**    |
-| `--attach-main --allow-main-writes` | same        | same                                               | allowed        |
+## Daemon Handling
 
-`--allow-main-writes` is a deliberate two-flag opt-in. Without it, mutation
-tools (`send`, `regen`, `config_set`, `character_switch`, etc.) refuse with a
-gate-refuse message instead of executing against the user's main profile.
+In test-profile modes, `shore-mcp` discovers or spawns a `shore-daemon` with a stable `--instance-id`. `--daemon-addr` can target an existing daemon.
 
-`--daemon-addr ADDR` overrides discovery and spawning — used by the
-integration test to point at an in-process daemon.
+## Tool Surface
 
-## .mcp.json example
+The MCP surface mirrors CLI/daemon operations:
 
-For Claude Code, drop a fragment like this in your project's `.mcp.json`:
+- status/config/model/character/usage/log
+- send and regen
+- memory query/compact/changelog
+- debug heartbeat commands
 
-```jsonc
-{
-  "mcpServers": {
-    "shore": {
-      "command": "/abs/path/to/silvershore/target/debug/shore-mcp",
-      "args": []
-    }
-  }
-}
+Mutating tools are gated by profile mode.
+
+## Current Memory Model
+
+Memory operations target markdown memory under each character workspace:
+
+```text
+characters/<Character>/workspace/memory/
 ```
 
-To target your real Shore profile (read-only):
+The old SQLite/vector/RAG memory stack is not the active runtime target.
 
-```jsonc
-{
-  "mcpServers": {
-    "shore-main": {
-      "command": "/abs/path/to/silvershore/target/debug/shore-mcp",
-      "args": ["--attach-main"]
-    }
-  }
-}
-```
+## Verification Use
 
-To target your real Shore profile with mutation tools enabled:
+`shore-mcp` is the quickest way to drive an end-to-end daemon path from an agent:
 
-```jsonc
-{
-  "mcpServers": {
-    "shore-main-rw": {
-      "command": "/abs/path/to/silvershore/target/debug/shore-mcp",
-      "args": ["--attach-main", "--allow-main-writes"]
-    }
-  }
-}
-```
+1. start `shore-mcp`
+2. send MCP `initialize`
+3. list tools
+4. call `send`, `memory_compact`, `status`, etc.
 
-## Tool surface
-
-Tools are grouped by category. Read-only tools always run; mutating tools obey
-the gate described above.
-
-### Read-only
-
-| Tool                 | Purpose                                       |
-| -------------------- | --------------------------------------------- |
-| `status`             | Daemon process / connection status            |
-| `status_diagnostics` | Diagnostics counters                          |
-| `log_tail`           | Tail of the active conversation log          |
-| `log_show`           | Full message body by id                       |
-| `log_heartbeat`      | Recent heartbeat ticks                        |
-| `log_follow`         | Bounded follow with timeout (read tool)       |
-| `usage`              | Token / cost accounting                       |
-| `config_get`         | Read a config key                             |
-| `config_check`       | Validate the current config                   |
-| `character_list`     | List installed characters                     |
-| `character_info`     | Detail on one character                       |
-| `model_list`         | List available models                         |
-| `model_info`         | Detail on one model                           |
-| `memory_query`       | Query the vector memory                       |
-| `memory_changelog`   | Memory writes over a recent window            |
-
-### Mutating (gated)
-
-| Tool                    | Purpose                                       |
-| ----------------------- | --------------------------------------------- |
-| `send`                  | Send a user message; returns the full reply   |
-| `regen`                 | Regenerate the last assistant turn            |
-| `log_delete`            | Delete a message by id                        |
-| `log_edit`              | Edit a message by id                          |
-| `config_set`            | Set a config key                              |
-| `config_reset`          | Reset config to defaults                      |
-| `character_switch`      | Switch the active character                   |
-| `model_switch`          | Switch the active model                       |
-| `model_reset`           | Reset model to default                        |
-| `memory_compact`        | Run memory compaction (optional `keep_turns`) |
-| `debug_tick_now`        | Force a heartbeat tick                        |
-| `debug_status_dormant`  | Force heartbeat into dormant state            |
-| `debug_status_active`   | Force heartbeat into active state             |
-
-## Integration test
-
-`shore-mcp/tests/mcp_integration.rs` spawns the binary as a subprocess against
-an in-process daemon booted by `shore-test-harness`, drives MCP JSON-RPC over
-stdio, and verifies `initialize` / `tools/list` / `status` / `send` end-to-end
-through a mock LLM. It is gated behind `--ignored`:
-
-```sh
-cargo mcp-itest
-```
+Live model calls require configured provider keys and may cost money.

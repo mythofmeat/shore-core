@@ -97,11 +97,15 @@ pub fn build_capabilities_block(config: &CapabilitiesConfig) -> Option<String> {
     }
 
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> dev
     let mut parts = vec![
         "**Tool usage**".to_string(),
         String::new(),
         "You have a number of tools available to help you during the \
          conversation. You're encouraged to use them freely — reaching for a \
+<<<<<<< HEAD
 =======
     Some(
         "**Tool usage**\n\
@@ -109,9 +113,10 @@ pub fn build_capabilities_block(config: &CapabilitiesConfig) -> Option<String> {
          You have a number of tools available to help you during the \
          conversation. You're encouraged to use them freely. Reaching for a \
 >>>>>>> main
+=======
+>>>>>>> dev
          tool is in-character and enhances the conversation rather than \
-         interrupting it. Each tool's own description covers when it's useful. \
-         Please use your memory tools often."
+         interrupting it. Each tool's own description covers when it's useful."
             .to_string(),
     ];
 
@@ -264,6 +269,7 @@ pub fn assemble_prompt(params: &PromptParams<'_>) -> AssembledPrompt {
                 label: "recent_memory".into(),
                 content: format!(
 <<<<<<< HEAD
+<<<<<<< HEAD
                     "<{char_tag}_recap> \n\
                      The following is a brief recap of recent conversations. \
                      This recap is not exhaustive and only covers a short period of time. \
@@ -271,11 +277,16 @@ pub fn assemble_prompt(params: &PromptParams<'_>) -> AssembledPrompt {
                      {recap}\n\
                      </{char_tag}_recap>"
 =======
+=======
+>>>>>>> dev
                     "<recent_memory>\n\
                      The following is a compact digest of your most recent durable memories.\n\n\
                      {digest}\n\
                      </recent_memory>"
+<<<<<<< HEAD
 >>>>>>> breaking/openclawify
+=======
+>>>>>>> dev
                 ),
             });
         }

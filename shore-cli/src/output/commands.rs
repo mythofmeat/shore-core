@@ -149,17 +149,25 @@ pub fn print_status(data: &serde_json::Value, character_name: &str) {
         write_row(&mut out, "Messages", &count.to_string());
     }
 
-    // Memory info (if present in the response).
-    if let Some(mem) = data.get("memory") {
-        let total = mem["total_entries"].as_u64().unwrap_or(0);
-        let active = mem["active_entries"].as_u64().unwrap_or(0);
-        if total > 0 {
-            write_row(
-                &mut out,
-                "Memory",
-                &format!("{total} entries ({active} active)"),
-            );
-        }
+    let pending_deferred_edit_count = data["pending_deferred_edit_count"].as_u64().unwrap_or(0);
+    if pending_deferred_edit_count > 0 {
+        let paths: Vec<&str> = data["pending_deferred_edits"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|path| path.as_str())
+            .collect();
+        let label = if pending_deferred_edit_count == 1 {
+            "1 pending".to_string()
+        } else {
+            format!("{pending_deferred_edit_count} pending")
+        };
+        let detail = if paths.is_empty() {
+            label
+        } else {
+            format!("{label}: {}", paths.join(", "))
+        };
+        write_row(&mut out, "Prompt Edits", &detail);
     }
 
     let _ = writeln!(out);
@@ -253,6 +261,7 @@ pub fn format_command(name: &str, data: &serde_json::Value) {
         "memory" => print_memory(data),
         "compact" => print_compact_result(data),
         "memory_changelog" => print_changelog(data),
+        "memory_dream" => print_memory_dream(data),
         "config" => print_config(data),
         "config_check" => print_config_check(data),
         "config_reset" => print_config_reset(data),
@@ -266,6 +275,53 @@ pub fn format_command(name: &str, data: &serde_json::Value) {
         "heartbeat_set_active" => print_heartbeat_status_change(data, "active"),
         _ => print_command_output_fallback(name, data),
     }
+}
+
+fn print_memory_dream(data: &serde_json::Value) {
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    let width = term_width();
+    let char_name = data["character"].as_str().unwrap_or("?");
+    write_section_header(&mut out, "Dreaming", char_name, width);
+
+    if data.get("state_path").is_some() {
+        write_row(
+            &mut out,
+            "Enabled",
+            if data["enabled"].as_bool().unwrap_or(false) {
+                "yes"
+            } else {
+                "no"
+            },
+        );
+        write_row(
+            &mut out,
+            "Frequency",
+            data["frequency"].as_str().unwrap_or("?"),
+        );
+        write_row(
+            &mut out,
+            "Due",
+            if data["due"].as_bool().unwrap_or(false) {
+                "yes"
+            } else {
+                "no"
+            },
+        );
+        if let Some(last) = data["last_run_at"].as_str() {
+            write_row(&mut out, "Last run", last);
+        }
+    } else if data["status"].as_str() == Some("not_due") {
+        write_row(&mut out, "Status", "not due");
+    } else {
+        let dry = data["dry_run"].as_bool().unwrap_or(false);
+        write_row(&mut out, "Status", if dry { "dry run" } else { "ran" });
+        let candidates = data["candidates"].as_array().map_or(0, Vec::len);
+        let promoted = data["promoted"].as_array().map_or(0, Vec::len);
+        write_row(&mut out, "Candidates", &candidates.to_string());
+        write_row(&mut out, "Promoted", &promoted.to_string());
+    }
+    let _ = writeln!(out);
 }
 
 fn print_command_output_fallback(name: &str, data: &serde_json::Value) {
@@ -552,16 +608,19 @@ fn print_memory(data: &serde_json::Value) {
     let char_name = data["character"].as_str().unwrap_or("?");
     write_section_header(&mut out, "Memory", char_name, width);
 
-    let entries = data["entries"].as_u64().unwrap_or(0);
-    let active = data["active_entries"].as_u64().unwrap_or(0);
-    let entities = data["entities"].as_u64().unwrap_or(0);
+    let files = data["entries"].as_u64().unwrap_or(0);
+    let curated = data["curated_files"].as_u64().unwrap_or(0);
+    let daily = data["daily_files"].as_u64().unwrap_or(0);
+    let images = data["image_files"].as_u64().unwrap_or(0);
 
-    if entries > 0 {
-        write_row(&mut out, "Entries", &format!("{entries} ({active} active)"));
-    } else {
-        write_row(&mut out, "Entries", "0");
+    write_row(&mut out, "Files", &files.to_string());
+    if files > 0 {
+        write_row(
+            &mut out,
+            "Breakdown",
+            &format!("{curated} curated, {daily} daily, {images} images"),
+        );
     }
-    write_row(&mut out, "Entities", &entities.to_string());
     let _ = writeln!(out);
 }
 
@@ -637,8 +696,8 @@ fn print_compact_result(data: &serde_json::Value) {
     write_row(&mut out, "Character", char_name);
 
     if status == "dry_run" {
-        let would = data["would_create_entries"].as_u64().unwrap_or(0);
-        write_row(&mut out, "Would create", &format!("{would} entries"));
+        let would = data["would_write_files"].as_u64().unwrap_or(0);
+        write_row(&mut out, "Would write", &format!("{would} files"));
         let msgs = data["message_count"].as_u64().unwrap_or(0);
         let retained_turns = data["retained_turns"].as_u64().unwrap_or(0);
         write_row(
@@ -647,8 +706,10 @@ fn print_compact_result(data: &serde_json::Value) {
             &format!("{msgs} compacted, {retained_turns} turns retained"),
         );
     } else {
-        let entries = data["entries_created"].as_u64().unwrap_or(0);
-        write_row(&mut out, "Entries", &format!("{entries} new"));
+        let files = data["memory_files_written"]
+            .as_array()
+            .map_or(0, |files| files.len());
+        write_row(&mut out, "Memory files", &format!("{files} written"));
         let msgs = data["message_count"].as_u64().unwrap_or(0);
         let retained_turns = data["retained_turns"].as_u64().unwrap_or(0);
         write_row(
@@ -1114,6 +1175,8 @@ mod tests {
             "character": "Sable",
             "message_count": 142,
             "active_model": "claude-sonnet-4-20250514",
+            "pending_deferred_edit_count": 2,
+            "pending_deferred_edits": ["SOUL.md", "TOOLS.md"],
             "tokens": {
                 "input": 12450,
                 "output": 3218,

@@ -27,7 +27,6 @@ _write_config() {
 [defaults]
 display_name = "tester"
 model        = "chat.test.model"
-memory_query = "chat.test.model"
 embedding    = "qwen3"
 
 [behavior.autonomy]
@@ -50,7 +49,7 @@ memory = true
 api_payload_logging = true
 
 [daemon]
-socket_path = "$SOCKET_PATH"
+addr = "$LISTEN_ADDR"
 TOML
 
     local model_toml="$CONFIG_DIR/conf.d/models.toml"
@@ -98,7 +97,7 @@ send_shore_cmd() {
     echo -e "${CYAN}[$TEST_NAME]${NC} shore $subcmd $*"
     SHORE_CONFIG_DIR="$CONFIG_DIR" \
     SHORE_DATA_DIR="$DATA_DIR" \
-        "$SHORE_BIN" --socket "$SOCKET_PATH" \
+        "$SHORE_BIN" --addr "$DAEMON_ADDR" \
             --character "$CHARACTER_NAME" \
             $subcmd "$@" 2>>"$LOG_FILE" || true
 }
@@ -119,12 +118,12 @@ echo -e "${CYAN}[$TEST_NAME]${NC} === PHASE 2: Compact ==="
 PRE_COMPACT_COUNT="$(grep -c '"type":"response"' "$(forensics_path)")"
 echo -e "${CYAN}[$TEST_NAME]${NC} running: shore memory compact"
 COMPACT_OUT="$(SHORE_CONFIG_DIR="$CONFIG_DIR" SHORE_DATA_DIR="$DATA_DIR" \
-    "$SHORE_BIN" --socket "$SOCKET_PATH" --character "$CHARACTER_NAME" \
+    "$SHORE_BIN" --addr "$DAEMON_ADDR" --character "$CHARACTER_NAME" \
     memory compact 2>&1)" || true
 echo -e "${CYAN}[$TEST_NAME]${NC} compact output: $COMPACT_OUT"
 
-# Verify compaction actually ran — look for "compacted" in output.
-if ! echo "$COMPACT_OUT" | grep -qi 'compacted\|entries_created'; then
+# Verify compaction actually ran — look for the current markdown-memory output.
+if ! echo "$COMPACT_OUT" | grep -qi 'compacted\|memory files'; then
     harness_fail "compaction did not run: $COMPACT_OUT"
 fi
 

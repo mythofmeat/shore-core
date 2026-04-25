@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-One-time migration: export SQLite memory entries to markdown files.
+One-time migration: export active SQLite memory entries to markdown files.
 
 Usage:
     python3 scripts/migrate-memory.py <character> [data_dir] [config_dir]
@@ -52,6 +52,7 @@ def migrate(character: str, data_dir: str, config_dir: str) -> int:
         """
         SELECT id, topic_key, summary_text
         FROM entries
+        WHERE status = 'active'
         ORDER BY created_at DESC
         """
     )

@@ -715,7 +715,7 @@ mod tests {
     /// can render intermediate tool calls. Only the terminal StreamEnd has
     /// `is_final = true`. Aggregating callers (shore-mcp's `send` tool, etc.)
     /// must keep reading past non-final StreamEnds — otherwise they return
-    /// the intermediate "Let me check my memory—" text, miss the ToolCall
+    /// the intermediate "Let me search memory—" text, miss the ToolCall
     /// and ToolResult frames entirely, and surface the wrong finish_reason.
     #[tokio::test]
     async fn collect_stream_spans_tool_loop_to_final_end() {
@@ -757,7 +757,7 @@ mod tests {
                 &mut w,
                 &ServerMessage::StreamChunk(StreamChunk {
                     rid: None,
-                    text: "Let me check my memory—".into(),
+                    text: "Let me search memory—".into(),
                     content_type: "text".into(),
                 }),
             )
@@ -766,7 +766,7 @@ mod tests {
                 &mut w,
                 &ServerMessage::StreamEnd(StreamEnd {
                     rid: None,
-                    content: "Let me check my memory—".into(),
+                    content: "Let me search memory—".into(),
                     metadata: meta("turn-1"),
                     finish_reason: "tool_use".into(),
                     is_final: false,
@@ -780,8 +780,8 @@ mod tests {
                 &ServerMessage::ToolCall(ToolCall {
                     rid: None,
                     tool_id: "toolu_01".into(),
-                    tool_name: "memory".into(),
-                    input: serde_json::json!({"request": "sister"}),
+                    tool_name: "memory_search".into(),
+                    input: serde_json::json!({"query": "sister"}),
                 }),
             )
             .await;
@@ -790,7 +790,7 @@ mod tests {
                 &ServerMessage::ToolResult(ToolResult {
                     rid: None,
                     tool_id: "toolu_01".into(),
-                    tool_name: "memory".into(),
+                    tool_name: "memory_search".into(),
                     output: "Your sister's name is Maya.".into(),
                     is_error: false,
                 }),
@@ -843,7 +843,7 @@ mod tests {
             1,
             "one ToolCall frame must be collected"
         );
-        assert_eq!(response.tool_calls[0].tool_name, "memory");
+        assert_eq!(response.tool_calls[0].tool_name, "memory_search");
         assert_eq!(
             response.tool_results.len(),
             1,

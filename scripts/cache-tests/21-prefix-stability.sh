@@ -44,7 +44,7 @@ memory = true
 api_payload_logging = true
 
 [daemon]
-socket_path = "$SOCKET_PATH"
+addr = "$LISTEN_ADDR"
 TOML
 
     local model_toml="$CONFIG_DIR/conf.d/models.toml"
@@ -73,7 +73,7 @@ send_cmd() {
     echo -e "${CYAN}[$TEST_NAME]${NC} cmd: $cmd"
     SHORE_CONFIG_DIR="$CONFIG_DIR" \
     SHORE_DATA_DIR="$DATA_DIR" \
-        "$SHORE_BIN" --socket "$SOCKET_PATH" \
+        "$SHORE_BIN" --addr "$DAEMON_ADDR" \
             --character "$CHARACTER_NAME" \
             debug "$cmd" 2>>"$LOG_FILE"
 }

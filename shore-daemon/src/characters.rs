@@ -175,6 +175,14 @@ impl CharacterRegistry {
         self.char_configs.clear();
     }
 
+    /// Store an in-memory effective config override for one character.
+    ///
+    /// This is used by runtime config commands. It is deliberately not written
+    /// back to disk, and `config_reset` clears it by reloading registry state.
+    pub fn set_runtime_effective_config(&mut self, name: &str, config: LoadedConfig) {
+        self.char_configs.insert(name.to_string(), Some(config));
+    }
+
     /// Update the global config reference and invalidate per-character caches.
     pub fn set_global_config(&mut self, config: LoadedConfig) {
         self.global_config = config;

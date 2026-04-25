@@ -84,7 +84,6 @@ pub fn switch_model(ctx: &mut CommandContext, args: &serde_json::Value) -> Comma
 /// Reset model to config default.
 pub fn reset_model(ctx: &mut CommandContext) -> CommandResult {
     let previous = ctx.active_model.take();
-    ctx.active_model = ctx.config.app.defaults.model.clone();
     Ok(json!({
         "previous": previous,
         "active": ctx.active_model,

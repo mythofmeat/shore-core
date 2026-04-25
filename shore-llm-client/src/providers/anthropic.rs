@@ -1575,7 +1575,7 @@ mod tests {
     fn test_convert_inline_system_preserves_structured_prev_content() {
         let messages = vec![
             json!({"role": "assistant", "content": [
-                {"type": "tool_use", "id": "t1", "name": "memory", "input": {}},
+                {"type": "tool_use", "id": "t1", "name": "memory_search", "input": {"query": "Ren"}},
             ]}),
             json!({"role": "user", "content": [
                 {"type": "tool_result", "tool_use_id": "t1", "content": "ok"},

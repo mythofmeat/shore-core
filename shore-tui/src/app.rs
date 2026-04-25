@@ -428,6 +428,8 @@ pub struct App {
     pub audio_player: Option<AudioPlayer>,
     /// Whether live-speak mode is enabled in this session.
     pub live_speak: bool,
+    /// Animation frame for transient progress indicators.
+    pub spinner_frame: usize,
 }
 
 impl Default for App {
@@ -466,6 +468,7 @@ impl Default for App {
             fullscreen: None,
             audio_player: None,
             live_speak: false,
+            spinner_frame: 0,
         }
     }
 }
@@ -503,6 +506,7 @@ impl App {
         self.stream.reset();
         self.stream.active = true;
         self.stream.regen = true;
+        self.spinner_frame = 0;
         if let Some(pos) = self
             .entries
             .iter()

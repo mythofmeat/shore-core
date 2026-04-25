@@ -4,6 +4,28 @@ All notable changes to Shore are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — OpenClawify
+
+See [OpenClawify Patch Notes](docs/PATCH_NOTES_OPENCLAWIFY.md) for migration guidance.
+
+### Added
+- Character workspaces with protected prompt files: `SOUL.md`, `USER.md`, `AGENTS.md`, `TOOLS.md`, and `HEARTBEAT.md`
+- Markdown long-term memory under `characters/<Character>/workspace/memory/`
+- `active_prompt/` snapshots and deferred protected self-edit activation
+- Opt-in memory dreaming with `.dreams/`, `DREAMS.md`, and `MEMORY.md`
+- Optional hybrid semantic+lexical markdown retrieval backed by a rebuildable index
+- Workspace file tools and sandboxed `exec`
+
+### Changed
+- Runtime memory source of truth moved from hidden SQLite/vector/RAG state to markdown files
+- Interiority naming standardized to heartbeat/autonomy
+- Compaction now writes markdown memory and activates staged protected edits
+- Docs rewritten against `GOALS.md` and current branch behavior
+
+### Removed
+- Runtime dependency on the old memory shell, collation pipeline, passive RAG injection, and authoritative vector memory store
+- User-facing claims that `character.md`, `user.md`, or `prompts/system.md` are the active layout
+
 ## [0.15.0] — 2026-04-16
 
 ### Added
@@ -18,14 +40,14 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Daemon `--instance-id` flag for stable registry IDs
 - Daemon runs idle compaction inline during the autonomy tick
 - CLI persists active model across sessions, adds dynamic completions, and includes character name in the log
-- Autonomy: force a recap wrap-up when the heartbeat tool loop hits its cap
+- Autonomy: heartbeat private turns with `HEARTBEAT_OK`, `set_next_wake`, and `<sendMessage>`
 - `collect_stream` client helper for request/response consumers
 - Ledger/CLI: usage breakdown by call type
 
 ### Fixed
 - `shore-llm-client`: strip orphan `tool_use` / `tool_result` pairs from outbound requests
 - Memory agent retries on `content_filter` and transient errors
-- Daemon registers the kernel-resolved port when bound to `:0`, excludes tool models from `list_models`, applies the heartbeat model override on the warm path, and drops the time-gap gate on recap injection
+- Daemon registers the kernel-resolved port when bound to `:0`, excludes tool models from `list_models`, and applies the heartbeat model override on the warm path
 - Ledger/CLI usage deserialization by column name
 - `shore-mcp`: detach auto-spawned daemon via `setsid`, clamp `log_follow` seconds, exhaustive `run_cmd` match, unified `character_info` param shape, narrower spawn-on-discovery-miss, schemars alignment with rmcp
 

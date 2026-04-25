@@ -225,15 +225,9 @@ impl CompactionManager {
         deduped
     }
 
-    /// Generate an entry ID with a compaction prefix: c_YYYYMMDD_HHMMSS_N
-    ///
-    /// The `c_` prefix marks compaction-generated entries.
-    /// when both run in the same second.
-    /// Run compaction on a conversation.
-    ///
     /// Splits messages into a compacted portion (sent to LLM) and a retained
     /// portion (kept in active.jsonl). The LLM generates both a rolling recap
-    /// and memory entries from the compacted messages.
+    /// and markdown memory file operations from the compacted messages.
     ///
     /// If `dry_run` is true, returns what would be created without side effects.
     #[instrument(skip(self, messages, active_content, prompt_template, existing_recap, llm, conversation_mgr, markdown_store), fields(char = char_name, user = user_name, msg_count = messages.len(), dry_run))]
@@ -326,7 +320,7 @@ impl CompactionManager {
         // Dry run: return preview without side effects.
         if dry_run {
             return Ok(CompactionOutcome::DryRun(DryRunResult {
-                would_create_entries: file_ops.len(),
+                would_write_files: file_ops.len(),
                 file_ops_preview: file_ops,
                 message_count: split_at,
                 retained_count: messages.len() - split_at,
@@ -415,7 +409,7 @@ impl CompactionManager {
         }
 
         info!(
-            entries_created = markdown_paths.len(),
+            memory_files_written = markdown_paths.len(),
             markdown_files = markdown_paths.len(),
             conversation_id,
             retained,
@@ -1346,7 +1340,7 @@ They discussed daily activities and the user's beverage preferences.
 
         match result {
             CompactionOutcome::DryRun(r) => {
-                assert_eq!(r.would_create_entries, 2);
+                assert_eq!(r.would_write_files, 2);
                 assert_eq!(r.message_count, 6);
                 assert_eq!(r.retained_count, 4);
                 assert_eq!(r.file_ops_preview.len(), 2);

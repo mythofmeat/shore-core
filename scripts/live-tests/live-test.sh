@@ -104,14 +104,14 @@ trap cleanup EXIT
 CONFIG_DIR="$TMPDIR/config/shore"
 DATA_DIR="$TMPDIR/data/shore"
 RUNTIME_DIR="$TMPDIR/runtime/shore"
-SOCK="$RUNTIME_DIR/test.sock"
+INSTANCES="$RUNTIME_DIR/instances.json"
 
 mkdir -p "$CONFIG_DIR/characters/TestChar" "$DATA_DIR" "$RUNTIME_DIR"
 
 # Config with cheap OpenRouter model.
 cat > "$CONFIG_DIR/config.toml" <<EOF
 [daemon]
-socket_path = "$SOCK"
+addr = "127.0.0.1:0"
 
 [defaults]
 model = "haiku"
@@ -161,20 +161,22 @@ export XDG_RUNTIME_DIR="$TMPDIR/runtime"
 
 # ── Start shore-daemon ────────────────────────────────────────────────
 printf "${BOLD}Starting daemon...${RESET}\n"
+rm -f "$INSTANCES"
 RUST_LOG=info "$DAEMON" --config "$CONFIG_DIR/config.toml" &
 DAEMON_PID=$!
 
 for i in $(seq 1 50); do
-    [[ -S "$SOCK" ]] && break
+    [[ -s "$INSTANCES" ]] && break
+    kill -0 "$DAEMON_PID" 2>/dev/null || break
     sleep 0.1
 done
-if [[ ! -S "$SOCK" ]]; then
+if [[ ! -s "$INSTANCES" ]]; then
     echo "Daemon failed to start"
     exit 1
 fi
-printf "${DIM}  daemon pid=$DAEMON_PID socket=$SOCK${RESET}\n\n"
+printf "${DIM}  daemon pid=$DAEMON_PID registry=$INSTANCES${RESET}\n\n"
 
-CLI="$SHORE --socket $SOCK"
+CLI="$SHORE"
 
 # ══════════════════════════════════════════════════════════════════════
 # TEST 1: Basic send + receive (streaming)
@@ -277,10 +279,14 @@ printf "${DIM}  %-50s${RESET}" "messages persist after restart"
 
 kill $DAEMON_PID 2>/dev/null || true
 wait $DAEMON_PID 2>/dev/null || true
-rm -f "$SOCK"
+rm -f "$INSTANCES"
 RUST_LOG=info "$DAEMON" --config "$CONFIG_DIR/config.toml" &
 DAEMON_PID=$!
-for i in $(seq 1 50); do [[ -S "$SOCK" ]] && break; sleep 0.1; done
+for i in $(seq 1 50); do
+    [[ -s "$INSTANCES" ]] && break
+    kill -0 "$DAEMON_PID" 2>/dev/null || break
+    sleep 0.1
+done
 
 msg_count_after=$($CLI status --json 2>&1 | grep -o '"message_count": [0-9]*' | head -1 | grep -o '[0-9]*')
 # Messages persist if count after restart >= count before (tool results
@@ -366,10 +372,14 @@ with open('$CHAR_DATA/active.jsonl', 'w') as f:
 # Restart daemon to pick up the seeded messages.
 kill $DAEMON_PID 2>/dev/null || true
 wait $DAEMON_PID 2>/dev/null || true
-rm -f "$SOCK"
+rm -f "$INSTANCES"
 RUST_LOG=info "$DAEMON" --config "$CONFIG_DIR/config.toml" &
 DAEMON_PID=$!
-for i in $(seq 1 50); do [[ -S "$SOCK" ]] && break; sleep 0.1; done
+for i in $(seq 1 50); do
+    [[ -s "$INSTANCES" ]] && break
+    kill -0 "$DAEMON_PID" 2>/dev/null || break
+    sleep 0.1
+done
 
 # Verify messages loaded.
 run_test_contains "seeded 26 messages" '"message_count": 26' $CLI status --json

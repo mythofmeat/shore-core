@@ -29,7 +29,7 @@ pub const MAX_WAKE_INTERVAL: Duration = Duration::from_secs(48 * 60 * 60);
 pub enum HeartbeatAction {
     /// Nothing to do this tick.
     None,
-    /// Fire a full heartbeat tick (recap-backed LLM call with tools).
+    /// Fire a full heartbeat tick (private LLM call with tools).
     RunTick,
 }
 
