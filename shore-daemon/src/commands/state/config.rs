@@ -48,8 +48,10 @@ pub fn config_check(ctx: &CommandContext) -> CommandResult {
     // Check: LLM service configured?
     if ctx.config.app.services.llm.command.is_none() && ctx.config.app.services.llm.socket.is_none()
     {
-        warnings
-            .push("No LLM service configured. Set [services.llm] command or socket_path.".into());
+        warnings.push(
+            "No LLM service configured. Set [services.llm].command or [services.llm].socket."
+                .into(),
+        );
     }
 
     // Check: API key env vars are set for configured providers

@@ -202,10 +202,10 @@ TOOLS = [
      "input_schema": {"type": "object", "properties": {
          "notation": {"type": "string", "description": "Dice notation"}},
          "required": ["notation"]}},
-    {"name": "memory", "description": "Access, search, or store information in long-term memory.",
+    {"name": "memory_search", "description": "Search markdown memory files for long-term context.",
      "input_schema": {"type": "object", "properties": {
-         "request": {"type": "string", "description": "What to remember or recall"}},
-         "required": ["request"]}},
+         "query": {"type": "string", "description": "What to recall"}},
+         "required": ["query"]}},
     {"name": "scratchpad_write", "description": "Write content to a file in the scratchpad.",
      "input_schema": {"type": "object", "properties": {
          "path": {"type": "string", "description": "File path"},

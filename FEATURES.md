@@ -67,13 +67,15 @@ Memory tools:
 
 | Tool | Purpose |
 | --- | --- |
-| `memory` | natural-language markdown memory query |
 | `memory_read` | read one markdown memory file |
 | `memory_write` | write one markdown memory file |
 | `memory_search` | ranked search over markdown memory |
 | `memory_list` | list markdown memory files |
 
 Workspace tools can also use `memory/...` paths when memory access is enabled.
+
+The CLI and MCP still expose a natural-language memory query command, but the
+LLM-facing runtime tools are the granular `memory_*` tools above.
 
 Search is lexical by default. If an embedding profile is configured, retrieval can use a rebuildable hybrid semantic+lexical index. The index is a ranking aid only; markdown files remain authoritative.
 

@@ -267,7 +267,7 @@ mod tests {
         let mut asst = assistant_thinking_and_tool_use(
             "a1",
             "Let me check",
-            vec![("t1", "memory"), ("t2", "check_time")],
+            vec![("t1", "memory_search"), ("t2", "check_time")],
         );
         // Insert a whitespace-only Text block at the front (as the LLM does).
         asst.content_blocks.insert(
@@ -291,11 +291,13 @@ mod tests {
         assert_eq!(merged[1].msg_id, "a2");
         assert_eq!(merged[1].content, "Hey there!");
 
-        // Blocks: thinking, tu(memory), tr(memory), tu(check_time), tr(check_time), text
+        // Blocks: thinking, tu(memory_search), tr(memory_search), tu(check_time), tr(check_time), text
         let blocks = &merged[1].content_blocks;
         assert_eq!(blocks.len(), 6);
         assert!(matches!(&blocks[0], ContentBlock::Thinking { .. }));
-        assert!(matches!(&blocks[1], ContentBlock::ToolUse { name, .. } if name == "memory"));
+        assert!(
+            matches!(&blocks[1], ContentBlock::ToolUse { name, .. } if name == "memory_search")
+        );
         assert!(matches!(&blocks[2], ContentBlock::ToolResult { .. }));
         assert!(matches!(&blocks[3], ContentBlock::ToolUse { name, .. } if name == "check_time"));
         assert!(matches!(&blocks[4], ContentBlock::ToolResult { .. }));
@@ -305,7 +307,8 @@ mod tests {
     #[test]
     fn text_before_tool_calls_merged() {
         // Real-world: model says "let me check" then calls tools.
-        let mut asst = assistant_tool_use("a1", vec![("t1", "memory"), ("t2", "check_time")]);
+        let mut asst =
+            assistant_tool_use("a1", vec![("t1", "memory_search"), ("t2", "check_time")]);
         asst.content_blocks.insert(
             0,
             ContentBlock::Text {
@@ -326,13 +329,15 @@ mod tests {
         assert_eq!(merged.len(), 2, "should merge into user + assistant");
         assert_eq!(merged[1].msg_id, "a2");
 
-        // Blocks: text("let me look..."), tu(memory), tr(memory), tu(check_time), tr(check_time), text("You're Trevor!")
+        // Blocks: text("let me look..."), tu(memory_search), tr(memory_search), tu(check_time), tr(check_time), text("You're Trevor!")
         let blocks = &merged[1].content_blocks;
         assert_eq!(blocks.len(), 6);
         assert!(
             matches!(&blocks[0], ContentBlock::Text { text } if text == "let me look that up!")
         );
-        assert!(matches!(&blocks[1], ContentBlock::ToolUse { name, .. } if name == "memory"));
+        assert!(
+            matches!(&blocks[1], ContentBlock::ToolUse { name, .. } if name == "memory_search")
+        );
         assert!(matches!(&blocks[2], ContentBlock::ToolResult { .. }));
         assert!(matches!(&blocks[3], ContentBlock::ToolUse { name, .. } if name == "check_time"));
         assert!(matches!(&blocks[4], ContentBlock::ToolResult { .. }));
@@ -371,7 +376,7 @@ mod tests {
     fn multiple_tools_single_round() {
         let msgs = vec![
             user_msg("u1", "time and save"),
-            assistant_tool_use("a1", vec![("t1", "check_time"), ("t2", "memory")]),
+            assistant_tool_use("a1", vec![("t1", "check_time"), ("t2", "memory_write")]),
             user_tool_results("u2", vec![("t1", "3:22 PM", false), ("t2", "saved", false)]),
             assistant_text("a2", "Done!"),
         ];
@@ -415,7 +420,11 @@ mod tests {
     fn thinking_preserved() {
         let msgs = vec![
             user_msg("u1", "remember me?"),
-            assistant_thinking_and_tool_use("a1", "Let me check memory", vec![("t1", "memory")]),
+            assistant_thinking_and_tool_use(
+                "a1",
+                "Let me search memory",
+                vec![("t1", "memory_search")],
+            ),
             user_tool_results("u2", vec![("t1", "Trevor", false)]),
             assistant_text("a2", "Yes, you're Trevor!"),
         ];
@@ -425,7 +434,7 @@ mod tests {
         let blocks = &merged[1].content_blocks;
         assert_eq!(blocks.len(), 4); // thinking, tool_use, tool_result, text
         assert!(
-            matches!(&blocks[0], ContentBlock::Thinking { thinking, .. } if thinking == "Let me check memory")
+            matches!(&blocks[0], ContentBlock::Thinking { thinking, .. } if thinking == "Let me search memory")
         );
         assert!(matches!(&blocks[1], ContentBlock::ToolUse { .. }));
         assert!(matches!(&blocks[2], ContentBlock::ToolResult { .. }));
@@ -606,7 +615,7 @@ mod tests {
             user_tool_results("u2", vec![("t1", "3:22 PM", false)]),
             assistant_text("a2", "3:22"),
             user_msg("u3", "remember me"),
-            assistant_tool_use("a3", vec![("t2", "memory")]),
+            assistant_tool_use("a3", vec![("t2", "memory_search")]),
             user_tool_results("u4", vec![("t2", "Trevor", false)]),
             assistant_text("a4", "Hi Trevor!"),
         ];

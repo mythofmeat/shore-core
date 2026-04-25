@@ -171,7 +171,7 @@ fn list_models_excludes_tool_models() {
 [chat.anthropic.claude-sonnet]
 model_id = "claude-sonnet-4-20250514"
 
-[tools.openai.collator]
+[tools.openai.extractor]
 model_id = "gpt-4o-mini"
 "#;
     let table: toml::Table = toml_str.parse().unwrap();
@@ -191,7 +191,7 @@ model_id = "gpt-4o-mini"
     );
     assert_eq!(models[0]["name"], "claude-sonnet");
     assert!(
-        models.iter().all(|m| m["name"] != "collator"),
+        models.iter().all(|m| m["name"] != "extractor"),
         "tool model should not appear in list"
     );
 }

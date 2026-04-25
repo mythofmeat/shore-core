@@ -1716,8 +1716,8 @@ mod scenario_tests {
             ServerMessage::ToolCall(ToolCall {
                 rid: None,
                 tool_id: "tc1".into(),
-                tool_name: "memory".into(),
-                input: serde_json::json!({"op": "query"}),
+                tool_name: "memory_search".into(),
+                input: serde_json::json!({"query": "Ren"}),
             }),
         );
 
@@ -1739,7 +1739,7 @@ mod scenario_tests {
             ServerMessage::ToolResult(ToolResult {
                 rid: None,
                 tool_id: "tc1".into(),
-                tool_name: "memory".into(),
+                tool_name: "memory_search".into(),
                 output: "{}".into(),
                 is_error: false,
             }),

@@ -88,17 +88,21 @@ run_test_not_contains() {
 # ── Helpers ───────────────────────────────────────────────────────────
 
 start_daemon() {
-    rm -f "$SOCK"
-    RUST_LOG=warn "$DAEMON" --config "$CONFIG_DIR/config.toml" &
+    DAEMON_ADDR=""
+    RUST_LOG=warn SHORE_RUNTIME_DIR="$RUNTIME_DIR" "$DAEMON" --config "$CONFIG_DIR/config.toml" &
     DAEMON_PID=$!
+
     for i in $(seq 1 50); do
-        [[ -S "$SOCK" ]] && break
+        DAEMON_ADDR="$(_registered_daemon_addr "$INSTANCES" "$DAEMON_PID" 2>/dev/null || true)"
+        [[ -n "$DAEMON_ADDR" ]] && break
         sleep 0.1
     done
-    if [[ ! -S "$SOCK" ]]; then
-        echo "Daemon failed to start (socket not found after 5s)"
+
+    if [[ -z "$DAEMON_ADDR" ]]; then
+        echo "Daemon failed to start (address not registered after 5s)"
         exit 1
     fi
+    CLI="$SHORE --addr $DAEMON_ADDR"
 }
 
 restart_daemon() {
@@ -109,6 +113,25 @@ restart_daemon() {
 
 clear_state() {
     rm -f "$RUNTIME_DIR/active_character"
+}
+
+_registered_daemon_addr() {
+    local registry="$1"
+    local pid="$2"
+    [[ -f "$registry" ]] || return 1
+    REGISTRY="$registry" DAEMON_PID="$pid" python3 - <<'PY'
+import json
+import os
+
+with open(os.environ["REGISTRY"], "r", encoding="utf-8") as f:
+    entries = json.load(f)
+pid = int(os.environ["DAEMON_PID"])
+for entry in entries:
+    if entry.get("pid") == pid and entry.get("addr"):
+        print(entry["addr"])
+        raise SystemExit(0)
+raise SystemExit(1)
+PY
 }
 
 # ── Build ─────────────────────────────────────────────────────────────
@@ -134,13 +157,15 @@ trap cleanup EXIT
 CONFIG_DIR="$TMPDIR/config/shore"
 DATA_DIR="$TMPDIR/data/shore"
 RUNTIME_DIR="$TMPDIR/runtime/shore"
-SOCK="$RUNTIME_DIR/test.sock"
+LISTEN_ADDR="127.0.0.1:0"
+DAEMON_ADDR=""
+INSTANCES="$RUNTIME_DIR/instances.json"
 
 mkdir -p "$CONFIG_DIR/characters/TestChar" "$DATA_DIR" "$RUNTIME_DIR"
 
 cat > "$CONFIG_DIR/config.toml" <<EOF
 [daemon]
-socket_path = "$SOCK"
+addr = "$LISTEN_ADDR"
 EOF
 
 cat > "$CONFIG_DIR/characters/TestChar/character.md" <<'EOF'
@@ -154,9 +179,9 @@ export XDG_RUNTIME_DIR="$TMPDIR/runtime"
 # ── Start daemon (single character — no -c needed) ────────────────────
 printf "${BOLD}Starting daemon...${RESET}\n"
 start_daemon
-printf "${DIM}  daemon pid=$DAEMON_PID socket=$SOCK${RESET}\n\n"
+printf "${DIM}  daemon pid=$DAEMON_PID addr=$DAEMON_ADDR${RESET}\n\n"
 
-CLI="$SHORE --socket $SOCK"
+CLI="$SHORE --addr $DAEMON_ADDR"
 
 # ══════════════════════════════════════════════════════════════════════
 # SECTION 1: CLI basics (empty state, single character)
@@ -303,16 +328,16 @@ fi
 # SECTION 12: Global flags
 # ══════════════════════════════════════════════════════════════════════
 printf "\n${BOLD}Global flags${RESET}\n"
-run_test "no-color flag" $SHORE --socket "$SOCK" --no-color status
-run_test_contains "NO_COLOR env" "TestChar" env NO_COLOR=1 $SHORE --socket "$SOCK" status
-run_test_contains "-c flag selects character" "TestChar" $SHORE --socket "$SOCK" -c TestChar status
+run_test "no-color flag" $SHORE --addr "$DAEMON_ADDR" --no-color status
+run_test_contains "NO_COLOR env" "TestChar" env NO_COLOR=1 $SHORE --addr "$DAEMON_ADDR" status
+run_test_contains "-c flag selects character" "TestChar" $SHORE --addr "$DAEMON_ADDR" -c TestChar status
 
 # ══════════════════════════════════════════════════════════════════════
 # SECTION 13: Error handling
 # ══════════════════════════════════════════════════════════════════════
 printf "\n${BOLD}Error handling${RESET}\n"
-run_test_expect_fail "bad socket path" $SHORE --socket /tmp/nonexistent_shore_test.sock status
-run_test_expect_fail "unknown command" $SHORE --socket "$SOCK" badcommand
+run_test_expect_fail "bad daemon address" $SHORE --addr 127.0.0.1:1 status
+run_test_expect_fail "unknown command" $SHORE --addr "$DAEMON_ADDR" badcommand
 
 # ══════════════════════════════════════════════════════════════════════
 # SECTION 14: Character management (multi-character — tested last)
@@ -329,8 +354,8 @@ run_test "character --new SecondChar" $CLI character SecondChar --new
 restart_daemon
 
 # With two characters, daemon requires explicit selection.
-CLIA="$SHORE --socket $SOCK -c TestChar"
-CLIB="$SHORE --socket $SOCK -c SecondChar"
+CLIA="$SHORE --addr $DAEMON_ADDR -c TestChar"
+CLIB="$SHORE --addr $DAEMON_ADDR -c SecondChar"
 
 run_test_contains "char list includes SecondChar" "SecondChar" $CLIA character
 run_test_contains "switch to SecondChar" "Switched" $CLIA character SecondChar

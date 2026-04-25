@@ -44,22 +44,40 @@ fn make_model(effort: &str) -> ResolvedModel {
     }
 }
 
-// ── Tool definitions (exact production copies) ──────────────────────────
+// ── Tool definitions (production-style copies) ──────────────────────────
 
 fn all_tool_defs() -> Vec<serde_json::Value> {
     vec![
         json!({
-            "name": "memory",
-            "description": "Search or save a memory. Pass a natural language request describing what to search for or what to remember.",
+            "name": "memory_search",
+            "description": "Search memory files for a keyword or phrase.",
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "request": {
+                    "query": {
                         "type": "string",
-                        "description": "Natural language query to search memories, or a statement to save."
+                        "description": "Keyword or phrase to search for."
                     }
                 },
-                "required": ["request"]
+                "required": ["query"]
+            }
+        }),
+        json!({
+            "name": "memory_write",
+            "description": "Write or overwrite a markdown memory file.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Relative path within the memory directory."
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Full markdown content to write."
+                    }
+                },
+                "required": ["path", "content"]
             }
         }),
         json!({
@@ -204,7 +222,7 @@ A topic the user mentioned, a reference you half-remember, something you want to
 understand better.\n\
 - fetch_url: read an actual webpage — an article, a wiki page, documentation for \
 something the user is working on.\n\
-- memory: search your memories for past conversations. Look for patterns, things \
+- memory_search: search your memories for past conversations. Look for patterns, things \
 you might have missed, context you can build on next time you talk.\n\
 \n\
 MAKE THINGS:\n\

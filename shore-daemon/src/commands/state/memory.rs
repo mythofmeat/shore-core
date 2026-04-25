@@ -306,7 +306,7 @@ pub async fn compact(
         CompactionOutcome::Compacted(result) => {
             info!(
                 character = %char_name,
-                entries_created = result.memory_files_written.len(),
+                memory_files_written = result.memory_files_written.len(),
                 message_count = result.message_count,
                 retained_count = result.retained_count,
                 "Compaction complete"
@@ -356,7 +356,7 @@ pub async fn compact(
             Ok(json!({
                 "status": "dry_run",
                 "character": char_name,
-                "would_create_entries": result.would_create_entries,
+                "would_write_files": result.would_write_files,
                 "file_ops_preview": previews,
                 "message_count": result.message_count,
                 "retained_count": result.retained_count,

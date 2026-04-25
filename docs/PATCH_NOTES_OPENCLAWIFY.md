@@ -80,12 +80,14 @@ $XDG_CONFIG_HOME/shore/characters/<Character>/workspace/memory/
 
 The character can inspect and maintain it with:
 
-- `memory`
 - `memory_read`
 - `memory_write`
 - `memory_search`
 - `memory_list`
 - workspace tools using `memory/...`
+
+The CLI and MCP still provide a natural-language memory query surface, but the
+LLM-facing memory tools are the granular markdown operations above.
 
 What to do:
 

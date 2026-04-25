@@ -102,8 +102,7 @@ pub fn build_capabilities_block(config: &CapabilitiesConfig) -> Option<String> {
         "You have a number of tools available to help you during the \
          conversation. You're encouraged to use them freely — reaching for a \
          tool is in-character and enhances the conversation rather than \
-         interrupting it. Each tool's own description covers when it's useful. \
-         Please use your memory tools often."
+         interrupting it. Each tool's own description covers when it's useful."
             .to_string(),
     ];
 

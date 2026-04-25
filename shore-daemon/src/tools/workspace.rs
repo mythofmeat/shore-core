@@ -886,7 +886,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn write_and_read_memories_prefix() {
+    async fn write_and_read_memory_prefix() {
         let tmp = tempfile::tempdir().unwrap();
         let ws = tmp.path().join("workspace");
         let ws_str = ws.to_string_lossy().to_string();

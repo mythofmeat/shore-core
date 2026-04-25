@@ -38,7 +38,7 @@ memory = true
 api_payload_logging = true
 
 [daemon]
-socket_path = "$SOCKET_PATH"
+addr = "$LISTEN_ADDR"
 TOML
 
     local model_toml="$CONFIG_DIR/conf.d/models.toml"
@@ -65,7 +65,7 @@ harness_start
 send_cmd() {
     SHORE_CONFIG_DIR="$CONFIG_DIR" \
     SHORE_DATA_DIR="$DATA_DIR" \
-        "$SHORE_BIN" --socket "$SOCKET_PATH" \
+        "$SHORE_BIN" --addr "$DAEMON_ADDR" \
             --character "$CHARACTER_NAME" \
             debug "$1" 2>>"$LOG_FILE"
 }

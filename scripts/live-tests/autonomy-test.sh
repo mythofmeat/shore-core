@@ -7,12 +7,12 @@
 #
 # What this tests:
 #   1. Daemon starts, sends messages to prime last_request
-#   2. Heartbeat tick fires after min_wake_secs (deadline-based)
+#   2. Heartbeat tick fires after minimum_heartbeat_latency (deadline-based)
 #   3. Status command shows heartbeat_state and effective_interval_secs
 #   4. Heartbeat log shows tick_fired events
 #   5. Cache hits on heartbeat tick LLM calls
 #
-# Uses compressed timescales (min_wake_secs=120) so the test completes
+# Uses compressed timescales (minimum_heartbeat_latency="2m") so the test completes
 # in ~3 minutes. Cache keepalive pings (59min interval) won't fire
 # during this test — that's expected and tested separately.
 #
@@ -38,6 +38,25 @@ fail=0
 
 # Strip ANSI escape codes from log files (belt-and-suspenders).
 strip_ansi() { sed 's/\x1b\[[0-9;]*m//g'; }
+
+registered_daemon_addr() {
+    local registry="$1"
+    local pid="$2"
+    [[ -f "$registry" ]] || return 1
+    REGISTRY="$registry" DAEMON_PID="$pid" python3 - <<'PY'
+import json
+import os
+
+with open(os.environ["REGISTRY"], "r", encoding="utf-8") as f:
+    entries = json.load(f)
+pid = int(os.environ["DAEMON_PID"])
+for entry in entries:
+    if entry.get("pid") == pid and entry.get("addr"):
+        print(entry["addr"])
+        raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
 
 run_check() {
     local name="$1"
@@ -104,7 +123,9 @@ trap cleanup EXIT
 CONFIG_DIR="$TMPDIR/config/shore"
 DATA_DIR="$TMPDIR/data/shore"
 RUNTIME_DIR="$TMPDIR/runtime/shore"
-SOCK="$RUNTIME_DIR/test.sock"
+LISTEN_ADDR="127.0.0.1:0"
+DAEMON_ADDR=""
+INSTANCES="$RUNTIME_DIR/instances.json"
 
 mkdir -p "$CONFIG_DIR/characters/TestChar" "$DATA_DIR" "$RUNTIME_DIR"
 
@@ -112,8 +133,9 @@ mkdir -p "$CONFIG_DIR/characters/TestChar" "$DATA_DIR" "$RUNTIME_DIR"
 # Mirrors production config structure with compressed timescales.
 #
 # The heartbeat system is deadline-based: after user messages,
-# next_wake_at = max(existing, now + min_wake_secs). We set min_wake_secs
-# and interval_secs both to 120s so the first tick fires ~2min after
+# next_wake_at = max(existing, now + minimum_heartbeat_latency). We set
+# minimum_heartbeat_latency and fallback_heartbeat_interval both to 120s
+# so the first tick fires ~2min after
 # priming messages. Cache keepalive is on a fixed 59min cycle and won't
 # fire during this test — that's expected.
 #
@@ -126,7 +148,7 @@ mkdir -p "$CONFIG_DIR/characters/TestChar" "$DATA_DIR" "$RUNTIME_DIR"
 
 cat > "$CONFIG_DIR/config.toml" <<EOF
 [daemon]
-socket_path = "$SOCK"
+addr = "$LISTEN_ADDR"
 
 [defaults]
 model = "haiku"
@@ -136,10 +158,12 @@ display_name = "tester"
 enabled = true
 
 [behavior.autonomy.heartbeat]
-enabled       = true
-interval_secs = 120
-min_wake_secs = 120
-max_idle_ticks = 2
+enabled = true
+fallback_heartbeat_interval = "2m"
+minimum_heartbeat_latency = "2m"
+dormant_after_heartbeat_turns = 2
+dormant_after_idle_time = "48h"
+max_tool_rounds = 1
 
 [behavior.tool_use]
 enabled = true
@@ -255,21 +279,22 @@ export XDG_RUNTIME_DIR="$TMPDIR/runtime"
 
 # ── Start daemon ──────────────────────────────────────────────────────
 printf "${BOLD}Starting daemon...${RESET}\n"
-NO_COLOR=1 RUST_LOG=info "$DAEMON" --config "$CONFIG_DIR/config.toml" > "$LOG_FILE" 2>&1 &
+NO_COLOR=1 SHORE_RUNTIME_DIR="$RUNTIME_DIR" RUST_LOG=info "$DAEMON" --config "$CONFIG_DIR/config.toml" > "$LOG_FILE" 2>&1 &
 DAEMON_PID=$!
 
 for i in $(seq 1 50); do
-    [[ -S "$SOCK" ]] && break
+    DAEMON_ADDR="$(registered_daemon_addr "$INSTANCES" "$DAEMON_PID" 2>/dev/null || true)"
+    [[ -n "$DAEMON_ADDR" ]] && break
     sleep 0.1
 done
-if [[ ! -S "$SOCK" ]]; then
-    echo "Daemon failed to start (socket not found after 5s)"
+if [[ -z "$DAEMON_ADDR" ]]; then
+    echo "Daemon failed to start (address not registered after 5s)"
     cat "$LOG_FILE"
     exit 1
 fi
-printf "${DIM}  daemon pid=$DAEMON_PID${RESET}\n\n"
+printf "${DIM}  daemon pid=$DAEMON_PID addr=$DAEMON_ADDR${RESET}\n\n"
 
-CLI="$SHORE --socket $SOCK"
+CLI="$SHORE --addr $DAEMON_ADDR"
 
 # ══════════════════════════════════════════════════════════════════════
 # PHASE 1: Prime the conversation (populates last_request)
@@ -327,7 +352,7 @@ run_check "no cache_keepalive fields in status" \
 # ══════════════════════════════════════════════════════════════════════
 printf "\n${BOLD}Phase 3: Wait for heartbeat tick (~2.5 min)${RESET}\n"
 
-# With min_wake_secs=120, the tick fires ~120s after the last user
+# With minimum_heartbeat_latency="2m", the tick fires ~120s after the last user
 # message. We wait 150s to be safe.
 # Note: cache keepalive pings fire at 59min intervals and won't appear
 # during this compressed-timescale test.

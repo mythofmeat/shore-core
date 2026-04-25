@@ -43,11 +43,14 @@ mkdir -p "$LOG_DIR"
 TEST_DIR="$(mktemp -d "/tmp/shore-keepalive-24h-XXXXXX")"
 CONFIG_DIR="$TEST_DIR/config"
 DATA_DIR="$TEST_DIR/data"
+RUNTIME_DIR="$TEST_DIR/runtime"
 CHAR_DIR="$CONFIG_DIR/characters/$CHARACTER_NAME"
-SOCKET_PATH="$TEST_DIR/shore.sock"
+LISTEN_ADDR="127.0.0.1:0"
+DAEMON_ADDR=""
+INSTANCES="$RUNTIME_DIR/instances.json"
 NONCE="$(head -c 24 /dev/urandom | base64 | tr -d '/+=' | head -c 32)"
 
-mkdir -p "$CONFIG_DIR/conf.d" "$DATA_DIR/$CHARACTER_NAME/memory" "$CHAR_DIR"
+mkdir -p "$CONFIG_DIR/conf.d" "$DATA_DIR/$CHARACTER_NAME/memory" "$RUNTIME_DIR" "$CHAR_DIR"
 
 # Copy .env from real config.
 REAL_CONFIG="${SHORE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/shore}"
@@ -63,6 +66,25 @@ log "dir: $TEST_DIR"
 log "logs: $LOG_DIR"
 log "nonce: $NONCE"
 log "duration: ${DURATION_HOURS}h"
+
+registered_daemon_addr() {
+    local registry="$1"
+    local pid="$2"
+    [[ -f "$registry" ]] || return 1
+    REGISTRY="$registry" DAEMON_PID="$pid" python3 - <<'PY'
+import json
+import os
+
+with open(os.environ["REGISTRY"], "r", encoding="utf-8") as f:
+    entries = json.load(f)
+pid = int(os.environ["DAEMON_PID"])
+for entry in entries:
+    if entry.get("pid") == pid and entry.get("addr"):
+        print(entry["addr"])
+        raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
 
 # ── Write config ───────────────────────────────────────────────────
 cat > "$CONFIG_DIR/config.toml" << TOML
@@ -88,7 +110,7 @@ memory = false
 api_payload_logging = true
 
 [daemon]
-socket_path = "$SOCKET_PATH"
+addr = "$LISTEN_ADDR"
 TOML
 
 cat > "$CONFIG_DIR/conf.d/models.toml" << TOML
@@ -166,23 +188,26 @@ cargo build --bin shore --bin shore-daemon \
 log "Starting daemon..."
 SHORE_CONFIG_DIR="$CONFIG_DIR" \
 SHORE_DATA_DIR="$DATA_DIR" \
+SHORE_RUNTIME_DIR="$RUNTIME_DIR" \
 RUST_LOG=info,shore_daemon::autonomy=debug,shore_llm_client::providers::anthropic=debug \
     "$DAEMON_BIN" > "$DAEMON_LOG" 2>&1 &
 DAEMON_PID=$!
 
-# Wait for socket.
+# Wait for the daemon to publish its resolved TCP address.
 tries=0
-while [[ ! -S "$SOCKET_PATH" && $tries -lt 30 ]]; do
+while [[ $tries -lt 30 ]]; do
+    DAEMON_ADDR="$(registered_daemon_addr "$INSTANCES" "$DAEMON_PID" 2>/dev/null || true)"
+    [[ -n "$DAEMON_ADDR" ]] && break
     sleep 0.5
     tries=$((tries + 1))
 done
 
-if [[ ! -S "$SOCKET_PATH" ]]; then
+if [[ -z "$DAEMON_ADDR" ]]; then
     log "${RED}Daemon failed to start${NC}"
     tail -20 "$DAEMON_LOG" >> "$LOG_FILE"
     exit 1
 fi
-log "Daemon running (PID $DAEMON_PID)"
+log "Daemon running (PID $DAEMON_PID, addr $DAEMON_ADDR)"
 
 # ── Cleanup trap ───────────────────────────────────────────────────
 cleanup() {
@@ -212,7 +237,7 @@ send_and_log() {
     local output
     output=$(SHORE_CONFIG_DIR="$CONFIG_DIR" \
              SHORE_DATA_DIR="$DATA_DIR" \
-             "$SHORE_BIN" --socket "$SOCKET_PATH" \
+             "$SHORE_BIN" --addr "$DAEMON_ADDR" \
                  --character "$CHARACTER_NAME" \
                  send "$msg" 2>>"$DAEMON_LOG")
     echo "$output" | head -5 >> "$LOG_FILE"
