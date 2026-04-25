@@ -18,8 +18,8 @@ const TIME_GAP_THRESHOLD_SECS: f64 = 1800.0; // 30 minutes
 
 /// Built-in system prompt template used when no override is found on disk.
 ///
-/// This is intentionally minimal — character/user definitions, capabilities,
-/// and recent-memory digest are injected as separate system blocks by
+/// This is intentionally minimal — character/user definitions, TOOLS.md, and
+/// recent-memory digest are injected as separate system blocks by
 /// `assemble_prompt`.
 const BUILTIN_SYSTEM_TEMPLATE: &str = "\
 You are {{char}}, in conversation with {{user}}.
@@ -54,76 +54,6 @@ pub struct AssembledPrompt {
 }
 
 // ---------------------------------------------------------------------------
-// Capabilities config
-// ---------------------------------------------------------------------------
-
-/// Flat boolean config for building the capabilities system block.
-///
-/// Extracted from `AppConfig` at the call site to avoid dragging the full
-/// config tree into prompt assembly.
-#[derive(Debug, Clone, Default)]
-pub struct CapabilitiesConfig {
-    pub heartbeat_enabled: bool,
-    pub scratchpad_enabled: bool,
-    pub memory_enabled: bool,
-    pub send_image_enabled: bool,
-    pub generate_image_enabled: bool,
-    pub web_search_enabled: bool,
-}
-
-impl CapabilitiesConfig {
-    pub fn any_enabled(&self) -> bool {
-        self.heartbeat_enabled
-            || self.scratchpad_enabled
-            || self.memory_enabled
-            || self.send_image_enabled
-            || self.generate_image_enabled
-            || self.web_search_enabled
-    }
-}
-
-/// Build a "Tool usage" system block — a short, always-identical stance that
-/// reaches the model whenever any tool is enabled.
-///
-/// Returns `None` when no capabilities are enabled. Per-tool when/why guidance
-/// lives in each tool's own `description` field (see Anthropic's tool-use docs
-/// on detailed descriptions — that's where the model's selection signal comes
-/// from). This block exists only to assert that reaching for a tool is
-/// in-character and in-scope, since a character-framed system prompt otherwise
-/// risks Claude treating tool calls as breaking frame.
-pub fn build_capabilities_block(config: &CapabilitiesConfig) -> Option<String> {
-    if !config.any_enabled() {
-        return None;
-    }
-
-    let mut parts = vec![
-        "**Tool usage**".to_string(),
-        String::new(),
-        "You have a number of tools available to help you during the \
-         conversation. You're encouraged to use them freely — reaching for a \
-         tool is in-character and enhances the conversation rather than \
-         interrupting it. Each tool's own description covers when it's useful."
-            .to_string(),
-    ];
-
-    if config.memory_enabled {
-        parts.push(String::new());
-        parts.push(
-            "**Memory retrieval**\n\
-             \n\
-             Before making a factual claim about {{user}} or past conversations, \
-             search your memories with `memory_search` or `memory_read`. \
-             Do not guess facts you could verify. If `memory_search` returns \
-             a relevant file, call `memory_read` to get the full content \
-             before answering."
-                .to_string(),
-        );
-    }
-
-    Some(parts.join("\n"))
-}
-
-// ---------------------------------------------------------------------------
 // Prompt parameters
 // ---------------------------------------------------------------------------
 
@@ -151,9 +81,6 @@ pub struct PromptParams<'a> {
     pub max_context_tokens: Option<u32>,
     /// Maximum output tokens (reserved for response). `None` uses default.
     pub max_output_tokens: Option<u32>,
-    /// Capabilities config for building the tool-description system block.
-    /// `None` means no capabilities block is emitted.
-    pub capabilities: Option<&'a CapabilitiesConfig>,
 }
 
 // ---------------------------------------------------------------------------
@@ -165,10 +92,9 @@ pub struct PromptParams<'a> {
 /// Produces multiple system blocks matching V1's structure:
 /// 1. Rendered AGENTS.md template (or built-in default)
 /// 2. TOOLS.md guidance (if present)
-/// 3. `<capabilities>` block (if tools enabled)
-/// 4. `<{char}>` character definition (if present)
-/// 5. `<{user}>` user definition (if present)
-/// 6. `<recent_memory>` block (if present, not private)
+/// 3. `<{char}>` character definition (if present)
+/// 4. `<{user}>` user definition (if present)
+/// 5. `<recent_memory>` block (if present, not private)
 ///
 /// Then trims conversation history to fit the token budget.
 pub fn assemble_prompt(params: &PromptParams<'_>) -> AssembledPrompt {
@@ -217,20 +143,7 @@ pub fn assemble_prompt(params: &PromptParams<'_>) -> AssembledPrompt {
         });
     }
 
-    // Block 3: capabilities (if any tools enabled).
-    // Rendered through the same template pipeline as the main system block
-    // so {{char}}, {{user}}, {{date}}, {{time}} resolve inside capability
-    // bullets. Keep the bullets date/time-free to preserve cache stability.
-    if let Some(caps) = params.capabilities {
-        if let Some(block) = build_capabilities_block(caps) {
-            system.push(SystemBlock {
-                label: "capabilities".into(),
-                content: render_template(&block, &vars),
-            });
-        }
-    }
-
-    // Block 4: character definition.
+    // Block 3: character definition.
     if let Some(char_def) = params.character_definition.filter(|s| !s.is_empty()) {
         let tag = xml_tag_from_name(params.character_name, "character");
         system.push(SystemBlock {
@@ -239,7 +152,7 @@ pub fn assemble_prompt(params: &PromptParams<'_>) -> AssembledPrompt {
         });
     }
 
-    // Block 5: user definition.
+    // Block 4: user definition.
     if let Some(user_def) = params.user_definition.filter(|s| !s.is_empty()) {
         let tag = xml_tag_from_name(params.display_name, "user");
         system.push(SystemBlock {
@@ -248,7 +161,7 @@ pub fn assemble_prompt(params: &PromptParams<'_>) -> AssembledPrompt {
         });
     }
 
-    // Block 6: recent memory digest (suppressed for private conversations).
+    // Block 5: recent memory digest (suppressed for private conversations).
     if !params.is_private {
         if let Some(digest) = params.recent_memory_digest.filter(|s| !s.is_empty()) {
             system.push(SystemBlock {
@@ -265,7 +178,6 @@ pub fn assemble_prompt(params: &PromptParams<'_>) -> AssembledPrompt {
 
     debug!(
         system_blocks = system.len(),
-        has_capabilities = params.capabilities.is_some(),
         has_char_def = params
             .character_definition
             .filter(|s| !s.is_empty())
@@ -602,7 +514,6 @@ mod tests {
             messages,
             max_context_tokens: None,
             max_output_tokens: None,
-            capabilities: None,
         }
     }
 
@@ -688,49 +599,6 @@ mod tests {
     #[test]
     fn xml_tag_from_name_collapses_underscores() {
         assert_eq!(xml_tag_from_name("a - b", "x"), "a_b");
-    }
-
-    // ── Capabilities block ────────────────────────────────────────────
-
-    #[test]
-    fn capabilities_block_none_when_empty() {
-        let config = CapabilitiesConfig::default();
-        assert!(build_capabilities_block(&config).is_none());
-    }
-
-    #[test]
-    fn capabilities_block_is_stance_only_when_any_enabled() {
-        let config = CapabilitiesConfig {
-            memory_enabled: true,
-            ..Default::default()
-        };
-        let block = build_capabilities_block(&config).unwrap();
-        assert!(block.starts_with("**Tool usage**"));
-        assert!(block.contains("in-character"));
-        assert!(block.contains("Each tool's own description"));
-        // The block is a fixed stance — per-tool guidance lives in tool descriptions.
-        assert!(!block.contains("<capabilities>"));
-        assert!(!block.contains("### Memory database"));
-    }
-
-    #[test]
-    fn capabilities_block_is_identical_for_any_nonempty_config() {
-        // The block content is not per-tool; enabling any flag yields the same text.
-        let only_memory = build_capabilities_block(&CapabilitiesConfig {
-            memory_enabled: true,
-            ..Default::default()
-        })
-        .unwrap();
-        let all_flags = build_capabilities_block(&CapabilitiesConfig {
-            heartbeat_enabled: true,
-            scratchpad_enabled: true,
-            memory_enabled: true,
-            send_image_enabled: true,
-            generate_image_enabled: true,
-            web_search_enabled: true,
-        })
-        .unwrap();
-        assert_eq!(only_memory, all_flags);
     }
 
     // ── Token estimation ──────────────────────────────────────────────
@@ -1107,7 +975,6 @@ mod tests {
             messages: &messages,
             max_context_tokens: Some(200_000),
             max_output_tokens: Some(4096),
-            capabilities: None,
         };
 
         let result = assemble_prompt(&params);
@@ -1147,38 +1014,6 @@ mod tests {
         let result = assemble_prompt(&params);
         // {{character_name}} should be substituted (backward compat).
         assert_eq!(result.system[0].content, "Custom prompt for TestChar.");
-    }
-
-    #[test]
-    fn assemble_prompt_substitutes_vars_in_capabilities_block() {
-        // Regression guard: the capabilities block goes through render_template
-        // like the main system block, so any future {{char}} / {{user}} usage
-        // in the stance text must resolve. Today the stance has no placeholders,
-        // so this is a forward-compat check.
-        let caps = CapabilitiesConfig {
-            memory_enabled: true,
-            ..Default::default()
-        };
-        let params = PromptParams {
-            display_name: "Sam",
-            character_name: "Ada",
-            capabilities: Some(&caps),
-            ..make_params(&[])
-        };
-        let result = assemble_prompt(&params);
-        let caps_block = result
-            .system
-            .iter()
-            .find(|b| b.label == "capabilities")
-            .expect("capabilities block present");
-        assert!(
-            !caps_block.content.contains("{{user}}"),
-            "{{{{user}}}} must be substituted"
-        );
-        assert!(
-            !caps_block.content.contains("{{char}}"),
-            "{{{{char}}}} must be substituted"
-        );
     }
 
     #[test]
@@ -1226,47 +1061,23 @@ mod tests {
     }
 
     #[test]
-    fn assemble_prompt_with_capabilities() {
-        let caps = CapabilitiesConfig {
-            memory_enabled: true,
-            ..Default::default()
-        };
-        let params = PromptParams {
-            capabilities: Some(&caps),
-            ..make_params(&[])
-        };
-
-        let result = assemble_prompt(&params);
-        let cap_block = result.system.iter().find(|b| b.label == "capabilities");
-        assert!(cap_block.is_some());
-        assert!(cap_block.unwrap().content.starts_with("**Tool usage**"));
-    }
-
-    #[test]
     fn assemble_prompt_multi_block_count() {
-        let caps = CapabilitiesConfig {
-            web_search_enabled: true,
-            ..Default::default()
-        };
-
         let params = PromptParams {
             tools_guidance: Some("Use tools carefully."),
             character_definition: Some("A character."),
             user_definition: Some("A user."),
             recent_memory_digest: Some("Digest"),
-            capabilities: Some(&caps),
             ..make_params(&[])
         };
 
         let result = assemble_prompt(&params);
-        // Should have: system, tools_guidance, capabilities, character, user, recent_memory = 6 blocks.
-        assert_eq!(result.system.len(), 6);
+        // Should have: system, tools_guidance, character, user, recent_memory = 5 blocks.
+        assert_eq!(result.system.len(), 5);
         assert_eq!(result.system[0].label, "system");
         assert_eq!(result.system[1].label, "tools_guidance");
-        assert_eq!(result.system[2].label, "capabilities");
-        assert_eq!(result.system[3].label, "character");
-        assert_eq!(result.system[4].label, "user");
-        assert_eq!(result.system[5].label, "recent_memory");
+        assert_eq!(result.system[2].label, "character");
+        assert_eq!(result.system[3].label, "user");
+        assert_eq!(result.system[4].label, "recent_memory");
     }
 
     // ── Private conversation suppression ──────────────────────────────
