@@ -12,7 +12,7 @@ For the current branch notes, read [OpenClawify Patch Notes](docs/PATCH_NOTES_OP
 - **Markdown memory.** Long-term memory lives under each character's `workspace/memory/` as ordinary files.
 - **Cache-safe prompt edits.** Character self-edits to protected prompt files are staged and only activate at compaction/reload boundaries.
 - **Heartbeat autonomy.** Characters can use private heartbeat ticks to reflect, maintain memory, use tools, schedule the next wake, and optionally send a message.
-- **Tool-rich conversations.** Characters can search memory, read/write workspace files, use web search, generate/send images, inspect activity, roll dice, check time, and use a scratchpad.
+- **Tool-rich conversations.** Characters can search workspace and memory files, search conversation history, read/write workspace files, use web search, generate images, inspect activity, roll dice, and check time.
 - **Budget awareness.** Usage and cost are recorded in a SQLite ledger; Anthropic prompt-cache behavior is tracked closely.
 
 ## Prerequisites

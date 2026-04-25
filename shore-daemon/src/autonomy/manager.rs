@@ -1067,8 +1067,8 @@ fn build_heartbeat_prompt(user_name: &str, default_interval: &str) -> String {
     format!(
         "\
 [This is a private heartbeat turn governed by the active HEARTBEAT.md content above. \
-You have real tools and can search or write markdown memories, use your scratchpad, \
-check the web, generate images, and schedule the next wake.
+You have real tools and can search or write workspace and memory files, search \
+your conversation history, check the web, generate images, and schedule the next wake.
 
 In addition, you can:
 
@@ -1087,9 +1087,9 @@ to {user_name}.
 
 Thoughts, tool-use results, and any text in your response that is not part \
 of `<sendMessage>` tags are private and ephemeral. If you want to carry \
-something forward, write it down with a memory or workspace tool.
+something forward, write it down with a workspace tool.
 
-Changes you make to markdown memory files or to your scratchpad will persist. \
+Changes you make to workspace files, including files under memory/, will persist. \
 If nothing needs doing right now, respond with HEARTBEAT_OK and stop.]"
     )
 }
@@ -1103,17 +1103,22 @@ fn load_heartbeat_instructions(character_data_dir: &Path) -> String {
         .unwrap_or_else(|| default_heartbeat_instructions().to_string())
 }
 
+fn history_is_between_turns(messages: &[Message]) -> bool {
+    matches!(messages.last().map(|m| &m.role), Some(Role::Assistant))
+}
+
 /// Rebuild an `LlmRequest` from the compacted conversation on disk.
 ///
 /// Called when `last_request` is `None` (e.g. after compaction invalidated it).
-/// Returns `None` if there are no messages or the model can't be resolved.
+/// Returns `None` if there are no messages, the conversation is mid-turn, or
+/// the model can't be resolved.
 fn rebuild_request_from_disk(
     character: &str,
     data_dir: &Path,
     config: &LoadedConfig,
 ) -> Option<LlmRequest> {
     use crate::engine::messages::MessageStore;
-    use crate::engine::prompt::{self, CapabilitiesConfig, PromptParams};
+    use crate::engine::prompt::{self, PromptParams};
 
     let char_dir = data_dir.join(character);
     let active_path = char_dir.join("active.jsonl");
@@ -1122,6 +1127,13 @@ fn rebuild_request_from_disk(
         .map_err(|e| warn!(character, error = %e, "Heartbeat rebuild: failed to load messages"))
         .ok()?;
     if store.messages().is_empty() {
+        return None;
+    }
+    if !history_is_between_turns(store.messages()) {
+        info!(
+            character,
+            "Heartbeat rebuild: skipping tick because conversation is mid-turn"
+        );
         return None;
     }
 
@@ -1164,15 +1176,6 @@ fn rebuild_request_from_disk(
     );
 
     let tool_toggles = &config.app.behavior.tool_use.tools;
-    let capabilities = CapabilitiesConfig {
-        heartbeat_enabled: config.app.behavior.autonomy.heartbeat.enabled,
-        scratchpad_enabled: tool_toggles.scratchpad_read() || tool_toggles.scratchpad_write(),
-        memory_enabled: tool_toggles.memory(),
-        send_image_enabled: tool_toggles.send_image(),
-        generate_image_enabled: tool_toggles.generate_image(),
-        web_search_enabled: tool_toggles.web_search(),
-    };
-
     let prompt_result = prompt::assemble_prompt(&PromptParams {
         character_name: character,
         display_name: &display_name,
@@ -1185,7 +1188,6 @@ fn rebuild_request_from_disk(
         messages: store.messages(),
         max_context_tokens: resolved.max_context_tokens,
         max_output_tokens: resolved.max_tokens,
-        capabilities: Some(&capabilities),
     });
 
     let cache_dir = &config.dirs.cache;
@@ -1374,10 +1376,10 @@ async fn execute_heartbeat_tick(
         .messages
         .push(json!({"role": "system", "content": heartbeat_prompt}));
 
-    // NOTE: set_next_wake is now in the base tool set (tools/basic.rs)
-    // so the tools array is identical between normal messages and heartbeat
-    // ticks. This prevents cache prefix invalidation. Instructions for using
-    // set_next_wake are in the heartbeat prompt, not the capabilities block.
+    // NOTE: set_next_wake is in the base tool set (tools/basic.rs), so the
+    // tools array is identical between normal messages and heartbeat ticks.
+    // This prevents cache prefix invalidation. Instructions for using
+    // set_next_wake are in the heartbeat prompt.
 
     let tool_ctx = match build_tool_context(character, data_dir, client, lc).await {
         Some(ctx) => ctx,
@@ -1639,7 +1641,7 @@ async fn execute_heartbeat_tick(
 ///
 /// Uses the same ingredients as the handler (LlmClient, LoadedConfig, data_dir)
 /// but resolves models with heartbeat-specific fallbacks. All tools work —
-/// memory, images, web, scratchpad. The only gap is AutonomyManager (the
+/// workspace/memory files, images, and web. The only gap is AutonomyManager (the
 /// heatmap tool degrades gracefully via the trait default).
 async fn build_tool_context(
     character: &str,
@@ -1672,7 +1674,6 @@ async fn build_tool_context(
         image_gen_config_val: image_gen_config,
         search_config_val: config.app.behavior.tool_use.search.clone(),
         character_name_val: character.to_string(),
-        scratchpad_dir_val: char_dir.join("scratchpad").to_string_lossy().into_owned(),
         workspace_dir_val: character_workspace_dir(&config.dirs.config, character)
             .to_string_lossy()
             .into_owned(),
@@ -1801,6 +1802,21 @@ mod tests {
         AutonomyConfig::default()
     }
 
+    fn test_message(role: Role) -> Message {
+        Message {
+            msg_id: format!("m_{}", uuid::Uuid::new_v4()),
+            role,
+            content: "hello".into(),
+            images: vec![],
+            content_blocks: vec![ContentBlock::Text {
+                text: "hello".into(),
+            }],
+            alt_index: None,
+            alt_count: None,
+            timestamp: chrono::Local::now().to_rfc3339(),
+        }
+    }
+
     fn test_manager(data_dir: &Path) -> AutonomyManager {
         let (_tx, rx) = tokio::sync::watch::channel(());
         AutonomyManager::new(
@@ -1809,6 +1825,16 @@ mod tests {
             data_dir.to_path_buf(),
             rx,
         )
+    }
+
+    #[test]
+    fn history_between_turns_only_after_assistant_message() {
+        assert!(!history_is_between_turns(&[]));
+        assert!(!history_is_between_turns(&[test_message(Role::User)]));
+        assert!(history_is_between_turns(&[
+            test_message(Role::User),
+            test_message(Role::Assistant)
+        ]));
     }
 
     // -- ensure_state ---------------------------------------------------------
@@ -2359,15 +2385,15 @@ mod tests {
     /// ENTIRE cache prefix — system AND messages.  Every heartbeat tick
     /// with a different tools array pays full input price (20× expected).
     ///
-    /// The fix is to handle `set_next_wake` via an XML tag in the response
-    /// (like `<sendMessage>` and `<recap>` already work), not as a tool.
+    /// The fix is to keep `set_next_wake` in the normal tool list and
+    /// intercept it during heartbeat execution.
     #[test]
     fn heartbeat_must_not_mutate_tools_array() {
         // Simulate what execute_heartbeat_tick does: clone last_request,
         // then check if tools are modified.
         let original_tools: Vec<serde_json::Value> = vec![
             json!({"name": "check_time", "input_schema": {}}),
-            json!({"name": "memory_search", "input_schema": {}}),
+            json!({"name": "search_history", "input_schema": {}}),
         ];
 
         let request = LlmRequest {

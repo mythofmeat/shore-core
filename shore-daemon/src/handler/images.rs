@@ -15,7 +15,7 @@ use tracing::{info, warn};
 pub(crate) fn format_image_annotation(rel_path: &str) -> String {
     format!(
         "[Attached image saved as: {rel_path}]\n\
-         If you want to reference this image again later, use the saved path above with `send_image`."
+         If you want to reference this image again later, use the saved path above."
     )
 }
 

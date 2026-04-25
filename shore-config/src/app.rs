@@ -315,15 +315,6 @@ impl ToolToggles {
     pub fn memory_write(&self) -> bool {
         self.is_enabled("memory_write")
     }
-    pub fn memory_search(&self) -> bool {
-        self.is_enabled("memory_search")
-    }
-    pub fn memory_list(&self) -> bool {
-        self.is_enabled("memory_list")
-    }
-    pub fn send_image(&self) -> bool {
-        self.is_enabled("send_image")
-    }
     pub fn generate_image(&self) -> bool {
         self.is_enabled("generate_image")
     }
@@ -342,24 +333,17 @@ impl ToolToggles {
     pub fn activity_heatmap(&self) -> bool {
         self.is_enabled("activity_heatmap")
     }
-    pub fn scratchpad_list(&self) -> bool {
-        self.is_enabled("scratchpad_list")
-    }
-    pub fn scratchpad_read(&self) -> bool {
-        self.is_enabled("scratchpad_read")
-    }
-    pub fn scratchpad_write(&self) -> bool {
-        self.is_enabled("scratchpad_write")
-    }
-    pub fn scratchpad_delete(&self) -> bool {
-        self.is_enabled("scratchpad_delete")
-    }
 }
 
 fn is_memory_tool_name(name: &str) -> bool {
     matches!(
         name,
-        "memory" | "memory_read" | "memory_write" | "memory_search" | "memory_list"
+        "memory"
+            | "memory_read"
+            | "memory_write"
+            | "memory_search"
+            | "memory_list"
+            | "search_history"
     )
 }
 
@@ -1213,14 +1197,15 @@ homeserver = "https://matrix.example.com"
         assert!(!toggles.memory());
         assert!(!toggles.memory_read());
         assert!(!toggles.memory_write());
-        assert!(!toggles.memory_search());
-        assert!(!toggles.memory_list());
         assert!(!toggles.is_enabled("memory_search"));
+        assert!(!toggles.is_enabled("memory_list"));
+        assert!(!toggles.is_enabled("search_history"));
 
         // Re-enable.
         toggles.set("memory", true);
         assert!(toggles.memory());
         assert!(toggles.is_enabled("memory_search"));
+        assert!(toggles.is_enabled("search_history"));
     }
 
     #[test]
@@ -1228,12 +1213,12 @@ homeserver = "https://matrix.example.com"
         let mut toggles = ToolToggles::default();
         toggles.set("memory_search", false);
         assert!(toggles.memory());
-        assert!(!toggles.memory_search());
+        assert!(!toggles.is_enabled("memory_search"));
         assert!(toggles.memory_read());
 
         toggles.set("memory_search", true);
         toggles.set("memory", false);
-        assert!(!toggles.memory_search());
+        assert!(!toggles.is_enabled("memory_search"));
     }
 
     #[test]

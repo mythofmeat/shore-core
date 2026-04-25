@@ -9,7 +9,7 @@ use shore_protocol::types::{ContentBlock, Message, Role};
 use tracing::{debug, info, instrument};
 
 use crate::autonomy::parse_cache_ttl_secs;
-use crate::engine::prompt::{self, CapabilitiesConfig, PromptParams};
+use crate::engine::prompt::{self, PromptParams};
 use crate::handler::generation::{
     run_tool_phase, stream_with_retry, thinking_enabled_from_request,
 };
@@ -204,16 +204,6 @@ pub(super) async fn handle_generation(
         crate::memory::deferred_edits::RECENT_MEMORY_DIGEST_FILE,
     );
     let display_name = effective_config.app.defaults.resolve_display_name();
-    let tool_toggles = &effective_config.app.behavior.tool_use.tools;
-    let capabilities = CapabilitiesConfig {
-        heartbeat_enabled: effective_config.app.behavior.autonomy.heartbeat.enabled,
-        scratchpad_enabled: tool_toggles.scratchpad_read() || tool_toggles.scratchpad_write(),
-        memory_enabled: tool_toggles.memory(),
-        send_image_enabled: tool_toggles.send_image(),
-        generate_image_enabled: tool_toggles.generate_image(),
-        web_search_enabled: tool_toggles.web_search(),
-    };
-
     let prompt_result = prompt::assemble_prompt(&PromptParams {
         character_name: &char_name,
         display_name: &display_name,
@@ -226,7 +216,6 @@ pub(super) async fn handle_generation(
         messages: &messages,
         max_context_tokens: resolved.max_context_tokens,
         max_output_tokens: resolved.max_tokens,
-        capabilities: Some(&capabilities),
     });
 
     let cache_dir = &effective_config.dirs.cache;
