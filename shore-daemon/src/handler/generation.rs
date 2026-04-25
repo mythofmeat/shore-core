@@ -231,10 +231,6 @@ pub(super) async fn run_tool_phase(
             image_gen_config_val: image_gen_config,
             search_config_val: effective_config.app.behavior.tool_use.search.clone(),
             character_name_val: char_name.to_owned(),
-            scratchpad_dir_val: character_data_dir
-                .join("scratchpad")
-                .to_string_lossy()
-                .into_owned(),
             workspace_dir_val: workspace_dir.to_string_lossy().into_owned(),
             markdown_store_val: MarkdownMemoryStore::open_sync(memory_dir).ok(),
             memory_retrieval_config_val: effective_config.app.memory.retrieval.clone(),

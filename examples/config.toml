@@ -56,26 +56,21 @@ model = "claude-sonnet"            # Must match a key in [chat.*.*] below
 
 # Per-tool toggles — all enabled by default; set to false to disable.
 # [behavior.tool_use.tools]
-# memory = true
-# memory_read = true
-# memory_write = true
-# memory_search = true
-# memory_list = true
-# send_image = true
+# memory = true              # Enables memory/... workspace access and history search
+# memory_read = true         # Allows read/list/search of memory/... and search_history
+# memory_write = true        # Allows write/edit of memory/... files
 # generate_image = true
 # web_search = true
 # fetch_url = true
 # check_time = true
 # roll_dice = true
 # activity_heatmap = true
-# scratchpad_list = true     # Browse character's persistent scratchpad filesystem
-# scratchpad_read = true     # Read a scratchpad file
-# scratchpad_write = true    # Write a scratchpad file
-# scratchpad_delete = true   # Delete a scratchpad file
 # read = true                # Read workspace files; memory=false blocks memory/... access
 # write = true               # Write workspace files; protected character files defer to compaction
 # edit = true                # Edit workspace files
 # list_files = true          # List workspace files
+# search = true              # Search workspace files; memory=false hides memory/... results
+# search_history = true      # Search compacted and active conversation history
 # exec = true                # Allowlisted, argument-sandboxed workspace commands;
 #                            # hidden when memory read/write is disabled or private
 
@@ -100,9 +95,9 @@ model = "claude-sonnet"            # Must match a key in [chat.*.*] below
 #                            # Opus 4.7 (cost-curve elbow). 0 disables entirely.
 # keep_recent_turns = 2      # User turns to retain verbatim after compaction
 
-# Retrieval — controls how memory_search and LLM-assisted memory queries rank
-# markdown memory files. "auto" uses hybrid semantic+lexical search when an
-# embedding profile is configured and usable, otherwise lexical search.
+# Retrieval — controls semantic/lexical ranking for internal memory retrieval.
+# "auto" uses hybrid semantic+lexical search when an embedding profile is
+# configured and usable, otherwise lexical search.
 # [memory.retrieval]
 # mode = "auto"              # "auto", "lexical", or "hybrid"
 

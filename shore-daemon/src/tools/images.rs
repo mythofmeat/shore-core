@@ -5,84 +5,30 @@ use shore_llm_client::types::ImageGenerateParams;
 use tracing::info;
 
 pub fn tool_defs() -> Vec<ToolDef> {
-    vec![
-        ToolDef {
-            name: "send_image",
-            description: "Attach an existing image file from your per-character images directory to your reply so {{user}} sees it alongside your words. Use this when you already know the relative path of an image you want to send.",
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Relative path inside your images directory (e.g. 'generated/20260423_120000.png' or 'attachments/photo.jpg')."
-                    },
-                    "caption": {
-                        "type": "string",
-                        "description": "Optional caption for the image."
-                    }
+    vec![ToolDef {
+        name: "generate_image",
+        description: "Generate an image from a text description via a separate image-generation model, save it to your images directory, and send it to {{user}}. Be specific about subject, mood, and composition.",
+        parameters: json!({
+            "type": "object",
+            "properties": {
+                "prompt": {
+                    "type": "string",
+                    "description": "Text prompt for image generation."
                 },
-                "required": ["path"]
-            }),
-            category: ToolCategory::Other,
-        },
-        ToolDef {
-            name: "generate_image",
-            description: "Generate an image from a text description via a separate image-generation model, save it to your images directory, and send it to {{user}}. Be specific about subject, mood, and composition.",
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "prompt": {
-                        "type": "string",
-                        "description": "Text prompt for image generation."
-                    },
-                    "size": {
-                        "type": "string",
-                        "description": "Image dimensions (e.g. '1024x1024').",
-                        "default": "1024x1024"
-                    },
-                    "caption": {
-                        "type": "string",
-                        "description": "Optional caption to send with the generated image."
-                    }
+                "size": {
+                    "type": "string",
+                    "description": "Image dimensions (e.g. '1024x1024').",
+                    "default": "1024x1024"
                 },
-                "required": ["prompt"]
-            }),
-            category: ToolCategory::Other,
-        },
-    ]
-}
-
-fn resolve_image_path(
-    input_path: &str,
-    ctx: &dyn ToolContext,
-) -> Result<std::path::PathBuf, ToolError> {
-    let full_path = std::path::Path::new(ctx.image_dir()).join(input_path);
-    if !full_path.exists() {
-        return Err(ToolError::Io(format!(
-            "image not found: {}",
-            full_path.display()
-        )));
-    }
-    Ok(full_path)
-}
-
-pub async fn handle_send_image(input: Value, ctx: &dyn ToolContext) -> Result<Value, ToolError> {
-    let path = input
-        .get("path")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| ToolError::InvalidArgs("missing 'path' field".to_string()))?;
-
-    let caption = input
-        .get("caption")
-        .and_then(|v| v.as_str())
-        .map(str::to_string);
-    let full_path = resolve_image_path(path, ctx)?;
-
-    Ok(json!({
-        "path": full_path.to_string_lossy(),
-        "caption": caption,
-        "sent": true,
-    }))
+                "caption": {
+                    "type": "string",
+                    "description": "Optional caption to send with the generated image."
+                }
+            },
+            "required": ["prompt"]
+        }),
+        category: ToolCategory::Other,
+    }]
 }
 
 pub async fn handle_generate_image(
@@ -204,24 +150,9 @@ mod tests {
     #[test]
     fn test_image_tool_defs() {
         let defs = tool_defs();
-        assert_eq!(defs.len(), 2);
+        assert_eq!(defs.len(), 1);
         let names: Vec<&str> = defs.iter().map(|d| d.name).collect();
-        assert!(names.contains(&"send_image"));
         assert!(names.contains(&"generate_image"));
-    }
-
-    #[tokio::test]
-    async fn test_send_image_file_not_found() {
-        let ctx = TestToolContext::new().with_image_dir("/nonexistent");
-        let result = handle_send_image(json!({"path": "test.png"}), &ctx).await;
-        assert!(matches!(result, Err(ToolError::Io(_))));
-    }
-
-    #[tokio::test]
-    async fn test_send_image_missing_path() {
-        let ctx = TestToolContext::new().with_image_dir("/tmp");
-        let result = handle_send_image(json!({}), &ctx).await;
-        assert!(matches!(result, Err(ToolError::InvalidArgs(_))));
     }
 
     #[tokio::test]
@@ -230,26 +161,6 @@ mod tests {
         let result =
             handle_generate_image(json!({"prompt": "a cat", "size": "512x512"}), &ctx).await;
         assert!(matches!(result, Err(ToolError::Io(_))));
-    }
-
-    #[tokio::test]
-    async fn test_send_image_existing_file() {
-        let tmp = tempfile::tempdir().unwrap();
-        let image_path = tmp.path().join("photo.png");
-        std::fs::write(&image_path, b"fake image data").unwrap();
-
-        let ctx = TestToolContext::new().with_image_dir(tmp.path().to_str().unwrap());
-
-        let result = handle_send_image(
-            json!({"path": "photo.png", "caption": "A test photo"}),
-            &ctx,
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(result["sent"], true);
-        assert!(result["path"].as_str().unwrap().contains("photo.png"));
-        assert_eq!(result["caption"], "A test photo");
     }
 
     #[test]

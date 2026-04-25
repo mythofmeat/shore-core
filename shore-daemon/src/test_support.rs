@@ -63,6 +63,7 @@ pub struct TestToolContext {
     pub memory_read_allowed_val: bool,
     pub memory_write_allowed_val: bool,
     pub workspace_dir_val: String,
+    pub character_data_dir_val: String,
 }
 
 impl TestToolContext {
@@ -82,6 +83,7 @@ impl TestToolContext {
             memory_read_allowed_val: true,
             memory_write_allowed_val: true,
             workspace_dir_val: String::new(),
+            character_data_dir_val: String::new(),
         }
     }
 
@@ -127,6 +129,12 @@ impl TestToolContext {
     /// Set a workspace directory for workspace dispatch tests.
     pub fn with_workspace_dir(mut self, dir: &str) -> Self {
         self.workspace_dir_val = dir.to_string();
+        self
+    }
+
+    /// Set a character data directory for conversation-history tool tests.
+    pub fn with_character_data_dir(mut self, dir: &str) -> Self {
+        self.character_data_dir_val = dir.to_string();
         self
     }
 
@@ -184,6 +192,9 @@ impl ToolContext for TestToolContext {
     }
     fn workspace_dir(&self) -> &str {
         &self.workspace_dir_val
+    }
+    fn character_data_dir(&self) -> &str {
+        &self.character_data_dir_val
     }
     fn config_dir(&self) -> &str {
         ""

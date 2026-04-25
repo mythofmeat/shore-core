@@ -93,7 +93,7 @@ These are correctness constraints for Shore. `GOALS.md` is the source of user in
 **Must:**
 
 - Tool visibility must respect private mode and toggles.
-- Memory gates must apply to memory tools and workspace `memory/...` paths.
+- Memory gates must apply to durable history search and workspace `memory/...` paths.
 - Workspace file tools must prevent path traversal and symlink escape.
 - `exec` must not run through a shell.
 - `exec` path-like arguments must remain inside the character workspace.
