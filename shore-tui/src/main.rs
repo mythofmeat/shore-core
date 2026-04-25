@@ -26,6 +26,9 @@ use app::{App, ConnectionStatus, ConversationEntry, InputState, StreamBlock};
 use connection::{ConnCommand, ConnEvent};
 use input::Action;
 
+const INPUT_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const SPINNER_INTERVAL: Duration = Duration::from_millis(125);
+
 #[derive(Parser)]
 #[command(name = "shore-tui", about = "Shore terminal UI")]
 struct Cli {
@@ -266,6 +269,124 @@ fn which_exists(cmd: &str) -> bool {
         .unwrap_or(false)
 }
 
+async fn send_conn_commands(
+    cmd_tx: &tokio::sync::mpsc::Sender<ConnCommand>,
+    cmds: Vec<ConnCommand>,
+) {
+    for cmd in cmds {
+        let _ = cmd_tx.send(cmd).await;
+    }
+}
+
+async fn handle_conn_event_and_send(
+    app: &mut App,
+    cmd_tx: &tokio::sync::mpsc::Sender<ConnCommand>,
+    event: ConnEvent,
+) {
+    let cmds = handle_conn_event(app, event);
+    send_conn_commands(cmd_tx, cmds).await;
+}
+
+fn mark_connection_task_exited(app: &mut App, conn_events_open: &mut bool) {
+    if !*conn_events_open {
+        return;
+    }
+    *conn_events_open = false;
+    app.connection_status = ConnectionStatus::Disconnected;
+    app.set_status("connection task exited");
+}
+
+async fn handle_action(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    app: &mut App,
+    cmd_tx: &tokio::sync::mpsc::Sender<ConnCommand>,
+    action: Action,
+) -> io::Result<bool> {
+    match action {
+        Action::Quit => {
+            app.should_quit = true;
+            Ok(true)
+        }
+        Action::Interrupt => {
+            app.interrupt = true;
+            app.should_quit = true;
+            Ok(true)
+        }
+        Action::Send(cmd) => {
+            let _ = cmd_tx.send(cmd).await;
+            Ok(true)
+        }
+        Action::SendMulti(cmds) => {
+            send_conn_commands(cmd_tx, cmds).await;
+            Ok(true)
+        }
+        Action::OpenInEditor => {
+            let _ = open_in_editor(terminal, &mut app.input);
+            Ok(true)
+        }
+        Action::PickImage(start_dir) => {
+            match pick_image(terminal, start_dir.as_deref()) {
+                Ok(paths) if paths.is_empty() => {
+                    // User cancelled; the alternate screen was still restored.
+                }
+                Ok(paths) => {
+                    let count = paths.len();
+                    app.pending_images.extend(paths);
+                    app.set_status(format!(
+                        "attached {count} image(s) ({} pending)",
+                        app.pending_images.len()
+                    ));
+                }
+                Err(e) => {
+                    app.set_status(format!("image picker: {e}"));
+                }
+            }
+            Ok(true)
+        }
+        Action::PasteImage => {
+            let result = tokio::time::timeout(
+                Duration::from_millis(1500),
+                tokio::task::spawn_blocking(clipboard::read_image_to_temp),
+            )
+            .await;
+            match result {
+                Ok(Ok(Ok(path))) => {
+                    let path_str = path.to_string_lossy().into_owned();
+                    app.pending_images.push(path_str);
+                    app.paste_temp_paths.push(path);
+                    app.set_status(format!(
+                        "pasted image ({} pending)",
+                        app.pending_images.len()
+                    ));
+                }
+                Ok(Ok(Err(e))) => app.set_status(e.to_string()),
+                Ok(Err(_join)) => app.set_status("paste task panicked"),
+                Err(_elapsed) => app.set_status("clipboard read timed out"),
+            }
+            Ok(true)
+        }
+        Action::Redraw => Ok(true),
+        Action::None => Ok(false),
+    }
+}
+
+async fn process_terminal_events(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    app: &mut App,
+    cmd_tx: &tokio::sync::mpsc::Sender<ConnCommand>,
+) -> io::Result<bool> {
+    let mut redraw = false;
+    while event::poll(Duration::from_millis(0))? {
+        let ev = event::read()?;
+        let action = input::handle_event(app, ev);
+        redraw |= handle_action(terminal, app, cmd_tx, action).await?;
+        if app.should_quit {
+            break;
+        }
+    }
+    Ok(redraw)
+}
+
 #[instrument(skip(cli))]
 async fn run_tui(cli: Cli) -> io::Result<()> {
     // Set up terminal
@@ -289,10 +410,19 @@ async fn run_tui(cli: Cli) -> io::Result<()> {
     // Spawn connection manager
     let (cmd_tx, mut event_rx) = connection::spawn_connection(cli.addr, cli.config, character);
 
+    let mut input_poll = tokio::time::interval(INPUT_POLL_INTERVAL);
+    input_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut spinner = tokio::time::interval(SPINNER_INTERVAL);
+    spinner.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut needs_redraw = true;
+    let mut conn_events_open = true;
+
     // Main event loop
     let result = loop {
-        // Draw
-        terminal.draw(|frame| ui::draw(frame, &mut app))?;
+        if needs_redraw {
+            terminal.draw(|frame| ui::draw(frame, &mut app))?;
+            needs_redraw = false;
+        }
 
         // Poll for events (crossterm keyboard or connection events)
         tokio::select! {
@@ -304,88 +434,40 @@ async fn run_tui(cli: Cli) -> io::Result<()> {
                 app.should_quit = true;
             }
             // Connection events
-            conn_event = event_rx.recv() => {
+            conn_event = event_rx.recv(), if conn_events_open => {
                 match conn_event {
                     Some(event) => {
-                        let cmds = handle_conn_event(&mut app, event);
-                        for cmd in cmds {
-                            let _ = cmd_tx.send(cmd).await;
+                        handle_conn_event_and_send(&mut app, &cmd_tx, event).await;
+                        needs_redraw = true;
+
+                        loop {
+                            match event_rx.try_recv() {
+                                Ok(event) => {
+                                    handle_conn_event_and_send(&mut app, &cmd_tx, event).await;
+                                }
+                                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
+                                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                                    mark_connection_task_exited(&mut app, &mut conn_events_open);
+                                    break;
+                                }
+                            }
                         }
                     }
                     None => {
-                        // Connection task exited
-                        app.connection_status = ConnectionStatus::Disconnected;
-                        app.set_status("connection task exited");
+                        mark_connection_task_exited(&mut app, &mut conn_events_open);
+                        needs_redraw = true;
                     }
                 }
             }
-            // Keyboard events — poll with short timeout to keep responsive
-            _ = tokio::time::sleep(Duration::from_millis(16)) => {
-                while event::poll(Duration::from_millis(0))? {
-                    let ev = event::read()?;
-                    match input::handle_event(&mut app, ev) {
-                        Action::Quit => {
-                            app.should_quit = true;
-                            break;
-                        }
-                        Action::Interrupt => {
-                            app.interrupt = true;
-                            app.should_quit = true;
-                            break;
-                        }
-                        Action::Send(cmd) => {
-                            let _ = cmd_tx.send(cmd).await;
-                        }
-                        Action::SendMulti(cmds) => {
-                            for cmd in cmds {
-                                let _ = cmd_tx.send(cmd).await;
-                            }
-                        }
-                        Action::OpenInEditor => {
-                            let _ = open_in_editor(&mut terminal, &mut app.input);
-                        }
-                        Action::PickImage(start_dir) => {
-                            match pick_image(&mut terminal, start_dir.as_deref()) {
-                                Ok(paths) if paths.is_empty() => {
-                                    // User cancelled — no status needed
-                                }
-                                Ok(paths) => {
-                                    let count = paths.len();
-                                    app.pending_images.extend(paths);
-                                    app.set_status(format!(
-                                        "attached {count} image(s) ({} pending)",
-                                        app.pending_images.len()
-                                    ));
-                                }
-                                Err(e) => {
-                                    app.set_status(format!("image picker: {e}"));
-                                }
-                            }
-                        }
-                        Action::PasteImage => {
-                            let result = tokio::time::timeout(
-                                Duration::from_millis(1500),
-                                tokio::task::spawn_blocking(clipboard::read_image_to_temp),
-                            )
-                            .await;
-                            match result {
-                                Ok(Ok(Ok(path))) => {
-                                    let path_str = path.to_string_lossy().into_owned();
-                                    app.pending_images.push(path_str);
-                                    app.paste_temp_paths.push(path);
-                                    app.set_status(format!(
-                                        "pasted image ({} pending)",
-                                        app.pending_images.len()
-                                    ));
-                                }
-                                Ok(Ok(Err(e))) => app.set_status(e.to_string()),
-                                Ok(Err(_join)) => app.set_status("paste task panicked"),
-                                Err(_elapsed) => app.set_status("clipboard read timed out"),
-                            }
-                        }
-                        Action::Redraw | Action::None => {}
-                    }
-                }
+            // Keyboard events are polled cheaply; redraws are event-driven.
+            _ = input_poll.tick() => {
+                needs_redraw |= process_terminal_events(&mut terminal, &mut app, &cmd_tx).await?;
+            }
+            // Keep progress indicators moving without turning the whole TUI into
+            // a fixed-frame renderer.
+            _ = spinner.tick(), if app.stream.active => {
+                app.spinner_frame = app.spinner_frame.wrapping_add(1);
+                needs_redraw = true;
             }
         }
 
@@ -615,6 +697,7 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<Co
 
     match msg {
         ServerMessage::StreamStart(start) => {
+            app.spinner_frame = 0;
             if start.regen {
                 app.begin_regen_optimistic();
             } else if !app.stream.active {

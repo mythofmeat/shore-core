@@ -328,6 +328,8 @@ fn render_streaming_content(lines: &mut Vec<Line<'static>>, app: &App, content_w
         .fg(Color::DarkGray)
         .add_modifier(Modifier::ITALIC);
 
+    let spinner = spinner_glyphs(app.spinner_frame);
+
     if let Some(ref tool) = app.stream.tool_name {
         lines.push(Line::from(vec![
             Span::raw("  "),
@@ -338,21 +340,26 @@ fn render_streaming_content(lines: &mut Vec<Line<'static>>, app: &App, content_w
                     .fg(Color::Magenta)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(" ···", indicator_style),
+            Span::styled(format!(" {spinner}"), indicator_style),
         ]));
     } else {
         let label = match app.stream.phase.as_str() {
-            "thinking" => "thinking ···",
-            "tool_use" => "waiting for tool ···",
-            "responding" => "···",
-            _ => "···",
+            "thinking" => format!("thinking {spinner}"),
+            "tool_use" => format!("waiting for tool {spinner}"),
+            "responding" => spinner.to_string(),
+            _ => spinner.to_string(),
         };
         lines.push(Line::from(vec![
             Span::raw("  "),
-            Span::styled(label.to_string(), indicator_style),
+            Span::styled(label, indicator_style),
         ]));
     }
     lines.push(Line::from(""));
+}
+
+fn spinner_glyphs(frame: usize) -> &'static str {
+    const FRAMES: [&str; 4] = ["···", "•··", "·•·", "··•"];
+    FRAMES[frame % FRAMES.len()]
 }
 
 /// Render the scrollable conversation log.
