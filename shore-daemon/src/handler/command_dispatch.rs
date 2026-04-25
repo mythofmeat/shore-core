@@ -195,6 +195,12 @@ impl MessageHandler {
         let mut result = commands::dispatch(engine_arc.clone(), &mut cmd_ctx, cmd)
             .await
             .with_rid(meta.rid.clone());
+        let runtime_config_set = cmd.name == "config"
+            && cmd
+                .args
+                .get("value")
+                .and_then(serde_json::Value::as_str)
+                .is_some();
         let active_model_after_command = cmd_ctx.active_model.clone();
         let reasoning_effort_after_command = cmd_ctx.reasoning_effort_override.clone();
         if let Err(e) = save_active_model(&character_data_dir, active_model_after_command.clone()) {
@@ -209,6 +215,30 @@ impl MessageHandler {
             let session = self.session_state_mut(session_id);
             session.active_model = active_model_after_command.clone();
             session.reasoning_effort_override = reasoning_effort_after_command;
+        }
+
+        if runtime_config_set {
+            if let ServerMessage::CommandOutput(output) = &mut result {
+                let runtime_config = cmd_ctx.config.clone();
+                {
+                    let mut registry = self.registry.lock().await;
+                    registry.set_runtime_effective_config(&char_name, runtime_config.clone());
+                }
+                self.autonomy.reload_runtime_config(runtime_config.clone());
+                self.cmd_ctx
+                    .autonomy
+                    .reload_runtime_config(runtime_config.clone());
+
+                if output
+                    .data
+                    .get("invalidated")
+                    .and_then(serde_json::Value::as_object)
+                    .is_none()
+                {
+                    output.data["invalidated"] = json!({});
+                }
+                output.data["invalidated"]["merged_character_configs"] = json!(true);
+            }
         }
 
         if cmd.name == "config_reset" {

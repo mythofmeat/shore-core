@@ -330,6 +330,56 @@ async fn config_reset_refreshes_registry_runtime_state() {
 }
 
 #[tokio::test]
+async fn config_set_runtime_override_survives_next_command() {
+    let tmp = TempDir::new().unwrap();
+    let (mut handler, _rx, _direct_rx) = make_handler(&tmp, &["Alice"]).await;
+    let meta = test_request_meta(Some("Alice"), None);
+
+    let result = handler
+        .dispatch_command(
+            &Command {
+                rid: None,
+                name: "config".into(),
+                args: serde_json::json!({
+                    "key": "defaults.stream",
+                    "value": "false",
+                }),
+            },
+            &meta,
+        )
+        .await;
+
+    match result {
+        ServerMessage::CommandOutput(output) => {
+            assert_eq!(output.data["set"], "defaults.stream");
+            assert_eq!(output.data["value"], false);
+        }
+        other => panic!("Expected CommandOutput, got {:?}", other),
+    }
+
+    let result = handler
+        .dispatch_command(
+            &Command {
+                rid: None,
+                name: "config".into(),
+                args: serde_json::json!({
+                    "key": "defaults",
+                    "value": null,
+                }),
+            },
+            &meta,
+        )
+        .await;
+
+    match result {
+        ServerMessage::CommandOutput(output) => {
+            assert_eq!(output.data["config"]["stream"], false);
+        }
+        other => panic!("Expected CommandOutput, got {:?}", other),
+    }
+}
+
+#[tokio::test]
 async fn handle_engine_message_regen_builds_empty_body() {
     let tmp = TempDir::new().unwrap();
     let (mut handler, _rx, _direct_rx) = make_handler(&tmp, &["Alice"]).await;
