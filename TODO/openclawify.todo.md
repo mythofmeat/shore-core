@@ -1,0 +1,6 @@
+- [ ] our system prompt includes both the tool capabilities text as well as the new `TOOLS.md` injection. the old tool capabilities text should be removed entirely
+- [ ] when starting the daemon, the heartbeat can trigger mid-conversation. this should not happen.
+- [ ] the `send_image` tool is deprecated and should be removed
+- [ ] we have both scratchpad read/write tools, memory read/write tools, and basic read/write tools. they are all essentially useless duplicates. 
+  - [ ] the scratchpad is from the previous version and should be removed. 
+  - [ ] memory read/write tools should be removed because the character can just use the basic tools targeting the memory folder. memory_search could be replaced with a full-workspace search.
