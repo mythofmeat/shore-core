@@ -1,7 +1,7 @@
 //! Memory subsystem.
 //!
 //! Active memory for characters is markdown-first:
-//! - runtime memory tools use [`markdown_store`] and [`markdown_query`]
+//! - runtime workspace tools read and write markdown files directly
 //! - compaction writes markdown files directly
 //! - protected character/user/system edits are staged by [`deferred_edits`]
 

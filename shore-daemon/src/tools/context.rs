@@ -29,7 +29,6 @@ pub(crate) struct SharedToolContext {
     pub(crate) image_gen_config_val: Option<ImageGenConfig>,
     pub(crate) search_config_val: SearchConfig,
     pub(crate) character_name_val: String,
-    pub(crate) scratchpad_dir_val: String,
     pub(crate) workspace_dir_val: String,
     pub(crate) markdown_store_val: Option<MarkdownMemoryStore>,
     pub(crate) memory_retrieval_config_val: RetrievalConfig,
@@ -58,11 +57,11 @@ impl ToolContext for SharedToolContext {
     fn character_name(&self) -> &str {
         &self.character_name_val
     }
-    fn scratchpad_dir(&self) -> &str {
-        &self.scratchpad_dir_val
-    }
     fn workspace_dir(&self) -> &str {
         &self.workspace_dir_val
+    }
+    fn character_data_dir(&self) -> &str {
+        &self.character_data_dir_val
     }
     fn markdown_store(&self) -> Option<&MarkdownMemoryStore> {
         self.markdown_store_val.as_ref()

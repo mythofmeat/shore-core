@@ -73,11 +73,11 @@ impl ToolContext for HandlerToolContext {
     fn character_name(&self) -> &str {
         self.inner.character_name()
     }
-    fn scratchpad_dir(&self) -> &str {
-        self.inner.scratchpad_dir()
-    }
     fn workspace_dir(&self) -> &str {
         self.inner.workspace_dir()
+    }
+    fn character_data_dir(&self) -> &str {
+        self.inner.character_data_dir()
     }
     fn markdown_store(&self) -> Option<&crate::memory::markdown_store::MarkdownMemoryStore> {
         self.inner.markdown_store()

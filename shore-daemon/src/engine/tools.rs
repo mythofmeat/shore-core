@@ -175,13 +175,13 @@ pub async fn run_tool_loop(
                 Err(e) => (e.to_string(), true, None),
             };
 
-            // `send_image` and `generate_image` produce structured results
-            // whose `path` should
-            // surface as an actual image attachment, not just a tool-result
-            // string. Attach it to the assistant message that issued the call
-            // (so log replay renders it inline) and broadcast a SendImage event
-            // for live clients (TUI image cache, matrix bridge collector).
-            if !is_error && (tool_use.name == "send_image" || tool_use.name == "generate_image") {
+            // `generate_image` produces a structured result whose `path`
+            // should surface as an actual image attachment, not just a
+            // tool-result string. Attach it to the assistant message that
+            // issued the call (so log replay renders it inline) and broadcast
+            // a SendImage event for live clients (TUI image cache, matrix
+            // bridge collector).
+            if !is_error && tool_use.name == "generate_image" {
                 if let Some(value) = &ok_value {
                     if let Some(path) = value.get("path").and_then(|v| v.as_str()) {
                         let caption = value
@@ -609,7 +609,7 @@ mod tests {
 
     #[tokio::test]
     async fn tool_loop_handles_tool_error() {
-        // generate_image always returns NotImplemented.
+        // generate_image returns a tool error when no image-generation profile is configured.
         let sse = sse_text_end_turn("Image generation is not available.");
         let (base_url, server) = mock_sse_server(sse, 1).await;
 

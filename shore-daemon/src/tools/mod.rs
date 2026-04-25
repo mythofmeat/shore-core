@@ -1,9 +1,8 @@
 pub mod activity;
 pub mod basic;
 pub(crate) mod context;
+pub mod history;
 pub mod images;
-pub mod memory_tools;
-pub mod scratchpad;
 pub mod web;
 pub mod workspace;
 
@@ -96,13 +95,13 @@ pub trait ToolContext: Sync {
         ""
     }
 
-    // Scratchpad directory for per-character scratch storage
-    fn scratchpad_dir(&self) -> &str {
+    // Workspace directory for general filesystem tools
+    fn workspace_dir(&self) -> &str {
         ""
     }
 
-    // Workspace directory for general filesystem tools
-    fn workspace_dir(&self) -> &str {
+    // Character data directory for conversation history search.
+    fn character_data_dir(&self) -> &str {
         ""
     }
 
@@ -156,19 +155,18 @@ pub trait ToolContext: Sync {
 /// Returns all registered tool definitions.
 pub fn all_tools() -> Vec<ToolDef> {
     let mut tools = Vec::new();
-    tools.extend(memory_tools::tool_defs());
     tools.extend(images::tool_defs());
     tools.extend(web::tool_defs());
     tools.extend(activity::tool_defs());
     tools.extend(basic::tool_defs());
-    tools.extend(scratchpad::tool_defs());
     tools.extend(workspace::tool_defs());
+    tools.extend(history::tool_defs());
     tools
 }
 
 /// Build the outbound LLM `tools` array from `available_tools`, rendering
 /// `{{char}}` / `{{user}}` placeholders in each tool's description through
-/// the same template pipeline the capabilities block uses.
+/// the same template pipeline the system prompt uses.
 ///
 /// Centralizes what was previously duplicated at every call site (handler +
 /// autonomy manager) and guarantees that `{{user}}` in a description
@@ -227,7 +225,7 @@ fn workspace_memory_namespace_available(
         return false;
     }
     match name {
-        "read" | "list_files" => toggles.memory_read(),
+        "read" | "list_files" | "search" => toggles.memory_read(),
         "write" => toggles.memory_write(),
         "edit" => toggles.memory_read() && toggles.memory_write(),
         _ => toggles.memory(),
@@ -240,16 +238,6 @@ fn ensure_memory_read_access(ctx: &dyn ToolContext) -> Result<(), ToolError> {
     } else {
         Err(ToolError::InvalidArgs(
             "memory read access is disabled for this conversation".into(),
-        ))
-    }
-}
-
-fn ensure_memory_write_access(ctx: &dyn ToolContext) -> Result<(), ToolError> {
-    if ctx.memory_write_allowed() {
-        Ok(())
-    } else {
-        Err(ToolError::InvalidArgs(
-            "memory write access is disabled for this conversation".into(),
         ))
     }
 }
@@ -278,7 +266,7 @@ fn ensure_workspace_memory_access(
     }
 
     let allowed = match name {
-        "read" | "list_files" => ctx.memory_read_allowed(),
+        "read" | "list_files" | "search" => ctx.memory_read_allowed(),
         "write" => ctx.memory_write_allowed(),
         "edit" => ctx.memory_read_allowed() && ctx.memory_write_allowed(),
         _ => true,
@@ -328,24 +316,10 @@ pub fn dispatch_tool<'a>(
 ) -> Pin<Box<dyn Future<Output = Result<Value, ToolError>> + Send + 'a>> {
     Box::pin(async move {
         match name {
-            // Memory tools
-            "memory_read" => {
+            "search_history" => {
                 ensure_memory_read_access(ctx)?;
-                memory_tools::handle_memory_read(input, ctx).await
+                history::handle_search_history(input, ctx).await
             }
-            "memory_write" => {
-                ensure_memory_write_access(ctx)?;
-                memory_tools::handle_memory_write(input, ctx).await
-            }
-            "memory_search" => {
-                ensure_memory_read_access(ctx)?;
-                memory_tools::handle_memory_search(input, ctx).await
-            }
-            "memory_list" => {
-                ensure_memory_read_access(ctx)?;
-                memory_tools::handle_memory_list(input, ctx).await
-            }
-            "send_image" => images::handle_send_image(input, ctx).await,
             "generate_image" => images::handle_generate_image(input, ctx).await,
             // Web tools
             "web_search" => web::handle_web_search(input, ctx).await,
@@ -355,19 +329,6 @@ pub fn dispatch_tool<'a>(
             "roll_dice" => basic::handle_roll_dice(input).await,
             // Other
             "activity_heatmap" => activity::handle_activity_heatmap(input, ctx).await,
-            // Scratchpad tools
-            "scratchpad_list" => {
-                scratchpad::handle_scratchpad_list(input, ctx.scratchpad_dir()).await
-            }
-            "scratchpad_read" => {
-                scratchpad::handle_scratchpad_read(input, ctx.scratchpad_dir()).await
-            }
-            "scratchpad_write" => {
-                scratchpad::handle_scratchpad_write(input, ctx.scratchpad_dir()).await
-            }
-            "scratchpad_delete" => {
-                scratchpad::handle_scratchpad_delete(input, ctx.scratchpad_dir()).await
-            }
             // Workspace tools
             "read" => {
                 ensure_workspace_memory_access(name, &input, ctx)?;
@@ -415,6 +376,11 @@ pub fn dispatch_tool<'a>(
                 ensure_workspace_memory_access(name, &input, ctx)?;
                 workspace::handle_list_files(input, ctx.workspace_dir()).await
             }
+            "search" => {
+                ensure_workspace_memory_access(name, &input, ctx)?;
+                workspace::handle_search(input, ctx.workspace_dir(), ctx.memory_read_allowed())
+                    .await
+            }
             "exec" => {
                 ensure_workspace_memory_access(name, &input, ctx)?;
                 workspace::handle_exec(input, ctx.workspace_dir()).await
@@ -441,15 +407,15 @@ mod tests {
 
     #[test]
     fn render_tool_defs_substitutes_user_placeholder() {
-        // {{user}} appears in scratchpad_delete and must resolve, not ship
+        // {{user}} appears in check_time and must resolve, not ship
         // literal to the model.
         let toggles = ToolToggles::default();
         let defs = render_tool_defs(false, &toggles, "qifei", "ren");
-        let delete = defs
+        let check_time = defs
             .iter()
-            .find(|d| d["name"] == "scratchpad_delete")
-            .expect("scratchpad_delete present");
-        let desc = delete["description"].as_str().unwrap();
+            .find(|d| d["name"] == "check_time")
+            .expect("check_time present");
+        let desc = check_time["description"].as_str().unwrap();
         assert!(
             !desc.contains("{{user}}"),
             "{{{{user}}}} must be substituted, got: {desc}"
@@ -478,8 +444,8 @@ mod tests {
     #[test]
     fn test_all_tools_returns_expected_count() {
         let tools = all_tools();
-        // memory(4) + images(2) + web(2) + activity(1) + basic(3) + scratchpad(4) + workspace(5) = 21
-        assert_eq!(tools.len(), 21);
+        // images(1) + web(2) + activity(1) + basic(3) + workspace(6) + history(1) = 14
+        assert_eq!(tools.len(), 14);
     }
 
     #[test]
@@ -508,18 +474,16 @@ mod tests {
         let private = available_tools(true, &toggles);
         let private_names: Vec<&str> = private.iter().map(|t| t.name).collect();
 
-        // Memory tools should be excluded.
-        assert!(!private_names.contains(&"memory_read"));
-        assert!(!private_names.contains(&"memory_write"));
-        assert!(!private_names.contains(&"memory_search"));
-        assert!(!private_names.contains(&"memory_list"));
+        // Durable history search should be excluded.
+        assert!(!private_names.contains(&"search_history"));
+        assert!(!private_names.contains(&"exec"));
 
         // Web and other tools should remain.
         assert!(private_names.contains(&"web_search"));
         assert!(private_names.contains(&"fetch_url"));
         assert!(private_names.contains(&"activity_heatmap"));
-        assert!(private_names.contains(&"send_image"));
         assert!(private_names.contains(&"generate_image"));
+        assert!(private_names.contains(&"search"));
     }
 
     #[test]
@@ -533,9 +497,10 @@ mod tests {
 
         assert!(!names.contains(&"roll_dice"));
         assert!(!names.contains(&"web_search"));
-        assert!(names.contains(&"memory_search"));
+        assert!(names.contains(&"search"));
+        assert!(names.contains(&"search_history"));
         assert!(names.contains(&"check_time"));
-        assert_eq!(tools.len(), 19); // 21 - 2 disabled
+        assert_eq!(tools.len(), 12); // 14 - 2 disabled
     }
 
     #[test]
@@ -546,15 +511,13 @@ mod tests {
         let tools = available_tools(false, &toggles);
         let names: Vec<&str> = tools.iter().map(|t| t.name).collect();
 
-        assert!(!names.contains(&"memory_read"));
-        assert!(!names.contains(&"memory_write"));
-        assert!(!names.contains(&"memory_search"));
-        assert!(!names.contains(&"memory_list"));
+        assert!(!names.contains(&"search_history"));
         assert!(!names.contains(&"exec"));
         assert!(names.contains(&"read"));
         assert!(names.contains(&"write"));
         assert!(names.contains(&"edit"));
         assert!(names.contains(&"list_files"));
+        assert!(names.contains(&"search"));
     }
 
     #[test]
@@ -592,7 +555,7 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("memory/..."));
-        assert!(defs.iter().all(|d| d["name"] != "memory_write"));
+        assert!(defs.iter().any(|d| d["name"] == "search_history"));
         assert!(defs.iter().all(|d| d["name"] != "exec"));
     }
 
@@ -646,19 +609,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_dispatch_send_image_invalid_args() {
-        let ctx = TestToolContext::new();
-        // Missing required "path" arg — handler should return InvalidArgs, not NotImplemented.
-        let result = dispatch_tool("send_image", serde_json::json!({}), &ctx).await;
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(
-            !matches!(err, ToolError::NotImplemented(_)),
-            "send_image with bad args should reach handler, not return NotImplemented"
-        );
-    }
-
-    #[tokio::test]
     async fn test_dispatch_fetch_url_routes_correctly() {
         let ctx = TestToolContext::new();
         // Invalid URL — handler should return an error (not NotImplemented).
@@ -678,28 +628,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_dispatch_memory_routes_correctly() {
+    async fn test_dispatch_removed_memory_tool_is_not_implemented() {
         let ctx = TestToolContext::new();
-        let result = dispatch_tool(
-            "memory_search",
-            serde_json::json!({"query": "search for test"}),
-            &ctx,
-        )
-        .await;
-        // The handler may return Ok or an error from the store, but NOT NotImplemented.
-        if let Err(ref e) = result {
-            assert!(
-                !matches!(e, ToolError::NotImplemented(_)),
-                "memory_search should reach handler, got: {e}"
-            );
-        }
+        let result =
+            dispatch_tool("memory_search", serde_json::json!({"query": "tea"}), &ctx).await;
+        assert!(matches!(result, Err(ToolError::NotImplemented(_))));
     }
 
     #[tokio::test]
-    async fn test_dispatch_rejects_memory_when_access_disabled() {
+    async fn test_dispatch_rejects_history_search_when_memory_access_disabled() {
         let ctx = TestToolContext::new().with_memory_access_allowed(false);
         let result =
-            dispatch_tool("memory_search", serde_json::json!({"query": "tea"}), &ctx).await;
+            dispatch_tool("search_history", serde_json::json!({"query": "tea"}), &ctx).await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
@@ -863,19 +803,5 @@ mod tests {
                 );
             }
         }
-    }
-
-    #[tokio::test]
-    async fn test_dispatch_scratchpad_routes_correctly() {
-        let ctx = TestToolContext::new();
-        // scratchpad_dir is "" by default, which the handler rejects — but that
-        // proves the dispatch routed to the handler (not NotImplemented).
-        let result = dispatch_tool("scratchpad_list", serde_json::json!({}), &ctx).await;
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(
-            !matches!(err, ToolError::NotImplemented(_)),
-            "scratchpad_list should reach handler"
-        );
     }
 }

@@ -107,6 +107,29 @@ pub fn tool_defs() -> Vec<ToolDef> {
             category: ToolCategory::Other,
         },
         ToolDef {
+            name: "search",
+            description: "Search text files across your workspace and memory directory. Bare paths resolve under workspace/. Use `memory/...` to search durable memory files. Returns matching file paths, line numbers, and excerpts. Use this for discovery before reading a full file.",
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Keyword or phrase to search for (case-insensitive)."
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "Optional relative path to limit the search. Bare paths resolve under workspace/. Use `workspace/...` or `memory/...` for an explicit root."
+                    },
+                    "max_results": {
+                        "type": "number",
+                        "description": "Maximum matches to return. Defaults to 20, maximum 100."
+                    }
+                },
+                "required": ["query"]
+            }),
+            category: ToolCategory::Other,
+        },
+        ToolDef {
             name: "exec",
             description: "Run an allowlisted host command. The command string is parsed into argv and executed directly; shell features like pipes, redirects, command substitution, and `;` chaining are not supported. Use this for search, git, and build/test commands when a file tool is awkward.",
             parameters: json!({
@@ -141,6 +164,7 @@ pub(super) fn description_for_memory_access(
         "write" => Some("Write or overwrite a file in your workspace. Bare paths resolve under workspace/. Parent directories are created automatically. Overwrites without confirmation."),
         "edit" => Some("Edit an existing workspace file by replacing specific text. Bare paths resolve under workspace/. Each replacement must match the old_string exactly, including whitespace and newlines."),
         "list_files" => Some("List files and directories under a path in your workspace. Bare paths resolve under workspace/. Returns each entry's name, type, and size."),
+        "search" => Some("Search text files across your workspace. Bare paths resolve under workspace/. Returns matching file paths, line numbers, and excerpts. Use this for discovery before reading a full file."),
         _ => None,
     }
 }
@@ -246,6 +270,64 @@ fn resolve_list_path(workspace_dir: &str, relative: Option<&str>) -> Result<Path
 
 fn truncate_chars(text: &str, limit: usize) -> String {
     text.chars().take(limit).collect()
+}
+
+const SEARCH_DEFAULT_MAX_RESULTS: usize = 20;
+const SEARCH_MAX_RESULTS: usize = 100;
+const SEARCH_MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
+const SEARCH_EXCERPT_CHARS: usize = 240;
+
+fn normalize_search_query(input: &Value) -> Result<String, ToolError> {
+    let query = input
+        .get("query")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| ToolError::InvalidArgs("missing required field: query".into()))?
+        .trim();
+
+    if query.is_empty() {
+        return Err(ToolError::InvalidArgs("query must not be empty".into()));
+    }
+
+    Ok(query.to_string())
+}
+
+fn search_result_limit(input: &Value) -> usize {
+    input
+        .get("max_results")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as usize)
+        .unwrap_or(SEARCH_DEFAULT_MAX_RESULTS)
+        .clamp(1, SEARCH_MAX_RESULTS)
+}
+
+fn display_path_for(workspace_dir: &str, path: &Path) -> String {
+    let workspace_root = Path::new(workspace_dir);
+    if let Ok(rel) = path.strip_prefix(workspace_root) {
+        let normalized = rel.to_string_lossy().replace('\\', "/");
+        return normalized;
+    }
+    path.to_string_lossy().replace('\\', "/")
+}
+
+fn is_root_memory_dir(workspace_dir: &str, path: &Path) -> bool {
+    let Ok(rel) = path.strip_prefix(Path::new(workspace_dir)) else {
+        return false;
+    };
+    let mut components = rel.components();
+    matches!(
+        (components.next(), components.next()),
+        (Some(std::path::Component::Normal(first)), None)
+            if first == std::ffi::OsStr::new("memory")
+    )
+}
+
+fn excerpt_line(line: &str) -> String {
+    let trimmed = line.trim();
+    if trimmed.chars().count() <= SEARCH_EXCERPT_CHARS {
+        trimmed.to_string()
+    } else {
+        format!("{}...", truncate_chars(trimmed, SEARCH_EXCERPT_CHARS))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -466,6 +548,107 @@ pub async fn handle_list_files(input: Value, workspace_dir: &str) -> Result<Valu
     Ok(json!({ "entries": entries }))
 }
 
+pub async fn handle_search(
+    input: Value,
+    workspace_dir: &str,
+    include_memory: bool,
+) -> Result<Value, ToolError> {
+    if workspace_dir.is_empty() {
+        return Err(ToolError::InvalidArgs("workspace not configured".into()));
+    }
+
+    let query = normalize_search_query(&input)?;
+    let query_lower = query.to_lowercase();
+    let max_results = search_result_limit(&input);
+    let path_str = input.get("path").and_then(|v| v.as_str());
+    let root = resolve_list_path(workspace_dir, path_str)?;
+
+    if !root.exists() {
+        return Ok(json!({
+            "query": query,
+            "results": [],
+            "count": 0,
+            "note": "path does not exist"
+        }));
+    }
+
+    let mut pending = vec![root];
+    let mut results = Vec::new();
+    let mut searched_files = 0usize;
+    let mut skipped_binary_or_large = 0usize;
+
+    while let Some(path) = pending.pop() {
+        if results.len() >= max_results {
+            break;
+        }
+
+        let meta = match tokio::fs::metadata(&path).await {
+            Ok(meta) => meta,
+            Err(_) => continue,
+        };
+
+        if meta.is_dir() {
+            if !include_memory && is_root_memory_dir(workspace_dir, &path) {
+                continue;
+            }
+
+            let mut entries = Vec::new();
+            let mut read_dir = match tokio::fs::read_dir(&path).await {
+                Ok(read_dir) => read_dir,
+                Err(_) => continue,
+            };
+            while let Ok(Some(entry)) = read_dir.next_entry().await {
+                entries.push(entry.path());
+            }
+            entries.sort_by(|a, b| b.cmp(a));
+            pending.extend(entries);
+            continue;
+        }
+
+        if !meta.is_file() {
+            continue;
+        }
+
+        if meta.len() > SEARCH_MAX_FILE_BYTES {
+            skipped_binary_or_large += 1;
+            continue;
+        }
+
+        let bytes = match tokio::fs::read(&path).await {
+            Ok(bytes) => bytes,
+            Err(_) => continue,
+        };
+        let Ok(content) = String::from_utf8(bytes) else {
+            skipped_binary_or_large += 1;
+            continue;
+        };
+
+        searched_files += 1;
+        for (line_idx, line) in content.lines().enumerate() {
+            if !line.to_lowercase().contains(&query_lower) {
+                continue;
+            }
+            results.push(json!({
+                "path": display_path_for(workspace_dir, &path),
+                "line": line_idx + 1,
+                "excerpt": excerpt_line(line),
+            }));
+            if results.len() >= max_results {
+                break;
+            }
+        }
+    }
+
+    let count = results.len();
+    Ok(json!({
+        "query": query,
+        "results": results,
+        "count": count,
+        "searched_files": searched_files,
+        "skipped_binary_or_large": skipped_binary_or_large,
+    }))
+}
+
 // ---------------------------------------------------------------------------
 // Exec allowlist
 // ---------------------------------------------------------------------------
@@ -680,7 +863,7 @@ mod tests {
 
     #[test]
     fn tool_defs_count() {
-        assert_eq!(tool_defs().len(), 5);
+        assert_eq!(tool_defs().len(), 6);
     }
 
     #[test]
@@ -903,6 +1086,56 @@ mod tests {
             .unwrap();
         assert_eq!(result["content"], "# Ren\n\nLikes tea.");
         assert!(tmp.path().join("workspace/memory/people/ren.md").exists());
+    }
+
+    #[tokio::test]
+    async fn search_finds_workspace_and_memory_matches() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("workspace");
+        let ws_str = ws.to_string_lossy().to_string();
+
+        handle_write(
+            json!({"path": "notes/ideas.md", "content": "Tea in the garden\nCoffee later"}),
+            &ws_str,
+        )
+        .await
+        .unwrap();
+        handle_write(
+            json!({"path": "memory/people/ren.md", "content": "Ren likes tea."}),
+            &ws_str,
+        )
+        .await
+        .unwrap();
+
+        let result = handle_search(json!({"query": "tea"}), &ws_str, true)
+            .await
+            .unwrap();
+        let results = result["results"].as_array().unwrap();
+        let paths: Vec<&str> = results
+            .iter()
+            .map(|entry| entry["path"].as_str().unwrap())
+            .collect();
+        assert!(paths.contains(&"notes/ideas.md"));
+        assert!(paths.contains(&"memory/people/ren.md"));
+    }
+
+    #[tokio::test]
+    async fn search_skips_memory_when_memory_not_included() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("workspace");
+        let ws_str = ws.to_string_lossy().to_string();
+
+        handle_write(
+            json!({"path": "memory/people/ren.md", "content": "Ren likes tea."}),
+            &ws_str,
+        )
+        .await
+        .unwrap();
+
+        let result = handle_search(json!({"query": "tea"}), &ws_str, false)
+            .await
+            .unwrap();
+        assert_eq!(result["count"], 0);
     }
 
     #[test]

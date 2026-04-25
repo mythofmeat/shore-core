@@ -80,14 +80,12 @@ $XDG_CONFIG_HOME/shore/characters/<Character>/workspace/memory/
 
 The character can inspect and maintain it with:
 
-- `memory_read`
-- `memory_write`
-- `memory_search`
-- `memory_list`
 - workspace tools using `memory/...`
+- `search` for workspace-wide text search
+- `search_history` for transcript search
 
 The CLI and MCP still provide a natural-language memory query surface, but the
-LLM-facing memory tools are the granular markdown operations above.
+LLM-facing memory surface is now the ordinary workspace file tools.
 
 What to do:
 
@@ -149,7 +147,7 @@ The following old workflows are no longer the normal interface:
 What to do instead:
 
 - Use markdown files directly.
-- Use `memory_search` / `memory_read` / `memory_write`.
+- Use `search`, `read`, `write`, and `edit` with `memory/...` paths.
 - Let compaction update memory during normal operation.
 
 ## Heartbeat Replaces Interiority Naming
@@ -199,8 +197,8 @@ What to do:
 
 Memory gates now apply consistently:
 
-- `memory = false` disables all memory tools.
-- private conversations hide memory tools.
+- `memory = false` disables `memory/...` workspace access and history search.
+- private conversations hide durable history search.
 - workspace access to `memory/...` is blocked when memory access is disabled.
 - `exec` is hidden unless memory read/write access is fully enabled.
 
