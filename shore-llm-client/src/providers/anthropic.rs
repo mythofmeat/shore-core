@@ -77,6 +77,10 @@ fn find_turn_boundary(messages: &[Value], depth: usize) -> Option<usize> {
         return None;
     }
 
+    let current_user_idx = messages.iter().rposition(|m| {
+        m.get("role").and_then(Value::as_str) == Some("user") && !is_tool_result_message(m)
+    });
+
     let mut real_user_count = 0;
     let mut best: Option<usize> = None;
     for i in (0..messages.len()).rev() {
@@ -88,6 +92,16 @@ fn find_turn_boundary(messages: &[Value], depth: usize) -> Option<usize> {
                 // Ideal: exact depth reached.
                 return Some(i - 1);
             }
+            if real_user_count == depth + 1 {
+                // Exact target is the first message. Cache it only when it is
+                // historical; never place a message breakpoint on the active
+                // user message itself.
+                return if Some(i) == current_user_idx && i + 1 == messages.len() {
+                    None
+                } else {
+                    Some(0)
+                };
+            }
             // Track the earliest real user message as fallback.
             best = Some(i);
         }
@@ -95,7 +109,9 @@ fn find_turn_boundary(messages: &[Value], depth: usize) -> Option<usize> {
     // Fallback: not enough turns for requested depth — place breakpoint on
     // the first message (index 0) so we still get *some* caching rather
     // than wasting the entire prefix.
-    if best.is_some() {
+    if best.is_some()
+        && !(best == current_user_idx && current_user_idx == Some(messages.len().saturating_sub(1)))
+    {
         Some(0)
     } else {
         None
@@ -484,7 +500,7 @@ fn build_body(request: &LlmRequest, streaming: bool) -> (Value, u64) {
 
     let msg_count = converted_messages.len();
 
-    // Cache breakpoint defaults: depth=[1,2] (two sliding message breakpoints)
+    // Cache breakpoint defaults: depth=[0,1] (two sliding message breakpoints)
     // and pinned=[-1] (system anchor on second-to-last block, i.e. the char
     // definition — the recap block sits after it as the last system block).
     //
@@ -493,7 +509,7 @@ fn build_body(request: &LlmRequest, streaming: bool) -> (Value, u64) {
     //
     // Overridable via SHORE_CACHE_DEPTH_TURNS and SHORE_CACHE_PINNED_POSITION
     // env vars (comma-separated) for debugging.
-    let depth_turns: Vec<u32> = vec![1, 2];
+    let depth_turns: Vec<u32> = vec![0, 1];
     let pinned_positions: Vec<i32> = vec![-1];
 
     let (messages, system, placement) = if cache_enabled && !has_existing_markers {
@@ -1290,13 +1306,12 @@ mod tests {
     }
 
     #[test]
-    fn test_sillytavern_config_system_anchor_present() {
-        // Config: depth=[1,2] pinned=[0] — the SillyTavern-equivalent
-        // config that was confirmed working. The system anchor must always
-        // be present for this to work.
+    fn test_default_sliding_config_system_anchor_present() {
+        // Config: depth=[0,1] pinned=[0]. The system anchor must always be
+        // present for sliding message breakpoints to work reliably.
         let system = build_system_with_recap();
         let msgs = build_conversation(5);
-        let (result, sys, p) = apply_cache_control(&msgs, &system, "1h", &[1, 2], &[0]);
+        let (result, sys, p) = apply_cache_control(&msgs, &system, "1h", &[0, 1], &[0]);
 
         // Must have exactly 1 system breakpoint on the last block (recap).
         assert_eq!(
@@ -1349,12 +1364,12 @@ mod tests {
 
     #[test]
     fn test_pinned_neg1_with_recap_targets_char_def() {
-        // Config: depth=[1,2] pinned=[-1] — user's preferred config.
+        // Config: depth=[0,1] pinned=[-1] — current default config.
         // With 3 system blocks (template, char def, recap), -1 should
         // target index 1 (char def), NOT the recap.
         let system = build_system_with_recap();
         let msgs = build_conversation(5);
-        let (_, sys, p) = apply_cache_control(&msgs, &system, "1h", &[1, 2], &[-1]);
+        let (_, sys, p) = apply_cache_control(&msgs, &system, "1h", &[0, 1], &[-1]);
 
         assert_eq!(
             p.sys_breakpoints,
@@ -1383,7 +1398,7 @@ mod tests {
 
         for turn_count in 4..=10 {
             let msgs = build_conversation(turn_count);
-            let (result, sys, p) = apply_cache_control(&msgs, &system, "1h", &[1, 2], &[0]);
+            let (result, sys, p) = apply_cache_control(&msgs, &system, "1h", &[0, 1], &[0]);
 
             // System must be structurally identical every turn.
             let sys_str = sys.to_string();
@@ -1439,7 +1454,7 @@ mod tests {
 
         for turn_count in 4..=8 {
             let msgs = build_conversation(turn_count);
-            let (_, _, p) = apply_cache_control(&msgs, &system, "1h", &[1, 2], &[0]);
+            let (_, _, p) = apply_cache_control(&msgs, &system, "1h", &[0, 1], &[0]);
 
             if let Some(prev) = &prev_bp {
                 // Each new turn adds 2 messages (assistant + user), so
@@ -1474,10 +1489,10 @@ mod tests {
         // (nothing would ever be un-cached for the response). Verify that
         // no message breakpoint lands on the last message.
         let system = build_system_with_recap();
-        for turn_count in 3..=10 {
+        for turn_count in 1..=10 {
             let msgs = build_conversation(turn_count);
             let last_idx = msgs.len() - 1;
-            let (_, _, p) = apply_cache_control(&msgs, &system, "1h", &[1, 2], &[0]);
+            let (_, _, p) = apply_cache_control(&msgs, &system, "1h", &[0, 1], &[0]);
             for &bp in &p.msg_breakpoints {
                 assert_ne!(
                     bp, last_idx,
@@ -1486,6 +1501,19 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_default_depths_single_user_has_no_message_breakpoint() {
+        let system = build_system_with_recap();
+        let msgs = build_conversation(1);
+        let (_, _, p) = apply_cache_control(&msgs, &system, "1h", &[0, 1], &[-1]);
+
+        assert!(
+            p.msg_breakpoints.is_empty(),
+            "single active user message must not be cached as a message breakpoint"
+        );
+        assert_eq!(p.sys_breakpoints, vec![1]);
     }
 
     #[test]
@@ -2066,8 +2094,21 @@ mod tests {
     #[test]
     fn test_find_turn_boundary_single_user_message() {
         let msgs = vec![json!({"role": "user", "content": "hi"})];
-        // Not enough depth, but falls back to index 0.
-        assert_eq!(find_turn_boundary(&msgs, 2), Some(0));
+        // Never place a breakpoint on the active final user message.
+        assert_eq!(find_turn_boundary(&msgs, 0), None);
+        assert_eq!(find_turn_boundary(&msgs, 1), None);
+        assert_eq!(find_turn_boundary(&msgs, 2), None);
+    }
+
+    #[test]
+    fn test_find_turn_boundary_depth_zero_uses_previous_message() {
+        let msgs = vec![
+            json!({"role": "user", "content": "q1"}),
+            json!({"role": "assistant", "content": "a1"}),
+            json!({"role": "user", "content": "q2"}),
+        ];
+        assert_eq!(find_turn_boundary(&msgs, 0), Some(1));
+        assert_eq!(find_turn_boundary(&msgs, 1), Some(0));
     }
 
     #[test]
