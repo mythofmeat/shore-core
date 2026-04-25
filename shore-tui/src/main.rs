@@ -12,7 +12,8 @@ use std::time::Duration;
 use clap::Parser;
 use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste, EventStream};
 use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    disable_raw_mode, enable_raw_mode, DisableLineWrap, EnableLineWrap, EnterAlternateScreen,
+    LeaveAlternateScreen,
 };
 use crossterm::ExecutableCommand;
 use futures_util::StreamExt;
@@ -29,10 +30,11 @@ use input::Action;
 
 const STREAM_FRAME_INTERVAL: Duration = Duration::from_millis(200);
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RedrawPolicy {
     None,
     Immediate,
+    ImmediateFull,
     DeferredStream,
 }
 
@@ -146,6 +148,7 @@ fn open_in_editor(
     std::fs::write(&tmp, input.text.as_str())?;
 
     io::stdout().execute(DisableBracketedPaste)?;
+    io::stdout().execute(EnableLineWrap)?;
     disable_raw_mode()?;
     io::stdout().execute(LeaveAlternateScreen)?;
 
@@ -153,6 +156,7 @@ fn open_in_editor(
 
     enable_raw_mode()?;
     io::stdout().execute(EnterAlternateScreen)?;
+    io::stdout().execute(DisableLineWrap)?;
     io::stdout().execute(EnableBracketedPaste)?;
     terminal.clear()?;
 
@@ -177,6 +181,7 @@ fn pick_image(
     let start = start_dir.unwrap_or(".");
 
     io::stdout().execute(DisableBracketedPaste)?;
+    io::stdout().execute(EnableLineWrap)?;
     disable_raw_mode()?;
     io::stdout().execute(LeaveAlternateScreen)?;
 
@@ -184,6 +189,7 @@ fn pick_image(
 
     enable_raw_mode()?;
     io::stdout().execute(EnterAlternateScreen)?;
+    io::stdout().execute(DisableLineWrap)?;
     io::stdout().execute(EnableBracketedPaste)?;
     terminal.clear()?;
 
@@ -303,18 +309,33 @@ fn redraw_policy_for_conn_event(event: &ConnEvent) -> RedrawPolicy {
             ServerMessage::AudioChunk(_) | ServerMessage::AudioEnd(_) => RedrawPolicy::None,
             // NewMessage is currently ignored by the TUI handler.
             ServerMessage::NewMessage(_) => RedrawPolicy::None,
+            // Stream finalization replaces live streamed content with the
+            // persisted History entry. Force a full flush so terminals cannot
+            // keep a stale diffed viewport after long wrapped output.
+            ServerMessage::StreamEnd(end) if end.finish_reason != "tool_use" => {
+                RedrawPolicy::ImmediateFull
+            }
             _ => RedrawPolicy::Immediate,
         },
         ConnEvent::Connected { .. } | ConnEvent::Disconnected(_) => RedrawPolicy::Immediate,
     }
 }
 
-fn apply_redraw_policy(policy: RedrawPolicy, needs_redraw: &mut bool) {
+fn apply_redraw_policy(
+    policy: RedrawPolicy,
+    needs_redraw: &mut bool,
+    deferred_stream_dirty: &mut bool,
+    needs_full_redraw: &mut bool,
+) {
     match policy {
         RedrawPolicy::None => {}
         // Stream chunks are painted by the next stream frame tick.
-        RedrawPolicy::DeferredStream => {}
+        RedrawPolicy::DeferredStream => *deferred_stream_dirty = true,
         RedrawPolicy::Immediate => *needs_redraw = true,
+        RedrawPolicy::ImmediateFull => {
+            *needs_redraw = true;
+            *needs_full_redraw = true;
+        }
     }
 }
 
@@ -323,10 +344,17 @@ async fn process_conn_event(
     cmd_tx: &tokio::sync::mpsc::Sender<ConnCommand>,
     event: ConnEvent,
     needs_redraw: &mut bool,
+    deferred_stream_dirty: &mut bool,
+    needs_full_redraw: &mut bool,
 ) {
     let policy = redraw_policy_for_conn_event(&event);
     handle_conn_event_and_send(app, cmd_tx, event).await;
-    apply_redraw_policy(policy, needs_redraw);
+    apply_redraw_policy(
+        policy,
+        needs_redraw,
+        deferred_stream_dirty,
+        needs_full_redraw,
+    );
 }
 
 fn mark_connection_task_exited(app: &mut App, conn_events_open: &mut bool) {
@@ -417,6 +445,7 @@ async fn run_tui(cli: Cli) -> io::Result<()> {
     // Set up terminal
     enable_raw_mode()?;
     io::stdout().execute(EnterAlternateScreen)?;
+    io::stdout().execute(DisableLineWrap)?;
     io::stdout().execute(EnableBracketedPaste)?;
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
@@ -439,13 +468,20 @@ async fn run_tui(cli: Cli) -> io::Result<()> {
     let mut stream_frame = tokio::time::interval(STREAM_FRAME_INTERVAL);
     stream_frame.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut needs_redraw = true;
+    let mut deferred_stream_dirty = false;
+    let mut needs_full_redraw = false;
     let mut conn_events_open = true;
 
     // Main event loop
     let result = loop {
         if needs_redraw {
+            if needs_full_redraw {
+                terminal.clear()?;
+                needs_full_redraw = false;
+            }
             terminal.draw(|frame| ui::draw(frame, &mut app))?;
             needs_redraw = false;
+            deferred_stream_dirty = false;
         }
 
         // Poll for events (crossterm keyboard or connection events)
@@ -466,6 +502,8 @@ async fn run_tui(cli: Cli) -> io::Result<()> {
                             &cmd_tx,
                             event,
                             &mut needs_redraw,
+                            &mut deferred_stream_dirty,
+                            &mut needs_full_redraw,
                         ).await;
 
                         loop {
@@ -476,6 +514,8 @@ async fn run_tui(cli: Cli) -> io::Result<()> {
                                         &cmd_tx,
                                         event,
                                         &mut needs_redraw,
+                                        &mut deferred_stream_dirty,
+                                        &mut needs_full_redraw,
                                     ).await;
                                 }
                                 Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
@@ -484,6 +524,12 @@ async fn run_tui(cli: Cli) -> io::Result<()> {
                                     break;
                                 }
                             }
+                        }
+
+                        // If a drained batch ends the stream, the stream-frame
+                        // tick is disabled. Paint any deferred chunk content now.
+                        if deferred_stream_dirty && !app.stream.active {
+                            needs_redraw = true;
                         }
                     }
                     None => {
@@ -510,7 +556,11 @@ async fn run_tui(cli: Cli) -> io::Result<()> {
             // Keep progress indicators moving and coalesce high-rate stream chunks.
             _ = stream_frame.tick(), if app.stream.active => {
                 app.spinner_frame = app.spinner_frame.wrapping_add(1);
+                let scheduled_deferred_stream_paint = deferred_stream_dirty;
                 needs_redraw = true;
+                if scheduled_deferred_stream_paint {
+                    deferred_stream_dirty = false;
+                }
             }
         }
 
@@ -531,6 +581,7 @@ async fn run_tui(cli: Cli) -> io::Result<()> {
 
     // Restore terminal
     io::stdout().execute(DisableBracketedPaste)?;
+    io::stdout().execute(EnableLineWrap)?;
     disable_raw_mode()?;
     io::stdout().execute(LeaveAlternateScreen)?;
 
@@ -781,6 +832,7 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<Co
                 return vec![];
             }
 
+            let keep_bottom = app.auto_scroll;
             app.model = end.metadata.model.clone();
             app.tokens = end.metadata.tokens.clone();
 
@@ -836,6 +888,9 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<Co
                     });
                 }
                 app.stream.reset();
+                if keep_bottom {
+                    app.scroll_to_bottom();
+                }
             }
         }
 
@@ -1080,4 +1135,109 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<Co
         _ => {}
     }
     vec![]
+}
+
+#[cfg(test)]
+mod redraw_tests {
+    use super::*;
+    use shore_protocol::server_msg::{StreamChunk, StreamEnd};
+    use shore_protocol::types::{StreamMetadata, TimingInfo, TokenCounts};
+
+    fn metadata() -> StreamMetadata {
+        StreamMetadata {
+            model: "test-model".into(),
+            tokens: TokenCounts {
+                input: 1,
+                output: 1,
+                cache_read: 0,
+                cache_write: 0,
+            },
+            timing: TimingInfo {
+                total_ms: 1,
+                ttft_ms: 1,
+            },
+        }
+    }
+
+    #[test]
+    fn final_stream_end_requests_full_redraw() {
+        let event = ConnEvent::Message(ServerMessage::StreamEnd(StreamEnd {
+            rid: None,
+            content: "done".into(),
+            metadata: metadata(),
+            finish_reason: "end_turn".into(),
+            is_final: true,
+        }));
+
+        assert_eq!(
+            redraw_policy_for_conn_event(&event),
+            RedrawPolicy::ImmediateFull
+        );
+    }
+
+    #[test]
+    fn tool_use_stream_end_keeps_regular_redraw() {
+        let event = ConnEvent::Message(ServerMessage::StreamEnd(StreamEnd {
+            rid: None,
+            content: String::new(),
+            metadata: metadata(),
+            finish_reason: "tool_use".into(),
+            is_final: false,
+        }));
+
+        assert_eq!(
+            redraw_policy_for_conn_event(&event),
+            RedrawPolicy::Immediate
+        );
+    }
+
+    #[test]
+    fn deferred_stream_policy_marks_dirty_without_immediate_redraw() {
+        let mut needs_redraw = false;
+        let mut deferred_stream_dirty = false;
+        let mut needs_full_redraw = false;
+
+        apply_redraw_policy(
+            RedrawPolicy::DeferredStream,
+            &mut needs_redraw,
+            &mut deferred_stream_dirty,
+            &mut needs_full_redraw,
+        );
+
+        assert!(!needs_redraw);
+        assert!(deferred_stream_dirty);
+        assert!(!needs_full_redraw);
+    }
+
+    #[test]
+    fn immediate_full_policy_requests_full_redraw() {
+        let mut needs_redraw = false;
+        let mut deferred_stream_dirty = true;
+        let mut needs_full_redraw = false;
+
+        apply_redraw_policy(
+            RedrawPolicy::ImmediateFull,
+            &mut needs_redraw,
+            &mut deferred_stream_dirty,
+            &mut needs_full_redraw,
+        );
+
+        assert!(needs_redraw);
+        assert!(deferred_stream_dirty);
+        assert!(needs_full_redraw);
+    }
+
+    #[test]
+    fn stream_chunk_policy_is_deferred() {
+        let event = ConnEvent::Message(ServerMessage::StreamChunk(StreamChunk {
+            rid: None,
+            text: "partial".into(),
+            content_type: "text".into(),
+        }));
+
+        assert_eq!(
+            redraw_policy_for_conn_event(&event),
+            RedrawPolicy::DeferredStream
+        );
+    }
 }

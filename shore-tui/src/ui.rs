@@ -176,18 +176,8 @@ fn squeeze_blank_lines(lines: &mut Vec<Line<'static>>) {
 }
 
 fn visual_line_count(lines: &[Line<'static>], width: u16) -> u16 {
-    let width = width.max(1) as usize;
-    let total: usize = lines
-        .iter()
-        .map(|line| {
-            let line_width = line.width();
-            if line_width == 0 {
-                1
-            } else {
-                line_width.div_ceil(width).max(1)
-            }
-        })
-        .sum();
+    let paragraph = Paragraph::new(Text::from(lines.to_vec())).wrap(Wrap { trim: false });
+    let total = paragraph.line_count(width);
 
     total.min(u16::MAX as usize) as u16
 }
@@ -2028,6 +2018,185 @@ mod scenario_tests {
             f.matches(reply).count(),
             1,
             "reply text must appear exactly once on screen\n{f}"
+        );
+    }
+
+    #[test]
+    fn scenario_history_then_stream_end_long_reply_stays_bottom_anchored() {
+        use shore_protocol::server_msg::{
+            History, ServerMessage, StreamChunk, StreamEnd, StreamStart,
+        };
+        use shore_protocol::types::{
+            ContentBlock, Message, Role, StreamMetadata, TimingInfo, TokenCounts,
+        };
+
+        let tail = "TAIL MARKER final response words";
+        let mut reply_lines: Vec<String> = (0..36)
+            .map(|i| format!("line {i:02}: a long streamed response keeps moving"))
+            .collect();
+        reply_lines.push(tail.into());
+        let reply = reply_lines.join("\n");
+
+        let mut h = Harness::with_size(64, 16);
+        h.app.connection_status = ConnectionStatus::Connected;
+        h.app.character_name = "qifei".into();
+        h.app.entries.push(ConversationEntry::User {
+            content: "write a long answer".into(),
+            images: vec![],
+            timestamp: "t1".into(),
+        });
+
+        crate::handle_server_message(
+            &mut h.app,
+            ServerMessage::StreamStart(StreamStart {
+                rid: None,
+                regen: false,
+            }),
+        );
+        for chunk in reply.as_bytes().chunks(96) {
+            crate::handle_server_message(
+                &mut h.app,
+                ServerMessage::StreamChunk(StreamChunk {
+                    rid: None,
+                    text: std::str::from_utf8(chunk).unwrap().into(),
+                    content_type: "text".into(),
+                }),
+            );
+        }
+
+        let history_msgs = vec![
+            Message {
+                msg_id: "m_0".into(),
+                role: Role::User,
+                content: "write a long answer".into(),
+                images: vec![],
+                content_blocks: vec![ContentBlock::Text {
+                    text: "write a long answer".into(),
+                }],
+                alt_index: None,
+                alt_count: None,
+                timestamp: "t1".into(),
+            },
+            Message {
+                msg_id: "m_1".into(),
+                role: Role::Assistant,
+                content: reply.clone(),
+                images: vec![],
+                content_blocks: vec![ContentBlock::Text {
+                    text: reply.clone(),
+                }],
+                alt_index: None,
+                alt_count: None,
+                timestamp: "t2".into(),
+            },
+        ];
+        crate::handle_server_message(
+            &mut h.app,
+            ServerMessage::History(History {
+                rid: None,
+                messages: history_msgs,
+                config: serde_json::json!({}),
+                selected_character: None,
+                revision: 1,
+            }),
+        );
+
+        crate::handle_server_message(
+            &mut h.app,
+            ServerMessage::StreamEnd(StreamEnd {
+                rid: None,
+                content: reply,
+                metadata: StreamMetadata {
+                    model: "anthropic/claude-haiku-4-5".into(),
+                    tokens: TokenCounts {
+                        input: 100,
+                        output: 200,
+                        cache_read: 0,
+                        cache_write: 0,
+                    },
+                    timing: TimingInfo {
+                        total_ms: 800,
+                        ttft_ms: 120,
+                    },
+                },
+                finish_reason: "end_turn".into(),
+                is_final: true,
+            }),
+        );
+
+        let f = h.render("long history + stream_end");
+        assert!(h.app.auto_scroll, "auto_scroll remains enabled");
+        assert_eq!(h.app.scroll_offset, 0, "viewport remains bottom-anchored");
+        assert!(
+            f.contains(tail),
+            "final rendered frame should include the tail of the response\n{f}"
+        );
+        assert!(
+            !f.contains("line 00:"),
+            "long final response should be scrolled to its tail, not its head\n{f}"
+        );
+    }
+
+    #[test]
+    fn scenario_tool_toggle_keeps_bottom_anchored() {
+        let tail = "FINAL TAIL remains visible after tool toggle";
+        let long_tool_output = (0..28)
+            .map(|i| {
+                format!(
+                    "tool row {i:02}: {}",
+                    "0123456789abcdef0123456789abcdef0123456789abcdef"
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let mut h = Harness::with_size(64, 16);
+        h.app.connection_status = ConnectionStatus::Connected;
+        h.app.character_name = "qifei".into();
+        h.app.entries.push(ConversationEntry::User {
+            content: "run a tool and summarize".into(),
+            images: vec![],
+            timestamp: "t1".into(),
+        });
+        h.app.entries.push(ConversationEntry::ToolCall {
+            tool_id: "toolu_1".into(),
+            tool_name: "long_tool".into(),
+            input: serde_json::json!({
+                "path": "/tmp/0123456789abcdef0123456789abcdef0123456789abcdef"
+            }),
+        });
+        h.app.entries.push(ConversationEntry::ToolResult {
+            tool_id: "toolu_1".into(),
+            tool_name: "long_tool".into(),
+            output: long_tool_output,
+            is_error: false,
+        });
+        h.app.entries.push(ConversationEntry::Assistant {
+            content: format!("summary line\n{tail}"),
+            images: vec![],
+            timestamp: "t2".into(),
+            metadata: None,
+        });
+
+        let f_tools_on = h.render("tools visible");
+        assert!(h.app.auto_scroll, "auto_scroll starts enabled");
+        assert!(
+            f_tools_on.contains(tail),
+            "tail should be visible with tools shown\n{f_tools_on}"
+        );
+
+        h.app.show_tools = false;
+        let f_tools_off = h.render("tools hidden");
+        assert!(
+            f_tools_off.contains(tail),
+            "tail should stay visible after hiding tools\n{f_tools_off}"
+        );
+
+        h.app.show_tools = true;
+        let f_tools_back_on = h.render("tools visible again");
+        assert!(
+            f_tools_back_on.contains(tail),
+            "tail should stay visible after showing tools again\n{f_tools_back_on}"
         );
     }
 
