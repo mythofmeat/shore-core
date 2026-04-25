@@ -262,6 +262,8 @@ mod tests {
             finish_reason: "end_turn".into(),
             rid: None,
             is_final: true,
+            msg_id: None,
+            revision: None,
         }));
         if let CollectorAction::SendMessage { text, images } = action {
             assert_eq!(text, "hello world");
@@ -312,6 +314,8 @@ mod tests {
             finish_reason: "end_turn".into(),
             rid: None,
             is_final: true,
+            msg_id: None,
+            revision: None,
         }));
 
         if let CollectorAction::SendMessage { text, images } = action {
@@ -452,6 +456,8 @@ mod tests {
             finish_reason: "end_turn".into(),
             rid: None,
             is_final: true,
+            msg_id: None,
+            revision: None,
         }));
 
         // Second stream should start clean
@@ -477,6 +483,8 @@ mod tests {
             finish_reason: "end_turn".into(),
             rid: None,
             is_final: true,
+            msg_id: None,
+            revision: None,
         }));
 
         if let CollectorAction::SendMessage { images, .. } = action {
