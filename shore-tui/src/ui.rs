@@ -157,20 +157,39 @@ fn flush_tools(
 
 /// Squeeze runs of >1 consecutive blank lines down to at most 1.
 fn squeeze_blank_lines(lines: &mut Vec<Line<'static>>) {
-    let mut i = 0;
     let mut consecutive_blanks = 0u32;
-    while i < lines.len() {
-        if lines[i].width() == 0 {
+    let mut squeezed = Vec::with_capacity(lines.len());
+
+    for line in lines.drain(..) {
+        if line.width() == 0 {
             consecutive_blanks += 1;
             if consecutive_blanks > 1 {
-                lines.remove(i);
                 continue;
             }
         } else {
             consecutive_blanks = 0;
         }
-        i += 1;
+        squeezed.push(line);
     }
+
+    *lines = squeezed;
+}
+
+fn visual_line_count(lines: &[Line<'static>], width: u16) -> u16 {
+    let width = width.max(1) as usize;
+    let total: usize = lines
+        .iter()
+        .map(|line| {
+            let line_width = line.width();
+            if line_width == 0 {
+                1
+            } else {
+                line_width.div_ceil(width).max(1)
+            }
+        })
+        .sum();
+
+    total.min(u16::MAX as usize) as u16
 }
 
 /// Word-wrap a single line of text to fit within `max_width` columns.
@@ -589,11 +608,7 @@ fn draw_conversation(frame: &mut Frame, app: &mut App, area: Rect) {
 
     let visible_height = area.height;
 
-    // Use Paragraph::line_count for accurate visual line count that accounts
-    // for ratatui's word-wrap algorithm (manual char-width division undershoots).
-    let content_visual = Paragraph::new(Text::from(lines.clone()))
-        .wrap(Wrap { trim: false })
-        .line_count(content_width) as u16;
+    let content_visual = visual_line_count(&lines, content_width);
 
     // Bottom-anchor: pad short conversations so content sits near the input
     if content_visual < visible_height {
@@ -627,7 +642,9 @@ fn draw_conversation(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_widget(paragraph, area);
 
     // Swap U+2800 stand-in → U+10EEEE kitty placeholder in rendered cells.
-    images::fixup_placeholder_cells(frame.buffer_mut(), area);
+    if !app.image_index.is_empty() {
+        images::fixup_placeholder_cells(frame.buffer_mut(), area);
+    }
 }
 
 /// Render the fullscreen image viewer overlay.
