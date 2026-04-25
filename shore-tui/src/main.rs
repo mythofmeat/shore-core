@@ -31,11 +31,29 @@ use input::Action;
 const STREAM_FRAME_INTERVAL: Duration = Duration::from_millis(200);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum RedrawPolicy {
+enum RedrawEffect {
     None,
     Immediate,
     ImmediateFull,
     DeferredStream,
+}
+
+pub(crate) struct UiEffect {
+    cmds: Vec<ConnCommand>,
+    redraw: RedrawEffect,
+}
+
+impl UiEffect {
+    fn redraw(redraw: RedrawEffect) -> Self {
+        Self {
+            cmds: vec![],
+            redraw,
+        }
+    }
+
+    fn none() -> Self {
+        Self::redraw(RedrawEffect::None)
+    }
 }
 
 #[derive(Parser)]
@@ -295,44 +313,27 @@ async fn handle_conn_event_and_send(
     app: &mut App,
     cmd_tx: &tokio::sync::mpsc::Sender<ConnCommand>,
     event: ConnEvent,
-) {
-    let cmds = handle_conn_event(app, event);
-    send_conn_commands(cmd_tx, cmds).await;
-}
-
-fn redraw_policy_for_conn_event(event: &ConnEvent) -> RedrawPolicy {
-    match event {
-        ConnEvent::Message(msg) => match msg {
-            // Fast streams can arrive far faster than a terminal should redraw.
-            ServerMessage::StreamChunk(_) => RedrawPolicy::DeferredStream,
-            // Audio chunks do not change visible TUI state and may be high-rate.
-            ServerMessage::AudioChunk(_) | ServerMessage::AudioEnd(_) => RedrawPolicy::None,
-            // NewMessage is currently ignored by the TUI handler.
-            ServerMessage::NewMessage(_) => RedrawPolicy::None,
-            // Stream finalization replaces live streamed content with the
-            // persisted History entry. Force a full flush so terminals cannot
-            // keep a stale diffed viewport after long wrapped output.
-            ServerMessage::StreamEnd(end) if end.finish_reason != "tool_use" => {
-                RedrawPolicy::ImmediateFull
-            }
-            _ => RedrawPolicy::Immediate,
-        },
-        ConnEvent::Connected { .. } | ConnEvent::Disconnected(_) => RedrawPolicy::Immediate,
+) -> UiEffect {
+    let effect = handle_conn_event(app, event);
+    send_conn_commands(cmd_tx, effect.cmds).await;
+    UiEffect {
+        cmds: vec![],
+        redraw: effect.redraw,
     }
 }
 
-fn apply_redraw_policy(
-    policy: RedrawPolicy,
+fn apply_redraw_effect(
+    effect: RedrawEffect,
     needs_redraw: &mut bool,
     deferred_stream_dirty: &mut bool,
     needs_full_redraw: &mut bool,
 ) {
-    match policy {
-        RedrawPolicy::None => {}
+    match effect {
+        RedrawEffect::None => {}
         // Stream chunks are painted by the next stream frame tick.
-        RedrawPolicy::DeferredStream => *deferred_stream_dirty = true,
-        RedrawPolicy::Immediate => *needs_redraw = true,
-        RedrawPolicy::ImmediateFull => {
+        RedrawEffect::DeferredStream => *deferred_stream_dirty = true,
+        RedrawEffect::Immediate => *needs_redraw = true,
+        RedrawEffect::ImmediateFull => {
             *needs_redraw = true;
             *needs_full_redraw = true;
         }
@@ -347,10 +348,9 @@ async fn process_conn_event(
     deferred_stream_dirty: &mut bool,
     needs_full_redraw: &mut bool,
 ) {
-    let policy = redraw_policy_for_conn_event(&event);
-    handle_conn_event_and_send(app, cmd_tx, event).await;
-    apply_redraw_policy(
-        policy,
+    let effect = handle_conn_event_and_send(app, cmd_tx, event).await;
+    apply_redraw_effect(
+        effect.redraw,
         needs_redraw,
         deferred_stream_dirty,
         needs_full_redraw,
@@ -526,11 +526,6 @@ async fn run_tui(cli: Cli) -> io::Result<()> {
                             }
                         }
 
-                        // If a drained batch ends the stream, the stream-frame
-                        // tick is disabled. Paint any deferred chunk content now.
-                        if deferred_stream_dirty && !app.stream.active {
-                            needs_redraw = true;
-                        }
                     }
                     None => {
                         mark_connection_task_exited(&mut app, &mut conn_events_open);
@@ -595,7 +590,7 @@ async fn run_tui(cli: Cli) -> io::Result<()> {
     result
 }
 
-fn handle_conn_event(app: &mut App, event: ConnEvent) -> Vec<ConnCommand> {
+fn handle_conn_event(app: &mut App, event: ConnEvent) -> UiEffect {
     match event {
         ConnEvent::Connected {
             characters,
@@ -631,14 +626,14 @@ fn handle_conn_event(app: &mut App, event: ConnEvent) -> Vec<ConnCommand> {
             transmit_entry_images(app);
 
             app.set_status("connected");
-            vec![]
+            UiEffect::redraw(RedrawEffect::Immediate)
         }
 
         ConnEvent::Disconnected(reason) => {
             app.connection_status = ConnectionStatus::Connecting;
             app.stream.reset(); // clear stale streaming state
             app.set_status(format!("reconnecting: {reason}"));
-            vec![]
+            UiEffect::redraw(RedrawEffect::Immediate)
         }
 
         ConnEvent::Message(msg) => handle_server_message(app, msg),
@@ -777,19 +772,20 @@ fn transmit_image_ref(
     }
 }
 
-pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<ConnCommand> {
+pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> UiEffect {
     match &msg {
-        ServerMessage::AudioStart(_)
-        | ServerMessage::AudioChunk(_)
-        | ServerMessage::AudioEnd(_)
-        | ServerMessage::AudioError(_) => {
+        ServerMessage::AudioStart(_) | ServerMessage::AudioError(_) => {
             app.handle_audio_message(&msg);
-            return vec![];
+            return UiEffect::redraw(RedrawEffect::Immediate);
+        }
+        ServerMessage::AudioChunk(_) | ServerMessage::AudioEnd(_) => {
+            app.handle_audio_message(&msg);
+            return UiEffect::none();
         }
         _ => {}
     }
 
-    match msg {
+    let redraw = match msg {
         ServerMessage::StreamStart(start) => {
             app.spinner_frame = 0;
             if start.regen {
@@ -804,6 +800,7 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<Co
                 app.stream.phase = "responding".into();
                 app.stream.tool_name = None;
             }
+            RedrawEffect::Immediate
         }
 
         ServerMessage::StreamChunk(chunk) => {
@@ -823,13 +820,14 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<Co
             if app.auto_scroll {
                 app.scroll_to_bottom();
             }
+            RedrawEffect::DeferredStream
         }
 
         ServerMessage::StreamEnd(end) => {
             if end.finish_reason == "cancelled" {
                 app.stream.reset();
                 app.set_status("generation cancelled");
-                return vec![];
+                return UiEffect::redraw(RedrawEffect::ImmediateFull);
             }
 
             let keep_bottom = app.auto_scroll;
@@ -862,6 +860,7 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<Co
                 app.stream.blocks.clear();
                 app.stream.phase = "tool_use".into();
                 app.stream.tool_name = None;
+                RedrawEffect::Immediate
             } else {
                 // The daemon broadcasts a History snapshot during
                 // `engine.append_message` (in persist_and_notify) and only
@@ -891,6 +890,7 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<Co
                 if keep_bottom {
                     app.scroll_to_bottom();
                 }
+                RedrawEffect::ImmediateFull
             }
         }
 
@@ -899,9 +899,10 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<Co
             if let Some(model) = phase.model {
                 app.model = model;
             }
+            RedrawEffect::Immediate
         }
 
-        ServerMessage::NewMessage(_) => {}
+        ServerMessage::NewMessage(_) => RedrawEffect::None,
 
         ServerMessage::ToolCall(tc) => {
             app.stream.active = true;
@@ -915,6 +916,7 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<Co
             if app.auto_scroll {
                 app.scroll_to_bottom();
             }
+            RedrawEffect::Immediate
         }
 
         ServerMessage::ToolResult(tr) => {
@@ -928,6 +930,7 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<Co
             if app.auto_scroll {
                 app.scroll_to_bottom();
             }
+            RedrawEffect::Immediate
         }
 
         ServerMessage::SendImage(img) => {
@@ -939,6 +942,7 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<Co
                 app.image_cache
                     .ensure_transmitted(&img.path, max_cols, max_rows);
             }
+            RedrawEffect::Immediate
         }
 
         ServerMessage::CommandOutput(co) => {
@@ -1102,14 +1106,17 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<Co
                     app.set_status(format!("cmd:{} completed", co.name));
                 }
             }
+            RedrawEffect::Immediate
         }
 
         ServerMessage::Error(err) => {
             app.set_status(format!("error: {:?} - {}", err.code, err.message));
+            RedrawEffect::Immediate
         }
 
         ServerMessage::CacheWarning(cw) => {
             app.set_status(format!("cache warning: {}", cw.message));
+            RedrawEffect::Immediate
         }
 
         ServerMessage::History(hist) => {
@@ -1129,12 +1136,13 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<Co
                 expand_msg(msg, &mut app.entries);
             }
             transmit_entry_images(app);
+            RedrawEffect::Immediate
         }
 
         // Ignore unexpected messages
-        _ => {}
-    }
-    vec![]
+        _ => RedrawEffect::Immediate,
+    };
+    UiEffect::redraw(redraw)
 }
 
 #[cfg(test)]
@@ -1161,44 +1169,46 @@ mod redraw_tests {
 
     #[test]
     fn final_stream_end_requests_full_redraw() {
-        let event = ConnEvent::Message(ServerMessage::StreamEnd(StreamEnd {
-            rid: None,
-            content: "done".into(),
-            metadata: metadata(),
-            finish_reason: "end_turn".into(),
-            is_final: true,
-        }));
-
-        assert_eq!(
-            redraw_policy_for_conn_event(&event),
-            RedrawPolicy::ImmediateFull
+        let mut app = App::default();
+        let effect = handle_server_message(
+            &mut app,
+            ServerMessage::StreamEnd(StreamEnd {
+                rid: None,
+                content: "done".into(),
+                metadata: metadata(),
+                finish_reason: "end_turn".into(),
+                is_final: true,
+            }),
         );
+
+        assert_eq!(effect.redraw, RedrawEffect::ImmediateFull);
     }
 
     #[test]
     fn tool_use_stream_end_keeps_regular_redraw() {
-        let event = ConnEvent::Message(ServerMessage::StreamEnd(StreamEnd {
-            rid: None,
-            content: String::new(),
-            metadata: metadata(),
-            finish_reason: "tool_use".into(),
-            is_final: false,
-        }));
-
-        assert_eq!(
-            redraw_policy_for_conn_event(&event),
-            RedrawPolicy::Immediate
+        let mut app = App::default();
+        let effect = handle_server_message(
+            &mut app,
+            ServerMessage::StreamEnd(StreamEnd {
+                rid: None,
+                content: String::new(),
+                metadata: metadata(),
+                finish_reason: "tool_use".into(),
+                is_final: false,
+            }),
         );
+
+        assert_eq!(effect.redraw, RedrawEffect::Immediate);
     }
 
     #[test]
-    fn deferred_stream_policy_marks_dirty_without_immediate_redraw() {
+    fn deferred_stream_effect_marks_dirty_without_immediate_redraw() {
         let mut needs_redraw = false;
         let mut deferred_stream_dirty = false;
         let mut needs_full_redraw = false;
 
-        apply_redraw_policy(
-            RedrawPolicy::DeferredStream,
+        apply_redraw_effect(
+            RedrawEffect::DeferredStream,
             &mut needs_redraw,
             &mut deferred_stream_dirty,
             &mut needs_full_redraw,
@@ -1210,13 +1220,13 @@ mod redraw_tests {
     }
 
     #[test]
-    fn immediate_full_policy_requests_full_redraw() {
+    fn immediate_full_effect_requests_full_redraw() {
         let mut needs_redraw = false;
         let mut deferred_stream_dirty = true;
         let mut needs_full_redraw = false;
 
-        apply_redraw_policy(
-            RedrawPolicy::ImmediateFull,
+        apply_redraw_effect(
+            RedrawEffect::ImmediateFull,
             &mut needs_redraw,
             &mut deferred_stream_dirty,
             &mut needs_full_redraw,
@@ -1228,16 +1238,17 @@ mod redraw_tests {
     }
 
     #[test]
-    fn stream_chunk_policy_is_deferred() {
-        let event = ConnEvent::Message(ServerMessage::StreamChunk(StreamChunk {
-            rid: None,
-            text: "partial".into(),
-            content_type: "text".into(),
-        }));
-
-        assert_eq!(
-            redraw_policy_for_conn_event(&event),
-            RedrawPolicy::DeferredStream
+    fn stream_chunk_effect_is_deferred() {
+        let mut app = App::default();
+        let effect = handle_server_message(
+            &mut app,
+            ServerMessage::StreamChunk(StreamChunk {
+                rid: None,
+                text: "partial".into(),
+                content_type: "text".into(),
+            }),
         );
+
+        assert_eq!(effect.redraw, RedrawEffect::DeferredStream);
     }
 }
