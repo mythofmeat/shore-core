@@ -88,6 +88,15 @@ fn default_content_type() -> String {
 pub struct StreamEnd {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rid: Option<String>,
+    /// Persisted assistant message id for terminal stream ends.
+    ///
+    /// Present only after the final assistant message has been appended and
+    /// persisted. Intermediate tool-use boundaries and older servers omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub msg_id: Option<String>,
+    /// Durable history revision containing `msg_id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<u64>,
     pub content: String,
     pub metadata: StreamMetadata,
     /// Why the model stopped: "end_turn", "tool_use", "max_tokens", etc.

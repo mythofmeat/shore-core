@@ -29,6 +29,8 @@ impl MessageHandler {
                     session_id,
                     ServerMessage::StreamEnd(shore_protocol::server_msg::StreamEnd {
                         rid: None,
+                        msg_id: None,
+                        revision: None,
                         content: String::new(),
                         metadata: shore_protocol::types::StreamMetadata {
                             tokens: shore_protocol::types::TokenCounts {

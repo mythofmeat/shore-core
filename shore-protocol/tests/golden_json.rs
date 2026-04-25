@@ -245,6 +245,8 @@ fn stream_chunk_thinking_golden() {
 const STREAM_END_FIXTURE: &str = r#"{
     "type": "stream_end",
     "rid": "msg_01",
+    "msg_id": "m_assistant_01",
+    "revision": 12,
     "content": "Hello, how can I help you today?",
     "metadata": {
         "tokens": {
@@ -268,6 +270,8 @@ fn stream_end_golden() {
     match msg {
         ServerMessage::StreamEnd(se) => {
             assert_eq!(se.rid.as_deref(), Some("msg_01"));
+            assert_eq!(se.msg_id.as_deref(), Some("m_assistant_01"));
+            assert_eq!(se.revision, Some(12));
             assert_eq!(se.content, "Hello, how can I help you today?");
             assert_eq!(se.metadata.tokens.input, 1234);
             assert_eq!(se.metadata.tokens.output, 567);
@@ -917,7 +921,11 @@ fn request_scoped_server_messages_missing_rid_default_to_none() {
             ServerMessage::Error(msg) => assert_eq!(msg.rid, None),
             ServerMessage::StreamStart(msg) => assert_eq!(msg.rid, None),
             ServerMessage::StreamChunk(msg) => assert_eq!(msg.rid, None),
-            ServerMessage::StreamEnd(msg) => assert_eq!(msg.rid, None),
+            ServerMessage::StreamEnd(msg) => {
+                assert_eq!(msg.rid, None);
+                assert_eq!(msg.msg_id, None);
+                assert_eq!(msg.revision, None);
+            }
             ServerMessage::Phase(msg) => assert_eq!(msg.rid, None),
             ServerMessage::ToolCall(msg) => assert_eq!(msg.rid, None),
             ServerMessage::ToolResult(msg) => assert_eq!(msg.rid, None),

@@ -234,6 +234,8 @@ mod tests {
     fn server_stream_end_round_trip() {
         let msg = ServerMessage::StreamEnd(StreamEnd {
             rid: Some("msg_01".into()),
+            msg_id: None,
+            revision: None,
             content: "full response".into(),
             metadata: StreamMetadata {
                 tokens: TokenCounts {
@@ -254,6 +256,8 @@ mod tests {
         let (json, _back) = round_trip(&msg);
         assert_eq!(json["type"], "stream_end");
         assert_eq!(json["rid"], "msg_01");
+        assert!(json.get("msg_id").is_none());
+        assert!(json.get("revision").is_none());
         assert_eq!(json["metadata"]["tokens"]["input"], 1234);
         assert_eq!(json["metadata"]["tokens"]["cache_read"], 890);
         assert_eq!(json["metadata"]["timing"]["total_ms"], 2340);

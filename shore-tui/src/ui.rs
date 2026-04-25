@@ -1188,6 +1188,7 @@ mod scenario_tests {
         /// Simulate StreamEnd (finalise response into entries).
         fn stream_end(&mut self, content: &str) {
             self.app.entries.push(ConversationEntry::Assistant {
+                msg_id: None,
                 content: content.to_string(),
                 images: vec![],
                 timestamp: String::new(),
@@ -1408,6 +1409,7 @@ mod scenario_tests {
                 timestamp: format!("t{i}"),
             });
             h.app.entries.push(ConversationEntry::Assistant {
+                msg_id: None,
                 content: format!("Reply {i}"),
                 images: vec![],
                 timestamp: format!("r{i}"),
@@ -1588,6 +1590,7 @@ mod scenario_tests {
             is_error: false,
         });
         h.app.entries.push(ConversationEntry::Assistant {
+            msg_id: None,
             content: "I found foo.".into(),
             images: vec![],
             timestamp: "t2".into(),
@@ -1695,6 +1698,8 @@ mod scenario_tests {
             &mut h.app,
             ServerMessage::StreamEnd(StreamEnd {
                 rid: None,
+                msg_id: None,
+                revision: None,
                 content: String::new(),
                 metadata: meta_phase_1.clone(),
                 finish_reason: "tool_use".into(),
@@ -1755,6 +1760,8 @@ mod scenario_tests {
             &mut h.app,
             ServerMessage::StreamEnd(StreamEnd {
                 rid: None,
+                msg_id: None,
+                revision: None,
                 content: "hey! what's up?".into(),
                 metadata: meta_phase_2.clone(),
                 finish_reason: "end_turn".into(),
@@ -1974,6 +1981,8 @@ mod scenario_tests {
             &mut h.app,
             ServerMessage::StreamEnd(StreamEnd {
                 rid: None,
+                msg_id: Some("m_1".into()),
+                revision: Some(1),
                 content: reply.into(),
                 metadata: meta.clone(),
                 finish_reason: "end_turn".into(),
@@ -2105,6 +2114,8 @@ mod scenario_tests {
             &mut h.app,
             ServerMessage::StreamEnd(StreamEnd {
                 rid: None,
+                msg_id: Some("m_1".into()),
+                revision: Some(1),
                 content: reply,
                 metadata: StreamMetadata {
                     model: "anthropic/claude-haiku-4-5".into(),
@@ -2172,6 +2183,7 @@ mod scenario_tests {
             is_error: false,
         });
         h.app.entries.push(ConversationEntry::Assistant {
+            msg_id: None,
             content: format!("summary line\n{tail}"),
             images: vec![],
             timestamp: "t2".into(),
@@ -2416,6 +2428,7 @@ mod scenario_tests {
             timestamp: "t1".into(),
         });
         h.app.entries.push(ConversationEntry::Assistant {
+            msg_id: None,
             content: "Hi there!".into(),
             images: vec![],
             timestamp: "t2".into(),
@@ -2627,6 +2640,7 @@ mod scenario_tests {
             timestamp: "t1".into(),
         });
         h.app.entries.push(ConversationEntry::Assistant {
+            msg_id: None,
             content: "Why did the chicken cross the road?".into(),
             images: vec![],
             timestamp: "t2".into(),
@@ -2680,7 +2694,8 @@ mod scenario_tests {
         h.app.connection_status = ConnectionStatus::Connected;
 
         h.app.entries.push(ConversationEntry::Assistant {
-            content: "Here's some code:\n\n```rust\nfn main() {\n    println!(\"hello\");\n}\n```\n\nThat should work.".into(),
+            msg_id: None,
+                content: "Here's some code:\n\n```rust\nfn main() {\n    println!(\"hello\");\n}\n```\n\nThat should work.".into(),
             images: vec![],
             timestamp: "t1".into(),
             metadata: None,
@@ -2731,6 +2746,7 @@ mod scenario_tests {
         // With character name set, assistant entries use it
         h.app.character_name = "Luna".into();
         h.app.entries.push(ConversationEntry::Assistant {
+            msg_id: None,
             content: "Hello!".into(),
             images: vec![],
             timestamp: "t1".into(),
@@ -2878,6 +2894,7 @@ mod scenario_tests {
                 timestamp: format!("u{i}"),
             });
             h.app.entries.push(ConversationEntry::Assistant {
+                msg_id: None,
                 content: format!("A{i}: Here's my answer to that particular question."),
                 images: vec![],
                 timestamp: format!("a{i}"),

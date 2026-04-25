@@ -334,6 +334,8 @@ mod tests {
 
         let end = ServerMessage::StreamEnd(StreamEnd {
             rid: None,
+            msg_id: None,
+            revision: None,
             content: "Hello world!".into(),
             metadata: StreamMetadata {
                 tokens: TokenCounts {
@@ -393,6 +395,8 @@ mod tests {
         let mut handler = StreamHandler::new();
         let end = ServerMessage::StreamEnd(StreamEnd {
             rid: None,
+            msg_id: None,
+            revision: None,
             content: "".into(),
             metadata: StreamMetadata {
                 tokens: TokenCounts {
@@ -483,6 +487,8 @@ mod tests {
 
         let end = ServerMessage::StreamEnd(StreamEnd {
             rid: None,
+            msg_id: None,
+            revision: None,
             content: "hihi".into(),
             metadata: StreamMetadata {
                 tokens: TokenCounts {
@@ -522,6 +528,8 @@ mod tests {
         handler.feed(&chunk, None).unwrap();
         let end = ServerMessage::StreamEnd(StreamEnd {
             rid: None,
+            msg_id: None,
+            revision: None,
             content: "first".into(),
             metadata: StreamMetadata {
                 tokens: TokenCounts {
@@ -633,6 +641,8 @@ mod tests {
                 &mut w,
                 &ServerMessage::StreamEnd(StreamEnd {
                     rid: None,
+                    msg_id: None,
+                    revision: None,
                     content: "partial text".into(),
                     metadata: StreamMetadata {
                         tokens: TokenCounts {
@@ -766,6 +776,8 @@ mod tests {
                 &mut w,
                 &ServerMessage::StreamEnd(StreamEnd {
                     rid: None,
+                    msg_id: None,
+                    revision: None,
                     content: "Let me search memory—".into(),
                     metadata: meta("turn-1"),
                     finish_reason: "tool_use".into(),
@@ -819,6 +831,8 @@ mod tests {
                 &mut w,
                 &ServerMessage::StreamEnd(StreamEnd {
                     rid: None,
+                    msg_id: None,
+                    revision: None,
                     content: "Of course — her name is Maya.".into(),
                     metadata: meta("turn-2"),
                     finish_reason: "end_turn".into(),

@@ -325,24 +325,33 @@ pub(super) async fn handle_generation(
     )
     .await?;
 
+    let (stream_msg_id, stream_revision) = {
+        let engine = engine_arc.lock().await;
+        (
+            engine.messages().last().map(|m| m.msg_id.clone()),
+            Some(engine.current_revision()),
+        )
+    };
+
     // Emit StreamEnd ONLY after persistence completes — clients that issue
     // an immediate follow-up command (e.g. `memory_compact` via shore-mcp)
     // would otherwise race the persist write and snapshot stale engine
     // state. See QUIRKS.md (StreamEnd / persistence ordering).
-    shore_llm_client::stream::emit_stream_end(&ctx.direct_tx, request.rid.clone(), &result, true)
-        .await;
+    shore_llm_client::stream::emit_stream_end(
+        &ctx.direct_tx,
+        request.rid.clone(),
+        &result,
+        true,
+        stream_msg_id.clone(),
+        stream_revision,
+    )
+    .await;
 
     if ctx.live_speak.load(Ordering::Relaxed) {
         if let Some(ref tts_client) = ctx.tts_client {
             let text = result.content.clone();
             if !text.is_empty() {
-                let msg_id = engine_arc
-                    .lock()
-                    .await
-                    .messages()
-                    .last()
-                    .map(|m| m.msg_id.clone())
-                    .unwrap_or_default();
+                let msg_id = stream_msg_id.clone().unwrap_or_default();
                 let voice = effective_config
                     .app
                     .tts

@@ -656,6 +656,7 @@ fn expand_msg(msg: Message, entries: &mut Vec<ConversationEntry>) {
                 timestamp: msg.timestamp,
             },
             Role::Assistant => ConversationEntry::Assistant {
+                msg_id: Some(msg.msg_id),
                 content: msg.content,
                 images: msg.images,
                 timestamp: msg.timestamp,
@@ -726,6 +727,7 @@ fn expand_msg(msg: Message, entries: &mut Vec<ConversationEntry>) {
     let content = text_parts.join("\n");
     if !content.trim().is_empty() {
         entries.push(ConversationEntry::Assistant {
+            msg_id: Some(msg.msg_id),
             content,
             images: msg.images,
             timestamp: msg.timestamp,
@@ -868,18 +870,34 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> UiEffe
                 // present in `app.entries`. Attach streaming metadata to
                 // that entry — pushing a new one would duplicate it.
                 let metadata = app.stream.accumulated_metadata.take();
-                let slot = app.entries.iter_mut().rev().find_map(|e| match e {
-                    ConversationEntry::Assistant { metadata, .. } => Some(metadata),
-                    _ => None,
-                });
-                if let Some(slot) = slot {
-                    *slot = metadata;
+                let slot_pos = if let Some(target) = end.msg_id.as_deref() {
+                    app.entries.iter().rposition(|e| {
+                        matches!(
+                            e,
+                            ConversationEntry::Assistant {
+                                msg_id: Some(entry_msg_id),
+                                ..
+                            } if entry_msg_id == target
+                        )
+                    })
+                } else {
+                    app.entries
+                        .iter()
+                        .rposition(|e| matches!(e, ConversationEntry::Assistant { .. }))
+                };
+                if let Some(pos) = slot_pos {
+                    if let ConversationEntry::Assistant { metadata: slot, .. } =
+                        &mut app.entries[pos]
+                    {
+                        *slot = metadata;
+                    }
                 } else {
                     // Fallback: History hasn't been applied yet (shouldn't
                     // happen given daemon ordering). Push so the user isn't
                     // left with a blank turn.
                     let content = std::mem::take(&mut app.stream.accumulated_text);
                     app.entries.push(ConversationEntry::Assistant {
+                        msg_id: end.msg_id.clone(),
                         content,
                         images: vec![],
                         timestamp: String::new(),
@@ -1174,6 +1192,8 @@ mod redraw_tests {
             &mut app,
             ServerMessage::StreamEnd(StreamEnd {
                 rid: None,
+                msg_id: None,
+                revision: None,
                 content: "done".into(),
                 metadata: metadata(),
                 finish_reason: "end_turn".into(),
@@ -1191,6 +1211,8 @@ mod redraw_tests {
             &mut app,
             ServerMessage::StreamEnd(StreamEnd {
                 rid: None,
+                msg_id: None,
+                revision: None,
                 content: String::new(),
                 metadata: metadata(),
                 finish_reason: "tool_use".into(),
@@ -1250,5 +1272,106 @@ mod redraw_tests {
         );
 
         assert_eq!(effect.redraw, RedrawEffect::DeferredStream);
+    }
+
+    #[test]
+    fn final_stream_end_attaches_metadata_by_msg_id_when_available() {
+        let target_meta = metadata();
+        let mut app = App::default();
+        app.entries.push(ConversationEntry::Assistant {
+            msg_id: Some("m_target".into()),
+            content: "target".into(),
+            images: vec![],
+            timestamp: "t1".into(),
+            metadata: None,
+        });
+        app.entries.push(ConversationEntry::Assistant {
+            msg_id: Some("m_later".into()),
+            content: "later".into(),
+            images: vec![],
+            timestamp: "t2".into(),
+            metadata: None,
+        });
+
+        handle_server_message(
+            &mut app,
+            ServerMessage::StreamEnd(StreamEnd {
+                rid: None,
+                msg_id: Some("m_target".into()),
+                revision: Some(7),
+                content: "target".into(),
+                metadata: target_meta.clone(),
+                finish_reason: "end_turn".into(),
+                is_final: true,
+            }),
+        );
+
+        let target = app
+            .entries
+            .iter()
+            .find_map(|entry| match entry {
+                ConversationEntry::Assistant {
+                    msg_id: Some(msg_id),
+                    metadata,
+                    ..
+                } if msg_id == "m_target" => metadata.as_ref(),
+                _ => None,
+            })
+            .expect("target assistant metadata");
+        assert_eq!(target.model, target_meta.model);
+
+        let later_metadata = app.entries.iter().find_map(|entry| match entry {
+            ConversationEntry::Assistant {
+                msg_id: Some(msg_id),
+                metadata,
+                ..
+            } if msg_id == "m_later" => Some(metadata),
+            _ => None,
+        });
+        assert!(matches!(later_metadata, Some(None)));
+    }
+
+    #[test]
+    fn final_stream_end_with_unmatched_msg_id_does_not_annotate_latest_assistant() {
+        let mut app = App::default();
+        app.stream.accumulated_text = "new response".into();
+        app.entries.push(ConversationEntry::Assistant {
+            msg_id: Some("m_existing".into()),
+            content: "existing".into(),
+            images: vec![],
+            timestamp: "t1".into(),
+            metadata: None,
+        });
+
+        handle_server_message(
+            &mut app,
+            ServerMessage::StreamEnd(StreamEnd {
+                rid: None,
+                msg_id: Some("m_missing_from_history".into()),
+                revision: Some(8),
+                content: String::new(),
+                metadata: metadata(),
+                finish_reason: "end_turn".into(),
+                is_final: true,
+            }),
+        );
+
+        let existing_metadata = app.entries.iter().find_map(|entry| match entry {
+            ConversationEntry::Assistant {
+                msg_id: Some(msg_id),
+                metadata,
+                ..
+            } if msg_id == "m_existing" => Some(metadata),
+            _ => None,
+        });
+        assert!(matches!(existing_metadata, Some(None)));
+        assert!(app.entries.iter().any(|entry| matches!(
+            entry,
+            ConversationEntry::Assistant {
+                msg_id: Some(msg_id),
+                metadata: Some(_),
+                ..
+            } if msg_id == "m_missing_from_history"
+        )));
     }
 }

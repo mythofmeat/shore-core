@@ -233,6 +233,8 @@ pub async fn emit_stream_end(
     rid: Option<String>,
     result: &StreamResult,
     is_final: bool,
+    msg_id: Option<String>,
+    revision: Option<u64>,
 ) {
     let metadata = StreamMetadata {
         tokens: TokenCounts {
@@ -250,6 +252,8 @@ pub async fn emit_stream_end(
     let _ = tx
         .send(ServerMessage::StreamEnd(StreamEnd {
             rid,
+            msg_id,
+            revision,
             content: result.content.clone(),
             metadata,
             finish_reason: result.finish_reason.clone(),
@@ -345,12 +349,14 @@ mod tests {
         );
 
         // The caller emits via emit_stream_end.
-        emit_stream_end(&direct_tx, None, &result, true).await;
+        emit_stream_end(&direct_tx, None, &result, true, None, None).await;
 
         let msg4 = direct_rx.recv().await.unwrap();
         match msg4 {
             ServerMessage::StreamEnd(end) => {
                 assert_eq!(end.content, "Hello world");
+                assert_eq!(end.msg_id, None);
+                assert_eq!(end.revision, None);
                 assert_eq!(end.metadata.model, "claude-test");
                 assert_eq!(end.metadata.tokens.input, 10);
                 assert_eq!(end.metadata.tokens.cache_read, 8);
@@ -852,9 +858,21 @@ mod tests {
         }
 
         // The caller emits StreamEnd, propagating the same rid.
-        emit_stream_end(&direct_tx, Some("req_stream_01".into()), &result, true).await;
+        emit_stream_end(
+            &direct_tx,
+            Some("req_stream_01".into()),
+            &result,
+            true,
+            Some("m_stream_01".into()),
+            Some(42),
+        )
+        .await;
         match direct_rx.recv().await.unwrap() {
-            ServerMessage::StreamEnd(msg) => assert_eq!(msg.rid.as_deref(), Some("req_stream_01")),
+            ServerMessage::StreamEnd(msg) => {
+                assert_eq!(msg.rid.as_deref(), Some("req_stream_01"));
+                assert_eq!(msg.msg_id.as_deref(), Some("m_stream_01"));
+                assert_eq!(msg.revision, Some(42));
+            }
             other => panic!("Expected StreamEnd, got {:?}", other),
         }
 
