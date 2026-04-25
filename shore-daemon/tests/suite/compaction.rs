@@ -22,14 +22,14 @@ fn compaction_llm_response(topic: &str) -> String {
 The user and assistant exchanged messages about {topic}. The conversation was brief.
 </recap>
 
-<entry>
-<summary>
+<memory>
+<write path="topics/{topic}.md">
+# {topic}
+
 - User and assistant discussed {topic}
 - The exchange was informative
-</summary>
-<topic_tags>{topic}, conversation</topic_tags>
-<memory_type>episodic</memory_type>
-</entry>"#,
+</write>
+</memory>"#,
         topic = topic
     )
 }
@@ -60,7 +60,7 @@ async fn test_compaction_triggers_on_max_turns() {
         .mock_llm
         .enqueue_json_text_optional(&compaction_llm_response("messages"))
         .await;
-    // Embedding is called once per <entry> block.  dimensions=8 per TestConfigBuilder.
+    // Optional hybrid retrieval indexing may ask for one embedding. dimensions=8 per TestConfigBuilder.
     harness.mock_llm.enqueue_embedding_optional(8).await;
 
     // Directly trigger compaction — bypasses the 30s autonomy tick.
@@ -77,7 +77,7 @@ async fn test_compaction_triggers_on_max_turns() {
         messages.len() < 6,
         "Expected compaction to trim active.jsonl below 6 messages, got {}. \
          Compaction may have failed — check that the LLM mock response includes \
-         valid <recap> and <entry> XML blocks.",
+         valid <recap> and <memory><write> XML blocks.",
         messages.len()
     );
 

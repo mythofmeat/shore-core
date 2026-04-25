@@ -2367,7 +2367,7 @@ mod tests {
         // then check if tools are modified.
         let original_tools: Vec<serde_json::Value> = vec![
             json!({"name": "check_time", "input_schema": {}}),
-            json!({"name": "memory", "input_schema": {}}),
+            json!({"name": "memory_search", "input_schema": {}}),
         ];
 
         let request = LlmRequest {

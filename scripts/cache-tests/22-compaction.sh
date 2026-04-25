@@ -122,8 +122,8 @@ COMPACT_OUT="$(SHORE_CONFIG_DIR="$CONFIG_DIR" SHORE_DATA_DIR="$DATA_DIR" \
     memory compact 2>&1)" || true
 echo -e "${CYAN}[$TEST_NAME]${NC} compact output: $COMPACT_OUT"
 
-# Verify compaction actually ran — look for "compacted" in output.
-if ! echo "$COMPACT_OUT" | grep -qi 'compacted\|entries_created'; then
+# Verify compaction actually ran — look for the current markdown-memory output.
+if ! echo "$COMPACT_OUT" | grep -qi 'compacted\|memory files'; then
     harness_fail "compaction did not run: $COMPACT_OUT"
 fi
 

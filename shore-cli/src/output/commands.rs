@@ -696,8 +696,8 @@ fn print_compact_result(data: &serde_json::Value) {
     write_row(&mut out, "Character", char_name);
 
     if status == "dry_run" {
-        let would = data["would_create_entries"].as_u64().unwrap_or(0);
-        write_row(&mut out, "Would create", &format!("{would} entries"));
+        let would = data["would_write_files"].as_u64().unwrap_or(0);
+        write_row(&mut out, "Would write", &format!("{would} files"));
         let msgs = data["message_count"].as_u64().unwrap_or(0);
         let retained_turns = data["retained_turns"].as_u64().unwrap_or(0);
         write_row(
@@ -706,8 +706,10 @@ fn print_compact_result(data: &serde_json::Value) {
             &format!("{msgs} compacted, {retained_turns} turns retained"),
         );
     } else {
-        let entries = data["entries_created"].as_u64().unwrap_or(0);
-        write_row(&mut out, "Entries", &format!("{entries} new"));
+        let files = data["memory_files_written"]
+            .as_array()
+            .map_or(0, |files| files.len());
+        write_row(&mut out, "Memory files", &format!("{files} written"));
         let msgs = data["message_count"].as_u64().unwrap_or(0);
         let retained_turns = data["retained_turns"].as_u64().unwrap_or(0);
         write_row(

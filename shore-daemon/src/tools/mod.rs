@@ -259,12 +259,12 @@ fn ensure_workspace_memory_access(
     input: &Value,
     ctx: &dyn ToolContext,
 ) -> Result<(), ToolError> {
-    let touches_memories = input
+    let touches_memory = input
         .get("path")
         .and_then(|v| v.as_str())
-        .is_some_and(path_requests_memories_namespace);
+        .is_some_and(path_requests_memory_namespace);
 
-    if !touches_memories && name != "exec" {
+    if !touches_memory && name != "exec" {
         return Ok(());
     }
 
@@ -293,7 +293,7 @@ fn ensure_workspace_memory_access(
     }
 }
 
-fn path_requests_memories_namespace(path: &str) -> bool {
+fn path_requests_memory_namespace(path: &str) -> bool {
     let normalized = path
         .trim()
         .trim_start_matches(['/', '\\'])
@@ -558,7 +558,7 @@ mod tests {
     }
 
     #[test]
-    fn render_tool_defs_hides_memories_namespace_when_memory_disabled() {
+    fn render_tool_defs_hides_memory_namespace_when_memory_disabled() {
         let mut toggles = ToolToggles::default();
         toggles.set("memory", false);
 

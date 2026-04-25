@@ -22,16 +22,6 @@ pub struct ConversationMessage {
     pub is_tool_result_only: bool,
 }
 
-/// A memory entry extracted by the LLM during compaction.
-#[derive(Debug, Clone)]
-pub struct CompactedEntry {
-    pub memory_type: String,
-    pub summary_text: String,
-    pub topic_tags: String,
-    pub topic_key: String,
-    pub confidence: f64,
-}
-
 /// Outcome of a compaction operation.
 #[derive(Debug)]
 pub enum CompactionOutcome {
@@ -56,7 +46,7 @@ pub struct CompactionResult {
 /// Result of a dry-run compaction.
 #[derive(Debug)]
 pub struct DryRunResult {
-    pub would_create_entries: usize,
+    pub would_write_files: usize,
     pub file_ops_preview: Vec<crate::memory::compaction::parser::MemoryFileOp>,
     pub message_count: usize,
     pub retained_count: usize,
@@ -107,7 +97,7 @@ pub enum CompactionError {
 /// LLM client for compaction. Takes a rendered prompt, returns raw LLM text.
 ///
 /// The library owns the prompt format (XML) and handles parsing the response
-/// into recap + entries. The impl just sends text and returns text.
+/// into recap + markdown file operations. The impl just sends text and returns text.
 pub trait CompactionLlm: Send + Sync {
     fn summarize(
         &self,
