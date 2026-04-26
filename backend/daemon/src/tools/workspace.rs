@@ -275,7 +275,7 @@ fn truncate_chars(text: &str, limit: usize) -> String {
 const SEARCH_DEFAULT_MAX_RESULTS: usize = 20;
 const SEARCH_MAX_RESULTS: usize = 100;
 const SEARCH_MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
-const SEARCH_EXCERPT_CHARS: usize = 240;
+const SEARCH_EXCERPT_CHARS: usize = 1_200;
 
 fn normalize_search_query(input: &Value) -> Result<String, ToolError> {
     let query = input
@@ -321,13 +321,104 @@ fn is_root_memory_dir(workspace_dir: &str, path: &Path) -> bool {
     )
 }
 
-fn excerpt_line(line: &str) -> String {
-    let trimmed = line.trim();
-    if trimmed.chars().count() <= SEARCH_EXCERPT_CHARS {
-        trimmed.to_string()
-    } else {
-        format!("{}...", truncate_chars(trimmed, SEARCH_EXCERPT_CHARS))
+fn find_case_insensitive_match(line: &str, query_lower: &str) -> Option<(usize, usize)> {
+    let folded = line.to_lowercase();
+    let folded_start = folded.find(query_lower)?;
+    let folded_end = folded_start + query_lower.len();
+
+    let mut folded_pos = 0usize;
+    let mut original_start = None;
+    let mut original_end = None;
+
+    for (original_idx, ch) in line.char_indices() {
+        let original_next = original_idx + ch.len_utf8();
+        let char_folded_start = folded_pos;
+        for folded_ch in ch.to_lowercase() {
+            folded_pos += folded_ch.len_utf8();
+        }
+        let char_folded_end = folded_pos;
+
+        if char_folded_end > folded_start && char_folded_start < folded_end {
+            original_start.get_or_insert(original_idx);
+            original_end = Some(original_next);
+            if char_folded_end >= folded_end {
+                break;
+            }
+        }
     }
+
+    Some((
+        original_start.unwrap_or(0),
+        original_end.unwrap_or(line.len()),
+    ))
+}
+
+fn byte_index_before_chars(text: &str, end: usize, count: usize) -> usize {
+    let mut start = end;
+    for _ in 0..count {
+        let Some((idx, _)) = text[..start].char_indices().next_back() else {
+            return 0;
+        };
+        start = idx;
+    }
+    start
+}
+
+fn byte_index_after_chars(text: &str, start: usize, count: usize) -> usize {
+    let mut end = start;
+    for _ in 0..count {
+        let Some((offset, ch)) = text[end..].char_indices().next() else {
+            return text.len();
+        };
+        end += offset + ch.len_utf8();
+    }
+    end
+}
+
+fn excerpt_line(line: &str, match_start: usize, match_end: usize) -> String {
+    let trimmed_start = line.trim_start();
+    let leading_trimmed_bytes = line.len() - trimmed_start.len();
+    let trimmed = trimmed_start.trim_end();
+
+    let match_start = match_start
+        .saturating_sub(leading_trimmed_bytes)
+        .min(trimmed.len());
+    let match_end = match_end
+        .saturating_sub(leading_trimmed_bytes)
+        .min(trimmed.len())
+        .max(match_start);
+
+    let match_chars = trimmed[match_start..match_end].chars().count();
+    let available_before = trimmed[..match_start].chars().count();
+    let available_after = trimmed[match_end..].chars().count();
+    let context_chars = SEARCH_EXCERPT_CHARS.saturating_sub(match_chars);
+    let mut before_chars = (context_chars / 2).min(available_before);
+    let mut after_chars = (context_chars - before_chars).min(available_after);
+
+    let unused_after = context_chars.saturating_sub(before_chars + after_chars);
+    if unused_after > 0 {
+        let extra_before = (available_before - before_chars).min(unused_after);
+        before_chars += extra_before;
+    }
+
+    let unused_before = context_chars.saturating_sub(before_chars + after_chars);
+    if unused_before > 0 {
+        let extra_after = (available_after - after_chars).min(unused_before);
+        after_chars += extra_after;
+    }
+
+    let excerpt_start = byte_index_before_chars(trimmed, match_start, before_chars);
+    let excerpt_end = byte_index_after_chars(trimmed, match_end, after_chars);
+
+    let mut excerpt = String::new();
+    if excerpt_start > 0 {
+        excerpt.push_str("...");
+    }
+    excerpt.push_str(&trimmed[excerpt_start..excerpt_end]);
+    if excerpt_end < trimmed.len() {
+        excerpt.push_str("...");
+    }
+    excerpt
 }
 
 // ---------------------------------------------------------------------------
@@ -625,13 +716,14 @@ pub async fn handle_search(
 
         searched_files += 1;
         for (line_idx, line) in content.lines().enumerate() {
-            if !line.to_lowercase().contains(&query_lower) {
+            let Some((match_start, match_end)) = find_case_insensitive_match(line, &query_lower)
+            else {
                 continue;
-            }
+            };
             results.push(json!({
                 "path": display_path_for(workspace_dir, &path),
                 "line": line_idx + 1,
-                "excerpt": excerpt_line(line),
+                "excerpt": excerpt_line(line, match_start, match_end),
             }));
             if results.len() >= max_results {
                 break;
@@ -1088,6 +1180,36 @@ mod tests {
         assert!(tmp.path().join("workspace/memory/people/ren.md").exists());
     }
 
+    #[test]
+    fn search_excerpt_centers_match_and_marks_clipping() {
+        let line = format!(
+            "{}German Shepherd{}",
+            "before ".repeat(140),
+            " after".repeat(140)
+        );
+        let (match_start, match_end) =
+            find_case_insensitive_match(&line, "german shepherd").unwrap();
+
+        let excerpt = excerpt_line(&line, match_start, match_end);
+
+        assert!(excerpt.contains("German Shepherd"));
+        assert!(excerpt.starts_with("..."));
+        assert!(excerpt.ends_with("..."));
+        assert!(excerpt.chars().count() <= SEARCH_EXCERPT_CHARS + 6);
+    }
+
+    #[test]
+    fn search_excerpt_preserves_source_casing() {
+        let line = "metadata: the Important Phrase appears here";
+        let (match_start, match_end) =
+            find_case_insensitive_match(line, "important phrase").unwrap();
+
+        let excerpt = excerpt_line(line, match_start, match_end);
+
+        assert!(excerpt.contains("Important Phrase"));
+        assert!(!excerpt.contains("important phrase appears"));
+    }
+
     #[tokio::test]
     async fn search_finds_workspace_and_memory_matches() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1117,6 +1239,37 @@ mod tests {
             .collect();
         assert!(paths.contains(&"notes/ideas.md"));
         assert!(paths.contains(&"memory/people/ren.md"));
+    }
+
+    #[tokio::test]
+    async fn search_excerpt_includes_match_in_long_single_line_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("workspace");
+        let ws_str = ws.to_string_lossy().to_string();
+        let metadata = "metadata ".repeat(200);
+        let line = format!(
+            r#"{{"metadata":"{}","message":"spotted a German Shepherd near the gate"}}"#,
+            metadata
+        );
+
+        handle_write(
+            json!({"path": "archive/chat.jsonl", "content": line}),
+            &ws_str,
+        )
+        .await
+        .unwrap();
+
+        let result = handle_search(json!({"query": "german shepherd"}), &ws_str, true)
+            .await
+            .unwrap();
+        let results = result["results"].as_array().unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["path"], "archive/chat.jsonl");
+        assert_eq!(results[0]["line"], 1);
+        let excerpt = results[0]["excerpt"].as_str().unwrap();
+        assert!(excerpt.contains("German Shepherd"));
+        assert!(excerpt.starts_with("..."));
+        assert!(excerpt.chars().count() <= SEARCH_EXCERPT_CHARS + 6);
     }
 
     #[tokio::test]
