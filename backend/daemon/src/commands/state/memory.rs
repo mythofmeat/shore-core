@@ -124,10 +124,16 @@ pub async fn memory_dream(
         return Ok(json!(status));
     }
 
-    let result =
-        crate::memory::dreaming::run_sweep(&ctx.config.dirs.config, char_name, cfg, dry_run, force)
-            .await
-            .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
+    let result = crate::memory::dreaming::run_librarian_sweep(
+        &ctx.config,
+        &ctx.data_dir,
+        &ctx.llm_client,
+        char_name,
+        dry_run,
+        force,
+    )
+    .await
+    .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
     match result {
         Some(result) => Ok(json!(result)),
         None => Ok(json!({

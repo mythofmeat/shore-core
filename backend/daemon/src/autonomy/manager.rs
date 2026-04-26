@@ -1030,11 +1030,14 @@ async fn execute_scheduled_dream(character: &str, ctx: &TickContext) {
     let Some(loaded_config) = ctx.loaded_config.as_deref() else {
         return;
     };
-    let cfg = &loaded_config.app.memory.dreaming;
-    match crate::memory::dreaming::run_sweep(
-        &loaded_config.dirs.config,
+    let Some(llm_client) = ctx.llm_client.as_ref() else {
+        return;
+    };
+    match crate::memory::dreaming::run_librarian_sweep(
+        loaded_config,
+        &ctx.data_dir,
+        llm_client,
         character,
-        cfg,
         false,
         false,
     )
@@ -1043,9 +1046,10 @@ async fn execute_scheduled_dream(character: &str, ctx: &TickContext) {
         Ok(Some(result)) => {
             info!(
                 character,
-                candidates = result.candidates.len(),
-                promoted = result.promoted.len(),
-                "Dreaming: scheduled sweep complete"
+                tool_rounds = result.tool_rounds,
+                changed = result.changed.len(),
+                audit_appended = result.audit_appended,
+                "Dreaming: scheduled AI librarian pass complete"
             );
         }
         Ok(None) => {}
