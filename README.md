@@ -4,7 +4,7 @@ Shore is a persistent AI character engine built in Rust. It is not a stateless c
 
 The project goal is personal and specific: make an AI character chat program that improves on the parts of SillyTavern that hurt, while leaning into long-lived character continuity, inspectable memory, Anthropic cache discipline, and a character that can do useful things with its own time.
 
-For the current branch notes, read [OpenClawify Patch Notes](docs/PATCH_NOTES_OPENCLAWIFY.md).
+For the current branch notes, read the [Unreleased changelog](CHANGELOG.md#unreleased--openclawify).
 
 ## What Matters
 
@@ -87,9 +87,8 @@ Legacy `character.md`, `user.md`, and `prompts/system.md` character layouts are 
 - [Features](FEATURES.md) — user-facing behavior
 - [Configuration](CONFIGURATION.md) — config reference
 - [Architecture](ARCHITECTURE.md) — implementation map
-- [Invariants](docs/INVARIANTS.md) — correctness constraints
-- [Quirks](docs/QUIRKS.md) — sharp edges and external weirdness
-- [OpenClawify Patch Notes](docs/PATCH_NOTES_OPENCLAWIFY.md) — what changed on this branch
+- [Invariants](docs/dev-info/INVARIANTS.md) — correctness constraints
+- [Quirks](docs/dev-info/QUIRKS.md) — sharp edges and external weirdness
 
 ## Tests
 

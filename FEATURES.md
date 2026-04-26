@@ -63,19 +63,17 @@ The old runtime SQLite/vector/RAG memory stack is not the normal source of truth
 scripts/migrate-memory.py
 ```
 
-Memory tools:
+Current LLM-facing memory surfaces:
 
-| Tool | Purpose |
+| Surface | Purpose |
 | --- | --- |
-| `memory_read` | read one markdown memory file |
-| `memory_write` | write one markdown memory file |
-| `memory_search` | ranked search over markdown memory |
-| `memory_list` | list markdown memory files |
+| Workspace `read`, `list_files`, `search` on `memory/...` | inspect markdown memory files when memory read access is enabled |
+| Workspace `write`, `edit` on `memory/...` | update markdown memory files when memory write access is enabled |
+| `search_history` | search active and compacted conversation transcripts |
+| CLI/MCP memory commands | user/developer natural-language memory query surfaces |
 
-Workspace tools can also use `memory/...` paths when memory access is enabled.
-
-The CLI and MCP still expose a natural-language memory query command, but the
-LLM-facing runtime tools are the granular `memory_*` tools above.
+There are no separate LLM-facing `memory_read`, `memory_write`,
+`memory_search`, or `memory_list` tools on this branch.
 
 Search is lexical by default. If an embedding profile is configured, retrieval can use a rebuildable hybrid semantic+lexical index. The index is a ranking aid only; markdown files remain authoritative.
 
@@ -141,17 +139,25 @@ Tools are part of the character experience, not just an automation API.
 
 Main tool groups:
 
-- memory tools
-- workspace `read`, `write`, `edit`, `list_files`, `exec`
-- scratchpad tools
+- workspace `read`, `write`, `edit`, `list_files`, `search`, and `exec`
+- workspace `memory/...` access when memory gates allow it
+- conversation transcript search via `search_history`
 - web search and fetch
-- image send/generate
+- image upload/vision and generated images via `generate_image`
 - activity heatmap
 - time and dice
 
 `exec` runs only allowlisted commands, does not invoke a shell, and now rejects path arguments outside the character workspace.
 
-Memory access gates apply consistently: disabling memory hides memory tools and blocks `memory/...` paths through workspace tools.
+Memory access gates apply consistently: disabling memory blocks `memory/...`
+paths through workspace tools, hides or disables history/memory read surfaces as
+appropriate, and hides `exec` unless memory read/write are fully enabled.
+
+Uploaded images may be persisted internally for history, replay, and UI display,
+and their bytes are sent to capable models for vision. Uploaded attachment
+filesystem paths are internal and are not exposed as something the character
+should remember, reuse, or send later. The `generate_image` tool creates and
+sends newly generated images.
 
 Private conversations suppress memory access.
 
