@@ -72,7 +72,7 @@ Why:
 
 ## 2026-04-24: Dreaming Is Scheduled Memory Consolidation
 
-Dreaming is the opt-in consolidation path. It stages machine-readable state in `.dreams/`, writes human-reviewable reports to `DREAMS.md`, and promotes durable facts into `MEMORY.md`.
+Dreaming is the opt-in consolidation path. It stages machine-readable state in `.dreams/`, writes human-reviewable reports to `DREAMS.md`, and promotes durable facts into `MEMORY.md` only during Deep Sleep after scoring gates pass. `DREAMS.md` is not memory and generated dreaming artifacts are excluded from later candidate ingestion.
 
 ## 2026-04-24: Remove Separate Collation As A Runtime Requirement
 

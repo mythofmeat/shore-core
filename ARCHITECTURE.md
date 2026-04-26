@@ -172,7 +172,9 @@ Dormancy stops autonomous LLM calls until user engagement resumes.
 
 Cache keepalive is separate from heartbeat. It exists to preserve Anthropic cache warmth, not to simulate character autonomy.
 
-Dreaming is the scheduled memory consolidation path. When autonomy and `[memory.dreaming]` are enabled, a due sweep stages state in `workspace/memory/.dreams/`, appends reviewable notes to `workspace/memory/DREAMS.md`, and promotes qualified durable facts into `workspace/memory/MEMORY.md`.
+Dreaming is the scheduled memory consolidation path. When autonomy and `[memory.dreaming]` are enabled, a due sweep runs Light -> REM -> Deep: Light stages deduplicated candidate state in `workspace/memory/.dreams/`, REM records theme/reinforcement signals, and Deep applies scoring gates before appending qualified durable facts to `workspace/memory/MEMORY.md`.
+
+`workspace/memory/DREAMS.md` is a human Dream Diary only. It is safe to edit for review, but it is not long-term memory and is not re-ingested. Generated outputs under `.dreams/**`, `DREAMS.md`, `dreams.md`, and `memory/dreaming/**` are excluded from candidate source collection.
 
 ## LLM Provider Boundary
 

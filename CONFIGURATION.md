@@ -205,7 +205,9 @@ frequency = "0 3 * * *"
 max_tool_rounds = 12
 ```
 
-Dreaming is opt-in and requires `[behavior.autonomy].enabled = true`. It runs independently of heartbeat and writes `.dreams/`, `DREAMS.md`, and `MEMORY.md` under `workspace/memory/`.
+Dreaming is opt-in and requires `[behavior.autonomy].enabled = true`. It runs independently of heartbeat as a Light -> REM -> Deep consolidation sweep. Machine-readable state is written under `.dreams/`; optional phase reports are written under `dreaming/<phase>/`; the human review diary is `DREAMS.md`; only Deep may append durable facts to `MEMORY.md`.
+
+`DREAMS.md` is review output, not long-term memory. Dreaming excludes generated artifacts from future candidate ingestion, including `.dreams/**`, `DREAMS.md`, `dreams.md`, and `dreaming/**`.
 
 ## `[memory.retrieval]`
 

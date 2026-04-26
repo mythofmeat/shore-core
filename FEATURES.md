@@ -133,7 +133,9 @@ Heartbeat does not force a recap or write memory by itself. Durable notes are cr
 
 ## Dreaming
 
-Dreaming is an opt-in scheduled memory consolidation sweep. It stages machine-readable candidates under `workspace/memory/.dreams/`, writes a human review surface to `workspace/memory/DREAMS.md`, and promotes qualified durable facts into `workspace/memory/MEMORY.md`.
+Dreaming is an opt-in scheduled memory consolidation sweep with explicit Light, REM, and Deep phases. Light stages deduplicated candidate signals from normal markdown memory sources into `workspace/memory/.dreams/`. REM records deterministic theme and reinforcement signals. Deep is the only phase allowed to append qualified durable facts to `workspace/memory/MEMORY.md`.
+
+`workspace/memory/DREAMS.md` is a Dream Diary for human review, not long-term memory and not a source of promotion truth. Generated dreaming output is excluded from future candidate ingestion, including `.dreams/**`, `DREAMS.md`, `dreams.md`, and `memory/dreaming/**`.
 
 ## Tools
 
