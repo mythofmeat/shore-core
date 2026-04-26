@@ -1,5 +1,7 @@
 Goal
 
+Status: Completed on 2026-04-26.
+
 Fix Shore’s dreaming system so it behaves like an OpenClaw-style memory consolidation pipeline instead of a superficial keyword scan with “Light / REM / Deep” labels.
 
 The desired behavior:
@@ -63,7 +65,7 @@ Relevant existing plumbing:
 
 Implementation requirements
 
-1. Replace the superficial one-pass keyword sweep with a real phase-oriented sweep.
+1. [x] Replace the superficial one-pass keyword sweep with a real phase-oriented sweep.
 
 Implement a pipeline roughly like:
 
@@ -107,7 +109,7 @@ Implement a pipeline roughly like:
   - Promote only qualified durable entries to `MEMORY.md`.
   - Write promotion/rejection explanation to `DREAMS.md` and optionally `memory/dreaming/deep/YYYY-MM-DD.md`.
 
-2. Preserve Shore’s markdown-first philosophy.
+2. [x] Preserve Shore’s markdown-first philosophy.
 
 Do not introduce a database for dreaming.
 
@@ -120,7 +122,7 @@ Use JSON/JSONL under `.dreams/` for machine state, for example:
 
 Exact file names can differ, but keep them obvious, inspectable, and git-diffable.
 
-3. Make `DREAMS.md` explicitly human-review-only.
+3. [x] Make `DREAMS.md` explicitly human-review-only.
 
 Change generated `DREAMS.md` content so it clearly says:
 
@@ -174,7 +176,7 @@ Rejected/deferred:
 - Safe to edit/delete for human review.
 - Does not control promotion state.
 
-4. Add real scoring gates.
+4. [x] Add real scoring gates.
 
 Do not rely only on “contains likes/prefers/project” style scoring.
 
@@ -212,7 +214,7 @@ Suggested initial gates:
 
 Because Shore may not yet have OpenClaw’s recall/query-diversity machinery, implement placeholders cleanly rather than pretending they exist. For example, `unique_query_count` can be optional or defaulted, but the data model should support it.
 
-5. Avoid re-ingestion loops.
+5. [x] Avoid re-ingestion loops.
 
 Generated files must not become future candidate sources:
 
@@ -223,7 +225,7 @@ Generated files must not become future candidate sources:
 
 `MEMORY.md` may be read for dedupe checks, but it should not be treated as a source of new candidates for promotion.
 
-6. Preserve dry-run behavior.
+6. [x] Preserve dry-run behavior.
 
 `run_sweep(..., dry_run = true, ...)` must not write:
 
@@ -241,7 +243,7 @@ Dry-run should return a full preview structure:
 - rejected/deferred entries
 - would-write paths
 
-7. Preserve existing command behavior.
+7. [x] Preserve existing command behavior.
 
 The existing `memory_dream` command path should continue to work:
 
@@ -261,7 +263,7 @@ But its returned JSON should become more useful:
 
 Do not break callers unnecessarily unless there is a good reason.
 
-8. Keep config minimal for now.
+8. [x] Keep config minimal for now.
 
 Do not overbuild config unless needed.
 
@@ -274,7 +276,7 @@ max_tool_rounds = 12
 
 It is okay to add conservative scoring constants in code first. If adding config keys, keep defaults backward-compatible and update docs/tests.
 
-9. Update docs.
+9. [x] Update docs.
 
 Update these docs to match the new behavior:
 
@@ -291,7 +293,7 @@ Docs should emphasize:
 - Light and REM never promote.
 - generated dreaming output is excluded from future candidate ingestion.
 
-10. Tests
+10. [x] Tests
 
 Add or update tests covering:
 
@@ -329,6 +331,13 @@ Risks and edge cases
 - Existing tests for symlink escape in `dreaming.rs` must remain meaningful.
 - The order of phases should be Light → REM → Deep.
 - The OpenClaw docs list Light → Deep → REM in one table but describe sweep execution as light → REM → deep elsewhere; for Shore, use Light → REM → Deep because it matches the desired narrative: stage, reflect, promote.
+
+Completion notes
+
+- Implemented Light -> REM -> Deep pipeline in `shore-daemon/src/memory/dreaming.rs`.
+- Added JSON machine state under `.dreams/`, human review diary entries in `DREAMS.md`, optional phase reports under `dreaming/<phase>/`, and Deep-only `MEMORY.md` promotion.
+- Added deterministic scoring gates, source rehydration, duplicate checks against `MEMORY.md`, and generated-output source exclusions.
+- Updated command JSON/CLI summaries, docs, and tests.
 
 Suggested validation steps
 
