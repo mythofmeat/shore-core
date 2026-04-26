@@ -63,6 +63,7 @@ Create a character workspace:
   TOOLS.md
   HEARTBEAT.md
   memory/
+    MEMORY.md
 ```
 
 Minimal `SOUL.md`:

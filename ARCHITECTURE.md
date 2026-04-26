@@ -62,7 +62,6 @@ $XDG_DATA_HOME/shore/<Character>/
     AGENTS.md
     TOOLS.md
     HEARTBEAT.md
-    RECENT_MEMORY.md
   compaction.json
   segments/
   deferred_edits.jsonl
@@ -78,6 +77,7 @@ $XDG_DATA_HOME/shore/ledger.db
 ## Prompt Assembly
 
 Prompt assembly reads protected prompt files from `active_prompt/`, not directly from editable workspace files.
+It reads the prompt-visible memory index directly from `workspace/memory/MEMORY.md`.
 
 Normal chat uses:
 
@@ -85,7 +85,7 @@ Normal chat uses:
 - `USER.md`
 - `AGENTS.md`
 - `TOOLS.md`
-- `RECENT_MEMORY.md`
+- `workspace/memory/MEMORY.md`
 - current conversation messages
 - capability/tool guidance
 
@@ -172,9 +172,11 @@ Dormancy stops autonomous LLM calls until user engagement resumes.
 
 Cache keepalive is separate from heartbeat. It exists to preserve Anthropic cache warmth, not to simulate character autonomy.
 
-Dreaming is the scheduled memory consolidation path. When autonomy and `[memory.dreaming]` are enabled, a due sweep runs Light -> REM -> Deep: Light stages deduplicated candidate state in `workspace/memory/.dreams/`, REM records theme/reinforcement signals, and Deep applies scoring gates before appending qualified durable facts to `workspace/memory/MEMORY.md`.
+Dreaming is the scheduled memory consolidation path. When autonomy and `[memory.dreaming]` are enabled, a due sweep runs Light -> REM -> Deep: Light stages deduplicated candidate state in `workspace/memory/.dreams/`, REM records theme/reinforcement signals, and Deep applies scoring gates before rewriting `workspace/memory/MEMORY.md` as the prompt-visible memory index.
 
-`workspace/memory/DREAMS.md` is a human Dream Diary only. It is safe to edit for review, but it is not long-term memory and is not re-ingested. Generated outputs under `.dreams/**`, `DREAMS.md`, `dreams.md`, and `memory/dreaming/**` are excluded from candidate source collection.
+`workspace/memory/MEMORY.md` orients the character with a map of memory files, recently updated files, and still-relevant conversational throughlines. It should not duplicate the roles of `SOUL.md`, `USER.md`, `AGENTS.md`, `TOOLS.md`, or `HEARTBEAT.md`.
+
+`workspace/memory/DREAMS.md` is a human Dream Diary only. It is safe to edit for review, but it is not long-term memory and is not re-ingested. Generated outputs under `.dreams/**`, `DREAMS.md`, `dreams.md`, `MEMORY.md`, and `memory/dreaming/**` are excluded from candidate source collection.
 
 ## LLM Provider Boundary
 

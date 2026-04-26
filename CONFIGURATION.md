@@ -194,7 +194,7 @@ max_context_tokens = 200000
 keep_recent_turns = 2
 ```
 
-Compaction writes markdown memory, updates `active_prompt/RECENT_MEMORY.md`, archives old turns, and activates staged protected prompt edits.
+Compaction writes markdown memory notes, archives old turns, and activates staged protected prompt edits. It does not write `MEMORY.md`; dreaming maintains that prompt-visible index.
 
 ## `[memory.dreaming]`
 
@@ -205,9 +205,9 @@ frequency = "0 3 * * *"
 max_tool_rounds = 12
 ```
 
-Dreaming is opt-in and requires `[behavior.autonomy].enabled = true`. It runs independently of heartbeat as a Light -> REM -> Deep consolidation sweep. Machine-readable state is written under `.dreams/`; optional phase reports are written under `dreaming/<phase>/`; the human review diary is `DREAMS.md`; only Deep may append durable facts to `MEMORY.md`.
+Dreaming is opt-in and requires `[behavior.autonomy].enabled = true`. It runs independently of heartbeat as a Light -> REM -> Deep consolidation sweep. Machine-readable state is written under `.dreams/`; optional phase reports are written under `dreaming/<phase>/`; the human review diary is `DREAMS.md`; Deep rewrites `MEMORY.md` as the prompt-visible memory index.
 
-`DREAMS.md` is review output, not long-term memory. Dreaming excludes generated artifacts from future candidate ingestion, including `.dreams/**`, `DREAMS.md`, `dreams.md`, and `dreaming/**`.
+`DREAMS.md` is review output, not long-term memory. `MEMORY.md` is an index of memory files, recent updates, and conversational throughlines. Dreaming excludes generated artifacts from future candidate ingestion, including `.dreams/**`, `DREAMS.md`, `dreams.md`, `MEMORY.md`, and `dreaming/**`.
 
 ## `[memory.retrieval]`
 

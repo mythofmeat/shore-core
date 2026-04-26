@@ -63,19 +63,15 @@ The old runtime SQLite/vector/RAG memory stack is not the normal source of truth
 scripts/migrate-memory.py
 ```
 
-Memory tools:
+LLM-facing workspace tools can read, write, edit, list, and search memory files
+through `memory/...` paths when memory access is enabled.
 
-| Tool | Purpose |
-| --- | --- |
-| `memory_read` | read one markdown memory file |
-| `memory_write` | write one markdown memory file |
-| `memory_search` | ranked search over markdown memory |
-| `memory_list` | list markdown memory files |
+`workspace/memory/MEMORY.md` is prompt-visible. It is a concise index of memory
+files, recently updated files, and still-relevant conversational throughlines;
+it is not the character definition, user profile, standing behavior, tool guide,
+or heartbeat guide.
 
-Workspace tools can also use `memory/...` paths when memory access is enabled.
-
-The CLI and MCP still expose a natural-language memory query command, but the
-LLM-facing runtime tools are the granular `memory_*` tools above.
+The CLI and MCP still expose a natural-language memory query command.
 
 Search is lexical by default. If an embedding profile is configured, retrieval can use a rebuildable hybrid semantic+lexical index. The index is a ranking aid only; markdown files remain authoritative.
 
@@ -84,10 +80,12 @@ Search is lexical by default. If an embedding profile is configured, retrieval c
 Compaction turns older conversation turns into durable markdown memory and trims the hot conversation log. It writes:
 
 - updated markdown files under `workspace/memory/`
-- a prompt digest at `{data_dir}/{character}/active_prompt/RECENT_MEMORY.md`
 - archived conversation segments under the character data directory
 
-Compaction is allowed to run on idle triggers, turn-count triggers, or context-token safety triggers. It also activates staged protected prompt edits because that is already a cache-boundary event.
+Compaction does not write `MEMORY.md`; dreaming maintains that prompt-visible
+index. Compaction is allowed to run on idle triggers, turn-count triggers, or
+context-token safety triggers. It also activates staged protected prompt edits
+because that is already a cache-boundary event.
 
 Manual command:
 
@@ -133,9 +131,9 @@ Heartbeat does not force a recap or write memory by itself. Durable notes are cr
 
 ## Dreaming
 
-Dreaming is an opt-in scheduled memory consolidation sweep with explicit Light, REM, and Deep phases. Light stages deduplicated candidate signals from normal markdown memory sources into `workspace/memory/.dreams/`. REM records deterministic theme and reinforcement signals. Deep is the only phase allowed to append qualified durable facts to `workspace/memory/MEMORY.md`.
+Dreaming is an opt-in scheduled memory consolidation sweep with explicit Light, REM, and Deep phases. Light stages deduplicated candidate signals from normal markdown memory sources into `workspace/memory/.dreams/`. REM records deterministic theme and reinforcement signals. Deep scores throughlines and rewrites `workspace/memory/MEMORY.md` as the prompt-visible memory index.
 
-`workspace/memory/DREAMS.md` is a Dream Diary for human review, not long-term memory and not a source of promotion truth. Generated dreaming output is excluded from future candidate ingestion, including `.dreams/**`, `DREAMS.md`, `dreams.md`, and `memory/dreaming/**`.
+`workspace/memory/DREAMS.md` is a Dream Diary for human review, not long-term memory and not a source of index truth. Generated dreaming output is excluded from future candidate ingestion, including `.dreams/**`, `DREAMS.md`, `dreams.md`, and `memory/dreaming/**`. `MEMORY.md` is read for prompt orientation but is not re-ingested as a candidate source.
 
 ## Tools
 

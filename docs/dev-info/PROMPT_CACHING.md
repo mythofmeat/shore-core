@@ -39,7 +39,7 @@ Normal chat prompt inputs:
 - active `USER.md`
 - active `AGENTS.md`
 - active `TOOLS.md`
-- active `RECENT_MEMORY.md`
+- workspace `memory/MEMORY.md`
 - conversation messages
 - stable capability/tool guidance
 
@@ -55,8 +55,8 @@ Prior completed-turn thinking is stripped by default through `[memory.thinking].
 
 ## Things That Should Not Bust Cache
 
-- writing markdown memory files
-- appending compaction/dreaming memory notes
+- writing ordinary markdown memory files
+- appending compaction/dreaming memory notes outside `MEMORY.md`
 - ordinary workspace edits outside protected prompt files
 - tool loop bookkeeping
 - activity tracking
@@ -66,6 +66,7 @@ Prior completed-turn thinking is stripped by default through `[memory.thinking].
 
 - compaction/reload
 - activating staged protected edits
+- rewriting `workspace/memory/MEMORY.md`
 - editing old conversation messages
 - changing active model/provider/cache settings
 - changing tool definitions or prompt templates in code

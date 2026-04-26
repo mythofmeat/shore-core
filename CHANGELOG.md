@@ -12,14 +12,14 @@ See [OpenClawify Patch Notes](docs/PATCH_NOTES_OPENCLAWIFY.md) for migration gui
 - Character workspaces with protected prompt files: `SOUL.md`, `USER.md`, `AGENTS.md`, `TOOLS.md`, and `HEARTBEAT.md`
 - Markdown long-term memory under `characters/<Character>/workspace/memory/`
 - `active_prompt/` snapshots and deferred protected self-edit activation
-- Opt-in memory dreaming with `.dreams/`, `DREAMS.md`, and `MEMORY.md`
+- Opt-in memory dreaming with `.dreams/`, `DREAMS.md`, and prompt-visible `MEMORY.md` indexing
 - Optional hybrid semantic+lexical markdown retrieval backed by a rebuildable index
 - Workspace file tools and sandboxed `exec`
 
 ### Changed
 - Runtime memory source of truth moved from hidden SQLite/vector/RAG state to markdown files
 - Interiority naming standardized to heartbeat/autonomy
-- Compaction now writes markdown memory and activates staged protected edits
+- Compaction now writes markdown memory notes and activates staged protected edits without generating recap prompt files
 - Docs rewritten against `GOALS.md` and current branch behavior
 
 ### Removed
