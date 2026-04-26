@@ -12,7 +12,8 @@ use std::time::Duration;
 use clap::Parser;
 use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste, EventStream};
 use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    disable_raw_mode, enable_raw_mode, DisableLineWrap, EnableLineWrap, EnterAlternateScreen,
+    LeaveAlternateScreen,
 };
 use crossterm::ExecutableCommand;
 use futures_util::StreamExt;
@@ -29,11 +30,30 @@ use input::Action;
 
 const STREAM_FRAME_INTERVAL: Duration = Duration::from_millis(200);
 
-#[derive(Clone, Copy)]
-enum RedrawPolicy {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RedrawEffect {
     None,
     Immediate,
+    ImmediateFull,
     DeferredStream,
+}
+
+pub(crate) struct UiEffect {
+    cmds: Vec<ConnCommand>,
+    redraw: RedrawEffect,
+}
+
+impl UiEffect {
+    fn redraw(redraw: RedrawEffect) -> Self {
+        Self {
+            cmds: vec![],
+            redraw,
+        }
+    }
+
+    fn none() -> Self {
+        Self::redraw(RedrawEffect::None)
+    }
 }
 
 #[derive(Parser)]
@@ -146,6 +166,7 @@ fn open_in_editor(
     std::fs::write(&tmp, input.text.as_str())?;
 
     io::stdout().execute(DisableBracketedPaste)?;
+    io::stdout().execute(EnableLineWrap)?;
     disable_raw_mode()?;
     io::stdout().execute(LeaveAlternateScreen)?;
 
@@ -153,6 +174,7 @@ fn open_in_editor(
 
     enable_raw_mode()?;
     io::stdout().execute(EnterAlternateScreen)?;
+    io::stdout().execute(DisableLineWrap)?;
     io::stdout().execute(EnableBracketedPaste)?;
     terminal.clear()?;
 
@@ -177,6 +199,7 @@ fn pick_image(
     let start = start_dir.unwrap_or(".");
 
     io::stdout().execute(DisableBracketedPaste)?;
+    io::stdout().execute(EnableLineWrap)?;
     disable_raw_mode()?;
     io::stdout().execute(LeaveAlternateScreen)?;
 
@@ -184,6 +207,7 @@ fn pick_image(
 
     enable_raw_mode()?;
     io::stdout().execute(EnterAlternateScreen)?;
+    io::stdout().execute(DisableLineWrap)?;
     io::stdout().execute(EnableBracketedPaste)?;
     terminal.clear()?;
 
@@ -289,32 +313,30 @@ async fn handle_conn_event_and_send(
     app: &mut App,
     cmd_tx: &tokio::sync::mpsc::Sender<ConnCommand>,
     event: ConnEvent,
-) {
-    let cmds = handle_conn_event(app, event);
-    send_conn_commands(cmd_tx, cmds).await;
-}
-
-fn redraw_policy_for_conn_event(event: &ConnEvent) -> RedrawPolicy {
-    match event {
-        ConnEvent::Message(msg) => match msg {
-            // Fast streams can arrive far faster than a terminal should redraw.
-            ServerMessage::StreamChunk(_) => RedrawPolicy::DeferredStream,
-            // Audio chunks do not change visible TUI state and may be high-rate.
-            ServerMessage::AudioChunk(_) | ServerMessage::AudioEnd(_) => RedrawPolicy::None,
-            // NewMessage is currently ignored by the TUI handler.
-            ServerMessage::NewMessage(_) => RedrawPolicy::None,
-            _ => RedrawPolicy::Immediate,
-        },
-        ConnEvent::Connected { .. } | ConnEvent::Disconnected(_) => RedrawPolicy::Immediate,
+) -> UiEffect {
+    let effect = handle_conn_event(app, event);
+    send_conn_commands(cmd_tx, effect.cmds).await;
+    UiEffect {
+        cmds: vec![],
+        redraw: effect.redraw,
     }
 }
 
-fn apply_redraw_policy(policy: RedrawPolicy, needs_redraw: &mut bool) {
-    match policy {
-        RedrawPolicy::None => {}
+fn apply_redraw_effect(
+    effect: RedrawEffect,
+    needs_redraw: &mut bool,
+    deferred_stream_dirty: &mut bool,
+    needs_full_redraw: &mut bool,
+) {
+    match effect {
+        RedrawEffect::None => {}
         // Stream chunks are painted by the next stream frame tick.
-        RedrawPolicy::DeferredStream => {}
-        RedrawPolicy::Immediate => *needs_redraw = true,
+        RedrawEffect::DeferredStream => *deferred_stream_dirty = true,
+        RedrawEffect::Immediate => *needs_redraw = true,
+        RedrawEffect::ImmediateFull => {
+            *needs_redraw = true;
+            *needs_full_redraw = true;
+        }
     }
 }
 
@@ -323,10 +345,16 @@ async fn process_conn_event(
     cmd_tx: &tokio::sync::mpsc::Sender<ConnCommand>,
     event: ConnEvent,
     needs_redraw: &mut bool,
+    deferred_stream_dirty: &mut bool,
+    needs_full_redraw: &mut bool,
 ) {
-    let policy = redraw_policy_for_conn_event(&event);
-    handle_conn_event_and_send(app, cmd_tx, event).await;
-    apply_redraw_policy(policy, needs_redraw);
+    let effect = handle_conn_event_and_send(app, cmd_tx, event).await;
+    apply_redraw_effect(
+        effect.redraw,
+        needs_redraw,
+        deferred_stream_dirty,
+        needs_full_redraw,
+    );
 }
 
 fn mark_connection_task_exited(app: &mut App, conn_events_open: &mut bool) {
@@ -417,6 +445,7 @@ async fn run_tui(cli: Cli) -> io::Result<()> {
     // Set up terminal
     enable_raw_mode()?;
     io::stdout().execute(EnterAlternateScreen)?;
+    io::stdout().execute(DisableLineWrap)?;
     io::stdout().execute(EnableBracketedPaste)?;
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
@@ -439,13 +468,20 @@ async fn run_tui(cli: Cli) -> io::Result<()> {
     let mut stream_frame = tokio::time::interval(STREAM_FRAME_INTERVAL);
     stream_frame.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut needs_redraw = true;
+    let mut deferred_stream_dirty = false;
+    let mut needs_full_redraw = false;
     let mut conn_events_open = true;
 
     // Main event loop
     let result = loop {
         if needs_redraw {
+            if needs_full_redraw {
+                terminal.clear()?;
+                needs_full_redraw = false;
+            }
             terminal.draw(|frame| ui::draw(frame, &mut app))?;
             needs_redraw = false;
+            deferred_stream_dirty = false;
         }
 
         // Poll for events (crossterm keyboard or connection events)
@@ -466,6 +502,8 @@ async fn run_tui(cli: Cli) -> io::Result<()> {
                             &cmd_tx,
                             event,
                             &mut needs_redraw,
+                            &mut deferred_stream_dirty,
+                            &mut needs_full_redraw,
                         ).await;
 
                         loop {
@@ -476,6 +514,8 @@ async fn run_tui(cli: Cli) -> io::Result<()> {
                                         &cmd_tx,
                                         event,
                                         &mut needs_redraw,
+                                        &mut deferred_stream_dirty,
+                                        &mut needs_full_redraw,
                                     ).await;
                                 }
                                 Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
@@ -485,6 +525,7 @@ async fn run_tui(cli: Cli) -> io::Result<()> {
                                 }
                             }
                         }
+
                     }
                     None => {
                         mark_connection_task_exited(&mut app, &mut conn_events_open);
@@ -510,7 +551,11 @@ async fn run_tui(cli: Cli) -> io::Result<()> {
             // Keep progress indicators moving and coalesce high-rate stream chunks.
             _ = stream_frame.tick(), if app.stream.active => {
                 app.spinner_frame = app.spinner_frame.wrapping_add(1);
+                let scheduled_deferred_stream_paint = deferred_stream_dirty;
                 needs_redraw = true;
+                if scheduled_deferred_stream_paint {
+                    deferred_stream_dirty = false;
+                }
             }
         }
 
@@ -531,6 +576,7 @@ async fn run_tui(cli: Cli) -> io::Result<()> {
 
     // Restore terminal
     io::stdout().execute(DisableBracketedPaste)?;
+    io::stdout().execute(EnableLineWrap)?;
     disable_raw_mode()?;
     io::stdout().execute(LeaveAlternateScreen)?;
 
@@ -544,7 +590,7 @@ async fn run_tui(cli: Cli) -> io::Result<()> {
     result
 }
 
-fn handle_conn_event(app: &mut App, event: ConnEvent) -> Vec<ConnCommand> {
+fn handle_conn_event(app: &mut App, event: ConnEvent) -> UiEffect {
     match event {
         ConnEvent::Connected {
             characters,
@@ -580,14 +626,14 @@ fn handle_conn_event(app: &mut App, event: ConnEvent) -> Vec<ConnCommand> {
             transmit_entry_images(app);
 
             app.set_status("connected");
-            vec![]
+            UiEffect::redraw(RedrawEffect::Immediate)
         }
 
         ConnEvent::Disconnected(reason) => {
             app.connection_status = ConnectionStatus::Connecting;
             app.stream.reset(); // clear stale streaming state
             app.set_status(format!("reconnecting: {reason}"));
-            vec![]
+            UiEffect::redraw(RedrawEffect::Immediate)
         }
 
         ConnEvent::Message(msg) => handle_server_message(app, msg),
@@ -610,6 +656,7 @@ fn expand_msg(msg: Message, entries: &mut Vec<ConversationEntry>) {
                 timestamp: msg.timestamp,
             },
             Role::Assistant => ConversationEntry::Assistant {
+                msg_id: Some(msg.msg_id),
                 content: msg.content,
                 images: msg.images,
                 timestamp: msg.timestamp,
@@ -680,6 +727,7 @@ fn expand_msg(msg: Message, entries: &mut Vec<ConversationEntry>) {
     let content = text_parts.join("\n");
     if !content.trim().is_empty() {
         entries.push(ConversationEntry::Assistant {
+            msg_id: Some(msg.msg_id),
             content,
             images: msg.images,
             timestamp: msg.timestamp,
@@ -726,19 +774,20 @@ fn transmit_image_ref(
     }
 }
 
-pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<ConnCommand> {
+pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> UiEffect {
     match &msg {
-        ServerMessage::AudioStart(_)
-        | ServerMessage::AudioChunk(_)
-        | ServerMessage::AudioEnd(_)
-        | ServerMessage::AudioError(_) => {
+        ServerMessage::AudioStart(_) | ServerMessage::AudioError(_) => {
             app.handle_audio_message(&msg);
-            return vec![];
+            return UiEffect::redraw(RedrawEffect::Immediate);
+        }
+        ServerMessage::AudioChunk(_) | ServerMessage::AudioEnd(_) => {
+            app.handle_audio_message(&msg);
+            return UiEffect::none();
         }
         _ => {}
     }
 
-    match msg {
+    let redraw = match msg {
         ServerMessage::StreamStart(start) => {
             app.spinner_frame = 0;
             if start.regen {
@@ -753,6 +802,7 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<Co
                 app.stream.phase = "responding".into();
                 app.stream.tool_name = None;
             }
+            RedrawEffect::Immediate
         }
 
         ServerMessage::StreamChunk(chunk) => {
@@ -772,15 +822,17 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<Co
             if app.auto_scroll {
                 app.scroll_to_bottom();
             }
+            RedrawEffect::DeferredStream
         }
 
         ServerMessage::StreamEnd(end) => {
             if end.finish_reason == "cancelled" {
                 app.stream.reset();
                 app.set_status("generation cancelled");
-                return vec![];
+                return UiEffect::redraw(RedrawEffect::ImmediateFull);
             }
 
+            let keep_bottom = app.auto_scroll;
             app.model = end.metadata.model.clone();
             app.tokens = end.metadata.tokens.clone();
 
@@ -810,6 +862,7 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<Co
                 app.stream.blocks.clear();
                 app.stream.phase = "tool_use".into();
                 app.stream.tool_name = None;
+                RedrawEffect::Immediate
             } else {
                 // The daemon broadcasts a History snapshot during
                 // `engine.append_message` (in persist_and_notify) and only
@@ -817,18 +870,34 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<Co
                 // present in `app.entries`. Attach streaming metadata to
                 // that entry — pushing a new one would duplicate it.
                 let metadata = app.stream.accumulated_metadata.take();
-                let slot = app.entries.iter_mut().rev().find_map(|e| match e {
-                    ConversationEntry::Assistant { metadata, .. } => Some(metadata),
-                    _ => None,
-                });
-                if let Some(slot) = slot {
-                    *slot = metadata;
+                let slot_pos = if let Some(target) = end.msg_id.as_deref() {
+                    app.entries.iter().rposition(|e| {
+                        matches!(
+                            e,
+                            ConversationEntry::Assistant {
+                                msg_id: Some(entry_msg_id),
+                                ..
+                            } if entry_msg_id == target
+                        )
+                    })
+                } else {
+                    app.entries
+                        .iter()
+                        .rposition(|e| matches!(e, ConversationEntry::Assistant { .. }))
+                };
+                if let Some(pos) = slot_pos {
+                    if let ConversationEntry::Assistant { metadata: slot, .. } =
+                        &mut app.entries[pos]
+                    {
+                        *slot = metadata;
+                    }
                 } else {
                     // Fallback: History hasn't been applied yet (shouldn't
                     // happen given daemon ordering). Push so the user isn't
                     // left with a blank turn.
                     let content = std::mem::take(&mut app.stream.accumulated_text);
                     app.entries.push(ConversationEntry::Assistant {
+                        msg_id: end.msg_id.clone(),
                         content,
                         images: vec![],
                         timestamp: String::new(),
@@ -836,6 +905,10 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<Co
                     });
                 }
                 app.stream.reset();
+                if keep_bottom {
+                    app.scroll_to_bottom();
+                }
+                RedrawEffect::ImmediateFull
             }
         }
 
@@ -844,9 +917,10 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<Co
             if let Some(model) = phase.model {
                 app.model = model;
             }
+            RedrawEffect::Immediate
         }
 
-        ServerMessage::NewMessage(_) => {}
+        ServerMessage::NewMessage(_) => RedrawEffect::None,
 
         ServerMessage::ToolCall(tc) => {
             app.stream.active = true;
@@ -860,6 +934,7 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<Co
             if app.auto_scroll {
                 app.scroll_to_bottom();
             }
+            RedrawEffect::Immediate
         }
 
         ServerMessage::ToolResult(tr) => {
@@ -873,6 +948,7 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<Co
             if app.auto_scroll {
                 app.scroll_to_bottom();
             }
+            RedrawEffect::Immediate
         }
 
         ServerMessage::SendImage(img) => {
@@ -884,6 +960,7 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<Co
                 app.image_cache
                     .ensure_transmitted(&img.path, max_cols, max_rows);
             }
+            RedrawEffect::Immediate
         }
 
         ServerMessage::CommandOutput(co) => {
@@ -1047,14 +1124,17 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<Co
                     app.set_status(format!("cmd:{} completed", co.name));
                 }
             }
+            RedrawEffect::Immediate
         }
 
         ServerMessage::Error(err) => {
             app.set_status(format!("error: {:?} - {}", err.code, err.message));
+            RedrawEffect::Immediate
         }
 
         ServerMessage::CacheWarning(cw) => {
             app.set_status(format!("cache warning: {}", cw.message));
+            RedrawEffect::Immediate
         }
 
         ServerMessage::History(hist) => {
@@ -1074,10 +1154,224 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> Vec<Co
                 expand_msg(msg, &mut app.entries);
             }
             transmit_entry_images(app);
+            RedrawEffect::Immediate
         }
 
         // Ignore unexpected messages
-        _ => {}
+        _ => RedrawEffect::Immediate,
+    };
+    UiEffect::redraw(redraw)
+}
+
+#[cfg(test)]
+mod redraw_tests {
+    use super::*;
+    use shore_protocol::server_msg::{StreamChunk, StreamEnd};
+    use shore_protocol::types::{StreamMetadata, TimingInfo, TokenCounts};
+
+    fn metadata() -> StreamMetadata {
+        StreamMetadata {
+            model: "test-model".into(),
+            tokens: TokenCounts {
+                input: 1,
+                output: 1,
+                cache_read: 0,
+                cache_write: 0,
+            },
+            timing: TimingInfo {
+                total_ms: 1,
+                ttft_ms: 1,
+            },
+        }
     }
-    vec![]
+
+    #[test]
+    fn final_stream_end_requests_full_redraw() {
+        let mut app = App::default();
+        let effect = handle_server_message(
+            &mut app,
+            ServerMessage::StreamEnd(StreamEnd {
+                rid: None,
+                msg_id: None,
+                revision: None,
+                content: "done".into(),
+                metadata: metadata(),
+                finish_reason: "end_turn".into(),
+                is_final: true,
+            }),
+        );
+
+        assert_eq!(effect.redraw, RedrawEffect::ImmediateFull);
+    }
+
+    #[test]
+    fn tool_use_stream_end_keeps_regular_redraw() {
+        let mut app = App::default();
+        let effect = handle_server_message(
+            &mut app,
+            ServerMessage::StreamEnd(StreamEnd {
+                rid: None,
+                msg_id: None,
+                revision: None,
+                content: String::new(),
+                metadata: metadata(),
+                finish_reason: "tool_use".into(),
+                is_final: false,
+            }),
+        );
+
+        assert_eq!(effect.redraw, RedrawEffect::Immediate);
+    }
+
+    #[test]
+    fn deferred_stream_effect_marks_dirty_without_immediate_redraw() {
+        let mut needs_redraw = false;
+        let mut deferred_stream_dirty = false;
+        let mut needs_full_redraw = false;
+
+        apply_redraw_effect(
+            RedrawEffect::DeferredStream,
+            &mut needs_redraw,
+            &mut deferred_stream_dirty,
+            &mut needs_full_redraw,
+        );
+
+        assert!(!needs_redraw);
+        assert!(deferred_stream_dirty);
+        assert!(!needs_full_redraw);
+    }
+
+    #[test]
+    fn immediate_full_effect_requests_full_redraw() {
+        let mut needs_redraw = false;
+        let mut deferred_stream_dirty = true;
+        let mut needs_full_redraw = false;
+
+        apply_redraw_effect(
+            RedrawEffect::ImmediateFull,
+            &mut needs_redraw,
+            &mut deferred_stream_dirty,
+            &mut needs_full_redraw,
+        );
+
+        assert!(needs_redraw);
+        assert!(deferred_stream_dirty);
+        assert!(needs_full_redraw);
+    }
+
+    #[test]
+    fn stream_chunk_effect_is_deferred() {
+        let mut app = App::default();
+        let effect = handle_server_message(
+            &mut app,
+            ServerMessage::StreamChunk(StreamChunk {
+                rid: None,
+                text: "partial".into(),
+                content_type: "text".into(),
+            }),
+        );
+
+        assert_eq!(effect.redraw, RedrawEffect::DeferredStream);
+    }
+
+    #[test]
+    fn final_stream_end_attaches_metadata_by_msg_id_when_available() {
+        let target_meta = metadata();
+        let mut app = App::default();
+        app.entries.push(ConversationEntry::Assistant {
+            msg_id: Some("m_target".into()),
+            content: "target".into(),
+            images: vec![],
+            timestamp: "t1".into(),
+            metadata: None,
+        });
+        app.entries.push(ConversationEntry::Assistant {
+            msg_id: Some("m_later".into()),
+            content: "later".into(),
+            images: vec![],
+            timestamp: "t2".into(),
+            metadata: None,
+        });
+
+        handle_server_message(
+            &mut app,
+            ServerMessage::StreamEnd(StreamEnd {
+                rid: None,
+                msg_id: Some("m_target".into()),
+                revision: Some(7),
+                content: "target".into(),
+                metadata: target_meta.clone(),
+                finish_reason: "end_turn".into(),
+                is_final: true,
+            }),
+        );
+
+        let target = app
+            .entries
+            .iter()
+            .find_map(|entry| match entry {
+                ConversationEntry::Assistant {
+                    msg_id: Some(msg_id),
+                    metadata,
+                    ..
+                } if msg_id == "m_target" => metadata.as_ref(),
+                _ => None,
+            })
+            .expect("target assistant metadata");
+        assert_eq!(target.model, target_meta.model);
+
+        let later_metadata = app.entries.iter().find_map(|entry| match entry {
+            ConversationEntry::Assistant {
+                msg_id: Some(msg_id),
+                metadata,
+                ..
+            } if msg_id == "m_later" => Some(metadata),
+            _ => None,
+        });
+        assert!(matches!(later_metadata, Some(None)));
+    }
+
+    #[test]
+    fn final_stream_end_with_unmatched_msg_id_does_not_annotate_latest_assistant() {
+        let mut app = App::default();
+        app.stream.accumulated_text = "new response".into();
+        app.entries.push(ConversationEntry::Assistant {
+            msg_id: Some("m_existing".into()),
+            content: "existing".into(),
+            images: vec![],
+            timestamp: "t1".into(),
+            metadata: None,
+        });
+
+        handle_server_message(
+            &mut app,
+            ServerMessage::StreamEnd(StreamEnd {
+                rid: None,
+                msg_id: Some("m_missing_from_history".into()),
+                revision: Some(8),
+                content: String::new(),
+                metadata: metadata(),
+                finish_reason: "end_turn".into(),
+                is_final: true,
+            }),
+        );
+
+        let existing_metadata = app.entries.iter().find_map(|entry| match entry {
+            ConversationEntry::Assistant {
+                msg_id: Some(msg_id),
+                metadata,
+                ..
+            } if msg_id == "m_existing" => Some(metadata),
+            _ => None,
+        });
+        assert!(matches!(existing_metadata, Some(None)));
+        assert!(app.entries.iter().any(|entry| matches!(
+            entry,
+            ConversationEntry::Assistant {
+                msg_id: Some(msg_id),
+                metadata: Some(_),
+                ..
+            } if msg_id == "m_missing_from_history"
+        )));
+    }
 }

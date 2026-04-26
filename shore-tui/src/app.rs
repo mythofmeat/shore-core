@@ -14,6 +14,8 @@ pub enum ConversationEntry {
         timestamp: String,
     },
     Assistant {
+        #[allow(dead_code)] // captured from daemon; TUI currently only uses it for metadata attach
+        msg_id: Option<String>,
         content: String,
         images: Vec<ImageRef>,
         #[allow(dead_code)] // captured from daemon; TUI does not render per-entry timestamps
@@ -867,6 +869,7 @@ mod tests {
         });
         app.set_status("reconnecting");
         app.entries.push(ConversationEntry::Assistant {
+            msg_id: None,
             content: "hi".into(),
             images: vec![],
             timestamp: String::new(),

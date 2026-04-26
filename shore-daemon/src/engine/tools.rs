@@ -73,8 +73,15 @@ pub async fn run_tool_loop(
         // the FINAL phase's StreamEnd is deferred until after persistence.
         // is_final=false so aggregating clients (collect_stream) know to keep
         // reading past this boundary.
-        shore_llm_client::stream::emit_stream_end(direct_tx, request.rid.clone(), &result, false)
-            .await;
+        shore_llm_client::stream::emit_stream_end(
+            direct_tx,
+            request.rid.clone(),
+            &result,
+            false,
+            None,
+            None,
+        )
+        .await;
 
         info!(
             iteration = iteration + 1,

@@ -22,6 +22,10 @@ pub struct StreamedResponse {
     pub tool_results: Vec<ToolResult>,
     /// Metadata from `StreamEnd` — tokens, timing, model.
     pub metadata: StreamMetadata,
+    /// Persisted assistant message id, when provided by the server.
+    pub msg_id: Option<String>,
+    /// Durable history revision containing `msg_id`, when provided.
+    pub revision: Option<u64>,
     /// Finish reason from `StreamEnd`.
     pub finish_reason: String,
 }
@@ -56,6 +60,10 @@ pub struct StreamHandler {
     final_content: Option<String>,
     /// Metadata from stream_end, if received.
     metadata: Option<shore_protocol::types::StreamMetadata>,
+    /// Persisted assistant message id from stream_end, if received.
+    msg_id: Option<String>,
+    /// Durable history revision from stream_end, if received.
+    revision: Option<u64>,
 }
 
 impl StreamHandler {
@@ -66,6 +74,8 @@ impl StreamHandler {
             chunks: Vec::new(),
             final_content: None,
             metadata: None,
+            msg_id: None,
+            revision: None,
         }
     }
 
@@ -76,6 +86,8 @@ impl StreamHandler {
         self.chunks.clear();
         self.final_content = None;
         self.metadata = None;
+        self.msg_id = None;
+        self.revision = None;
     }
 
     /// Whether the handler is currently inside a stream sequence.
@@ -101,6 +113,16 @@ impl StreamHandler {
     /// Metadata from `stream_end`, if the stream has completed.
     pub fn metadata(&self) -> Option<&shore_protocol::types::StreamMetadata> {
         self.metadata.as_ref()
+    }
+
+    /// Persisted assistant message id from `stream_end`, if the server sent it.
+    pub fn msg_id(&self) -> Option<&str> {
+        self.msg_id.as_deref()
+    }
+
+    /// Durable history revision from `stream_end`, if the server sent it.
+    pub fn revision(&self) -> Option<u64> {
+        self.revision
     }
 
     /// Feed a server message into the handler.
@@ -154,6 +176,8 @@ impl StreamHandler {
                 self.active = false;
                 self.final_content = Some(end.content.clone());
                 self.metadata = Some(end.metadata.clone());
+                self.msg_id = end.msg_id.clone();
+                self.revision = end.revision;
                 debug!(
                     finish_reason = %end.finish_reason,
                     model = %end.metadata.model,
@@ -263,6 +287,8 @@ pub async fn collect_stream(
         tool_calls,
         tool_results,
         metadata: end.metadata,
+        msg_id: end.msg_id,
+        revision: end.revision,
         finish_reason: end.finish_reason,
     })
 }
