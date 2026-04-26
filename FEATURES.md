@@ -57,23 +57,10 @@ Runtime memory is markdown-first.
 $XDG_CONFIG_HOME/shore/characters/<Character>/workspace/memory/
 ```
 
-The old runtime SQLite/vector/RAG memory stack is not the normal source of truth on this branch. Existing SQLite memory can be exported with:
+The old runtime SQLite/vector/RAG memory stack is not the normal source of truth
+on this branch. Historical migration helpers live in git history rather than
+the active runtime surface.
 
-```sh
-scripts/migrate-memory.py
-```
-
-<<<<<<< HEAD
-LLM-facing workspace tools can read, write, edit, list, and search memory files
-through `memory/...` paths when memory access is enabled.
-
-`workspace/memory/MEMORY.md` is prompt-visible. It is a concise index of memory
-files, recently updated files, and still-relevant conversational throughlines;
-it is not the character definition, user profile, standing behavior, tool guide,
-or heartbeat guide.
-
-The CLI and MCP still expose a natural-language memory query command.
-=======
 Current LLM-facing memory surfaces:
 
 | Surface | Purpose |
@@ -85,7 +72,11 @@ Current LLM-facing memory surfaces:
 
 There are no separate LLM-facing `memory_read`, `memory_write`,
 `memory_search`, or `memory_list` tools on this branch.
->>>>>>> main
+
+`workspace/memory/MEMORY.md` is prompt-visible. It is a concise index of memory
+files, recently updated files, and still-relevant conversational throughlines;
+it is not the character definition, user profile, standing behavior, tool guide,
+or heartbeat guide.
 
 Search is lexical by default. If an embedding profile is configured, retrieval can use a rebuildable hybrid semantic+lexical index. The index is a ranking aid only; markdown files remain authoritative.
 

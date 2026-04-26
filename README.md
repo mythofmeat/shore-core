@@ -101,17 +101,24 @@ Legacy `character.md`, `user.md`, and `prompts/system.md` character layouts are 
 
 ## Current Docs
 
+- [Agent entry map](AGENTS.md) — short map for Codex, Claude, and other agents
+- [Docs index](docs/README.md) — structured knowledge base
 - [Goals](GOALS.md) — source of truth for project intent
 - [Features](FEATURES.md) — user-facing behavior
 - [Configuration](CONFIGURATION.md) — config reference
 - [Architecture](ARCHITECTURE.md) — implementation map
 - [Invariants](docs/dev-info/INVARIANTS.md) — correctness constraints
+- [Harness engineering](docs/HARNESS_ENGINEERING.md) — agent-first repo practices
+- [Reliability](docs/RELIABILITY.md) — validation loops and release gates
+- [Security](docs/SECURITY.md) — boundary and threat notes
+- [Quality score](docs/QUALITY_SCORE.md) — quality grades and gaps
 - [Quirks](docs/dev-info/QUIRKS.md) — sharp edges and external weirdness
 - [Changelog](CHANGELOG.md) — release history
 
 ## Tests
 
 ```sh
+python3 scripts/harness-check.py
 cargo fmt --all --check
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings

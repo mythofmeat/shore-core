@@ -1,0 +1,17 @@
+name: Agent Harness Guardrails
+
+on:
+  push:
+    branches:
+      - main
+      - staging
+  pull_request:
+
+jobs:
+  harness-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate agent harness knowledge base
+        run: python3 scripts/harness-check.py
