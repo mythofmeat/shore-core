@@ -26,10 +26,10 @@ jobs:
         run: cargo test -p shore-protocol
 
       - name: Server handshake and routing tests
-        run: cargo test -p shore-daemon-server --lib
+        run: cargo test -p shore-swp-server --lib
 
       - name: Shared client sync tests
-        run: cargo test -p shore-client --lib
+        run: cargo test -p shore-swp-client --lib
 
       - name: Daemon direct-response guardrails
         run: cargo test -p shore-daemon --test suite guardrails -- --nocapture

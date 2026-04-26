@@ -23,7 +23,7 @@ start_daemon() {
     cargo build --bin shore-daemon --manifest-path "$REPO_ROOT/Cargo.toml" 2>&1 | tail -3
 
     echo "Starting shore-daemon (log: $LOG_FILE)..."
-    RUST_LOG=info,shore_daemon::autonomy=debug,shore_llm_client::providers::anthropic=debug \
+    RUST_LOG=info,shore_daemon::autonomy=debug,shore_llm::providers::anthropic=debug \
         "$REPO_ROOT/target/debug/shore-daemon" \
         > "$LOG_FILE" 2>&1 &
 

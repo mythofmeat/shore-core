@@ -1,0 +1,17 @@
+[package]
+name = "shore-gui-godot"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+
+[lib]
+name = "shore_bridge"
+crate-type = ["cdylib"]
+
+[dependencies]
+godot = { git = "https://github.com/godot-rust/gdext", branch = "master" }
+shore-swp-client = { path = "../../../core/swp-client" }
+shore-protocol = { path = "../../../core/protocol" }
+tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
+serde_json = "1"

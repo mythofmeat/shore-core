@@ -4,7 +4,7 @@ Shore is a persistent AI character engine built in Rust. It is not a stateless c
 
 The project goal is personal and specific: make an AI character chat program that improves on the parts of SillyTavern that hurt, while leaning into long-lived character continuity, inspectable memory, Anthropic cache discipline, and a character that can do useful things with its own time.
 
-For the current branch notes, read the [Unreleased changelog](CHANGELOG.md#unreleased--openclawify).
+For current release notes, read [CHANGELOG.md](CHANGELOG.md), including the [Unreleased changelog](CHANGELOG.md#unreleased--openclawify).
 
 ## What Matters
 
@@ -25,7 +25,14 @@ For the current branch notes, read the [Unreleased changelog](CHANGELOG.md#unrel
 ## Build
 
 ```sh
-cargo build --workspace --release
+cargo build
+```
+
+`cargo build` uses the workspace default members for the common daemon + CLI path.
+To build shipped release binaries explicitly:
+
+```sh
+cargo build --release -p shore-daemon -p shore-cli -p shore-tui -p shore-matrix
 ```
 
 Main binaries:
@@ -38,6 +45,16 @@ Main binaries:
 | `shore-matrix` | Matrix bridge |
 | `shore-mcp` | debug/development MCP bridge |
 | `shore-gui` | Tauri desktop GUI, if built |
+
+## Repo Layout
+
+| Path | Contents |
+| --- | --- |
+| `core/` | shared protocol, config, and SWP client crates |
+| `backend/` | daemon runtime plus backend support crates |
+| `clients/` | CLI, TUI, Tauri GUI, and experimental Godot GUI |
+| `bridges/` | external service bridges such as Matrix |
+| `dev/` | development tools and test harnesses |
 
 ## Quick Start
 
@@ -89,6 +106,7 @@ Legacy `character.md`, `user.md`, and `prompts/system.md` character layouts are 
 - [Architecture](ARCHITECTURE.md) — implementation map
 - [Invariants](docs/dev-info/INVARIANTS.md) — correctness constraints
 - [Quirks](docs/dev-info/QUIRKS.md) — sharp edges and external weirdness
+- [Changelog](CHANGELOG.md) — release history
 
 ## Tests
 
@@ -96,7 +114,7 @@ Legacy `character.md`, `user.md`, and `prompts/system.md` character layouts are 
 cargo fmt --all --check
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
-cargo build --workspace --release
+cargo build --release -p shore-daemon -p shore-cli -p shore-tui -p shore-matrix
 ```
 
 Live API verification is intentionally separate because it uses real provider credentials and costs money.
