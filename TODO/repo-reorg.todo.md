@@ -1,5 +1,7 @@
 # Repo Reorg: Core, Backend, Clients, Bridges, and Dev
 
+Status: implemented in this worktree. Kept as the migration record for the layout refactor.
+
 ## Summary
 
 Regroup the repository by ownership and runtime role while keeping one main Cargo workspace for normal Rust crates. Use `workspace.default-members` and targeted CI/package builds to keep everyday compile paths fast, rather than splitting the repo into multiple Cargo workspaces. Keep Godot as the main nested/out-of-workspace exception because it has distinct tooling and experimental dependencies.
@@ -60,7 +62,7 @@ Leave `docs/`, `examples/`, `experiments/`, `scripts/`, `contrib/`, and `TODO/` 
   - backend tests may keep dev/test helper dependencies where needed.
 - Move the Tauri app intact under `clients/gui/`; keep frontend and `src-tauri` together so Tauri relative paths remain local to the app.
 - Move the Godot client intact under `clients/gui-godot/`; preserve `libshore_bridge.so` output via `[lib] name = "shore_bridge"` or matching `.gdextension` updates.
-- Update active docs and tooling: root `README.md`, `docs/ARCHITECTURE.md`, `shore-mcp/README.md`, CI workflows, package/build scripts, `.cargo` aliases, and current contributor notes.
+- Update active docs and tooling: root `README.md`, `ARCHITECTURE.md`, `dev/mcp/README.md`, CI workflows, package/build scripts, `.cargo` aliases, and current contributor notes.
 - Update `TODO/TODO.md` to mark the old CLI/daemon-consolidation idea as superseded. Leave historical `CHANGELOG.md` and `docs/DECISIONS.md` entries unchanged unless they are actively misleading outside historical context.
 
 ## Migration Order

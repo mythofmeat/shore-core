@@ -6,8 +6,6 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased] — OpenClawify
 
-See [OpenClawify Patch Notes](docs/PATCH_NOTES_OPENCLAWIFY.md) for migration guidance.
-
 ### Added
 - Character workspaces with protected prompt files: `SOUL.md`, `USER.md`, `AGENTS.md`, `TOOLS.md`, and `HEARTBEAT.md`
 - Markdown long-term memory under `characters/<Character>/workspace/memory/`
@@ -15,12 +13,14 @@ See [OpenClawify Patch Notes](docs/PATCH_NOTES_OPENCLAWIFY.md) for migration gui
 - Opt-in memory dreaming with `.dreams/`, `DREAMS.md`, and `MEMORY.md`
 - Optional hybrid semantic+lexical markdown retrieval backed by a rebuildable index
 - Workspace file tools and sandboxed `exec`
+- Repository ownership layout: `core/`, `backend/`, `clients/`, `bridges/`, and `dev/`, with default Cargo members for faster local daemon/CLI builds
 
 ### Changed
 - Runtime memory source of truth moved from hidden SQLite/vector/RAG state to markdown files
 - Interiority naming standardized to heartbeat/autonomy
 - Compaction now writes markdown memory and activates staged protected edits
 - Docs rewritten against `GOALS.md` and current branch behavior
+- Internal crates renamed for clearer roles: `shore-swp-client`, `shore-swp-server`, and `shore-llm`
 
 ### Removed
 - Runtime dependency on the old memory shell, collation pipeline, passive RAG injection, and authoritative vector memory store

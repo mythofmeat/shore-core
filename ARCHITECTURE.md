@@ -2,22 +2,37 @@
 
 Shore is a daemon-centered AI character engine. The daemon owns state; clients observe and send commands.
 
+## Workspace Layout
+
+The main Rust workspace is grouped by ownership:
+
+- `core/` — shared protocol, config, and SWP client crates
+- `backend/` — daemon runtime plus backend support crates
+- `clients/` — user-facing clients, including CLI, TUI, and Tauri GUI
+- `bridges/` — external service bridges
+- `dev/` — development tools and test harnesses
+
+`clients/gui-godot/rust` is intentionally outside the root Cargo workspace because
+it has Godot-specific tooling and produces a `shore_bridge` dynamic library.
+
 ## Workspace Crates
 
-| Crate | Role |
+| Path | Crate | Role |
 | --- | --- |
-| `shore-protocol` | SWP wire types |
-| `shore-config` | config loading, model catalog, character paths |
-| `shore-client` | client connection/discovery helpers |
-| `shore-daemon-server` | TCP server, registry, session routing |
-| `shore-daemon` | engine, memory, autonomy, tools, generation |
-| `shore-llm-client` | provider request/stream handling |
-| `shore-ledger` | usage, pricing, Anthropic cache tracking |
-| `shore-cli` | CLI client |
-| `shore-tui` | terminal UI |
-| `shore-matrix` | Matrix bridge |
-| `shore-mcp` | development/debug MCP surface |
-| `shore-test-harness` | integration harness and mock server |
+| `core/protocol` | `shore-protocol` | SWP wire types |
+| `core/config` | `shore-config` | config loading, model catalog, character paths |
+| `core/swp-client` | `shore-swp-client` | client connection/discovery helpers |
+| `backend/swp-server` | `shore-swp-server` | TCP server, registry, session routing |
+| `backend/daemon` | `shore-daemon` | engine, memory, autonomy, tools, generation |
+| `backend/llm` | `shore-llm` | provider request/stream handling |
+| `backend/ledger` | `shore-ledger` | usage, pricing, Anthropic cache tracking |
+| `backend/diagnostics` | `shore-diagnostics` | shared diagnostic formatting |
+| `clients/cli` | `shore-cli` | CLI client |
+| `clients/tui` | `shore-tui` | terminal UI |
+| `clients/gui/src-tauri` | `shore-gui` | Tauri desktop client |
+| `bridges/matrix` | `shore-matrix` | Matrix bridge |
+| `dev/mcp` | `shore-mcp` | development/debug MCP surface |
+| `dev/test-harness` | `shore-test-harness` | integration harness and mock server |
 
 ## State Model
 
@@ -143,7 +158,7 @@ The optional embedding index is a rebuildable cache at `memory_index.json`. It i
 
 ## Tools
 
-Tool definitions live under `shore-daemon/src/tools/`.
+Tool definitions live under `backend/daemon/src/tools/`.
 
 Tool categories drive private-mode filtering. Memory gates are enforced at both the visible tool list and dispatch layer.
 
@@ -176,7 +191,7 @@ Dreaming is the scheduled memory consolidation path. When autonomy and `[memory.
 
 ## LLM Provider Boundary
 
-`shore-llm-client` owns provider-specific request construction, streaming, response parsing, retry behavior, and content block handling.
+`shore-llm` owns provider-specific request construction, streaming, response parsing, retry behavior, and content block handling.
 
 Upstream crates should test business logic with the test harness, but provider wire behavior should be verified with recorded or live provider responses.
 

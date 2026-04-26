@@ -5990,31 +5990,13 @@ dependencies = [
  "crossterm",
  "serde",
  "serde_json",
- "shore-client",
  "shore-config",
  "shore-protocol",
+ "shore-swp-client",
  "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "shore-client"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "libc",
- "rodio",
- "serde",
- "serde_json",
- "shore-config",
- "shore-protocol",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "toml 0.8.2",
- "tracing",
 ]
 
 [[package]]
@@ -6049,13 +6031,13 @@ dependencies = [
  "serde_json",
  "sha2",
  "shell-words",
- "shore-client",
  "shore-config",
- "shore-daemon-server",
  "shore-diagnostics",
  "shore-ledger",
- "shore-llm-client",
+ "shore-llm",
  "shore-protocol",
+ "shore-swp-client",
+ "shore-swp-server",
  "shore-test-harness",
  "tempfile",
  "thiserror 2.0.18",
@@ -6065,21 +6047,6 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "which",
-]
-
-[[package]]
-name = "shore-daemon-server"
-version = "0.1.0"
-dependencies = [
- "fs2",
- "libc",
- "serde",
- "serde_json",
- "shore-config",
- "shore-protocol",
- "tempfile",
- "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -6099,8 +6066,8 @@ dependencies = [
  "png 0.17.16",
  "serde",
  "serde_json",
- "shore-client",
  "shore-protocol",
+ "shore-swp-client",
  "tauri",
  "tauri-build",
  "tauri-plugin-notification",
@@ -6119,13 +6086,13 @@ dependencies = [
  "serde",
  "serde_json",
  "shore-config",
- "shore-llm-client",
+ "shore-llm",
  "tokio",
  "tracing",
 ]
 
 [[package]]
-name = "shore-llm-client"
+name = "shore-llm"
 version = "0.1.0"
 dependencies = [
  "chrono",
@@ -6152,9 +6119,9 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_json",
- "shore-client",
  "shore-config",
  "shore-protocol",
+ "shore-swp-client",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -6176,9 +6143,9 @@ dependencies = [
  "schemars 1.2.1",
  "serde",
  "serde_json",
- "shore-client",
  "shore-config",
  "shore-protocol",
+ "shore-swp-client",
  "shore-test-harness",
  "tempfile",
  "tokio",
@@ -6197,19 +6164,52 @@ dependencies = [
 ]
 
 [[package]]
+name = "shore-swp-client"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "libc",
+ "rodio",
+ "serde",
+ "serde_json",
+ "shore-config",
+ "shore-protocol",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml 0.8.2",
+ "tracing",
+]
+
+[[package]]
+name = "shore-swp-server"
+version = "0.1.0"
+dependencies = [
+ "fs2",
+ "libc",
+ "serde",
+ "serde_json",
+ "shore-config",
+ "shore-protocol",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "shore-test-harness"
 version = "0.1.0"
 dependencies = [
  "rusqlite",
  "serde_json",
- "shore-client",
  "shore-config",
  "shore-daemon",
- "shore-daemon-server",
  "shore-diagnostics",
  "shore-ledger",
- "shore-llm-client",
+ "shore-llm",
  "shore-protocol",
+ "shore-swp-client",
+ "shore-swp-server",
  "tempfile",
  "tokio",
  "toml 0.8.2",
@@ -6229,8 +6229,8 @@ dependencies = [
  "libc",
  "ratatui",
  "serde_json",
- "shore-client",
  "shore-protocol",
+ "shore-swp-client",
  "tokio",
  "tracing",
  "tracing-subscriber",

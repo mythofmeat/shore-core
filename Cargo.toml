@@ -1,20 +1,27 @@
 [workspace]
 resolver = "2"
 members = [
-    "shore-protocol",
-    "shore-client",
-    "shore-diagnostics",
-    "shore-config",
-    "shore-llm-client",
-    "shore-daemon",
-    "shore-daemon-server",
-    "shore-cli",
-    "shore-mcp",
-    "shore-tui",
-    "shore-ledger",
-    "shore-test-harness",
-    "shore-matrix",
-    "shore-gui/src-tauri",
+    "core/protocol",
+    "core/config",
+    "core/swp-client",
+    "backend/diagnostics",
+    "backend/llm",
+    "backend/ledger",
+    "backend/swp-server",
+    "backend/daemon",
+    "clients/cli",
+    "clients/tui",
+    "clients/gui/src-tauri",
+    "bridges/matrix",
+    "dev/mcp",
+    "dev/test-harness",
+]
+default-members = [
+    "core/protocol",
+    "core/config",
+    "core/swp-client",
+    "backend/daemon",
+    "clients/cli",
 ]
 
 [workspace.dependencies]
@@ -34,11 +41,15 @@ which = "6"
 reqwest = { version = "0.12", features = ["json", "stream"] }
 dashmap = "6"
 futures-util = "0.3"
-shore-protocol = { path = "shore-protocol" }
-shore-config = { path = "shore-config" }
-shore-diagnostics = { path = "shore-diagnostics" }
-shore-llm-client = { path = "shore-llm-client" }
-shore-ledger = { path = "shore-ledger" }
+shore-protocol = { path = "core/protocol" }
+shore-config = { path = "core/config" }
+shore-swp-client = { path = "core/swp-client" }
+shore-diagnostics = { path = "backend/diagnostics" }
+shore-llm = { path = "backend/llm" }
+shore-ledger = { path = "backend/ledger" }
+shore-swp-server = { path = "backend/swp-server" }
+shore-daemon = { path = "backend/daemon" }
+shore-test-harness = { path = "dev/test-harness" }
 rusqlite = { version = "0.37", features = ["bundled"] }
 
 [profile.dev]

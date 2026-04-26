@@ -22,7 +22,7 @@ build() {
     cd "${pkgbase}"
     export RUSTUP_TOOLCHAIN=stable
     export CARGO_TARGET_DIR=target
-    cargo build --workspace --release --frozen
+    cargo build --release --frozen -p shore-daemon -p shore-cli -p shore-tui -p shore-matrix
 }
 
 package_shore-daemon() {
