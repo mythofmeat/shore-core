@@ -175,7 +175,7 @@ pub(super) async fn handle_generation(
         }
     }
 
-    if !regen && (!body.text.is_empty() || !body.images.is_empty()) {
+    if !regen && (!body.text.is_empty() || !body.images.is_empty() || !body.image_data.is_empty()) {
         let turn_count = engine_arc.lock().await.turn_count();
         ctx.autonomy.notify_user_message(&char_name, turn_count);
     }

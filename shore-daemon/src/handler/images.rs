@@ -8,17 +8,6 @@ use serde_json::{json, Value};
 use shore_protocol::types::{ContentBlock, ImageRef};
 use tracing::{info, warn};
 
-/// Format the text annotation that accompanies a user-uploaded image in
-/// the conversation. The annotation does two jobs at once: it tells the
-/// character where the image landed on disk, and reminds them that the file
-/// can be referenced later by path if they want to send it back.
-pub(crate) fn format_image_annotation(rel_path: &str) -> String {
-    format!(
-        "[Attached image saved as: {rel_path}]\n\
-         If you want to reference this image again later, use the saved path above."
-    )
-}
-
 /// Detect MIME type from file extension.
 pub(crate) fn media_type_for_path(path: &str) -> Option<&'static str> {
     let ext = path.rsplit('.').next()?.to_ascii_lowercase();
@@ -94,7 +83,10 @@ pub(crate) fn build_content(
 ///
 /// Prefers `image_data` (base64-encoded uploads from new clients) over
 /// `image_paths` (legacy path-based, same-machine only).
-/// Returns (persisted ImageRefs, annotation ContentBlocks).
+/// Returns (persisted ImageRefs, model-facing ContentBlocks).
+///
+/// Uploaded attachment paths are intentionally kept out of model-facing
+/// content. The LLM receives image blocks via the returned ImageRefs instead.
 pub(super) fn ingest_images(
     data_dir: &std::path::Path,
     char_name: &str,
@@ -106,7 +98,6 @@ pub(super) fn ingest_images(
     let character_data_dir = data_dir.join(char_name);
     let attachments_dir = character_data_dir.join("images").join("attachments");
     let mut images: Vec<ImageRef> = Vec::with_capacity(image_data.len() + image_paths.len());
-    let mut content_blocks: Vec<ContentBlock> = Vec::new();
 
     // Preferred path: base64-encoded uploads (works across machines).
     for upload in image_data {
@@ -133,9 +124,6 @@ pub(super) fn ingest_images(
                     path: abs_path,
                     caption: None,
                     data: None,
-                });
-                content_blocks.push(ContentBlock::Text {
-                    text: format_image_annotation(&rel_path),
                 });
                 info!(filename = %upload.filename, dest = %rel_path, "Saved uploaded image to attachments");
             }
@@ -174,9 +162,6 @@ pub(super) fn ingest_images(
                         caption: None,
                         data: None,
                     });
-                    content_blocks.push(ContentBlock::Text {
-                        text: format_image_annotation(&rel_path),
-                    });
                     info!(src = %src_path_str, dest = %rel_path, "Copied incoming image to attachments");
                 }
                 Err(e) => {
@@ -191,7 +176,7 @@ pub(super) fn ingest_images(
         }
     }
 
-    (images, content_blocks)
+    (images, Vec::new())
 }
 
 /// Populate the `data` field on ImageRefs by reading and base64-encoding files.
@@ -255,6 +240,8 @@ pub(crate) fn encode_image_block(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::engine::general_purpose::STANDARD;
+    use shore_protocol::client_msg::ImageUpload;
 
     /// Create a valid JPEG image with pseudo-random pixels (high entropy, resists compression).
     ///
@@ -288,6 +275,77 @@ mod tests {
             .write_to(&mut cursor, image::ImageFormat::Jpeg)
             .unwrap();
         buf
+    }
+
+    fn assert_no_path_instruction_blocks(content_blocks: &[ContentBlock], paths: &[&str]) {
+        for block in content_blocks {
+            let ContentBlock::Text { text } = block else {
+                continue;
+            };
+            assert!(
+                !text.contains("Attached image saved as"),
+                "unexpected saved-path annotation: {text}"
+            );
+            assert!(
+                !text.contains("reference this image"),
+                "unexpected image reference instruction: {text}"
+            );
+            assert!(
+                !text.contains("saved path"),
+                "unexpected saved path instruction: {text}"
+            );
+            for path in paths {
+                assert!(
+                    !text.contains(path),
+                    "unexpected attachment path {path:?} in model-facing text: {text}"
+                );
+            }
+        }
+    }
+
+    // ── ingest_images ──────────────────────────────────────────────────
+
+    #[test]
+    fn ingest_images_saves_uploaded_image_without_model_facing_path_text() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let jpeg = make_jpeg(16, 16);
+        let upload = ImageUpload {
+            filename: "photo.jpg".to_string(),
+            data: STANDARD.encode(&jpeg),
+        };
+
+        let (images, content_blocks) = ingest_images(tmp.path(), "Alice", &[], &[upload]);
+
+        assert_eq!(images.len(), 1);
+        assert!(std::path::Path::new(&images[0].path).exists());
+        assert!(images[0].path.ends_with("photo.jpg"));
+        assert!(content_blocks.is_empty());
+        assert_no_path_instruction_blocks(&content_blocks, &[&images[0].path, "attachments/"]);
+    }
+
+    #[test]
+    fn ingest_images_copies_legacy_path_without_model_facing_path_text() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let src_path = tmp.path().join("legacy.jpg");
+        std::fs::write(&src_path, make_jpeg(16, 16)).unwrap();
+        let src_path_str = src_path.to_string_lossy().to_string();
+
+        let (images, content_blocks) = ingest_images(
+            tmp.path(),
+            "Alice",
+            std::slice::from_ref(&src_path_str),
+            &[],
+        );
+
+        assert_eq!(images.len(), 1);
+        assert!(std::path::Path::new(&images[0].path).exists());
+        assert_ne!(images[0].path, src_path_str);
+        assert!(images[0].path.ends_with("legacy.jpg"));
+        assert!(content_blocks.is_empty());
+        assert_no_path_instruction_blocks(
+            &content_blocks,
+            &[&images[0].path, &src_path_str, "attachments/"],
+        );
     }
 
     /// Create a valid PNG image with pseudo-random pixels (high entropy).
