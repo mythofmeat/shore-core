@@ -94,15 +94,8 @@ pub async fn recent_dream_entries(
         .split("\n## ")
         .filter_map(|section| {
             let trimmed = section.trim();
-            if trimmed.is_empty() || trimmed == "# Dreams" {
+            if trimmed.is_empty() || trimmed.starts_with("# Dreams") {
                 None
-            } else if let Some(rest) = trimmed.strip_prefix("# Dreams") {
-                let entry = rest.trim();
-                if entry.is_empty() {
-                    None
-                } else {
-                    Some(format!("## {entry}"))
-                }
             } else {
                 Some(format!("## {trimmed}"))
             }

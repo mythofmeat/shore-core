@@ -62,7 +62,7 @@ pub fn memory_changelog(
         .split("\n## ")
         .filter_map(|section| {
             let trimmed = section.trim();
-            if trimmed.is_empty() || trimmed == "# Dreams" {
+            if trimmed.is_empty() || trimmed.starts_with("# Dreams") {
                 return None;
             }
             let prefixed = if trimmed.starts_with("## ") {
@@ -74,8 +74,13 @@ pub fn memory_changelog(
             let heading = lines.next()?.trim_start_matches("## ").trim();
             let description = lines.collect::<Vec<_>>().join("\n").trim().to_string();
             let (timestamp, operation) = heading
-                .split_once(" - ")
-                .map(|(ts, op)| (ts.to_string(), op.to_string()))
+                .strip_prefix("Dream Cycle - ")
+                .map(|ts| (ts.to_string(), "dream_cycle".to_string()))
+                .or_else(|| {
+                    heading
+                        .split_once(" - ")
+                        .map(|(ts, op)| (ts.to_string(), op.to_string()))
+                })
                 .unwrap_or_else(|| (String::new(), heading.to_string()));
             Some(json!({
                 "timestamp": timestamp,

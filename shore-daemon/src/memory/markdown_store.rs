@@ -304,7 +304,7 @@ fn is_internal_dream_path(base_dir: &Path, path: &Path) -> bool {
     let mut components = rel.components();
     matches!(
         components.next().and_then(|c| c.as_os_str().to_str()),
-        Some(".dreams") | Some("dreaming") | Some("DREAMS.md")
+        Some(".dreams") | Some("dreaming") | Some("DREAMS.md") | Some("dreams.md")
     )
 }
 
@@ -432,6 +432,7 @@ mod tests {
 
         store.write("a.md", "A").await.unwrap();
         store.write("DREAMS.md", "review").await.unwrap();
+        store.write("dreams.md", "lowercase review").await.unwrap();
         store
             .write(".dreams/candidates.md", "internal")
             .await

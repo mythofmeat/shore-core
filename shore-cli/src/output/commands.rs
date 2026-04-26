@@ -316,10 +316,32 @@ fn print_memory_dream(data: &serde_json::Value) {
     } else {
         let dry = data["dry_run"].as_bool().unwrap_or(false);
         write_row(&mut out, "Status", if dry { "dry run" } else { "ran" });
-        let candidates = data["candidates"].as_array().map_or(0, Vec::len);
-        let promoted = data["promoted"].as_array().map_or(0, Vec::len);
+        let candidates = data["candidate_count"].as_u64().unwrap_or_else(|| {
+            data["candidates"]
+                .as_array()
+                .map_or(0, |items| items.len() as u64)
+        });
+        let promoted = data["promoted_count"].as_u64().unwrap_or_else(|| {
+            data["promoted"]
+                .as_array()
+                .map_or(0, |items| items.len() as u64)
+        });
+        let rejected = data["rejected_count"].as_u64().unwrap_or(0);
         write_row(&mut out, "Candidates", &candidates.to_string());
         write_row(&mut out, "Promoted", &promoted.to_string());
+        write_row(&mut out, "Deferred", &rejected.to_string());
+        let paths = if dry {
+            data["would_write_paths"].as_array()
+        } else {
+            data["paths_written"].as_array()
+        };
+        if let Some(paths) = paths {
+            write_row(
+                &mut out,
+                if dry { "Would write" } else { "Paths written" },
+                &paths.len().to_string(),
+            );
+        }
     }
     let _ = writeln!(out);
 }
