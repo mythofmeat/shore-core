@@ -63,19 +63,29 @@ The old runtime SQLite/vector/RAG memory stack is not the normal source of truth
 scripts/migrate-memory.py
 ```
 
-Memory tools:
+<<<<<<< HEAD
+LLM-facing workspace tools can read, write, edit, list, and search memory files
+through `memory/...` paths when memory access is enabled.
 
-| Tool | Purpose |
+`workspace/memory/MEMORY.md` is prompt-visible. It is a concise index of memory
+files, recently updated files, and still-relevant conversational throughlines;
+it is not the character definition, user profile, standing behavior, tool guide,
+or heartbeat guide.
+
+The CLI and MCP still expose a natural-language memory query command.
+=======
+Current LLM-facing memory surfaces:
+
+| Surface | Purpose |
 | --- | --- |
-| `memory_read` | read one markdown memory file |
-| `memory_write` | write one markdown memory file |
-| `memory_search` | ranked search over markdown memory |
-| `memory_list` | list markdown memory files |
+| Workspace `read`, `list_files`, `search` on `memory/...` | inspect markdown memory files when memory read access is enabled |
+| Workspace `write`, `edit` on `memory/...` | update markdown memory files when memory write access is enabled |
+| `search_history` | search active and compacted conversation transcripts |
+| CLI/MCP memory commands | user/developer natural-language memory query surfaces |
 
-Workspace tools can also use `memory/...` paths when memory access is enabled.
-
-The CLI and MCP still expose a natural-language memory query command, but the
-LLM-facing runtime tools are the granular `memory_*` tools above.
+There are no separate LLM-facing `memory_read`, `memory_write`,
+`memory_search`, or `memory_list` tools on this branch.
+>>>>>>> main
 
 Search is lexical by default. If an embedding profile is configured, retrieval can use a rebuildable hybrid semantic+lexical index. The index is a ranking aid only; markdown files remain authoritative.
 
@@ -84,10 +94,12 @@ Search is lexical by default. If an embedding profile is configured, retrieval c
 Compaction turns older conversation turns into durable markdown memory and trims the hot conversation log. It writes:
 
 - updated markdown files under `workspace/memory/`
-- a prompt digest at `{data_dir}/{character}/active_prompt/RECENT_MEMORY.md`
 - archived conversation segments under the character data directory
 
-Compaction is allowed to run on idle triggers, turn-count triggers, or context-token safety triggers. It also activates staged protected prompt edits because that is already a cache-boundary event.
+Compaction does not write `MEMORY.md`; dreaming maintains that prompt-visible
+index. Compaction is allowed to run on idle triggers, turn-count triggers, or
+context-token safety triggers. It also activates staged protected prompt edits
+because that is already a cache-boundary event.
 
 Manual command:
 
@@ -133,7 +145,9 @@ Heartbeat does not force a recap or write memory by itself. Durable notes are cr
 
 ## Dreaming
 
-Dreaming is an opt-in scheduled memory consolidation sweep. It stages machine-readable candidates under `workspace/memory/.dreams/`, writes a human review surface to `workspace/memory/DREAMS.md`, and promotes qualified durable facts into `workspace/memory/MEMORY.md`.
+Dreaming is an opt-in scheduled memory consolidation sweep with explicit Light, REM, and Deep phases. Light stages deduplicated candidate signals from normal markdown memory sources into `workspace/memory/.dreams/`. REM records deterministic theme and reinforcement signals. Deep scores throughlines and rewrites `workspace/memory/MEMORY.md` as the prompt-visible memory index.
+
+`workspace/memory/DREAMS.md` is a Dream Diary for human review, not long-term memory and not a source of index truth. Generated dreaming output is excluded from future candidate ingestion, including `.dreams/**`, `DREAMS.md`, `dreams.md`, and `memory/dreaming/**`. `MEMORY.md` is read for prompt orientation but is not re-ingested as a candidate source.
 
 ## Tools
 
@@ -141,17 +155,25 @@ Tools are part of the character experience, not just an automation API.
 
 Main tool groups:
 
-- memory tools
-- workspace `read`, `write`, `edit`, `list_files`, `exec`
-- scratchpad tools
+- workspace `read`, `write`, `edit`, `list_files`, `search`, and `exec`
+- workspace `memory/...` access when memory gates allow it
+- conversation transcript search via `search_history`
 - web search and fetch
-- image send/generate
+- image upload/vision and generated images via `generate_image`
 - activity heatmap
 - time and dice
 
 `exec` runs only allowlisted commands, does not invoke a shell, and now rejects path arguments outside the character workspace.
 
-Memory access gates apply consistently: disabling memory hides memory tools and blocks `memory/...` paths through workspace tools.
+Memory access gates apply consistently: disabling memory blocks `memory/...`
+paths through workspace tools, hides or disables history/memory read surfaces as
+appropriate, and hides `exec` unless memory read/write are fully enabled.
+
+Uploaded images may be persisted internally for history, replay, and UI display,
+and their bytes are sent to capable models for vision. Uploaded attachment
+filesystem paths are internal and are not exposed as something the character
+should remember, reuse, or send later. The `generate_image` tool creates and
+sends newly generated images.
 
 Private conversations suppress memory access.
 

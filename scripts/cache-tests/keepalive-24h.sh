@@ -173,9 +173,11 @@ include anthropic-version, x-api-key, and content-type.
 Remember: respond briefly. Do not reference the padding material.
 CHAREOF
 
-# Recap to ensure heartbeat has context for scheduling.
-mkdir -p "$DATA_DIR/$CHARACTER_NAME/active_prompt"
-cat > "$DATA_DIR/$CHARACTER_NAME/active_prompt/RECENT_MEMORY.md" << 'RECAP'
+# Memory index to ensure heartbeat has context for scheduling.
+mkdir -p "$CONFIG_DIR/characters/$CHARACTER_NAME/workspace/memory"
+cat > "$CONFIG_DIR/characters/$CHARACTER_NAME/workspace/memory/MEMORY.md" << 'RECAP'
+# Memory Index
+
 This is a test character used for cache keepalive validation. The user sends
 periodic test messages to verify cache warmth. Respond briefly to each message.
 RECAP
@@ -189,7 +191,7 @@ log "Starting daemon..."
 SHORE_CONFIG_DIR="$CONFIG_DIR" \
 SHORE_DATA_DIR="$DATA_DIR" \
 SHORE_RUNTIME_DIR="$RUNTIME_DIR" \
-RUST_LOG=info,shore_daemon::autonomy=debug,shore_llm_client::providers::anthropic=debug \
+RUST_LOG=info,shore_daemon::autonomy=debug,shore_llm::providers::anthropic=debug \
     "$DAEMON_BIN" > "$DAEMON_LOG" 2>&1 &
 DAEMON_PID=$!
 

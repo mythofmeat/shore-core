@@ -293,7 +293,7 @@ _start_daemon() {
     SHORE_CONFIG_DIR="$CONFIG_DIR" \
     SHORE_DATA_DIR="$DATA_DIR" \
     SHORE_RUNTIME_DIR="$RUNTIME_DIR" \
-    RUST_LOG=info,shore_daemon::autonomy=debug,shore_llm_client::providers::anthropic=debug \
+    RUST_LOG=info,shore_daemon::autonomy=debug,shore_llm::providers::anthropic=debug \
         "$DAEMON_BIN" > "$LOG_FILE" 2>&1 &
     DAEMON_PID=$!
 

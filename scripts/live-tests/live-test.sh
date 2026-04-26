@@ -80,7 +80,7 @@ fi
 # ── Build ─────────────────────────────────────────────────────────────
 if [[ "$SKIP_BUILD" == false ]]; then
     printf "${BOLD}Building...${RESET}\n"
-    cargo build --workspace --quiet 2>&1
+    cargo build --quiet -p shore-daemon -p shore-cli 2>&1
 fi
 
 SHORE="$REPO_ROOT/target/debug/shore"

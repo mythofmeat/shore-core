@@ -2,22 +2,37 @@
 
 Shore is a daemon-centered AI character engine. The daemon owns state; clients observe and send commands.
 
+## Workspace Layout
+
+The main Rust workspace is grouped by ownership:
+
+- `core/` — shared protocol, config, and SWP client crates
+- `backend/` — daemon runtime plus backend support crates
+- `clients/` — user-facing clients, including CLI, TUI, and Tauri GUI
+- `bridges/` — external service bridges
+- `dev/` — development tools and test harnesses
+
+`clients/gui-godot/rust` is intentionally outside the root Cargo workspace because
+it has Godot-specific tooling and produces a `shore_bridge` dynamic library.
+
 ## Workspace Crates
 
-| Crate | Role |
+| Path | Crate | Role |
 | --- | --- |
-| `shore-protocol` | SWP wire types |
-| `shore-config` | config loading, model catalog, character paths |
-| `shore-client` | client connection/discovery helpers |
-| `shore-daemon-server` | TCP server, registry, session routing |
-| `shore-daemon` | engine, memory, autonomy, tools, generation |
-| `shore-llm-client` | provider request/stream handling |
-| `shore-ledger` | usage, pricing, Anthropic cache tracking |
-| `shore-cli` | CLI client |
-| `shore-tui` | terminal UI |
-| `shore-matrix` | Matrix bridge |
-| `shore-mcp` | development/debug MCP surface |
-| `shore-test-harness` | integration harness and mock server |
+| `core/protocol` | `shore-protocol` | SWP wire types |
+| `core/config` | `shore-config` | config loading, model catalog, character paths |
+| `core/swp-client` | `shore-swp-client` | client connection/discovery helpers |
+| `backend/swp-server` | `shore-swp-server` | TCP server, registry, session routing |
+| `backend/daemon` | `shore-daemon` | engine, memory, autonomy, tools, generation |
+| `backend/llm` | `shore-llm` | provider request/stream handling |
+| `backend/ledger` | `shore-ledger` | usage, pricing, Anthropic cache tracking |
+| `backend/diagnostics` | `shore-diagnostics` | shared diagnostic formatting |
+| `clients/cli` | `shore-cli` | CLI client |
+| `clients/tui` | `shore-tui` | terminal UI |
+| `clients/gui/src-tauri` | `shore-gui` | Tauri desktop client |
+| `bridges/matrix` | `shore-matrix` | Matrix bridge |
+| `dev/mcp` | `shore-mcp` | development/debug MCP surface |
+| `dev/test-harness` | `shore-test-harness` | integration harness and mock server |
 
 ## State Model
 
@@ -62,7 +77,6 @@ $XDG_DATA_HOME/shore/<Character>/
     AGENTS.md
     TOOLS.md
     HEARTBEAT.md
-    RECENT_MEMORY.md
   compaction.json
   segments/
   deferred_edits.jsonl
@@ -78,6 +92,7 @@ $XDG_DATA_HOME/shore/ledger.db
 ## Prompt Assembly
 
 Prompt assembly reads protected prompt files from `active_prompt/`, not directly from editable workspace files.
+It reads the prompt-visible memory index directly from `workspace/memory/MEMORY.md`.
 
 Normal chat uses:
 
@@ -85,7 +100,7 @@ Normal chat uses:
 - `USER.md`
 - `AGENTS.md`
 - `TOOLS.md`
-- `RECENT_MEMORY.md`
+- `workspace/memory/MEMORY.md`
 - current conversation messages
 - capability/tool guidance
 
@@ -143,7 +158,7 @@ The optional embedding index is a rebuildable cache at `memory_index.json`. It i
 
 ## Tools
 
-Tool definitions live under `shore-daemon/src/tools/`.
+Tool definitions live under `backend/daemon/src/tools/`.
 
 Tool categories drive private-mode filtering. Memory gates are enforced at both the visible tool list and dispatch layer.
 
@@ -172,11 +187,15 @@ Dormancy stops autonomous LLM calls until user engagement resumes.
 
 Cache keepalive is separate from heartbeat. It exists to preserve Anthropic cache warmth, not to simulate character autonomy.
 
-Dreaming is the scheduled memory consolidation path. When autonomy and `[memory.dreaming]` are enabled, a due sweep stages state in `workspace/memory/.dreams/`, appends reviewable notes to `workspace/memory/DREAMS.md`, and promotes qualified durable facts into `workspace/memory/MEMORY.md`.
+Dreaming is the scheduled memory consolidation path. When autonomy and `[memory.dreaming]` are enabled, a due sweep runs Light -> REM -> Deep: Light stages deduplicated candidate state in `workspace/memory/.dreams/`, REM records theme/reinforcement signals, and Deep applies scoring gates before rewriting `workspace/memory/MEMORY.md` as the prompt-visible memory index.
+
+`workspace/memory/MEMORY.md` orients the character with a map of memory files, recently updated files, and still-relevant conversational throughlines. It should not duplicate the roles of `SOUL.md`, `USER.md`, `AGENTS.md`, `TOOLS.md`, or `HEARTBEAT.md`.
+
+`workspace/memory/DREAMS.md` is a human Dream Diary only. It is safe to edit for review, but it is not long-term memory and is not re-ingested. Generated outputs under `.dreams/**`, `DREAMS.md`, `dreams.md`, `MEMORY.md`, and `memory/dreaming/**` are excluded from candidate source collection.
 
 ## LLM Provider Boundary
 
-`shore-llm-client` owns provider-specific request construction, streaming, response parsing, retry behavior, and content block handling.
+`shore-llm` owns provider-specific request construction, streaming, response parsing, retry behavior, and content block handling.
 
 Upstream crates should test business logic with the test harness, but provider wire behavior should be verified with recorded or live provider responses.
 

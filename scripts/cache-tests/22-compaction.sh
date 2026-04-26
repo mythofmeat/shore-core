@@ -79,8 +79,10 @@ if ! grep -q 'OPENROUTER_SHORE_EMBEDDING' "$CONFIG_DIR/.env" 2>/dev/null; then
     fi
 fi
 
-mkdir -p "$DATA_DIR/$CHARACTER_NAME/active_prompt"
-cat > "$DATA_DIR/$CHARACTER_NAME/active_prompt/RECENT_MEMORY.md" << 'RECAP'
+mkdir -p "$CONFIG_DIR/characters/$CHARACTER_NAME/workspace/memory"
+cat > "$CONFIG_DIR/characters/$CHARACTER_NAME/workspace/memory/MEMORY.md" << 'RECAP'
+# Memory Index
+
 The user enjoys asking simple math questions.
 RECAP
 

@@ -23,7 +23,9 @@ These are correctness constraints for Shore. `GOALS.md` is the source of user in
 **Must:**
 
 - Runtime memory reads and writes use `characters/{character}/workspace/memory/**/*.md`.
-- Memory tools must expose paths and markdown content directly.
+- LLM-facing memory access must expose paths and markdown content through
+  workspace tools on `memory/...` paths.
+- Conversation transcript search must stay separate from curated markdown memory.
 - Compaction must update markdown memory, not a hidden runtime database.
 - Optional semantic indexes must be rebuildable ranking aids.
 
@@ -44,7 +46,7 @@ These are correctness constraints for Shore. `GOALS.md` is the source of user in
 
 **Must not:**
 
-- Tool use, memory writes, compaction digest writes, or ordinary workspace edits must not silently mutate the active prompt prefix.
+- Tool use, ordinary memory-note writes, or ordinary workspace edits must not silently mutate protected active prompt files. `MEMORY.md` is intentionally prompt-visible and may change when dreaming rewrites the memory index.
 
 ## Protected Self-Edits
 
@@ -64,7 +66,8 @@ These are correctness constraints for Shore. `GOALS.md` is the source of user in
 
 - Compaction sees a bounded snapshot of existing markdown memory before writing.
 - Compaction retains recent turns according to `keep_recent_turns`.
-- Compaction writes `RECENT_MEMORY.md` for prompt injection.
+- Compaction writes markdown memory notes, not prompt recap files.
+- Compaction must not write `MEMORY.md`; dreaming owns the prompt-visible index.
 - Compaction activates deferred protected edits.
 
 **Must not:**
@@ -84,7 +87,7 @@ These are correctness constraints for Shore. `GOALS.md` is the source of user in
 
 **Must not:**
 
-- Heartbeat must not force recaps or automatic daily-note writes.
+- Heartbeat must not force recap files or automatic daily-note writes.
 
 ## Tools
 
@@ -102,15 +105,16 @@ These are correctness constraints for Shore. `GOALS.md` is the source of user in
 
 - `exec` must not accept arbitrary executable paths or host filesystem paths.
 
-## Scratchpad Vs Memory
+## Workspace Vs Memory
 
-**Goal:** Scratchpad and memory are different surfaces.
+**Goal:** General workspace files and memory are different surfaces.
 
 **Must:**
 
-- Scratchpad is character-authored project/notes space.
+- General workspace files are character-authored project/notes space.
 - Memory is continuity/factual recall space.
-- Scratchpad is only in context when the character explicitly reads it.
+- Memory is only available through `memory/...` paths when memory gates allow it.
+- Workspace files are only in context when the character explicitly reads them.
 
 ## Editing And Regeneration
 

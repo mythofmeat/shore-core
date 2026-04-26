@@ -72,7 +72,7 @@ Why:
 
 ## 2026-04-24: Dreaming Is Scheduled Memory Consolidation
 
-Dreaming is the opt-in consolidation path. It stages machine-readable state in `.dreams/`, writes human-reviewable reports to `DREAMS.md`, and promotes durable facts into `MEMORY.md`.
+Dreaming is the opt-in consolidation path. It stages machine-readable state in `.dreams/`, writes human-reviewable reports to `DREAMS.md`, and rewrites `MEMORY.md` during Deep Sleep as the prompt-visible memory index. `MEMORY.md` points to memory files, recent updates, and current throughlines; durable notes live in ordinary markdown memory files. `DREAMS.md` is not memory and generated dreaming artifacts are excluded from later candidate ingestion.
 
 ## 2026-04-24: Remove Separate Collation As A Runtime Requirement
 
@@ -143,5 +143,5 @@ The following concepts appeared in older docs and changelogs but are not current
 - separate collation pipeline
 - Synapse-specific embedded Matrix wording
 - `character.md` as the active character definition path
-- `memory/recap.md`
+- compaction-generated prompt recap files
 - `memories/` as a runtime memory directory

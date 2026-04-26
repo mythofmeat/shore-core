@@ -141,34 +141,34 @@ max_iterations = 10
 memory = true
 memory_read = true
 memory_write = true
-memory_search = true
-memory_list = true
+web_search = true
+fetch_url = true
+generate_image = true
+check_time = true
+roll_dice = true
+activity_heatmap = true
 read = true
 write = true
 edit = true
 list_files = true
+search = true
+search_history = true
 exec = true
-scratchpad_list = true
-scratchpad_read = true
-scratchpad_write = true
-scratchpad_delete = true
-web_search = true
-fetch_url = true
-send_image = true
-generate_image = true
-activity_heatmap = true
-check_time = true
-roll_dice = true
 ```
 
 All tools default to enabled. Set `enabled = false` to disable tool use entirely.
 
 Memory gates:
 
-- `memory = false` disables all memory tools.
-- `memory_read = false` blocks memory reads and `memory/...` reads through workspace tools.
-- `memory_write = false` blocks memory writes and `memory/...` writes through workspace tools.
+- `memory = false` blocks `memory/...` workspace paths and disables conversation history search.
+- `memory_read = false` blocks `read`, `list_files`, and `search` access to `memory/...` paths and disables `search_history`.
+- `memory_write = false` blocks `write` and `edit` access to `memory/...` paths.
 - `exec` is hidden when memory read/write access is not both enabled.
+
+Legacy config keys such as `memory_search` and `memory_list` may still parse as
+tool toggles, but they are compatibility keys and are not registered LLM tools.
+There is no `send_image` toggle for uploaded attachments; generated-image
+sending is controlled by `generate_image`.
 
 `exec` is allowlisted and argument-sandboxed. Path-like arguments must stay inside the character workspace.
 
@@ -194,7 +194,7 @@ max_context_tokens = 200000
 keep_recent_turns = 2
 ```
 
-Compaction writes markdown memory, updates `active_prompt/RECENT_MEMORY.md`, archives old turns, and activates staged protected prompt edits.
+Compaction writes markdown memory notes, archives old turns, and activates staged protected prompt edits. It does not write `MEMORY.md`; dreaming maintains that prompt-visible index.
 
 ## `[memory.dreaming]`
 
@@ -205,7 +205,9 @@ frequency = "0 3 * * *"
 max_tool_rounds = 12
 ```
 
-Dreaming is opt-in and requires `[behavior.autonomy].enabled = true`. It runs independently of heartbeat and writes `.dreams/`, `DREAMS.md`, and `MEMORY.md` under `workspace/memory/`.
+Dreaming is opt-in and requires `[behavior.autonomy].enabled = true`. It runs independently of heartbeat as a Light -> REM -> Deep consolidation sweep. Machine-readable state is written under `.dreams/`; optional phase reports are written under `dreaming/<phase>/`; the human review diary is `DREAMS.md`; Deep rewrites `MEMORY.md` as the prompt-visible memory index.
+
+`DREAMS.md` is review output, not long-term memory. `MEMORY.md` is an index of memory files, recent updates, and conversational throughlines. Dreaming excludes generated artifacts from future candidate ingestion, including `.dreams/**`, `DREAMS.md`, `dreams.md`, `MEMORY.md`, and `dreaming/**`.
 
 ## `[memory.retrieval]`
 
@@ -245,11 +247,9 @@ Backends include `notify_send`, `ntfy`, and `command`.
 ```toml
 [tts]
 enabled = false
-provider = "openai"
-model = "tts-1"
+host = "127.0.0.1"
+port = 8778
 voice = "alloy"
-api_key_env = "OPENAI_API_KEY"
-base_url = "https://api.openai.com/v1"
 ```
 
 Used by `shore speak` and live-speak mode.
@@ -275,7 +275,9 @@ trusted_user = "@user:shore.local"
 
 [connections.matrix.embedded]
 server_name = "shore.local"
-bind_addr = "127.0.0.1:6167"
+bind_address = "127.0.0.1"
+port = 6167
+admin_password = "change-me"
 ```
 
 ## Validation

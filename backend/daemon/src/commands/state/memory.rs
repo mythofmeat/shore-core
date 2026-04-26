@@ -1,0 +1,507 @@
+use serde_json::json;
+use shore_protocol::error::ErrorCode;
+use shore_protocol::types::{ContentBlock, Role};
+use tracing::{debug, info};
+
+use crate::engine::ConversationEngine;
+use crate::memory::compaction::{
+    CompactionError, CompactionManager, CompactionOutcome, ConversationMessage,
+    DEFAULT_COMPACT_PROMPT,
+};
+use crate::memory::compaction_impls::{RealCompactionLlm, RealConversationManager};
+use crate::memory::markdown_query;
+use crate::memory::markdown_store::MarkdownMemoryStore;
+use shore_config::character_memory_dir;
+use shore_config::resolve_prompt_template;
+
+use crate::commands::{CommandContext, CommandResult};
+
+async fn open_markdown_store(
+    ctx: &CommandContext,
+    char_name: &str,
+) -> Result<MarkdownMemoryStore, (ErrorCode, String)> {
+    MarkdownMemoryStore::open(character_memory_dir(&ctx.config.dirs.config, char_name))
+        .await
+        .map_err(|e| {
+            (
+                ErrorCode::InternalError,
+                format!("Failed to open markdown store: {e}"),
+            )
+        })
+}
+
+/// Show recent memory changelog entries.
+pub fn memory_changelog(
+    engine: &ConversationEngine,
+    ctx: &CommandContext,
+    args: &serde_json::Value,
+) -> CommandResult {
+    let limit = args.get("limit").and_then(|v| v.as_i64()).unwrap_or(20);
+
+    let char_name = engine.character_name();
+    let dreams_path = ctx
+        .config
+        .dirs
+        .config
+        .join("characters")
+        .join(char_name)
+        .join("workspace")
+        .join("memory")
+        .join("DREAMS.md");
+    if !dreams_path.exists() {
+        return Ok(json!({ "changelog": [], "character": char_name }));
+    }
+
+    let content = std::fs::read_to_string(&dreams_path).map_err(|e| {
+        (
+            ErrorCode::InternalError,
+            format!("failed to read DREAMS.md: {e}"),
+        )
+    })?;
+    let mut sections = content
+        .split("\n## ")
+        .filter_map(|section| {
+            let trimmed = section.trim();
+            if trimmed.is_empty() || trimmed.starts_with("# Dreams") {
+                return None;
+            }
+            let prefixed = if trimmed.starts_with("## ") {
+                trimmed.to_string()
+            } else {
+                format!("## {trimmed}")
+            };
+            let mut lines = prefixed.lines();
+            let heading = lines.next()?.trim_start_matches("## ").trim();
+            let description = lines.collect::<Vec<_>>().join("\n").trim().to_string();
+            let (timestamp, operation) = heading
+                .strip_prefix("Dream Cycle - ")
+                .map(|ts| (ts.to_string(), "dream_cycle".to_string()))
+                .or_else(|| {
+                    heading
+                        .split_once(" - ")
+                        .map(|(ts, op)| (ts.to_string(), op.to_string()))
+                })
+                .unwrap_or_else(|| (String::new(), heading.to_string()));
+            Some(json!({
+                "timestamp": timestamp,
+                "operation": operation,
+                "description": description,
+            }))
+        })
+        .collect::<Vec<_>>();
+    sections.reverse();
+    sections.truncate(limit.max(0) as usize);
+
+    debug!(
+        character = char_name,
+        count = sections.len(),
+        "Memory changelog queried"
+    );
+    Ok(json!({ "changelog": sections, "character": char_name }))
+}
+
+pub async fn memory_dream(
+    engine: &ConversationEngine,
+    ctx: &CommandContext,
+    args: &serde_json::Value,
+) -> CommandResult {
+    let status = args
+        .get("status")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let dry_run = args
+        .get("dry_run")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+    let char_name = engine.character_name();
+    let cfg = &ctx.config.app.memory.dreaming;
+
+    if status {
+        let status = crate::memory::dreaming::dream_status(&ctx.config.dirs.config, char_name, cfg)
+            .await
+            .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
+        return Ok(json!(status));
+    }
+
+    let result =
+        crate::memory::dreaming::run_sweep(&ctx.config.dirs.config, char_name, cfg, dry_run, force)
+            .await
+            .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
+    match result {
+        Some(result) => Ok(json!(result)),
+        None => Ok(json!({
+            "character": char_name,
+            "status": "not_due",
+            "enabled": cfg.enabled,
+            "frequency": cfg.frequency,
+        })),
+    }
+}
+
+/// Memory command: status (no query) or direct markdown search (with query).
+pub async fn memory(
+    engine: &ConversationEngine,
+    ctx: &CommandContext,
+    args: &serde_json::Value,
+) -> CommandResult {
+    let query = args
+        .get("query")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty());
+    match query {
+        None => memory_status(engine, ctx).await,
+        Some(q) => {
+            debug!(
+                character = engine.character_name(),
+                query_len = q.len(),
+                "Memory query requested"
+            );
+            memory_query(engine, ctx, q).await
+        }
+    }
+}
+
+/// Return markdown memory file counts for the current character.
+async fn memory_status(engine: &ConversationEngine, ctx: &CommandContext) -> CommandResult {
+    let char_name = engine.character_name();
+    let store = open_markdown_store(ctx, char_name).await?;
+    let status = markdown_query::memory_status(&store)
+        .await
+        .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
+
+    debug!(
+        character = char_name,
+        entries = status.total_files,
+        daily = status.daily_files,
+        images = status.image_files,
+        "Memory status queried"
+    );
+    Ok(json!({
+        "character": char_name,
+        "entries": status.total_files,
+        "curated_files": status.topic_files,
+        "daily_files": status.daily_files,
+        "image_files": status.image_files,
+    }))
+}
+
+/// Run a memory query against markdown files.
+async fn memory_query(
+    engine: &ConversationEngine,
+    ctx: &CommandContext,
+    query: &str,
+) -> CommandResult {
+    let char_name = engine.character_name();
+    let store = open_markdown_store(ctx, char_name).await?;
+    let hits = store.search_text(query).await.map_err(|e| {
+        (
+            ErrorCode::InternalError,
+            format!("Memory query failed: {e}"),
+        )
+    })?;
+    let result = markdown_query::format_direct_response(query, &hits);
+
+    Ok(json!({
+        "character": char_name,
+        "query": query,
+        "result": result,
+    }))
+}
+
+/// Run compaction on the current character's conversation.
+pub async fn compact(
+    engine: &mut ConversationEngine,
+    ctx: &CommandContext,
+    args: &serde_json::Value,
+) -> CommandResult {
+    let dry_run = args
+        .get("dry_run")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let keep_turns_override = args
+        .get("keep_turns")
+        .and_then(|v| v.as_u64())
+        .map(|n| n as usize);
+
+    let char_name = engine.character_name().to_string();
+
+    let messages: Vec<ConversationMessage> = engine
+        .messages()
+        .iter()
+        .map(|m| ConversationMessage {
+            role: match m.role {
+                Role::User => "user".to_string(),
+                Role::Assistant => "assistant".to_string(),
+                Role::System => "system".to_string(),
+            },
+            content: m.content.clone(),
+            timestamp: m.timestamp.clone(),
+            is_tool_result_only: m.role == Role::User
+                && !m.content_blocks.is_empty()
+                && m.content_blocks
+                    .iter()
+                    .all(|b| matches!(b, ContentBlock::ToolResult { .. })),
+        })
+        .collect();
+
+    if messages.is_empty() {
+        return Err((
+            ErrorCode::InvalidRequest,
+            "No messages to compact".to_string(),
+        ));
+    }
+
+    info!(character = %char_name, message_count = messages.len(), dry_run, "Compaction started");
+
+    let prompt_template =
+        resolve_prompt_template(&ctx.config.dirs.config, &char_name, "compact.md")
+            .unwrap_or_else(|| DEFAULT_COMPACT_PROMPT.to_string());
+
+    let model = resolve_compaction_model(&ctx.config, ctx.active_model.as_deref())
+        .ok_or_else(|| (ErrorCode::InternalError, "No model configured".to_string()))?;
+
+    let llm = RealCompactionLlm::new(ctx.llm_client.clone(), model, char_name.clone());
+    let conv_mgr = RealConversationManager::new(engine.character_dir());
+
+    let mgr = CompactionManager::new(ctx.config.app.memory.compaction.clone());
+
+    let active_content = std::fs::read_to_string(engine.character_dir().join("active.jsonl"))
+        .map_err(|e| {
+            (
+                ErrorCode::InternalError,
+                format!("failed to read active.jsonl: {e}"),
+            )
+        })?;
+
+    let display_name = ctx.config.app.defaults.resolve_display_name();
+
+    let markdown_store = crate::memory::markdown_store::MarkdownMemoryStore::open(
+        character_memory_dir(&ctx.config.dirs.config, &char_name),
+    )
+    .await
+    .ok();
+
+    let outcome = mgr
+        .compact(
+            &char_name,
+            &messages,
+            &active_content,
+            false,
+            &prompt_template,
+            &char_name,
+            &display_name,
+            &llm,
+            &conv_mgr,
+            markdown_store.as_ref(),
+            dry_run,
+            keep_turns_override,
+        )
+        .await
+        .map_err(compaction_err)?;
+
+    match outcome {
+        CompactionOutcome::Compacted(result) => {
+            info!(
+                character = %char_name,
+                memory_files_written = result.memory_files_written.len(),
+                message_count = result.message_count,
+                retained_count = result.retained_count,
+                "Compaction complete"
+            );
+            engine
+                .reload()
+                .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
+
+            // Apply deferred character self-edits now that the cache has
+            // been bust by the engine reload.
+            let character_data_dir = ctx.config.dirs.data.join(&char_name);
+            if let Err(e) = crate::memory::deferred_edits::apply_deferred_edits(
+                &character_data_dir,
+                &ctx.config.dirs.config,
+                &char_name,
+            ) {
+                tracing::warn!(
+                    character = %char_name,
+                    error = %e,
+                    "Failed to apply deferred edits after compaction"
+                );
+            }
+
+            Ok(json!({
+                "status": "compacted",
+                "character": char_name,
+                "memory_files_written": result.memory_files_written,
+                "message_count": result.message_count,
+                "retained_count": result.retained_count,
+                "retained_turns": result.retained_turns,
+                "new_conversation_id": result.new_conversation_id,
+            }))
+        }
+        CompactionOutcome::DryRun(result) => {
+            let previews: Vec<serde_json::Value> = result
+                .file_ops_preview
+                .iter()
+                .map(|op| {
+                    json!({
+                        "path": op.path,
+                        "content_preview": op.content.chars().take(200).collect::<String>(),
+                    })
+                })
+                .collect();
+
+            Ok(json!({
+                "status": "dry_run",
+                "character": char_name,
+                "would_write_files": result.would_write_files,
+                "file_ops_preview": previews,
+                "message_count": result.message_count,
+                "retained_count": result.retained_count,
+                "retained_turns": result.retained_turns,
+            }))
+        }
+    }
+}
+
+fn compaction_err(e: CompactionError) -> (ErrorCode, String) {
+    match &e {
+        CompactionError::PrivateConversation | CompactionError::InsufficientMessages => {
+            (ErrorCode::InvalidRequest, e.to_string())
+        }
+        _ => (ErrorCode::InternalError, e.to_string()),
+    }
+}
+
+/// Resolve the model to use for compaction.
+///
+/// Chain: active character model → `defaults.model` → first chat model.
+/// Background and interactive compaction entry points depend on this returning
+/// the same value.
+pub fn resolve_compaction_model(
+    config: &shore_config::LoadedConfig,
+    active_model: Option<&str>,
+) -> Option<shore_config::models::ResolvedModel> {
+    active_model
+        .and_then(|name| config.models.find_model(name).ok())
+        .or_else(|| {
+            config
+                .app
+                .defaults
+                .model
+                .as_deref()
+                .and_then(|name| config.models.find_model(name).ok())
+        })
+        .or_else(|| config.models.first_chat_model())
+        .cloned()
+}
+
+#[cfg(test)]
+mod resolver_tests {
+    //! Regression tests for [`resolve_compaction_model`].
+    //!
+    //! Compaction follows the character's persisted active chat model, then
+    //! falls back through the normal chat default. This keeps manual and
+    //! background compaction aligned without a separate compaction selector.
+    //! Don't delete without a matching DECISIONS.md entry.
+    use super::resolve_compaction_model;
+    use shore_config::app::{AppConfig, DefaultsConfig};
+    use shore_config::models::ModelCatalog;
+    use shore_config::{LoadedConfig, ShoreDirs};
+    use std::path::PathBuf;
+
+    fn catalog_with_chat_and_tools() -> ModelCatalog {
+        let chat: toml::Table = toml::from_str(
+            r#"
+[anthropic.primary]
+model_id = "claude-primary"
+
+[anthropic.bg]
+model_id = "claude-bg"
+"#,
+        )
+        .unwrap();
+        let tools: toml::Table = toml::from_str(
+            r#"
+[openrouter.minimax]
+model_id = "minimax-tool"
+"#,
+        )
+        .unwrap();
+        ModelCatalog::from_sections(Some(&chat), Some(&tools), None, None).unwrap()
+    }
+
+    fn make_config(defaults: DefaultsConfig) -> LoadedConfig {
+        let app = AppConfig {
+            defaults,
+            ..AppConfig::default()
+        };
+        LoadedConfig::new_for_test(
+            app,
+            catalog_with_chat_and_tools(),
+            ShoreDirs {
+                config: PathBuf::from("/tmp/resolver-test/config"),
+                data: PathBuf::from("/tmp/resolver-test/data"),
+                runtime: PathBuf::from("/tmp/resolver-test/runtime"),
+                cache: PathBuf::from("/tmp/resolver-test/cache"),
+            },
+        )
+    }
+
+    #[test]
+    fn compaction_prefers_active_character_model() {
+        let config = make_config(DefaultsConfig {
+            model: Some("primary".to_string()),
+            ..DefaultsConfig::default()
+        });
+        let model = resolve_compaction_model(&config, Some("bg")).expect("resolved");
+        assert_eq!(model.name, "bg");
+    }
+
+    #[test]
+    fn compaction_ignores_unknown_active_model() {
+        let config = make_config(DefaultsConfig {
+            model: Some("primary".to_string()),
+            ..DefaultsConfig::default()
+        });
+        let model = resolve_compaction_model(&config, Some("missing")).expect("resolved");
+        assert_eq!(model.name, "primary");
+    }
+
+    #[test]
+    fn compaction_falls_back_to_default_model_when_active_unset() {
+        let config = make_config(DefaultsConfig {
+            model: Some("primary".to_string()),
+            ..DefaultsConfig::default()
+        });
+        let model = resolve_compaction_model(&config, None).expect("resolved");
+        assert_eq!(model.name, "primary");
+    }
+
+    #[test]
+    fn compaction_falls_back_to_first_chat_model_when_nothing_set() {
+        let config = make_config(DefaultsConfig::default());
+        let model = resolve_compaction_model(&config, None).expect("resolved");
+        // first_chat_model returns the first BTreeMap entry: "bg" sorts before "primary".
+        assert_eq!(model.name, "bg");
+    }
+
+    #[test]
+    fn compaction_returns_none_with_empty_catalog() {
+        let app = AppConfig {
+            defaults: DefaultsConfig::default(),
+            ..AppConfig::default()
+        };
+        let config = LoadedConfig::new_for_test(
+            app,
+            ModelCatalog::default(),
+            ShoreDirs {
+                config: PathBuf::from("/tmp/resolver-test/config"),
+                data: PathBuf::from("/tmp/resolver-test/data"),
+                runtime: PathBuf::from("/tmp/resolver-test/runtime"),
+                cache: PathBuf::from("/tmp/resolver-test/cache"),
+            },
+        );
+        assert!(resolve_compaction_model(&config, None).is_none());
+    }
+}

@@ -48,7 +48,10 @@ So `cat notes.md` works, but `cat /etc/passwd`, `git -C /tmp status`, and `cargo
 
 ## Memory Disabled Means `memory/...` Is Blocked
 
-Disabling memory does more than hide `memory_*` tools. It also blocks workspace access to `memory/...` paths and hides `exec` unless memory read/write access is fully enabled.
+Disabling memory blocks workspace access to `memory/...` paths and disables
+`search_history`. Workspace `read`, `write`, `edit`, `list_files`, and `search`
+can still operate on non-memory workspace paths when their own toggles are
+enabled. `exec` is hidden unless memory read/write access is fully enabled.
 
 ## Matrix Live Verification Needs A Homeserver
 
