@@ -21,6 +21,9 @@ const PROTECTED_PATHS: &[&str] = &[
 /// Persisted snapshot directory under the character data dir.
 const ACTIVE_PROMPT_DIR: &str = "active_prompt";
 
+/// Prompt-visible index maintained in the character workspace memory dir.
+pub const MEMORY_INDEX_FILE: &str = "MEMORY.md";
+
 /// Compaction-produced recent-memory digest injected into normal turns.
 pub const RECENT_MEMORY_DIGEST_FILE: &str = "RECENT_MEMORY.md";
 
@@ -78,6 +81,16 @@ pub fn active_prompt_file(character_data_dir: &Path, name: &str) -> PathBuf {
 
 pub fn recent_memory_digest_path(character_data_dir: &Path) -> PathBuf {
     active_prompt_file(character_data_dir, RECENT_MEMORY_DIGEST_FILE)
+}
+
+pub fn memory_index_path(config_dir: &Path, char_name: &str) -> PathBuf {
+    character_memory_dir(config_dir, char_name).join(MEMORY_INDEX_FILE)
+}
+
+pub fn load_memory_index(config_dir: &Path, char_name: &str) -> Option<String> {
+    fs::read_to_string(memory_index_path(config_dir, char_name))
+        .ok()
+        .filter(|content| !content.trim().is_empty())
 }
 
 pub fn load_active_prompt_file(character_data_dir: &Path, name: &str) -> Option<String> {

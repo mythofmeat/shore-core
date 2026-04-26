@@ -19,7 +19,7 @@ const TIME_GAP_THRESHOLD_SECS: f64 = 1800.0; // 30 minutes
 /// Built-in system prompt template used when no override is found on disk.
 ///
 /// This is intentionally minimal — character/user definitions, TOOLS.md, and
-/// recent-memory digest are injected as separate system blocks by
+/// the prompt-visible memory index are injected as separate system blocks by
 /// `assemble_prompt`.
 const BUILTIN_SYSTEM_TEMPLATE: &str = "\
 You are {{char}}, in conversation with {{user}}.
@@ -71,8 +71,8 @@ pub struct PromptParams<'a> {
     pub character_definition: Option<&'a str>,
     /// User definition (from USER.md).
     pub user_definition: Option<&'a str>,
-    /// Recent-memory digest compiled at the last compaction boundary.
-    pub recent_memory_digest: Option<&'a str>,
+    /// Prompt-visible memory index from workspace/memory/MEMORY.md.
+    pub memory_index: Option<&'a str>,
     /// Whether this is a private conversation.
     pub is_private: bool,
     /// Conversation messages (full history).
@@ -94,7 +94,7 @@ pub struct PromptParams<'a> {
 /// 2. TOOLS.md guidance (if present)
 /// 3. `<{char}>` character definition (if present)
 /// 4. `<{user}>` user definition (if present)
-/// 5. `<recent_memory>` block (if present, not private)
+/// 5. `<memory_index>` block (if present, not private)
 ///
 /// Then trims conversation history to fit the token budget.
 pub fn assemble_prompt(params: &PromptParams<'_>) -> AssembledPrompt {
@@ -161,16 +161,18 @@ pub fn assemble_prompt(params: &PromptParams<'_>) -> AssembledPrompt {
         });
     }
 
-    // Block 5: recent memory digest (suppressed for private conversations).
+    // Block 5: prompt-visible memory index (suppressed for private conversations).
     if !params.is_private {
-        if let Some(digest) = params.recent_memory_digest.filter(|s| !s.is_empty()) {
+        if let Some(index) = params.memory_index.filter(|s| !s.is_empty()) {
             system.push(SystemBlock {
-                label: "recent_memory".into(),
+                label: "memory_index".into(),
                 content: format!(
-                    "<recent_memory>\n\
-                     The following is a compact digest of your most recent durable memories.\n\n\
-                     {digest}\n\
-                     </recent_memory>"
+                    "<memory_index>\n\
+                     The following is your prompt-visible memory index from workspace/memory/MEMORY.md. \
+                     It is a map of memory files, recently updated files, and still-relevant conversational throughlines; \
+                     it does not replace SOUL.md, USER.md, AGENTS.md, TOOLS.md, or HEARTBEAT.md.\n\n\
+                     {index}\n\
+                     </memory_index>"
                 ),
             });
         }
@@ -183,10 +185,7 @@ pub fn assemble_prompt(params: &PromptParams<'_>) -> AssembledPrompt {
             .filter(|s| !s.is_empty())
             .is_some(),
         has_user_def = params.user_definition.filter(|s| !s.is_empty()).is_some(),
-        has_recent_memory = params
-            .recent_memory_digest
-            .filter(|s| !s.is_empty())
-            .is_some(),
+        has_memory_index = params.memory_index.filter(|s| !s.is_empty()).is_some(),
         "system blocks assembled"
     );
 
@@ -505,7 +504,7 @@ mod tests {
             tools_guidance: None,
             character_definition: None,
             user_definition: None,
-            recent_memory_digest: None,
+            memory_index: None,
             is_private: false,
             messages,
             max_context_tokens: None,
@@ -966,7 +965,7 @@ mod tests {
             tools_guidance: None,
             character_definition: Some("A friendly test character."),
             user_definition: Some("A developer."),
-            recent_memory_digest: None,
+            memory_index: None,
             is_private: false,
             messages: &messages,
             max_context_tokens: Some(200_000),
@@ -1023,23 +1022,21 @@ mod tests {
     }
 
     #[test]
-    fn assemble_prompt_injects_recent_memory_digest() {
+    fn assemble_prompt_injects_memory_index() {
         let params = PromptParams {
-            recent_memory_digest: Some("We talked about Rust."),
+            memory_index: Some("- `topics/rust.md` - Rust throughline."),
             ..make_params(&[])
         };
         let result = assemble_prompt(&params);
 
-        let digest_block = result
+        let index_block = result
             .system
             .iter()
-            .find(|b| b.label == "recent_memory")
+            .find(|b| b.label == "memory_index")
             .unwrap();
-        assert!(digest_block.content.contains("We talked about Rust."));
-        assert!(digest_block
-            .content
-            .contains("most recent durable memories"));
-        assert!(digest_block.content.contains("<recent_memory>"));
+        assert!(index_block.content.contains("topics/rust.md"));
+        assert!(index_block.content.contains("prompt-visible memory index"));
+        assert!(index_block.content.contains("<memory_index>"));
     }
 
     #[test]
@@ -1062,34 +1059,34 @@ mod tests {
             tools_guidance: Some("Use tools carefully."),
             character_definition: Some("A character."),
             user_definition: Some("A user."),
-            recent_memory_digest: Some("Digest"),
+            memory_index: Some("Index"),
             ..make_params(&[])
         };
 
         let result = assemble_prompt(&params);
-        // Should have: system, tools_guidance, character, user, recent_memory = 5 blocks.
+        // Should have: system, tools_guidance, character, user, memory_index = 5 blocks.
         assert_eq!(result.system.len(), 5);
         assert_eq!(result.system[0].label, "system");
         assert_eq!(result.system[1].label, "tools_guidance");
         assert_eq!(result.system[2].label, "character");
         assert_eq!(result.system[3].label, "user");
-        assert_eq!(result.system[4].label, "recent_memory");
+        assert_eq!(result.system[4].label, "memory_index");
     }
 
     // ── Private conversation suppression ──────────────────────────────
 
     #[test]
-    fn private_conversation_suppresses_recent_memory_digest() {
+    fn private_conversation_suppresses_memory_index() {
         let params = PromptParams {
-            recent_memory_digest: Some("We talked about Rust."),
+            memory_index: Some("We talked about Rust."),
             is_private: true,
             ..make_params(&[])
         };
 
         let result = assemble_prompt(&params);
         assert!(
-            result.system.iter().all(|b| b.label != "recent_memory"),
-            "Private conversation should not include recent memory digest"
+            result.system.iter().all(|b| b.label != "memory_index"),
+            "Private conversation should not include memory index"
         );
     }
 
