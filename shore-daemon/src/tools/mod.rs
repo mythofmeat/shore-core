@@ -208,6 +208,12 @@ pub fn available_tools(is_private: bool, toggles: &shore_config::app::ToolToggle
             if is_private && !t.category.allowed_in_private() {
                 return false;
             }
+            if t.category == ToolCategory::MemoryRead && !toggles.memory_read() {
+                return false;
+            }
+            if t.category == ToolCategory::MemoryWrite && !toggles.memory_write() {
+                return false;
+            }
             if !exec_can_reach_memory && t.name == "exec" {
                 return false;
             }
@@ -557,6 +563,33 @@ mod tests {
             .contains("memory/..."));
         assert!(defs.iter().any(|d| d["name"] == "search_history"));
         assert!(defs.iter().all(|d| d["name"] != "exec"));
+    }
+
+    #[test]
+    fn granular_memory_read_toggle_hides_read_surfaces() {
+        let mut toggles = ToolToggles::default();
+        toggles.set("memory_read", false);
+
+        let defs = render_tool_defs(false, &toggles, "qifei", "ren");
+        let names: Vec<&str> = defs.iter().filter_map(|d| d["name"].as_str()).collect();
+
+        assert!(!names.contains(&"search_history"));
+        assert!(!names.contains(&"exec"));
+        for tool_name in ["read", "list_files", "search"] {
+            let desc = defs
+                .iter()
+                .find(|d| d["name"] == tool_name)
+                .and_then(|d| d["description"].as_str())
+                .expect("workspace read surface present");
+            assert!(!desc.contains("memory/..."));
+        }
+
+        let write_desc = defs
+            .iter()
+            .find(|d| d["name"] == "write")
+            .and_then(|d| d["description"].as_str())
+            .expect("write present");
+        assert!(write_desc.contains("memory/..."));
     }
 
     #[test]
