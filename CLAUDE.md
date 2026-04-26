@@ -24,7 +24,7 @@ Current prompt model:
 cargo fmt --all --check
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
-cargo build --workspace --release
+cargo build --release -p shore-daemon -p shore-cli -p shore-tui -p shore-matrix
 ```
 
 Focused examples:
@@ -43,7 +43,7 @@ Live/provider tests use real credentials and cost money. Run them before release
 
 ## Testing Policy
 
-- `shore-llm-client` provider parsing/streaming/cache behavior should use live or recorded real provider responses.
+- `shore-llm` provider parsing/streaming/cache behavior should use live or recorded real provider responses.
 - Upstream daemon/client code may use deterministic test doubles or `shore-test-harness`.
 - Do not claim provider compatibility from hand-written fake wire responses alone.
 
@@ -54,11 +54,11 @@ Update docs with architectural changes:
 - `FEATURES.md` for user behavior
 - `CONFIGURATION.md` for config changes
 - `ARCHITECTURE.md` for structure and data flow
-- `docs/INVARIANTS.md` for correctness constraints
+- `docs/dev-info/INVARIANTS.md` for correctness constraints
 - `DECISIONS.md` for tradeoffs
-- `docs/QUIRKS.md` for surprising behavior
+- `docs/dev-info/QUIRKS.md` for surprising behavior
 
-Patch-note worthy user changes should also go in `docs/PATCH_NOTES_OPENCLAWIFY.md` until this branch lands.
+Patch-note worthy user changes should also go in `CHANGELOG.md`.
 
 ## Code Style
 

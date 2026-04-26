@@ -1,0 +1,33 @@
+[package]
+name = "shore-mcp"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "MCP server exposing Shore's CLI surface for debugging and programmatic use (debug-only)."
+
+[[bin]]
+name = "shore-mcp"
+
+[dependencies]
+shore-swp-client = { workspace = true }
+shore-config = { workspace = true }
+shore-protocol = { workspace = true }
+tokio = { workspace = true }
+anyhow = "1"
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+dirs = { workspace = true }
+tempfile = { workspace = true }
+which = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+rmcp = { version = "1.4", features = ["server", "transport-io"] }
+schemars = "1"
+
+[dev-dependencies]
+shore-test-harness = { workspace = true }

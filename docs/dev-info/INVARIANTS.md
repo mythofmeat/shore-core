@@ -23,7 +23,9 @@ These are correctness constraints for Shore. `GOALS.md` is the source of user in
 **Must:**
 
 - Runtime memory reads and writes use `characters/{character}/workspace/memory/**/*.md`.
-- Memory tools must expose paths and markdown content directly.
+- LLM-facing memory access must expose paths and markdown content through
+  workspace tools on `memory/...` paths.
+- Conversation transcript search must stay separate from curated markdown memory.
 - Compaction must update markdown memory, not a hidden runtime database.
 - Optional semantic indexes must be rebuildable ranking aids.
 
@@ -103,15 +105,16 @@ These are correctness constraints for Shore. `GOALS.md` is the source of user in
 
 - `exec` must not accept arbitrary executable paths or host filesystem paths.
 
-## Scratchpad Vs Memory
+## Workspace Vs Memory
 
-**Goal:** Scratchpad and memory are different surfaces.
+**Goal:** General workspace files and memory are different surfaces.
 
 **Must:**
 
-- Scratchpad is character-authored project/notes space.
+- General workspace files are character-authored project/notes space.
 - Memory is continuity/factual recall space.
-- Scratchpad is only in context when the character explicitly reads it.
+- Memory is only available through `memory/...` paths when memory gates allow it.
+- Workspace files are only in context when the character explicitly reads them.
 
 ## Editing And Regeneration
 

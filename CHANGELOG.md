@@ -6,7 +6,7 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased] — OpenClawify
 
-See [OpenClawify Patch Notes](docs/PATCH_NOTES_OPENCLAWIFY.md) for migration guidance.
+See `README.md`, `FEATURES.md`, and `CONFIGURATION.md` for current branch guidance.
 
 ### Added
 - Character workspaces with protected prompt files: `SOUL.md`, `USER.md`, `AGENTS.md`, `TOOLS.md`, and `HEARTBEAT.md`
@@ -15,16 +15,20 @@ See [OpenClawify Patch Notes](docs/PATCH_NOTES_OPENCLAWIFY.md) for migration gui
 - Opt-in memory dreaming with `.dreams/`, `DREAMS.md`, and prompt-visible `MEMORY.md` indexing
 - Optional hybrid semantic+lexical markdown retrieval backed by a rebuildable index
 - Workspace file tools and sandboxed `exec`
+- Repository ownership layout: `core/`, `backend/`, `clients/`, `bridges/`, and `dev/`, with default Cargo members for faster local daemon/CLI builds
 
 ### Changed
 - Runtime memory source of truth moved from hidden SQLite/vector/RAG state to markdown files
 - Interiority naming standardized to heartbeat/autonomy
 - Compaction now writes markdown memory notes and activates staged protected edits without generating recap prompt files
 - Docs rewritten against `GOALS.md` and current branch behavior
+- Current docs now distinguish uploaded image vision from generated-image sending: uploaded attachment paths remain internal, while `generate_image` can create and send new images
+- Internal crates renamed for clearer roles: `shore-swp-client`, `shore-swp-server`, and `shore-llm`
 
 ### Removed
 - Runtime dependency on the old memory shell, collation pipeline, passive RAG injection, and authoritative vector memory store
 - User-facing claims that `character.md`, `user.md`, or `prompts/system.md` are the active layout
+- Stale current-docs references to removed scratchpad tools, removed standalone `memory_*` tools, and uploaded-attachment `send_image` behavior
 
 ## [0.15.0] — 2026-04-16
 

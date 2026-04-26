@@ -6,7 +6,7 @@ linker = "clang"
 rustflags = ["-C", "link-arg=-fuse-ld=mold"]
 
 [alias]
-# shore-mcp is a debug-only binary (see shore-mcp/src/main.rs — release builds
+# shore-mcp is a debug-only binary (see dev/mcp/src/main.rs — release builds
 # produce a stub that refuses to run). These aliases are short-hands for the
 # package selector.
 mcp        = "build   -p shore-mcp"
