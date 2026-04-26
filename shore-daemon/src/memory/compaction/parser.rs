@@ -11,8 +11,6 @@ use tracing::debug;
 /// - `{{char}}`, `{{user}}` — character and user names
 /// - `{{conversation}}` — formatted conversation messages
 /// - `{{existing_memories}}` — bounded snapshot of current markdown memories
-/// - `{{#if recap}}...{{/if}}` — conditional block for existing recap
-/// - `{{recap}}` — existing recap text (inside conditional)
 pub const DEFAULT_COMPACT_PROMPT: &str = r#"You are {{char}}. This conversation with {{user}} is about to be archived and your active context will be cleared. Before that happens, you must save anything important to your long-term memory files.
 
 You have access to your memories directory. Use the <memory> section below to write or update markdown files. Be concise and organized.
@@ -23,28 +21,14 @@ Guidelines:
 - Each file should have a heading and bullet points
 - Include timestamps or session context when relevant
 - If {{user}} corrected previous information, update the file rather than appending
+- Do not write MEMORY.md, DREAMS.md, .dreams/**, or dreaming/**. Dreaming maintains MEMORY.md as the prompt-visible memory index.
 
 Existing memory files:
 <existing_memories>
 {{existing_memories}}
 </existing_memories>
 
-Your response MUST contain two parts, in this order:
-
-1. A single <recap> block — the throughline of the conversation: what happened, how {{char}} felt about it, what matters to them, and where things stand with {{user}}. Written **about {{char}} in close third person, using {{char}}'s own voice and vocabulary** — not "I" but "{{char}}" / "she" / "he" / "they". Cap the whole recap at ~4 paragraphs. If you are running long, condense older material further rather than dropping it.
-
-{{#if recap}}
-Here is the existing recap from previous compactions. The recap is a rolling throughline across all conversations, not a snapshot of the most recent one. Condense older material to make room for new events, but do not drop it. Earlier threads should shrink to a sentence or a phrase, never disappear.
-<previous_recap>
-{{recap}}
-</previous_recap>
-{{/if}}
-
-<recap>
-[rolling throughline, close third person about {{char}}]
-</recap>
-
-2. A <memory> block containing one or more <write> operations.
+Your response MUST contain a <memory> block containing zero or more <write> operations.
 
 Each <write> creates or overwrites a single memory file. The path is relative to your memories directory. The content is pure markdown — no YAML frontmatter.
 
@@ -95,25 +79,20 @@ pub struct MemoryFileOp {
     pub content: String,
 }
 
-/// Parse raw LLM response into recap + memory file operations.
+/// Parse raw LLM response into memory file operations.
 ///
-/// Expected format: `<recap>...</recap>` followed by `<memory>` block containing
-/// one or more `<write path="...">` blocks.
-pub fn parse_compaction_response(
-    raw: &str,
-) -> Result<(Option<String>, Vec<MemoryFileOp>), CompactionError> {
+/// Expected format: a `<memory>` block containing one or more
+/// `<write path="...">` blocks. Legacy responses may include a `<recap>` block;
+/// compaction ignores it because MEMORY.md is now maintained as the visible
+/// memory index by dreaming.
+pub fn parse_compaction_response(raw: &str) -> Result<Vec<MemoryFileOp>, CompactionError> {
     debug!(response_len = raw.len(), "Parsing compaction LLM response");
-    let recap = extract_xml_tag(raw, "recap");
 
     let memory_block = extract_xml_tag(raw, "memory").unwrap_or_default();
     let ops = extract_write_ops(&memory_block);
 
-    debug!(
-        ops = ops.len(),
-        has_recap = recap.is_some(),
-        "Compaction response parsed"
-    );
-    Ok((recap, ops))
+    debug!(ops = ops.len(), "Compaction response parsed");
+    Ok(ops)
 }
 
 /// Extract <write path="...">...</write> blocks from a <memory> section.
@@ -178,12 +157,7 @@ mod tests {
     use super::*;
 
     fn make_memory_response() -> String {
-        r#"<recap>
-The assistant had a pleasant conversation with the user about their day and preferences.
-They discussed daily activities and the user's beverage preferences.
-</recap>
-
-<memory>
+        r#"<memory>
 <write path="daily/2026-03-25.md">
 # Conversation on 2026-03-25
 
@@ -232,10 +206,8 @@ They discussed daily activities and the user's beverage preferences.
     #[test]
     fn test_parse_compaction_response() {
         let raw = make_memory_response();
-        let (recap, ops) = parse_compaction_response(&raw).unwrap();
+        let ops = parse_compaction_response(&raw).unwrap();
 
-        assert!(recap.is_some());
-        assert!(recap.unwrap().contains("pleasant conversation"));
         assert_eq!(ops.len(), 2);
         assert_eq!(ops[0].path, "daily/2026-03-25.md");
         assert!(ops[0].content.contains("User discussed their day"));
@@ -245,31 +217,26 @@ They discussed daily activities and the user's beverage preferences.
 
     #[test]
     fn test_parse_empty_memory_block() {
-        let raw = r#"<recap>The conversation was about cats</recap>
-
-<memory></memory>"#;
-        let (recap, ops) = parse_compaction_response(raw).unwrap();
-        assert!(recap.is_some());
+        let raw = r#"<memory></memory>"#;
+        let ops = parse_compaction_response(raw).unwrap();
         assert!(ops.is_empty());
     }
 
     #[test]
-    fn test_parse_no_memory_block() {
+    fn test_parse_legacy_recap_without_memory_block() {
         let raw = r#"<recap>The conversation was about cats</recap>"#;
-        let (recap, ops) = parse_compaction_response(raw).unwrap();
-        assert!(recap.is_some());
+        let ops = parse_compaction_response(raw).unwrap();
         assert!(ops.is_empty());
     }
 
     #[test]
-    fn test_parse_no_recap() {
+    fn test_parse_memory_without_legacy_recap() {
         let raw = r#"<memory>
 <write path="test.md">
 - Something happened
 </write>
 </memory>"#;
-        let (recap, ops) = parse_compaction_response(raw).unwrap();
-        assert!(recap.is_none());
+        let ops = parse_compaction_response(raw).unwrap();
         assert_eq!(ops.len(), 1);
         assert_eq!(ops[0].path, "test.md");
     }

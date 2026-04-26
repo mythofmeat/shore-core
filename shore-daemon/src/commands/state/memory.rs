@@ -267,11 +267,6 @@ pub async fn compact(
 
     let mgr = CompactionManager::new(ctx.config.app.memory.compaction.clone());
 
-    let recap_path = crate::memory::deferred_edits::recent_memory_digest_path(
-        &ctx.config.dirs.data.join(&char_name),
-    );
-    let existing_recap = std::fs::read_to_string(&recap_path).ok();
-
     let active_content = std::fs::read_to_string(engine.character_dir().join("active.jsonl"))
         .map_err(|e| {
             (
@@ -295,7 +290,6 @@ pub async fn compact(
             &active_content,
             false,
             &prompt_template,
-            existing_recap.as_deref(),
             &char_name,
             &display_name,
             &llm,
@@ -342,7 +336,6 @@ pub async fn compact(
                 "message_count": result.message_count,
                 "retained_count": result.retained_count,
                 "retained_turns": result.retained_turns,
-                "recap_generated": result.recap_generated,
                 "new_conversation_id": result.new_conversation_id,
             }))
         }
@@ -366,7 +359,6 @@ pub async fn compact(
                 "message_count": result.message_count,
                 "retained_count": result.retained_count,
                 "retained_turns": result.retained_turns,
-                "recap_preview": result.recap_preview,
             }))
         }
     }

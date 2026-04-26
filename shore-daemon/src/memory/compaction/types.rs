@@ -38,7 +38,6 @@ pub struct CompactionResult {
     pub message_count: usize,
     pub retained_count: usize,
     pub retained_turns: usize,
-    pub recap_generated: bool,
     /// Paths of markdown files written during compaction.
     pub markdown_paths: Vec<String>,
 }
@@ -51,7 +50,6 @@ pub struct DryRunResult {
     pub message_count: usize,
     pub retained_count: usize,
     pub retained_turns: usize,
-    pub recap_preview: Option<String>,
     /// Paths of markdown files that would be written.
     pub markdown_preview: Vec<String>,
 }
@@ -61,9 +59,6 @@ pub struct DryRunResult {
 pub struct RetentionParams {
     /// Number of messages to keep from the end of active.jsonl.
     pub keep_last_n: usize,
-    /// Recent-memory digest text to write to the active prompt snapshot
-    /// (None = leave untouched).
-    pub recap: Option<String>,
     /// Pre-read content of active.jsonl at the time messages were parsed.
     /// Eliminates the TOCTOU race where the file could change between
     /// message analysis and the archive-and-retain write.
@@ -97,7 +92,7 @@ pub enum CompactionError {
 /// LLM client for compaction. Takes a rendered prompt, returns raw LLM text.
 ///
 /// The library owns the prompt format (XML) and handles parsing the response
-/// into recap + markdown file operations. The impl just sends text and returns text.
+/// into markdown file operations. The impl just sends text and returns text.
 pub trait CompactionLlm: Send + Sync {
     fn summarize(
         &self,

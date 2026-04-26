@@ -18,11 +18,7 @@ async fn compaction_harness_3turns() -> TestHarness {
 /// Build a compact XML response that the compaction LLM parser will accept.
 fn compaction_llm_response(topic: &str) -> String {
     format!(
-        r#"<recap>
-The user and assistant exchanged messages about {topic}. The conversation was brief.
-</recap>
-
-<memory>
+        r#"<memory>
 <write path="topics/{topic}.md">
 # {topic}
 
@@ -77,7 +73,7 @@ async fn test_compaction_triggers_on_max_turns() {
         messages.len() < 6,
         "Expected compaction to trim active.jsonl below 6 messages, got {}. \
          Compaction may have failed — check that the LLM mock response includes \
-         valid <recap> and <memory><write> XML blocks.",
+         valid <memory><write> XML blocks.",
         messages.len()
     );
 

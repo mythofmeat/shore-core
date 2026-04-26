@@ -739,9 +739,6 @@ fn print_compact_result(data: &serde_json::Value) {
             "Messages",
             &format!("{msgs} compacted, {retained_turns} turns retained"),
         );
-        if data["recap_generated"].as_bool().unwrap_or(false) {
-            write_row(&mut out, "Recap", "generated");
-        }
     }
 
     let _ = writeln!(out);

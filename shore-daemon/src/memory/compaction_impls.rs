@@ -1,7 +1,7 @@
 //! Production implementations of the compaction traits.
 //!
 //! `RealCompactionLlm` — sends prompts to shore-llm via `LlmClient`, returns raw text.
-//! `RealConversationManager` — archives with retention and writes recap.
+//! `RealConversationManager` — archives with retention.
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -183,7 +183,7 @@ impl CompactionLlm for RealCompactionLlm {
 }
 
 /// Production `ConversationManager` that archives conversations to segment
-/// files with message retention and recap writing.
+/// files with message retention.
 pub struct RealConversationManager {
     character_dir: PathBuf,
 }
@@ -280,16 +280,6 @@ impl RealConversationManager {
             },
         )?;
 
-        // Write recap if provided.
-        if let Some(recap) = &params.recap {
-            crate::memory::deferred_edits::write_recent_memory_digest(&self.character_dir, recap)
-                .map_err(|e| {
-                CompactionError::ConversationManager(format!(
-                    "failed to write recent memory digest: {e}"
-                ))
-            })?;
-        }
-
         debug!(
             archived = archive_lines.len(),
             retained = retained_lines.len(),
@@ -354,7 +344,6 @@ mod tests {
                 "test-conv",
                 RetentionParams {
                     keep_last_n: 1,
-                    recap: None,
                     active_content: content,
                 },
             )
@@ -384,66 +373,6 @@ mod tests {
     }
 
     #[test]
-    fn archive_and_retain_writes_recap() {
-        let tmp = TempDir::new().unwrap();
-        let dir = tmp.path();
-
-        let msg = r#"{"msg_id":"m1","role":"User","content":"hello","images":[],"timestamp":"t1"}"#;
-        let content = format!("{msg}\n");
-        std::fs::write(dir.join("active.jsonl"), &content).unwrap();
-
-        let mgr = RealConversationManager::new(dir);
-        mgr.archive_and_retain(
-            "conv",
-            RetentionParams {
-                keep_last_n: 0,
-                recap: Some("A recap of events.".to_string()),
-                active_content: content,
-            },
-        )
-        .unwrap();
-
-        let recap = std::fs::read_to_string(
-            crate::memory::deferred_edits::recent_memory_digest_path(dir),
-        )
-        .unwrap();
-        assert_eq!(recap, "A recap of events.\n");
-    }
-
-    #[test]
-    fn archive_and_retain_no_recap_leaves_file_alone() {
-        let tmp = TempDir::new().unwrap();
-        let dir = tmp.path();
-
-        // Pre-existing recap.
-        std::fs::create_dir_all(dir.join("memory")).unwrap();
-        let recap_path = crate::memory::deferred_edits::recent_memory_digest_path(dir);
-        std::fs::create_dir_all(recap_path.parent().unwrap()).unwrap();
-        std::fs::write(recap_path, "old recap").unwrap();
-
-        let msg = r#"{"msg_id":"m1","role":"User","content":"hello","images":[],"timestamp":"t1"}"#;
-        let content = format!("{msg}\n");
-        std::fs::write(dir.join("active.jsonl"), &content).unwrap();
-
-        let mgr = RealConversationManager::new(dir);
-        mgr.archive_and_retain(
-            "conv",
-            RetentionParams {
-                keep_last_n: 0,
-                recap: None,
-                active_content: content,
-            },
-        )
-        .unwrap();
-
-        let recap = std::fs::read_to_string(
-            crate::memory::deferred_edits::recent_memory_digest_path(dir),
-        )
-        .unwrap();
-        assert_eq!(recap, "old recap");
-    }
-
-    #[test]
     fn archive_and_retain_keep_all() {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
@@ -460,7 +389,6 @@ mod tests {
             "conv",
             RetentionParams {
                 keep_last_n: 5, // more than available
-                recap: None,
                 active_content: content,
             },
         )
@@ -503,7 +431,6 @@ mod tests {
             "conv",
             RetentionParams {
                 keep_last_n: 0,
-                recap: None,
                 active_content: content,
             },
         )
@@ -538,7 +465,6 @@ mod tests {
                 "conv",
                 RetentionParams {
                     keep_last_n: 1,
-                    recap: None,
                     active_content: content,
                 },
             )
@@ -587,7 +513,6 @@ mod tests {
             "conv",
             RetentionParams {
                 keep_last_n: 1,
-                recap: None,
                 active_content: content,
             },
         );
@@ -629,7 +554,6 @@ mod tests {
             "conv",
             RetentionParams {
                 keep_last_n: 1,
-                recap: None,
                 active_content: content,
             },
         );
@@ -653,7 +577,6 @@ mod tests {
             "conv",
             RetentionParams {
                 keep_last_n: 1,
-                recap: None,
                 active_content: String::new(),
             },
         );

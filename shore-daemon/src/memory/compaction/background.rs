@@ -72,10 +72,6 @@ pub async fn run_compaction(
 
     let mgr = CompactionManager::new(effective.app.memory.compaction.clone());
 
-    // Load existing recent-memory digest for folding.
-    let recap_path = crate::memory::deferred_edits::recent_memory_digest_path(&character_dir);
-    let existing_recap = tokio::fs::read_to_string(&recap_path).await.ok();
-
     let display_name = effective.app.defaults.resolve_display_name();
 
     // Open markdown memory store for existing-memory context and file writes.
@@ -92,7 +88,6 @@ pub async fn run_compaction(
             &content,
             false,
             &prompt_template,
-            existing_recap.as_deref(),
             character,
             &display_name,
             &llm,
@@ -110,7 +105,6 @@ pub async fn run_compaction(
                 entries = result.memory_files_written.len(),
                 compacted_messages = result.message_count,
                 retained_turns = result.retained_turns,
-                recap = result.recap_generated,
                 "Background compaction completed"
             );
 

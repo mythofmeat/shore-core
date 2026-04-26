@@ -14,7 +14,6 @@ struct MockCompactionLlm {
 impl MockCompactionLlm {
     fn with_entries(entries: &[(&str, &str)]) -> Self {
         let mut xml = String::new();
-        xml.push_str("<recap>Test recap of the conversation.</recap>\n");
         xml.push_str("<memory>\n");
         for (path, body) in entries {
             xml.push_str(&format!("<write path=\"{path}\">\n{body}\n</write>\n"));
@@ -118,7 +117,6 @@ async fn test_markdown_memory_compaction_end_to_end() {
             &active,
             false,
             DEFAULT_COMPACT_PROMPT,
-            None,
             "Shore",
             "User",
             &llm,
@@ -141,12 +139,6 @@ async fn test_markdown_memory_compaction_end_to_end() {
 
     let dreams = store.read("DREAMS.md").await.unwrap();
     assert!(dreams.content.contains("Updated memory files"));
-
-    let recap = std::fs::read_to_string(
-        shore_daemon::memory::deferred_edits::recent_memory_digest_path(&char_dir),
-    )
-    .unwrap();
-    assert!(recap.contains("Test recap of the conversation."));
 
     let direct =
         markdown_query::format_direct_response("ramen", &store.search_text("ramen").await.unwrap());
@@ -173,7 +165,6 @@ async fn test_compaction_rejects_private_conversation() {
             "",
             true,
             DEFAULT_COMPACT_PROMPT,
-            None,
             "Shore",
             "User",
             &llm,

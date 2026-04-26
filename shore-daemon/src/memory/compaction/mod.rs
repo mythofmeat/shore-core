@@ -104,13 +104,11 @@ impl CompactionManager {
     /// Build a compaction prompt from a template and conversation messages.
     ///
     /// Replaces `{{conversation}}` with formatted messages, replaces
-    /// `{{existing_memories}}` with a bounded markdown-memory snapshot,
-    /// handles the `{{#if recap}}...{{/if}}` conditional block, and
+    /// `{{existing_memories}}` with a bounded markdown-memory snapshot, and
     /// substitutes `{{char}}` / `{{user}}` with the provided names.
     pub fn build_prompt(
         template: &str,
         messages: &[ConversationMessage],
-        existing_recap: Option<&str>,
         existing_memories: Option<&str>,
         char_name: &str,
         user_name: &str,
@@ -129,35 +127,18 @@ impl CompactionManager {
             .unwrap_or("No existing memory files were available.");
         result = result.replace("{{existing_memories}}", existing_memories_text);
 
-        // Handle {{#if recap}}...{{/if}} conditional block.
-        if let (Some(if_start), Some(endif_pos)) =
+        // Legacy custom compaction prompts may still contain recap placeholders.
+        // Recaps are no longer generated or injected, so strip those blocks.
+        while let (Some(if_start), Some(endif_pos)) =
             (result.find("{{#if recap}}"), result.find("{{/if}}"))
         {
-            if let Some(recap) = existing_recap.filter(|r| !r.is_empty()) {
-                // Keep the block content, strip the tags.
-                let block_start = if_start + "{{#if recap}}".len();
-                let block_content = &result[block_start..endif_pos];
-                let rendered_block = block_content.replace("{{recap}}", recap);
-                result = format!(
-                    "{}{}{}",
-                    &result[..if_start],
-                    rendered_block,
-                    &result[endif_pos + "{{/if}}".len()..],
-                );
-            } else {
-                // Remove the entire conditional block.
-                result = format!(
-                    "{}{}",
-                    &result[..if_start],
-                    &result[endif_pos + "{{/if}}".len()..],
-                );
-            }
-        } else {
-            // No conditional block — replace {{recap}} directly if present.
-            if let Some(recap) = existing_recap {
-                result = result.replace("{{recap}}", recap);
-            }
+            result = format!(
+                "{}{}",
+                &result[..if_start],
+                &result[endif_pos + "{{/if}}".len()..],
+            );
         }
+        result = result.replace("{{recap}}", "");
 
         // Substitute character and user names.
         result = result.replace("{{char}}", char_name);
@@ -225,12 +206,38 @@ impl CompactionManager {
         deduped
     }
 
+    fn write_allowed_path(path: &str) -> bool {
+        let normalized = path
+            .trim()
+            .trim_start_matches("./")
+            .replace('\\', "/")
+            .to_lowercase();
+        normalized != "memory.md"
+            && !crate::memory::dreaming::is_generated_dreaming_path(&normalized)
+    }
+
+    fn filter_file_ops(file_ops: Vec<MemoryFileOp>) -> Vec<MemoryFileOp> {
+        file_ops
+            .into_iter()
+            .filter(|op| {
+                let allowed = Self::write_allowed_path(&op.path);
+                if !allowed {
+                    warn!(
+                        path = %op.path,
+                        "compaction: refusing to write generated memory/index path"
+                    );
+                }
+                allowed
+            })
+            .collect()
+    }
+
     /// Splits messages into a compacted portion (sent to LLM) and a retained
-    /// portion (kept in active.jsonl). The LLM generates both a rolling recap
-    /// and markdown memory file operations from the compacted messages.
+    /// portion (kept in active.jsonl). The LLM generates markdown memory file
+    /// operations from the compacted messages.
     ///
     /// If `dry_run` is true, returns what would be created without side effects.
-    #[instrument(skip(self, messages, active_content, prompt_template, existing_recap, llm, conversation_mgr, markdown_store), fields(char = char_name, user = user_name, msg_count = messages.len(), dry_run))]
+    #[instrument(skip(self, messages, active_content, prompt_template, llm, conversation_mgr, markdown_store), fields(char = char_name, user = user_name, msg_count = messages.len(), dry_run))]
     #[allow(clippy::too_many_arguments)]
     pub async fn compact(
         &self,
@@ -239,7 +246,6 @@ impl CompactionManager {
         active_content: &str,
         is_private: bool,
         prompt_template: &str,
-        existing_recap: Option<&str>,
         char_name: &str,
         user_name: &str,
         llm: &dyn CompactionLlm,
@@ -292,21 +298,16 @@ impl CompactionManager {
         let prompt = Self::build_prompt(
             prompt_template,
             compacted_part,
-            existing_recap,
             Some(&existing_memory_context),
             char_name,
             user_name,
         );
         let raw_response = llm.summarize(&prompt).await?;
 
-        // Parse recap + memory file operations from LLM response.
-        let (recap, raw_file_ops) = parse_compaction_response(&raw_response)?;
-        let file_ops = Self::dedupe_file_ops(raw_file_ops);
-        debug!(
-            ops = file_ops.len(),
-            has_recap = recap.is_some(),
-            "LLM compaction response parsed"
-        );
+        // Parse memory file operations from LLM response.
+        let raw_file_ops = parse_compaction_response(&raw_response)?;
+        let file_ops = Self::filter_file_ops(Self::dedupe_file_ops(raw_file_ops));
+        debug!(ops = file_ops.len(), "LLM compaction response parsed");
 
         let retained_turns = keep_turns;
 
@@ -325,7 +326,6 @@ impl CompactionManager {
                 message_count: split_at,
                 retained_count: messages.len() - split_at,
                 retained_turns,
-                recap_preview: recap,
                 markdown_preview,
             }));
         }
@@ -358,7 +358,7 @@ impl CompactionManager {
             markdown_elapsed += md_started.elapsed();
         }
 
-        // Archive compacted messages, retain recent, write recap.
+        // Archive compacted messages and retain recent context.
         let retained = messages.len() - split_at;
         let archive_started = std::time::Instant::now();
         let new_conversation_id = match conversation_mgr
@@ -366,7 +366,6 @@ impl CompactionManager {
                 conversation_id,
                 RetentionParams {
                     keep_last_n: retained,
-                    recap: recap.clone(),
                     active_content: active_content.to_string(),
                 },
             )
@@ -423,7 +422,6 @@ impl CompactionManager {
             message_count: split_at,
             retained_count: retained,
             retained_turns,
-            recap_generated: recap.is_some(),
             markdown_paths,
         }))
     }
@@ -685,12 +683,7 @@ mod tests {
     }
 
     fn make_xml_response() -> String {
-        r#"<recap>
-The assistant had a pleasant conversation with the user about their day and preferences.
-They discussed daily activities and the user's beverage preferences.
-</recap>
-
-<memory>
+        r#"<memory>
 <write path="daily/2026-03-25.md">
 # Conversation on 2026-03-25
 
@@ -738,7 +731,6 @@ They discussed daily activities and the user's beverage preferences.
             "Template:\n{{conversation}}",
             &messages,
             None,
-            None,
             "Char",
             "User",
         );
@@ -748,32 +740,14 @@ They discussed daily activities and the user's beverage preferences.
     }
 
     #[test]
-    fn test_build_prompt_with_recap() {
+    fn test_build_prompt_strips_legacy_recap_block() {
         let messages = make_messages(2);
         let template = "Before\n{{#if recap}}RECAP: {{recap}}{{/if}}\nAfter\n{{conversation}}";
 
-        let prompt = CompactionManager::build_prompt(
-            template,
-            &messages,
-            Some("Previous events."),
-            None,
-            "Char",
-            "User",
-        );
-        assert!(prompt.contains("RECAP: Previous events."));
-        assert!(!prompt.contains("{{#if recap}}"));
-        assert!(!prompt.contains("{{/if}}"));
-    }
-
-    #[test]
-    fn test_build_prompt_recap_stripped_when_none() {
-        let messages = make_messages(2);
-        let template = "Before\n{{#if recap}}RECAP: {{recap}}{{/if}}\nAfter\n{{conversation}}";
-
-        let prompt =
-            CompactionManager::build_prompt(template, &messages, None, None, "Char", "User");
+        let prompt = CompactionManager::build_prompt(template, &messages, None, "Char", "User");
         assert!(!prompt.contains("RECAP"));
         assert!(!prompt.contains("{{#if recap}}"));
+        assert!(!prompt.contains("{{/if}}"));
         assert!(prompt.contains("Before"));
         assert!(prompt.contains("After"));
     }
@@ -786,7 +760,6 @@ They discussed daily activities and the user's beverage preferences.
         let prompt = CompactionManager::build_prompt(
             template,
             &messages,
-            None,
             Some("<file path=\"people/User.md\">\n# User\n</file>"),
             "Char",
             "User",
@@ -1013,7 +986,6 @@ They discussed daily activities and the user's beverage preferences.
                 "",
                 false,
                 DEFAULT_COMPACT_PROMPT,
-                None,
                 "TestChar",
                 "TestUser",
                 &llm,
@@ -1032,7 +1004,6 @@ They discussed daily activities and the user's beverage preferences.
                 assert_eq!(r.new_conversation_id, "new-conv-1");
                 assert_eq!(r.message_count, 6);
                 assert_eq!(r.retained_count, 4);
-                assert!(r.recap_generated);
             }
             _ => panic!("Expected Compacted outcome"),
         }
@@ -1041,6 +1012,55 @@ They discussed daily activities and the user's beverage preferences.
         assert!(store.read("preferences/beverages.md").await.is_ok());
         let dreams = store.read("DREAMS.md").await.unwrap();
         assert!(dreams.content.contains("Compacted 6 messages"));
+    }
+
+    #[tokio::test]
+    async fn test_compact_refuses_memory_index_and_generated_paths() {
+        let llm = MockLlm {
+            response: r#"<memory>
+<write path="MEMORY.md"># Bad index overwrite</write>
+<write path="DREAMS.md"># Bad dream diary overwrite</write>
+<write path=".dreams/candidates.md">bad staged output</write>
+<write path="notes/ok.md"># OK
+
+- Real note
+</write>
+</memory>"#
+                .to_string(),
+        };
+        let conv_mgr = MockConversationMgr::new("new-conv-filter");
+        let mgr = CompactionManager::new(make_config_with_keep(2));
+        let tmp = tempfile::tempdir().unwrap();
+        let store = MarkdownMemoryStore::open(tmp.path().join("memories"))
+            .await
+            .unwrap();
+
+        let result = mgr
+            .compact(
+                "conv-filter",
+                &make_messages(10),
+                "",
+                false,
+                DEFAULT_COMPACT_PROMPT,
+                "TestChar",
+                "TestUser",
+                &llm,
+                &conv_mgr,
+                Some(&store),
+                false,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let CompactionOutcome::Compacted(result) = result else {
+            panic!("Expected Compacted outcome");
+        };
+        assert_eq!(result.memory_files_written, vec!["notes/ok.md"]);
+        assert!(store.read("MEMORY.md").await.is_err());
+        assert!(store.read(".dreams/candidates.md").await.is_err());
+        let dreams = store.read("DREAMS.md").await.unwrap();
+        assert!(!dreams.content.contains("Bad dream diary overwrite"));
     }
 
     #[tokio::test]
@@ -1067,7 +1087,6 @@ They discussed daily activities and the user's beverage preferences.
             "",
             false,
             DEFAULT_COMPACT_PROMPT,
-            None,
             "TestChar",
             "TestUser",
             &llm,
@@ -1104,7 +1123,6 @@ They discussed daily activities and the user's beverage preferences.
                 "",
                 false,
                 DEFAULT_COMPACT_PROMPT,
-                None,
                 "TestChar",
                 "TestUser",
                 &llm,
@@ -1149,7 +1167,6 @@ They discussed daily activities and the user's beverage preferences.
                 "",
                 false,
                 DEFAULT_COMPACT_PROMPT,
-                None,
                 "TestChar",
                 "TestUser",
                 &llm,
@@ -1191,7 +1208,6 @@ They discussed daily activities and the user's beverage preferences.
                 "",
                 false,
                 DEFAULT_COMPACT_PROMPT,
-                None,
                 "TestChar",
                 "TestUser",
                 &llm,
@@ -1231,7 +1247,6 @@ They discussed daily activities and the user's beverage preferences.
                 "",
                 false,
                 DEFAULT_COMPACT_PROMPT,
-                None,
                 "TestChar",
                 "TestUser",
                 &llm,
@@ -1292,7 +1307,6 @@ They discussed daily activities and the user's beverage preferences.
                 "",
                 true,
                 DEFAULT_COMPACT_PROMPT,
-                None,
                 "TestChar",
                 "TestUser",
                 &llm,
@@ -1326,7 +1340,6 @@ They discussed daily activities and the user's beverage preferences.
                 "",
                 false,
                 DEFAULT_COMPACT_PROMPT,
-                None,
                 "TestChar",
                 "TestUser",
                 &llm,
@@ -1344,7 +1357,6 @@ They discussed daily activities and the user's beverage preferences.
                 assert_eq!(r.message_count, 6);
                 assert_eq!(r.retained_count, 4);
                 assert_eq!(r.file_ops_preview.len(), 2);
-                assert!(r.recap_preview.is_some());
             }
             _ => panic!("Expected DryRun outcome"),
         }
@@ -1372,7 +1384,6 @@ They discussed daily activities and the user's beverage preferences.
                 "",
                 false,
                 DEFAULT_COMPACT_PROMPT,
-                None,
                 "TestChar",
                 "TestUser",
                 &llm,
@@ -1405,7 +1416,6 @@ They discussed daily activities and the user's beverage preferences.
                 "",
                 false,
                 DEFAULT_COMPACT_PROMPT,
-                None,
                 "TestChar",
                 "TestUser",
                 &llm,
@@ -1509,7 +1519,6 @@ They discussed daily activities and the user's beverage preferences.
                 "",
                 false,
                 DEFAULT_COMPACT_PROMPT,
-                None,
                 "TestChar",
                 "TestUser",
                 &llm,

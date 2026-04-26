@@ -349,7 +349,7 @@ pub enum LogCommand {
 pub enum MemoryCommand {
     /// Compact conversation into markdown memory.
     /// Optional positional: number of recent user turns to retain
-    /// (0 = retain none — leaves only the system prompt and compaction digest).
+    /// (0 = retain none — leaves only the prompt files and memory index).
     Compact { keep_turns: Option<u32> },
 
     /// Show recent memory changelog entries
