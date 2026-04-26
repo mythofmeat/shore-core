@@ -248,11 +248,7 @@ pub fn render_template(template: &str, vars: &HashMap<String, String>) -> String
     let mut result = template.to_string();
 
     // Process all conditional blocks.
-    // Loop until no more {{#if ...}} blocks are found.
-    loop {
-        let Some(if_start) = result.find("{{#if ") else {
-            break;
-        };
+    while let Some(if_start) = result.find("{{#if ") {
         let Some(name_end) = result[if_start + 6..].find("}}") else {
             break;
         };

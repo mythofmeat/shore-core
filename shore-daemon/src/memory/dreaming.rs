@@ -174,6 +174,8 @@ struct DeepPhaseOutput {
     rejected: Vec<DreamRejection>,
 }
 
+type PhaseReportPaths<'a> = (&'a str, &'a str, &'a str);
+
 pub async fn dream_status(
     config_dir: &Path,
     character: &str,
@@ -285,9 +287,7 @@ pub async fn run_sweep(
     write_phase_reports(
         &store,
         &ran_at,
-        &light_report_rel,
-        &rem_report_rel,
-        &deep_report_rel,
+        (&light_report_rel, &rem_report_rel, &deep_report_rel),
         &light,
         &rem,
         &deep,
@@ -908,13 +908,12 @@ async fn append_dream_diary(
 async fn write_phase_reports(
     store: &MarkdownMemoryStore,
     ran_at: &str,
-    light_report_rel: &str,
-    rem_report_rel: &str,
-    deep_report_rel: &str,
+    report_paths: PhaseReportPaths<'_>,
     light: &LightPhaseOutput,
     rem: &RemPhaseOutput,
     deep: &DeepPhaseOutput,
 ) -> Result<(), DreamingError> {
+    let (light_report_rel, rem_report_rel, deep_report_rel) = report_paths;
     let mut light_report = format!("# Light Sleep - {ran_at}\n\n");
     light_report.push_str(&format!("- Sources reviewed: {}\n", light.sources_reviewed));
     light_report.push_str(&format!(
