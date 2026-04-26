@@ -7,6 +7,7 @@ import re
 import subprocess
 import sys
 import tomllib
+from urllib.parse import unquote
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,6 +26,7 @@ REQUIRED_FILES = [
     "docs/PLANS.md",
     "docs/QUALITY_SCORE.md",
     "docs/RELIABILITY.md",
+    "docs/OBSERVABILITY.md",
     "docs/SECURITY.md",
     "docs/dev-info/INVARIANTS.md",
     "docs/dev-info/PROMPT_CACHING.md",
@@ -47,6 +49,7 @@ AGENTS_REQUIRED_STRINGS = [
     "docs/HARNESS_ENGINEERING.md",
     "docs/dev-info/INVARIANTS.md",
     "docs/RELIABILITY.md",
+    "docs/OBSERVABILITY.md",
     "docs/SECURITY.md",
     "docs/QUALITY_SCORE.md",
     "python3 scripts/harness-check.py",
@@ -57,6 +60,7 @@ DOC_INDEX_REQUIRED_STRINGS = [
     "PLANS.md",
     "QUALITY_SCORE.md",
     "RELIABILITY.md",
+    "OBSERVABILITY.md",
     "SECURITY.md",
     "dev-info/INVARIANTS.md",
     "exec-plans/README.md",
@@ -65,6 +69,8 @@ DOC_INDEX_REQUIRED_STRINGS = [
 
 MAX_AGENTS_LINES = 120
 CONFLICT_RE = re.compile(r"^(<<<<<<<(?: .*)?|=======$|>>>>>>>(?: .*)?)$")
+MD_LINK_RE = re.compile(r"(?<!!)\[[^\]\n]+\]\(([^)\n]+)\)")
+URI_SCHEME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*:")
 SKIP_DIRS = {".git", "target", "node_modules", "dist", "build", ".next"}
 
 
@@ -163,6 +169,46 @@ def check_architecture_workspace_members(errors: list[str]) -> None:
             fail(errors, f"workspace member {member!r} is missing from ARCHITECTURE.md")
 
 
+def markdown_files() -> list[Path]:
+    return [
+        path
+        for path in repo_files()
+        if path.suffix.lower() == ".md"
+        and not any(part in SKIP_DIRS for part in path.relative_to(ROOT).parts)
+    ]
+
+
+def link_target(raw_target: str) -> str:
+    target = raw_target.strip()
+    if target.startswith("<"):
+        end = target.find(">")
+        if end != -1:
+            return target[1:end].strip()
+    return target.split()[0] if target else target
+
+
+def check_markdown_links(errors: list[str]) -> None:
+    for path in markdown_files():
+        text = read_text(path)
+        for match in MD_LINK_RE.finditer(text):
+            target = link_target(match.group(1))
+            if (
+                not target
+                or target.startswith("#")
+                or URI_SCHEME_RE.match(target)
+                or target.startswith("//")
+            ):
+                continue
+
+            target_path = unquote(target.split("#", 1)[0])
+            if not target_path:
+                continue
+            resolved = (path.parent / target_path).resolve(strict=False)
+            if not resolved.exists():
+                rel = path.relative_to(ROOT)
+                fail(errors, f"broken local markdown link in {rel}: {target}")
+
+
 def check_prompt_tool_names(errors: list[str]) -> None:
     prompt_path = ROOT / "backend/daemon/src/engine/prompt.rs"
     if not prompt_path.exists():
@@ -184,6 +230,7 @@ def main() -> int:
     check_doc_index(errors)
     check_conflict_markers(errors)
     check_architecture_workspace_members(errors)
+    check_markdown_links(errors)
     check_prompt_tool_names(errors)
 
     if errors:

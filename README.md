@@ -110,6 +110,7 @@ Legacy `character.md`, `user.md`, and `prompts/system.md` character layouts are 
 - [Invariants](docs/dev-info/INVARIANTS.md) — correctness constraints
 - [Harness engineering](docs/HARNESS_ENGINEERING.md) — agent-first repo practices
 - [Reliability](docs/RELIABILITY.md) — validation loops and release gates
+- [Observability](docs/OBSERVABILITY.md) — logs, diagnostics, and state surfaces
 - [Security](docs/SECURITY.md) — boundary and threat notes
 - [Quality score](docs/QUALITY_SCORE.md) — quality grades and gaps
 - [Quirks](docs/dev-info/QUIRKS.md) — sharp edges and external weirdness

@@ -12,14 +12,13 @@ changes; do not let this file become a trophy case.
 | Markdown memory | A- | File-oriented memory docs, compaction/dreaming tests, prompt-visible `MEMORY.md` model | Live memory quality still depends on provider behavior |
 | Prompt/cache stability | A- | Deferred protected edits, cache docs, cache scripts, ledger/cache forensics | Add more automated cache-script coverage to CI once credentials are not needed |
 | Workspace tools/security | A- | Path sandboxing, memory gates, narrow `exec`, focused tests | Keep pressure on symlink and path-like argument edge cases |
-| Agent harness | B+ | Short `AGENTS.md`, structured docs, harness checker, MCP and test harness | No full per-worktree observability stack yet |
+| Agent harness | A- | Short `AGENTS.md`, structured docs, harness checker, MCP/test harness, observability map | No full per-worktree metrics/traces stack yet |
 | Clients | B | CLI/TUI/protocol tests cover core flows | GUI/Godot paths have less automated coverage |
 | Matrix bridge | B | Bridge tests and clear client-bridge docs | Live homeserver verification remains external |
-| Documentation freshness | B+ | Harness checker guards required docs, links, workspace member drift, conflict markers | Add markdown link validation and stale-doc ownership checks |
+| Documentation freshness | A- | Harness checker guards required docs, local markdown links, workspace member drift, conflict markers | Add stale-doc ownership checks |
 
 ## Garbage Collection Queue
 
-- Add a markdown link checker once docs stabilize.
 - Add a recorded-provider fixture path for `shore-llm` streaming and cache
   behavior.
 - Convert repeated cache-test shell flows into a CI-safe no-credential suite.

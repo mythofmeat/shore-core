@@ -13,6 +13,7 @@ map into the repo, not the full manual.
 - Architectural decisions: [DECISIONS.md](DECISIONS.md)
 - Correctness invariants: [docs/dev-info/INVARIANTS.md](docs/dev-info/INVARIANTS.md)
 - Harness practices: [docs/HARNESS_ENGINEERING.md](docs/HARNESS_ENGINEERING.md)
+- Observability: [docs/OBSERVABILITY.md](docs/OBSERVABILITY.md)
 
 When docs and code disagree, inspect the code for behavior and `GOALS.md` for
 purpose. Then update the docs in the same change.
@@ -75,8 +76,9 @@ when provider behavior is in scope; see [docs/RELIABILITY.md](docs/RELIABILITY.m
 - For non-trivial work, keep an execution plan in
   [docs/exec-plans/active](docs/exec-plans/active) using
   [docs/PLANS.md](docs/PLANS.md).
-- Prefer deterministic harnesses in `dev/test-harness` and the MCP surface in
-  `dev/mcp` for end-to-end checks.
+- Prefer deterministic harnesses in `dev/test-harness`, the MCP surface in
+  `dev/mcp`, and the diagnostics in [docs/OBSERVABILITY.md](docs/OBSERVABILITY.md)
+  for end-to-end checks.
 - Encode repeated review feedback as docs, tests, lints, or harness checks.
 - Update [docs/QUALITY_SCORE.md](docs/QUALITY_SCORE.md) when a change alters a
   quality grade, known gap, or validation expectation.

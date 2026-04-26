@@ -28,6 +28,7 @@ repo-local operating contract, not as a requirement for zero human-written code.
 | Deterministic feedback | `dev/test-harness`, focused cargo tests, protocol guardrail workflow |
 | Agent-driven end-to-end path | [dev/mcp/README.md](../dev/mcp/README.md) |
 | Reliability and live gates | [RELIABILITY.md](RELIABILITY.md), `scripts/live-tests`, `scripts/cache-tests` |
+| Observability | [OBSERVABILITY.md](OBSERVABILITY.md), diagnostics, ledger, cache forensics |
 | Security boundaries | [SECURITY.md](SECURITY.md), workspace-tool tests, daemon remote-access rules |
 | Entropy tracking | [QUALITY_SCORE.md](QUALITY_SCORE.md), [exec-plans/tech-debt-tracker.md](exec-plans/tech-debt-tracker.md) |
 
@@ -51,6 +52,7 @@ The harness checker currently enforces:
 - `docs/README.md` links the core knowledge sources;
 - no unresolved merge-conflict markers exist in tracked or new files;
 - every root Cargo workspace member appears in `ARCHITECTURE.md`;
+- local markdown links resolve to existing files or directories;
 - daemon prompt guidance does not reference removed `memory_search` or
   `memory_read` tool names.
 
@@ -59,7 +61,7 @@ only adding prose.
 
 ## Limits
 
-Shore has deterministic in-process harnesses, MCP-driven end-to-end checks, and
-cache/live scripts. It does not yet ship a full ephemeral logs/metrics/traces
-stack per worktree. Until that exists, tracing, ledger/cache forensics, MCP,
-and focused scripts are the required legibility surfaces.
+Shore has deterministic in-process harnesses, MCP-driven end-to-end checks,
+runtime tracing, diagnostics, ledger/cache forensics, and cache/live scripts. It
+does not yet ship a full ephemeral metrics/traces stack per worktree; until that
+exists, [OBSERVABILITY.md](OBSERVABILITY.md) is the required legibility map.

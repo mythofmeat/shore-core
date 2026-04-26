@@ -32,8 +32,8 @@ cargo build --release -p shore-daemon -p shore-cli -p shore-tui -p shore-matrix
   concurrency behavior.
 - `scripts/live-tests`: runs real provider smoke/autonomy checks when keys and
   budget are available.
-- `backend/llm/src/cache_forensics.rs`: writes cache-event JSONL diagnostics.
-- `shore-ledger`: records usage, cost, cache reads/writes, and anomalies.
+- [OBSERVABILITY.md](OBSERVABILITY.md): maps logs, diagnostics, ledger, cache
+  forensics, and state files.
 
 ## Worktree Isolation
 

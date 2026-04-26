@@ -26,6 +26,7 @@ This directory is the repo-local system of record for agent and human context.
   OpenAI harness-engineering practice.
 - [PLANS.md](PLANS.md): execution-plan policy and template.
 - [RELIABILITY.md](RELIABILITY.md): deterministic and live validation loops.
+- [OBSERVABILITY.md](OBSERVABILITY.md): logs, diagnostics, and state surfaces.
 - [SECURITY.md](SECURITY.md): boundary, tool, remote-access, and secret-handling notes.
 - [QUALITY_SCORE.md](QUALITY_SCORE.md): domain quality grades and gaps.
 - [exec-plans/README.md](exec-plans/README.md): active/completed plan index.
