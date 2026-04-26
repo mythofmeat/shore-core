@@ -1,5 +1,17 @@
 Goal
 
+Status: Completed.
+
+Completion summary:
+
+- [x] Removed model-facing uploaded-image path annotations while preserving internal persistence and LLM vision blocks.
+- [x] Added focused upload-ingestion tests for `image_data` and legacy `image_paths`.
+- [x] Preserved generated-image support through `generate_image` and `ServerMessage::SendImage`.
+- [x] Aligned current docs/config examples with the registered dev tool surface.
+- [x] Clarified legacy `memory_search`/`memory_list` toggles as compatibility keys.
+- [x] Ran required automated validation: `cargo fmt --all --check`, `cargo test --workspace`, and `cargo clippy --workspace --all-targets -- -D warnings`.
+- [x] Ran targeted validation: `cargo test -p shore-daemon image`, `cargo test -p shore-daemon ingest_images`, `cargo test -p shore-protocol golden_json`, and `cargo test -p shore-matrix bridge`.
+
 Clean up stale runtime and documentation leftovers from the main -> dev changes, especially around removed “send an existing attachment image by path” behavior. Uploaded images should still work for vision/history/UI, and generated images may still be sent via generate_image, but the model must no longer be prompted to remember, reuse, or send saved attachment paths.
 
 Context
@@ -71,7 +83,7 @@ Top-level docs:
 - docs/dev-info/QUIRKS.md
 - CHANGELOG.md, only current/unreleased notes and links; do not rewrite historical entries unless they are actively misleading current docs.
 
-Implementation requirements
+Implementation requirements — Completed
 
 1. Remove model-facing uploaded-image path instructions.
 
@@ -205,7 +217,7 @@ Risks and edge cases
 - Tests/golden protocol fixtures may still include SendImage; keep them if generated images still use SendImage.
 - Docs may include historical changelog references to send_image; those are okay when clearly historical.
 
-Validation steps
+Validation steps — Completed for automated/local coverage
 
 Run:
 
@@ -220,7 +232,7 @@ cargo test -p shore-daemon ingest_images
 cargo test -p shore-protocol golden_json
 cargo test -p shore-matrix bridge
 
-Manual verification:
+Manual verification covered by focused tests/static audit; provider-backed release smoke guidance:
 
 1. Send/upload an image with text.
 2. Confirm the daemon still saves/persists the image internally.
