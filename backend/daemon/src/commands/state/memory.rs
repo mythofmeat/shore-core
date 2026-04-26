@@ -124,7 +124,7 @@ pub async fn memory_dream(
         return Ok(json!(status));
     }
 
-    let result = crate::memory::dreaming::run_librarian_sweep(
+    let result = match crate::memory::dreaming::run_librarian_sweep(
         &ctx.config,
         &ctx.data_dir,
         &ctx.llm_client,
@@ -133,7 +133,21 @@ pub async fn memory_dream(
         force,
     )
     .await
-    .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
+    {
+        Ok(result) => result,
+        Err(crate::memory::dreaming::DreamingError::Config(_)) if dry_run => {
+            crate::memory::dreaming::run_legacy_diagnostic_sweep(
+                &ctx.config.dirs.config,
+                char_name,
+                cfg,
+                dry_run,
+                force,
+            )
+            .await
+            .map_err(|e| (ErrorCode::InternalError, e.to_string()))?
+        }
+        Err(e) => return Err((ErrorCode::InternalError, e.to_string())),
+    };
     match result {
         Some(result) => Ok(json!(result)),
         None => Ok(json!({
