@@ -618,9 +618,9 @@ async fn build_librarian_request(
     .map_err(|e| DreamingError::Llm(e.to_string()))
 }
 
-fn resolve_dreaming_model<'a>(
-    loaded_config: &'a LoadedConfig,
-) -> Result<&'a shore_config::models::ResolvedModel, DreamingError> {
+fn resolve_dreaming_model(
+    loaded_config: &LoadedConfig,
+) -> Result<&shore_config::models::ResolvedModel, DreamingError> {
     if let Some(name) = loaded_config.app.defaults.dreaming.as_deref() {
         return loaded_config
             .models
