@@ -12,7 +12,10 @@ const MIN_PROMOTION_SCORE: f32 = 0.60;
 const MIN_CANDIDATE_LEN: usize = 18;
 const MAX_CANDIDATES: usize = 80;
 const MAX_DIARY_ITEMS: usize = 12;
-const DREAM_DIARY_HEADER: &str = "# Dreams\n\nThis file is the human-readable Dream Diary for Shore's memory consolidation system.\n\nIt is not long-term memory.\nDurable facts belong in `MEMORY.md`.\nMachine-facing dreaming state belongs in `.dreams/`.\n\nEditing or deleting Dream Diary sections does not directly change durable memory.\n\n";
+const MAX_INDEX_FILES: usize = 40;
+const MAX_RECENT_INDEX_FILES: usize = 12;
+const MAX_INDEX_THROUGHLINES: usize = 16;
+const DREAM_DIARY_HEADER: &str = "# Dreams\n\nThis file is the human-readable Dream Diary for Shore's memory consolidation system.\n\nIt is not long-term memory.\nDurable notes live in ordinary markdown memory files.\n`MEMORY.md` is the prompt-visible memory index.\nMachine-facing dreaming state lives in `.dreams/`.\n\nEditing or deleting Dream Diary sections does not directly change memory notes or the prompt-visible index.\n\n";
 
 #[derive(Debug, thiserror::Error)]
 pub enum DreamingError {
@@ -127,12 +130,14 @@ pub struct DreamSweepResult {
     pub ran_at: String,
     pub phase_summaries: Vec<DreamPhaseSummary>,
     pub candidate_count: usize,
+    pub indexed_count: usize,
     pub promoted_count: usize,
     pub rejected_count: usize,
     pub candidates: Vec<DreamCandidate>,
     pub rem_themes: Vec<DreamTheme>,
     pub promotions: Vec<DreamPromotion>,
     pub rejected: Vec<DreamRejection>,
+    pub indexed: Vec<String>,
     pub promoted: Vec<String>,
     pub paths_written: Vec<String>,
     pub would_write_paths: Vec<String>,
@@ -215,7 +220,6 @@ pub async fn run_sweep(
         .list_all()
         .await
         .map_err(|e| DreamingError::Memory(e.to_string()))?;
-    let existing_memory = read_existing_memory(&store).await?;
     let now = Local::now();
     let ran_at = now.to_rfc3339();
     let stamp = now.format("%Y%m%d-%H%M%S").to_string();
@@ -223,7 +227,7 @@ pub async fn run_sweep(
 
     let light = run_light_phase(entries, &state, &ran_at);
     let rem = run_rem_phase(&light.candidates);
-    let deep = run_deep_phase(&store, light.candidates.clone(), &rem, &existing_memory).await?;
+    let deep = run_deep_phase(&store, light.candidates.clone(), &rem).await?;
 
     let candidates_rel = format!(".dreams/candidates-{stamp}.json");
     let signals_rel = format!(".dreams/phase-signals-{stamp}.json");
@@ -232,19 +236,17 @@ pub async fn run_sweep(
     let rem_report_rel = format!("dreaming/rem/{day}.md");
     let deep_report_rel = format!("dreaming/deep/{day}.md");
 
-    let mut would_write_paths = vec![
+    let would_write_paths = vec![
         memory_dir.join(&candidates_rel).display().to_string(),
         memory_dir.join(&signals_rel).display().to_string(),
         memory_dir.join(&promotions_rel).display().to_string(),
         memory_dir.join(".dreams/state.json").display().to_string(),
         memory_dir.join("DREAMS.md").display().to_string(),
+        memory_dir.join("MEMORY.md").display().to_string(),
         memory_dir.join(&light_report_rel).display().to_string(),
         memory_dir.join(&rem_report_rel).display().to_string(),
         memory_dir.join(&deep_report_rel).display().to_string(),
     ];
-    if !deep.promoted.is_empty() {
-        would_write_paths.push(memory_dir.join("MEMORY.md").display().to_string());
-    }
 
     let initial_phase_summaries = phase_summaries(
         &light,
@@ -265,12 +267,14 @@ pub async fn run_sweep(
             ran_at,
             phase_summaries: initial_phase_summaries,
             candidate_count: deep.candidates.len(),
+            indexed_count: deep.promoted.len(),
             promoted_count: deep.promoted.len(),
             rejected_count: deep.rejected.len(),
             candidates: deep.candidates,
             rem_themes: rem.themes,
             promotions: deep.promoted,
             rejected: deep.rejected,
+            indexed: promoted.clone(),
             promoted,
             paths_written: Vec::new(),
             would_write_paths,
@@ -293,7 +297,7 @@ pub async fn run_sweep(
         &deep,
     )
     .await?;
-    append_memory_promotions(&store, &ran_at, &deep.promoted).await?;
+    write_memory_index(&store, character, &ran_at, &deep.promoted).await?;
 
     let mut next_state = state;
     next_state.last_run_at = Some(ran_at.clone());
@@ -304,10 +308,7 @@ pub async fn run_sweep(
     update_seen_state(&mut next_state, &deep.candidates);
     write_state(&memory_dir, &next_state).await?;
 
-    let mut paths_written = would_write_paths;
-    if deep.promoted.is_empty() {
-        paths_written.retain(|path| !path.ends_with("MEMORY.md"));
-    }
+    let paths_written = would_write_paths;
 
     Ok(Some(DreamSweepResult {
         character: character.to_string(),
@@ -315,12 +316,14 @@ pub async fn run_sweep(
         ran_at,
         phase_summaries: phase_summaries(&light, &rem, &deep, &paths_written),
         candidate_count: deep.candidates.len(),
+        indexed_count: deep.promoted.len(),
         promoted_count: deep.promoted.len(),
         rejected_count: deep.rejected.len(),
         candidates: deep.candidates,
         rem_themes: rem.themes,
         promotions: deep.promoted,
         rejected: deep.rejected,
+        indexed: promoted.clone(),
         promoted,
         paths_written,
         would_write_paths: Vec::new(),
@@ -390,14 +393,6 @@ async fn write_state(memory_dir: &Path, state: &DreamState) -> Result<(), Dreami
         .write(".dreams/state.json", &json)
         .await
         .map_err(|e| DreamingError::Memory(e.to_string()))
-}
-
-async fn read_existing_memory(store: &MarkdownMemoryStore) -> Result<String, DreamingError> {
-    match store.read("MEMORY.md").await {
-        Ok(entry) => Ok(entry.content),
-        Err(MarkdownStoreError::NotFound(_)) => Ok(String::new()),
-        Err(e) => Err(DreamingError::Memory(e.to_string())),
-    }
 }
 
 fn run_light_phase(
@@ -546,7 +541,6 @@ async fn run_deep_phase(
     store: &MarkdownMemoryStore,
     candidates: Vec<DreamCandidate>,
     rem: &RemPhaseOutput,
-    existing_memory: &str,
 ) -> Result<DeepPhaseOutput, DreamingError> {
     let mut evaluated = Vec::with_capacity(candidates.len());
     let mut promoted = Vec::new();
@@ -556,10 +550,10 @@ async fn run_deep_phase(
         let source_still_present = source_still_contains(store, &candidate).await?;
         candidate.promotion_score = score_candidate(&candidate, rem);
         candidate.score = candidate.promotion_score;
-        candidate.gates = promotion_gates(&candidate, existing_memory, source_still_present);
+        candidate.gates = promotion_gates(&candidate, source_still_present);
         candidate.promote = candidate.gates.iter().all(|gate| gate.passed);
         if candidate.promote {
-            candidate.decision_reason = "qualified for durable memory promotion".to_string();
+            candidate.decision_reason = "qualified for memory-index throughline".to_string();
             promoted.push(DreamPromotion {
                 text: candidate.text.clone(),
                 score: candidate.promotion_score,
@@ -644,7 +638,7 @@ fn phase_summaries(
         DreamPhaseSummary {
             phase: "deep".to_string(),
             summary: format!(
-                "promoted {} candidates and deferred {} candidates after scoring gates",
+                "indexed {} throughlines and deferred {} candidates after scoring gates",
                 deep.promoted.len(),
                 deep.rejected.len()
             ),
@@ -688,12 +682,7 @@ fn score_candidate(candidate: &DreamCandidate, rem: &RemPhaseOutput) -> f32 {
     )
 }
 
-fn promotion_gates(
-    candidate: &DreamCandidate,
-    existing_memory: &str,
-    source_still_present: bool,
-) -> Vec<DreamGate> {
-    let already_present = memory_contains(existing_memory, &candidate.text);
+fn promotion_gates(candidate: &DreamCandidate, source_still_present: bool) -> Vec<DreamGate> {
     let generated_source = is_generated_dreaming_path(&candidate.source);
     let too_short = candidate.text.len() < MIN_CANDIDATE_LEN;
     let heading = is_heading_line(&candidate.text);
@@ -704,7 +693,7 @@ fn promotion_gates(
             "minimum_score",
             candidate.promotion_score >= MIN_PROMOTION_SCORE,
             format!(
-                "promotion score {:.2} is below {:.2}",
+                "index score {:.2} is below {:.2}",
                 candidate.promotion_score, MIN_PROMOTION_SCORE
             ),
         ),
@@ -716,12 +705,7 @@ fn promotion_gates(
         gate(
             "not_generated_from_dreaming_files",
             !generated_source,
-            "generated dreaming artifacts are never promotion sources".to_string(),
-        ),
-        gate(
-            "not_already_present_in_memory",
-            !already_present,
-            "similar durable memory already exists in MEMORY.md".to_string(),
+            "generated dreaming artifacts are never index sources".to_string(),
         ),
         gate(
             "not_too_short",
@@ -862,8 +846,8 @@ async fn append_dream_diary(
     }
     body.push_str("- No durable memory was written\n\n");
 
-    body.push_str("### Deep Sleep - Promotion\n\n");
-    body.push_str("Promoted to `MEMORY.md`:\n\n");
+    body.push_str("### Deep Sleep - Indexing\n\n");
+    body.push_str("Indexed in `MEMORY.md`:\n\n");
     if deep.promoted.is_empty() {
         body.push_str("- None\n");
     } else {
@@ -897,7 +881,7 @@ async fn append_dream_diary(
     }
     body.push_str("\n### Notes for Review\n\n");
     body.push_str("- Safe to edit/delete for human review.\n");
-    body.push_str("- Does not control promotion state.\n\n");
+    body.push_str("- Does not directly control memory notes or the prompt-visible index.\n\n");
 
     store
         .write("DREAMS.md", &body)
@@ -941,7 +925,7 @@ async fn write_phase_reports(
     rem_report.push_str("\nNo durable memory was written.\n");
 
     let mut deep_report = format!("# Deep Sleep - {ran_at}\n\n");
-    deep_report.push_str("## Promoted\n\n");
+    deep_report.push_str("## Indexed Throughlines\n\n");
     if deep.promoted.is_empty() {
         deep_report.push_str("- None\n");
     } else {
@@ -972,42 +956,140 @@ async fn write_phase_reports(
         .map_err(|e| DreamingError::Memory(e.to_string()))
 }
 
-async fn append_memory_promotions(
+async fn write_memory_index(
     store: &MarkdownMemoryStore,
+    character: &str,
     ran_at: &str,
-    promoted: &[DreamPromotion],
+    throughlines: &[DreamPromotion],
 ) -> Result<(), DreamingError> {
-    if promoted.is_empty() {
-        return Ok(());
-    }
-    let mut body = match store.read("MEMORY.md").await {
-        Ok(entry) => entry.content,
-        Err(MarkdownStoreError::NotFound(_)) => "# Memory\n\n".to_string(),
-        Err(e) => return Err(DreamingError::Memory(e.to_string())),
-    };
-    if !body.ends_with('\n') {
-        body.push('\n');
-    }
-    body.push_str(&format!("\n## Dream consolidation - {ran_at}\n\n"));
-    for item in promoted {
-        body.push_str(&format!("- {}\n", item.text));
-        body.push_str(&format!("  - score: {:.2}\n", item.score));
-        if let Some(evidence) = item.evidence.first() {
+    let mut entries = store
+        .list_all()
+        .await
+        .map_err(|e| DreamingError::Memory(e.to_string()))?
+        .into_iter()
+        .filter(|entry| is_candidate_source_path(&entry.path))
+        .collect::<Vec<_>>();
+    entries.sort_by(|a, b| a.path.cmp(&b.path));
+
+    let mut recent = entries.clone();
+    recent.sort_by(|a, b| {
+        modified_sort_key(b)
+            .cmp(&modified_sort_key(a))
+            .then_with(|| a.path.cmp(&b.path))
+    });
+
+    let mut body = String::new();
+    body.push_str("# Memory Index\n\n");
+    body.push_str(&format!("Character: {character}\n"));
+    body.push_str(&format!("Last updated: {ran_at}\n\n"));
+    body.push_str("This file is the prompt-visible index for workspace/memory. It maps durable memory files, recent updates, and still-relevant conversational throughlines.\n\n");
+    body.push_str("It is not the character definition, user profile, standing behavior, tool guide, or heartbeat guide. Those roles stay in SOUL.md, USER.md, AGENTS.md, TOOLS.md, and HEARTBEAT.md.\n\n");
+
+    body.push_str("## Memory Files\n\n");
+    if entries.is_empty() {
+        body.push_str("- No memory files yet.\n");
+    } else {
+        for entry in entries.iter().take(MAX_INDEX_FILES) {
             body.push_str(&format!(
-                "  - source: `{}`{}\n",
-                evidence.source,
-                evidence
-                    .line
-                    .map(|line| format!(":{line}"))
-                    .unwrap_or_default()
+                "- `{}` - {}\n",
+                entry.path,
+                memory_file_summary(entry)
+            ));
+        }
+        if entries.len() > MAX_INDEX_FILES {
+            body.push_str(&format!(
+                "- {} additional memory files omitted from this index.\n",
+                entries.len() - MAX_INDEX_FILES
             ));
         }
     }
-    body.push('\n');
+
+    body.push_str("\n## Recently Updated\n\n");
+    if recent.is_empty() {
+        body.push_str("- No recent memory file updates.\n");
+    } else {
+        for entry in recent.iter().take(MAX_RECENT_INDEX_FILES) {
+            body.push_str(&format!(
+                "- `{}` - modified {}\n",
+                entry.path,
+                display_modified_at(&entry.modified_at)
+            ));
+        }
+    }
+
+    body.push_str("\n## Conversational Throughlines\n\n");
+    if throughlines.is_empty() {
+        body.push_str("- No high-confidence throughlines selected in the latest dream cycle.\n");
+    } else {
+        for item in throughlines.iter().take(MAX_INDEX_THROUGHLINES) {
+            body.push_str(&format!("- {}\n", diary_text(&item.text)));
+            if let Some(evidence) = item.evidence.first() {
+                body.push_str(&format!(
+                    "  - source: `{}`{}\n",
+                    evidence.source,
+                    evidence
+                        .line
+                        .map(|line| format!(":{line}"))
+                        .unwrap_or_default()
+                ));
+            }
+        }
+    }
+
+    body.push_str("\n## Use\n\n");
+    body.push_str("- Treat this as a map, not a full memory dump.\n");
+    body.push_str(
+        "- Read or search the referenced memory files for details before relying on them.\n",
+    );
+
     store
         .write("MEMORY.md", &body)
         .await
         .map_err(|e| DreamingError::Memory(e.to_string()))
+}
+
+fn memory_file_summary(entry: &MarkdownEntry) -> String {
+    let title = entry
+        .content
+        .lines()
+        .find_map(|line| {
+            let trimmed = line.trim();
+            trimmed
+                .strip_prefix('#')
+                .map(|rest| rest.trim_matches('#').trim())
+                .filter(|rest| !rest.is_empty())
+        })
+        .unwrap_or("untitled");
+    let detail = entry
+        .content
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || is_heading_line(trimmed) {
+                return None;
+            }
+            Some(strip_list_marker(trimmed).trim())
+        })
+        .find(|line| !line.is_empty());
+
+    match detail {
+        Some(detail) => format!("{title}; {detail}"),
+        None => title.to_string(),
+    }
+}
+
+fn modified_sort_key(entry: &MarkdownEntry) -> i64 {
+    DateTime::parse_from_rfc3339(&entry.modified_at)
+        .map(|dt| dt.timestamp())
+        .unwrap_or_default()
+}
+
+fn display_modified_at(modified_at: &str) -> &str {
+    if modified_at.is_empty() {
+        "unknown"
+    } else {
+        modified_at
+    }
 }
 
 fn update_seen_state(state: &mut DreamState, candidates: &[DreamCandidate]) {
@@ -1108,11 +1190,8 @@ fn source_kind(path: &str) -> &'static str {
     let lower = path.replace('\\', "/").to_lowercase();
     if lower.starts_with("daily/") || lower.starts_with("journal/") || lower.contains("/daily/") {
         "daily"
-    } else if lower.contains("recent_memory")
-        || lower.contains("compact")
-        || lower.contains("recap")
-    {
-        "recent_compacted"
+    } else if lower.contains("compact") {
+        "compacted_note"
     } else {
         "curated_markdown"
     }
@@ -1257,20 +1336,6 @@ fn specificity_score(text: &str) -> f32 {
     round_score(score.min(1.0))
 }
 
-fn memory_contains(memory: &str, candidate: &str) -> bool {
-    let wanted = normalize_candidate_text(candidate);
-    if wanted.is_empty() {
-        return false;
-    }
-    memory.lines().any(|line| {
-        let existing = normalize_candidate_text(strip_list_marker(line.trim()));
-        !existing.is_empty()
-            && (existing == wanted
-                || (existing.len() >= MIN_CANDIDATE_LEN && wanted.contains(&existing))
-                || (wanted.len() >= MIN_CANDIDATE_LEN && existing.contains(&wanted)))
-    })
-}
-
 fn normalize_candidate_text(text: &str) -> String {
     strip_list_marker(text.trim())
         .trim_matches(|c: char| c == '-' || c == '*' || c == ' ' || c == '\t')
@@ -1304,7 +1369,13 @@ fn round_score(value: f32) -> f32 {
 
 fn normalize_dream_diary(existing: String) -> String {
     if existing.contains("human-readable Dream Diary") {
-        let mut body = existing;
+        let mut body = if existing.contains("prompt-visible memory index") {
+            existing
+        } else if let Some(cycle_start) = existing.find("## Dream Cycle") {
+            format!("{DREAM_DIARY_HEADER}{}", &existing[cycle_start..])
+        } else {
+            DREAM_DIARY_HEADER.to_string()
+        };
         if !body.ends_with("\n\n") {
             if !body.ends_with('\n') {
                 body.push('\n');
@@ -1353,13 +1424,17 @@ mod tests {
             .would_write_paths
             .iter()
             .any(|path| path.contains(".dreams")));
+        assert!(result
+            .would_write_paths
+            .iter()
+            .any(|path| path.ends_with("MEMORY.md")));
         assert!(!mem.join(".dreams").exists());
         assert!(!mem.join("DREAMS.md").exists());
         assert!(!mem.join("MEMORY.md").exists());
     }
 
     #[tokio::test]
-    async fn light_and_rem_do_not_write_memory_without_deep_promotions() {
+    async fn sweep_writes_memory_index_even_without_throughlines() {
         let tmp = tempfile::tempdir().unwrap();
         let cfg_dir = tmp.path().join("config");
         let mem = character_memory_dir(&cfg_dir, "alice");
@@ -1373,13 +1448,16 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(result.promoted_count, 0);
-        assert!(!mem.join("MEMORY.md").exists());
+        assert!(mem.join("MEMORY.md").exists());
+        let memory = fs::read_to_string(mem.join("MEMORY.md")).await.unwrap();
+        assert!(memory.contains("# Memory Index"));
+        assert!(memory.contains("notes.md"));
         assert!(mem.join("DREAMS.md").exists());
         assert!(mem.join(".dreams").join("state.json").exists());
     }
 
     #[tokio::test]
-    async fn deep_promotes_only_qualified_candidates() {
+    async fn deep_indexes_only_qualified_throughlines() {
         let tmp = tempfile::tempdir().unwrap();
         let cfg_dir = tmp.path().join("config");
         let mem = character_memory_dir(&cfg_dir, "alice");
@@ -1398,6 +1476,8 @@ mod tests {
         assert_eq!(result.promoted.len(), 1);
         assert!(result.promoted[0].contains("jasmine tea"));
         let memory = fs::read_to_string(mem.join("MEMORY.md")).await.unwrap();
+        assert!(memory.contains("# Memory Index"));
+        assert!(memory.contains("notes.md"));
         assert!(memory.contains("jasmine tea"));
         assert!(!memory.contains("maybe later"));
     }
@@ -1452,14 +1532,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn existing_memory_prevents_duplicate_promotion() {
+    async fn existing_memory_index_is_regenerated_not_reingested() {
         let tmp = tempfile::tempdir().unwrap();
         let cfg_dir = tmp.path().join("config");
         let mem = character_memory_dir(&cfg_dir, "alice");
         fs::create_dir_all(&mem).await.unwrap();
         fs::write(
             mem.join("MEMORY.md"),
-            "# Memory\n\n- Alice prefers jasmine tea and remembers the blue cup.\n",
+            "# Memory Index\n\n- Alice prefers stale index tea and remembers it.\n",
         )
         .await
         .unwrap();
@@ -1475,13 +1555,11 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(result.promoted_count, 0);
-        assert_eq!(result.rejected_count, 1);
-        assert!(result.rejected[0]
-            .failed_gates
-            .contains(&"not_already_present_in_memory".to_string()));
+        assert_eq!(result.promoted_count, 1);
         let memory = fs::read_to_string(mem.join("MEMORY.md")).await.unwrap();
-        assert_eq!(memory.matches("jasmine tea").count(), 1);
+        assert!(memory.contains("# Memory Index"));
+        assert!(memory.contains("jasmine tea"));
+        assert!(!memory.contains("stale index tea"));
     }
 
     #[test]

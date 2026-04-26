@@ -124,6 +124,7 @@ fn memory_dream_returns_useful_phase_json() {
 
         assert_eq!(result["dry_run"], true);
         assert!(result["candidate_count"].as_u64().unwrap() >= 1);
+        assert!(result["indexed_count"].as_u64().unwrap() >= 1);
         assert!(result["promoted_count"].as_u64().unwrap() >= 1);
         assert!(result["rejected_count"].as_u64().is_some());
         assert!(result["phase_summaries"].as_array().unwrap().len() == 3);

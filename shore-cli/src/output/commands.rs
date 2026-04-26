@@ -321,14 +321,14 @@ fn print_memory_dream(data: &serde_json::Value) {
                 .as_array()
                 .map_or(0, |items| items.len() as u64)
         });
-        let promoted = data["promoted_count"].as_u64().unwrap_or_else(|| {
-            data["promoted"]
+        let indexed = data["indexed_count"].as_u64().unwrap_or_else(|| {
+            data["indexed"]
                 .as_array()
                 .map_or(0, |items| items.len() as u64)
         });
         let rejected = data["rejected_count"].as_u64().unwrap_or(0);
         write_row(&mut out, "Candidates", &candidates.to_string());
-        write_row(&mut out, "Promoted", &promoted.to_string());
+        write_row(&mut out, "Indexed", &indexed.to_string());
         write_row(&mut out, "Deferred", &rejected.to_string());
         let paths = if dry {
             data["would_write_paths"].as_array()
