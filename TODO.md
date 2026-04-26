@@ -1,3 +1,10 @@
+Completion status
+
+- [x] Merged from main.
+- [x] Implemented the AI/tool-loop dreaming librarian path.
+- [x] Updated scheduler, command path, model resolution, audit fallback, generated-artifact exclusions, protected-file handling, dry-run behavior, docs, and focused tests.
+- [x] Replaced the old deterministic sweep as the production dreaming path; the old scoring sweep remains only as a legacy diagnostic fallback.
+
 Goal
 
 Implement the actual Shore dreaming feature we discussed: dreaming should become a character-led memory librarian pass, not a deterministic keyword/scoring sweep.

@@ -63,17 +63,6 @@ The old runtime SQLite/vector/RAG memory stack is not the normal source of truth
 scripts/migrate-memory.py
 ```
 
-<<<<<<< HEAD
-LLM-facing workspace tools can read, write, edit, list, and search memory files
-through `memory/...` paths when memory access is enabled.
-
-`workspace/memory/MEMORY.md` is prompt-visible. It is a concise index of memory
-files, recently updated files, and still-relevant conversational throughlines;
-it is not the character definition, user profile, standing behavior, tool guide,
-or heartbeat guide.
-
-The CLI and MCP still expose a natural-language memory query command.
-=======
 Current LLM-facing memory surfaces:
 
 | Surface | Purpose |
@@ -85,7 +74,11 @@ Current LLM-facing memory surfaces:
 
 There are no separate LLM-facing `memory_read`, `memory_write`,
 `memory_search`, or `memory_list` tools on this branch.
->>>>>>> main
+
+`workspace/memory/MEMORY.md` is prompt-visible. It is a concise index of memory
+files, recently updated files, and still-relevant conversational throughlines;
+it is not the character definition, user profile, standing behavior, tool guide,
+or heartbeat guide.
 
 Search is lexical by default. If an embedding profile is configured, retrieval can use a rebuildable hybrid semantic+lexical index. The index is a ranking aid only; markdown files remain authoritative.
 
@@ -145,9 +138,11 @@ Heartbeat does not force a recap or write memory by itself. Durable notes are cr
 
 ## Dreaming
 
-Dreaming is an opt-in scheduled memory consolidation sweep with explicit Light, REM, and Deep phases. Light stages deduplicated candidate signals from normal markdown memory sources into `workspace/memory/.dreams/`. REM records deterministic theme and reinforcement signals. Deep scores throughlines and rewrites `workspace/memory/MEMORY.md` as the prompt-visible memory index.
+Dreaming is an opt-in scheduled AI librarian pass. When due, the character privately uses memory tools to list, read, search, write, and edit markdown memory files. Its job is to organize, dedupe, consolidate, and mark stale memory so future recall is easier.
 
-`workspace/memory/DREAMS.md` is a Dream Diary for human review, not long-term memory and not a source of index truth. Generated dreaming output is excluded from future candidate ingestion, including `.dreams/**`, `DREAMS.md`, `dreams.md`, and `memory/dreaming/**`. `MEMORY.md` is read for prompt orientation but is not re-ingested as a candidate source.
+`workspace/memory/MEMORY.md` is the prompt-visible memory index and replaces the old recap/digest concept. It should point to useful files and throughlines without duplicating `USER.md` or `AGENTS.md`. `workspace/memory/DREAMS.md` is the human-readable audit/review diary for each dreaming pass. Machine-readable state lives under `.dreams/`.
+
+Generated dreaming output is excluded from ordinary memory-source ingestion, including `.dreams/**`, `DREAMS.md`, `dreams.md`, `MEMORY.md`, and `memory/dreaming/**`.
 
 ## Tools
 

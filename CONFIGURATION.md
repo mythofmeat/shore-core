@@ -50,6 +50,7 @@ Non-loopback binds require `unsafe_allow_remote_access = true`. `allowed_hosts` 
 [defaults]
 model = "claude-sonnet"
 heartbeat = "haiku"
+dreaming = "claude-sonnet"
 embedding = "text-large"
 image_generation = "image"
 display_name = "Ren"
@@ -62,6 +63,7 @@ Important slots:
 
 - `model` — normal conversation and conversation-to-memory compaction
 - `heartbeat` — autonomous heartbeat ticks
+- `dreaming` — private AI memory librarian passes; falls back to `model`
 - `embedding` — optional hybrid retrieval profile
 - `image_generation` — image generation profile
 
@@ -205,9 +207,9 @@ frequency = "0 3 * * *"
 max_tool_rounds = 12
 ```
 
-Dreaming is opt-in and requires `[behavior.autonomy].enabled = true`. It runs independently of heartbeat as a Light -> REM -> Deep consolidation sweep. Machine-readable state is written under `.dreams/`; optional phase reports are written under `dreaming/<phase>/`; the human review diary is `DREAMS.md`; Deep rewrites `MEMORY.md` as the prompt-visible memory index.
+Dreaming is opt-in and requires `[behavior.autonomy].enabled = true`. It runs independently of heartbeat as a private AI librarian pass. The character uses memory tools to inspect the existing flexible markdown layout, consolidate and dedupe durable notes, mark stale/superseded material, update `MEMORY.md`, and write an audit entry to `DREAMS.md`.
 
-`DREAMS.md` is review output, not long-term memory. `MEMORY.md` is an index of memory files, recent updates, and conversational throughlines. Dreaming excludes generated artifacts from future candidate ingestion, including `.dreams/**`, `DREAMS.md`, `dreams.md`, `MEMORY.md`, and `dreaming/**`.
+`MEMORY.md` is the prompt-visible index/map and replaces the old recap/digest concept. It should not duplicate `USER.md` or `AGENTS.md`, which remain pinned prompt files. `DREAMS.md` is review output, not long-term memory. Machine-readable staging/debug state is written under `.dreams/`. Dreaming excludes generated artifacts from ordinary memory-source ingestion, including `.dreams/**`, `DREAMS.md`, `dreams.md`, `MEMORY.md`, and `dreaming/**`.
 
 ## `[memory.retrieval]`
 

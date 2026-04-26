@@ -187,11 +187,11 @@ Dormancy stops autonomous LLM calls until user engagement resumes.
 
 Cache keepalive is separate from heartbeat. It exists to preserve Anthropic cache warmth, not to simulate character autonomy.
 
-Dreaming is the scheduled memory consolidation path. When autonomy and `[memory.dreaming]` are enabled, a due sweep runs Light -> REM -> Deep: Light stages deduplicated candidate state in `workspace/memory/.dreams/`, REM records theme/reinforcement signals, and Deep applies scoring gates before rewriting `workspace/memory/MEMORY.md` as the prompt-visible memory index.
+Dreaming is the scheduled memory librarian path. When autonomy and `[memory.dreaming]` are enabled, a due pass makes a private LLM call with memory workspace tools. The character lists, reads, searches, writes, and edits markdown memory files to organize durable notes, dedupe repeated material, separate long-term facts from daily/raw logs, and mark stale or superseded information.
 
 `workspace/memory/MEMORY.md` orients the character with a map of memory files, recently updated files, and still-relevant conversational throughlines. It should not duplicate the roles of `SOUL.md`, `USER.md`, `AGENTS.md`, `TOOLS.md`, or `HEARTBEAT.md`.
 
-`workspace/memory/DREAMS.md` is a human Dream Diary only. It is safe to edit for review, but it is not long-term memory and is not re-ingested. Generated outputs under `.dreams/**`, `DREAMS.md`, `dreams.md`, `MEMORY.md`, and `memory/dreaming/**` are excluded from candidate source collection.
+Compaction captures and preserves older conversation material into ordinary markdown memory files. Dreaming reorganizes and collates those files afterward. `workspace/memory/DREAMS.md` is the human-readable audit diary for dreaming and compaction review, while `.dreams/` stores machine-readable staging/debug state. Generated outputs under `.dreams/**`, `DREAMS.md`, `dreams.md`, `MEMORY.md`, and `memory/dreaming/**` are excluded from ordinary memory-source ingestion.
 
 ## LLM Provider Boundary
 
