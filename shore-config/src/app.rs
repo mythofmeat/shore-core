@@ -341,6 +341,9 @@ fn is_memory_tool_name(name: &str) -> bool {
         "memory"
             | "memory_read"
             | "memory_write"
+            // Legacy config keys from the removed standalone memory tools.
+            // They remain gate-aware so old config files keep predictable
+            // behavior, but they are not registered LLM tool names.
             | "memory_search"
             | "memory_list"
             | "search_history"
