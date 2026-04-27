@@ -1,0 +1,1187 @@
+//! Daemon-owned, durable model preferences.
+//!
+//! Storage layout (Phase 2):
+//!
+//! - `<data_dir>/preferences/models.toml` — global preferences.
+//! - `<data_dir>/<character>/preferences/models.toml` — per-character.
+//!
+//! Schema:
+//!
+//! ```toml
+//! [selected]
+//! provider = "openrouter"
+//! model_id = "anthropic/claude-sonnet-4.5"
+//!
+//! [defaults.sampler]
+//! temperature = 1.0
+//!
+//! [models."openrouter:anthropic/claude-sonnet-4.5"]
+//! temperature = 0.8
+//! top_p = 0.95
+//! reasoning_effort = "medium"
+//! ```
+//!
+//! Per-model entries are keyed by **stable provider key + upstream
+//! model_id**, joined by `:` — never by display name or short alias —
+//! so preferences survive renames in the static catalog and follow the
+//! same model across discovered/manual entries.
+//!
+//! Phase 2 deliverable: load/save + merge resolver.
+//! Phase 3 wires this into the generation request path. Until Phase 3,
+//! the daemon's existing in-memory `active_model` / `reasoning_effort_override`
+//! continue to drive request resolution.
+
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+use tracing::debug;
+
+const PREFERENCES_DIR: &str = "preferences";
+const PREFERENCES_FILE: &str = "models.toml";
+
+// ── Errors ──────────────────────────────────────────────────────────────
+
+#[derive(Debug, thiserror::Error)]
+pub enum PreferenceError {
+    #[error("failed to read {path}: {source}")]
+    Read {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+
+    #[error("failed to write {path}: {source}")]
+    Write {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+
+    #[error("failed to parse {path}: {source}")]
+    Parse {
+        path: PathBuf,
+        source: toml::de::Error,
+    },
+
+    #[error("failed to serialize preferences: {0}")]
+    Serialize(#[source] toml::ser::Error),
+}
+
+// ── Sampler settings ────────────────────────────────────────────────────
+
+/// Per-model sampler/settings overrides written by the user.
+///
+/// Every field is optional — `None` means "inherit from the next layer up
+/// in the merge stack" (see `resolve_sampler_settings`). The complete
+/// stack is described in `TODO/provider-model-rework.md`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct SamplerSettings {
+    pub temperature: Option<f64>,
+    pub top_p: Option<f64>,
+    /// Reasoning effort: a string like `"low" | "medium" | "high"`, or
+    /// `"off"` to explicitly disable reasoning. `None` means "inherit"
+    /// (no opinion at this layer).
+    pub reasoning_effort: Option<String>,
+    /// Forward-compat: explicit toggle for extended thinking. Phase 3+
+    /// will wire this into request building. Skipped by callers today.
+    pub thinking_enabled: Option<bool>,
+    /// Token budget for extended thinking / reasoning. Mirrors
+    /// `ResolvedModel.budget_tokens` in the static catalog.
+    pub budget_tokens: Option<u32>,
+    pub max_tokens: Option<u32>,
+    pub cache_ttl: Option<String>,
+}
+
+impl SamplerSettings {
+    /// Apply `overlay` on top of `self`: each field set in `overlay`
+    /// replaces the corresponding field in `self`. Fields that are
+    /// `None` in `overlay` leave `self` unchanged.
+    pub fn apply_overlay(&mut self, overlay: &Self) {
+        macro_rules! merge {
+            ($field:ident) => {
+                if overlay.$field.is_some() {
+                    self.$field = overlay.$field.clone();
+                }
+            };
+        }
+        merge!(temperature);
+        merge!(top_p);
+        merge!(reasoning_effort);
+        merge!(thinking_enabled);
+        merge!(budget_tokens);
+        merge!(max_tokens);
+        merge!(cache_ttl);
+    }
+
+    /// Returns true if every field is unset.
+    pub fn is_empty(&self) -> bool {
+        self.temperature.is_none()
+            && self.top_p.is_none()
+            && self.reasoning_effort.is_none()
+            && self.thinking_enabled.is_none()
+            && self.budget_tokens.is_none()
+            && self.max_tokens.is_none()
+            && self.cache_ttl.is_none()
+    }
+}
+
+// ── Selected model ──────────────────────────────────────────────────────
+
+/// `[selected]` block: which provider+model is active.
+///
+/// Both fields must be set for the selection to be valid. A partial
+/// selection (only one of provider/model_id) is treated as "not selected".
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct SelectedModel {
+    pub provider: Option<String>,
+    pub model_id: Option<String>,
+}
+
+impl SelectedModel {
+    pub fn is_set(&self) -> bool {
+        self.provider.is_some() && self.model_id.is_some()
+    }
+
+    /// Return `(provider, model_id)` if both are set.
+    pub fn pair(&self) -> Option<(&str, &str)> {
+        match (self.provider.as_deref(), self.model_id.as_deref()) {
+            (Some(p), Some(m)) => Some((p, m)),
+            _ => None,
+        }
+    }
+
+    /// Return the canonical preference key `provider:model_id`.
+    pub fn key(&self) -> Option<String> {
+        self.pair().map(|(p, m)| preference_key(p, m))
+    }
+}
+
+// ── Per-model preference entry ──────────────────────────────────────────
+
+/// `[models."<provider>:<model_id>"]` entry. Today this is just a
+/// flattened `SamplerSettings`; future phases may add metadata fields
+/// (last_used, pinned, etc.) but Phase 2 keeps it minimal.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct ModelPreference {
+    #[serde(flatten)]
+    pub sampler: SamplerSettings,
+}
+
+// ── Defaults block ──────────────────────────────────────────────────────
+
+/// `[defaults]` block. Wraps a single `[defaults.sampler]` for now;
+/// other defaults can be added later without breaking the schema.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct PreferenceDefaults {
+    pub sampler: SamplerSettings,
+}
+
+// ── Top-level preferences file ──────────────────────────────────────────
+
+/// Top-level shape of `models.toml` (global or character-scoped).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub struct ModelPreferences {
+    pub selected: SelectedModel,
+    pub defaults: PreferenceDefaults,
+    /// Per-model entries keyed by `<provider>:<model_id>`.
+    pub models: BTreeMap<String, ModelPreference>,
+}
+
+impl ModelPreferences {
+    pub fn is_empty(&self) -> bool {
+        !self.selected.is_set() && self.defaults.sampler.is_empty() && self.models.is_empty()
+    }
+
+    /// Look up a model preference by `(provider, model_id)`.
+    pub fn model(&self, provider: &str, model_id: &str) -> Option<&ModelPreference> {
+        self.models.get(&preference_key(provider, model_id))
+    }
+
+    /// Insert or update a model preference. Removing all sampler fields
+    /// followed by `set_model` does NOT delete the entry — call
+    /// `clear_model` for that.
+    pub fn set_model(&mut self, provider: &str, model_id: &str, pref: ModelPreference) {
+        self.models.insert(preference_key(provider, model_id), pref);
+    }
+
+    /// Remove a per-model entry. Returns the previous value if any.
+    pub fn clear_model(&mut self, provider: &str, model_id: &str) -> Option<ModelPreference> {
+        self.models.remove(&preference_key(provider, model_id))
+    }
+}
+
+// ── Path helpers ────────────────────────────────────────────────────────
+
+/// Stable preference key: `<provider>:<model_id>`.
+pub fn preference_key(provider: &str, model_id: &str) -> String {
+    format!("{provider}:{model_id}")
+}
+
+/// Path to the global preferences file: `<data_dir>/preferences/models.toml`.
+pub fn global_preferences_path(data_dir: &Path) -> PathBuf {
+    data_dir.join(PREFERENCES_DIR).join(PREFERENCES_FILE)
+}
+
+/// Path to a character's preferences file:
+/// `<data_dir>/<character>/preferences/models.toml`.
+pub fn character_preferences_path(data_dir: &Path, character: &str) -> PathBuf {
+    data_dir
+        .join(character)
+        .join(PREFERENCES_DIR)
+        .join(PREFERENCES_FILE)
+}
+
+// ── Load / save ─────────────────────────────────────────────────────────
+
+/// Load preferences from `path`.
+///
+/// Missing file → empty defaults. Malformed TOML or unknown fields →
+/// `PreferenceError::Parse` so the caller can surface a clear error
+/// to the user instead of silently overwriting their settings.
+pub fn load_preferences(path: &Path) -> Result<ModelPreferences, PreferenceError> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            debug!(path = %path.display(), "No preferences file; using defaults");
+            return Ok(ModelPreferences::default());
+        }
+        Err(e) => {
+            return Err(PreferenceError::Read {
+                path: path.to_path_buf(),
+                source: e,
+            });
+        }
+    };
+
+    toml::from_str::<ModelPreferences>(&content).map_err(|e| PreferenceError::Parse {
+        path: path.to_path_buf(),
+        source: e,
+    })
+}
+
+/// Save preferences to `path`. Creates parent directories as needed.
+///
+/// If the on-disk representation is empty, the file is still written
+/// (so users can `cat` it to see the schema). Callers can optimize this
+/// later if it matters.
+pub fn save_preferences(path: &Path, prefs: &ModelPreferences) -> Result<(), PreferenceError> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| PreferenceError::Write {
+            path: path.to_path_buf(),
+            source: e,
+        })?;
+    }
+    let body = toml::to_string_pretty(prefs).map_err(PreferenceError::Serialize)?;
+    std::fs::write(path, body).map_err(|e| PreferenceError::Write {
+        path: path.to_path_buf(),
+        source: e,
+    })
+}
+
+// ── Resolver ────────────────────────────────────────────────────────────
+
+/// Resolve which model is selected after layering global + character.
+///
+/// Character beats global. A partial selection (only one of
+/// provider/model_id) is ignored at that layer.
+pub fn resolve_selected_model(
+    global: &ModelPreferences,
+    character: Option<&ModelPreferences>,
+) -> Option<(String, String)> {
+    if let Some(char_prefs) = character {
+        if let Some((p, m)) = char_prefs.selected.pair() {
+            return Some((p.to_string(), m.to_string()));
+        }
+    }
+    global
+        .selected
+        .pair()
+        .map(|(p, m)| (p.to_string(), m.to_string()))
+}
+
+/// Resolve sampler settings for `(provider, model_id)`.
+///
+/// Layer order (lowest to highest precedence):
+///
+/// 1. `global.defaults.sampler`
+/// 2. `character.defaults.sampler`
+/// 3. `global.models[<provider:model_id>]`
+/// 4. `character.models[<provider:model_id>]`
+///
+/// Higher layers' set fields overwrite lower layers'. Unset (`None`)
+/// fields fall through.
+pub fn resolve_sampler_settings(
+    global: &ModelPreferences,
+    character: Option<&ModelPreferences>,
+    provider: &str,
+    model_id: &str,
+) -> SamplerSettings {
+    let mut effective = global.defaults.sampler.clone();
+    if let Some(c) = character {
+        effective.apply_overlay(&c.defaults.sampler);
+    }
+    if let Some(p) = global.model(provider, model_id) {
+        effective.apply_overlay(&p.sampler);
+    }
+    if let Some(c) = character {
+        if let Some(p) = c.model(provider, model_id) {
+            effective.apply_overlay(&p.sampler);
+        }
+    }
+    effective
+}
+
+// ── Scope (where a sampler field came from) ─────────────────────────────
+
+/// Where in the preference stack a sampler field landed. Surfaced in
+/// `model_settings` / `model_info` so users can tell whether a value
+/// is global or character-scoped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PreferenceScope {
+    /// Field is unset at every layer; the static catalog default is in effect.
+    StaticDefault,
+    /// `[defaults.sampler]` in the global preferences file.
+    GlobalDefault,
+    /// `[defaults.sampler]` in the character preferences file.
+    CharacterDefault,
+    /// `[models."<key>"]` in the global preferences file.
+    GlobalModel,
+    /// `[models."<key>"]` in the character preferences file.
+    CharacterModel,
+}
+
+/// Determine which layer last set each sampler field for `(provider, model_id)`.
+/// Higher precedence wins on equal-layer ties; unset fields stay
+/// `StaticDefault`.
+#[derive(Debug, Clone, Default)]
+pub struct SamplerScopes {
+    pub temperature: Option<PreferenceScope>,
+    pub top_p: Option<PreferenceScope>,
+    pub reasoning_effort: Option<PreferenceScope>,
+    pub thinking_enabled: Option<PreferenceScope>,
+    pub budget_tokens: Option<PreferenceScope>,
+    pub max_tokens: Option<PreferenceScope>,
+    pub cache_ttl: Option<PreferenceScope>,
+}
+
+pub fn resolve_sampler_scopes(
+    global: &ModelPreferences,
+    character: Option<&ModelPreferences>,
+    provider: &str,
+    model_id: &str,
+) -> SamplerScopes {
+    let mut scopes = SamplerScopes::default();
+    let mut update = |layer: &SamplerSettings, scope: PreferenceScope| {
+        macro_rules! note {
+            ($field:ident) => {
+                if layer.$field.is_some() {
+                    scopes.$field = Some(scope);
+                }
+            };
+        }
+        note!(temperature);
+        note!(top_p);
+        note!(reasoning_effort);
+        note!(thinking_enabled);
+        note!(budget_tokens);
+        note!(max_tokens);
+        note!(cache_ttl);
+    };
+    update(&global.defaults.sampler, PreferenceScope::GlobalDefault);
+    if let Some(c) = character {
+        update(&c.defaults.sampler, PreferenceScope::CharacterDefault);
+    }
+    if let Some(p) = global.model(provider, model_id) {
+        update(&p.sampler, PreferenceScope::GlobalModel);
+    }
+    if let Some(c) = character {
+        if let Some(p) = c.model(provider, model_id) {
+            update(&p.sampler, PreferenceScope::CharacterModel);
+        }
+    }
+    scopes
+}
+
+// ── Character flow helpers ──────────────────────────────────────────────
+
+/// Load `(global, character)` preferences for a character.
+///
+/// Either file may be missing — that produces empty defaults rather than
+/// an error. Other I/O or parse errors propagate.
+pub fn load_for_character(
+    data_dir: &Path,
+    character: &str,
+) -> Result<(ModelPreferences, ModelPreferences), PreferenceError> {
+    let global = load_preferences(&global_preferences_path(data_dir))?;
+    let char_prefs = load_preferences(&character_preferences_path(data_dir, character))?;
+    Ok((global, char_prefs))
+}
+
+/// Save just the character preferences file.
+pub fn save_character_preferences(
+    data_dir: &Path,
+    character: &str,
+    prefs: &ModelPreferences,
+) -> Result<(), PreferenceError> {
+    save_preferences(&character_preferences_path(data_dir, character), prefs)
+}
+
+/// Save just the global preferences file.
+pub fn save_global_preferences(
+    data_dir: &Path,
+    prefs: &ModelPreferences,
+) -> Result<(), PreferenceError> {
+    save_preferences(&global_preferences_path(data_dir), prefs)
+}
+
+// ── Catalog bridging ────────────────────────────────────────────────────
+
+/// Look up the resolved model that matches `(provider, model_id)` in the
+/// static catalog.
+///
+/// This is the inverse of "save selection": users select by short name,
+/// the catalog resolves it to a `ResolvedModel`, and we persist
+/// `(provider_key, model_id)`. On reload we walk the catalog to find a
+/// matching entry. Returns `None` if no static entry matches — Phase 5
+/// adds discovered-model lookup and Phase 7 unifies the two.
+pub fn find_static_model<'a>(
+    catalog: &'a shore_config::models::ModelCatalog,
+    provider: &str,
+    model_id: &str,
+) -> Option<&'a shore_config::models::ResolvedModel> {
+    catalog
+        .chat
+        .values()
+        .chain(catalog.tools.values())
+        .find(|m| m.provider_key == provider && m.model_id == model_id)
+}
+
+/// Resolve the active model for a session.
+///
+/// Returns the ResolvedModel and the `(provider, model_id)` pair the
+/// preferences store expects. Resolution order:
+///
+/// 1. Character preferences `[selected]` (provider, model_id) →
+///    catalog lookup by `(provider_key, model_id)`.
+/// 2. Global preferences `[selected]` → same lookup.
+/// 3. Legacy `runtime_state.json::active_model` (string name) →
+///    catalog `find_model` by name. Migration fallback for installs
+///    that haven't written preferences yet.
+/// 4. `app.defaults.model` from config.
+/// 5. First chat model in the catalog.
+///
+/// The legacy `runtime_state.json` is read but never written by Phase 3
+/// code — preferences are now authoritative.
+pub fn resolve_active_for_character<'a>(
+    catalog: &'a shore_config::models::ModelCatalog,
+    global: &ModelPreferences,
+    character: &ModelPreferences,
+    legacy_active_model: Option<&str>,
+    app_default_model: Option<&str>,
+) -> Option<&'a shore_config::models::ResolvedModel> {
+    if let Some((p, m)) = character.selected.pair() {
+        if let Some(rm) = find_static_model(catalog, p, m) {
+            return Some(rm);
+        }
+    }
+    if let Some((p, m)) = global.selected.pair() {
+        if let Some(rm) = find_static_model(catalog, p, m) {
+            return Some(rm);
+        }
+    }
+    if let Some(name) = legacy_active_model {
+        if let Ok(rm) = catalog.find_model(name) {
+            return Some(rm);
+        }
+    }
+    if let Some(name) = app_default_model {
+        if let Ok(rm) = catalog.find_model(name) {
+            return Some(rm);
+        }
+    }
+    catalog.first_chat_model()
+}
+
+/// Patch a `ResolvedModel` with the given sampler overlay. Returns a
+/// fresh owned model — never mutates the catalog entry.
+pub fn apply_sampler_overlay(
+    model: &shore_config::models::ResolvedModel,
+    overlay: &SamplerSettings,
+) -> shore_config::models::ResolvedModel {
+    let mut patched = model.clone();
+    if let Some(t) = overlay.temperature {
+        patched.temperature = Some(t);
+    }
+    if let Some(p) = overlay.top_p {
+        patched.top_p = Some(p);
+    }
+    if let Some(ref e) = overlay.reasoning_effort {
+        // "off" is the explicit-disable sentinel — store None so the
+        // request builder omits the reasoning_effort field entirely.
+        patched.reasoning_effort = if e == "off" { None } else { Some(e.clone()) };
+    }
+    if let Some(b) = overlay.budget_tokens {
+        patched.budget_tokens = Some(b);
+    }
+    if let Some(m) = overlay.max_tokens {
+        patched.max_tokens = Some(m);
+    }
+    if let Some(ref c) = overlay.cache_ttl {
+        patched.cache_ttl = Some(c.clone());
+    }
+    patched
+}
+
+// ── Tests ───────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn write_prefs(dir: &Path, body: &str) -> PathBuf {
+        let path = dir.join("models.toml");
+        std::fs::write(&path, body).unwrap();
+        path
+    }
+
+    // ── Path helpers ────────────────────────────────────────────────
+
+    #[test]
+    fn preference_key_concatenates_provider_and_model_id() {
+        assert_eq!(
+            preference_key("openrouter", "anthropic/claude-sonnet-4.5"),
+            "openrouter:anthropic/claude-sonnet-4.5"
+        );
+    }
+
+    #[test]
+    fn global_preferences_path_under_data_dir() {
+        let p = global_preferences_path(Path::new("/tmp/shore"));
+        assert_eq!(p, PathBuf::from("/tmp/shore/preferences/models.toml"));
+    }
+
+    #[test]
+    fn character_preferences_path_under_character_dir() {
+        let p = character_preferences_path(Path::new("/tmp/shore"), "alice");
+        assert_eq!(p, PathBuf::from("/tmp/shore/alice/preferences/models.toml"));
+    }
+
+    // ── Load behavior ────────────────────────────────────────────────
+
+    #[test]
+    fn missing_file_yields_default_preferences() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("nonexistent.toml");
+        let prefs = load_preferences(&path).unwrap();
+        assert!(prefs.is_empty());
+    }
+
+    #[test]
+    fn empty_file_yields_default_preferences() {
+        let tmp = TempDir::new().unwrap();
+        let path = write_prefs(tmp.path(), "");
+        let prefs = load_preferences(&path).unwrap();
+        assert!(prefs.is_empty());
+    }
+
+    #[test]
+    fn full_preferences_round_trip() {
+        let tmp = TempDir::new().unwrap();
+        let body = r#"
+[selected]
+provider = "openrouter"
+model_id = "anthropic/claude-sonnet-4.5"
+
+[defaults.sampler]
+temperature = 1.0
+
+[models."openrouter:anthropic/claude-sonnet-4.5"]
+temperature = 0.8
+top_p = 0.95
+reasoning_effort = "medium"
+
+[models."openrouter:google/gemini-2.5-flash"]
+temperature = 1.2
+top_p = 0.9
+reasoning_effort = "off"
+"#;
+        let path = write_prefs(tmp.path(), body);
+        let prefs = load_preferences(&path).unwrap();
+
+        assert_eq!(prefs.selected.provider.as_deref(), Some("openrouter"));
+        assert_eq!(
+            prefs.selected.model_id.as_deref(),
+            Some("anthropic/claude-sonnet-4.5")
+        );
+        assert!(prefs.selected.is_set());
+        assert_eq!(prefs.defaults.sampler.temperature, Some(1.0));
+        assert_eq!(prefs.models.len(), 2);
+
+        let sonnet = prefs
+            .model("openrouter", "anthropic/claude-sonnet-4.5")
+            .unwrap();
+        assert_eq!(sonnet.sampler.temperature, Some(0.8));
+        assert_eq!(sonnet.sampler.top_p, Some(0.95));
+        assert_eq!(sonnet.sampler.reasoning_effort.as_deref(), Some("medium"));
+
+        let gemini = prefs
+            .model("openrouter", "google/gemini-2.5-flash")
+            .unwrap();
+        assert_eq!(gemini.sampler.reasoning_effort.as_deref(), Some("off"));
+    }
+
+    #[test]
+    fn malformed_file_returns_parse_error() {
+        let tmp = TempDir::new().unwrap();
+        let path = write_prefs(tmp.path(), "this is not valid toml \x00 \n=");
+        let err = load_preferences(&path).unwrap_err();
+        assert!(matches!(err, PreferenceError::Parse { .. }));
+    }
+
+    #[test]
+    fn unknown_field_at_top_level_rejected() {
+        // Schema strictness — unknown fields must surface as errors so a
+        // typo never silently drops user settings on a write-back.
+        let tmp = TempDir::new().unwrap();
+        let path = write_prefs(tmp.path(), "typo_field = true\n");
+        let err = load_preferences(&path).unwrap_err();
+        match err {
+            PreferenceError::Parse { source, .. } => {
+                assert!(
+                    source.to_string().contains("unknown field"),
+                    "expected unknown-field error, got: {source}"
+                );
+            }
+            other => panic!("expected Parse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unknown_sampler_field_rejected() {
+        let tmp = TempDir::new().unwrap();
+        let path = write_prefs(
+            tmp.path(),
+            r#"
+[models."openrouter:foo/bar"]
+temperature = 0.5
+typo_setting = "x"
+"#,
+        );
+        let err = load_preferences(&path).unwrap_err();
+        assert!(matches!(err, PreferenceError::Parse { .. }));
+    }
+
+    // ── Save behavior ────────────────────────────────────────────────
+
+    #[test]
+    fn save_creates_parent_directories() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp
+            .path()
+            .join("preferences")
+            .join("nested")
+            .join("models.toml");
+        let prefs = ModelPreferences::default();
+        save_preferences(&path, &prefs).unwrap();
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn save_then_load_round_trips_all_fields() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("models.toml");
+
+        let mut prefs = ModelPreferences::default();
+        prefs.selected.provider = Some("anthropic".into());
+        prefs.selected.model_id = Some("claude-sonnet-4-5".into());
+        prefs.defaults.sampler.temperature = Some(1.0);
+        prefs.set_model(
+            "anthropic",
+            "claude-sonnet-4-5",
+            ModelPreference {
+                sampler: SamplerSettings {
+                    temperature: Some(0.7),
+                    top_p: Some(0.95),
+                    reasoning_effort: Some("high".into()),
+                    thinking_enabled: Some(true),
+                    budget_tokens: Some(8192),
+                    max_tokens: Some(4096),
+                    cache_ttl: Some("5m".into()),
+                },
+            },
+        );
+
+        save_preferences(&path, &prefs).unwrap();
+        let reloaded = load_preferences(&path).unwrap();
+        assert_eq!(prefs, reloaded);
+    }
+
+    // ── Resolver: selected model ─────────────────────────────────────
+
+    #[test]
+    fn resolve_selected_returns_global_when_no_character() {
+        let mut g = ModelPreferences::default();
+        g.selected.provider = Some("anthropic".into());
+        g.selected.model_id = Some("opus".into());
+        assert_eq!(
+            resolve_selected_model(&g, None),
+            Some(("anthropic".into(), "opus".into()))
+        );
+    }
+
+    #[test]
+    fn resolve_selected_character_overrides_global() {
+        let mut g = ModelPreferences::default();
+        g.selected.provider = Some("anthropic".into());
+        g.selected.model_id = Some("opus".into());
+
+        let mut c = ModelPreferences::default();
+        c.selected.provider = Some("openrouter".into());
+        c.selected.model_id = Some("anthropic/claude-sonnet-4.5".into());
+
+        assert_eq!(
+            resolve_selected_model(&g, Some(&c)),
+            Some(("openrouter".into(), "anthropic/claude-sonnet-4.5".into()))
+        );
+    }
+
+    #[test]
+    fn resolve_selected_character_partial_falls_back_to_global() {
+        let mut g = ModelPreferences::default();
+        g.selected.provider = Some("anthropic".into());
+        g.selected.model_id = Some("opus".into());
+
+        // Character has only provider set — incomplete, ignored at this layer.
+        let mut c = ModelPreferences::default();
+        c.selected.provider = Some("openrouter".into());
+
+        assert_eq!(
+            resolve_selected_model(&g, Some(&c)),
+            Some(("anthropic".into(), "opus".into()))
+        );
+    }
+
+    #[test]
+    fn resolve_selected_none_when_neither_set() {
+        let g = ModelPreferences::default();
+        let c = ModelPreferences::default();
+        assert!(resolve_selected_model(&g, Some(&c)).is_none());
+    }
+
+    // ── Resolver: sampler settings ────────────────────────────────────
+
+    #[test]
+    fn resolve_sampler_uses_global_defaults_when_no_per_model() {
+        let mut g = ModelPreferences::default();
+        g.defaults.sampler.temperature = Some(1.0);
+        g.defaults.sampler.top_p = Some(0.9);
+        let s = resolve_sampler_settings(&g, None, "anthropic", "opus");
+        assert_eq!(s.temperature, Some(1.0));
+        assert_eq!(s.top_p, Some(0.9));
+    }
+
+    #[test]
+    fn resolve_sampler_per_model_overrides_global_defaults() {
+        let mut g = ModelPreferences::default();
+        g.defaults.sampler.temperature = Some(1.0);
+        g.set_model(
+            "anthropic",
+            "opus",
+            ModelPreference {
+                sampler: SamplerSettings {
+                    temperature: Some(0.7),
+                    ..Default::default()
+                },
+            },
+        );
+        let s = resolve_sampler_settings(&g, None, "anthropic", "opus");
+        assert_eq!(s.temperature, Some(0.7));
+    }
+
+    #[test]
+    fn resolve_sampler_character_overrides_global_per_model() {
+        let mut g = ModelPreferences::default();
+        g.set_model(
+            "anthropic",
+            "opus",
+            ModelPreference {
+                sampler: SamplerSettings {
+                    temperature: Some(0.7),
+                    top_p: Some(0.9),
+                    ..Default::default()
+                },
+            },
+        );
+
+        let mut c = ModelPreferences::default();
+        c.set_model(
+            "anthropic",
+            "opus",
+            ModelPreference {
+                sampler: SamplerSettings {
+                    temperature: Some(0.5),
+                    ..Default::default()
+                },
+            },
+        );
+
+        let s = resolve_sampler_settings(&g, Some(&c), "anthropic", "opus");
+        // Character overrides temperature.
+        assert_eq!(s.temperature, Some(0.5));
+        // top_p falls through from global per-model.
+        assert_eq!(s.top_p, Some(0.9));
+    }
+
+    #[test]
+    fn resolve_sampler_full_layer_precedence() {
+        // Build all four layers with distinct values to confirm precedence.
+        let mut g = ModelPreferences::default();
+        g.defaults.sampler.temperature = Some(0.1);
+        g.defaults.sampler.top_p = Some(0.10);
+        g.defaults.sampler.max_tokens = Some(100);
+        g.defaults.sampler.budget_tokens = Some(1000);
+        g.set_model(
+            "anthropic",
+            "opus",
+            ModelPreference {
+                sampler: SamplerSettings {
+                    temperature: Some(0.2),
+                    top_p: Some(0.20),
+                    ..Default::default()
+                },
+            },
+        );
+
+        let mut c = ModelPreferences::default();
+        c.defaults.sampler.top_p = Some(0.30);
+        c.defaults.sampler.max_tokens = Some(200);
+        c.set_model(
+            "anthropic",
+            "opus",
+            ModelPreference {
+                sampler: SamplerSettings {
+                    temperature: Some(0.4),
+                    ..Default::default()
+                },
+            },
+        );
+
+        let s = resolve_sampler_settings(&g, Some(&c), "anthropic", "opus");
+        assert_eq!(s.temperature, Some(0.4), "char per-model wins");
+        assert_eq!(s.top_p, Some(0.20), "global per-model beats char defaults");
+        assert_eq!(
+            s.max_tokens,
+            Some(200),
+            "char defaults beat global defaults"
+        );
+        assert_eq!(s.budget_tokens, Some(1000), "global defaults are floor");
+    }
+
+    // ── Sticky-per-model behavior ────────────────────────────────────
+
+    #[test]
+    fn switching_models_preserves_other_models_settings() {
+        // Phase 2 storage invariant: setting model B's sampler must not
+        // touch model A's stored sampler. Switching back to A restores
+        // its settings (Phase 3 wires this into the active selection).
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("models.toml");
+
+        let mut prefs = ModelPreferences::default();
+        prefs.set_model(
+            "anthropic",
+            "opus",
+            ModelPreference {
+                sampler: SamplerSettings {
+                    temperature: Some(0.7),
+                    ..Default::default()
+                },
+            },
+        );
+        prefs.set_model(
+            "anthropic",
+            "sonnet",
+            ModelPreference {
+                sampler: SamplerSettings {
+                    temperature: Some(1.2),
+                    ..Default::default()
+                },
+            },
+        );
+        // Mark sonnet as selected, then change selection to opus.
+        prefs.selected.provider = Some("anthropic".into());
+        prefs.selected.model_id = Some("sonnet".into());
+        save_preferences(&path, &prefs).unwrap();
+
+        // Switch selection — does not modify per-model settings.
+        let mut prefs = load_preferences(&path).unwrap();
+        prefs.selected.model_id = Some("opus".into());
+        save_preferences(&path, &prefs).unwrap();
+
+        // Switch back — both temperatures still intact.
+        let prefs = load_preferences(&path).unwrap();
+        assert_eq!(
+            prefs
+                .model("anthropic", "opus")
+                .unwrap()
+                .sampler
+                .temperature,
+            Some(0.7)
+        );
+        assert_eq!(
+            prefs
+                .model("anthropic", "sonnet")
+                .unwrap()
+                .sampler
+                .temperature,
+            Some(1.2)
+        );
+    }
+
+    #[test]
+    fn clear_model_removes_entry() {
+        let mut prefs = ModelPreferences::default();
+        prefs.set_model(
+            "anthropic",
+            "opus",
+            ModelPreference {
+                sampler: SamplerSettings {
+                    temperature: Some(0.7),
+                    ..Default::default()
+                },
+            },
+        );
+        let removed = prefs.clear_model("anthropic", "opus");
+        assert!(removed.is_some());
+        assert!(prefs.model("anthropic", "opus").is_none());
+    }
+
+    // ── apply_overlay ────────────────────────────────────────────────
+
+    #[test]
+    fn apply_overlay_replaces_only_set_fields() {
+        let mut base = SamplerSettings {
+            temperature: Some(1.0),
+            top_p: Some(0.9),
+            max_tokens: Some(4096),
+            ..Default::default()
+        };
+        let overlay = SamplerSettings {
+            temperature: Some(0.7),
+            reasoning_effort: Some("medium".into()),
+            ..Default::default()
+        };
+        base.apply_overlay(&overlay);
+        assert_eq!(base.temperature, Some(0.7));
+        assert_eq!(base.top_p, Some(0.9), "preserved");
+        assert_eq!(base.max_tokens, Some(4096), "preserved");
+        assert_eq!(base.reasoning_effort.as_deref(), Some("medium"));
+    }
+
+    // ── Catalog bridging ─────────────────────────────────────────────
+
+    fn make_catalog(toml: &str) -> shore_config::models::ModelCatalog {
+        let table: toml::Table = toml.parse().unwrap();
+        let chat = table.get("chat").and_then(|v| v.as_table());
+        shore_config::models::ModelCatalog::from_sections(chat, None, None, None).unwrap()
+    }
+
+    #[test]
+    fn find_static_model_locates_by_provider_and_model_id() {
+        let catalog = make_catalog(
+            r#"
+[chat.anthropic.opus]
+model_id = "claude-opus-4-6"
+
+[chat.openrouter.kimi]
+model_id = "kimi-k2"
+"#,
+        );
+        let m = find_static_model(&catalog, "anthropic", "claude-opus-4-6").unwrap();
+        assert_eq!(m.qualified_name, "chat.anthropic.opus");
+
+        let m = find_static_model(&catalog, "openrouter", "kimi-k2").unwrap();
+        assert_eq!(m.qualified_name, "chat.openrouter.kimi");
+
+        // Wrong provider / model_id pairs return None.
+        assert!(find_static_model(&catalog, "anthropic", "kimi-k2").is_none());
+        assert!(find_static_model(&catalog, "openrouter", "claude-opus-4-6").is_none());
+    }
+
+    #[test]
+    fn resolve_active_prefers_character_then_global_then_legacy_then_default() {
+        let catalog = make_catalog(
+            r#"
+[chat.anthropic.opus]
+model_id = "claude-opus-4-6"
+
+[chat.anthropic.sonnet]
+model_id = "claude-sonnet-4-6"
+
+[chat.openrouter.kimi]
+model_id = "kimi-k2"
+"#,
+        );
+
+        // (a) Character preference wins.
+        let g = ModelPreferences::default();
+        let mut c = ModelPreferences::default();
+        c.selected.provider = Some("anthropic".into());
+        c.selected.model_id = Some("claude-sonnet-4-6".into());
+        let active = resolve_active_for_character(&catalog, &g, &c, None, None).unwrap();
+        assert_eq!(active.qualified_name, "chat.anthropic.sonnet");
+
+        // (b) Global preference falls in when character is empty.
+        let mut g = ModelPreferences::default();
+        g.selected.provider = Some("openrouter".into());
+        g.selected.model_id = Some("kimi-k2".into());
+        let c = ModelPreferences::default();
+        let active = resolve_active_for_character(&catalog, &g, &c, None, None).unwrap();
+        assert_eq!(active.qualified_name, "chat.openrouter.kimi");
+
+        // (c) Legacy runtime_state.json fallback (migration path).
+        let g = ModelPreferences::default();
+        let c = ModelPreferences::default();
+        let active = resolve_active_for_character(&catalog, &g, &c, Some("opus"), None).unwrap();
+        assert_eq!(active.qualified_name, "chat.anthropic.opus");
+
+        // (d) app.defaults.model fallback when no preferences and no legacy.
+        let active = resolve_active_for_character(&catalog, &g, &c, None, Some("kimi")).unwrap();
+        assert_eq!(active.qualified_name, "chat.openrouter.kimi");
+
+        // (e) First chat model is the final fallback.
+        let active = resolve_active_for_character(&catalog, &g, &c, None, None).unwrap();
+        // BTreeMap iteration is lexicographic by qualified_name, so
+        // "chat.anthropic.opus" comes first.
+        assert_eq!(active.qualified_name, "chat.anthropic.opus");
+    }
+
+    #[test]
+    fn apply_sampler_overlay_patches_resolved_model() {
+        let catalog = make_catalog(
+            r#"
+[chat.anthropic.opus]
+model_id = "claude-opus-4-6"
+temperature = 1.0
+top_p = 0.9
+max_tokens = 4096
+"#,
+        );
+        let base = catalog.find_model("opus").unwrap();
+        let overlay = SamplerSettings {
+            temperature: Some(0.7),
+            reasoning_effort: Some("high".into()),
+            budget_tokens: Some(2048),
+            ..Default::default()
+        };
+        let patched = apply_sampler_overlay(base, &overlay);
+        assert_eq!(patched.temperature, Some(0.7), "overlaid");
+        assert_eq!(patched.top_p, Some(0.9), "preserved from static");
+        assert_eq!(patched.max_tokens, Some(4096), "preserved from static");
+        assert_eq!(patched.reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(patched.budget_tokens, Some(2048));
+    }
+
+    #[test]
+    fn apply_sampler_overlay_off_clears_reasoning_effort() {
+        // Phase 3 invariant: setting reasoning_effort = "off" in
+        // preferences clears the field on the resolved model so the
+        // request builder omits it entirely.
+        let catalog = make_catalog(
+            r#"
+[chat.anthropic.opus]
+model_id = "claude-opus-4-6"
+reasoning_effort = "high"
+"#,
+        );
+        let base = catalog.find_model("opus").unwrap();
+        let overlay = SamplerSettings {
+            reasoning_effort: Some("off".into()),
+            ..Default::default()
+        };
+        let patched = apply_sampler_overlay(base, &overlay);
+        assert!(patched.reasoning_effort.is_none(), "off → None");
+    }
+
+    #[test]
+    fn apply_sampler_overlay_does_not_mutate_input() {
+        let catalog = make_catalog(
+            r#"
+[chat.anthropic.opus]
+model_id = "claude-opus-4-6"
+temperature = 1.0
+"#,
+        );
+        let base = catalog.find_model("opus").unwrap();
+        let overlay = SamplerSettings {
+            temperature: Some(0.5),
+            ..Default::default()
+        };
+        let _patched = apply_sampler_overlay(base, &overlay);
+        // Catalog's stored model is untouched.
+        assert_eq!(catalog.find_model("opus").unwrap().temperature, Some(1.0));
+    }
+
+    #[test]
+    fn resolve_sampler_scopes_reflects_top_layer() {
+        let mut g = ModelPreferences::default();
+        g.defaults.sampler.temperature = Some(0.1);
+        g.set_model(
+            "anthropic",
+            "opus",
+            ModelPreference {
+                sampler: SamplerSettings {
+                    top_p: Some(0.5),
+                    ..Default::default()
+                },
+            },
+        );
+
+        let mut c = ModelPreferences::default();
+        c.set_model(
+            "anthropic",
+            "opus",
+            ModelPreference {
+                sampler: SamplerSettings {
+                    temperature: Some(0.7),
+                    ..Default::default()
+                },
+            },
+        );
+
+        let scopes = resolve_sampler_scopes(&g, Some(&c), "anthropic", "opus");
+        assert_eq!(scopes.temperature, Some(PreferenceScope::CharacterModel));
+        assert_eq!(scopes.top_p, Some(PreferenceScope::GlobalModel));
+        assert_eq!(scopes.max_tokens, None, "unset → None");
+    }
+
+    // ── Character flow helpers ───────────────────────────────────────
+
+    #[test]
+    fn load_for_character_returns_empty_when_neither_file_exists() {
+        let tmp = TempDir::new().unwrap();
+        let (g, c) = load_for_character(tmp.path(), "alice").unwrap();
+        assert!(g.is_empty());
+        assert!(c.is_empty());
+    }
+
+    #[test]
+    fn save_character_preferences_then_load_for_character_round_trip() {
+        let tmp = TempDir::new().unwrap();
+        let mut prefs = ModelPreferences::default();
+        prefs.selected.provider = Some("anthropic".into());
+        prefs.selected.model_id = Some("claude-opus-4-6".into());
+        save_character_preferences(tmp.path(), "alice", &prefs).unwrap();
+
+        let (g, c) = load_for_character(tmp.path(), "alice").unwrap();
+        assert!(g.is_empty(), "global untouched");
+        assert_eq!(c.selected.provider.as_deref(), Some("anthropic"));
+        assert_eq!(c.selected.model_id.as_deref(), Some("claude-opus-4-6"));
+    }
+}

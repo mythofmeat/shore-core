@@ -11,6 +11,7 @@ pub mod handler;
 pub mod handshake;
 pub mod memory;
 pub mod notifications;
+pub mod preferences;
 pub mod runtime_state;
 mod sync;
 pub mod templates;
