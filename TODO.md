@@ -1,0 +1,1 @@
+- [ ] we should give the character the ability to "delete" file (really just moving it to a trash directory somewhere outside their workspace. maybe the data dir somewhere? idk)
