@@ -1,0 +1,1 @@
+- [ ] shore-tui seems to develop some pretty noticeable input latency over time. it also takes a while to actually load the chat history sometimes. there's some serious optimizations needed for shore-tui, i think.
