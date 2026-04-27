@@ -88,7 +88,7 @@ impl ToolContext for SharedToolContext {
         &self.config_dir_val
     }
     fn defer_edit(&self, path: &str) {
-        if !crate::memory::deferred_edits::is_protected_path(path) {
+        if !crate::memory::deferred_edits::is_prompt_visible_path(path) {
             return;
         }
         let data_dir = Path::new(&self.character_data_dir_val);

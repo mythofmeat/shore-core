@@ -199,8 +199,11 @@ pub(super) async fn handle_generation(
         crate::memory::deferred_edits::load_active_prompt_file(&character_data_dir, AGENTS_FILE);
     let tools_guidance =
         crate::memory::deferred_edits::load_active_prompt_file(&character_data_dir, TOOLS_FILE);
-    let memory_index =
-        crate::memory::deferred_edits::load_memory_index(&effective_config.dirs.config, &char_name);
+    let memory_index = crate::memory::deferred_edits::load_memory_index(
+        &character_data_dir,
+        &effective_config.dirs.config,
+        &char_name,
+    );
     let display_name = effective_config.app.defaults.resolve_display_name();
     let prompt_result = prompt::assemble_prompt(&PromptParams {
         character_name: &char_name,

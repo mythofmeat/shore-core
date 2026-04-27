@@ -124,11 +124,13 @@ pub async fn memory_dream(
         return Ok(json!(status));
     }
 
+    let cached_request = ctx.autonomy.cached_last_request(char_name);
     let result = match crate::memory::dreaming::run_librarian_sweep(
         &ctx.config,
         &ctx.data_dir,
         &ctx.llm_client,
         char_name,
+        cached_request.as_ref(),
         dry_run,
         force,
     )

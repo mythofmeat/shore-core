@@ -231,6 +231,7 @@ pub async fn run_librarian_sweep(
     data_dir: &Path,
     llm_client: &LedgerClient,
     character: &str,
+    cached_request: Option<&LlmRequest>,
     dry_run: bool,
     force: bool,
 ) -> Result<Option<DreamSweepResult>, DreamingError> {
@@ -248,8 +249,10 @@ pub async fn run_librarian_sweep(
     let now = Local::now();
     let ran_at = now.to_rfc3339();
 
-    let mut request = build_librarian_request(loaded_config, character, dry_run, &ran_at).await?;
+    let mut request =
+        build_librarian_request(loaded_config, character, cached_request, dry_run, &ran_at).await?;
     request.forensic_character = Some(character.to_string());
+    request.rid = None;
     let tool_ctx =
         build_librarian_tool_context(loaded_config, data_dir, llm_client, character, dry_run)
             .await
@@ -320,6 +323,17 @@ pub async fn run_librarian_sweep(
 
     let memory_created_by_fallback =
         ensure_memory_index_after_librarian(&store, character, &ran_at).await?;
+    if memory_created_by_fallback {
+        if let Err(e) =
+            crate::memory::deferred_edits::note_memory_index_deferred(&data_dir.join(character))
+        {
+            warn!(
+                character,
+                error = %e,
+                "Dreaming: failed to defer fallback MEMORY.md activation"
+            );
+        }
+    }
 
     let dreams_before = before.get("DREAMS.md").cloned();
     let dreams_after_before_fallback = store
@@ -572,10 +586,10 @@ type MemorySnapshot = BTreeMap<String, String>;
 async fn build_librarian_request(
     loaded_config: &LoadedConfig,
     character: &str,
+    cached_request: Option<&LlmRequest>,
     dry_run: bool,
     ran_at: &str,
 ) -> Result<LlmRequest, DreamingError> {
-    let resolved = resolve_dreaming_model(loaded_config)?;
     let display_name = loaded_config.app.defaults.resolve_display_name();
     let character_data_dir = loaded_config.dirs.data.join(character);
     if let Err(e) = crate::memory::deferred_edits::ensure_active_prompt_snapshot(
@@ -607,6 +621,17 @@ async fn build_librarian_request(
     } else {
         "Run the memory librarian pass now. Use memory tools to inspect and improve workspace/memory, update memory/MEMORY.md, and write an audit entry to memory/DREAMS.md. Do not emit a user-facing message."
     };
+    if let Some(cached) = cached_request {
+        let mut request = cached.clone();
+        request.rid = None;
+        request.messages.push(json!({
+            "role": "system",
+            "content": format!("{system}\n\n{user_prompt}"),
+        }));
+        return Ok(request);
+    }
+
+    let resolved = resolve_dreaming_model(loaded_config)?;
     let tools = build_librarian_tool_defs(character, &display_name, dry_run);
     LedgerClient::build_request(
         resolved,
@@ -664,6 +689,7 @@ Maintain `memory/MEMORY.md` as the prompt-visible memory index. It should includ
 - unresolved memory-maintenance questions or contradictions
 
 `MEMORY.md` is not the full memory itself. It must not duplicate `SOUL.md`, `USER.md`, `AGENTS.md`, `TOOLS.md`, or `HEARTBEAT.md`; those are protected prompt files with separate roles.
+`MEMORY.md` is prompt-visible through an active snapshot. Updating `memory/MEMORY.md` changes the canonical file now, but the new index only becomes prompt-active after the next compaction boundary.
 
 Write an audit entry to `memory/DREAMS.md` describing:
 - timestamp: {ran_at}
@@ -788,9 +814,8 @@ async fn run_private_librarian_loop(
     dry_run: bool,
 ) -> Result<LibrarianLoopResult, DreamingError> {
     let mut loop_result = LibrarianLoopResult::default();
-    let max_iterations = max_tool_rounds.max(1);
 
-    for iteration in 0..max_iterations {
+    for iteration in 0..max_tool_rounds {
         let resp = client
             .generate(request, CallType::Dreaming, character, false)
             .await
@@ -2239,6 +2264,7 @@ mod tests {
             &config.dirs.data,
             &test_ledger(&tmp),
             "alice",
+            None,
             false,
             true,
         )
@@ -2266,6 +2292,15 @@ mod tests {
         let dreams = fs::read_to_string(mem.join("DREAMS.md")).await.unwrap();
         assert!(dreams.contains("AI librarian dreaming pass"));
         assert!(dreams.contains("MEMORY.md updated: yes"));
+        assert!(
+            crate::memory::deferred_edits::load_memory_index(
+                &config.dirs.data.join("alice"),
+                &config.dirs.config,
+                "alice"
+            )
+            .is_none(),
+            "new MEMORY.md content should stay out of the prompt snapshot until compaction"
+        );
         let soul = fs::read_to_string(
             character_workspace_dir(&config.dirs.config, "alice").join(SOUL_FILE),
         )
@@ -2273,6 +2308,100 @@ mod tests {
         .unwrap();
         assert!(soul.contains("concise test assistant"));
         assert!(mem.join(".dreams/state.json").exists());
+    }
+
+    #[tokio::test]
+    async fn ai_librarian_sweep_appends_after_cached_request_prefix() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mock = MockLlmServer::start().await;
+        let config = librarian_config(&tmp, &mock, "alice", 3);
+        let resolved = config.models.first_chat_model().unwrap();
+        let cached_request = LedgerClient::build_request(
+            resolved,
+            vec![
+                json!({"role": "user", "content": "original user turn"}),
+                json!({"role": "assistant", "content": "original assistant turn"}),
+            ],
+            Some(json!([{ "type": "text", "text": "cached system prefix" }])),
+            Some(vec![json!({
+                "name": "read",
+                "description": "sentinel cached tool definition",
+                "input_schema": { "type": "object", "properties": {} }
+            })]),
+            None,
+        )
+        .unwrap();
+
+        mock.enqueue_json_text("Librarian pass complete.").await;
+
+        run_librarian_sweep(
+            &config,
+            &config.dirs.data,
+            &test_ledger(&tmp),
+            "alice",
+            Some(&cached_request),
+            false,
+            true,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        let requests = mock.received_requests().await;
+        assert_eq!(requests.len(), 1);
+        let body = &requests[0];
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[0]["role"], "user");
+        assert_eq!(messages[1]["role"], "assistant");
+        assert_eq!(messages[2]["role"], "user");
+        assert!(messages[0].to_string().contains("original user turn"));
+        assert!(messages[1].to_string().contains("original assistant turn"));
+        assert!(messages[2].to_string().contains("memory librarian pass"));
+        assert!(body["system"].to_string().contains("cached system prefix"));
+        assert_eq!(body["tools"][0]["name"], "read");
+        assert!(body["tools"][0]["description"]
+            .as_str()
+            .unwrap()
+            .contains("sentinel cached"));
+    }
+
+    #[tokio::test]
+    async fn zero_max_tool_rounds_sends_no_librarian_request() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mock = MockLlmServer::start().await;
+        let config = librarian_config(&tmp, &mock, "alice", 0);
+        let mem = character_memory_dir(&config.dirs.config, "alice");
+        fs::create_dir_all(&mem).await.unwrap();
+        fs::write(mem.join("notes.md"), "# Notes\n\n- Durable note.\n")
+            .await
+            .unwrap();
+
+        let result = run_librarian_sweep(
+            &config,
+            &config.dirs.data,
+            &test_ledger(&tmp),
+            "alice",
+            None,
+            false,
+            true,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(result.tool_rounds, 0);
+        assert!(mock.received_requests().await.is_empty());
+        assert!(mem.join("MEMORY.md").exists());
+        assert!(
+            crate::memory::deferred_edits::load_memory_index(
+                &config.dirs.data.join("alice"),
+                &config.dirs.config,
+                "alice"
+            )
+            .is_none(),
+            "fallback MEMORY.md should not become prompt-active before compaction"
+        );
     }
 
     #[tokio::test]
@@ -2297,6 +2426,7 @@ mod tests {
             &config.dirs.data,
             &test_ledger(&tmp),
             "alice",
+            None,
             true,
             true,
         )
@@ -2334,6 +2464,7 @@ mod tests {
             &config.dirs.data,
             &test_ledger(&tmp),
             "alice",
+            None,
             false,
             true,
         )
@@ -2375,6 +2506,7 @@ mod tests {
             &config.dirs.data,
             &test_ledger(&tmp),
             "alice",
+            None,
             false,
             true,
         )
