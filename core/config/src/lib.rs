@@ -1,6 +1,7 @@
 pub mod app;
 pub mod duration;
 pub mod models;
+pub mod providers;
 
 pub use duration::ConfigDuration;
 
@@ -8,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use app::AppConfig;
 use models::ModelCatalog;
+use providers::ProviderRegistry;
 use tracing::{info, warn};
 
 /// Errors that can occur during configuration loading.
@@ -37,6 +39,9 @@ pub enum ConfigError {
     #[error("failed to parse model catalog: {0}")]
     Catalog(Box<models::CatalogError>),
 
+    #[error("failed to parse provider registry: {0}")]
+    ProviderRegistry(#[source] providers::ProviderRegistryError),
+
     #[error("validation error: {0}")]
     Validation(String),
 }
@@ -44,6 +49,12 @@ pub enum ConfigError {
 impl From<models::CatalogError> for ConfigError {
     fn from(e: models::CatalogError) -> Self {
         ConfigError::Catalog(Box::new(e))
+    }
+}
+
+impl From<providers::ProviderRegistryError> for ConfigError {
+    fn from(e: providers::ProviderRegistryError) -> Self {
+        ConfigError::ProviderRegistry(e)
     }
 }
 
@@ -146,6 +157,7 @@ pub fn runtime_dir() -> PathBuf {
 pub struct LoadedConfig {
     pub app: AppConfig,
     pub models: ModelCatalog,
+    pub providers: ProviderRegistry,
     pub dirs: ShoreDirs,
     /// Raw global TOML table (after include/conf.d merging, before model extraction).
     /// Preserved for per-character config merging.
@@ -160,6 +172,7 @@ impl LoadedConfig {
         Self {
             app,
             models,
+            providers: ProviderRegistry::default(),
             dirs,
             raw_table: None,
         }
@@ -304,6 +317,7 @@ fn parse_config_table(table: toml::Table, dirs: ShoreDirs) -> Result<LoadedConfi
     let tools_section = table.remove("tools");
     let embedding_section = table.remove("embedding");
     let image_generation_section = table.remove("image_generation");
+    let providers_section = table.remove("providers");
 
     // Deserialize the remaining table into AppConfig.
     let app: AppConfig = toml::Value::Table(table)
@@ -318,11 +332,15 @@ fn parse_config_table(table: toml::Table, dirs: ShoreDirs) -> Result<LoadedConfi
         image_generation_section.as_ref().and_then(|v| v.as_table()),
     )?;
 
+    let providers =
+        ProviderRegistry::from_section(providers_section.as_ref().and_then(|v| v.as_table()))?;
+
     validate_config(&app, &catalog)?;
 
     Ok(LoadedConfig {
         app,
         models: catalog,
+        providers,
         dirs,
         raw_table: Some(raw_table),
     })
@@ -1374,5 +1392,150 @@ model = "chat.anthropic.opus"
         // conf.d models should still be available after merge.
         assert!(qifei.models.find_model("opus").is_ok());
         assert!(qifei.models.find_model("kimi").is_ok());
+    }
+
+    // ── Provider registry integration ────────────────────────────────
+
+    #[test]
+    fn empty_config_has_empty_provider_registry() {
+        let tmp = setup_config_dir(&[("config.toml", "")]);
+        let loaded = load_config(Some(&tmp.path().join("config.toml"))).unwrap();
+        assert!(loaded.providers.is_empty());
+    }
+
+    #[test]
+    fn existing_static_chat_config_loads_with_no_providers_section() {
+        // Regression guard: static `[chat.X.Y]` config must continue to work
+        // exactly as before, with an empty provider registry alongside it.
+        let tmp = setup_config_dir(&[(
+            "config.toml",
+            r#"
+[chat.anthropic.opus]
+model_id = "claude-opus-4-6"
+
+[chat.anthropic.sonnet]
+model_id = "claude-sonnet-4-6"
+"#,
+        )]);
+        let loaded = load_config(Some(&tmp.path().join("config.toml"))).unwrap();
+        assert!(loaded.providers.is_empty());
+        assert!(loaded.models.find_model("opus").is_ok());
+        assert!(loaded.models.find_model("sonnet").is_ok());
+    }
+
+    #[test]
+    fn provider_registry_loads_alongside_static_chat() {
+        // Phase 1 deliverable: both can coexist; the registry parses but
+        // does not yet alter resolution.
+        let tmp = setup_config_dir(&[(
+            "config.toml",
+            r#"
+[providers.openrouter]
+sdk = "openai"
+base_url = "https://openrouter.ai/api/v1"
+
+[[providers.openrouter.keys]]
+name = "budget"
+env = "OPENROUTER_API_KEY_BUDGET"
+warn_on_fallback = true
+
+[[providers.openrouter.keys]]
+name = "overflow"
+env = "OPENROUTER_API_KEY_OVERFLOW"
+
+[providers.openrouter.discovery]
+enabled = true
+
+[chat.anthropic.opus]
+model_id = "claude-opus-4-6"
+"#,
+        )]);
+        let loaded = load_config(Some(&tmp.path().join("config.toml"))).unwrap();
+
+        let or = loaded.providers.get("openrouter").unwrap();
+        assert!(or.enabled);
+        assert_eq!(or.base_url.as_deref(), Some("https://openrouter.ai/api/v1"));
+        assert_eq!(or.keys.len(), 2);
+        assert_eq!(or.keys[0].name, "budget");
+        assert!(or.discovery.enabled);
+
+        // Static catalog continues to work.
+        assert!(loaded.models.find_model("opus").is_ok());
+    }
+
+    #[test]
+    fn compact_api_key_env_form_loads() {
+        let tmp = setup_config_dir(&[(
+            "config.toml",
+            r#"
+[providers.openai]
+api_key_env = "OPENAI_API_KEY"
+"#,
+        )]);
+        let loaded = load_config(Some(&tmp.path().join("config.toml"))).unwrap();
+        let p = loaded.providers.get("openai").unwrap();
+        assert_eq!(p.keys.len(), 1, "compact form folded into a single key");
+        assert_eq!(p.keys[0].name, "default");
+        assert_eq!(p.keys[0].env, "OPENAI_API_KEY");
+    }
+
+    #[test]
+    fn provider_registry_via_conf_d() {
+        // Provider sections must merge through conf.d like every other
+        // top-level section.
+        let tmp = setup_config_dir(&[
+            ("config.toml", ""),
+            (
+                "conf.d/providers.toml",
+                r#"
+[providers.openrouter]
+sdk = "openai"
+
+[[providers.openrouter.keys]]
+name = "main"
+env = "OR_KEY"
+"#,
+            ),
+        ]);
+        let loaded = load_config(Some(&tmp.path().join("config.toml"))).unwrap();
+        assert!(loaded.providers.get("openrouter").is_some());
+    }
+
+    #[test]
+    fn provider_registry_parse_error_propagates() {
+        let tmp = setup_config_dir(&[(
+            "config.toml",
+            r#"
+[providers.openrouter]
+api_key_env = "A"
+
+[[providers.openrouter.keys]]
+name = "explicit"
+env = "B"
+"#,
+        )]);
+        let err = load_config(Some(&tmp.path().join("config.toml"))).unwrap_err();
+        assert!(matches!(err, ConfigError::ProviderRegistry(_)));
+        assert!(err.to_string().contains("api_key_env"));
+    }
+
+    #[test]
+    fn legacy_chat_provider_api_key_env_unchanged() {
+        // Existing single-key behavior under [chat.<provider>] must still
+        // cascade into ResolvedModel.api_key_env. Phase 1 does not touch
+        // this code path.
+        let tmp = setup_config_dir(&[(
+            "config.toml",
+            r#"
+[chat.anthropic]
+api_key_env = "MY_LEGACY_KEY"
+
+[chat.anthropic.opus]
+model_id = "claude-opus-4-6"
+"#,
+        )]);
+        let loaded = load_config(Some(&tmp.path().join("config.toml"))).unwrap();
+        let opus = loaded.models.find_model("opus").unwrap();
+        assert_eq!(opus.api_key_env.as_deref(), Some("MY_LEGACY_KEY"));
     }
 }
