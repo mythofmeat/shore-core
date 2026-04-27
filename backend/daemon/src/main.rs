@@ -320,6 +320,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config: loaded.clone(),
         push_tx: push_tx.clone(),
         data_dir: loaded.dirs.data.clone(),
+        character_name: None,
         active_model: None,
         reasoning_effort_override: None,
         session_tokens: session_tokens.clone(),

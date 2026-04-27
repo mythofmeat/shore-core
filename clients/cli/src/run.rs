@@ -354,16 +354,19 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
-        // Intercept model switch/reset so we can mirror the daemon's
-        // decision into the client state file. Without this the choice
-        // is lost as soon as the one-shot CLI session exits.
+        // Phase 3+: the daemon owns durable model/reasoning state in
+        // `<data_dir>/<character>/preferences/models.toml`. The CLI
+        // runtime mirror at `$SHORE_RUNTIME_DIR/active_*` is read at
+        // startup as a one-release migration fallback (see run.rs:75)
+        // but no longer written here. Best-effort cleanup of any stale
+        // mirror keeps `shore status` honest after the upgrade.
         CliCommand::Model {
             reset: true, json, ..
         } => {
             conn.send_command("reset_model", serde_json::json!({}))
                 .await?;
             let data = recv_command_data(&mut conn).await?;
-            state::clear_active_model()?;
+            let _ = state::clear_active_model();
             if *json {
                 println!("{}", serde_json::to_string_pretty(&data)?);
             } else {
@@ -380,51 +383,25 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             conn.send_command("switch_model", serde_json::json!({ "name": name }))
                 .await?;
             let data = recv_command_data(&mut conn).await?;
-            // Persist only after the daemon accepts the name, so we
-            // never stash a value the daemon rejects.
-            state::write_active_model(name)?;
+            let _ = state::clear_active_model();
             if *json {
                 println!("{}", serde_json::to_string_pretty(&data)?);
             } else {
                 output::format_command("switch_model", &data);
             }
         }
-        // `shore reasoning` — intercepted so we can persist the override to
-        // the state file after the daemon acks, mirroring the `shore model`
-        // path. A one-shot CLI connection loses session state otherwise.
         CliCommand::Reasoning { value, reset, json } => {
-            let (args, persist_after_success): (
-                serde_json::Value,
-                Box<dyn FnOnce() -> std::io::Result<()>>,
-            ) = if *reset {
-                (
-                    serde_json::json!({ "clear": true }),
-                    Box::new(state::clear_reasoning_effort_override),
-                )
+            let args = if *reset {
+                serde_json::json!({ "clear": true })
             } else if let Some(v) = value.as_deref() {
-                let normalized = v.trim().to_ascii_lowercase();
-                let persist: Box<dyn FnOnce() -> std::io::Result<()>> = match normalized.as_str() {
-                    "off" | "none" | "null" | "disable" | "disabled" | "unset" => {
-                        Box::new(|| state::write_reasoning_effort_override(None))
-                    }
-                    "" => Box::new(state::clear_reasoning_effort_override),
-                    _ => {
-                        let owned = v.trim().to_string();
-                        Box::new(move || state::write_reasoning_effort_override(Some(&owned)))
-                    }
-                };
-                (serde_json::json!({ "value": v }), persist)
+                serde_json::json!({ "value": v })
             } else {
-                // Read-only: no state-file write.
-                (
-                    serde_json::json!({}),
-                    Box::new(|| Ok::<(), std::io::Error>(())),
-                )
+                serde_json::json!({})
             };
 
             conn.send_command("set_reasoning_effort", args).await?;
             let data = recv_command_data(&mut conn).await?;
-            persist_after_success()?;
+            let _ = state::clear_reasoning_effort_override();
             if *json {
                 println!("{}", serde_json::to_string_pretty(&data)?);
             } else {

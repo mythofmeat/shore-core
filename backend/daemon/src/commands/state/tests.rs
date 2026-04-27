@@ -55,6 +55,7 @@ fn make_ctx_with_models(
         config,
         push_tx,
         data_dir: data_dir.clone(),
+        character_name: Some("TestChar".into()),
         active_model: None,
         reasoning_effort_override: None,
         session_tokens: std::sync::Arc::new(std::sync::Mutex::new(
@@ -675,4 +676,246 @@ reasoning_effort = "medium"
         result["effective"], "medium",
         "no override → effective = config default"
     );
+}
+
+// ── Phase 3: preferences-backed switch_model + sticky sampler ────────
+
+#[test]
+fn switch_model_persists_provider_and_model_id_to_preferences() {
+    let tmp = TempDir::new().unwrap();
+    let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
+
+    let result = switch_model(&mut ctx, &json!({"name": "gpt-4o"})).unwrap();
+    assert_eq!(result["provider"], "openrouter");
+    assert_eq!(result["model_id"], "gpt-4o");
+    assert_eq!(result["qualified_name"], "chat.openrouter.gpt-4o");
+
+    // File on disk reflects the selection by stable provider:model_id key.
+    let path = crate::preferences::character_preferences_path(&ctx.data_dir, "TestChar");
+    let prefs = crate::preferences::load_preferences(&path).unwrap();
+    assert_eq!(prefs.selected.provider.as_deref(), Some("openrouter"));
+    assert_eq!(prefs.selected.model_id.as_deref(), Some("gpt-4o"));
+}
+
+#[test]
+fn switch_model_requires_attached_character() {
+    let tmp = TempDir::new().unwrap();
+    let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
+    ctx.character_name = None;
+
+    let err = switch_model(&mut ctx, &json!({"name": "gpt-4o"})).unwrap_err();
+    assert_eq!(err.0, shore_protocol::error::ErrorCode::InvalidRequest);
+}
+
+#[test]
+fn reset_model_clears_selection_in_preferences() {
+    let tmp = TempDir::new().unwrap();
+    let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
+
+    switch_model(&mut ctx, &json!({"name": "gpt-4o"})).unwrap();
+    let path = crate::preferences::character_preferences_path(&ctx.data_dir, "TestChar");
+    assert!(crate::preferences::load_preferences(&path)
+        .unwrap()
+        .selected
+        .is_set());
+
+    reset_model(&mut ctx).unwrap();
+    let prefs = crate::preferences::load_preferences(&path).unwrap();
+    assert!(!prefs.selected.is_set(), "[selected] should be cleared");
+    assert!(ctx.active_model.is_none());
+}
+
+#[test]
+fn set_model_setting_persists_per_model_sampler() {
+    let tmp = TempDir::new().unwrap();
+    let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
+    ctx.active_model = Some("gpt-4o".into());
+
+    let result = set_model_setting(&mut ctx, &json!({"key": "temperature", "value": 0.8})).unwrap();
+    assert_eq!(result["changed"], true);
+    assert_eq!(result["scope"], "character");
+    assert_eq!(result["key"], "temperature");
+    assert_eq!(result["value"], 0.8);
+
+    let path = crate::preferences::character_preferences_path(&ctx.data_dir, "TestChar");
+    let prefs = crate::preferences::load_preferences(&path).unwrap();
+    let entry = prefs.model("openrouter", "gpt-4o").unwrap();
+    assert_eq!(entry.sampler.temperature, Some(0.8));
+}
+
+#[test]
+fn set_model_setting_global_scope_writes_global_file() {
+    let tmp = TempDir::new().unwrap();
+    let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
+    ctx.active_model = Some("gpt-4o".into());
+
+    set_model_setting(
+        &mut ctx,
+        &json!({"key": "top_p", "value": 0.9, "scope": "global"}),
+    )
+    .unwrap();
+
+    let global = crate::preferences::load_preferences(
+        &crate::preferences::global_preferences_path(&ctx.data_dir),
+    )
+    .unwrap();
+    assert_eq!(
+        global.model("openrouter", "gpt-4o").unwrap().sampler.top_p,
+        Some(0.9)
+    );
+
+    // Character file untouched.
+    let char_prefs = crate::preferences::load_preferences(
+        &crate::preferences::character_preferences_path(&ctx.data_dir, "TestChar"),
+    )
+    .unwrap();
+    assert!(char_prefs.model("openrouter", "gpt-4o").is_none());
+}
+
+#[test]
+fn set_model_setting_null_value_clears_field() {
+    let tmp = TempDir::new().unwrap();
+    let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
+    ctx.active_model = Some("gpt-4o".into());
+
+    set_model_setting(&mut ctx, &json!({"key": "temperature", "value": 0.7})).unwrap();
+    set_model_setting(&mut ctx, &json!({"key": "temperature", "value": null})).unwrap();
+
+    // Empty entries get pruned so the file stays tidy.
+    let path = crate::preferences::character_preferences_path(&ctx.data_dir, "TestChar");
+    let prefs = crate::preferences::load_preferences(&path).unwrap();
+    assert!(prefs.model("openrouter", "gpt-4o").is_none());
+}
+
+#[test]
+fn set_model_setting_rejects_unknown_key() {
+    let tmp = TempDir::new().unwrap();
+    let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
+    ctx.active_model = Some("gpt-4o".into());
+
+    let err = set_model_setting(&mut ctx, &json!({"key": "typo", "value": 0.5})).unwrap_err();
+    assert_eq!(err.0, shore_protocol::error::ErrorCode::InvalidRequest);
+    assert!(err.1.contains("typo"));
+}
+
+#[test]
+fn set_model_setting_validates_value_type() {
+    let tmp = TempDir::new().unwrap();
+    let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
+    ctx.active_model = Some("gpt-4o".into());
+
+    // temperature must be a number.
+    let err =
+        set_model_setting(&mut ctx, &json!({"key": "temperature", "value": "hot"})).unwrap_err();
+    assert_eq!(err.0, shore_protocol::error::ErrorCode::InvalidRequest);
+}
+
+#[test]
+fn sticky_sampler_per_model_across_switches() {
+    // Phase 3 manual-test scenario captured as automation:
+    //   set A.temp=0.7 → switch to B → set B.temp=1.2 → switch to A
+    //   → A.temp must still be 0.7. Switch to B again → B.temp = 1.2.
+    let tmp = TempDir::new().unwrap();
+    let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
+
+    switch_model(&mut ctx, &json!({"name": "claude-sonnet"})).unwrap();
+    set_model_setting(&mut ctx, &json!({"key": "temperature", "value": 0.7})).unwrap();
+
+    switch_model(&mut ctx, &json!({"name": "gpt-4o"})).unwrap();
+    set_model_setting(&mut ctx, &json!({"key": "temperature", "value": 1.2})).unwrap();
+
+    // Both samplers saved independently.
+    let path = crate::preferences::character_preferences_path(&ctx.data_dir, "TestChar");
+    let prefs = crate::preferences::load_preferences(&path).unwrap();
+    assert_eq!(
+        prefs
+            .model("anthropic", "claude-sonnet-4-20250514")
+            .unwrap()
+            .sampler
+            .temperature,
+        Some(0.7)
+    );
+    assert_eq!(
+        prefs
+            .model("openrouter", "gpt-4o")
+            .unwrap()
+            .sampler
+            .temperature,
+        Some(1.2)
+    );
+}
+
+#[test]
+fn model_settings_returns_effective_sampler_with_scopes() {
+    let tmp = TempDir::new().unwrap();
+    let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
+    ctx.active_model = Some("gpt-4o".into());
+
+    // Write a global default and a character-level override.
+    let mut global = crate::preferences::ModelPreferences::default();
+    global.defaults.sampler.temperature = Some(1.0);
+    crate::preferences::save_global_preferences(&ctx.data_dir, &global).unwrap();
+    set_model_setting(&mut ctx, &json!({"key": "temperature", "value": 0.8})).unwrap();
+
+    let result = model_settings(&ctx, &json!({})).unwrap();
+    assert_eq!(result["model"], "chat.openrouter.gpt-4o");
+    assert_eq!(result["effective_sampler"]["temperature"], 0.8);
+    assert_eq!(result["scopes"]["temperature"], "character_model");
+}
+
+#[test]
+fn set_reasoning_effort_persists_to_preferences() {
+    let tmp = TempDir::new().unwrap();
+    let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
+    ctx.active_model = Some("gpt-4o".into());
+
+    set_reasoning_effort(&mut ctx, &json!({"value": "high"})).unwrap();
+
+    let path = crate::preferences::character_preferences_path(&ctx.data_dir, "TestChar");
+    let prefs = crate::preferences::load_preferences(&path).unwrap();
+    assert_eq!(
+        prefs
+            .model("openrouter", "gpt-4o")
+            .unwrap()
+            .sampler
+            .reasoning_effort
+            .as_deref(),
+        Some("high")
+    );
+}
+
+#[test]
+fn set_reasoning_effort_off_stored_as_off_sentinel() {
+    let tmp = TempDir::new().unwrap();
+    let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
+    ctx.active_model = Some("gpt-4o".into());
+
+    set_reasoning_effort(&mut ctx, &json!({"value": "off"})).unwrap();
+
+    let path = crate::preferences::character_preferences_path(&ctx.data_dir, "TestChar");
+    let prefs = crate::preferences::load_preferences(&path).unwrap();
+    // "off" is the durable sentinel; the resolver translates it to a
+    // None reasoning_effort on the patched ResolvedModel so the request
+    // builder omits the field.
+    assert_eq!(
+        prefs
+            .model("openrouter", "gpt-4o")
+            .unwrap()
+            .sampler
+            .reasoning_effort
+            .as_deref(),
+        Some("off")
+    );
+}
+
+#[test]
+fn model_info_includes_effective_sampler_for_active_character() {
+    let tmp = TempDir::new().unwrap();
+    let (_engine, mut ctx, _rx) = make_ctx_with_models(&tmp, sample_models());
+    ctx.active_model = Some("gpt-4o".into());
+    set_model_setting(&mut ctx, &json!({"key": "top_p", "value": 0.95})).unwrap();
+
+    let result = model_info(&ctx, &json!({})).unwrap();
+    assert_eq!(result["effective_sampler"]["top_p"], 0.95);
+    assert_eq!(result["scopes"]["top_p"], "character_model");
 }

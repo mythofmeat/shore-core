@@ -35,11 +35,19 @@ pub struct CommandContext {
     pub push_tx: broadcast::Sender<ServerMessage>,
     /// Data directory (`$XDG_DATA_HOME/shore/`).
     pub data_dir: PathBuf,
-    /// Currently active model name.
+    /// Resolved character name for this command, if any. `None` for
+    /// characterless commands like `list_characters` / `list_models`.
+    /// Used by Phase 3+ commands to locate per-character preferences.
+    pub character_name: Option<String>,
+    /// Currently active model name (resolved qualified_name).
+    /// Phase 3+ this is sourced from preferences, not from
+    /// `runtime_state.json`; the field is kept as a session-level cache.
     pub active_model: Option<String>,
     /// Per-session override for the resolved model's `reasoning_effort`.
-    /// `None` means "use the value from config"; `Some(v)` patches the
-    /// resolved chat model for every subsequent generation on this session.
+    /// `None` means "use the value from config/preferences"; `Some(v)`
+    /// patches the resolved chat model for every subsequent generation
+    /// on this session. Phase 3+ this only carries pending in-flight
+    /// state; durable storage lives in the preferences file.
     pub reasoning_effort_override: Option<Option<String>>,
     /// Cumulative token usage for the session (shared with generation tasks).
     pub session_tokens: Arc<Mutex<SessionTokens>>,
@@ -85,6 +93,8 @@ pub async fn dispatch(
         "switch_model" => state::switch_model(ctx, &cmd.args),
         "reset_model" => state::reset_model(ctx),
         "set_reasoning_effort" => state::set_reasoning_effort(ctx, &cmd.args),
+        "set_model_setting" => state::set_model_setting(ctx, &cmd.args),
+        "model_settings" => state::model_settings(ctx, &cmd.args),
         "memory_changelog" => state::memory_changelog(engine, ctx, &cmd.args),
         "memory_dream" => state::memory_dream(engine, ctx, &cmd.args).await,
         "memory" => state::memory(engine, ctx, &cmd.args).await,
@@ -182,6 +192,7 @@ mod tests {
             config,
             push_tx,
             data_dir: data_dir.clone(),
+            character_name: Some("TestChar".into()),
             active_model: None,
             reasoning_effort_override: None,
             session_tokens: Arc::new(Mutex::new(SessionTokens::default())),

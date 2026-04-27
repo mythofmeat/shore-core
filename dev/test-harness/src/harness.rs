@@ -142,6 +142,7 @@ impl TestHarness {
             config: config.clone(),
             push_tx: push_tx.clone(),
             data_dir: config.dirs.data.clone(),
+            character_name: None,
             active_model: config.app.defaults.model.clone(),
             reasoning_effort_override: None,
             session_tokens: Arc::new(std::sync::Mutex::new(SessionTokens::default())),

@@ -8,7 +8,8 @@ use tracing::{debug, info};
 
 use crate::commands::{self, CommandContext};
 use crate::handshake::build_session_history_snapshot;
-use crate::runtime_state::{load_active_model, save_active_model};
+use crate::preferences;
+use crate::runtime_state::load_active_model;
 
 use super::{GenContext, MessageHandler};
 
@@ -109,6 +110,7 @@ impl MessageHandler {
                 config: self.cmd_ctx.config.clone(),
                 push_tx: self.push_tx.clone(),
                 data_dir: self.cmd_ctx.data_dir.clone(),
+                character_name: None,
                 active_model,
                 reasoning_effort_override,
                 session_tokens,
@@ -172,7 +174,30 @@ impl MessageHandler {
         };
 
         let character_data_dir = self.cmd_ctx.data_dir.join(&char_name);
-        let persisted_active_model = load_active_model(&character_data_dir);
+        // Phase 3: preferences are the durable source of truth for the
+        // active model. Legacy `runtime_state.json` is read as a one-
+        // release migration fallback so users who haven't written
+        // preferences yet keep their selection across this upgrade.
+        let persisted_active_model = {
+            let data_dir = &self.cmd_ctx.data_dir;
+            let (global_prefs, char_prefs) = preferences::load_for_character(data_dir, &char_name)
+                .unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, character = %char_name, "Failed to load preferences; using empty defaults");
+                    (
+                        preferences::ModelPreferences::default(),
+                        preferences::ModelPreferences::default(),
+                    )
+                });
+            let legacy = load_active_model(&character_data_dir);
+            preferences::resolve_active_for_character(
+                &effective_config.models,
+                &global_prefs,
+                &char_prefs,
+                legacy.as_deref(),
+                effective_config.app.defaults.model.as_deref(),
+            )
+            .map(|m| m.qualified_name.clone())
+        };
 
         let (reasoning_effort_override, session_tokens) = {
             let session = self.session_state_mut(session_id);
@@ -186,6 +211,7 @@ impl MessageHandler {
             config: effective_config,
             push_tx: self.push_tx.clone(),
             data_dir: self.cmd_ctx.data_dir.clone(),
+            character_name: Some(char_name.clone()),
             active_model: persisted_active_model,
             reasoning_effort_override,
             session_tokens,
@@ -203,15 +229,12 @@ impl MessageHandler {
                 .get("value")
                 .and_then(serde_json::Value::as_str)
                 .is_some();
+        // Phase 3: model selection persistence is owned by individual
+        // commands that write to `<data_dir>/<char>/preferences/models.toml`.
+        // The dispatcher only mirrors the post-command state into the
+        // session cache.
         let active_model_after_command = cmd_ctx.active_model.clone();
         let reasoning_effort_after_command = cmd_ctx.reasoning_effort_override.clone();
-        if let Err(e) = save_active_model(&character_data_dir, active_model_after_command.clone()) {
-            tracing::warn!(
-                character = %char_name,
-                error = %e,
-                "Failed to persist active model"
-            );
-        }
 
         {
             let session = self.session_state_mut(session_id);

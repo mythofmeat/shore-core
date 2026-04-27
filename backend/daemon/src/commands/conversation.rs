@@ -265,6 +265,7 @@ mod tests {
             config,
             push_tx,
             data_dir: data_dir.clone(),
+            character_name: Some("TestChar".into()),
             active_model: None,
             reasoning_effort_override: None,
             session_tokens: std::sync::Arc::new(std::sync::Mutex::new(SessionTokens::default())),

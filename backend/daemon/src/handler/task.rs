@@ -43,6 +43,7 @@ pub(super) async fn handle_generation(
         data_dir,
         active_model,
         reasoning_effort_override,
+        sampler_overlay,
     } = params;
     info!(
         character = %char_name,
@@ -110,13 +111,20 @@ pub(super) async fn handle_generation(
             .first_chat_model()
             .ok_or("No model configured")?,
     };
-    // Apply the per-session `reasoning_effort` override (if any) by
-    // cloning the resolved model and patching the field for this request.
+    // Phase 3+: apply preference-derived sampler overlay first
+    // (durable per-model settings), then the per-session
+    // `reasoning_effort_override` (transient session state) on top.
+    // The transient override wins so existing `shore reasoning` flow
+    // remains a "change just for this turn" affordance until Phase 8
+    // routes it through the preferences store too.
     let resolved_owned;
     let resolved: &shore_config::models::ResolvedModel =
-        if let Some(new_effort) = reasoning_effort_override.as_ref() {
-            let mut patched = resolved_base.clone();
-            patched.reasoning_effort = new_effort.clone();
+        if !sampler_overlay.is_empty() || reasoning_effort_override.is_some() {
+            let mut patched =
+                crate::preferences::apply_sampler_overlay(resolved_base, &sampler_overlay);
+            if let Some(new_effort) = reasoning_effort_override.as_ref() {
+                patched.reasoning_effort = new_effort.clone();
+            }
             resolved_owned = patched;
             &resolved_owned
         } else {
@@ -127,6 +135,7 @@ pub(super) async fn handle_generation(
         provider = %resolved.provider_key,
         reasoning_effort = ?resolved.reasoning_effort,
         override_active = reasoning_effort_override.is_some(),
+        sampler_overlay_active = !sampler_overlay.is_empty(),
         "model resolved"
     );
 

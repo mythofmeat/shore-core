@@ -85,6 +85,7 @@ async fn make_handler(
         config: loaded_config.clone(),
         push_tx: push_tx.clone(),
         data_dir: data_dir.clone(),
+        character_name: None,
         active_model: None,
         reasoning_effort_override: None,
         session_tokens: Arc::new(std::sync::Mutex::new(SessionTokens::default())),
@@ -434,6 +435,7 @@ async fn handle_engine_message_regen_builds_empty_body() {
             data_dir,
             active_model: None,
             reasoning_effort_override: None,
+            sampler_overlay: crate::preferences::SamplerSettings::default(),
         },
     )
     .await;
@@ -716,6 +718,7 @@ async fn make_handler_with_models(
         config: loaded_config.clone(),
         push_tx: push_tx.clone(),
         data_dir: data_dir.clone(),
+        character_name: None,
         active_model: None,
         reasoning_effort_override: None,
         session_tokens: Arc::new(std::sync::Mutex::new(SessionTokens::default())),
@@ -791,6 +794,7 @@ async fn pipeline_user_message_to_persisted_response() {
             data_dir: data_dir.clone(),
             active_model: None,
             reasoning_effort_override: None,
+            sampler_overlay: crate::preferences::SamplerSettings::default(),
         },
     )
     .await;

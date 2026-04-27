@@ -67,18 +67,6 @@ pub fn read_active_model() -> Option<String> {
     }
 }
 
-/// Write the active model name to the state file.
-///
-/// Creates parent directories if needed.
-pub fn write_active_model(name: &str) -> std::io::Result<()> {
-    let path = model_state_file_path();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    debug!(model = name, "Writing active model to state file");
-    std::fs::write(&path, name)
-}
-
 /// Remove the active model state file (treated as "no preference").
 ///
 /// Missing file is not an error: we only care that the file is gone
@@ -112,23 +100,6 @@ pub fn read_reasoning_effort_override() -> Option<Option<String>> {
         "off" | "none" | "null" => Some(None),
         _ => Some(Some(trimmed.to_string())),
     }
-}
-
-/// Write the reasoning_effort override to the state file.
-///
-/// Pass `None` to persist the "force off" sentinel ("off") and `Some(v)` to
-/// persist a literal value.
-pub fn write_reasoning_effort_override(value: Option<&str>) -> std::io::Result<()> {
-    let path = reasoning_effort_state_file_path();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let body = value.unwrap_or("off");
-    debug!(
-        value = body,
-        "Writing active reasoning_effort override to state file"
-    );
-    std::fs::write(&path, body)
 }
 
 /// Remove the reasoning_effort override state file (treated as "no override").
@@ -256,10 +227,10 @@ mod tests {
             assert_eq!(read_active_character().as_deref(), Some("carol"));
 
             // ── model ─────────────────────────────────────────────────
-            // Regression for #3: `shore model <name>` appeared to be a
-            // no-op because the selection only lived inside the one-shot
-            // session. The fix persists it to $XDG_RUNTIME_DIR so the
-            // next CLI invocation can re-apply it on connect.
+            // Phase 3+: CLI no longer writes the model mirror. The
+            // reader is kept as a one-release migration fallback so an
+            // upgraded daemon can pick up a stale runtime file. Test
+            // simulates that by writing the file directly via fs::write.
 
             // 1. Missing file → None.
             assert!(
@@ -267,19 +238,16 @@ mod tests {
                 "missing file should return None"
             );
 
-            // 2. Write and read back.
-            write_active_model("gpt-4o").unwrap();
+            // 2. Pre-existing legacy file is read back.
+            std::fs::create_dir_all(model_state_file_path().parent().unwrap()).unwrap();
+            std::fs::write(model_state_file_path(), "gpt-4o").unwrap();
             assert_eq!(read_active_model().as_deref(), Some("gpt-4o"));
 
-            // 3. Overwrite.
-            write_active_model("claude-sonnet-4-5").unwrap();
-            assert_eq!(read_active_model().as_deref(), Some("claude-sonnet-4-5"));
-
-            // 4. Whitespace trimming.
+            // 3. Whitespace trimming.
             std::fs::write(model_state_file_path(), "  opus  \n").unwrap();
             assert_eq!(read_active_model().as_deref(), Some("opus"));
 
-            // 5. Clear removes the file.
+            // 4. Clear removes the file.
             clear_active_model().unwrap();
             assert!(
                 !model_state_file_path().exists(),
@@ -287,7 +255,7 @@ mod tests {
             );
             assert!(read_active_model().is_none());
 
-            // 6. Clearing when missing is a no-op, not an error.
+            // 5. Clearing when missing is a no-op, not an error.
             clear_active_model().unwrap();
         });
         std::env::remove_var("SHORE_RUNTIME_DIR");

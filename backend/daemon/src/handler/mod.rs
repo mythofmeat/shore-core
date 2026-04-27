@@ -134,6 +134,10 @@ struct GenerationParams {
     data_dir: PathBuf,
     active_model: Option<String>,
     reasoning_effort_override: Option<Option<String>>,
+    /// Phase 3+: per-model sampler overlay derived from the merged
+    /// global+character preferences for the active `(provider, model_id)`.
+    /// Empty `SamplerSettings` means "no preference overrides apply".
+    sampler_overlay: crate::preferences::SamplerSettings,
 }
 
 #[derive(Default)]
@@ -360,9 +364,40 @@ impl MessageHandler {
                         Some(tx) => tx,
                         None => continue,
                     };
-                    let active_model = crate::runtime_state::load_active_model(
-                        &self.cmd_ctx.data_dir.join(&char_name),
-                    );
+                    // Phase 3: preferences are authoritative.
+                    // Legacy `runtime_state.json` remains as a migration
+                    // fallback for one release; it is read but never
+                    // written by Phase 3+ code paths.
+                    let (active_model, sampler_overlay) = {
+                        let character_data_dir = self.cmd_ctx.data_dir.join(&char_name);
+                        let (global_prefs, char_prefs) =
+                            crate::preferences::load_for_character(&self.cmd_ctx.data_dir, &char_name)
+                                .unwrap_or_else(|e| {
+                                    tracing::warn!(error = %e, character = %char_name, "Failed to load preferences; using empty defaults");
+                                    (
+                                        crate::preferences::ModelPreferences::default(),
+                                        crate::preferences::ModelPreferences::default(),
+                                    )
+                                });
+                        let legacy = crate::runtime_state::load_active_model(&character_data_dir);
+                        let resolved = crate::preferences::resolve_active_for_character(
+                            &effective_config.models,
+                            &global_prefs,
+                            &char_prefs,
+                            legacy.as_deref(),
+                            effective_config.app.defaults.model.as_deref(),
+                        );
+                        let overlay = match resolved {
+                            Some(m) => crate::preferences::resolve_sampler_settings(
+                                &global_prefs,
+                                Some(&char_prefs),
+                                &m.provider_key,
+                                &m.model_id,
+                            ),
+                            None => crate::preferences::SamplerSettings::default(),
+                        };
+                        (resolved.map(|m| m.qualified_name.clone()), overlay)
+                    };
                     let reasoning_effort_override = {
                         let session = self.session_state_mut(meta.session.session_id);
                         session.reasoning_effort_override.clone()
@@ -379,6 +414,7 @@ impl MessageHandler {
                         data_dir: self.cmd_ctx.data_dir.clone(),
                         active_model,
                         reasoning_effort_override,
+                        sampler_overlay,
                     };
 
                     let session = self.session_state_mut(meta.session.session_id);

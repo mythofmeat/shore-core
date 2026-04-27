@@ -1,8 +1,93 @@
-use serde_json::json;
+use serde_json::{json, Value};
 use shore_protocol::error::ErrorCode;
 use tracing::info;
 
 use crate::commands::{CommandContext, CommandResult};
+use crate::preferences::{self, ModelPreferences, PreferenceScope, SamplerSettings};
+
+// ── Helpers ─────────────────────────────────────────────────────────────
+
+/// Names of every sampler key `set_model_setting` accepts.
+const SAMPLER_KEYS: &[&str] = &[
+    "temperature",
+    "top_p",
+    "reasoning_effort",
+    "thinking_enabled",
+    "budget_tokens",
+    "max_tokens",
+    "cache_ttl",
+];
+
+/// Resolve the character whose preferences should be loaded/saved.
+fn require_character(ctx: &CommandContext) -> Result<&str, (ErrorCode, String)> {
+    ctx.character_name.as_deref().ok_or((
+        ErrorCode::InvalidRequest,
+        "this command requires an attached character".into(),
+    ))
+}
+
+/// Resolve the active model for the current session.
+///
+/// Trusts `ctx.active_model` (populated by the dispatcher from
+/// preferences) before falling back to `app.defaults.model`. Commands
+/// that need provider+model_id for preference keys go through here.
+fn resolve_active_model(
+    ctx: &CommandContext,
+) -> Result<&shore_config::models::ResolvedModel, (ErrorCode, String)> {
+    let name = ctx
+        .active_model
+        .as_deref()
+        .or(ctx.config.app.defaults.model.as_deref())
+        .ok_or((
+            ErrorCode::InvalidRequest,
+            "No model specified and no active model set".into(),
+        ))?;
+    ctx.config
+        .models
+        .find_model(name)
+        .map_err(|e| (ErrorCode::NotFound, e.to_string()))
+}
+
+fn save_char_prefs(
+    ctx: &CommandContext,
+    char_name: &str,
+    prefs: &ModelPreferences,
+) -> Result<(), (ErrorCode, String)> {
+    preferences::save_character_preferences(&ctx.data_dir, char_name, prefs).map_err(|e| {
+        (
+            ErrorCode::InternalError,
+            format!("Failed to save preferences: {e}"),
+        )
+    })
+}
+
+fn load_char_prefs(
+    ctx: &CommandContext,
+    char_name: &str,
+) -> Result<ModelPreferences, (ErrorCode, String)> {
+    preferences::load_preferences(&preferences::character_preferences_path(
+        &ctx.data_dir,
+        char_name,
+    ))
+    .map_err(|e| {
+        (
+            ErrorCode::InternalError,
+            format!("Failed to load preferences: {e}"),
+        )
+    })
+}
+
+fn scope_str(scope: PreferenceScope) -> &'static str {
+    match scope {
+        PreferenceScope::StaticDefault => "static_default",
+        PreferenceScope::GlobalDefault => "global_default",
+        PreferenceScope::CharacterDefault => "character_default",
+        PreferenceScope::GlobalModel => "global_model",
+        PreferenceScope::CharacterModel => "character_model",
+    }
+}
+
+// ── Commands ────────────────────────────────────────────────────────────
 
 /// List available chat model profiles. Tool-only profiles, embedding
 /// profiles, and image-generation profiles are intentionally excluded:
@@ -31,61 +116,124 @@ pub fn list_models(ctx: &CommandContext) -> CommandResult {
 }
 
 /// Show detailed info for a model. If no name given, uses the active model.
-pub fn model_info(ctx: &CommandContext, args: &serde_json::Value) -> CommandResult {
-    let name = args
+///
+/// Phase 3+: also returns `effective_sampler` + `scopes` so users can see
+/// which preference layer last set each value.
+pub fn model_info(ctx: &CommandContext, args: &Value) -> CommandResult {
+    let name_arg = args
         .get("name")
         .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .or(ctx.active_model.as_deref());
+        .filter(|s| !s.is_empty());
 
-    let name = name.ok_or_else(|| {
-        (
-            ErrorCode::InvalidRequest,
-            "No model specified and no active model set".into(),
-        )
-    })?;
+    let resolved = match name_arg {
+        Some(name) => ctx
+            .config
+            .models
+            .find_model(name)
+            .map_err(|e| (ErrorCode::NotFound, e.to_string()))?,
+        None => resolve_active_model(ctx)?,
+    };
 
-    let resolved = ctx
-        .config
-        .models
-        .find_model(name)
-        .map_err(|e| (ErrorCode::NotFound, e.to_string()))?;
-
-    let data = serde_json::to_value(resolved).map_err(|e| {
+    let mut data = serde_json::to_value(resolved).map_err(|e| {
         (
             ErrorCode::InternalError,
             format!("Failed to serialize model: {e}"),
         )
     })?;
 
+    // Augment with effective sampler + scope per field.
+    if let Some(char_name) = ctx.character_name.as_deref() {
+        let (global, char_prefs) = preferences::load_for_character(&ctx.data_dir, char_name)
+            .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
+        let sampler = preferences::resolve_sampler_settings(
+            &global,
+            Some(&char_prefs),
+            &resolved.provider_key,
+            &resolved.model_id,
+        );
+        let scopes = preferences::resolve_sampler_scopes(
+            &global,
+            Some(&char_prefs),
+            &resolved.provider_key,
+            &resolved.model_id,
+        );
+        data["effective_sampler"] = serde_json::to_value(&sampler).unwrap_or(Value::Null);
+        data["scopes"] = json!({
+            "temperature": scopes.temperature.map(scope_str),
+            "top_p": scopes.top_p.map(scope_str),
+            "reasoning_effort": scopes.reasoning_effort.map(scope_str),
+            "thinking_enabled": scopes.thinking_enabled.map(scope_str),
+            "budget_tokens": scopes.budget_tokens.map(scope_str),
+            "max_tokens": scopes.max_tokens.map(scope_str),
+            "cache_ttl": scopes.cache_ttl.map(scope_str),
+        });
+    }
+
     Ok(data)
 }
 
-/// Switch model or show current. Validates against model catalog.
-pub fn switch_model(ctx: &mut CommandContext, args: &serde_json::Value) -> CommandResult {
+/// Switch model or show current. Validates against model catalog and
+/// persists the selection to the character's preferences file.
+pub fn switch_model(ctx: &mut CommandContext, args: &Value) -> CommandResult {
     let name = args.get("name").and_then(|v| v.as_str());
 
     match name {
         None => Ok(json!({ "active": ctx.active_model })),
         Some(name) => {
-            if ctx.config.models.find_model(name).is_err() {
-                return Err((
-                    ErrorCode::NotFound,
-                    format!("Model not found: {name}. Use list_models to see available models."),
-                ));
-            }
+            let resolved = ctx
+                .config
+                .models
+                .find_model(name)
+                .map_err(|e| (ErrorCode::NotFound, e.to_string()))?;
+
+            let char_name = require_character(ctx)?.to_string();
+            let mut prefs = load_char_prefs(ctx, &char_name)?;
+            prefs.selected.provider = Some(resolved.provider_key.clone());
+            prefs.selected.model_id = Some(resolved.model_id.clone());
+            save_char_prefs(ctx, &char_name, &prefs)?;
+
+            // Keep ctx.active_model as the user-supplied name so existing
+            // session/CLI flows that expect the raw name keep working.
+            // Persistence uses (provider, model_id) so aliases survive.
             ctx.active_model = Some(name.to_string());
-            info!(model = name, "Model switched");
-            Ok(json!({ "active": name, "changed": true }))
+            info!(
+                character = %char_name,
+                model = %resolved.qualified_name,
+                provider = %resolved.provider_key,
+                model_id = %resolved.model_id,
+                "Model switched (persisted to preferences)"
+            );
+            Ok(json!({
+                "active": name,
+                "qualified_name": resolved.qualified_name,
+                "provider": resolved.provider_key,
+                "model_id": resolved.model_id,
+                "changed": true,
+            }))
         }
     }
 }
 
-/// Reset model to config default.
+/// Reset model selection — clears the character's `[selected]` block so
+/// the daemon falls back to global preferences / `app.defaults.model` /
+/// the first chat model.
 pub fn reset_model(ctx: &mut CommandContext) -> CommandResult {
-    let previous = ctx.active_model.take();
+    let char_name = require_character(ctx)?.to_string();
+    let mut prefs = load_char_prefs(ctx, &char_name)?;
+    let previous = prefs.selected.clone();
+    prefs.selected = preferences::SelectedModel::default();
+    save_char_prefs(ctx, &char_name, &prefs)?;
+
+    let previous_active = ctx.active_model.take();
+    info!(
+        character = %char_name,
+        previous = ?previous_active,
+        "Model selection reset"
+    );
     Ok(json!({
-        "previous": previous,
+        "previous": previous_active,
+        "previous_provider": previous.provider,
+        "previous_model_id": previous.model_id,
         "active": ctx.active_model,
         "reset_to": "config default",
     }))
@@ -93,12 +241,18 @@ pub fn reset_model(ctx: &mut CommandContext) -> CommandResult {
 
 /// Set or clear the per-session `reasoning_effort` override.
 ///
+/// Phase 3+: persists the setting to the active model's preference
+/// entry instead of just the in-session override. The transient
+/// `ctx.reasoning_effort_override` is kept so existing CLI/TUI flows
+/// keep working until Phase 8 unifies them. The durable write means
+/// the next daemon restart preserves the choice.
+///
 /// Args:
 /// - omitted → read-only, return current state
 /// - `{ "value": null }` or `{ "clear": true }` → clear override (use config)
-/// - `{ "value": "off" | "none" | "disable" }` → force off (null in request)
-/// - `{ "value": "<string>" }` → force to that string (typically "low"|"medium"|"high")
-pub fn set_reasoning_effort(ctx: &mut CommandContext, args: &serde_json::Value) -> CommandResult {
+/// - `{ "value": "off" | "none" | "disable" }` → force off
+/// - `{ "value": "<string>" }` → force to that string ("low"|"medium"|"high")
+pub fn set_reasoning_effort(ctx: &mut CommandContext, args: &Value) -> CommandResult {
     let has_value_key = args.get("value").is_some();
     let clear_flag = args.get("clear").and_then(|v| v.as_bool()).unwrap_or(false);
 
@@ -114,10 +268,25 @@ pub fn set_reasoning_effort(ctx: &mut CommandContext, args: &serde_json::Value) 
 
     if clear_flag {
         ctx.reasoning_effort_override = None;
+        // Also clear the durable preference if a character is attached.
+        if let Some(char_name) = ctx.character_name.clone() {
+            if let Ok(active) = resolve_active_model(ctx) {
+                let provider = active.provider_key.clone();
+                let model_id = active.model_id.clone();
+                let mut prefs = load_char_prefs(ctx, &char_name)?;
+                if let Some(entry) = prefs
+                    .models
+                    .get_mut(&preferences::preference_key(&provider, &model_id))
+                {
+                    entry.sampler.reasoning_effort = None;
+                }
+                save_char_prefs(ctx, &char_name, &prefs)?;
+            }
+        }
         info!("reasoning_effort override cleared");
         return Ok(json!({
             "changed": true,
-            "override": serde_json::Value::Null,
+            "override": Value::Null,
             "effective": resolved_default.clone(),
             "config_default": resolved_default,
         }));
@@ -133,7 +302,7 @@ pub fn set_reasoning_effort(ctx: &mut CommandContext, args: &serde_json::Value) 
                 info!("reasoning_effort override cleared");
                 return Ok(json!({
                     "changed": true,
-                    "override": serde_json::Value::Null,
+                    "override": Value::Null,
                     "effective": resolved_default.clone(),
                     "config_default": resolved_default,
                 }));
@@ -143,12 +312,34 @@ pub fn set_reasoning_effort(ctx: &mut CommandContext, args: &serde_json::Value) 
         }
     } else {
         return Err((
-            shore_protocol::error::ErrorCode::InvalidRequest,
+            ErrorCode::InvalidRequest,
             "value must be a string or null".into(),
         ));
     };
 
     ctx.reasoning_effort_override = Some(new_override.clone());
+
+    // Phase 3+: persist to character preferences for the active model.
+    // "off" maps to the literal string "off" in storage; the
+    // preference resolver translates that back to None when patching
+    // the resolved model so the request omits reasoning_effort.
+    if let Some(char_name) = ctx.character_name.clone() {
+        if let Ok(active) = resolve_active_model(ctx) {
+            let provider = active.provider_key.clone();
+            let model_id = active.model_id.clone();
+            let mut prefs = load_char_prefs(ctx, &char_name)?;
+            let entry = prefs
+                .models
+                .entry(preferences::preference_key(&provider, &model_id))
+                .or_default();
+            entry.sampler.reasoning_effort = match &new_override {
+                Some(v) => Some(v.clone()),
+                None => Some("off".into()),
+            };
+            save_char_prefs(ctx, &char_name, &prefs)?;
+        }
+    }
+
     info!(
         value = new_override.as_deref().unwrap_or("<off>"),
         "reasoning_effort override set"
@@ -162,6 +353,265 @@ pub fn set_reasoning_effort(ctx: &mut CommandContext, args: &serde_json::Value) 
     }))
 }
 
+/// Set a single sampler/setting field on the active model's preferences.
+///
+/// Args:
+/// - `key`: one of `temperature`, `top_p`, `reasoning_effort`,
+///   `thinking_enabled`, `budget_tokens`, `max_tokens`, `cache_ttl`.
+/// - `value`: a number/string/bool/null. `null` removes the setting.
+/// - `scope`: `"character"` (default) or `"global"`.
+pub fn set_model_setting(ctx: &mut CommandContext, args: &Value) -> CommandResult {
+    let key = args
+        .get("key")
+        .and_then(|v| v.as_str())
+        .ok_or((ErrorCode::InvalidRequest, "missing key".into()))?
+        .trim()
+        .to_string();
+    if !SAMPLER_KEYS.contains(&key.as_str()) {
+        return Err((
+            ErrorCode::InvalidRequest,
+            format!(
+                "unknown setting key: {key}; supported: {}",
+                SAMPLER_KEYS.join(", ")
+            ),
+        ));
+    }
+    let value = args.get("value").cloned().unwrap_or(Value::Null);
+    let scope = args
+        .get("scope")
+        .and_then(|v| v.as_str())
+        .unwrap_or("character");
+    if scope != "character" && scope != "global" {
+        return Err((
+            ErrorCode::InvalidRequest,
+            format!("scope must be \"character\" or \"global\", got {scope:?}"),
+        ));
+    }
+
+    // Resolve active model for keying the preference entry.
+    let active = resolve_active_model(ctx)?;
+    let provider = active.provider_key.clone();
+    let model_id = active.model_id.clone();
+    let qualified = active.qualified_name.clone();
+
+    // Load the appropriate preferences file.
+    let mut prefs = match scope {
+        "global" => {
+            preferences::load_preferences(&preferences::global_preferences_path(&ctx.data_dir))
+                .map_err(|e| (ErrorCode::InternalError, e.to_string()))?
+        }
+        _ => {
+            let char_name = require_character(ctx)?;
+            load_char_prefs(ctx, char_name)?
+        }
+    };
+
+    let entry = prefs
+        .models
+        .entry(preferences::preference_key(&provider, &model_id))
+        .or_default();
+
+    // Apply the value. Null clears the field.
+    apply_sampler_value(&mut entry.sampler, &key, &value)?;
+
+    // If the entry's sampler is now fully empty, drop it to keep the
+    // file tidy.
+    if entry.sampler == SamplerSettings::default() {
+        prefs
+            .models
+            .remove(&preferences::preference_key(&provider, &model_id));
+    }
+
+    match scope {
+        "global" => {
+            preferences::save_global_preferences(&ctx.data_dir, &prefs)
+                .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
+        }
+        _ => {
+            let char_name = require_character(ctx)?.to_string();
+            save_char_prefs(ctx, &char_name, &prefs)?;
+        }
+    }
+
+    info!(
+        scope,
+        key = %key,
+        ?value,
+        model = %qualified,
+        "Model setting updated"
+    );
+    Ok(json!({
+        "changed": true,
+        "scope": scope,
+        "model": qualified,
+        "provider": provider,
+        "model_id": model_id,
+        "key": key,
+        "value": value,
+    }))
+}
+
+fn apply_sampler_value(
+    sampler: &mut SamplerSettings,
+    key: &str,
+    value: &Value,
+) -> Result<(), (ErrorCode, String)> {
+    let invalid = |msg: String| (ErrorCode::InvalidRequest, msg);
+    let is_null = value.is_null();
+    match key {
+        "temperature" => {
+            sampler.temperature =
+                if is_null {
+                    None
+                } else {
+                    Some(value.as_f64().ok_or_else(|| {
+                        invalid(format!("temperature must be a number, got {value}"))
+                    })?)
+                };
+        }
+        "top_p" => {
+            sampler.top_p = if is_null {
+                None
+            } else {
+                Some(
+                    value
+                        .as_f64()
+                        .ok_or_else(|| invalid(format!("top_p must be a number, got {value}")))?,
+                )
+            };
+        }
+        "reasoning_effort" => {
+            sampler.reasoning_effort = if is_null {
+                None
+            } else {
+                Some(
+                    value
+                        .as_str()
+                        .ok_or_else(|| {
+                            invalid(format!("reasoning_effort must be a string, got {value}"))
+                        })?
+                        .to_string(),
+                )
+            };
+        }
+        "thinking_enabled" => {
+            sampler.thinking_enabled = if is_null {
+                None
+            } else {
+                Some(value.as_bool().ok_or_else(|| {
+                    invalid(format!("thinking_enabled must be a boolean, got {value}"))
+                })?)
+            };
+        }
+        "budget_tokens" => {
+            sampler.budget_tokens = if is_null {
+                None
+            } else {
+                Some(parse_u32_value(value, "budget_tokens")?)
+            };
+        }
+        "max_tokens" => {
+            sampler.max_tokens = if is_null {
+                None
+            } else {
+                Some(parse_u32_value(value, "max_tokens")?)
+            };
+        }
+        "cache_ttl" => {
+            sampler.cache_ttl = if is_null {
+                None
+            } else {
+                Some(
+                    value
+                        .as_str()
+                        .ok_or_else(|| invalid(format!("cache_ttl must be a string, got {value}")))?
+                        .to_string(),
+                )
+            };
+        }
+        _ => unreachable!("guarded by SAMPLER_KEYS"),
+    }
+    Ok(())
+}
+
+fn parse_u32_value(value: &Value, name: &str) -> Result<u32, (ErrorCode, String)> {
+    value
+        .as_u64()
+        .and_then(|v| u32::try_from(v).ok())
+        .ok_or_else(|| {
+            (
+                ErrorCode::InvalidRequest,
+                format!("{name} must be a non-negative integer fitting in u32, got {value}"),
+            )
+        })
+}
+
+/// Return effective sampler settings + scope info for the active model.
+pub fn model_settings(ctx: &CommandContext, args: &Value) -> CommandResult {
+    let active = match args
+        .get("name")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+    {
+        Some(name) => ctx
+            .config
+            .models
+            .find_model(name)
+            .map_err(|e| (ErrorCode::NotFound, e.to_string()))?,
+        None => resolve_active_model(ctx)?,
+    };
+
+    let char_name = ctx.character_name.as_deref();
+    let (global, char_prefs) = match char_name {
+        Some(c) => preferences::load_for_character(&ctx.data_dir, c)
+            .map_err(|e| (ErrorCode::InternalError, e.to_string()))?,
+        None => (ModelPreferences::default(), ModelPreferences::default()),
+    };
+    let char_prefs_opt = if char_name.is_some() {
+        Some(&char_prefs)
+    } else {
+        None
+    };
+    let sampler = preferences::resolve_sampler_settings(
+        &global,
+        char_prefs_opt,
+        &active.provider_key,
+        &active.model_id,
+    );
+    let scopes = preferences::resolve_sampler_scopes(
+        &global,
+        char_prefs_opt,
+        &active.provider_key,
+        &active.model_id,
+    );
+    let saved_global = global
+        .model(&active.provider_key, &active.model_id)
+        .cloned();
+    let saved_character = char_prefs
+        .model(&active.provider_key, &active.model_id)
+        .cloned();
+
+    Ok(json!({
+        "model": active.qualified_name,
+        "provider": active.provider_key,
+        "model_id": active.model_id,
+        "effective_sampler": sampler,
+        "saved_global": saved_global.map(|p| p.sampler),
+        "saved_character": saved_character.map(|p| p.sampler),
+        "scopes": {
+            "temperature": scopes.temperature.map(scope_str),
+            "top_p": scopes.top_p.map(scope_str),
+            "reasoning_effort": scopes.reasoning_effort.map(scope_str),
+            "thinking_enabled": scopes.thinking_enabled.map(scope_str),
+            "budget_tokens": scopes.budget_tokens.map(scope_str),
+            "max_tokens": scopes.max_tokens.map(scope_str),
+            "cache_ttl": scopes.cache_ttl.map(scope_str),
+        },
+    }))
+}
+
+// ── Internal helpers carried over from the prior implementation ─────────
+
 fn resolve_config_default(ctx: &CommandContext) -> Option<String> {
     let name = ctx
         .active_model
@@ -174,21 +624,18 @@ fn resolve_config_default(ctx: &CommandContext) -> Option<String> {
         .and_then(|m| m.reasoning_effort.clone())
 }
 
-fn override_to_json(o: &Option<Option<String>>) -> serde_json::Value {
+fn override_to_json(o: &Option<Option<String>>) -> Value {
     match o {
-        None => serde_json::Value::Null,
-        Some(None) => json!({ "set": true, "value": serde_json::Value::Null }),
+        None => Value::Null,
+        Some(None) => json!({ "set": true, "value": Value::Null }),
         Some(Some(v)) => json!({ "set": true, "value": v }),
     }
 }
 
-fn effective_value(o: &Option<Option<String>>, default: &Option<String>) -> serde_json::Value {
+fn effective_value(o: &Option<Option<String>>, default: &Option<String>) -> Value {
     match o {
-        None => default
-            .clone()
-            .map(serde_json::Value::String)
-            .unwrap_or(serde_json::Value::Null),
-        Some(None) => serde_json::Value::Null,
-        Some(Some(v)) => serde_json::Value::String(v.clone()),
+        None => default.clone().map(Value::String).unwrap_or(Value::Null),
+        Some(None) => Value::Null,
+        Some(Some(v)) => Value::String(v.clone()),
     }
 }
