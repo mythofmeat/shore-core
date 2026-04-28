@@ -1,1 +1,0 @@
-- [x] it appears that the compaction prompt is is not appending the compaction instructions to the existing conversation, and also it does not include a system prompt. this makes compaction far more expensive than it needs to be
