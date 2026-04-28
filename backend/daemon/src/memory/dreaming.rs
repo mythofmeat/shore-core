@@ -8,10 +8,13 @@ use shore_config::app::DreamingConfig;
 use shore_config::{
     character_memory_dir, character_workspace_dir, LoadedConfig, SOUL_FILE, USER_FILE,
 };
+
 use shore_ledger::{CallType, LedgerClient};
 use shore_llm::types::{GenerateResponse, LlmRequest};
+use tokio::fs;
 use tracing::{debug, info, warn};
 
+use crate::memory::deferred_edits::MEMORY_INDEX_FILE;
 use crate::memory::markdown_store::{MarkdownEntry, MarkdownMemoryStore, MarkdownStoreError};
 use crate::tools::context::SharedToolContext;
 use crate::tools::{self as tool_system, ToolContext};
@@ -237,6 +240,8 @@ pub async fn run_librarian_sweep(
 ) -> Result<Option<DreamSweepResult>, DreamingError> {
     let cfg = &loaded_config.app.memory.dreaming;
     let memory_dir = character_memory_dir(&loaded_config.dirs.config, character);
+    let workspace_dir = character_workspace_dir(&loaded_config.dirs.config, character);
+    let memory_index_path = workspace_dir.join(MEMORY_INDEX_FILE);
     let state = read_state(&memory_dir).await?;
     if !force && !dry_run && !is_due(cfg, state.last_run_at.as_deref())? {
         return Ok(None);
@@ -245,7 +250,7 @@ pub async fn run_librarian_sweep(
     let store = MarkdownMemoryStore::open(&memory_dir)
         .await
         .map_err(|e| DreamingError::Memory(e.to_string()))?;
-    let before = snapshot_memory_files(&store).await?;
+    let before = snapshot_memory_files(&store, &memory_index_path).await?;
     let now = Local::now();
     let ran_at = now.to_rfc3339();
 
@@ -277,7 +282,7 @@ pub async fn run_librarian_sweep(
 
     if dry_run {
         let would_write_paths = vec![
-            memory_dir.join("MEMORY.md").display().to_string(),
+            memory_index_path.display().to_string(),
             memory_dir.join("DREAMS.md").display().to_string(),
             memory_dir.join(".dreams/state.json").display().to_string(),
         ];
@@ -322,7 +327,7 @@ pub async fn run_librarian_sweep(
     }
 
     let memory_created_by_fallback =
-        ensure_memory_index_after_librarian(&store, character, &ran_at).await?;
+        ensure_memory_index_after_librarian(&store, &memory_index_path, character, &ran_at).await?;
     if memory_created_by_fallback {
         if let Err(e) =
             crate::memory::deferred_edits::note_memory_index_deferred(&data_dir.join(character))
@@ -365,16 +370,22 @@ pub async fn run_librarian_sweep(
     next_state.last_promotions_path = None;
     write_state(&memory_dir, &next_state).await?;
 
-    let after = snapshot_memory_files(&store).await?;
+    let after = snapshot_memory_files(&store, &memory_index_path).await?;
     let mut changed = changed_paths(&before, &after);
     if !changed.iter().any(|path| path == ".dreams/state.json") {
         changed.push(".dreams/state.json".to_string());
     }
     let paths_written = changed
         .iter()
-        .map(|path| memory_dir.join(path).display().to_string())
+        .map(|path| {
+            if path == MEMORY_INDEX_FILE {
+                memory_index_path.display().to_string()
+            } else {
+                memory_dir.join(path).display().to_string()
+            }
+        })
         .collect::<Vec<_>>();
-    let indexed_count = usize::from(after.contains_key("MEMORY.md"));
+    let indexed_count = usize::from(after.contains_key(MEMORY_INDEX_FILE));
 
     Ok(Some(DreamSweepResult {
         character: character.to_string(),
@@ -402,8 +413,8 @@ pub async fn run_librarian_sweep(
         rem_themes: Vec::new(),
         promotions: Vec::new(),
         rejected: Vec::new(),
-        indexed: if after.contains_key("MEMORY.md") {
-            vec!["MEMORY.md".to_string()]
+        indexed: if after.contains_key(MEMORY_INDEX_FILE) {
+            vec![MEMORY_INDEX_FILE.to_string()]
         } else {
             Vec::new()
         },
@@ -412,7 +423,7 @@ pub async fn run_librarian_sweep(
         would_write_paths: Vec::new(),
         staged_path: Some(memory_dir.join(".dreams/state.json").display().to_string()),
         dreams_path: Some(memory_dir.join("DREAMS.md").display().to_string()),
-        memory_path: Some(memory_dir.join("MEMORY.md").display().to_string()),
+        memory_path: Some(memory_index_path.display().to_string()),
         inspected: loop_result.inspected,
         changed,
         tools_used: loop_result.tools_used,
@@ -433,6 +444,8 @@ pub async fn run_legacy_diagnostic_sweep(
     force: bool,
 ) -> Result<Option<DreamSweepResult>, DreamingError> {
     let memory_dir = character_memory_dir(config_dir, character);
+    let workspace_dir = character_workspace_dir(config_dir, character);
+    let memory_index_path = workspace_dir.join(MEMORY_INDEX_FILE);
     let state = read_state(&memory_dir).await?;
     if !force && !dry_run && !is_due(cfg, state.last_run_at.as_deref())? {
         return Ok(None);
@@ -467,7 +480,7 @@ pub async fn run_legacy_diagnostic_sweep(
         memory_dir.join(&promotions_rel).display().to_string(),
         memory_dir.join(".dreams/state.json").display().to_string(),
         memory_dir.join("DREAMS.md").display().to_string(),
-        memory_dir.join("MEMORY.md").display().to_string(),
+        memory_index_path.display().to_string(),
         memory_dir.join(&light_report_rel).display().to_string(),
         memory_dir.join(&rem_report_rel).display().to_string(),
         memory_dir.join(&deep_report_rel).display().to_string(),
@@ -529,7 +542,7 @@ pub async fn run_legacy_diagnostic_sweep(
         &deep,
     )
     .await?;
-    write_memory_index(&store, character, &ran_at, &deep.promoted).await?;
+    write_memory_index(&store, &memory_index_path, character, &ran_at, &deep.promoted).await?;
 
     let mut next_state = state;
     next_state.last_run_at = Some(ran_at.clone());
@@ -562,7 +575,7 @@ pub async fn run_legacy_diagnostic_sweep(
         would_write_paths: Vec::new(),
         staged_path: Some(memory_dir.join(&candidates_rel).display().to_string()),
         dreams_path: Some(memory_dir.join("DREAMS.md").display().to_string()),
-        memory_path: Some(memory_dir.join("MEMORY.md").display().to_string()),
+        memory_path: Some(memory_index_path.display().to_string()),
         inspected: Vec::new(),
         changed: Vec::new(),
         tools_used: Vec::new(),
@@ -619,7 +632,7 @@ async fn build_librarian_request(
     let user_prompt = if dry_run {
         "Run the dry-run memory librarian pass now. Inspect memory files with read-only tools and finish with a proposed plan. Do not write, edit, or emit a user-facing message."
     } else {
-        "Run the memory librarian pass now. Use memory tools to inspect and improve workspace/memory, update memory/MEMORY.md, and write an audit entry to memory/DREAMS.md. Do not emit a user-facing message."
+        "Run the memory librarian pass now. Use memory tools to inspect and improve workspace/memory, update MEMORY.md (at the workspace root), and write an audit entry to memory/DREAMS.md. Do not emit a user-facing message."
     };
     if let Some(cached) = cached_request {
         let mut request = cached.clone();
@@ -682,14 +695,14 @@ You are running a character-led memory librarian pass. Your task is to make your
 
 Use your memory tools to inspect existing files before changing them. Organize durable long-term facts so they are easy to find. Prefer updating existing files over creating duplicates. Move durable facts out of daily or raw notes into appropriate long-term files when useful. Deduplicate repeated facts. Mark stale, superseded, or incorrect information clearly rather than preserving contradictions as equally current. Leave uncertain cases in a review or needs-review area.
 
-Maintain `memory/MEMORY.md` as the prompt-visible memory index. It should include:
+Maintain `MEMORY.md` (at the workspace root, alongside `SOUL.md`/`USER.md`/`AGENTS.md`/`TOOLS.md`/`HEARTBEAT.md`) as the prompt-visible memory index. It should include:
 - an overview of important memory files and what they contain
 - recently updated or worth-reading files
 - ongoing conversational throughlines that remain relevant
 - unresolved memory-maintenance questions or contradictions
 
 `MEMORY.md` is not the full memory itself. It must not duplicate `SOUL.md`, `USER.md`, `AGENTS.md`, `TOOLS.md`, or `HEARTBEAT.md`; those are protected prompt files with separate roles.
-`MEMORY.md` is prompt-visible through an active snapshot. Updating `memory/MEMORY.md` changes the canonical file now, but the new index only becomes prompt-active after the next compaction boundary.
+`MEMORY.md` is prompt-visible through an active snapshot. Updating `MEMORY.md` changes the canonical file now, but the new index only becomes prompt-active after the next compaction boundary.
 
 Write an audit entry to `memory/DREAMS.md` describing:
 - timestamp: {ran_at}
@@ -924,7 +937,7 @@ fn blocked_librarian_tool_result(
         if let Some(path) = tool_path(input) {
             if crate::memory::deferred_edits::normalize_protected_path(path).is_some() {
                 return Some((
-                    "protected prompt files are not edited during dreaming; record needed changes in memory/MEMORY.md Needs Review or memory/DREAMS.md"
+                    "protected prompt files are not edited during dreaming; record needed changes in MEMORY.md Needs Review or memory/DREAMS.md"
                         .to_string(),
                     true,
                 ));
@@ -965,6 +978,7 @@ fn push_unique(items: &mut Vec<String>, value: String) {
 
 async fn snapshot_memory_files(
     store: &MarkdownMemoryStore,
+    memory_index_path: &Path,
 ) -> Result<MemorySnapshot, DreamingError> {
     let mut snapshot = BTreeMap::new();
     for entry in store
@@ -974,14 +988,19 @@ async fn snapshot_memory_files(
     {
         snapshot.insert(entry.path, entry.content);
     }
-    for path in ["MEMORY.md", "DREAMS.md"] {
-        match store.read(path).await {
-            Ok(entry) => {
-                snapshot.insert(path.to_string(), entry.content);
-            }
-            Err(MarkdownStoreError::NotFound(_)) => {}
-            Err(e) => return Err(DreamingError::Memory(e.to_string())),
+    match store.read("DREAMS.md").await {
+        Ok(entry) => {
+            snapshot.insert("DREAMS.md".to_string(), entry.content);
         }
+        Err(MarkdownStoreError::NotFound(_)) => {}
+        Err(e) => return Err(DreamingError::Memory(e.to_string())),
+    }
+    match fs::read_to_string(memory_index_path).await {
+        Ok(content) => {
+            snapshot.insert(MEMORY_INDEX_FILE.to_string(), content);
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(DreamingError::Io(e.to_string())),
     }
     Ok(snapshot)
 }
@@ -998,21 +1017,27 @@ fn changed_paths(before: &MemorySnapshot, after: &MemorySnapshot) -> Vec<String>
 
 async fn ensure_memory_index_after_librarian(
     store: &MarkdownMemoryStore,
+    memory_index_path: &Path,
     character: &str,
     ran_at: &str,
 ) -> Result<bool, DreamingError> {
-    match store.read("MEMORY.md").await {
-        Ok(entry) if !entry.content.trim().is_empty() => Ok(false),
-        Ok(_) | Err(MarkdownStoreError::NotFound(_)) => {
-            write_fallback_memory_index(store, character, ran_at).await?;
+    match fs::read_to_string(memory_index_path).await {
+        Ok(content) if !content.trim().is_empty() => Ok(false),
+        Ok(_) => {
+            write_fallback_memory_index(store, memory_index_path, character, ran_at).await?;
             Ok(true)
         }
-        Err(e) => Err(DreamingError::Memory(e.to_string())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            write_fallback_memory_index(store, memory_index_path, character, ran_at).await?;
+            Ok(true)
+        }
+        Err(e) => Err(DreamingError::Io(e.to_string())),
     }
 }
 
 async fn write_fallback_memory_index(
     store: &MarkdownMemoryStore,
+    memory_index_path: &Path,
     character: &str,
     ran_at: &str,
 ) -> Result<(), DreamingError> {
@@ -1048,10 +1073,14 @@ async fn write_fallback_memory_index(
     body.push_str("- Needs review during the next AI librarian pass.\n");
     body.push_str("\n## Needs review\n\n");
     body.push_str("- Previous dreaming pass did not update MEMORY.md directly.\n");
-    store
-        .write("MEMORY.md", &body)
+    if let Some(parent) = memory_index_path.parent() {
+        fs::create_dir_all(parent)
+            .await
+            .map_err(|e| DreamingError::Io(e.to_string()))?;
+    }
+    fs::write(memory_index_path, body)
         .await
-        .map_err(|e| DreamingError::Memory(e.to_string()))
+        .map_err(|e| DreamingError::Io(e.to_string()))
 }
 
 async fn append_fallback_librarian_audit(
@@ -1735,6 +1764,7 @@ async fn write_phase_reports(
 
 async fn write_memory_index(
     store: &MarkdownMemoryStore,
+    memory_index_path: &Path,
     character: &str,
     ran_at: &str,
     throughlines: &[DreamPromotion],
@@ -1759,7 +1789,7 @@ async fn write_memory_index(
     body.push_str("# Memory Index\n\n");
     body.push_str(&format!("Character: {character}\n"));
     body.push_str(&format!("Last updated: {ran_at}\n\n"));
-    body.push_str("This file is the prompt-visible index for workspace/memory. It maps durable memory files, recent updates, and still-relevant conversational throughlines.\n\n");
+    body.push_str("This file is the prompt-visible memory index. It maps durable memory files in workspace/memory, recent updates, and still-relevant conversational throughlines.\n\n");
     body.push_str("It is not the character definition, user profile, standing behavior, tool guide, or heartbeat guide. Those roles stay in SOUL.md, USER.md, AGENTS.md, TOOLS.md, and HEARTBEAT.md.\n\n");
 
     body.push_str("## Memory Files\n\n");
@@ -1819,10 +1849,14 @@ async fn write_memory_index(
         "- Read or search the referenced memory files for details before relying on them.\n",
     );
 
-    store
-        .write("MEMORY.md", &body)
+    if let Some(parent) = memory_index_path.parent() {
+        fs::create_dir_all(parent)
+            .await
+            .map_err(|e| DreamingError::Io(e.to_string()))?;
+    }
+    fs::write(memory_index_path, body)
         .await
-        .map_err(|e| DreamingError::Memory(e.to_string()))
+        .map_err(|e| DreamingError::Io(e.to_string()))
 }
 
 fn memory_file_summary(entry: &MarkdownEntry) -> String {
@@ -2243,7 +2277,7 @@ mod tests {
             "t_write_memory",
             "write",
             json!({
-                "path": "memory/MEMORY.md",
+                "path": "MEMORY.md",
                 "content": "# Memory Index\n\nThis file is the character's map of long-term memory. It is not the full memory itself.\nUse it to decide which memory files to inspect before answering.\n\nCore user facts and standing behavior guidance are already loaded from USER.md and AGENTS.md; do not duplicate them here unless needed as pointers to memory files.\n\n## Memory areas\n\n- `shore-notes.md` - Durable Shore memory architecture notes.\n- `daily/2026-04.md` - Raw April notes; read only for source context.\n\n## Recently updated files\n\n- `shore-notes.md` - Consolidated duplicate daily notes about MEMORY.md replacing recap.\n\n## Current conversational throughlines\n\n- Shore memory should remain markdown-first, with dreaming acting as an AI librarian.\n\n## Needs review\n\n- None.\n"
             }),
         )
@@ -2284,7 +2318,10 @@ mod tests {
             .await
             .unwrap();
         assert!(notes.contains("consolidated"));
-        let memory = fs::read_to_string(mem.join("MEMORY.md")).await.unwrap();
+        let workspace = character_workspace_dir(&config.dirs.config, "alice");
+        let memory = fs::read_to_string(workspace.join("MEMORY.md"))
+            .await
+            .unwrap();
         assert!(memory.contains("# Memory Index"));
         assert!(memory.contains("shore-notes.md"));
         assert!(!memory
@@ -2372,6 +2409,7 @@ mod tests {
         let mock = MockLlmServer::start().await;
         let config = librarian_config(&tmp, &mock, "alice", 0);
         let mem = character_memory_dir(&config.dirs.config, "alice");
+        let workspace = character_workspace_dir(&config.dirs.config, "alice");
         fs::create_dir_all(&mem).await.unwrap();
         fs::write(mem.join("notes.md"), "# Notes\n\n- Durable note.\n")
             .await
@@ -2392,7 +2430,7 @@ mod tests {
 
         assert_eq!(result.tool_rounds, 0);
         assert!(mock.received_requests().await.is_empty());
-        assert!(mem.join("MEMORY.md").exists());
+        assert!(workspace.join("MEMORY.md").exists());
         assert!(
             crate::memory::deferred_edits::load_memory_index(
                 &config.dirs.data.join("alice"),
@@ -2410,13 +2448,14 @@ mod tests {
         let mock = MockLlmServer::start().await;
         let config = librarian_config(&tmp, &mock, "alice", 3);
         let mem = character_memory_dir(&config.dirs.config, "alice");
+        let workspace = character_workspace_dir(&config.dirs.config, "alice");
         fs::create_dir_all(&mem).await.unwrap();
         fs::write(mem.join("notes.md"), "# Notes\n").await.unwrap();
 
         mock.enqueue_json_tool_use(
             "t_write",
             "write",
-            json!({"path": "memory/MEMORY.md", "content": "# Bad"}),
+            json!({"path": "MEMORY.md", "content": "# Bad"}),
         )
         .await;
         mock.enqueue_json_text("Would update MEMORY.md.").await;
@@ -2440,7 +2479,7 @@ mod tests {
             .would_write_paths
             .iter()
             .any(|path| path.ends_with("MEMORY.md")));
-        assert!(!mem.join("MEMORY.md").exists());
+        assert!(!workspace.join("MEMORY.md").exists());
         assert!(!mem.join("DREAMS.md").exists());
         assert!(!mem.join(".dreams/state.json").exists());
     }
@@ -2451,6 +2490,7 @@ mod tests {
         let mock = MockLlmServer::start().await;
         let config = librarian_config(&tmp, &mock, "alice", 3);
         let mem = character_memory_dir(&config.dirs.config, "alice");
+        let workspace = character_workspace_dir(&config.dirs.config, "alice");
         fs::create_dir_all(&mem).await.unwrap();
         fs::write(mem.join("notes.md"), "# Notes\n\n- Durable note.\n")
             .await
@@ -2473,7 +2513,9 @@ mod tests {
         .unwrap();
 
         assert!(result.audit_appended);
-        let memory = fs::read_to_string(mem.join("MEMORY.md")).await.unwrap();
+        let memory = fs::read_to_string(workspace.join("MEMORY.md"))
+            .await
+            .unwrap();
         assert!(memory.contains("Fallback note"));
         assert!(memory.contains("notes.md"));
         let dreams = fs::read_to_string(mem.join("DREAMS.md")).await.unwrap();
@@ -2526,6 +2568,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let cfg_dir = tmp.path().join("config");
         let mem = character_memory_dir(&cfg_dir, "alice");
+        let workspace = character_workspace_dir(&cfg_dir, "alice");
         fs::create_dir_all(&mem).await.unwrap();
         fs::write(
             mem.join("notes.md"),
@@ -2550,7 +2593,7 @@ mod tests {
             .any(|path| path.ends_with("MEMORY.md")));
         assert!(!mem.join(".dreams").exists());
         assert!(!mem.join("DREAMS.md").exists());
-        assert!(!mem.join("MEMORY.md").exists());
+        assert!(!workspace.join("MEMORY.md").exists());
     }
 
     #[tokio::test]
@@ -2558,6 +2601,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let cfg_dir = tmp.path().join("config");
         let mem = character_memory_dir(&cfg_dir, "alice");
+        let workspace = character_workspace_dir(&cfg_dir, "alice");
         fs::create_dir_all(&mem).await.unwrap();
         fs::write(mem.join("notes.md"), "- maybe later\n")
             .await
@@ -2568,8 +2612,10 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(result.promoted_count, 0);
-        assert!(mem.join("MEMORY.md").exists());
-        let memory = fs::read_to_string(mem.join("MEMORY.md")).await.unwrap();
+        assert!(workspace.join("MEMORY.md").exists());
+        let memory = fs::read_to_string(workspace.join("MEMORY.md"))
+            .await
+            .unwrap();
         assert!(memory.contains("# Memory Index"));
         assert!(memory.contains("notes.md"));
         assert!(mem.join("DREAMS.md").exists());
@@ -2581,6 +2627,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let cfg_dir = tmp.path().join("config");
         let mem = character_memory_dir(&cfg_dir, "alice");
+        let workspace = character_workspace_dir(&cfg_dir, "alice");
         fs::create_dir_all(&mem).await.unwrap();
         fs::write(
             mem.join("notes.md"),
@@ -2595,7 +2642,9 @@ mod tests {
             .unwrap();
         assert_eq!(result.promoted.len(), 1);
         assert!(result.promoted[0].contains("jasmine tea"));
-        let memory = fs::read_to_string(mem.join("MEMORY.md")).await.unwrap();
+        let memory = fs::read_to_string(workspace.join("MEMORY.md"))
+            .await
+            .unwrap();
         assert!(memory.contains("# Memory Index"));
         assert!(memory.contains("notes.md"));
         assert!(memory.contains("jasmine tea"));
@@ -2656,9 +2705,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let cfg_dir = tmp.path().join("config");
         let mem = character_memory_dir(&cfg_dir, "alice");
+        let workspace = character_workspace_dir(&cfg_dir, "alice");
         fs::create_dir_all(&mem).await.unwrap();
+        fs::create_dir_all(&workspace).await.unwrap();
         fs::write(
-            mem.join("MEMORY.md"),
+            workspace.join("MEMORY.md"),
             "# Memory Index\n\n- Alice prefers stale index tea and remembers it.\n",
         )
         .await
@@ -2676,7 +2727,9 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(result.promoted_count, 1);
-        let memory = fs::read_to_string(mem.join("MEMORY.md")).await.unwrap();
+        let memory = fs::read_to_string(workspace.join("MEMORY.md"))
+            .await
+            .unwrap();
         assert!(memory.contains("# Memory Index"));
         assert!(memory.contains("jasmine tea"));
         assert!(!memory.contains("stale index tea"));

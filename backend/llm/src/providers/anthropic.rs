@@ -501,8 +501,10 @@ fn build_body(request: &LlmRequest, streaming: bool) -> (Value, u64) {
     let msg_count = converted_messages.len();
 
     // Cache breakpoint defaults: depth=[0,1] (two sliding message breakpoints)
-    // and pinned=[-1] (system anchor on second-to-last block, i.e. the char
-    // definition — the recap block sits after it as the last system block).
+    // and pinned=[-1] (system anchor on second-to-last block). The last
+    // system block is the `<memory_index>` rendering of MEMORY.md, which can
+    // change at every compaction; placing the anchor one block above it keeps
+    // the cached prefix stable when the index is rewritten.
     //
     // Sliding breakpoints WITHOUT a system anchor are unreliable (intermittent
     // full prefix rewrites despite identical content). See docs/PROMPT_CACHING.md.
@@ -1296,12 +1298,12 @@ mod tests {
     }
 
     /// Helper: builds a multi-block system prompt like assemble_prompt
-    /// produces (template + char def + recap).
-    fn build_system_with_recap() -> Value {
+    /// produces (template + char def + memory_index).
+    fn build_system_with_memory_index() -> Value {
         json!([
             { "type": "text", "text": "You are TestChar, in conversation with User." },
             { "type": "text", "text": "<testchar>\nA test character.\n</testchar>" },
-            { "type": "text", "text": "<testchar_recap>\nPrevious conversation summary.\n</testchar_recap>" }
+            { "type": "text", "text": "<memory_index>\nMEMORY.md contents.\n</memory_index>" }
         ])
     }
 
@@ -1309,11 +1311,11 @@ mod tests {
     fn test_default_sliding_config_system_anchor_present() {
         // Config: depth=[0,1] pinned=[0]. The system anchor must always be
         // present for sliding message breakpoints to work reliably.
-        let system = build_system_with_recap();
+        let system = build_system_with_memory_index();
         let msgs = build_conversation(5);
         let (result, sys, p) = apply_cache_control(&msgs, &system, "1h", &[0, 1], &[0]);
 
-        // Must have exactly 1 system breakpoint on the last block (recap).
+        // Must have exactly 1 system breakpoint on the last block (memory_index).
         assert_eq!(
             p.sys_breakpoints,
             vec![2],
@@ -1363,11 +1365,11 @@ mod tests {
     }
 
     #[test]
-    fn test_pinned_neg1_with_recap_targets_char_def() {
+    fn test_pinned_neg1_with_memory_index_targets_char_def() {
         // Config: depth=[0,1] pinned=[-1] — current default config.
-        // With 3 system blocks (template, char def, recap), -1 should
-        // target index 1 (char def), NOT the recap.
-        let system = build_system_with_recap();
+        // With 3 system blocks (template, char def, memory_index), -1 should
+        // target index 1 (char def), NOT the memory_index.
+        let system = build_system_with_memory_index();
         let msgs = build_conversation(5);
         let (_, sys, p) = apply_cache_control(&msgs, &system, "1h", &[0, 1], &[-1]);
 
@@ -1383,7 +1385,7 @@ mod tests {
         );
         assert!(
             sys_blocks[2].get("cache_control").is_none(),
-            "recap block must NOT have cache_control (it changes)"
+            "memory_index block must NOT have cache_control (it changes)"
         );
     }
 
@@ -1393,7 +1395,7 @@ mod tests {
         // content before the earliest breakpoint must remain identical
         // (same bytes, same structure). If the prefix changes, the cache
         // is busted.
-        let system = build_system_with_recap();
+        let system = build_system_with_memory_index();
         let mut prev_sys_hash: Option<String> = None;
 
         for turn_count in 4..=10 {
@@ -1488,7 +1490,7 @@ mod tests {
         // conversation is in the cached prefix, which defeats the purpose
         // (nothing would ever be un-cached for the response). Verify that
         // no message breakpoint lands on the last message.
-        let system = build_system_with_recap();
+        let system = build_system_with_memory_index();
         for turn_count in 1..=10 {
             let msgs = build_conversation(turn_count);
             let last_idx = msgs.len() - 1;
@@ -1505,7 +1507,7 @@ mod tests {
 
     #[test]
     fn test_default_depths_single_user_has_no_message_breakpoint() {
-        let system = build_system_with_recap();
+        let system = build_system_with_memory_index();
         let msgs = build_conversation(1);
         let (_, _, p) = apply_cache_control(&msgs, &system, "1h", &[0, 1], &[-1]);
 
