@@ -18,6 +18,7 @@ See `README.md`, `FEATURES.md`, and `CONFIGURATION.md` for current branch guidan
 - Dreaming now reuses the cached chat request prefix when available, and `MEMORY.md` index edits activate at compaction instead of immediately changing the hot prompt prefix
 - Optional hybrid semantic+lexical markdown retrieval backed by a rebuildable index
 - Workspace file tools and sandboxed `exec`
+- Workspace `delete` tool that moves files into a timestamped trash directory under the character data dir; refuses prompt-visible files and directories
 - Repository ownership layout: `core/`, `backend/`, `clients/`, `bridges/`, and `dev/`, with default Cargo members for faster local daemon/CLI builds
 
 ### Changed

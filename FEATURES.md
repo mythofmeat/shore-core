@@ -152,7 +152,7 @@ Tools are part of the character experience, not just an automation API.
 
 Main tool groups:
 
-- workspace `read`, `write`, `edit`, `list_files`, `search`, and `exec`
+- workspace `read`, `write`, `edit`, `delete`, `list_files`, `search`, and `exec`
 - workspace `memory/...` access when memory gates allow it
 - conversation transcript search via `search_history`
 - web search and fetch
@@ -161,6 +161,8 @@ Main tool groups:
 - time and dice
 
 `exec` runs only allowlisted commands, does not invoke a shell, and now rejects path arguments outside the character workspace.
+
+`delete` removes a workspace file by moving it into a timestamped folder under the character data directory's `trash/` subdirectory rather than erasing it. Prompt-visible files (SOUL.md, USER.md, AGENTS.md, TOOLS.md, HEARTBEAT.md, MEMORY.md) and directories cannot be deleted.
 
 Memory access gates apply consistently: disabling memory blocks `memory/...`
 paths through workspace tools, hides or disables history/memory read surfaces as
