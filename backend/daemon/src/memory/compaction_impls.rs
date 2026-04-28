@@ -156,18 +156,19 @@ impl RealCompactionLlm {
 impl CompactionLlm for RealCompactionLlm {
     fn summarize(
         &self,
-        prompt: &str,
+        system: &str,
+        messages: Vec<serde_json::Value>,
     ) -> Pin<Box<dyn Future<Output = Result<String, CompactionError>> + Send + '_>> {
-        let prompt = prompt.to_string();
+        let system = system.to_string();
         Box::pin(async move {
-            let messages = vec![json!({"role": "user", "content": prompt})];
-
-            let request = LedgerClient::build_request(&self.model, messages, None, None, None)
-                .map_err(|e| CompactionError::Llm(e.to_string()))?;
+            let msg_count = messages.len();
+            let request =
+                LedgerClient::build_request(&self.model, messages, Some(json!(system)), None, None)
+                    .map_err(|e| CompactionError::Llm(e.to_string()))?;
 
             debug!(
-                prompt_len = prompt.len(),
-                "compaction: starting LLM summarize"
+                system_len = system.len(),
+                msg_count, "compaction: starting LLM summarize"
             );
             let t0 = std::time::Instant::now();
             let resp = self

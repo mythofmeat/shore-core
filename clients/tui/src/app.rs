@@ -1,8 +1,51 @@
+use ratatui::text::Line;
 use shore_protocol::server_msg::ServerMessage;
 use shore_protocol::types::{CharacterInfo, ImageRef, StreamMetadata, TokenCounts};
 use shore_swp_client::audio::AudioPlayer;
 
 use crate::images::ImageCache;
+
+/// Cached output of `draw_conversation`'s line-building pass.
+///
+/// Building these lines walks every entry, runs markdown rendering, and
+/// word-wraps everything — work proportional to total conversation size.
+/// Without a cache, every keystroke pays that cost, so input latency grows
+/// with conversation length. The cache hits when the cheap fingerprint
+/// (entries length + last-entry summary + stream/toggle state + image cache
+/// version + width) matches the previous build.
+#[derive(Default)]
+pub struct ConvCache {
+    pub fingerprint: ConvFingerprint,
+    pub lines: Vec<Line<'static>>,
+    pub content_visual: u16,
+}
+
+/// Cheap snapshot of state that affects `draw_conversation`'s output.
+///
+/// Computed on every frame; if it equals the cached snapshot, the lines
+/// are reused. Tracks lengths and counts rather than full string contents
+/// because mutations almost always grow text or push entries — full
+/// equality would defeat the purpose by being as expensive as the work
+/// being cached.
+#[derive(Default, PartialEq, Eq, Clone)]
+pub struct ConvFingerprint {
+    pub width: u16,
+    pub entries_len: u32,
+    pub last_entry: u64,
+    pub second_last_entry: u64,
+    pub stream_active: bool,
+    pub stream_regen: bool,
+    pub stream_blocks_len: u32,
+    pub stream_last_block_len: u32,
+    pub stream_phase_len: u32,
+    pub stream_tool_name_len: i32,
+    pub show_thinking: bool,
+    pub show_tools: bool,
+    pub show_images: bool,
+    pub spinner_frame: u32,
+    pub character_name_len: u32,
+    pub image_cache_version: u64,
+}
 
 /// A single entry in the conversation log.
 #[derive(Clone, Debug)]
@@ -432,6 +475,10 @@ pub struct App {
     pub live_speak: bool,
     /// Animation frame for transient progress indicators.
     pub spinner_frame: usize,
+    /// Cached lines from the last `draw_conversation` rebuild. Reused on
+    /// frames where the fingerprint of conversation-affecting state hasn't
+    /// changed — the common case while the user is just typing.
+    pub conv_cache: ConvCache,
 }
 
 impl Default for App {
@@ -471,11 +518,103 @@ impl Default for App {
             audio_player: None,
             live_speak: false,
             spinner_frame: 0,
+            conv_cache: ConvCache::default(),
         }
     }
 }
 
 impl App {
+    /// Snapshot the state that affects `draw_conversation`'s output.
+    ///
+    /// Used as the cache key for the rendered conversation lines. The
+    /// fingerprint stays cheap by hashing lengths, counts, and flags
+    /// rather than full string contents — mutations to entry text grow
+    /// `content.len()`, so a length match plus an `entries.len()` match
+    /// is a tight enough proxy for "no change" without scanning bodies.
+    pub fn conversation_fingerprint(&self, width: u16) -> ConvFingerprint {
+        let entry_summary = |e: &ConversationEntry| -> u64 {
+            // Pack a kind tag plus a content-size signature into a u64.
+            // Different variants distinguish themselves via the high tag
+            // byte; mutations within a variant change the lower bits.
+            match e {
+                ConversationEntry::User {
+                    content, images, ..
+                } => (1u64 << 56) | ((content.len() as u64) << 16) | (images.len() as u64),
+                ConversationEntry::Assistant {
+                    content,
+                    images,
+                    metadata,
+                    ..
+                } => {
+                    (2u64 << 56)
+                        | ((content.len() as u64) << 16)
+                        | ((images.len() as u64) << 4)
+                        | (metadata.is_some() as u64)
+                }
+                ConversationEntry::System { content, count, .. } => {
+                    (3u64 << 56) | ((content.len() as u64) << 24) | (*count as u64)
+                }
+                ConversationEntry::Thinking { content } => (4u64 << 56) | (content.len() as u64),
+                ConversationEntry::ToolCall {
+                    tool_name, input, ..
+                } => {
+                    (5u64 << 56)
+                        | ((tool_name.len() as u64) << 24)
+                        | (input.to_string().len() as u64)
+                }
+                ConversationEntry::ToolResult {
+                    tool_name,
+                    output,
+                    is_error,
+                    ..
+                } => {
+                    (6u64 << 56)
+                        | ((tool_name.len() as u64) << 24)
+                        | ((output.len() as u64) << 1)
+                        | (*is_error as u64)
+                }
+            }
+        };
+
+        let last_entry = self.entries.last().map(entry_summary).unwrap_or(0);
+        let second_last_entry = if self.entries.len() >= 2 {
+            entry_summary(&self.entries[self.entries.len() - 2])
+        } else {
+            0
+        };
+
+        let (stream_blocks_len, stream_last_block_len) = match self.stream.blocks.last() {
+            Some(StreamBlock::Thinking(s)) | Some(StreamBlock::Text(s)) => {
+                (self.stream.blocks.len() as u32, s.len() as u32)
+            }
+            None => (0, 0),
+        };
+
+        ConvFingerprint {
+            width,
+            entries_len: self.entries.len() as u32,
+            last_entry,
+            second_last_entry,
+            stream_active: self.stream.active,
+            stream_regen: self.stream.regen,
+            stream_blocks_len,
+            stream_last_block_len,
+            stream_phase_len: self.stream.phase.len() as u32,
+            stream_tool_name_len: self
+                .stream
+                .tool_name
+                .as_ref()
+                .map(|s| s.len() as i32)
+                .unwrap_or(-1),
+            show_thinking: self.show_thinking,
+            show_tools: self.show_tools,
+            show_images: self.show_images,
+            spinner_frame: self.spinner_frame as u32,
+            character_name_len: self.character_name.len() as u32,
+            image_cache_version: self.image_cache.version(),
+        }
+    }
+
     pub fn scroll_up(&mut self, amount: u16) {
         self.scroll_offset = self.scroll_offset.saturating_add(amount);
         self.auto_scroll = false;
