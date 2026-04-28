@@ -64,12 +64,27 @@ pub fn list_providers(ctx: &CommandContext) -> CommandResult {
 
             let cache_path = shore_llm::discovery::cache_path(&ctx.data_dir, name);
             let cache_summary = match shore_llm::discovery::read_cache(&cache_path) {
-                Ok(Some(c)) => json!({
-                    "present": true,
-                    "models": c.models.len(),
-                    "fetched_at": c.fetched_at,
+                Ok(Some(c)) => {
+                    let hidden = c
+                        .models
+                        .iter()
+                        .filter(|m| !entry.discovery.is_visible(&m.model_id))
+                        .count();
+                    json!({
+                        "present": true,
+                        "models": c.models.len(),
+                        "visible": c.models.len() - hidden,
+                        "hidden": hidden,
+                        "fetched_at": c.fetched_at,
+                    })
+                }
+                _ => json!({
+                    "present": false,
+                    "models": 0,
+                    "visible": 0,
+                    "hidden": 0,
+                    "fetched_at": Value::Null,
                 }),
-                _ => json!({ "present": false, "models": 0, "fetched_at": Value::Null }),
             };
 
             json!({
@@ -178,20 +193,30 @@ pub async fn refresh_provider_models(ctx: &CommandContext, args: &Value) -> Comm
 ///
 /// Static models are always returned, even when the discovery cache is
 /// missing. This preserves the manual escape hatch from Phase 0.
+///
+/// Visibility filtering (Phase 6): discovered models matched by the
+/// provider's `discovery.visibility` rules are placed in `hidden`
+/// instead of `discovered`. Pass `include_hidden = true` to fold them
+/// back into the main `discovered` list. Static models are not
+/// filtered — manual catalog entries are always intentional.
 pub fn list_provider_models(ctx: &CommandContext, args: &Value) -> CommandResult {
     let provider = require_provider(args)?;
+    let include_hidden = args
+        .get("include_hidden")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     // Validate that the provider is at least *known* (configured in the
     // registry, or referenced by a static chat entry). Discovering the
     // hardcoded provider defaults is a Phase 7 concern.
-    let known_in_registry = ctx.config.providers.get(provider).is_some();
+    let registry_entry = ctx.config.providers.get(provider);
     let known_in_static = ctx
         .config
         .models
         .chat
         .values()
         .any(|m| m.provider_key == provider);
-    if !known_in_registry && !known_in_static {
+    if registry_entry.is_none() && !known_in_static {
         return Err((
             ErrorCode::NotFound,
             format!("provider {provider:?} is not configured"),
@@ -201,10 +226,20 @@ pub fn list_provider_models(ctx: &CommandContext, args: &Value) -> CommandResult
     let cache_path = shore_llm::discovery::cache_path(&ctx.data_dir, provider);
     let cache = shore_llm::discovery::read_cache(&cache_path).ok().flatten();
 
-    let discovered: Vec<Value> = cache
-        .as_ref()
-        .map(|c| c.models.iter().map(discovered_to_json).collect())
-        .unwrap_or_default();
+    let mut discovered: Vec<Value> = Vec::new();
+    let mut hidden: Vec<Value> = Vec::new();
+    if let Some(c) = cache.as_ref() {
+        for m in &c.models {
+            let is_visible = registry_entry
+                .map(|e| e.discovery.is_visible(&m.model_id))
+                .unwrap_or(true);
+            if is_visible || include_hidden {
+                discovered.push(discovered_to_json(m));
+            } else {
+                hidden.push(discovered_to_json(m));
+            }
+        }
+    }
 
     let static_models: Vec<Value> = ctx
         .config
@@ -227,7 +262,9 @@ pub fn list_provider_models(ctx: &CommandContext, args: &Value) -> CommandResult
     Ok(json!({
         "provider": provider,
         "discovered": discovered,
+        "hidden": hidden,
         "static": static_models,
+        "include_hidden": include_hidden,
         "cache": cache.map(|c| json!({
             "fetched_at": c.fetched_at,
             "model_count": c.models.len(),
@@ -502,6 +539,208 @@ model_id = "kimi-k2"
         assert!(out["discovered"].as_array().unwrap().is_empty());
         assert_eq!(out["static"].as_array().unwrap().len(), 1);
         assert_eq!(out["cache"]["model_count"], 0);
+    }
+
+    // ── visibility filtering ────────────────────────────────────────────
+
+    fn build_ctx_with_visibility(tmp: &tempfile::TempDir, visibility: &[&str]) -> CommandContext {
+        let v: String = visibility.iter().map(|p| format!("  {:?},\n", p)).collect();
+        let toml_str = format!(
+            r#"
+[providers.openrouter]
+api_key_env = "OR_KEY"
+
+[providers.openrouter.discovery]
+enabled = true
+visibility = [
+{v}]
+"#,
+        );
+        build_ctx_with_registry(tmp, &toml_str)
+    }
+
+    fn cache_with_models(data_dir: &std::path::Path, provider: &str, ids: &[&str]) {
+        let models = ids
+            .iter()
+            .map(|id| discovered_fixture(provider, id))
+            .collect();
+        write_test_cache(data_dir, provider, models);
+    }
+
+    #[test]
+    fn visibility_hides_matching_pattern() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = build_ctx_with_visibility(&tmp, &["meta-llama/*"]);
+        cache_with_models(
+            &ctx.data_dir,
+            "openrouter",
+            &[
+                "anthropic/claude-3.5-sonnet",
+                "meta-llama/llama-3-405b",
+                "openai/gpt-4o",
+            ],
+        );
+
+        let out = list_provider_models(&ctx, &json!({ "provider": "openrouter" })).unwrap();
+        let discovered = out["discovered"].as_array().unwrap();
+        let hidden = out["hidden"].as_array().unwrap();
+        let dids: Vec<&str> = discovered
+            .iter()
+            .map(|m| m["model_id"].as_str().unwrap())
+            .collect();
+        let hids: Vec<&str> = hidden
+            .iter()
+            .map(|m| m["model_id"].as_str().unwrap())
+            .collect();
+        assert!(dids.contains(&"anthropic/claude-3.5-sonnet"));
+        assert!(dids.contains(&"openai/gpt-4o"));
+        assert!(!dids.contains(&"meta-llama/llama-3-405b"));
+        assert_eq!(hids, vec!["meta-llama/llama-3-405b"]);
+    }
+
+    #[test]
+    fn visibility_star_then_negate_shows_only_anthropic() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = build_ctx_with_visibility(&tmp, &["*", "!anthropic/*"]);
+        cache_with_models(
+            &ctx.data_dir,
+            "openrouter",
+            &[
+                "anthropic/claude-3.5-sonnet",
+                "meta-llama/llama-3-405b",
+                "openai/gpt-4o",
+            ],
+        );
+
+        let out = list_provider_models(&ctx, &json!({ "provider": "openrouter" })).unwrap();
+        let dids: Vec<&str> = out["discovered"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["model_id"].as_str().unwrap())
+            .collect();
+        assert_eq!(dids, vec!["anthropic/claude-3.5-sonnet"]);
+        assert_eq!(out["hidden"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn visibility_last_match_wins_at_command_level() {
+        // Hide all anthropic, then un-hide a single id. Last match wins.
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = build_ctx_with_visibility(&tmp, &["anthropic/*", "!anthropic/claude-3.5-sonnet"]);
+        cache_with_models(
+            &ctx.data_dir,
+            "openrouter",
+            &[
+                "anthropic/claude-3.5-sonnet",
+                "anthropic/claude-3-haiku",
+                "openai/gpt-4o",
+            ],
+        );
+
+        let out = list_provider_models(&ctx, &json!({ "provider": "openrouter" })).unwrap();
+        let dids: Vec<&str> = out["discovered"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["model_id"].as_str().unwrap())
+            .collect();
+        let hids: Vec<&str> = out["hidden"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["model_id"].as_str().unwrap())
+            .collect();
+        assert!(dids.contains(&"anthropic/claude-3.5-sonnet"));
+        assert!(dids.contains(&"openai/gpt-4o"));
+        assert_eq!(hids, vec!["anthropic/claude-3-haiku"]);
+    }
+
+    #[test]
+    fn hidden_models_remain_in_cache() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = build_ctx_with_visibility(&tmp, &["meta-llama/*"]);
+        cache_with_models(
+            &ctx.data_dir,
+            "openrouter",
+            &["meta-llama/llama-3-405b", "anthropic/claude-3.5-sonnet"],
+        );
+
+        // Even though one model is hidden, the cache file still contains both.
+        let path = shore_llm::discovery::cache_path(&ctx.data_dir, "openrouter");
+        let cache = shore_llm::discovery::read_cache(&path).unwrap().unwrap();
+        assert_eq!(cache.models.len(), 2);
+    }
+
+    #[test]
+    fn include_hidden_returns_filtered_models_in_main_list() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = build_ctx_with_visibility(&tmp, &["meta-llama/*"]);
+        cache_with_models(
+            &ctx.data_dir,
+            "openrouter",
+            &["meta-llama/llama-3-405b", "anthropic/claude-3.5-sonnet"],
+        );
+
+        let out = list_provider_models(
+            &ctx,
+            &json!({ "provider": "openrouter", "include_hidden": true }),
+        )
+        .unwrap();
+        assert_eq!(out["discovered"].as_array().unwrap().len(), 2);
+        assert!(out["hidden"].as_array().unwrap().is_empty());
+        assert_eq!(out["include_hidden"], true);
+    }
+
+    #[test]
+    fn static_models_not_filtered_by_visibility() {
+        // Even with a wildcard hide-all rule, manual `[chat.<provider>.<...>]`
+        // entries must remain visible — they are intentional.
+        let tmp = tempfile::tempdir().unwrap();
+        let mut ctx = build_ctx_with_visibility(&tmp, &["*"]);
+        let table: toml::Table = r#"
+[chat.openrouter.kimi]
+model_id = "kimi-k2"
+"#
+        .parse()
+        .unwrap();
+        ctx.config.models = shore_config::models::ModelCatalog::from_sections(
+            table.get("chat").and_then(|v| v.as_table()),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        cache_with_models(&ctx.data_dir, "openrouter", &["meta-llama/llama-3-405b"]);
+
+        let out = list_provider_models(&ctx, &json!({ "provider": "openrouter" })).unwrap();
+        // Discovered hidden by the "*" rule.
+        assert!(out["discovered"].as_array().unwrap().is_empty());
+        assert_eq!(out["hidden"].as_array().unwrap().len(), 1);
+        // Static model still surfaced.
+        assert_eq!(out["static"].as_array().unwrap().len(), 1);
+        assert_eq!(out["static"][0]["model_id"], "kimi-k2");
+    }
+
+    #[test]
+    fn list_providers_reports_hidden_count() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = build_ctx_with_visibility(&tmp, &["meta-llama/*"]);
+        cache_with_models(
+            &ctx.data_dir,
+            "openrouter",
+            &[
+                "meta-llama/llama-3-405b",
+                "meta-llama/llama-3-70b",
+                "anthropic/claude-3.5-sonnet",
+            ],
+        );
+
+        let out = list_providers(&ctx).unwrap();
+        let cache = &out["providers"][0]["cache"];
+        assert_eq!(cache["models"], 3);
+        assert_eq!(cache["visible"], 1);
+        assert_eq!(cache["hidden"], 2);
     }
 
     #[test]

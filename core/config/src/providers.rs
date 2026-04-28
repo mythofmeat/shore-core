@@ -79,13 +79,78 @@ pub enum ProviderRegistryError {
 
 /// `[providers.<name>.discovery]` sub-block.
 ///
-/// Phase 1 only carries `enabled`. Visibility filtering (Phase 6) and other
+/// Carries `enabled` (Phase 1) and `visibility` (Phase 6). Future
 /// discovery knobs land in their own phases.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct ProviderDiscovery {
     /// Whether discovery is enabled for this provider.
     pub enabled: bool,
+
+    /// Gitignore-style visibility patterns evaluated against an upstream
+    /// model id (e.g. `"anthropic/claude-3.5-sonnet"`).
+    ///
+    /// Semantics:
+    /// * Patterns are evaluated in order and the last match wins.
+    /// * A bare pattern (no leading `!`) **hides** matched ids.
+    /// * A pattern with leading `!` **shows** matched ids.
+    /// * Models with no matching pattern stay visible (default-show).
+    /// * Wildcards: `*` matches any sequence of characters within a single
+    ///   id segment view (no special handling of `/`); patterns like
+    ///   `meta-llama/*` and `*/free` work as written.
+    ///
+    /// Visibility filtering only applies to discovered models; manual
+    /// `[chat.<provider>.<...>]` entries are not affected.
+    pub visibility: Vec<String>,
+}
+
+impl ProviderDiscovery {
+    /// Whether `model_id` should be surfaced in normal model lists for
+    /// this provider. Default-visible if `visibility` is empty.
+    pub fn is_visible(&self, model_id: &str) -> bool {
+        let mut visible = true;
+        for pat in &self.visibility {
+            let (negate, body) = match pat.strip_prefix('!') {
+                Some(rest) => (true, rest),
+                None => (false, pat.as_str()),
+            };
+            if glob_matches(body, model_id) {
+                // Bare hides, `!` shows; last match wins.
+                visible = negate;
+            }
+        }
+        visible
+    }
+}
+
+/// Tiny `*`-only glob matcher. `*` matches any (possibly empty) run of
+/// characters, including `/`. Other characters match literally. Sufficient
+/// for `meta-llama/*`, `*/free`, `anthropic/claude-3.5-*`, etc.
+fn glob_matches(pattern: &str, s: &str) -> bool {
+    let parts: Vec<&str> = pattern.split('*').collect();
+    if parts.len() == 1 {
+        return parts[0] == s;
+    }
+    let first = parts[0];
+    let last = parts[parts.len() - 1];
+    if !s.starts_with(first) || !s.ends_with(last) {
+        return false;
+    }
+    if first.len() + last.len() > s.len() {
+        return false;
+    }
+    let mut cursor = first.len();
+    let end = s.len() - last.len();
+    for middle in &parts[1..parts.len() - 1] {
+        if middle.is_empty() {
+            continue;
+        }
+        match s[cursor..end].find(middle) {
+            Some(idx) => cursor += idx + middle.len(),
+            None => return false,
+        }
+    }
+    true
 }
 
 // ── Per-key entry ───────────────────────────────────────────────────────
@@ -591,19 +656,118 @@ api_key_env = "K"
 
 [providers.openrouter.discovery]
 enabled = true
-visibility = ["*"]
+typo_field = "oops"
 "#,
         );
         let providers = table.get("providers").and_then(|v| v.as_table());
         let err = ProviderRegistry::from_section(providers).unwrap_err();
-        // Visibility is a Phase 6 field; until then it must be rejected so
-        // typos surface as errors instead of silently no-op'ing.
         match err {
             ProviderRegistryError::ParseEntry { source, .. } => {
                 assert!(source.to_string().contains("unknown field"));
             }
             other => panic!("expected ParseEntry, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn visibility_defaults_to_empty() {
+        let r = registry_from(
+            r#"
+[providers.openrouter]
+api_key_env = "K"
+"#,
+        );
+        assert!(r.get("openrouter").unwrap().discovery.visibility.is_empty());
+    }
+
+    #[test]
+    fn glob_matcher_basics() {
+        assert!(glob_matches("*", "anything"));
+        assert!(glob_matches("*", ""));
+        assert!(glob_matches("anthropic/*", "anthropic/claude-3.5-sonnet"));
+        assert!(!glob_matches("anthropic/*", "openai/gpt-4o"));
+        assert!(glob_matches("*/free", "x/free"));
+        assert!(glob_matches("*/free", "meta-llama/free"));
+        assert!(!glob_matches("*/free", "meta-llama/llama-3-free"));
+        assert!(!glob_matches("*/free", "no-slash-here"));
+        assert!(glob_matches("*free", "meta-llama/llama-3-free"));
+        assert!(glob_matches("exact-id", "exact-id"));
+        assert!(!glob_matches("exact-id", "other-id"));
+        // Multi-wildcard
+        assert!(glob_matches("a*b*c", "axxxbyyyc"));
+        assert!(glob_matches("a*b*c", "abc"));
+        assert!(!glob_matches("a*b*c", "axc"));
+    }
+
+    #[test]
+    fn visibility_default_is_show_all() {
+        let d = ProviderDiscovery::default();
+        assert!(d.is_visible("anything"));
+        assert!(d.is_visible("anthropic/claude"));
+    }
+
+    #[test]
+    fn visibility_simple_hide() {
+        let d = ProviderDiscovery {
+            enabled: true,
+            visibility: vec!["meta-llama/*".into()],
+        };
+        assert!(!d.is_visible("meta-llama/llama-3-405b"));
+        assert!(d.is_visible("anthropic/claude-3.5-sonnet"));
+    }
+
+    #[test]
+    fn visibility_show_only_some_via_star_then_negate() {
+        // "*" hides everything, "!anthropic/*" reveals only Anthropic.
+        let d = ProviderDiscovery {
+            enabled: true,
+            visibility: vec!["*".into(), "!anthropic/*".into()],
+        };
+        assert!(d.is_visible("anthropic/claude-3.5-sonnet"));
+        assert!(!d.is_visible("openai/gpt-4o"));
+        assert!(!d.is_visible("meta-llama/llama-3"));
+    }
+
+    #[test]
+    fn visibility_last_match_wins() {
+        // First pattern hides Anthropic, second un-hides one specific id.
+        let d = ProviderDiscovery {
+            enabled: true,
+            visibility: vec!["anthropic/*".into(), "!anthropic/claude-3.5-sonnet".into()],
+        };
+        assert!(d.is_visible("anthropic/claude-3.5-sonnet"));
+        assert!(!d.is_visible("anthropic/claude-3-haiku"));
+    }
+
+    #[test]
+    fn visibility_negate_then_hide() {
+        // Inverted: show all then hide a subset — hide wins because last.
+        let d = ProviderDiscovery {
+            enabled: true,
+            visibility: vec!["!anthropic/*".into(), "anthropic/claude-3-haiku".into()],
+        };
+        assert!(d.is_visible("anthropic/claude-3.5-sonnet"));
+        assert!(!d.is_visible("anthropic/claude-3-haiku"));
+    }
+
+    #[test]
+    fn visibility_parses_gitignore_style_patterns() {
+        let r = registry_from(
+            r#"
+[providers.openrouter]
+api_key_env = "K"
+
+[providers.openrouter.discovery]
+enabled = true
+visibility = [
+  "*",
+  "!anthropic/*",
+  "!openai/*",
+]
+"#,
+        );
+        let v = &r.get("openrouter").unwrap().discovery.visibility;
+        assert_eq!(v, &vec!["*", "!anthropic/*", "!openai/*"]);
     }
 
     #[test]
