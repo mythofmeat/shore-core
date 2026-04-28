@@ -492,6 +492,13 @@ impl AutonomyManager {
         debug!(character, "Cached last LLM request for heartbeat reuse");
     }
 
+    /// Clone the cached LLM request for private background work that should
+    /// preserve the same provider-side prompt-cache prefix.
+    pub fn cached_last_request(&self, character: &str) -> Option<LlmRequest> {
+        self.with_state(character, |s| s.last_request.clone())
+            .flatten()
+    }
+
     /// Call after compaction completes successfully. Updates the turn count
     /// and resets compaction state so future triggers can fire.
     ///
@@ -1030,11 +1037,19 @@ async fn execute_scheduled_dream(character: &str, ctx: &TickContext) {
     let Some(loaded_config) = ctx.loaded_config.as_deref() else {
         return;
     };
-    let cfg = &loaded_config.app.memory.dreaming;
-    match crate::memory::dreaming::run_sweep(
-        &loaded_config.dirs.config,
+    let Some(llm_client) = ctx.llm_client.as_ref() else {
+        return;
+    };
+    let cached_request = {
+        let s = lock_state(&ctx.state);
+        s.last_request.clone()
+    };
+    match crate::memory::dreaming::run_librarian_sweep(
+        loaded_config,
+        &ctx.data_dir,
+        llm_client,
         character,
-        cfg,
+        cached_request.as_ref(),
         false,
         false,
     )
@@ -1043,9 +1058,10 @@ async fn execute_scheduled_dream(character: &str, ctx: &TickContext) {
         Ok(Some(result)) => {
             info!(
                 character,
-                candidates = result.candidates.len(),
-                promoted = result.promoted.len(),
-                "Dreaming: scheduled sweep complete"
+                tool_rounds = result.tool_rounds,
+                changed = result.changed.len(),
+                audit_appended = result.audit_appended,
+                "Dreaming: scheduled AI librarian pass complete"
             );
         }
         Ok(None) => {}
@@ -1171,7 +1187,7 @@ fn rebuild_request_from_disk(
     let tools_guidance =
         crate::memory::deferred_edits::load_active_prompt_file(&char_dir, TOOLS_FILE);
     let memory_index =
-        crate::memory::deferred_edits::load_memory_index(&config.dirs.config, character);
+        crate::memory::deferred_edits::load_memory_index(&char_dir, &config.dirs.config, character);
 
     let tool_toggles = &config.app.behavior.tool_use.tools;
     let prompt_result = prompt::assemble_prompt(&PromptParams {

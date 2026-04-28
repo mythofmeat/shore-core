@@ -12,7 +12,9 @@ See `README.md`, `FEATURES.md`, and `CONFIGURATION.md` for current branch guidan
 - Character workspaces with protected prompt files: `SOUL.md`, `USER.md`, `AGENTS.md`, `TOOLS.md`, and `HEARTBEAT.md`
 - Markdown long-term memory under `characters/<Character>/workspace/memory/`
 - `active_prompt/` snapshots and deferred protected self-edit activation
-- Opt-in memory dreaming with `.dreams/`, `DREAMS.md`, and prompt-visible `MEMORY.md` indexing
+- Opt-in AI librarian dreaming with memory tools, `.dreams/`, `DREAMS.md`, and prompt-visible `MEMORY.md` indexing
+- Optional `[defaults].dreaming` model selector for private memory librarian passes
+- Dreaming now reuses the cached chat request prefix when available, and `MEMORY.md` index edits activate at compaction instead of immediately changing the hot prompt prefix
 - Optional hybrid semantic+lexical markdown retrieval backed by a rebuildable index
 - Workspace file tools and sandboxed `exec`
 - Repository ownership layout: `core/`, `backend/`, `clients/`, `bridges/`, and `dev/`, with default Cargo members for faster local daemon/CLI builds

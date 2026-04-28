@@ -23,6 +23,7 @@ pub enum CallType {
     Keepalive,
     Heartbeat,
     Compaction,
+    Dreaming,
     MemoryQuery,
 }
 
@@ -34,8 +35,13 @@ impl CallType {
             CallType::Keepalive => "keepalive",
             CallType::Heartbeat => "heartbeat",
             CallType::Compaction => "compaction",
+            CallType::Dreaming => "dreaming",
             CallType::MemoryQuery => "memory_query",
         }
+    }
+
+    fn affects_cache_tracker(&self) -> bool {
+        !matches!(self, CallType::Dreaming)
     }
 }
 
@@ -76,55 +82,56 @@ pub(crate) fn record_call(
     // Cache tracking: run for any call that reports cache metrics (not just
     // provider == "anthropic", which misses OpenRouter-routed Anthropic calls).
     let has_cache_metrics = usage.cache_read_tokens > 0 || usage.cache_creation_tokens > 0;
-    let (cache_state, cache_anomaly) = if has_cache_metrics || provider == "anthropic" {
-        let obs = Observation {
-            ts: ts.clone(),
-            model: model.to_string(),
-            thinking_enabled,
-            cache_read_tokens: usage.cache_read_tokens,
-            cache_write_tokens: usage.cache_creation_tokens,
-            call_type: call_type.as_str().to_string(),
+    let (cache_state, cache_anomaly) =
+        if call_type.affects_cache_tracker() && (has_cache_metrics || provider == "anthropic") {
+            let obs = Observation {
+                ts: ts.clone(),
+                model: model.to_string(),
+                thinking_enabled,
+                cache_read_tokens: usage.cache_read_tokens,
+                cache_write_tokens: usage.cache_creation_tokens,
+                call_type: call_type.as_str().to_string(),
+            };
+
+            let mut trackers = lock_or_recover("ledger cache tracker map", cache_trackers);
+            let tracker = trackers.entry(character.to_string()).or_default();
+            let result = tracker.observe(&obs);
+
+            let state_str = match result.state {
+                CacheState::Cold => "cold",
+                CacheState::Warm => "warm",
+            };
+
+            let anomaly_str = result.anomaly.map(|a| match a {
+                Anomaly::UnexpectedWrite => "unexpected_write",
+                Anomaly::KeepaliveMiss => "keepalive_miss",
+            });
+
+            if let Some(anomaly) = &anomaly_str {
+                error!(
+                    provider,
+                    model,
+                    character,
+                    call_type = call_type.as_str(),
+                    cache_state = state_str,
+                    anomaly,
+                    cache_read_tokens = usage.cache_read_tokens,
+                    cache_creation_tokens = usage.cache_creation_tokens,
+                    "Cache anomaly detected"
+                );
+                shore_llm::cache_forensics::notify_anomaly(
+                    character,
+                    anomaly,
+                    call_type.as_str(),
+                    usage.cache_read_tokens,
+                    usage.cache_creation_tokens,
+                );
+            }
+
+            (Some(state_str.to_string()), anomaly_str.map(String::from))
+        } else {
+            (None, None)
         };
-
-        let mut trackers = lock_or_recover("ledger cache tracker map", cache_trackers);
-        let tracker = trackers.entry(character.to_string()).or_default();
-        let result = tracker.observe(&obs);
-
-        let state_str = match result.state {
-            CacheState::Cold => "cold",
-            CacheState::Warm => "warm",
-        };
-
-        let anomaly_str = result.anomaly.map(|a| match a {
-            Anomaly::UnexpectedWrite => "unexpected_write",
-            Anomaly::KeepaliveMiss => "keepalive_miss",
-        });
-
-        if let Some(anomaly) = &anomaly_str {
-            error!(
-                provider,
-                model,
-                character,
-                call_type = call_type.as_str(),
-                cache_state = state_str,
-                anomaly,
-                cache_read_tokens = usage.cache_read_tokens,
-                cache_creation_tokens = usage.cache_creation_tokens,
-                "Cache anomaly detected"
-            );
-            shore_llm::cache_forensics::notify_anomaly(
-                character,
-                anomaly,
-                call_type.as_str(),
-                usage.cache_read_tokens,
-                usage.cache_creation_tokens,
-            );
-        }
-
-        (Some(state_str.to_string()), anomaly_str.map(String::from))
-    } else {
-        (None, None)
-    };
 
     // Cost calculation (sync — cached pricing only, no fetch)
     let cost = pricing
@@ -511,6 +518,68 @@ mod tests {
     }
 
     #[test]
+    fn dreaming_call_does_not_touch_cache_tracker() {
+        let (ledger, pricing, trackers) = test_parts();
+        record_call(
+            &ledger,
+            &pricing,
+            &trackers,
+            RecordCall {
+                provider: "anthropic",
+                model: "claude-opus-4-6",
+                call_type: CallType::Message,
+                character: "aria",
+                usage: &Usage {
+                    input_tokens: 100,
+                    output_tokens: 50,
+                    cache_read_tokens: 400,
+                    cache_creation_tokens: 0,
+                },
+                timing: &Timing {
+                    total_ms: 1500,
+                    time_to_first_token_ms: 0,
+                },
+                finish_reason: "end_turn",
+                thinking_enabled: false,
+                cache_ttl: None,
+            },
+        );
+        record_call(
+            &ledger,
+            &pricing,
+            &trackers,
+            RecordCall {
+                provider: "anthropic",
+                model: "claude-opus-4-6",
+                call_type: CallType::Dreaming,
+                character: "aria",
+                usage: &Usage {
+                    input_tokens: 100,
+                    output_tokens: 50,
+                    cache_read_tokens: 0,
+                    cache_creation_tokens: 0,
+                },
+                timing: &Timing {
+                    total_ms: 1500,
+                    time_to_first_token_ms: 0,
+                },
+                finish_reason: "end_turn",
+                thinking_enabled: false,
+                cache_ttl: None,
+            },
+        );
+
+        let map = trackers.lock().unwrap();
+        let tracker = map.get("aria").unwrap();
+        assert_eq!(tracker.state(), crate::cache_tracker::CacheState::Warm);
+        assert_eq!(tracker.last_cache_read(), 400);
+        let rows = ledger.recent(2).unwrap();
+        assert_eq!(rows[0].call_type, "dreaming");
+        assert!(rows[0].cache_state.is_none());
+        assert!(rows[0].cache_anomaly.is_none());
+    }
+
+    #[test]
     fn non_anthropic_skips_cache_tracker() {
         let (ledger, pricing, trackers) = test_parts();
         record_call(
@@ -549,6 +618,7 @@ mod tests {
         assert_eq!(CallType::Keepalive.as_str(), "keepalive");
         assert_eq!(CallType::Heartbeat.as_str(), "heartbeat");
         assert_eq!(CallType::Compaction.as_str(), "compaction");
+        assert_eq!(CallType::Dreaming.as_str(), "dreaming");
         assert_eq!(CallType::MemoryQuery.as_str(), "memory_query");
     }
 

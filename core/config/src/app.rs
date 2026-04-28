@@ -89,6 +89,9 @@ pub struct DefaultsConfig {
     /// Default heartbeat model name (for autonomous heartbeat ticks).
     pub heartbeat: Option<String>,
 
+    /// Default dreaming model name (for private memory librarian passes).
+    pub dreaming: Option<String>,
+
     /// Default embedding profile name.
     pub embedding: Option<String>,
 
@@ -119,6 +122,7 @@ impl Default for DefaultsConfig {
         Self {
             model: None,
             heartbeat: None,
+            dreaming: None,
             embedding: None,
             image_generation: None,
             display_name: None,
@@ -417,7 +421,7 @@ pub struct DreamingConfig {
     #[serde(default = "default_dreaming_frequency")]
     pub frequency: String,
 
-    /// Maximum internal tool-style rounds a future LLM-backed sweep may use.
+    /// Maximum private tool rounds an LLM-backed dreaming pass may use.
     #[serde(default = "default_dreaming_max_tool_rounds")]
     pub max_tool_rounds: u32,
 }

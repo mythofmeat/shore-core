@@ -57,23 +57,17 @@ Runtime memory is markdown-first.
 $XDG_CONFIG_HOME/shore/characters/<Character>/workspace/memory/
 ```
 
-The old runtime SQLite/vector/RAG memory stack is not the normal source of truth on this branch. Existing SQLite memory can be exported with:
+The old runtime SQLite/vector/RAG memory stack is not the normal source of truth
+on this branch. Historical migration helpers live in git history rather than
+the active runtime surface.
 
+<<<<<<< HEAD
 ```sh
 scripts/migrate-memory.py
 ```
 
-<<<<<<< HEAD
-LLM-facing workspace tools can read, write, edit, list, and search memory files
-through `memory/...` paths when memory access is enabled.
-
-`workspace/memory/MEMORY.md` is prompt-visible. It is a concise index of memory
-files, recently updated files, and still-relevant conversational throughlines;
-it is not the character definition, user profile, standing behavior, tool guide,
-or heartbeat guide.
-
-The CLI and MCP still expose a natural-language memory query command.
 =======
+>>>>>>> main
 Current LLM-facing memory surfaces:
 
 | Surface | Purpose |
@@ -85,6 +79,19 @@ Current LLM-facing memory surfaces:
 
 There are no separate LLM-facing `memory_read`, `memory_write`,
 `memory_search`, or `memory_list` tools on this branch.
+
+<<<<<<< HEAD
+`workspace/MEMORY.md` is the canonical memory index. Chat uses the
+snapshot under `active_prompt/MEMORY.md`, so edits to the index only become
+prompt-active after compaction/reload, matching the protected prompt files.
+It is a concise index of memory files, recently updated files, and
+still-relevant conversational throughlines; it is not the character definition,
+user profile, standing behavior, tool guide, or heartbeat guide.
+=======
+`workspace/MEMORY.md` is prompt-visible. It is a concise index of memory
+files, recently updated files, and still-relevant conversational throughlines;
+it is not the character definition, user profile, standing behavior, tool guide,
+or heartbeat guide.
 >>>>>>> main
 
 Search is lexical by default. If an embedding profile is configured, retrieval can use a rebuildable hybrid semantic+lexical index. The index is a ranking aid only; markdown files remain authoritative.
@@ -96,10 +103,11 @@ Compaction turns older conversation turns into durable markdown memory and trims
 - updated markdown files under `workspace/memory/`
 - archived conversation segments under the character data directory
 
-Compaction does not write `MEMORY.md`; dreaming maintains that prompt-visible
-index. Compaction is allowed to run on idle triggers, turn-count triggers, or
+Compaction does not write `MEMORY.md`; dreaming maintains the canonical index.
+Compaction is allowed to run on idle triggers, turn-count triggers, or
 context-token safety triggers. It also activates staged protected prompt edits
-because that is already a cache-boundary event.
+and staged `MEMORY.md` index updates because that is already a cache-boundary
+event.
 
 Manual command:
 
@@ -109,7 +117,7 @@ shore memory compact
 
 ## Prompt Snapshots
 
-Prompt-active protected files live under:
+Prompt-active files live under:
 
 ```text
 $XDG_DATA_HOME/shore/<Character>/active_prompt/
@@ -117,13 +125,14 @@ $XDG_DATA_HOME/shore/<Character>/active_prompt/
 
 Normal chat and heartbeat prompt assembly read from `active_prompt/`, not directly from editable workspace files. This keeps character self-editing compatible with Anthropic prompt caching.
 
-Protected files:
+Prompt-visible snapshot files:
 
 - `SOUL.md`
 - `USER.md`
 - `AGENTS.md`
 - `TOOLS.md`
 - `HEARTBEAT.md`
+- `MEMORY.md` snapshot from `workspace/MEMORY.md`
 
 `HEARTBEAT.md` is only injected into heartbeat ticks, not ordinary chat turns.
 
@@ -145,9 +154,11 @@ Heartbeat does not force a recap or write memory by itself. Durable notes are cr
 
 ## Dreaming
 
-Dreaming is an opt-in scheduled memory consolidation sweep with explicit Light, REM, and Deep phases. Light stages deduplicated candidate signals from normal markdown memory sources into `workspace/memory/.dreams/`. REM records deterministic theme and reinforcement signals. Deep scores throughlines and rewrites `workspace/memory/MEMORY.md` as the prompt-visible memory index.
+Dreaming is an opt-in scheduled AI librarian pass. When due, the character privately uses memory tools to list, read, search, write, and edit markdown memory files. Its job is to organize, dedupe, consolidate, and mark stale memory so future recall is easier.
 
-`workspace/memory/DREAMS.md` is a Dream Diary for human review, not long-term memory and not a source of index truth. Generated dreaming output is excluded from future candidate ingestion, including `.dreams/**`, `DREAMS.md`, `dreams.md`, and `memory/dreaming/**`. `MEMORY.md` is read for prompt orientation but is not re-ingested as a candidate source.
+`workspace/MEMORY.md` is the canonical memory index and replaces the old recap/digest concept. Its active prompt snapshot refreshes at compaction, so dreaming can reorganize memory without changing the hot chat prefix immediately. It should point to useful files and throughlines without duplicating `USER.md` or `AGENTS.md`. `workspace/memory/DREAMS.md` is the human-readable audit/review diary for each dreaming pass. Machine-readable state lives under `.dreams/`.
+
+Generated dreaming output is excluded from ordinary memory-source ingestion, including `.dreams/**`, `DREAMS.md`, `dreams.md`, `MEMORY.md`, and `memory/dreaming/**`.
 
 ## Tools
 

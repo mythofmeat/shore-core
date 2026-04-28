@@ -141,10 +141,10 @@ pub trait ToolContext: Sync {
         ""
     }
 
-    /// Queue a deferred edit for a protected workspace bootstrap file
-    /// (SOUL.md, USER.md, AGENTS.md, TOOLS.md, HEARTBEAT.md). Called by the tool dispatch layer after a
-    /// successful write or edit to a protected path. The actual copy to
-    /// the config dir happens at the next compaction boundary.
+    /// Queue a deferred edit for a prompt-visible workspace file. Called by
+    /// the tool dispatch layer after a successful write or edit to a path
+    /// whose content should only become prompt-active at the next compaction
+    /// boundary.
     fn defer_edit(&self, _path: &str) {}
 }
 
@@ -349,10 +349,13 @@ pub fn dispatch_tool<'a>(
                     .to_string();
                 let mut result = workspace::handle_write(input, ctx.workspace_dir()).await?;
                 if let Some(deferred_path) =
-                    crate::memory::deferred_edits::normalize_protected_path(&path)
+                    crate::memory::deferred_edits::normalize_prompt_visible_path(&path)
                 {
                     ctx.defer_edit(&path);
-                    result["protected_file"] = serde_json::json!(true);
+                    result["prompt_visible_file"] = serde_json::json!(true);
+                    if crate::memory::deferred_edits::normalize_protected_path(&path).is_some() {
+                        result["protected_file"] = serde_json::json!(true);
+                    }
                     result["deferred_until_compaction"] = serde_json::json!(true);
                     result["deferred_path"] = serde_json::json!(deferred_path);
                     result["prompt_reload_required"] = serde_json::json!(true);
@@ -368,10 +371,13 @@ pub fn dispatch_tool<'a>(
                     .to_string();
                 let mut result = workspace::handle_edit(input, ctx.workspace_dir()).await?;
                 if let Some(deferred_path) =
-                    crate::memory::deferred_edits::normalize_protected_path(&path)
+                    crate::memory::deferred_edits::normalize_prompt_visible_path(&path)
                 {
                     ctx.defer_edit(&path);
-                    result["protected_file"] = serde_json::json!(true);
+                    result["prompt_visible_file"] = serde_json::json!(true);
+                    if crate::memory::deferred_edits::normalize_protected_path(&path).is_some() {
+                        result["protected_file"] = serde_json::json!(true);
+                    }
                     result["deferred_until_compaction"] = serde_json::json!(true);
                     result["deferred_path"] = serde_json::json!(deferred_path);
                     result["prompt_reload_required"] = serde_json::json!(true);

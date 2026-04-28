@@ -39,7 +39,7 @@ Normal chat prompt inputs:
 - active `USER.md`
 - active `AGENTS.md`
 - active `TOOLS.md`
-- workspace `memory/MEMORY.md`
+- active snapshot `active_prompt/MEMORY.md`, refreshed from `workspace/MEMORY.md` at compaction/reload
 - conversation messages
 - stable capability/tool guidance
 
@@ -66,7 +66,7 @@ Prior completed-turn thinking is stripped by default through `[memory.thinking].
 
 - compaction/reload
 - activating staged protected edits
-- rewriting `workspace/memory/MEMORY.md`
+- activating a rewritten `workspace/MEMORY.md` snapshot
 - editing old conversation messages
 - changing active model/provider/cache settings
 - changing tool definitions or prompt templates in code

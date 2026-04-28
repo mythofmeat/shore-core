@@ -1021,6 +1021,7 @@ mod tests {
 <write path="MEMORY.md"># Bad index overwrite</write>
 <write path="DREAMS.md"># Bad dream diary overwrite</write>
 <write path=".dreams/candidates.md">bad staged output</write>
+<write path="dreaming/rem/today.md">bad phase report</write>
 <write path="notes/ok.md"># OK
 
 - Real note
@@ -1059,6 +1060,7 @@ mod tests {
         assert_eq!(result.memory_files_written, vec!["notes/ok.md"]);
         assert!(store.read("MEMORY.md").await.is_err());
         assert!(store.read(".dreams/candidates.md").await.is_err());
+        assert!(store.read("dreaming/rem/today.md").await.is_err());
         let dreams = store.read("DREAMS.md").await.unwrap();
         assert!(!dreams.content.contains("Bad dream diary overwrite"));
     }

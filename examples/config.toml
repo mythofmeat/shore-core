@@ -19,6 +19,7 @@
 [defaults]
 model = "claude-sonnet"            # Must match a key in [chat.*.*] below
 # heartbeat = "claude-sonnet"     # Model for autonomous heartbeat ticks
+# dreaming = "claude-sonnet"      # Model for private memory librarian passes
 # embedding = "text-large"          # Embedding profile
 # image_generation = "gemini-flash" # Image generation profile
 # display_name = "Your Name"        # {{user}} in templates; falls back to $USER
@@ -47,6 +48,7 @@ model = "claude-sonnet"            # Must match a key in [chat.*.*] below
 # enabled = false
 # frequency = "0 3 * * *"
 # max_tool_rounds = 12
+# Optional: set [defaults].dreaming to choose a specific model for this pass.
 
 # ── Tool use ─────────────────────────────────────────────────────────────
 

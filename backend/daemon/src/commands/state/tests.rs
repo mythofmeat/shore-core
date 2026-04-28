@@ -111,6 +111,8 @@ fn memory_dream_returns_useful_phase_json() {
         let (engine, ctx, _rx) = make_ctx(&tmp);
         let mem =
             shore_config::character_memory_dir(&ctx.config.dirs.config, engine.character_name());
+        let workspace =
+            shore_config::character_workspace_dir(&ctx.config.dirs.config, engine.character_name());
         tokio::fs::create_dir_all(&mem).await.unwrap();
         tokio::fs::write(
             mem.join("notes.md"),
@@ -135,7 +137,7 @@ fn memory_dream_returns_useful_phase_json() {
             .iter()
             .any(|path| path.as_str().unwrap().contains(".dreams")));
         assert!(!mem.join("DREAMS.md").exists());
-        assert!(!mem.join("MEMORY.md").exists());
+        assert!(!workspace.join("MEMORY.md").exists());
     });
 }
 

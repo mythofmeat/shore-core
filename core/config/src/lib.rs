@@ -726,6 +726,7 @@ model_id = "claude-opus-4-6"
 
         // All defaults should be filled in.
         assert!(loaded.app.defaults.stream);
+        assert!(loaded.app.defaults.dreaming.is_none());
         assert!(!loaded.app.behavior.autonomy.enabled);
         assert!(loaded.app.behavior.autonomy.heartbeat.enabled);
         assert_eq!(

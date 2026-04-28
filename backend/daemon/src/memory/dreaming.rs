@@ -3,10 +3,21 @@ use std::path::Path;
 
 use chrono::{DateTime, Datelike, Local, Timelike, Utc};
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use shore_config::app::DreamingConfig;
-use shore_config::character_memory_dir;
+use shore_config::{
+    character_memory_dir, character_workspace_dir, LoadedConfig, SOUL_FILE, USER_FILE,
+};
 
+use shore_ledger::{CallType, LedgerClient};
+use shore_llm::types::{GenerateResponse, LlmRequest};
+use tokio::fs;
+use tracing::{debug, info, warn};
+
+use crate::memory::deferred_edits::MEMORY_INDEX_FILE;
 use crate::memory::markdown_store::{MarkdownEntry, MarkdownMemoryStore, MarkdownStoreError};
+use crate::tools::context::SharedToolContext;
+use crate::tools::{self as tool_system, ToolContext};
 
 const MIN_PROMOTION_SCORE: f32 = 0.60;
 const MIN_CANDIDATE_LEN: usize = 18;
@@ -23,6 +34,10 @@ pub enum DreamingError {
     Io(String),
     #[error("memory: {0}")]
     Memory(String),
+    #[error("config: {0}")]
+    Config(String),
+    #[error("llm: {0}")]
+    Llm(String),
     #[error("invalid schedule: {0}")]
     Schedule(String),
 }
@@ -128,6 +143,8 @@ pub struct DreamSweepResult {
     pub character: String,
     pub dry_run: bool,
     pub ran_at: String,
+    #[serde(default)]
+    pub mode: String,
     pub phase_summaries: Vec<DreamPhaseSummary>,
     pub candidate_count: usize,
     pub indexed_count: usize,
@@ -144,6 +161,18 @@ pub struct DreamSweepResult {
     pub staged_path: Option<String>,
     pub dreams_path: Option<String>,
     pub memory_path: Option<String>,
+    #[serde(default)]
+    pub inspected: Vec<String>,
+    #[serde(default)]
+    pub changed: Vec<String>,
+    #[serde(default)]
+    pub tools_used: Vec<String>,
+    #[serde(default)]
+    pub tool_rounds: u32,
+    #[serde(default)]
+    pub audit_appended: bool,
+    #[serde(default)]
+    pub final_report: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -200,7 +229,214 @@ pub async fn dream_status(
     })
 }
 
-pub async fn run_sweep(
+pub async fn run_librarian_sweep(
+    loaded_config: &LoadedConfig,
+    data_dir: &Path,
+    llm_client: &LedgerClient,
+    character: &str,
+    cached_request: Option<&LlmRequest>,
+    dry_run: bool,
+    force: bool,
+) -> Result<Option<DreamSweepResult>, DreamingError> {
+    let cfg = &loaded_config.app.memory.dreaming;
+    let memory_dir = character_memory_dir(&loaded_config.dirs.config, character);
+    let workspace_dir = character_workspace_dir(&loaded_config.dirs.config, character);
+    let memory_index_path = workspace_dir.join(MEMORY_INDEX_FILE);
+    let state = read_state(&memory_dir).await?;
+    if !force && !dry_run && !is_due(cfg, state.last_run_at.as_deref())? {
+        return Ok(None);
+    }
+
+    let store = MarkdownMemoryStore::open(&memory_dir)
+        .await
+        .map_err(|e| DreamingError::Memory(e.to_string()))?;
+    let before = snapshot_memory_files(&store, &memory_index_path).await?;
+    let now = Local::now();
+    let ran_at = now.to_rfc3339();
+
+    let mut request =
+        build_librarian_request(loaded_config, character, cached_request, dry_run, &ran_at).await?;
+    request.forensic_character = Some(character.to_string());
+    request.rid = None;
+    let tool_ctx =
+        build_librarian_tool_context(loaded_config, data_dir, llm_client, character, dry_run)
+            .await
+            .ok_or_else(|| DreamingError::Config("failed to build dreaming tool context".into()))?;
+
+    info!(
+        character,
+        dry_run,
+        max_tool_rounds = cfg.max_tool_rounds,
+        "Dreaming: starting AI librarian pass"
+    );
+
+    let loop_result = run_private_librarian_loop(
+        llm_client,
+        &mut request,
+        &tool_ctx,
+        character,
+        cfg.max_tool_rounds,
+        dry_run,
+    )
+    .await?;
+
+    if dry_run {
+        let would_write_paths = vec![
+            memory_index_path.display().to_string(),
+            memory_dir.join("DREAMS.md").display().to_string(),
+            memory_dir.join(".dreams/state.json").display().to_string(),
+        ];
+        return Ok(Some(DreamSweepResult {
+            character: character.to_string(),
+            dry_run,
+            ran_at,
+            mode: "ai_librarian".to_string(),
+            phase_summaries: vec![DreamPhaseSummary {
+                phase: "librarian".to_string(),
+                summary: format!(
+                    "dry-run AI librarian pass inspected memory with {} tool round(s); writes were disabled",
+                    loop_result.tool_rounds
+                ),
+                candidate_count: 0,
+                promoted_count: 0,
+                rejected_count: 0,
+                paths: Vec::new(),
+            }],
+            candidate_count: 0,
+            indexed_count: 0,
+            promoted_count: 0,
+            rejected_count: 0,
+            candidates: Vec::new(),
+            rem_themes: Vec::new(),
+            promotions: Vec::new(),
+            rejected: Vec::new(),
+            indexed: Vec::new(),
+            promoted: Vec::new(),
+            paths_written: Vec::new(),
+            would_write_paths,
+            staged_path: None,
+            dreams_path: None,
+            memory_path: None,
+            inspected: loop_result.inspected,
+            changed: Vec::new(),
+            tools_used: loop_result.tools_used,
+            tool_rounds: loop_result.tool_rounds,
+            audit_appended: false,
+            final_report: loop_result.final_report,
+        }));
+    }
+
+    let memory_created_by_fallback =
+        ensure_memory_index_after_librarian(&store, &memory_index_path, character, &ran_at).await?;
+    if memory_created_by_fallback {
+        if let Err(e) =
+            crate::memory::deferred_edits::note_memory_index_deferred(&data_dir.join(character))
+        {
+            warn!(
+                character,
+                error = %e,
+                "Dreaming: failed to defer fallback MEMORY.md activation"
+            );
+        }
+    }
+
+    let dreams_before = before.get("DREAMS.md").cloned();
+    let dreams_after_before_fallback = store
+        .read("DREAMS.md")
+        .await
+        .ok()
+        .map(|entry| entry.content);
+    let model_wrote_dreams =
+        dreams_after_before_fallback.is_some() && dreams_after_before_fallback != dreams_before;
+    let mut audit_appended = false;
+    if !model_wrote_dreams {
+        append_fallback_librarian_audit(
+            &store,
+            &ran_at,
+            &loop_result.inspected,
+            &loop_result.changed,
+            memory_created_by_fallback,
+            loop_result.final_report.as_deref(),
+        )
+        .await?;
+        audit_appended = true;
+    }
+
+    let mut next_state = state;
+    next_state.last_run_at = Some(ran_at.clone());
+    next_state.runs += 1;
+    next_state.last_candidates_path = None;
+    next_state.last_signals_path = None;
+    next_state.last_promotions_path = None;
+    write_state(&memory_dir, &next_state).await?;
+
+    let after = snapshot_memory_files(&store, &memory_index_path).await?;
+    let mut changed = changed_paths(&before, &after);
+    if !changed.iter().any(|path| path == ".dreams/state.json") {
+        changed.push(".dreams/state.json".to_string());
+    }
+    let paths_written = changed
+        .iter()
+        .map(|path| {
+            if path == MEMORY_INDEX_FILE {
+                memory_index_path.display().to_string()
+            } else {
+                memory_dir.join(path).display().to_string()
+            }
+        })
+        .collect::<Vec<_>>();
+    let indexed_count = usize::from(after.contains_key(MEMORY_INDEX_FILE));
+
+    Ok(Some(DreamSweepResult {
+        character: character.to_string(),
+        dry_run,
+        ran_at,
+        mode: "ai_librarian".to_string(),
+        phase_summaries: vec![DreamPhaseSummary {
+            phase: "librarian".to_string(),
+            summary: format!(
+                "AI librarian pass used {} tool round(s), changed {} file(s), and {} DREAMS.md audit fallback",
+                loop_result.tool_rounds,
+                changed.len(),
+                if audit_appended { "needed a" } else { "did not need a" }
+            ),
+            candidate_count: 0,
+            promoted_count: indexed_count,
+            rejected_count: 0,
+            paths: paths_written.clone(),
+        }],
+        candidate_count: 0,
+        indexed_count,
+        promoted_count: 0,
+        rejected_count: 0,
+        candidates: Vec::new(),
+        rem_themes: Vec::new(),
+        promotions: Vec::new(),
+        rejected: Vec::new(),
+        indexed: if after.contains_key(MEMORY_INDEX_FILE) {
+            vec![MEMORY_INDEX_FILE.to_string()]
+        } else {
+            Vec::new()
+        },
+        promoted: Vec::new(),
+        paths_written,
+        would_write_paths: Vec::new(),
+        staged_path: Some(memory_dir.join(".dreams/state.json").display().to_string()),
+        dreams_path: Some(memory_dir.join("DREAMS.md").display().to_string()),
+        memory_path: Some(memory_index_path.display().to_string()),
+        inspected: loop_result.inspected,
+        changed,
+        tools_used: loop_result.tools_used,
+        tool_rounds: loop_result.tool_rounds,
+        audit_appended,
+        final_report: loop_result.final_report,
+    }))
+}
+
+/// Legacy deterministic sweep retained only for dry-run diagnostics and
+/// fallback-oriented unit coverage. Production scheduled and command-driven
+/// dreaming uses [`run_librarian_sweep`].
+pub async fn run_legacy_diagnostic_sweep(
     config_dir: &Path,
     character: &str,
     cfg: &DreamingConfig,
@@ -208,6 +444,8 @@ pub async fn run_sweep(
     force: bool,
 ) -> Result<Option<DreamSweepResult>, DreamingError> {
     let memory_dir = character_memory_dir(config_dir, character);
+    let workspace_dir = character_workspace_dir(config_dir, character);
+    let memory_index_path = workspace_dir.join(MEMORY_INDEX_FILE);
     let state = read_state(&memory_dir).await?;
     if !force && !dry_run && !is_due(cfg, state.last_run_at.as_deref())? {
         return Ok(None);
@@ -242,7 +480,7 @@ pub async fn run_sweep(
         memory_dir.join(&promotions_rel).display().to_string(),
         memory_dir.join(".dreams/state.json").display().to_string(),
         memory_dir.join("DREAMS.md").display().to_string(),
-        memory_dir.join("MEMORY.md").display().to_string(),
+        memory_index_path.display().to_string(),
         memory_dir.join(&light_report_rel).display().to_string(),
         memory_dir.join(&rem_report_rel).display().to_string(),
         memory_dir.join(&deep_report_rel).display().to_string(),
@@ -265,6 +503,7 @@ pub async fn run_sweep(
             character: character.to_string(),
             dry_run,
             ran_at,
+            mode: "legacy_diagnostic".to_string(),
             phase_summaries: initial_phase_summaries,
             candidate_count: deep.candidates.len(),
             indexed_count: deep.promoted.len(),
@@ -281,6 +520,12 @@ pub async fn run_sweep(
             staged_path: None,
             dreams_path: None,
             memory_path: None,
+            inspected: Vec::new(),
+            changed: Vec::new(),
+            tools_used: Vec::new(),
+            tool_rounds: 0,
+            audit_appended: false,
+            final_report: None,
         }));
     }
 
@@ -297,7 +542,7 @@ pub async fn run_sweep(
         &deep,
     )
     .await?;
-    write_memory_index(&store, character, &ran_at, &deep.promoted).await?;
+    write_memory_index(&store, &memory_index_path, character, &ran_at, &deep.promoted).await?;
 
     let mut next_state = state;
     next_state.last_run_at = Some(ran_at.clone());
@@ -314,6 +559,7 @@ pub async fn run_sweep(
         character: character.to_string(),
         dry_run,
         ran_at,
+        mode: "legacy_diagnostic".to_string(),
         phase_summaries: phase_summaries(&light, &rem, &deep, &paths_written),
         candidate_count: deep.candidates.len(),
         indexed_count: deep.promoted.len(),
@@ -329,8 +575,568 @@ pub async fn run_sweep(
         would_write_paths: Vec::new(),
         staged_path: Some(memory_dir.join(&candidates_rel).display().to_string()),
         dreams_path: Some(memory_dir.join("DREAMS.md").display().to_string()),
-        memory_path: Some(memory_dir.join("MEMORY.md").display().to_string()),
+        memory_path: Some(memory_index_path.display().to_string()),
+        inspected: Vec::new(),
+        changed: Vec::new(),
+        tools_used: Vec::new(),
+        tool_rounds: 0,
+        audit_appended: false,
+        final_report: None,
     }))
+}
+
+#[derive(Debug, Default)]
+struct LibrarianLoopResult {
+    final_report: Option<String>,
+    inspected: Vec<String>,
+    changed: Vec<String>,
+    tools_used: Vec<String>,
+    tool_rounds: u32,
+}
+
+type MemorySnapshot = BTreeMap<String, String>;
+
+async fn build_librarian_request(
+    loaded_config: &LoadedConfig,
+    character: &str,
+    cached_request: Option<&LlmRequest>,
+    dry_run: bool,
+    ran_at: &str,
+) -> Result<LlmRequest, DreamingError> {
+    let display_name = loaded_config.app.defaults.resolve_display_name();
+    let character_data_dir = loaded_config.dirs.data.join(character);
+    if let Err(e) = crate::memory::deferred_edits::ensure_active_prompt_snapshot(
+        &character_data_dir,
+        &loaded_config.dirs.config,
+        character,
+    ) {
+        warn!(
+            character,
+            error = %e,
+            "Dreaming: failed to prepare active prompt snapshot"
+        );
+    }
+
+    let character_definition =
+        crate::memory::deferred_edits::load_active_prompt_file(&character_data_dir, SOUL_FILE);
+    let user_definition =
+        crate::memory::deferred_edits::load_active_prompt_file(&character_data_dir, USER_FILE);
+    let system = build_librarian_prompt(
+        character,
+        &display_name,
+        character_definition.as_deref(),
+        user_definition.as_deref(),
+        dry_run,
+        ran_at,
+    );
+    let user_prompt = if dry_run {
+        "Run the dry-run memory librarian pass now. Inspect memory files with read-only tools and finish with a proposed plan. Do not write, edit, or emit a user-facing message."
+    } else {
+        "Run the memory librarian pass now. Use memory tools to inspect and improve workspace/memory, update MEMORY.md (at the workspace root), and write an audit entry to memory/DREAMS.md. Do not emit a user-facing message."
+    };
+    if let Some(cached) = cached_request {
+        let mut request = cached.clone();
+        request.rid = None;
+        request.messages.push(json!({
+            "role": "system",
+            "content": format!("{system}\n\n{user_prompt}"),
+        }));
+        return Ok(request);
+    }
+
+    let resolved = resolve_dreaming_model(loaded_config)?;
+    let tools = build_librarian_tool_defs(character, &display_name, dry_run);
+    LedgerClient::build_request(
+        resolved,
+        vec![json!({"role": "user", "content": user_prompt})],
+        Some(json!(system)),
+        Some(tools),
+        None,
+    )
+    .map_err(|e| DreamingError::Llm(e.to_string()))
+}
+
+fn resolve_dreaming_model(
+    loaded_config: &LoadedConfig,
+) -> Result<&shore_config::models::ResolvedModel, DreamingError> {
+    if let Some(name) = loaded_config.app.defaults.dreaming.as_deref() {
+        return loaded_config
+            .models
+            .find_model(name)
+            .map_err(|e| DreamingError::Config(e.to_string()));
+    }
+    if let Some(name) = loaded_config.app.defaults.model.as_deref() {
+        return loaded_config
+            .models
+            .find_model(name)
+            .map_err(|e| DreamingError::Config(e.to_string()));
+    }
+    loaded_config
+        .models
+        .first_chat_model()
+        .ok_or_else(|| DreamingError::Config("no chat model configured for dreaming".into()))
+}
+
+fn build_librarian_prompt(
+    character: &str,
+    display_name: &str,
+    character_definition: Option<&str>,
+    user_definition: Option<&str>,
+    dry_run: bool,
+    ran_at: &str,
+) -> String {
+    let mut prompt = format!(
+        "\
+You are {character}, running a private memory maintenance pass for {display_name}.
+
+This is not a chat turn. Do not send a user-facing message.
+
+You are running a character-led memory librarian pass. Your task is to make your markdown memory easier for future-you to search and recall.
+
+Use your memory tools to inspect existing files before changing them. Organize durable long-term facts so they are easy to find. Prefer updating existing files over creating duplicates. Move durable facts out of daily or raw notes into appropriate long-term files when useful. Deduplicate repeated facts. Mark stale, superseded, or incorrect information clearly rather than preserving contradictions as equally current. Leave uncertain cases in a review or needs-review area.
+
+Maintain `MEMORY.md` (at the workspace root, alongside `SOUL.md`/`USER.md`/`AGENTS.md`/`TOOLS.md`/`HEARTBEAT.md`) as the prompt-visible memory index. It should include:
+- an overview of important memory files and what they contain
+- recently updated or worth-reading files
+- ongoing conversational throughlines that remain relevant
+- unresolved memory-maintenance questions or contradictions
+
+`MEMORY.md` is not the full memory itself. It must not duplicate `SOUL.md`, `USER.md`, `AGENTS.md`, `TOOLS.md`, or `HEARTBEAT.md`; those are protected prompt files with separate roles.
+`MEMORY.md` is prompt-visible through an active snapshot. Updating `MEMORY.md` changes the canonical file now, but the new index only becomes prompt-active after the next compaction boundary.
+
+Write an audit entry to `memory/DREAMS.md` describing:
+- timestamp: {ran_at}
+- that this was an AI librarian dreaming pass
+- files inspected
+- files changed
+- important moves, dedupes, or supersessions
+- unresolved issues
+- whether `MEMORY.md` was updated
+
+Generated dreaming artifacts are not durable memory sources. Do not mine `.dreams/**`, `DREAMS.md`, `dreams.md`, `MEMORY.md`, or `dreaming/**` as facts, although you may read `MEMORY.md` and `DREAMS.md` for index and audit continuity.
+
+Do not silently rewrite protected prompt files: `SOUL.md`, `USER.md`, `AGENTS.md`, `TOOLS.md`, or `HEARTBEAT.md`. If information belongs there, record it under Needs Review in `MEMORY.md` and/or in `DREAMS.md`.
+
+The memory folder is self-organizing. Do not impose a rigid folder taxonomy. Inspect the existing layout and improve it sympathetically.
+"
+    );
+
+    if dry_run {
+        prompt.push_str(
+            "\nThis is a dry run. Write and edit tools are unavailable. Inspect files and produce a concise internal plan of what would change.\n",
+        );
+    }
+
+    if let Some(definition) = character_definition.filter(|s| !s.trim().is_empty()) {
+        prompt.push_str("\n<character_identity>\n");
+        prompt.push_str(definition);
+        prompt.push_str("\n</character_identity>\n");
+    }
+    if let Some(definition) = user_definition.filter(|s| !s.trim().is_empty()) {
+        prompt.push_str("\n<user_profile>\n");
+        prompt.push_str(definition);
+        prompt.push_str("\n</user_profile>\n");
+    }
+    prompt
+}
+
+fn build_librarian_tool_defs(character: &str, display_name: &str, dry_run: bool) -> Vec<Value> {
+    let toggles = shore_config::app::ToolToggles::default();
+    let allowed = |name: &str| {
+        if dry_run {
+            matches!(
+                name,
+                "read" | "list_files" | "search" | "search_history" | "check_time"
+            )
+        } else {
+            matches!(
+                name,
+                "read"
+                    | "write"
+                    | "edit"
+                    | "list_files"
+                    | "search"
+                    | "search_history"
+                    | "check_time"
+            )
+        }
+    };
+    tool_system::render_tool_defs(false, &toggles, character, display_name)
+        .into_iter()
+        .filter(|tool| {
+            tool.get("name")
+                .and_then(|name| name.as_str())
+                .is_some_and(allowed)
+        })
+        .collect()
+}
+
+async fn build_librarian_tool_context(
+    loaded_config: &LoadedConfig,
+    data_dir: &Path,
+    llm_client: &LedgerClient,
+    character: &str,
+    dry_run: bool,
+) -> Option<SharedToolContext> {
+    let character_data_dir = data_dir.join(character);
+    let image_gen_config = crate::memory::compaction_impls::resolve_image_gen_config(
+        loaded_config.app.defaults.image_generation.as_deref(),
+        &loaded_config.models.image_generation,
+    )
+    .ok();
+    let embedding_config = crate::memory::retrieval::resolve_embedding_config(
+        loaded_config.app.defaults.embedding.as_deref(),
+        &loaded_config.models.embedding,
+    )
+    .ok();
+
+    Some(SharedToolContext {
+        image_dir_val: character_data_dir
+            .join("images")
+            .to_string_lossy()
+            .into_owned(),
+        llm_client_val: llm_client.inner().clone(),
+        image_gen_config_val: image_gen_config,
+        search_config_val: loaded_config.app.behavior.tool_use.search.clone(),
+        character_name_val: character.to_string(),
+        workspace_dir_val: character_workspace_dir(&loaded_config.dirs.config, character)
+            .to_string_lossy()
+            .into_owned(),
+        markdown_store_val: MarkdownMemoryStore::open_sync(character_memory_dir(
+            &loaded_config.dirs.config,
+            character,
+        ))
+        .ok(),
+        memory_retrieval_config_val: loaded_config.app.memory.retrieval.clone(),
+        embedding_config_val: embedding_config,
+        memory_index_path_val: character_data_dir.join("memory_index.json"),
+        memory_access_allowed_val: true,
+        memory_read_allowed_val: true,
+        memory_write_allowed_val: !dry_run,
+        config_dir_val: loaded_config.dirs.config.to_string_lossy().into_owned(),
+        character_data_dir_val: character_data_dir.to_string_lossy().into_owned(),
+    })
+}
+
+async fn run_private_librarian_loop(
+    client: &LedgerClient,
+    request: &mut LlmRequest,
+    tool_ctx: &dyn ToolContext,
+    character: &str,
+    max_tool_rounds: u32,
+    dry_run: bool,
+) -> Result<LibrarianLoopResult, DreamingError> {
+    let mut loop_result = LibrarianLoopResult::default();
+
+    for iteration in 0..max_tool_rounds {
+        let resp = client
+            .generate(request, CallType::Dreaming, character, false)
+            .await
+            .map_err(|e| DreamingError::Llm(e.to_string()))?;
+        remember_final_report(&mut loop_result, &resp);
+        push_assistant_response(request, &resp);
+
+        let tool_uses = crate::content_util::extract_tool_uses(&resp.content_blocks);
+        if tool_uses.is_empty() || resp.finish_reason != "tool_use" {
+            return Ok(loop_result);
+        }
+
+        loop_result.tool_rounds += 1;
+        let mut tool_results = Vec::new();
+        for (id, name, input) in tool_uses {
+            loop_result.tools_used.push(name.clone());
+            record_librarian_tool_intent(&mut loop_result, &name, &input);
+            debug!(
+                character,
+                iteration,
+                tool = %name,
+                input = %input,
+                "Dreaming: executing private librarian tool"
+            );
+
+            let (output, is_error) =
+                if let Some(blocked) = blocked_librarian_tool_result(&name, &input, dry_run) {
+                    blocked
+                } else {
+                    crate::content_util::dispatch_result_to_output(
+                        tool_system::dispatch_tool(&name, input.clone(), tool_ctx).await,
+                    )
+                };
+
+            if !is_error && matches!(name.as_str(), "write" | "edit") {
+                if let Some(path) = tool_path(&input) {
+                    loop_result.changed.push(path.to_string());
+                }
+            }
+
+            tool_results.push(crate::content_util::build_tool_result_json(
+                &id, &output, is_error,
+            ));
+        }
+        request
+            .messages
+            .push(json!({"role": "user", "content": tool_results}));
+    }
+
+    warn!(
+        character,
+        max_tool_rounds, "Dreaming: private librarian tool loop hit configured cap"
+    );
+    Ok(loop_result)
+}
+
+fn remember_final_report(loop_result: &mut LibrarianLoopResult, resp: &GenerateResponse) {
+    let text = resp.extract_text();
+    if !text.trim().is_empty() {
+        loop_result.final_report = Some(text.trim().to_string());
+    }
+}
+
+fn push_assistant_response(request: &mut LlmRequest, resp: &GenerateResponse) {
+    let assistant_content: Vec<Value> = if request.sdk == shore_config::models::Sdk::Zai {
+        resp.content_blocks
+            .iter()
+            .map(crate::content_util::content_block_to_json)
+            .collect()
+    } else {
+        resp.content_blocks
+            .iter()
+            .filter_map(crate::content_util::content_block_to_api_json)
+            .collect()
+    };
+
+    if !assistant_content.is_empty() {
+        request
+            .messages
+            .push(json!({"role": "assistant", "content": assistant_content}));
+    } else if !resp.content.trim().is_empty() {
+        request
+            .messages
+            .push(json!({"role": "assistant", "content": resp.content}));
+    }
+}
+
+fn blocked_librarian_tool_result(
+    name: &str,
+    input: &Value,
+    dry_run: bool,
+) -> Option<(String, bool)> {
+    if name == "exec" {
+        return Some((
+            "exec is not available during private dreaming passes".to_string(),
+            true,
+        ));
+    }
+    if dry_run && matches!(name, "write" | "edit") {
+        return Some((
+            "dry-run dreaming does not write or edit files".to_string(),
+            true,
+        ));
+    }
+    if matches!(name, "write" | "edit") {
+        if let Some(path) = tool_path(input) {
+            if crate::memory::deferred_edits::normalize_protected_path(path).is_some() {
+                return Some((
+                    "protected prompt files are not edited during dreaming; record needed changes in MEMORY.md Needs Review or memory/DREAMS.md"
+                        .to_string(),
+                    true,
+                ));
+            }
+        }
+    }
+    None
+}
+
+fn record_librarian_tool_intent(result: &mut LibrarianLoopResult, name: &str, input: &Value) {
+    match name {
+        "read" | "list_files" => {
+            if let Some(path) = tool_path(input) {
+                push_unique(&mut result.inspected, path.to_string());
+            }
+        }
+        "search" | "search_history" => {
+            let query = input
+                .get("query")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<missing query>");
+            let scope = tool_path(input).unwrap_or("memory");
+            push_unique(&mut result.inspected, format!("{name}:{scope}:{query}"));
+        }
+        _ => {}
+    }
+}
+
+fn tool_path(input: &Value) -> Option<&str> {
+    input.get("path").and_then(|v| v.as_str())
+}
+
+fn push_unique(items: &mut Vec<String>, value: String) {
+    if !items.iter().any(|existing| existing == &value) {
+        items.push(value);
+    }
+}
+
+async fn snapshot_memory_files(
+    store: &MarkdownMemoryStore,
+    memory_index_path: &Path,
+) -> Result<MemorySnapshot, DreamingError> {
+    let mut snapshot = BTreeMap::new();
+    for entry in store
+        .list_all()
+        .await
+        .map_err(|e| DreamingError::Memory(e.to_string()))?
+    {
+        snapshot.insert(entry.path, entry.content);
+    }
+    match store.read("DREAMS.md").await {
+        Ok(entry) => {
+            snapshot.insert("DREAMS.md".to_string(), entry.content);
+        }
+        Err(MarkdownStoreError::NotFound(_)) => {}
+        Err(e) => return Err(DreamingError::Memory(e.to_string())),
+    }
+    match fs::read_to_string(memory_index_path).await {
+        Ok(content) => {
+            snapshot.insert(MEMORY_INDEX_FILE.to_string(), content);
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(DreamingError::Io(e.to_string())),
+    }
+    Ok(snapshot)
+}
+
+fn changed_paths(before: &MemorySnapshot, after: &MemorySnapshot) -> Vec<String> {
+    let mut keys = before
+        .keys()
+        .chain(after.keys())
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    keys.retain(|path| before.get(path) != after.get(path));
+    keys.into_iter().collect()
+}
+
+async fn ensure_memory_index_after_librarian(
+    store: &MarkdownMemoryStore,
+    memory_index_path: &Path,
+    character: &str,
+    ran_at: &str,
+) -> Result<bool, DreamingError> {
+    match fs::read_to_string(memory_index_path).await {
+        Ok(content) if !content.trim().is_empty() => Ok(false),
+        Ok(_) => {
+            write_fallback_memory_index(store, memory_index_path, character, ran_at).await?;
+            Ok(true)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            write_fallback_memory_index(store, memory_index_path, character, ran_at).await?;
+            Ok(true)
+        }
+        Err(e) => Err(DreamingError::Io(e.to_string())),
+    }
+}
+
+async fn write_fallback_memory_index(
+    store: &MarkdownMemoryStore,
+    memory_index_path: &Path,
+    character: &str,
+    ran_at: &str,
+) -> Result<(), DreamingError> {
+    let entries = store
+        .list_all()
+        .await
+        .map_err(|e| DreamingError::Memory(e.to_string()))?;
+    let mut body = String::new();
+    body.push_str("# Memory Index\n\n");
+    body.push_str(
+        "This file is the character's map of long-term memory. It is not the full memory itself.\n",
+    );
+    body.push_str("Use it to decide which memory files to inspect before answering.\n\n");
+    body.push_str("Core user facts and standing behavior guidance are already loaded from USER.md and AGENTS.md; do not duplicate them here unless needed as pointers to memory files.\n\n");
+    body.push_str(&format!("Character: {character}\n"));
+    body.push_str(&format!("Last updated: {ran_at}\n"));
+    body.push_str("Fallback note: Rust created this minimal index because the AI librarian pass did not leave a usable MEMORY.md.\n\n");
+    body.push_str("## Memory areas\n\n");
+    if entries.is_empty() {
+        body.push_str("- No ordinary memory files were found yet.\n");
+    } else {
+        for entry in entries.iter().take(MAX_INDEX_FILES) {
+            body.push_str(&format!(
+                "- `{}` - {}\n",
+                entry.path,
+                memory_file_summary(entry)
+            ));
+        }
+    }
+    body.push_str("\n## Recently updated files\n\n");
+    body.push_str("- Needs review during the next AI librarian pass.\n");
+    body.push_str("\n## Current conversational throughlines\n\n");
+    body.push_str("- Needs review during the next AI librarian pass.\n");
+    body.push_str("\n## Needs review\n\n");
+    body.push_str("- Previous dreaming pass did not update MEMORY.md directly.\n");
+    if let Some(parent) = memory_index_path.parent() {
+        fs::create_dir_all(parent)
+            .await
+            .map_err(|e| DreamingError::Io(e.to_string()))?;
+    }
+    fs::write(memory_index_path, body)
+        .await
+        .map_err(|e| DreamingError::Io(e.to_string()))
+}
+
+async fn append_fallback_librarian_audit(
+    store: &MarkdownMemoryStore,
+    ran_at: &str,
+    inspected: &[String],
+    changed: &[String],
+    memory_created_by_fallback: bool,
+    final_report: Option<&str>,
+) -> Result<(), DreamingError> {
+    let mut body = String::new();
+    body.push_str(&format!("AI librarian dreaming pass at `{ran_at}`.\n\n"));
+    body.push_str("Files inspected:\n");
+    push_markdown_list_or_none(&mut body, inspected);
+    body.push_str("\nFiles changed by tools:\n");
+    push_markdown_list_or_none(&mut body, changed);
+    body.push_str("\nImportant moves/dedupes/supersessions:\n");
+    body.push_str(
+        "- The model did not write an audit entry, so Rust recorded this fallback trace.\n",
+    );
+    body.push_str("\nUnresolved issues:\n");
+    if memory_created_by_fallback {
+        body.push_str("- `MEMORY.md` was missing or empty after the pass and was recreated as a minimal fallback index.\n");
+    } else {
+        body.push_str("- Review the final internal report for any details not captured in this fallback entry.\n");
+    }
+    body.push_str("\nMEMORY.md updated:\n");
+    body.push_str(if memory_created_by_fallback {
+        "- Yes, by Rust fallback.\n"
+    } else {
+        "- Present after the pass.\n"
+    });
+    if let Some(report) = final_report.filter(|report| !report.trim().is_empty()) {
+        body.push_str("\nFinal internal report:\n");
+        body.push_str(report.trim());
+        body.push('\n');
+    }
+
+    crate::memory::markdown_query::append_dream_entry(
+        store,
+        Local::now().fixed_offset(),
+        "AI librarian dreaming pass",
+        &body,
+    )
+    .await
+    .map_err(|e| DreamingError::Memory(e.to_string()))
+}
+
+fn push_markdown_list_or_none(body: &mut String, items: &[String]) {
+    if items.is_empty() {
+        body.push_str("- None recorded.\n");
+        return;
+    }
+    for item in items {
+        body.push_str(&format!("- `{}`\n", item.replace('`', "'")));
+    }
 }
 
 pub fn is_due(cfg: &DreamingConfig, last_run_at: Option<&str>) -> Result<bool, DreamingError> {
@@ -958,6 +1764,7 @@ async fn write_phase_reports(
 
 async fn write_memory_index(
     store: &MarkdownMemoryStore,
+    memory_index_path: &Path,
     character: &str,
     ran_at: &str,
     throughlines: &[DreamPromotion],
@@ -982,7 +1789,7 @@ async fn write_memory_index(
     body.push_str("# Memory Index\n\n");
     body.push_str(&format!("Character: {character}\n"));
     body.push_str(&format!("Last updated: {ran_at}\n\n"));
-    body.push_str("This file is the prompt-visible index for workspace/memory. It maps durable memory files, recent updates, and still-relevant conversational throughlines.\n\n");
+    body.push_str("This file is the prompt-visible memory index. It maps durable memory files in workspace/memory, recent updates, and still-relevant conversational throughlines.\n\n");
     body.push_str("It is not the character definition, user profile, standing behavior, tool guide, or heartbeat guide. Those roles stay in SOUL.md, USER.md, AGENTS.md, TOOLS.md, and HEARTBEAT.md.\n\n");
 
     body.push_str("## Memory Files\n\n");
@@ -1042,10 +1849,14 @@ async fn write_memory_index(
         "- Read or search the referenced memory files for details before relying on them.\n",
     );
 
-    store
-        .write("MEMORY.md", &body)
+    if let Some(parent) = memory_index_path.parent() {
+        fs::create_dir_all(parent)
+            .await
+            .map_err(|e| DreamingError::Io(e.to_string()))?;
+    }
+    fs::write(memory_index_path, body)
         .await
-        .map_err(|e| DreamingError::Memory(e.to_string()))
+        .map_err(|e| DreamingError::Io(e.to_string()))
 }
 
 fn memory_file_summary(entry: &MarkdownEntry) -> String {
@@ -1117,7 +1928,8 @@ fn update_seen_state(state: &mut DreamState, candidates: &[DreamCandidate]) {
 
 pub fn is_generated_dreaming_path(path: &str) -> bool {
     let lower = path.replace('\\', "/").to_lowercase();
-    lower == "dreams.md"
+    lower == "memory.md"
+        || lower == "dreams.md"
         || lower == "dreams"
         || lower == "dreams/"
         || lower.starts_with(".dreams/")
@@ -1126,7 +1938,7 @@ pub fn is_generated_dreaming_path(path: &str) -> bool {
 
 fn is_candidate_source_path(path: &str) -> bool {
     let lower = path.replace('\\', "/").to_lowercase();
-    !is_generated_dreaming_path(path) && lower != "memory.md" && lower.ends_with(".md")
+    !is_generated_dreaming_path(path) && lower.ends_with(".md")
 }
 
 fn candidate_text_from_line(line: &str) -> Option<String> {
@@ -1399,13 +2211,364 @@ fn diary_text(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shore_ledger::LedgerClient;
+    use shore_llm::LlmClient;
+    use shore_test_harness::{MockLlmServer, TestConfigBuilder};
     use tokio::fs;
+
+    fn test_ledger(tmp: &tempfile::TempDir) -> LedgerClient {
+        LedgerClient::new(LlmClient::new(), &tmp.path().join("ledger.db")).unwrap()
+    }
+
+    fn librarian_config(
+        tmp: &tempfile::TempDir,
+        mock: &MockLlmServer,
+        character: &str,
+        max_tool_rounds: u32,
+    ) -> LoadedConfig {
+        let mut config = TestConfigBuilder::new()
+            .character_name(character)
+            .build(tmp.path(), &mock.base_url());
+        config.app.memory.dreaming.enabled = true;
+        config.app.memory.dreaming.max_tool_rounds = max_tool_rounds;
+        config
+    }
+
+    #[tokio::test]
+    async fn ai_librarian_sweep_uses_tools_and_updates_memory_and_audit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mock = MockLlmServer::start().await;
+        let config = librarian_config(&tmp, &mock, "alice", 10);
+        let mem = character_memory_dir(&config.dirs.config, "alice");
+        fs::create_dir_all(mem.join("daily")).await.unwrap();
+        fs::write(
+            mem.join("daily/2026-04.md"),
+            "# Daily April Notes\n\n- Trevor wants Shore memory to use MEMORY.md as an index.\n- Trevor wants Shore memory to use MEMORY.md as an index.\n- Old recap block should be replaced.\n",
+        )
+        .await
+        .unwrap();
+        fs::write(
+            mem.join("shore-notes.md"),
+            "# Shore Notes\n\n- Older note.\n",
+        )
+        .await
+        .unwrap();
+
+        mock.enqueue_json_tool_use("t_list", "list_files", json!({"path": "memory"}))
+            .await;
+        mock.enqueue_json_tool_use("t_read", "read", json!({"path": "memory/daily/2026-04.md"}))
+            .await;
+        mock.enqueue_json_tool_use(
+            "t_search",
+            "search",
+            json!({"path": "memory", "query": "MEMORY.md", "max_results": 10}),
+        )
+        .await;
+        mock.enqueue_json_tool_use(
+            "t_write_notes",
+            "write",
+            json!({
+                "path": "memory/shore-notes.md",
+                "content": "# Shore Notes\n\n- Shore memory uses `MEMORY.md` as a prompt-visible index rather than an old recap block.\n- Duplicate daily notes about the index direction were consolidated here.\n"
+            }),
+        )
+        .await;
+        mock.enqueue_json_tool_use(
+            "t_write_memory",
+            "write",
+            json!({
+                "path": "MEMORY.md",
+                "content": "# Memory Index\n\nThis file is the character's map of long-term memory. It is not the full memory itself.\nUse it to decide which memory files to inspect before answering.\n\nCore user facts and standing behavior guidance are already loaded from USER.md and AGENTS.md; do not duplicate them here unless needed as pointers to memory files.\n\n## Memory areas\n\n- `shore-notes.md` - Durable Shore memory architecture notes.\n- `daily/2026-04.md` - Raw April notes; read only for source context.\n\n## Recently updated files\n\n- `shore-notes.md` - Consolidated duplicate daily notes about MEMORY.md replacing recap.\n\n## Current conversational throughlines\n\n- Shore memory should remain markdown-first, with dreaming acting as an AI librarian.\n\n## Needs review\n\n- None.\n"
+            }),
+        )
+        .await;
+        mock.enqueue_json_tool_use(
+            "t_write_dreams",
+            "write",
+            json!({
+                "path": "memory/DREAMS.md",
+                "content": "# Dreams\n\n## 2026-04-27 - AI librarian dreaming pass\n\n- Files inspected: `daily/2026-04.md`, `shore-notes.md`.\n- Files changed: `shore-notes.md`, `MEMORY.md`, `DREAMS.md`.\n- Moved/deduped/superseded: duplicate daily notes about MEMORY.md were consolidated into `shore-notes.md`; old recap language was superseded.\n- Unresolved issues: none.\n- MEMORY.md updated: yes.\n"
+            }),
+        )
+        .await;
+        mock.enqueue_json_text("Librarian pass complete.").await;
+
+        let result = run_librarian_sweep(
+            &config,
+            &config.dirs.data,
+            &test_ledger(&tmp),
+            "alice",
+            None,
+            false,
+            true,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(result.mode, "ai_librarian");
+        assert!(!result.audit_appended);
+        assert!(result.tools_used.contains(&"list_files".to_string()));
+        assert!(result.tools_used.contains(&"read".to_string()));
+        assert!(result.tools_used.contains(&"search".to_string()));
+        assert!(result.tools_used.contains(&"write".to_string()));
+        assert_eq!(result.tool_rounds, 6);
+
+        let notes = fs::read_to_string(mem.join("shore-notes.md"))
+            .await
+            .unwrap();
+        assert!(notes.contains("consolidated"));
+        let workspace = character_workspace_dir(&config.dirs.config, "alice");
+        let memory = fs::read_to_string(workspace.join("MEMORY.md"))
+            .await
+            .unwrap();
+        assert!(memory.contains("# Memory Index"));
+        assert!(memory.contains("shore-notes.md"));
+        assert!(!memory
+            .contains("Trevor wants Shore memory to use MEMORY.md as an index.\n- Trevor wants"));
+        let dreams = fs::read_to_string(mem.join("DREAMS.md")).await.unwrap();
+        assert!(dreams.contains("AI librarian dreaming pass"));
+        assert!(dreams.contains("MEMORY.md updated: yes"));
+        assert!(
+            crate::memory::deferred_edits::load_memory_index(
+                &config.dirs.data.join("alice"),
+                &config.dirs.config,
+                "alice"
+            )
+            .is_none(),
+            "new MEMORY.md content should stay out of the prompt snapshot until compaction"
+        );
+        let soul = fs::read_to_string(
+            character_workspace_dir(&config.dirs.config, "alice").join(SOUL_FILE),
+        )
+        .await
+        .unwrap();
+        assert!(soul.contains("concise test assistant"));
+        assert!(mem.join(".dreams/state.json").exists());
+    }
+
+    #[tokio::test]
+    async fn ai_librarian_sweep_appends_after_cached_request_prefix() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mock = MockLlmServer::start().await;
+        let config = librarian_config(&tmp, &mock, "alice", 3);
+        let resolved = config.models.first_chat_model().unwrap();
+        let cached_request = LedgerClient::build_request(
+            resolved,
+            vec![
+                json!({"role": "user", "content": "original user turn"}),
+                json!({"role": "assistant", "content": "original assistant turn"}),
+            ],
+            Some(json!([{ "type": "text", "text": "cached system prefix" }])),
+            Some(vec![json!({
+                "name": "read",
+                "description": "sentinel cached tool definition",
+                "input_schema": { "type": "object", "properties": {} }
+            })]),
+            None,
+        )
+        .unwrap();
+
+        mock.enqueue_json_text("Librarian pass complete.").await;
+
+        run_librarian_sweep(
+            &config,
+            &config.dirs.data,
+            &test_ledger(&tmp),
+            "alice",
+            Some(&cached_request),
+            false,
+            true,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        let requests = mock.received_requests().await;
+        assert_eq!(requests.len(), 1);
+        let body = &requests[0];
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[0]["role"], "user");
+        assert_eq!(messages[1]["role"], "assistant");
+        assert_eq!(messages[2]["role"], "user");
+        assert!(messages[0].to_string().contains("original user turn"));
+        assert!(messages[1].to_string().contains("original assistant turn"));
+        assert!(messages[2].to_string().contains("memory librarian pass"));
+        assert!(body["system"].to_string().contains("cached system prefix"));
+        assert_eq!(body["tools"][0]["name"], "read");
+        assert!(body["tools"][0]["description"]
+            .as_str()
+            .unwrap()
+            .contains("sentinel cached"));
+    }
+
+    #[tokio::test]
+    async fn zero_max_tool_rounds_sends_no_librarian_request() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mock = MockLlmServer::start().await;
+        let config = librarian_config(&tmp, &mock, "alice", 0);
+        let mem = character_memory_dir(&config.dirs.config, "alice");
+        let workspace = character_workspace_dir(&config.dirs.config, "alice");
+        fs::create_dir_all(&mem).await.unwrap();
+        fs::write(mem.join("notes.md"), "# Notes\n\n- Durable note.\n")
+            .await
+            .unwrap();
+
+        let result = run_librarian_sweep(
+            &config,
+            &config.dirs.data,
+            &test_ledger(&tmp),
+            "alice",
+            None,
+            false,
+            true,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(result.tool_rounds, 0);
+        assert!(mock.received_requests().await.is_empty());
+        assert!(workspace.join("MEMORY.md").exists());
+        assert!(
+            crate::memory::deferred_edits::load_memory_index(
+                &config.dirs.data.join("alice"),
+                &config.dirs.config,
+                "alice"
+            )
+            .is_none(),
+            "fallback MEMORY.md should not become prompt-active before compaction"
+        );
+    }
+
+    #[tokio::test]
+    async fn dry_run_librarian_sweep_blocks_writes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mock = MockLlmServer::start().await;
+        let config = librarian_config(&tmp, &mock, "alice", 3);
+        let mem = character_memory_dir(&config.dirs.config, "alice");
+        let workspace = character_workspace_dir(&config.dirs.config, "alice");
+        fs::create_dir_all(&mem).await.unwrap();
+        fs::write(mem.join("notes.md"), "# Notes\n").await.unwrap();
+
+        mock.enqueue_json_tool_use(
+            "t_write",
+            "write",
+            json!({"path": "MEMORY.md", "content": "# Bad"}),
+        )
+        .await;
+        mock.enqueue_json_text("Would update MEMORY.md.").await;
+
+        let result = run_librarian_sweep(
+            &config,
+            &config.dirs.data,
+            &test_ledger(&tmp),
+            "alice",
+            None,
+            true,
+            true,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert!(result.dry_run);
+        assert!(result.paths_written.is_empty());
+        assert!(result
+            .would_write_paths
+            .iter()
+            .any(|path| path.ends_with("MEMORY.md")));
+        assert!(!workspace.join("MEMORY.md").exists());
+        assert!(!mem.join("DREAMS.md").exists());
+        assert!(!mem.join(".dreams/state.json").exists());
+    }
+
+    #[tokio::test]
+    async fn librarian_sweep_fallback_creates_memory_index_and_audit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mock = MockLlmServer::start().await;
+        let config = librarian_config(&tmp, &mock, "alice", 3);
+        let mem = character_memory_dir(&config.dirs.config, "alice");
+        let workspace = character_workspace_dir(&config.dirs.config, "alice");
+        fs::create_dir_all(&mem).await.unwrap();
+        fs::write(mem.join("notes.md"), "# Notes\n\n- Durable note.\n")
+            .await
+            .unwrap();
+
+        mock.enqueue_json_text("I inspected nothing and forgot to write files.")
+            .await;
+
+        let result = run_librarian_sweep(
+            &config,
+            &config.dirs.data,
+            &test_ledger(&tmp),
+            "alice",
+            None,
+            false,
+            true,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert!(result.audit_appended);
+        let memory = fs::read_to_string(workspace.join("MEMORY.md"))
+            .await
+            .unwrap();
+        assert!(memory.contains("Fallback note"));
+        assert!(memory.contains("notes.md"));
+        let dreams = fs::read_to_string(mem.join("DREAMS.md")).await.unwrap();
+        assert!(dreams.contains("AI librarian dreaming pass"));
+        assert!(dreams.contains("Rust recorded this fallback trace"));
+    }
+
+    #[tokio::test]
+    async fn librarian_sweep_blocks_protected_prompt_file_writes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mock = MockLlmServer::start().await;
+        let config = librarian_config(&tmp, &mock, "alice", 3);
+        let workspace = character_workspace_dir(&config.dirs.config, "alice");
+        fs::create_dir_all(&workspace).await.unwrap();
+        fs::write(workspace.join(SOUL_FILE), "original soul")
+            .await
+            .unwrap();
+
+        mock.enqueue_json_tool_use(
+            "t_write_soul",
+            "write",
+            json!({"path": "SOUL.md", "content": "new soul"}),
+        )
+        .await;
+        mock.enqueue_json_text("Recorded protected edit as needs review.")
+            .await;
+
+        let result = run_librarian_sweep(
+            &config,
+            &config.dirs.data,
+            &test_ledger(&tmp),
+            "alice",
+            None,
+            false,
+            true,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert!(result.tools_used.contains(&"write".to_string()));
+        assert_eq!(
+            fs::read_to_string(workspace.join(SOUL_FILE)).await.unwrap(),
+            "original soul"
+        );
+    }
 
     #[tokio::test]
     async fn dry_run_does_not_write_files() {
         let tmp = tempfile::tempdir().unwrap();
         let cfg_dir = tmp.path().join("config");
         let mem = character_memory_dir(&cfg_dir, "alice");
+        let workspace = character_workspace_dir(&cfg_dir, "alice");
         fs::create_dir_all(&mem).await.unwrap();
         fs::write(
             mem.join("notes.md"),
@@ -1414,7 +2577,7 @@ mod tests {
         .await
         .unwrap();
         let cfg = DreamingConfig::default();
-        let result = run_sweep(&cfg_dir, "alice", &cfg, true, true)
+        let result = run_legacy_diagnostic_sweep(&cfg_dir, "alice", &cfg, true, true)
             .await
             .unwrap()
             .unwrap();
@@ -1430,7 +2593,7 @@ mod tests {
             .any(|path| path.ends_with("MEMORY.md")));
         assert!(!mem.join(".dreams").exists());
         assert!(!mem.join("DREAMS.md").exists());
-        assert!(!mem.join("MEMORY.md").exists());
+        assert!(!workspace.join("MEMORY.md").exists());
     }
 
     #[tokio::test]
@@ -1438,18 +2601,21 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let cfg_dir = tmp.path().join("config");
         let mem = character_memory_dir(&cfg_dir, "alice");
+        let workspace = character_workspace_dir(&cfg_dir, "alice");
         fs::create_dir_all(&mem).await.unwrap();
         fs::write(mem.join("notes.md"), "- maybe later\n")
             .await
             .unwrap();
         let cfg = DreamingConfig::default();
-        let result = run_sweep(&cfg_dir, "alice", &cfg, false, true)
+        let result = run_legacy_diagnostic_sweep(&cfg_dir, "alice", &cfg, false, true)
             .await
             .unwrap()
             .unwrap();
         assert_eq!(result.promoted_count, 0);
-        assert!(mem.join("MEMORY.md").exists());
-        let memory = fs::read_to_string(mem.join("MEMORY.md")).await.unwrap();
+        assert!(workspace.join("MEMORY.md").exists());
+        let memory = fs::read_to_string(workspace.join("MEMORY.md"))
+            .await
+            .unwrap();
         assert!(memory.contains("# Memory Index"));
         assert!(memory.contains("notes.md"));
         assert!(mem.join("DREAMS.md").exists());
@@ -1461,6 +2627,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let cfg_dir = tmp.path().join("config");
         let mem = character_memory_dir(&cfg_dir, "alice");
+        let workspace = character_workspace_dir(&cfg_dir, "alice");
         fs::create_dir_all(&mem).await.unwrap();
         fs::write(
             mem.join("notes.md"),
@@ -1469,13 +2636,15 @@ mod tests {
         .await
         .unwrap();
         let cfg = DreamingConfig::default();
-        let result = run_sweep(&cfg_dir, "alice", &cfg, false, true)
+        let result = run_legacy_diagnostic_sweep(&cfg_dir, "alice", &cfg, false, true)
             .await
             .unwrap()
             .unwrap();
         assert_eq!(result.promoted.len(), 1);
         assert!(result.promoted[0].contains("jasmine tea"));
-        let memory = fs::read_to_string(mem.join("MEMORY.md")).await.unwrap();
+        let memory = fs::read_to_string(workspace.join("MEMORY.md"))
+            .await
+            .unwrap();
         assert!(memory.contains("# Memory Index"));
         assert!(memory.contains("notes.md"));
         assert!(memory.contains("jasmine tea"));
@@ -1523,7 +2692,7 @@ mod tests {
         .unwrap();
 
         let cfg = DreamingConfig::default();
-        let result = run_sweep(&cfg_dir, "alice", &cfg, true, true)
+        let result = run_legacy_diagnostic_sweep(&cfg_dir, "alice", &cfg, true, true)
             .await
             .unwrap()
             .unwrap();
@@ -1536,9 +2705,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let cfg_dir = tmp.path().join("config");
         let mem = character_memory_dir(&cfg_dir, "alice");
+        let workspace = character_workspace_dir(&cfg_dir, "alice");
         fs::create_dir_all(&mem).await.unwrap();
+        fs::create_dir_all(&workspace).await.unwrap();
         fs::write(
-            mem.join("MEMORY.md"),
+            workspace.join("MEMORY.md"),
             "# Memory Index\n\n- Alice prefers stale index tea and remembers it.\n",
         )
         .await
@@ -1551,12 +2722,14 @@ mod tests {
         .unwrap();
 
         let cfg = DreamingConfig::default();
-        let result = run_sweep(&cfg_dir, "alice", &cfg, false, true)
+        let result = run_legacy_diagnostic_sweep(&cfg_dir, "alice", &cfg, false, true)
             .await
             .unwrap()
             .unwrap();
         assert_eq!(result.promoted_count, 1);
-        let memory = fs::read_to_string(mem.join("MEMORY.md")).await.unwrap();
+        let memory = fs::read_to_string(workspace.join("MEMORY.md"))
+            .await
+            .unwrap();
         assert!(memory.contains("# Memory Index"));
         assert!(memory.contains("jasmine tea"));
         assert!(!memory.contains("stale index tea"));
@@ -1601,7 +2774,7 @@ mod tests {
 
         let cfg = DreamingConfig::default();
         assert!(matches!(
-            run_sweep(&cfg_dir, "alice", &cfg, false, true).await,
+            run_legacy_diagnostic_sweep(&cfg_dir, "alice", &cfg, false, true).await,
             Err(DreamingError::Memory(_))
         ));
         assert_eq!(
@@ -1629,7 +2802,7 @@ mod tests {
 
         let cfg = DreamingConfig::default();
         assert!(matches!(
-            run_sweep(&cfg_dir, "alice", &cfg, false, true).await,
+            run_legacy_diagnostic_sweep(&cfg_dir, "alice", &cfg, false, true).await,
             Err(DreamingError::Memory(_))
         ));
         assert!(!outside.join("state.json").exists());

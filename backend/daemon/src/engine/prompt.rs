@@ -112,10 +112,10 @@ pub fn build_capabilities_block(config: &CapabilitiesConfig) -> Option<String> {
             "**Memory retrieval**\n\
              \n\
              Before making a factual claim about {{user}} or past conversations, \
-             search your memories with `memory_search` or `memory_read`. \
-             Do not guess facts you could verify. If `memory_search` returns \
-             a relevant file, call `memory_read` to get the full content \
-             before answering."
+             use `search` with path `memory` for curated memory files, or \
+             `search_history` for transcript facts. Do not guess facts you \
+             could verify. If `search` returns a relevant file, call `read` \
+             on its `memory/...` path to get the full content before answering."
                 .to_string(),
         );
     }
@@ -141,7 +141,7 @@ pub struct PromptParams<'a> {
     pub character_definition: Option<&'a str>,
     /// User definition (from USER.md).
     pub user_definition: Option<&'a str>,
-    /// Prompt-visible memory index from workspace/memory/MEMORY.md.
+    /// Prompt-visible memory index from workspace/MEMORY.md.
     pub memory_index: Option<&'a str>,
     /// Whether this is a private conversation.
     pub is_private: bool,
@@ -238,7 +238,7 @@ pub fn assemble_prompt(params: &PromptParams<'_>) -> AssembledPrompt {
                 label: "memory_index".into(),
                 content: format!(
                     "<memory_index>\n\
-                     The following is your prompt-visible memory index from workspace/memory/MEMORY.md. \
+                     The following is your prompt-visible memory index from workspace/MEMORY.md. \
                      It is a map of memory files, recently updated files, and still-relevant conversational throughlines; \
                      it does not replace SOUL.md, USER.md, AGENTS.md, TOOLS.md, or HEARTBEAT.md.\n\n\
                      {index}\n\
@@ -644,6 +644,21 @@ mod tests {
         let result = render_template(BUILTIN_SYSTEM_TEMPLATE, &vars);
         assert!(result.contains("You are TestChar, in conversation with TestUser."));
         assert!(result.contains("Communicate directly"));
+    }
+
+    #[test]
+    fn capabilities_block_names_current_memory_tools() {
+        let block = build_capabilities_block(&CapabilitiesConfig {
+            memory_enabled: true,
+            ..Default::default()
+        })
+        .expect("memory capabilities should produce a block");
+
+        assert!(block.contains("`search`"));
+        assert!(block.contains("`read`"));
+        assert!(block.contains("`search_history`"));
+        assert!(!block.contains("memory_search"));
+        assert!(!block.contains("memory_read"));
     }
 
     // ── XML tag helper ────────────────────────────────────────────────

@@ -46,7 +46,7 @@ These are correctness constraints for Shore. `GOALS.md` is the source of user in
 
 **Must not:**
 
-- Tool use, ordinary memory-note writes, or ordinary workspace edits must not silently mutate protected active prompt files. `MEMORY.md` is intentionally prompt-visible and may change when dreaming rewrites the memory index.
+- Tool use, ordinary memory-note writes, or ordinary workspace edits must not silently mutate active prompt files. `MEMORY.md` is intentionally prompt-visible through `active_prompt/MEMORY.md`; dreaming may rewrite the canonical workspace index, but it must not become prompt-active until compaction/reload.
 
 ## Protected Self-Edits
 
@@ -67,7 +67,7 @@ These are correctness constraints for Shore. `GOALS.md` is the source of user in
 - Compaction sees a bounded snapshot of existing markdown memory before writing.
 - Compaction retains recent turns according to `keep_recent_turns`.
 - Compaction writes markdown memory notes, not prompt recap files.
-- Compaction must not write `MEMORY.md`; dreaming owns the prompt-visible index.
+- Compaction must not write `MEMORY.md`; dreaming owns the canonical index, and compaction owns activating its prompt snapshot.
 - Compaction activates deferred protected edits.
 
 **Must not:**

@@ -21,7 +21,7 @@ Guidelines:
 - Each file should have a heading and bullet points
 - Include timestamps or session context when relevant
 - If {{user}} corrected previous information, update the file rather than appending
-- Do not write MEMORY.md, DREAMS.md, .dreams/**, or dreaming/**. Dreaming maintains MEMORY.md as the prompt-visible memory index.
+- Do not write MEMORY.md, DREAMS.md, .dreams/**, or dreaming/**. Dreaming maintains the canonical MEMORY.md index; compaction only activates its prompt snapshot.
 
 Existing memory files:
 <existing_memories>
@@ -83,8 +83,8 @@ pub struct MemoryFileOp {
 ///
 /// Expected format: a `<memory>` block containing one or more
 /// `<write path="...">` blocks. Legacy responses may include a `<recap>` block;
-/// compaction ignores it because MEMORY.md is now maintained as the visible
-/// memory index by dreaming.
+/// compaction ignores it because MEMORY.md is now maintained as the memory
+/// index by dreaming and activated through the prompt snapshot boundary.
 pub fn parse_compaction_response(raw: &str) -> Result<Vec<MemoryFileOp>, CompactionError> {
     debug!(response_len = raw.len(), "Parsing compaction LLM response");
 

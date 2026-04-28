@@ -21,8 +21,15 @@ const PROTECTED_PATHS: &[&str] = &[
 /// Persisted snapshot directory under the character data dir.
 const ACTIVE_PROMPT_DIR: &str = "active_prompt";
 
-/// Prompt-visible index maintained in the character workspace memory dir.
+/// Prompt-visible memory index, maintained at the workspace root alongside
+/// the other top-level prompt files (SOUL.md, USER.md, AGENTS.md, etc.).
 pub const MEMORY_INDEX_FILE: &str = "MEMORY.md";
+pub const MEMORY_INDEX_DEFERRED_PATH: &str = "MEMORY.md";
+
+/// Stale active-prompt snapshot left behind by the pre-rename `<recent_memory>`
+/// block. Cleaned up opportunistically when the active prompt directory is
+/// (re)seeded so it doesn't accumulate forever.
+const LEGACY_RECENT_MEMORY_SNAPSHOT: &str = "RECENT_MEMORY.md";
 
 const DEFAULT_TOOLS_GUIDANCE: &str = "\
 # TOOLS
@@ -42,8 +49,7 @@ const DEFAULT_HEARTBEAT_GUIDANCE: &str = "\
 - If nothing needs action, respond HEARTBEAT_OK.
 ";
 
-/// Normalize a workspace path to one of the protected workspace-root files.
-pub fn normalize_protected_path(path: &str) -> Option<String> {
+fn normalize_workspace_path(path: &str) -> String {
     let mut normalized = path
         .trim()
         .trim_start_matches('/')
@@ -58,6 +64,13 @@ pub fn normalize_protected_path(path: &str) -> Option<String> {
         normalized = rest.to_string();
     }
 
+    normalized
+}
+
+/// Normalize a workspace path to one of the protected workspace-root files.
+pub fn normalize_protected_path(path: &str) -> Option<String> {
+    let normalized = normalize_workspace_path(path);
+
     PROTECTED_PATHS
         .iter()
         .any(|&protected| normalized == protected)
@@ -66,6 +79,23 @@ pub fn normalize_protected_path(path: &str) -> Option<String> {
 
 pub fn is_protected_path(path: &str) -> bool {
     normalize_protected_path(path).is_some()
+}
+
+/// Normalize a path whose canonical content is prompt-visible only after the
+/// next compaction/reload boundary.
+pub fn normalize_prompt_visible_path(path: &str) -> Option<String> {
+    let normalized = normalize_workspace_path(path);
+    if let Some(path) = normalize_protected_path(&normalized) {
+        return Some(path);
+    }
+    if normalized == MEMORY_INDEX_DEFERRED_PATH {
+        return Some(MEMORY_INDEX_DEFERRED_PATH.to_string());
+    }
+    None
+}
+
+pub fn is_prompt_visible_path(path: &str) -> bool {
+    normalize_prompt_visible_path(path).is_some()
 }
 
 pub fn active_prompt_dir(character_data_dir: &Path) -> PathBuf {
@@ -77,10 +107,82 @@ pub fn active_prompt_file(character_data_dir: &Path, name: &str) -> PathBuf {
 }
 
 pub fn memory_index_path(config_dir: &Path, char_name: &str) -> PathBuf {
-    character_memory_dir(config_dir, char_name).join(MEMORY_INDEX_FILE)
+    character_workspace_dir(config_dir, char_name).join(MEMORY_INDEX_FILE)
 }
 
-pub fn load_memory_index(config_dir: &Path, char_name: &str) -> Option<String> {
+pub fn load_memory_index(
+    character_data_dir: &Path,
+    config_dir: &Path,
+    char_name: &str,
+) -> Option<String> {
+    let active = active_prompt_file(character_data_dir, MEMORY_INDEX_FILE);
+    if active.exists() {
+        return fs::read_to_string(active)
+            .ok()
+            .filter(|content| !content.trim().is_empty());
+    }
+
+    fs::read_to_string(memory_index_path(config_dir, char_name))
+        .ok()
+        .filter(|content| !content.trim().is_empty())
+}
+
+fn canonical_prompt_visible_file(config_dir: &Path, char_name: &str, path: &str) -> PathBuf {
+    if path == MEMORY_INDEX_DEFERRED_PATH {
+        return memory_index_path(config_dir, char_name);
+    }
+    character_workspace_file(config_dir, char_name, path)
+}
+
+fn active_prompt_snapshot_name(path: &str) -> &str {
+    if path == MEMORY_INDEX_DEFERRED_PATH {
+        MEMORY_INDEX_FILE
+    } else {
+        path
+    }
+}
+
+fn copy_prompt_visible_file(
+    character_data_dir: &Path,
+    config_dir: &Path,
+    char_name: &str,
+    path: &str,
+    seed_only: bool,
+) -> io::Result<()> {
+    let active_dir = active_prompt_dir(character_data_dir);
+    fs::create_dir_all(&active_dir)?;
+
+    let src = canonical_prompt_visible_file(config_dir, char_name, path);
+    let dst = active_dir.join(active_prompt_snapshot_name(path));
+
+    if seed_only && dst.exists() {
+        return Ok(());
+    }
+
+    if src.exists() {
+        fs::copy(src, dst)?;
+    } else if !seed_only && dst.exists() {
+        fs::remove_file(dst)?;
+    }
+    Ok(())
+}
+
+fn ensure_deferred_memory_index_sentinel(character_data_dir: &Path) -> io::Result<()> {
+    let dst = active_prompt_file(character_data_dir, MEMORY_INDEX_FILE);
+    if dst.exists() {
+        return Ok(());
+    }
+    if let Some(parent) = dst.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(dst, "")
+}
+
+pub fn note_memory_index_deferred(character_data_dir: &Path) -> io::Result<()> {
+    queue_deferred_edit(character_data_dir, MEMORY_INDEX_DEFERRED_PATH)
+}
+
+pub fn load_canonical_memory_index(config_dir: &Path, char_name: &str) -> Option<String> {
     fs::read_to_string(memory_index_path(config_dir, char_name))
         .ok()
         .filter(|content| !content.trim().is_empty())
@@ -113,7 +215,7 @@ pub fn pending_deferred_edit_paths(character_data_dir: &Path) -> io::Result<Vec<
         if let Some(path) = entry
             .get("path")
             .and_then(|v| v.as_str())
-            .and_then(normalize_protected_path)
+            .and_then(normalize_prompt_visible_path)
         {
             paths.insert(path);
         }
@@ -121,13 +223,16 @@ pub fn pending_deferred_edit_paths(character_data_dir: &Path) -> io::Result<Vec<
     Ok(paths.into_iter().collect())
 }
 
-/// Queue a deferred refresh for a protected file.
+/// Queue a deferred refresh for a prompt-visible file.
 pub fn queue_deferred_edit(character_data_dir: &Path, path: &str) -> io::Result<()> {
-    let Some(path) = normalize_protected_path(path) else {
+    let Some(path) = normalize_prompt_visible_path(path) else {
         return Ok(());
     };
 
     fs::create_dir_all(character_data_dir)?;
+    if path == MEMORY_INDEX_DEFERRED_PATH {
+        ensure_deferred_memory_index_sentinel(character_data_dir)?;
+    }
     let queue_path = character_data_dir.join("deferred_edits.jsonl");
     let mut file = fs::OpenOptions::new()
         .create(true)
@@ -218,13 +323,19 @@ pub fn ensure_active_prompt_snapshot(
     fs::create_dir_all(&active_dir)?;
 
     for name in PROTECTED_PATHS {
-        let dst = active_dir.join(name);
-        if !dst.exists() {
-            let src = character_workspace_file(config_dir, char_name, name);
-            if src.exists() {
-                fs::copy(src, dst)?;
-            }
-        }
+        copy_prompt_visible_file(character_data_dir, config_dir, char_name, name, true)?;
+    }
+    copy_prompt_visible_file(
+        character_data_dir,
+        config_dir,
+        char_name,
+        MEMORY_INDEX_DEFERRED_PATH,
+        true,
+    )?;
+
+    let legacy_snapshot = active_dir.join(LEGACY_RECENT_MEMORY_SNAPSHOT);
+    if legacy_snapshot.exists() {
+        fs::remove_file(legacy_snapshot)?;
     }
 
     Ok(())
@@ -238,19 +349,16 @@ pub fn refresh_active_prompt_snapshot(
 ) -> io::Result<()> {
     ensure_character_workspace(character_data_dir, config_dir, char_name)?;
 
-    let active_dir = active_prompt_dir(character_data_dir);
-    fs::create_dir_all(&active_dir)?;
-
     for name in PROTECTED_PATHS {
-        let src = character_workspace_file(config_dir, char_name, name);
-        let dst = active_dir.join(name);
-
-        if src.exists() {
-            fs::copy(src, dst)?;
-        } else if dst.exists() {
-            fs::remove_file(dst)?;
-        }
+        copy_prompt_visible_file(character_data_dir, config_dir, char_name, name, false)?;
     }
+    copy_prompt_visible_file(
+        character_data_dir,
+        config_dir,
+        char_name,
+        MEMORY_INDEX_DEFERRED_PATH,
+        false,
+    )?;
 
     Ok(())
 }
@@ -354,9 +462,17 @@ mod tests {
         queue_deferred_edit(&char_dir, "workspace/SOUL.md").unwrap();
         queue_deferred_edit(&char_dir, "SOUL.md").unwrap();
         queue_deferred_edit(&char_dir, "AGENTS.md").unwrap();
+        queue_deferred_edit(&char_dir, "workspace/MEMORY.md").unwrap();
 
         let paths = pending_deferred_edit_paths(&char_dir).unwrap();
-        assert_eq!(paths, vec!["AGENTS.md".to_string(), "SOUL.md".to_string()]);
+        assert_eq!(
+            paths,
+            vec![
+                "AGENTS.md".to_string(),
+                "MEMORY.md".to_string(),
+                "SOUL.md".to_string(),
+            ]
+        );
     }
 
     #[test]
@@ -469,5 +585,85 @@ mod tests {
             "apply_deferred_edits is the activation boundary"
         );
         assert!(!char_dir.join("deferred_edits.jsonl").exists());
+    }
+
+    #[test]
+    fn test_memory_index_stays_deferred_until_apply() {
+        let tmp = TempDir::new().unwrap();
+        let char_dir = tmp.path().join("data").join("TestChar");
+        let config_dir = tmp.path().join("config");
+        let workspace = character_workspace_dir(&config_dir, "TestChar");
+
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(workspace.join(MEMORY_INDEX_FILE), "active index").unwrap();
+        ensure_active_prompt_snapshot(&char_dir, &config_dir, "TestChar").unwrap();
+
+        fs::write(workspace.join(MEMORY_INDEX_FILE), "edited index").unwrap();
+        queue_deferred_edit(&char_dir, "MEMORY.md").unwrap();
+        ensure_active_prompt_snapshot(&char_dir, &config_dir, "TestChar").unwrap();
+
+        assert_eq!(
+            load_memory_index(&char_dir, &config_dir, "TestChar").unwrap(),
+            "active index"
+        );
+        assert_eq!(
+            pending_deferred_edit_paths(&char_dir).unwrap(),
+            vec!["MEMORY.md"]
+        );
+
+        apply_deferred_edits(&char_dir, &config_dir, "TestChar").unwrap();
+
+        assert_eq!(
+            load_memory_index(&char_dir, &config_dir, "TestChar").unwrap(),
+            "edited index"
+        );
+    }
+
+    #[test]
+    fn test_new_memory_index_deferred_sentinel_blocks_live_activation() {
+        let tmp = TempDir::new().unwrap();
+        let char_dir = tmp.path().join("data").join("TestChar");
+        let config_dir = tmp.path().join("config");
+        let workspace = character_workspace_dir(&config_dir, "TestChar");
+
+        ensure_active_prompt_snapshot(&char_dir, &config_dir, "TestChar").unwrap();
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(workspace.join(MEMORY_INDEX_FILE), "new index").unwrap();
+        queue_deferred_edit(&char_dir, "MEMORY.md").unwrap();
+        ensure_active_prompt_snapshot(&char_dir, &config_dir, "TestChar").unwrap();
+
+        assert!(load_memory_index(&char_dir, &config_dir, "TestChar").is_none());
+
+        apply_deferred_edits(&char_dir, &config_dir, "TestChar").unwrap();
+        assert_eq!(
+            load_memory_index(&char_dir, &config_dir, "TestChar").unwrap(),
+            "new index"
+        );
+    }
+
+    #[test]
+    fn test_legacy_recent_memory_snapshot_cleaned_on_seed() {
+        let tmp = TempDir::new().unwrap();
+        let char_dir = tmp.path().join("data").join("TestChar");
+        let config_dir = tmp.path().join("config");
+        let workspace = character_workspace_dir(&config_dir, "TestChar");
+
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(workspace.join(SOUL_FILE), "soul").unwrap();
+        fs::write(workspace.join(USER_FILE), "user").unwrap();
+        fs::write(workspace.join(AGENTS_FILE), "agents").unwrap();
+        fs::write(workspace.join(TOOLS_FILE), "tools").unwrap();
+        fs::write(workspace.join(HEARTBEAT_FILE), "heartbeat").unwrap();
+
+        let active_dir = active_prompt_dir(&char_dir);
+        fs::create_dir_all(&active_dir).unwrap();
+        fs::write(active_dir.join(LEGACY_RECENT_MEMORY_SNAPSHOT), "stale").unwrap();
+        assert!(active_dir.join(LEGACY_RECENT_MEMORY_SNAPSHOT).exists());
+
+        ensure_active_prompt_snapshot(&char_dir, &config_dir, "TestChar").unwrap();
+        assert!(
+            !active_dir.join(LEGACY_RECENT_MEMORY_SNAPSHOT).exists(),
+            "legacy RECENT_MEMORY.md snapshot must be cleaned up on seed"
+        );
     }
 }
