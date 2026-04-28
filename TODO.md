@@ -1,1 +1,0 @@
-- [ ] the contents of `MEMORY.md` should take the place of the old `<recap>` in the system prompt. (i.e., the final section of the system prompt, the system prompts cache breakpoint being placed *above* it because it is likely to change on every compaction)
