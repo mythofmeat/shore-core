@@ -6,6 +6,7 @@ mod concurrency;
 mod e2e;
 mod guardrails;
 mod heartbeat;
+mod key_fallback;
 mod ledger;
 mod memory_integration;
 mod message_integrity;

@@ -10,6 +10,7 @@
 mod command_dispatch;
 mod generation;
 mod images;
+mod key_fallback;
 mod persistence;
 mod resize;
 mod task;

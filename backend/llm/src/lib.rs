@@ -1,4 +1,5 @@
 pub mod cache_forensics;
+pub mod credentials;
 pub mod debug_log;
 pub(crate) mod providers;
 pub mod retry;
@@ -90,6 +91,11 @@ impl LlmClient {
     ///
     /// Resolves the API key from the environment variable specified in the model
     /// profile. Returns `LlmError::MissingApiKey` if the variable is not set.
+    ///
+    /// For the multi-key fallback path (Phase 4), use
+    /// [`Self::build_request_with_resolved_key`] instead — that variant takes
+    /// a pre-resolved API key string so the dispatcher can rotate keys on
+    /// credential failures without rebuilding the rest of the request.
     pub fn build_request(
         model: &ResolvedModel,
         messages: Vec<serde_json::Value>,
@@ -106,6 +112,31 @@ impl LlmClient {
             var: api_key_env.to_string(),
         })?;
 
+        Ok(Self::build_request_with_resolved_key(
+            model,
+            api_key,
+            messages,
+            system,
+            tools,
+            provider_options,
+        ))
+    }
+
+    /// Build an `LlmRequest` using a pre-resolved API key string.
+    ///
+    /// The dispatch layer's multi-key fallback path resolves the candidate
+    /// key list itself (so it can also handle missing-env-var cases by
+    /// rotating to the next candidate) and passes the chosen key value here.
+    /// All sampler/provider-options derivation is shared with
+    /// [`Self::build_request`].
+    pub fn build_request_with_resolved_key(
+        model: &ResolvedModel,
+        api_key: String,
+        messages: Vec<serde_json::Value>,
+        system: Option<serde_json::Value>,
+        tools: Option<Vec<serde_json::Value>>,
+        provider_options: Option<serde_json::Value>,
+    ) -> LlmRequest {
         // Build provider_options from V1-style fields if not explicitly provided.
         let opts = provider_options.unwrap_or_else(|| {
             let mut map = serde_json::Map::new();
@@ -150,7 +181,7 @@ impl LlmClient {
 
         let provider_options = if opts.is_null() { None } else { Some(opts) };
 
-        Ok(LlmRequest {
+        LlmRequest {
             sdk: model.sdk.clone(),
             model: model.model_id.clone(),
             api_key,
@@ -165,7 +196,7 @@ impl LlmClient {
             provider_key: Some(model.provider_key.clone()),
             rid: None,
             forensic_character: None,
-        })
+        }
     }
 
     /// Send a streaming completion request to the LLM provider.
@@ -262,7 +293,7 @@ fn maybe_sanitize_request(request: &LlmRequest) -> Cow<'_, LlmRequest> {
 }
 
 /// Return the conventional API key env var name for a provider key.
-fn default_api_key_env(provider_key: &str) -> &str {
+pub fn default_api_key_env(provider_key: &str) -> &'static str {
     match provider_key {
         "anthropic" => "ANTHROPIC_API_KEY",
         "openai" => "OPENAI_API_KEY",

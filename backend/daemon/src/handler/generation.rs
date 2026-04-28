@@ -92,6 +92,12 @@ use shore_llm::stream::StreamConsumer;
 use super::{GenContext, HandlerToolContext};
 
 /// Phase 10: Stream the LLM response with exponential backoff retry.
+///
+/// Returns `LlmError` directly so the multi-key fallback wrapper
+/// (`key_fallback::stream_with_credential_fallback`) can classify the
+/// failure and decide whether to rotate credentials. Transient retries
+/// (5xx, 429, network blips) are absorbed here; credential-shaped
+/// failures bubble up to the rotation layer above.
 #[instrument(skip(ctx, request, effective_config), fields(char = char_name, model = %resolved.qualified_name))]
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn stream_with_retry(
@@ -102,7 +108,7 @@ pub(super) async fn stream_with_retry(
     regen: bool,
     char_name: &str,
     thinking_enabled: bool,
-) -> Result<shore_llm::types::StreamResult, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<shore_llm::types::StreamResult, shore_llm::LlmError> {
     let retry_policy = RetryPolicy {
         max_retries: effective_config
             .app
@@ -172,11 +178,11 @@ pub(super) async fn stream_with_retry(
                 }
                 RetryDecision::FallbackModel(_model) => {
                     error!(error = %e, "stream_with_retry failed — fallback model requested");
-                    return Err(e.into());
+                    return Err(e);
                 }
                 RetryDecision::Fail => {
                     error!(attempts = attempt + 1, error = %e, "stream_with_retry exhausted retries");
-                    return Err(e.into());
+                    return Err(e);
                 }
             },
         }

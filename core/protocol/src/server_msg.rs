@@ -175,6 +175,35 @@ pub struct CacheWarning {
     pub message: String,
 }
 
+/// The daemon rotated from one configured provider key to another mid-request
+/// because the previous key reported a credential-scoped failure (missing,
+/// invalid, exhausted quota or budget, account-scoped rate limit).
+///
+/// Emitted only when the previous key had `warn_on_fallback = true`. The
+/// payload intentionally never carries the env var value or the API key
+/// itself — only the provider key, the friendly key names, the failure
+/// classification, and a sanitized human-readable reason.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ProviderFallbackWarning {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rid: Option<String>,
+    /// Provider this fallback applies to (e.g. `"openrouter"`).
+    pub provider: String,
+    /// Friendly name of the key being abandoned.
+    pub from_key: String,
+    /// Friendly name of the key now in use.
+    pub to_key: String,
+    /// Stable failure tag from `CredentialFailureKind::as_str()`. Stable
+    /// across releases so client-side rendering can branch on it.
+    pub kind: String,
+    /// HTTP status when the failure was a status-shaped error; `None` for
+    /// missing-key / network / classified-by-body cases.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<u16>,
+    /// Sanitized human-readable summary. Never contains secrets.
+    pub message: String,
+}
+
 /// TTS audio stream starting.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct AudioStart {
@@ -227,6 +256,7 @@ pub enum ServerMessage {
     ToolResult(ToolResult),
     SendImage(SendImage),
     CacheWarning(CacheWarning),
+    ProviderFallbackWarning(ProviderFallbackWarning),
     AudioStart(AudioStart),
     AudioChunk(AudioChunk),
     AudioEnd(AudioEnd),
@@ -253,6 +283,7 @@ impl ServerMessage {
             ServerMessage::AudioChunk(msg) => msg.rid = rid.clone(),
             ServerMessage::AudioEnd(msg) => msg.rid = rid.clone(),
             ServerMessage::AudioError(msg) => msg.rid = rid.clone(),
+            ServerMessage::ProviderFallbackWarning(msg) => msg.rid = rid.clone(),
             ServerMessage::Hello(_)
             | ServerMessage::Shutdown(_)
             | ServerMessage::Ping(_)

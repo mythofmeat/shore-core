@@ -1137,6 +1137,11 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> UiEffe
             RedrawEffect::Immediate
         }
 
+        ServerMessage::ProviderFallbackWarning(w) => {
+            app.set_status(w.message.clone());
+            RedrawEffect::Immediate
+        }
+
         ServerMessage::History(hist) => {
             if let Some(private) = hist.config.get("private").and_then(|v| v.as_bool()) {
                 app.is_private = private;

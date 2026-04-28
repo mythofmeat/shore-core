@@ -1,5 +1,6 @@
 use tracing::warn;
 
+use super::credentials::classify_credential_failure;
 use super::types::StreamResult;
 use super::LlmError;
 
@@ -39,7 +40,26 @@ pub enum RetryDecision {
 /// Determine whether to retry after an LLM error.
 ///
 /// Called when `stream_raw` or stream consumption fails.
+///
+/// Credential-shaped failures (missing/invalid key, exhausted quota or
+/// budget, account-scoped rate limits) short-circuit to `Fail` without
+/// consuming retry budget — retrying the same key cannot help, and the
+/// multi-key fallback wrapper above this layer relies on the error
+/// surfacing immediately so it can rotate to the next configured key.
+/// Plain transient errors (5xx, generic 429, network blips) still go
+/// through the normal exponential-backoff retry path.
 pub fn should_retry_error(error: &LlmError, attempt: u32, policy: &RetryPolicy) -> RetryDecision {
+    let cred_kind = classify_credential_failure("", error);
+    if cred_kind.should_rotate() {
+        warn!(
+            attempt,
+            kind = cred_kind.as_str(),
+            error = %error,
+            "Credential-shaped failure — failing fast so multi-key fallback can rotate"
+        );
+        return RetryDecision::Fail;
+    }
+
     if attempt >= policy.max_retries {
         // Exhausted retries — try fallback model if available.
         if let Some(ref fallback) = policy.fallback_model {

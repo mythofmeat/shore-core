@@ -98,6 +98,7 @@ impl ShoreMcpHandler {
                 | ServerMessage::SendImage(_)
                 | ServerMessage::Phase(_)
                 | ServerMessage::CacheWarning(_)
+                | ServerMessage::ProviderFallbackWarning(_)
                 | ServerMessage::AudioStart(_)
                 | ServerMessage::AudioChunk(_)
                 | ServerMessage::AudioEnd(_)

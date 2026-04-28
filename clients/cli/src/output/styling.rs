@@ -2,7 +2,9 @@ use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crossterm::style::{Color, ResetColor, SetForegroundColor};
-use shore_protocol::server_msg::{Phase, SendImage, StreamChunk, StreamEnd, ToolCall, ToolResult};
+use shore_protocol::server_msg::{
+    Phase, ProviderFallbackWarning, SendImage, StreamChunk, StreamEnd, ToolCall, ToolResult,
+};
 use shore_protocol::types::ImageRef;
 
 use super::{abbreviate_model, use_color, MAX_TOOL_OUTPUT};
@@ -98,6 +100,23 @@ pub fn print_error(err: &dyn std::fmt::Display) {
         let _ = crossterm::execute!(out, ResetColor);
     }
     let _ = writeln!(out, ": {err}");
+}
+
+/// Print a provider key fallback warning. Emitted when the daemon
+/// rotates away from a credential-flagged key (e.g. an exhausted budget
+/// key) so the user sees the rotation immediately.
+pub fn print_provider_fallback_warning(w: &ProviderFallbackWarning) {
+    let stderr = io::stderr();
+    let mut out = stderr.lock();
+
+    if use_color() {
+        let _ = crossterm::execute!(out, SetForegroundColor(Color::Yellow));
+    }
+    let _ = write!(out, "warning");
+    if use_color() {
+        let _ = crossterm::execute!(out, ResetColor);
+    }
+    let _ = writeln!(out, ": {}", w.message);
 }
 
 /// Print a server protocol error.

@@ -88,6 +88,36 @@ pub struct ErrorEntry {
     pub context: String,
 }
 
+/// One credential-fallback rotation event for the multi-key path.
+///
+/// Recorded whenever the daemon abandons a configured provider key on a
+/// classified credential failure (missing/invalid/quota/budget/account
+/// rate limit). The payload intentionally never carries the API key
+/// value or the env var contents — only the friendly key names plus
+/// status/reason metadata.
+#[derive(Debug, Clone, Serialize)]
+pub struct KeyFallbackEntry {
+    pub timestamp: String,
+    /// Request id, when the rotation happened inside a tracked request.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rid: Option<String>,
+    pub provider: String,
+    pub model: String,
+    pub character: String,
+    pub from_key: String,
+    /// Friendly name of the key now in use, or `None` if the rotation
+    /// exhausted all candidates.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub to_key: Option<String>,
+    /// Stable failure tag (`CredentialFailureKind::as_str()`).
+    pub kind: String,
+    /// HTTP status when applicable (omitted for missing-key / network cases).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<u16>,
+    /// Sanitized reason. Never contains secrets.
+    pub reason: String,
+}
+
 // ---------------------------------------------------------------------------
 // Diagnostics aggregate
 // ---------------------------------------------------------------------------
@@ -98,6 +128,7 @@ pub struct Diagnostics {
     pub api_calls: RingBuffer<ApiCallEntry>,
     pub tool_calls: RingBuffer<ToolCallEntry>,
     pub errors: RingBuffer<ErrorEntry>,
+    pub key_fallbacks: RingBuffer<KeyFallbackEntry>,
 }
 
 impl Default for Diagnostics {
@@ -106,6 +137,7 @@ impl Default for Diagnostics {
             api_calls: RingBuffer::new(DEFAULT_CAPACITY),
             tool_calls: RingBuffer::new(DEFAULT_CAPACITY),
             errors: RingBuffer::new(DEFAULT_CAPACITY),
+            key_fallbacks: RingBuffer::new(DEFAULT_CAPACITY),
         }
     }
 }
@@ -138,11 +170,17 @@ impl Diagnostics {
             .last_n(last_n)
             .map(|e| serde_json::to_value(e).unwrap_or(json!(null)))
             .collect();
+        let key_fallbacks: Vec<Value> = self
+            .key_fallbacks
+            .last_n(last_n)
+            .map(|e| serde_json::to_value(e).unwrap_or(json!(null)))
+            .collect();
 
         json!({
             "api_calls": { "count": self.api_calls.len(), "recent": api },
             "tool_calls": { "count": self.tool_calls.len(), "recent": tools },
             "errors": { "count": self.errors.len(), "recent": errors },
+            "key_fallbacks": { "count": self.key_fallbacks.len(), "recent": key_fallbacks },
         })
     }
 }

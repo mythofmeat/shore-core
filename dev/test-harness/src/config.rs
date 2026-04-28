@@ -4,6 +4,7 @@ use shore_config::{
     app::{AppConfig, BehaviorConfig, CompactionConfig, HeartbeatConfig, ToolUseConfig},
     duration::ConfigDuration,
     models::ModelCatalog,
+    providers::ProviderRegistry,
     LoadedConfig, ShoreDirs,
 };
 
@@ -21,6 +22,10 @@ pub struct TestConfigBuilder {
     pub compaction_keep_recent: Option<usize>,
     pub autonomy_enabled: bool,
     pub heartbeat_max_tool_rounds: Option<u32>,
+    /// Optional `[providers.<name>]` registry section in TOML form.
+    /// When set, parsed and attached to `LoadedConfig.providers`. Used by
+    /// the multi-key fallback tests to declare ordered named keys.
+    pub provider_registry_toml: Option<String>,
 }
 
 impl Default for TestConfigBuilder {
@@ -47,7 +52,16 @@ impl TestConfigBuilder {
             compaction_keep_recent: None,
             autonomy_enabled: false,
             heartbeat_max_tool_rounds: None,
+            provider_registry_toml: None,
         }
+    }
+
+    /// Inject a `[providers.<name>]` registry section. The string must be
+    /// a complete TOML fragment (without a wrapping `[providers]` table —
+    /// the parser expects each entry as `[providers.<name>]`).
+    pub fn provider_registry_toml(mut self, toml: &str) -> Self {
+        self.provider_registry_toml = Some(toml.to_string());
+        self
     }
 
     pub fn character_name(mut self, name: &str) -> Self {
@@ -194,7 +208,7 @@ dimensions = 8
             ModelCatalog::from_sections(Some(&chat_table), None, embed_table.as_ref(), None)
                 .expect("failed to build ModelCatalog");
 
-        LoadedConfig::new_for_test(
+        let mut loaded = LoadedConfig::new_for_test(
             app,
             models,
             ShoreDirs {
@@ -203,6 +217,17 @@ dimensions = 8
                 runtime: runtime_dir,
                 cache: tmp_dir.join("cache"),
             },
-        )
+        );
+
+        if let Some(ref toml_text) = self.provider_registry_toml {
+            let table: toml::Table = toml_text
+                .parse()
+                .expect("failed to parse provider_registry_toml");
+            let providers_section = table.get("providers").and_then(|v| v.as_table());
+            loaded.providers = ProviderRegistry::from_section(providers_section)
+                .expect("failed to build ProviderRegistry from test toml");
+        }
+
+        loaded
     }
 }

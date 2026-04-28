@@ -10,10 +10,9 @@ use tracing::{debug, info, instrument};
 
 use crate::autonomy::parse_cache_ttl_secs;
 use crate::engine::prompt::{self, PromptParams};
-use crate::handler::generation::{
-    run_tool_phase, stream_with_retry, thinking_enabled_from_request,
-};
+use crate::handler::generation::{run_tool_phase, thinking_enabled_from_request};
 use crate::handler::images::{embed_image_data, ingest_images};
+use crate::handler::key_fallback::stream_with_credential_fallback;
 use crate::handler::persistence::persist_and_notify;
 use crate::handler::resize::warm_image_cache;
 
@@ -267,8 +266,19 @@ pub(super) async fn handle_generation(
         None
     };
 
-    let mut request =
-        shore_ledger::LedgerClient::build_request(resolved, llm_messages, system, tool_defs, None)?;
+    // Phase 4: build the request without baking in a specific API key.
+    // The credential-fallback wrapper resolves the candidate key list
+    // from the provider registry just-in-time and rewrites
+    // `request.api_key` per attempt during rotation, so we can leave
+    // the placeholder empty here.
+    let mut request = shore_llm::LlmClient::build_request_with_resolved_key(
+        resolved,
+        String::new(),
+        llm_messages,
+        system,
+        tool_defs,
+        None,
+    );
     request.rid = rid;
     request.forensic_character = Some(char_name.to_owned());
 
@@ -297,9 +307,9 @@ pub(super) async fn handle_generation(
 
     let thinking_enabled = thinking_enabled_from_request(&request);
 
-    let mut result = stream_with_retry(
+    let mut result = stream_with_credential_fallback(
         &ctx,
-        &request,
+        &mut request,
         resolved,
         &effective_config,
         regen,

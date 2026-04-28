@@ -726,6 +726,7 @@ async fn event_matches_session(
         | ServerMessage::ToolCall(_)
         | ServerMessage::ToolResult(_)
         | ServerMessage::SendImage(_)
+        | ServerMessage::ProviderFallbackWarning(_)
         | ServerMessage::AudioStart(_)
         | ServerMessage::AudioChunk(_)
         | ServerMessage::AudioEnd(_)

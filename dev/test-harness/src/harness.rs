@@ -49,6 +49,9 @@ pub struct TestHarness {
     // Stored for `trigger_compaction_now`.
     llm_client: LedgerClient,
     notifier: shore_daemon::notifications::NotificationService,
+    /// In-memory diagnostics ring buffers — exposed so integration tests
+    /// can assert on key-fallback events, API call records, etc.
+    pub diagnostics: Arc<std::sync::Mutex<shore_diagnostics::Diagnostics>>,
 }
 
 impl TestHarness {
@@ -138,6 +141,9 @@ impl TestHarness {
         autonomy.set_registry(char_registry.clone());
 
         // ── Command Context ──────────────────────────────────────────
+        let diagnostics = Arc::new(std::sync::Mutex::new(
+            shore_diagnostics::Diagnostics::default(),
+        ));
         let cmd_ctx = CommandContext {
             config: config.clone(),
             push_tx: push_tx.clone(),
@@ -148,9 +154,7 @@ impl TestHarness {
             session_tokens: Arc::new(std::sync::Mutex::new(SessionTokens::default())),
             autonomy: autonomy.clone(),
             llm_client: llm_client.clone(),
-            diagnostics: Arc::new(std::sync::Mutex::new(
-                shore_diagnostics::Diagnostics::default(),
-            )),
+            diagnostics: diagnostics.clone(),
         };
 
         // Clone for storage in TestHarness (before ownership is moved into msg_handler).
@@ -214,6 +218,7 @@ impl TestHarness {
             autonomy: stored_autonomy,
             llm_client: stored_llm_client,
             notifier: stored_notifier,
+            diagnostics,
         }
     }
 

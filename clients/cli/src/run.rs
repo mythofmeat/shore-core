@@ -733,6 +733,10 @@ async fn recv_streaming_response(
             ServerMessage::Ping(_) => {
                 // Keepalive, ignore
             }
+            ServerMessage::ProviderFallbackWarning(w) => {
+                spinner.clear().await;
+                output::print_provider_fallback_warning(w);
+            }
             _ => {
                 // Other messages during streaming are unexpected but not fatal
             }
