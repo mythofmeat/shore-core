@@ -9,6 +9,7 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 See `README.md`, `FEATURES.md`, and `CONFIGURATION.md` for current branch guidance.
 
 ### Added
+- Time-aware prompt assembly: user messages now carry inline time markers when the gap from the previous turn is large, when an hour has elapsed since the last marker (so long, slow conversations stay anchored), or when prior context was lost to compaction (so the first user message after a cut still has an absolute date/time reference)
 - Character workspaces with protected prompt files: `SOUL.md`, `USER.md`, `AGENTS.md`, `TOOLS.md`, and `HEARTBEAT.md`
 - Markdown long-term memory under `characters/<Character>/workspace/memory/`
 - `active_prompt/` snapshots and deferred protected self-edit activation

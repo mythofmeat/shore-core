@@ -1145,6 +1145,9 @@ fn rebuild_request_from_disk(
     if store.messages().is_empty() {
         return None;
     }
+    let has_prior_context = crate::engine::segments::SegmentReader::load(&char_dir)
+        .map(|r| r.segment_count() > 0)
+        .unwrap_or(false);
     if !history_is_between_turns(store.messages()) {
         info!(
             character,
@@ -1199,6 +1202,7 @@ fn rebuild_request_from_disk(
         user_definition: user_definition.as_deref(),
         memory_index: memory_index.as_deref(),
         is_private: false,
+        has_prior_context,
         messages: store.messages(),
         max_context_tokens: resolved.max_context_tokens,
         max_output_tokens: resolved.max_tokens,
