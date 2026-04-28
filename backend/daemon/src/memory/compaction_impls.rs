@@ -162,19 +162,13 @@ impl CompactionLlm for RealCompactionLlm {
         let system = system.to_string();
         Box::pin(async move {
             let msg_count = messages.len();
-            let request = LedgerClient::build_request(
-                &self.model,
-                messages,
-                Some(json!(system)),
-                None,
-                None,
-            )
-            .map_err(|e| CompactionError::Llm(e.to_string()))?;
+            let request =
+                LedgerClient::build_request(&self.model, messages, Some(json!(system)), None, None)
+                    .map_err(|e| CompactionError::Llm(e.to_string()))?;
 
             debug!(
                 system_len = system.len(),
-                msg_count,
-                "compaction: starting LLM summarize"
+                msg_count, "compaction: starting LLM summarize"
             );
             let t0 = std::time::Instant::now();
             let resp = self

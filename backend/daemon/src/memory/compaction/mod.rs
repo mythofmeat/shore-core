@@ -3,7 +3,9 @@ pub mod parser;
 pub mod types;
 
 pub use background::run_compaction;
-pub use parser::{parse_compaction_response, MemoryFileOp, DEFAULT_COMPACT_PROMPT, DEFAULT_COMPACT_SYSTEM};
+pub use parser::{
+    parse_compaction_response, MemoryFileOp, DEFAULT_COMPACT_PROMPT, DEFAULT_COMPACT_SYSTEM,
+};
 pub use types::*;
 
 use crate::memory::markdown_query;
