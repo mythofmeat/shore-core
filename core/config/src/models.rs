@@ -64,6 +64,20 @@ impl Sdk {
             Sdk::Zai => "zai",
         }
     }
+
+    /// Parse a wire-protocol string back into an `Sdk`. `None` for unknown
+    /// strings — the caller decides whether to fall back or error. Named
+    /// `parse_wire` rather than `from_str` to avoid colliding with
+    /// [`std::str::FromStr`] (which would force a stricter error type).
+    pub fn parse_wire(s: &str) -> Option<Self> {
+        match s {
+            "anthropic" => Some(Sdk::Anthropic),
+            "openai" => Some(Sdk::Openai),
+            "gemini" => Some(Sdk::Gemini),
+            "zai" => Some(Sdk::Zai),
+            _ => None,
+        }
+    }
 }
 
 // ── Shared model config fields ──────────────────────────────────────────
@@ -545,6 +559,14 @@ fn base_provider_defaults() -> ModelConfigFields {
 }
 
 /// Hardcoded provider defaults (ported from V1 `PROVIDER_DEFAULTS`).
+///
+/// Public so the effective-catalog merger (Phase 7) can synthesize
+/// `ResolvedModel` records for discovered models that have no TOML
+/// scalars under `[chat.<provider>]`.
+pub fn hardcoded_provider_defaults(provider_key: &str) -> ProviderConfig {
+    hardcoded_defaults(provider_key)
+}
+
 fn hardcoded_defaults(provider_key: &str) -> ProviderConfig {
     let fields = match provider_key {
         "anthropic" => ModelConfigFields {
@@ -599,7 +621,7 @@ fn hardcoded_defaults(provider_key: &str) -> ProviderConfig {
 }
 
 /// Default SDK for a provider key (used when neither hardcoded nor TOML specifies one).
-fn default_sdk(provider_key: &str) -> Sdk {
+pub fn default_sdk(provider_key: &str) -> Sdk {
     match provider_key {
         "anthropic" => Sdk::Anthropic,
         "gemini" => Sdk::Gemini,

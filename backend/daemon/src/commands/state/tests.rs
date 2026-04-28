@@ -921,3 +921,373 @@ fn model_info_includes_effective_sampler_for_active_character() {
     assert_eq!(result["effective_sampler"]["top_p"], 0.95);
     assert_eq!(result["scopes"]["top_p"], "character_model");
 }
+
+// ── Phase 7: effective catalog (static + discovered) integration ────────
+
+mod phase7 {
+    use super::*;
+    use shore_config::providers::ProviderRegistry;
+    use shore_llm::discovery::{DiscoveredModel, ProviderModelsCache, CACHE_VERSION};
+
+    /// Build a context with a provider registry, optional static chat
+    /// catalog, and a populated discovery cache for `provider`.
+    fn make_ctx_with_discovery(
+        tmp: &TempDir,
+        providers_toml: &str,
+        chat_toml: &str,
+        provider: &str,
+        cached_ids: &[&str],
+        visible_pattern: Option<&[&str]>,
+    ) -> (
+        ConversationEngine,
+        CommandContext,
+        broadcast::Receiver<ServerMessage>,
+    ) {
+        let catalog = if chat_toml.is_empty() {
+            ModelCatalog::default()
+        } else {
+            let table: toml::Table = chat_toml.parse().unwrap();
+            ModelCatalog::from_sections(
+                table.get("chat").and_then(|v| v.as_table()),
+                None,
+                None,
+                None,
+            )
+            .unwrap()
+        };
+
+        // Optionally append visibility rules to the providers TOML.
+        let providers_toml_full = match visible_pattern {
+            Some(pats) => {
+                let pats_lit = pats
+                    .iter()
+                    .map(|p| format!("  {:?}", p))
+                    .collect::<Vec<_>>()
+                    .join(",\n");
+                format!(
+                    "{providers_toml}\n[providers.{provider}.discovery]\nenabled = true\nvisibility = [\n{pats_lit}\n]\n"
+                )
+            }
+            None => providers_toml.to_string(),
+        };
+
+        let providers = if providers_toml_full.trim().is_empty() {
+            ProviderRegistry::default()
+        } else {
+            let table: toml::Table = providers_toml_full.parse().unwrap();
+            ProviderRegistry::from_section(table.get("providers").and_then(|v| v.as_table()))
+                .unwrap()
+        };
+
+        let (mut _engine, mut ctx, push_rx) = make_ctx_with_models(tmp, catalog);
+        ctx.config.providers = providers;
+        // Reattach an engine that matches the existing make_ctx_with_models
+        // engine pattern (we discard the original since we mutated config).
+        let engine = ConversationEngine::new(
+            "TestChar".to_string(),
+            ctx.data_dir.clone(),
+            ctx.push_tx.clone(),
+        )
+        .unwrap();
+        _engine = engine;
+
+        // Write the discovery cache for the requested provider.
+        let cache = ProviderModelsCache {
+            version: CACHE_VERSION,
+            provider_key: provider.into(),
+            fetched_at: "2026-04-29T00:00:00Z".into(),
+            base_url: Some("https://example.test/v1".into()),
+            models: cached_ids
+                .iter()
+                .map(|id| DiscoveredModel {
+                    provider_key: provider.into(),
+                    model_id: (*id).into(),
+                    display_name: None,
+                    sdk: "openai".into(),
+                    base_url: Some("https://example.test/v1".into()),
+                    created_at: None,
+                    owned_by: None,
+                    description: None,
+                    context_length: Some(200_000),
+                    max_output_tokens: Some(8192),
+                    supports_tools: None,
+                    supports_images: None,
+                    supports_reasoning: None,
+                    supports_prompt_cache: None,
+                    raw_provider_metadata: serde_json::Value::Null,
+                    discovered_at: "2026-04-29T00:00:00Z".into(),
+                })
+                .collect(),
+        };
+        let path = shore_llm::discovery::cache_path(&ctx.data_dir, provider);
+        shore_llm::discovery::write_cache(&path, &cache).unwrap();
+
+        (_engine, ctx, push_rx)
+    }
+
+    // ── Validation: discovered model can be selected ────────────────────
+
+    #[test]
+    fn discovered_model_can_be_selected_via_switch_model() {
+        let tmp = TempDir::new().unwrap();
+        let (_e, mut ctx, _rx) = make_ctx_with_discovery(
+            &tmp,
+            r#"
+[providers.openrouter]
+api_key_env = "OR_KEY"
+base_url = "https://openrouter.ai/api/v1"
+"#,
+            "",
+            "openrouter",
+            &["anthropic/claude-sonnet-4.5"],
+            None,
+        );
+
+        let out =
+            switch_model(&mut ctx, &json!({ "name": "anthropic/claude-sonnet-4.5" })).unwrap();
+        assert_eq!(out["changed"], true);
+        assert_eq!(out["provider"], "openrouter");
+        assert_eq!(out["model_id"], "anthropic/claude-sonnet-4.5");
+        assert_eq!(
+            ctx.active_model.as_deref(),
+            Some("anthropic/claude-sonnet-4.5")
+        );
+    }
+
+    #[test]
+    fn discovered_model_selectable_with_provider_prefix() {
+        let tmp = TempDir::new().unwrap();
+        let (_e, mut ctx, _rx) = make_ctx_with_discovery(
+            &tmp,
+            r#"
+[providers.openrouter]
+api_key_env = "OR_KEY"
+base_url = "https://openrouter.ai/api/v1"
+"#,
+            "",
+            "openrouter",
+            &["anthropic/claude-sonnet-4.5"],
+            None,
+        );
+        let out = switch_model(
+            &mut ctx,
+            &json!({ "name": "openrouter:anthropic/claude-sonnet-4.5" }),
+        )
+        .unwrap();
+        assert_eq!(out["provider"], "openrouter");
+        assert_eq!(out["model_id"], "anthropic/claude-sonnet-4.5");
+    }
+
+    // ── Validation: static alias still resolves ────────────────────────
+
+    #[test]
+    fn static_alias_still_selectable_with_discovery_present() {
+        let tmp = TempDir::new().unwrap();
+        let (_e, mut ctx, _rx) = make_ctx_with_discovery(
+            &tmp,
+            r#"
+[providers.openrouter]
+api_key_env = "OR_KEY"
+base_url = "https://openrouter.ai/api/v1"
+"#,
+            r#"
+[chat.openrouter.sonnet]
+model_id = "anthropic/claude-sonnet-4.5"
+cache_ttl = "1h"
+max_tokens = 16384
+"#,
+            "openrouter",
+            &["anthropic/claude-sonnet-4.5"],
+            None,
+        );
+        let out = switch_model(&mut ctx, &json!({ "name": "sonnet" })).unwrap();
+        // Static qualified_name wins.
+        assert_eq!(out["qualified_name"], "chat.openrouter.sonnet");
+        assert_eq!(out["model_id"], "anthropic/claude-sonnet-4.5");
+    }
+
+    // ── Validation: saved sampler settings apply to discovered model ────
+
+    #[test]
+    fn saved_sampler_settings_apply_to_discovered_model() {
+        let tmp = TempDir::new().unwrap();
+        let (_e, mut ctx, _rx) = make_ctx_with_discovery(
+            &tmp,
+            r#"
+[providers.openrouter]
+api_key_env = "OR_KEY"
+base_url = "https://openrouter.ai/api/v1"
+"#,
+            "",
+            "openrouter",
+            &["anthropic/claude-sonnet-4.5"],
+            None,
+        );
+        // Select the discovered model, then set a sampler value.
+        switch_model(&mut ctx, &json!({"name": "anthropic/claude-sonnet-4.5"})).unwrap();
+        set_model_setting(&mut ctx, &json!({"key": "temperature", "value": 0.4})).unwrap();
+
+        // Verify model_settings reflects the saved value via preference resolution.
+        let out = model_settings(&ctx, &json!({})).unwrap();
+        assert_eq!(out["effective_sampler"]["temperature"], 0.4);
+        assert_eq!(out["scopes"]["temperature"], "character_model");
+        assert_eq!(out["model_id"], "anthropic/claude-sonnet-4.5");
+        assert_eq!(out["provider"], "openrouter");
+    }
+
+    // ── Validation: character-specific saved sampler ────────────────────
+
+    #[test]
+    fn character_scope_overrides_global_for_discovered_model() {
+        let tmp = TempDir::new().unwrap();
+        let (_e, mut ctx, _rx) = make_ctx_with_discovery(
+            &tmp,
+            r#"
+[providers.openrouter]
+api_key_env = "OR_KEY"
+base_url = "https://openrouter.ai/api/v1"
+"#,
+            "",
+            "openrouter",
+            &["anthropic/claude-sonnet-4.5"],
+            None,
+        );
+        switch_model(&mut ctx, &json!({"name": "anthropic/claude-sonnet-4.5"})).unwrap();
+        // Global value first.
+        set_model_setting(
+            &mut ctx,
+            &json!({"key": "temperature", "value": 0.9, "scope": "global"}),
+        )
+        .unwrap();
+        // Character-scope override.
+        set_model_setting(
+            &mut ctx,
+            &json!({"key": "temperature", "value": 0.2, "scope": "character"}),
+        )
+        .unwrap();
+
+        let out = model_settings(&ctx, &json!({})).unwrap();
+        assert_eq!(
+            out["effective_sampler"]["temperature"], 0.2,
+            "character_model should win over global_model"
+        );
+        assert_eq!(out["scopes"]["temperature"], "character_model");
+    }
+
+    // ── Validation: hidden discovered models gated ──────────────────────
+
+    #[test]
+    fn hidden_discovered_model_cannot_be_selected_by_default() {
+        let tmp = TempDir::new().unwrap();
+        let (_e, mut ctx, _rx) = make_ctx_with_discovery(
+            &tmp,
+            r#"
+[providers.openrouter]
+api_key_env = "OR_KEY"
+base_url = "https://openrouter.ai/api/v1"
+"#,
+            "",
+            "openrouter",
+            &["meta-llama/llama-3-70b"],
+            Some(&["meta-llama/*"]),
+        );
+        let err = switch_model(&mut ctx, &json!({"name": "meta-llama/llama-3-70b"})).unwrap_err();
+        let (code, msg) = err;
+        assert_eq!(code, shore_protocol::error::ErrorCode::NotFound);
+        assert!(
+            msg.contains("hidden") && msg.contains("include_hidden"),
+            "error must explain how to include hidden models, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn hidden_discovered_model_selectable_with_include_hidden() {
+        let tmp = TempDir::new().unwrap();
+        let (_e, mut ctx, _rx) = make_ctx_with_discovery(
+            &tmp,
+            r#"
+[providers.openrouter]
+api_key_env = "OR_KEY"
+base_url = "https://openrouter.ai/api/v1"
+"#,
+            "",
+            "openrouter",
+            &["meta-llama/llama-3-70b"],
+            Some(&["meta-llama/*"]),
+        );
+        let out = switch_model(
+            &mut ctx,
+            &json!({ "name": "meta-llama/llama-3-70b", "include_hidden": true }),
+        )
+        .unwrap();
+        assert_eq!(out["model_id"], "meta-llama/llama-3-70b");
+    }
+
+    // ── list_models surfaces the merged catalog ─────────────────────────
+
+    #[test]
+    fn list_models_surfaces_static_and_discovered_with_source_tag() {
+        let tmp = TempDir::new().unwrap();
+        let (_e, ctx, _rx) = make_ctx_with_discovery(
+            &tmp,
+            r#"
+[providers.openrouter]
+api_key_env = "OR_KEY"
+base_url = "https://openrouter.ai/api/v1"
+"#,
+            r#"
+[chat.anthropic.opus]
+model_id = "claude-opus-4-7"
+"#,
+            "openrouter",
+            &["anthropic/claude-sonnet-4.5"],
+            None,
+        );
+        let out = list_models_with_args(&ctx, &json!({})).unwrap();
+        let models = out["models"].as_array().unwrap();
+        let by_source: std::collections::BTreeMap<&str, &str> = models
+            .iter()
+            .map(|m| {
+                (
+                    m["model_id"].as_str().unwrap(),
+                    m["source"].as_str().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(by_source.get("claude-opus-4-7"), Some(&"static"));
+        assert_eq!(
+            by_source.get("anthropic/claude-sonnet-4.5"),
+            Some(&"discovered")
+        );
+    }
+
+    #[test]
+    fn list_models_drops_hidden_unless_include_hidden_requested() {
+        let tmp = TempDir::new().unwrap();
+        let (_e, ctx, _rx) = make_ctx_with_discovery(
+            &tmp,
+            r#"
+[providers.openrouter]
+api_key_env = "OR_KEY"
+base_url = "https://openrouter.ai/api/v1"
+"#,
+            "",
+            "openrouter",
+            &["meta-llama/llama-3-70b", "anthropic/claude-sonnet-4.5"],
+            Some(&["meta-llama/*"]),
+        );
+        let visible = list_models_with_args(&ctx, &json!({})).unwrap();
+        let names: Vec<&str> = visible["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["model_id"].as_str().unwrap())
+            .collect();
+        assert!(names.contains(&"anthropic/claude-sonnet-4.5"));
+        assert!(!names.contains(&"meta-llama/llama-3-70b"));
+        assert_eq!(visible["hidden_count"], 1);
+
+        let with_hidden = list_models_with_args(&ctx, &json!({"include_hidden": true})).unwrap();
+        assert_eq!(with_hidden["models"].as_array().unwrap().len(), 2);
+    }
+}

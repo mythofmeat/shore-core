@@ -89,7 +89,7 @@ pub async fn dispatch(
 
         // State
         "status" => state::status(engine, ctx),
-        "list_models" => state::list_models(ctx),
+        "list_models" => state::list_models_with_args(ctx, &cmd.args),
         "model_info" => state::model_info(ctx, &cmd.args),
         "switch_model" => state::switch_model(ctx, &cmd.args),
         "reset_model" => state::reset_model(ctx),
@@ -143,7 +143,7 @@ pub fn dispatch_characterless(ctx: &CommandContext, cmd: &Command) -> CommandRes
     debug!(command = %cmd.name, "Dispatching characterless command");
     match cmd.name.as_str() {
         "list_characters" => navigation::list_characters_standalone(ctx),
-        "list_models" => state::list_models(ctx),
+        "list_models" => state::list_models_with_args(ctx, &cmd.args),
         "list_providers" => providers::list_providers(ctx),
         "list_provider_models" => providers::list_provider_models(ctx, &cmd.args),
         _ => Err((

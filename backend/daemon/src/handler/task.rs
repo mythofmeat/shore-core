@@ -100,16 +100,23 @@ pub(super) async fn handle_generation(
     let model_name = active_model
         .as_deref()
         .or(effective_config.app.defaults.model.as_deref());
-    let resolved_base = match model_name {
-        Some(name) => effective_config
-            .models
-            .find_model(name)
-            .map_err(|e| e.to_string())?,
+    let resolved_base_owned: shore_config::models::ResolvedModel = match model_name {
+        Some(name) => crate::effective_catalog::find_effective_model(
+            &effective_config,
+            &effective_config.dirs.data,
+            name,
+            // Once a model is the active selection, it has already been
+            // explicitly chosen — visibility is enforced at switch time.
+            true,
+        )
+        .map_err(|e| e.to_string())?,
         None => effective_config
             .models
             .first_chat_model()
+            .cloned()
             .ok_or("No model configured")?,
     };
+    let resolved_base = &resolved_base_owned;
     // Phase 3+: apply preference-derived sampler overlay first
     // (durable per-model settings), then the per-session
     // `reasoning_effort_override` (transient session state) on top.

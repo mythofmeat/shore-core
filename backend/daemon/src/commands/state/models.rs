@@ -3,6 +3,7 @@ use shore_protocol::error::ErrorCode;
 use tracing::info;
 
 use crate::commands::{CommandContext, CommandResult};
+use crate::effective_catalog::{self, EffectiveCatalogError, EffectiveModel, EffectiveSource};
 use crate::preferences::{self, ModelPreferences, PreferenceScope, SamplerSettings};
 
 // ── Helpers ─────────────────────────────────────────────────────────────
@@ -31,9 +32,16 @@ fn require_character(ctx: &CommandContext) -> Result<&str, (ErrorCode, String)> 
 /// Trusts `ctx.active_model` (populated by the dispatcher from
 /// preferences) before falling back to `app.defaults.model`. Commands
 /// that need provider+model_id for preference keys go through here.
+///
+/// Phase 7+: consults the effective catalog (static + discovered) so an
+/// active selection saved as an upstream `model_id` (or
+/// `provider:model_id`) keeps resolving across daemon restarts. Once an
+/// active model is set, the user has already chosen it explicitly, so
+/// `include_hidden = true` here — visibility is enforced at *selection*
+/// time (`switch_model`), not on every subsequent request.
 fn resolve_active_model(
     ctx: &CommandContext,
-) -> Result<&shore_config::models::ResolvedModel, (ErrorCode, String)> {
+) -> Result<shore_config::models::ResolvedModel, (ErrorCode, String)> {
     let name = ctx
         .active_model
         .as_deref()
@@ -42,10 +50,17 @@ fn resolve_active_model(
             ErrorCode::InvalidRequest,
             "No model specified and no active model set".into(),
         ))?;
-    ctx.config
-        .models
-        .find_model(name)
-        .map_err(|e| (ErrorCode::NotFound, e.to_string()))
+    effective_catalog::find_effective_model(&ctx.config, &ctx.data_dir, name, true)
+        .map_err(effective_catalog_err)
+}
+
+fn effective_catalog_err(e: EffectiveCatalogError) -> (ErrorCode, String) {
+    match &e {
+        EffectiveCatalogError::NotFound { .. } | EffectiveCatalogError::Hidden { .. } => {
+            (ErrorCode::NotFound, e.to_string())
+        }
+        EffectiveCatalogError::Ambiguous { .. } => (ErrorCode::InvalidRequest, e.to_string()),
+    }
 }
 
 fn save_char_prefs(
@@ -92,27 +107,57 @@ fn scope_str(scope: PreferenceScope) -> &'static str {
 /// List available chat model profiles. Tool-only profiles, embedding
 /// profiles, and image-generation profiles are intentionally excluded:
 /// they are not user-selectable chat targets.
+///
+/// Phase 7+: also includes models discovered through provider registries
+/// (`[providers.<name>]` + cached `/v1/models` results). Each entry
+/// carries `source = "static" | "discovered"` so clients can render them
+/// distinctly. Hidden discovered models are dropped unless
+/// `include_hidden = true` is passed.
 pub fn list_models(ctx: &CommandContext) -> CommandResult {
-    let models: Vec<_> = ctx
-        .config
-        .models
-        .chat
-        .values()
-        .map(|m| {
-            json!({
-                "name": m.name,
-                "qualified_name": m.qualified_name,
-                "sdk": m.sdk.as_str(),
-                "provider": m.provider_key,
-                "model_id": m.model_id,
-            })
-        })
-        .collect();
+    list_models_with_args(ctx, &Value::Null)
+}
+
+pub fn list_models_with_args(ctx: &CommandContext, args: &Value) -> CommandResult {
+    let include_hidden = args
+        .get("include_hidden")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let entries =
+        effective_catalog::list_effective_models(&ctx.config, &ctx.data_dir, include_hidden);
+    let models: Vec<Value> = entries.iter().map(effective_model_to_json).collect();
+
+    let hidden_count = if include_hidden {
+        entries.iter().filter(|e| e.hidden).count()
+    } else {
+        // Recompute the hidden count when not folded in.
+        let with_hidden =
+            effective_catalog::list_effective_models(&ctx.config, &ctx.data_dir, true);
+        with_hidden.iter().filter(|e| e.hidden).count()
+    };
 
     Ok(json!({
         "models": models,
         "active": ctx.active_model,
+        "include_hidden": include_hidden,
+        "hidden_count": hidden_count,
     }))
+}
+
+fn effective_model_to_json(entry: &EffectiveModel) -> Value {
+    let m = &entry.resolved;
+    json!({
+        "name": m.name,
+        "qualified_name": m.qualified_name,
+        "sdk": m.sdk.as_str(),
+        "provider": m.provider_key,
+        "model_id": m.model_id,
+        "source": match entry.source {
+            EffectiveSource::Static => "static",
+            EffectiveSource::Discovered => "discovered",
+        },
+        "hidden": entry.hidden,
+    })
 }
 
 /// Show detailed info for a model. If no name given, uses the active model.
@@ -126,15 +171,14 @@ pub fn model_info(ctx: &CommandContext, args: &Value) -> CommandResult {
         .filter(|s| !s.is_empty());
 
     let resolved = match name_arg {
-        Some(name) => ctx
-            .config
-            .models
-            .find_model(name)
-            .map_err(|e| (ErrorCode::NotFound, e.to_string()))?,
+        Some(name) => {
+            effective_catalog::find_effective_model(&ctx.config, &ctx.data_dir, name, true)
+                .map_err(effective_catalog_err)?
+        }
         None => resolve_active_model(ctx)?,
     };
 
-    let mut data = serde_json::to_value(resolved).map_err(|e| {
+    let mut data = serde_json::to_value(&resolved).map_err(|e| {
         (
             ErrorCode::InternalError,
             format!("Failed to serialize model: {e}"),
@@ -172,19 +216,30 @@ pub fn model_info(ctx: &CommandContext, args: &Value) -> CommandResult {
     Ok(data)
 }
 
-/// Switch model or show current. Validates against model catalog and
-/// persists the selection to the character's preferences file.
+/// Switch model or show current. Validates against the effective catalog
+/// (static + discovered) and persists the selection to the character's
+/// preferences file.
+///
+/// Phase 7+: hidden discovered models cannot be selected unless the
+/// caller passes `include_hidden = true`. The error spells out how to
+/// either opt in for the call or update visibility rules permanently.
 pub fn switch_model(ctx: &mut CommandContext, args: &Value) -> CommandResult {
     let name = args.get("name").and_then(|v| v.as_str());
+    let include_hidden = args
+        .get("include_hidden")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     match name {
         None => Ok(json!({ "active": ctx.active_model })),
         Some(name) => {
-            let resolved = ctx
-                .config
-                .models
-                .find_model(name)
-                .map_err(|e| (ErrorCode::NotFound, e.to_string()))?;
+            let resolved = effective_catalog::find_effective_model(
+                &ctx.config,
+                &ctx.data_dir,
+                name,
+                include_hidden,
+            )
+            .map_err(effective_catalog_err)?;
 
             let char_name = require_character(ctx)?.to_string();
             let mut prefs = load_char_prefs(ctx, &char_name)?;
@@ -553,11 +608,10 @@ pub fn model_settings(ctx: &CommandContext, args: &Value) -> CommandResult {
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
     {
-        Some(name) => ctx
-            .config
-            .models
-            .find_model(name)
-            .map_err(|e| (ErrorCode::NotFound, e.to_string()))?,
+        Some(name) => {
+            effective_catalog::find_effective_model(&ctx.config, &ctx.data_dir, name, true)
+                .map_err(effective_catalog_err)?
+        }
         None => resolve_active_model(ctx)?,
     };
 

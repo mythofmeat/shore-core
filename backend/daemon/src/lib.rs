@@ -6,6 +6,7 @@ pub mod cache_keepalive;
 pub mod characters;
 pub mod commands;
 pub mod content_util;
+pub mod effective_catalog;
 pub mod engine;
 pub mod handler;
 pub mod handshake;
