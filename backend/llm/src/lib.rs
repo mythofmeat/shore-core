@@ -1,6 +1,7 @@
 pub mod cache_forensics;
 pub mod credentials;
 pub mod debug_log;
+pub mod discovery;
 pub(crate) mod providers;
 pub mod retry;
 pub mod sanitize;
@@ -85,6 +86,13 @@ impl LlmClient {
     /// Set the payload log directory.
     pub fn set_payload_log_dir(&mut self, dir: PathBuf) {
         self.payload_log_dir = Some(dir);
+    }
+
+    /// Borrow the shared `reqwest::Client` so other modules (e.g.
+    /// provider model discovery) can reuse the connection pool instead
+    /// of constructing their own client per call.
+    pub fn http_client(&self) -> &reqwest::Client {
+        &self.http_client
     }
 
     /// Build an `LlmRequest` from a resolved model profile and conversation state.

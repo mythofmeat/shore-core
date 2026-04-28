@@ -1,0 +1,557 @@
+//! Provider model discovery and on-disk cache.
+//!
+//! Every provider that exposes an OpenAI-compatible `/v1/models` endpoint
+//! (OpenAI, OpenRouter, vLLM, Together, etc.) is reachable through the same
+//! fetcher. The Phase 5 layer is intentionally narrow:
+//!
+//! * `discover_openai_compatible` — one-shot fetch + map to `DiscoveredModel`.
+//! * `read_cache` / `write_cache` — durable, atomic per-provider cache files
+//!   under `<data_dir>/providers/<provider>/models.json`.
+//!
+//! Capabilities are kept as `Option<bool>` so unknown values stay unknown:
+//! the user-facing list must not pretend a provider does *not* support
+//! tool use just because it didn't advertise the field. The original
+//! provider entry JSON is preserved in `raw_provider_metadata` so future
+//! phases can extract more without re-fetching.
+//!
+//! Atomic write semantics: cache is written to a sibling tmp file and
+//! renamed in. Discovery failures never delete the previous cache —
+//! the write only happens on success.
+//!
+//! No secrets are read or written by this module's I/O code paths. The
+//! caller resolves the API key (typically via
+//! [`crate::credentials::resolve_key_candidates`]) and passes the value
+//! into `discover_openai_compatible`. Cache files contain only public
+//! provider metadata.
+
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+use tracing::{debug, warn};
+
+/// Current cache schema version. Bump when adding a non-trivial field
+/// that older Shore builds couldn't reasonably ignore. Older caches with
+/// a smaller `version` are read on a best-effort basis; mismatched newer
+/// caches are treated as "no cache" and require a refresh.
+pub const CACHE_VERSION: u32 = 1;
+
+// ── DiscoveredModel ─────────────────────────────────────────────────────
+
+/// One model record returned by a provider's discovery endpoint.
+///
+/// Capabilities are `Option<bool>` on purpose: `None` means *unknown*,
+/// not *unsupported*. UI surfaces should distinguish the two.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DiscoveredModel {
+    pub provider_key: String,
+    pub model_id: String,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+
+    /// Wire SDK family (typically the same as the provider's `sdk` field).
+    pub sdk: String,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<i64>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owned_by: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_length: Option<u64>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<u64>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_tools: Option<bool>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_images: Option<bool>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_reasoning: Option<bool>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_prompt_cache: Option<bool>,
+
+    /// The original provider entry, preserved verbatim so future phases
+    /// can extract additional fields without re-fetching.
+    #[serde(default, skip_serializing_if = "is_null_value")]
+    pub raw_provider_metadata: serde_json::Value,
+
+    /// RFC3339 timestamp of when this record was discovered. Stored as
+    /// a string to match the diagnostics ring buffer convention and
+    /// avoid pulling in chrono's serde feature.
+    pub discovered_at: String,
+}
+
+fn is_null_value(v: &serde_json::Value) -> bool {
+    v.is_null()
+}
+
+// ── Cache file ──────────────────────────────────────────────────────────
+
+/// On-disk per-provider cache shape.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProviderModelsCache {
+    pub version: u32,
+    pub provider_key: String,
+    /// RFC3339 timestamp of when this cache was last refreshed.
+    pub fetched_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    pub models: Vec<DiscoveredModel>,
+}
+
+/// Build the canonical cache path for `provider_key` under `data_dir`:
+/// `<data_dir>/providers/<provider>/models.json`.
+pub fn cache_path(data_dir: &Path, provider_key: &str) -> PathBuf {
+    data_dir
+        .join("providers")
+        .join(provider_key)
+        .join("models.json")
+}
+
+/// Read a provider's cache, returning `Ok(None)` when the file is absent
+/// or corrupt. Corrupt caches are logged but not propagated as errors —
+/// a caller asking for cached models should not fall over because of a
+/// bad file; the user can refresh.
+pub fn read_cache(path: &Path) -> std::io::Result<Option<ProviderModelsCache>> {
+    let bytes = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    match serde_json::from_slice::<ProviderModelsCache>(&bytes) {
+        Ok(c) if c.version <= CACHE_VERSION => Ok(Some(c)),
+        Ok(c) => {
+            warn!(
+                path = %path.display(),
+                cache_version = c.version,
+                supported = CACHE_VERSION,
+                "Provider cache version newer than this build — treating as missing"
+            );
+            Ok(None)
+        }
+        Err(e) => {
+            warn!(
+                path = %path.display(),
+                error = %e,
+                "Provider cache failed to parse — treating as missing"
+            );
+            Ok(None)
+        }
+    }
+}
+
+/// Write a provider cache atomically: serialize → write to tmp sibling →
+/// rename in. The rename only succeeds on success, so a previous good
+/// cache survives a serialization or I/O failure.
+pub fn write_cache(path: &Path, cache: &ProviderModelsCache) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let bytes = serde_json::to_vec_pretty(cache)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, &bytes)?;
+    std::fs::rename(&tmp, path)?;
+    debug!(path = %path.display(), models = cache.models.len(), "Wrote provider model cache");
+    Ok(())
+}
+
+// ── Discovery error ─────────────────────────────────────────────────────
+
+#[derive(Debug, thiserror::Error)]
+pub enum DiscoveryError {
+    #[error("provider {provider}: {kind} discovery is not enabled")]
+    DiscoveryDisabled { provider: String, kind: String },
+
+    #[error("provider {provider}: no API key configured")]
+    NoKeys { provider: String },
+
+    #[error("provider {provider}: missing base_url for discovery")]
+    MissingBaseUrl { provider: String },
+
+    #[error("provider {provider}: discovery HTTP {status}")]
+    HttpStatus {
+        provider: String,
+        status: u16,
+        body: String,
+    },
+
+    #[error("provider {provider}: network error: {source}")]
+    Network {
+        provider: String,
+        #[source]
+        source: reqwest::Error,
+    },
+
+    #[error("provider {provider}: failed to parse models response: {source}")]
+    Parse {
+        provider: String,
+        #[source]
+        source: serde_json::Error,
+    },
+}
+
+// ── OpenAI-compatible /v1/models fetcher ────────────────────────────────
+
+/// Fetch and map a provider's `/v1/models` endpoint.
+///
+/// `base_url` should be the provider's API root (e.g.
+/// `https://openrouter.ai/api/v1`). The `/models` suffix is appended,
+/// preserving an existing trailing slash when present.
+pub async fn discover_openai_compatible(
+    http: &reqwest::Client,
+    provider_key: &str,
+    base_url: &str,
+    api_key: &str,
+) -> Result<Vec<DiscoveredModel>, DiscoveryError> {
+    let url = build_models_url(base_url);
+    debug!(provider = provider_key, url = %url, "Fetching provider models");
+
+    let resp = http
+        .get(&url)
+        .bearer_auth(api_key)
+        .header("accept", "application/json")
+        .send()
+        .await
+        .map_err(|e| DiscoveryError::Network {
+            provider: provider_key.to_string(),
+            source: e,
+        })?;
+
+    let status = resp.status();
+    let body = resp.text().await.map_err(|e| DiscoveryError::Network {
+        provider: provider_key.to_string(),
+        source: e,
+    })?;
+
+    if !status.is_success() {
+        return Err(DiscoveryError::HttpStatus {
+            provider: provider_key.to_string(),
+            status: status.as_u16(),
+            body: truncate_for_log(&body),
+        });
+    }
+
+    parse_openai_models_response(provider_key, base_url, &body)
+}
+
+/// Append `/models` to a provider base URL, handling a trailing slash.
+fn build_models_url(base_url: &str) -> String {
+    let trimmed = base_url.trim_end_matches('/');
+    format!("{trimmed}/models")
+}
+
+/// Truncate a response body for logging so we don't drag huge payloads
+/// (or, in pathological cases, secrets that a buggy provider might echo)
+/// into error chains.
+fn truncate_for_log(body: &str) -> String {
+    const MAX: usize = 512;
+    if body.len() <= MAX {
+        body.to_string()
+    } else {
+        format!("{}…", &body[..MAX])
+    }
+}
+
+#[derive(Deserialize)]
+struct ModelsEnvelope {
+    #[serde(default)]
+    data: Vec<serde_json::Value>,
+}
+
+fn parse_openai_models_response(
+    provider_key: &str,
+    base_url: &str,
+    body: &str,
+) -> Result<Vec<DiscoveredModel>, DiscoveryError> {
+    let envelope: ModelsEnvelope =
+        serde_json::from_str(body).map_err(|e| DiscoveryError::Parse {
+            provider: provider_key.to_string(),
+            source: e,
+        })?;
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut out = Vec::with_capacity(envelope.data.len());
+    for raw in envelope.data {
+        if let Some(model) = map_entry(provider_key, base_url, &raw, &now) {
+            out.push(model);
+        }
+    }
+    Ok(out)
+}
+
+fn map_entry(
+    provider_key: &str,
+    base_url: &str,
+    raw: &serde_json::Value,
+    now: &str,
+) -> Option<DiscoveredModel> {
+    let id = raw.get("id").and_then(|v| v.as_str())?.to_string();
+    let display_name = raw
+        .get("name")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let created_at = raw.get("created").and_then(|v| v.as_i64());
+    let owned_by = raw
+        .get("owned_by")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let description = raw
+        .get("description")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let context_length = raw.get("context_length").and_then(|v| v.as_u64());
+
+    // OpenRouter shape: top_provider.max_completion_tokens
+    let max_output_tokens = raw
+        .get("top_provider")
+        .and_then(|v| v.get("max_completion_tokens"))
+        .and_then(|v| v.as_u64())
+        .or_else(|| raw.get("max_completion_tokens").and_then(|v| v.as_u64()));
+
+    // Capabilities — best-effort, otherwise unknown.
+    let supports_tools = supported_param(raw, &["tools", "tool_use", "function_calling"]);
+    let supports_reasoning = supported_param(raw, &["reasoning", "include_reasoning"]);
+    let supports_images = modality_includes(raw, "input", "image");
+    let supports_prompt_cache = supported_param(raw, &["prompt_cache", "cache_control"]);
+
+    Some(DiscoveredModel {
+        provider_key: provider_key.to_string(),
+        model_id: id,
+        display_name,
+        sdk: "openai".to_string(),
+        base_url: Some(base_url.to_string()),
+        created_at,
+        owned_by,
+        description,
+        context_length,
+        max_output_tokens,
+        supports_tools,
+        supports_images,
+        supports_reasoning,
+        supports_prompt_cache,
+        raw_provider_metadata: raw.clone(),
+        discovered_at: now.to_string(),
+    })
+}
+
+/// Look at OpenRouter-style `supported_parameters: [...]` for any of the
+/// listed names. `None` means the field is absent — unknown, not false.
+fn supported_param(raw: &serde_json::Value, candidates: &[&str]) -> Option<bool> {
+    let arr = raw.get("supported_parameters")?.as_array()?;
+    let values: Vec<&str> = arr.iter().filter_map(|v| v.as_str()).collect();
+    Some(candidates.iter().any(|c| values.contains(c)))
+}
+
+/// Look at OpenRouter-style `architecture.{input,output}_modalities` for
+/// a specific modality. `None` means the field is absent.
+fn modality_includes(raw: &serde_json::Value, side: &str, modality: &str) -> Option<bool> {
+    let arch = raw.get("architecture")?;
+    let key = format!("{side}_modalities");
+    let arr = arch.get(&key)?.as_array()?;
+    Some(arr.iter().any(|v| v.as_str() == Some(modality)))
+}
+
+// ── Tests ───────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cache_path_layout() {
+        let p = cache_path(Path::new("/data"), "openrouter");
+        assert_eq!(p, PathBuf::from("/data/providers/openrouter/models.json"));
+    }
+
+    #[test]
+    fn read_missing_cache_is_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = cache_path(tmp.path(), "ghost");
+        assert!(read_cache(&p).unwrap().is_none());
+    }
+
+    #[test]
+    fn write_then_read_round_trip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = cache_path(tmp.path(), "openrouter");
+        let cache = ProviderModelsCache {
+            version: CACHE_VERSION,
+            provider_key: "openrouter".into(),
+            fetched_at: "2026-04-28T10:00:00Z".into(),
+            base_url: Some("https://openrouter.ai/api/v1".into()),
+            models: vec![DiscoveredModel {
+                provider_key: "openrouter".into(),
+                model_id: "x-ai/grok-2".into(),
+                display_name: Some("Grok 2".into()),
+                sdk: "openai".into(),
+                base_url: Some("https://openrouter.ai/api/v1".into()),
+                created_at: Some(1_700_000_000),
+                owned_by: Some("xai".into()),
+                description: None,
+                context_length: Some(131_072),
+                max_output_tokens: Some(8192),
+                supports_tools: Some(true),
+                supports_images: Some(false),
+                supports_reasoning: None,
+                supports_prompt_cache: None,
+                raw_provider_metadata: serde_json::json!({"id":"x-ai/grok-2"}),
+                discovered_at: "2026-04-28T10:00:00Z".into(),
+            }],
+        };
+
+        write_cache(&path, &cache).unwrap();
+
+        let read_back = read_cache(&path).unwrap().expect("present");
+        assert_eq!(read_back, cache);
+
+        // No tmp file left behind.
+        let tmp_path = path.with_extension("json.tmp");
+        assert!(!tmp_path.exists(), "tmp sibling should be renamed in");
+    }
+
+    #[test]
+    fn corrupt_cache_returns_none_without_erroring() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = cache_path(tmp.path(), "openrouter");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"not-json{{{").unwrap();
+        assert!(read_cache(&path).unwrap().is_none());
+    }
+
+    #[test]
+    fn newer_cache_version_treated_as_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = cache_path(tmp.path(), "openrouter");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let body = serde_json::json!({
+            "version": CACHE_VERSION + 99,
+            "provider_key": "openrouter",
+            "fetched_at": "2030-01-01T00:00:00Z",
+            "models": [],
+        });
+        std::fs::write(&path, serde_json::to_vec(&body).unwrap()).unwrap();
+        assert!(read_cache(&path).unwrap().is_none());
+    }
+
+    #[test]
+    fn build_models_url_handles_trailing_slash() {
+        assert_eq!(
+            build_models_url("https://openrouter.ai/api/v1"),
+            "https://openrouter.ai/api/v1/models"
+        );
+        assert_eq!(
+            build_models_url("https://openrouter.ai/api/v1/"),
+            "https://openrouter.ai/api/v1/models"
+        );
+    }
+
+    #[test]
+    fn parses_openai_minimal_response() {
+        let body = r#"{
+            "object": "list",
+            "data": [
+                { "id": "gpt-4o", "object": "model", "created": 1234567890, "owned_by": "openai" },
+                { "id": "gpt-4o-mini", "object": "model" }
+            ]
+        }"#;
+        let models =
+            parse_openai_models_response("openai", "https://api.openai.com/v1", body).unwrap();
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].model_id, "gpt-4o");
+        assert_eq!(models[0].owned_by.as_deref(), Some("openai"));
+        assert_eq!(models[0].created_at, Some(1234567890));
+        assert!(models[0].supports_tools.is_none(), "unknown stays unknown");
+        assert!(models[0].supports_images.is_none());
+        assert_eq!(models[0].sdk, "openai");
+        assert_eq!(
+            models[0].base_url.as_deref(),
+            Some("https://api.openai.com/v1")
+        );
+        assert_eq!(models[1].owned_by, None);
+    }
+
+    #[test]
+    fn parses_openrouter_extended_response() {
+        let body = r#"{
+            "data": [{
+                "id": "anthropic/claude-3.5-sonnet",
+                "name": "Claude 3.5 Sonnet",
+                "context_length": 200000,
+                "supported_parameters": ["temperature", "tools", "reasoning"],
+                "architecture": {
+                    "input_modalities": ["text", "image"],
+                    "output_modalities": ["text"]
+                },
+                "top_provider": { "max_completion_tokens": 8192 },
+                "description": "Strong general model."
+            }]
+        }"#;
+        let models =
+            parse_openai_models_response("openrouter", "https://openrouter.ai/api/v1", body)
+                .unwrap();
+        assert_eq!(models.len(), 1);
+        let m = &models[0];
+        assert_eq!(m.model_id, "anthropic/claude-3.5-sonnet");
+        assert_eq!(m.display_name.as_deref(), Some("Claude 3.5 Sonnet"));
+        assert_eq!(m.context_length, Some(200_000));
+        assert_eq!(m.max_output_tokens, Some(8192));
+        assert_eq!(m.supports_tools, Some(true));
+        assert_eq!(m.supports_reasoning, Some(true));
+        assert_eq!(m.supports_images, Some(true));
+        assert_eq!(m.supports_prompt_cache, Some(false));
+        assert_eq!(m.description.as_deref(), Some("Strong general model."));
+        assert_eq!(m.raw_provider_metadata["id"], "anthropic/claude-3.5-sonnet");
+    }
+
+    #[test]
+    fn unknown_capability_stays_unknown_when_field_absent() {
+        let body = r#"{"data": [{"id": "x", "object": "model"}]}"#;
+        let models = parse_openai_models_response("p", "u", body).unwrap();
+        assert_eq!(models[0].supports_tools, None);
+        assert_eq!(models[0].supports_images, None);
+        assert_eq!(models[0].supports_reasoning, None);
+        assert_eq!(models[0].supports_prompt_cache, None);
+    }
+
+    #[test]
+    fn entry_without_id_is_skipped() {
+        let body = r#"{"data": [{"object":"model"}, {"id":"keep","object":"model"}]}"#;
+        let models = parse_openai_models_response("p", "u", body).unwrap();
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].model_id, "keep");
+    }
+
+    #[test]
+    fn parse_invalid_json_propagates_error() {
+        let err = parse_openai_models_response("openai", "u", "{bad json").unwrap_err();
+        assert!(matches!(err, DiscoveryError::Parse { .. }));
+    }
+
+    #[test]
+    fn truncate_for_log_caps_long_bodies() {
+        let body = "x".repeat(2000);
+        let truncated = truncate_for_log(&body);
+        assert!(truncated.len() < body.len());
+        assert!(truncated.ends_with('…'));
+    }
+
+    #[test]
+    fn truncate_for_log_passes_short_bodies() {
+        assert_eq!(truncate_for_log("hi"), "hi");
+    }
+}

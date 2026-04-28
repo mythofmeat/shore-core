@@ -40,3 +40,4 @@ shore-config = { workspace = true }
 shore-diagnostics = { workspace = true }
 shore-llm = { workspace = true }
 shore-test-harness = { workspace = true }
+wiremock = "0.6"

@@ -96,8 +96,46 @@ impl MessageHandler {
         // config and never touch a character engine, so they bypass the
         // character-resolution step below. This lets `shore complete
         // models` succeed even on a multi-character config where no
-        // character has been selected yet.
-        if cmd.name == "list_characters" || cmd.name == "list_models" {
+        // character has been selected yet. Provider listing commands
+        // (`list_providers`, `list_provider_models`) are similarly
+        // characterless and sync.
+        //
+        // `refresh_provider_models` is also character-agnostic but async
+        // (network I/O), so it gets its own bypass below.
+        if cmd.name == "refresh_provider_models" {
+            let ctx = CommandContext {
+                config: self.cmd_ctx.config.clone(),
+                push_tx: self.push_tx.clone(),
+                data_dir: self.cmd_ctx.data_dir.clone(),
+                character_name: None,
+                active_model: None,
+                reasoning_effort_override: None,
+                session_tokens: self.session_state_mut(session_id).session_tokens.clone(),
+                autonomy: self.cmd_ctx.autonomy.clone(),
+                llm_client: self.cmd_ctx.llm_client.clone(),
+                diagnostics: self.cmd_ctx.diagnostics.clone(),
+            };
+            return match commands::providers::refresh_provider_models(&ctx, &cmd.args).await {
+                Ok(data) => {
+                    ServerMessage::CommandOutput(shore_protocol::server_msg::CommandOutput {
+                        rid: None,
+                        name: cmd.name.clone(),
+                        data,
+                    })
+                }
+                Err((code, msg)) => ServerMessage::Error(SwpError {
+                    rid: None,
+                    code,
+                    message: msg,
+                }),
+            }
+            .with_rid(meta.rid.clone());
+        }
+
+        if matches!(
+            cmd.name.as_str(),
+            "list_characters" | "list_models" | "list_providers" | "list_provider_models"
+        ) {
             let (active_model, reasoning_effort_override, session_tokens) = {
                 let session = self.session_state_mut(session_id);
                 (

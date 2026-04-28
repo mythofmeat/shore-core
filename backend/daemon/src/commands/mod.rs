@@ -1,5 +1,6 @@
 pub mod conversation;
 pub mod navigation;
+pub mod providers;
 pub mod state;
 pub mod usage;
 
@@ -109,6 +110,11 @@ pub async fn dispatch(
         "heartbeat_set_active" => state::heartbeat_set_active(engine, ctx),
         "usage" => usage::usage(ctx, &cmd.args).await,
 
+        // Provider discovery
+        "list_providers" => providers::list_providers(ctx),
+        "refresh_provider_models" => providers::refresh_provider_models(ctx, &cmd.args).await,
+        "list_provider_models" => providers::list_provider_models(ctx, &cmd.args),
+
         _ => Err((
             ErrorCode::InvalidRequest,
             format!("Unknown command: {}", cmd.name),
@@ -138,6 +144,8 @@ pub fn dispatch_characterless(ctx: &CommandContext, cmd: &Command) -> CommandRes
     match cmd.name.as_str() {
         "list_characters" => navigation::list_characters_standalone(ctx),
         "list_models" => state::list_models(ctx),
+        "list_providers" => providers::list_providers(ctx),
+        "list_provider_models" => providers::list_provider_models(ctx, &cmd.args),
         _ => Err((
             ErrorCode::InvalidRequest,
             format!("Command '{}' requires a character", cmd.name),
