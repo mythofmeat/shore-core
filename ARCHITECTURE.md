@@ -94,7 +94,7 @@ $XDG_DATA_HOME/shore/ledger.db
 
 Prompt assembly reads prompt-visible files from `active_prompt/`, not directly
 from editable workspace files. `active_prompt/MEMORY.md` is refreshed from
-`workspace/memory/MEMORY.md` at the same compaction/reload boundary as the
+`workspace/MEMORY.md` at the same compaction/reload boundary as the
 protected prompt files.
 
 Normal chat uses:
@@ -120,7 +120,7 @@ Prompt-visible files:
 - `AGENTS.md`
 - `TOOLS.md`
 - `HEARTBEAT.md`
-- `workspace/memory/MEMORY.md`
+- `workspace/MEMORY.md`
 
 When a model writes or edits one of these through workspace tools:
 
@@ -193,7 +193,7 @@ Cache keepalive is separate from heartbeat. It exists to preserve Anthropic cach
 
 Dreaming is the scheduled memory librarian path. When autonomy and `[memory.dreaming]` are enabled, a due pass makes a private LLM call with memory workspace tools. The character lists, reads, searches, writes, and edits markdown memory files to organize durable notes, dedupe repeated material, separate long-term facts from daily/raw logs, and mark stale or superseded information.
 
-`workspace/memory/MEMORY.md` is the canonical index; `active_prompt/MEMORY.md` is the prompt-active copy. It orients the character with a map of memory files, recently updated files, and still-relevant conversational throughlines. It should not duplicate the roles of `SOUL.md`, `USER.md`, `AGENTS.md`, `TOOLS.md`, or `HEARTBEAT.md`.
+`workspace/MEMORY.md` is the canonical index; `active_prompt/MEMORY.md` is the prompt-active copy. It orients the character with a map of memory files, recently updated files, and still-relevant conversational throughlines. It should not duplicate the roles of `SOUL.md`, `USER.md`, `AGENTS.md`, `TOOLS.md`, or `HEARTBEAT.md`.
 
 Compaction captures and preserves older conversation material into ordinary markdown memory files. Dreaming reorganizes and collates those files afterward. `workspace/memory/DREAMS.md` is the human-readable audit diary for dreaming and compaction review, while `.dreams/` stores machine-readable staging/debug state. Generated outputs under `.dreams/**`, `DREAMS.md`, `dreams.md`, `MEMORY.md`, and `memory/dreaming/**` are excluded from ordinary memory-source ingestion.
 

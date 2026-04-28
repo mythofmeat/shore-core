@@ -79,8 +79,8 @@ Create a character workspace:
   AGENTS.md
   TOOLS.md
   HEARTBEAT.md
+  MEMORY.md
   memory/
-    MEMORY.md
 ```
 
 Minimal `SOUL.md`:
