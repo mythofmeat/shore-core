@@ -130,6 +130,21 @@ pub fn tool_defs() -> Vec<ToolDef> {
             category: ToolCategory::Other,
         },
         ToolDef {
+            name: "delete",
+            description: "Move a file in your workspace or memory directory to a trash folder. Bare paths resolve under workspace/. Use `memory/...` to remove a durable memory file. The file is moved out of your workspace into a timestamped trash folder, not permanently erased. Refuses prompt-visible files (SOUL.md, USER.md, AGENTS.md, TOOLS.md, HEARTBEAT.md, MEMORY.md) and directories.",
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Relative path to the file to remove. Bare paths resolve under workspace/. Use `workspace/...` or `memory/...` for an explicit root."
+                    }
+                },
+                "required": ["path"]
+            }),
+            category: ToolCategory::Other,
+        },
+        ToolDef {
             name: "exec",
             description: "Run an allowlisted host command. The command string is parsed into argv and executed directly; shell features like pipes, redirects, command substitution, and `;` chaining are not supported. Use this for search, git, and build/test commands when a file tool is awkward.",
             parameters: json!({
@@ -165,6 +180,7 @@ pub(super) fn description_for_memory_access(
         "edit" => Some("Edit an existing workspace file by replacing specific text. Bare paths resolve under workspace/. Each replacement must match the old_string exactly, including whitespace and newlines."),
         "list_files" => Some("List files and directories under a path in your workspace. Bare paths resolve under workspace/. Returns each entry's name, type, and size."),
         "search" => Some("Search text files across your workspace. Bare paths resolve under workspace/. Returns matching file paths, line numbers, and excerpts. Use this for discovery before reading a full file."),
+        "delete" => Some("Move a file in your workspace to a trash folder. Bare paths resolve under workspace/. The file is moved out of your workspace into a timestamped trash folder, not permanently erased. Refuses prompt-visible files (SOUL.md, USER.md, AGENTS.md, TOOLS.md, HEARTBEAT.md, MEMORY.md) and directories."),
         _ => None,
     }
 }
@@ -741,6 +757,83 @@ pub async fn handle_search(
     }))
 }
 
+pub async fn handle_delete(
+    input: Value,
+    workspace_dir: &str,
+    character_data_dir: &str,
+) -> Result<Value, ToolError> {
+    let path_str = input
+        .get("path")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| ToolError::InvalidArgs("missing required field: path".into()))?;
+
+    if crate::memory::deferred_edits::is_prompt_visible_path(path_str) {
+        return Err(ToolError::InvalidArgs(format!(
+            "{path_str} is a prompt-visible file and cannot be deleted"
+        )));
+    }
+
+    if character_data_dir.is_empty() {
+        return Err(ToolError::InvalidArgs(
+            "character data directory not configured".into(),
+        ));
+    }
+
+    let path = resolve_path(workspace_dir, path_str)?;
+
+    if !path.exists() {
+        return Err(ToolError::Io(format!("file not found: {path_str}")));
+    }
+    if !path.is_file() {
+        return Err(ToolError::InvalidArgs(format!(
+            "{path_str} is not a file (delete only operates on regular files)"
+        )));
+    }
+
+    let workspace_root = PathBuf::from(workspace_dir);
+    let relative_under_workspace = path
+        .strip_prefix(&workspace_root)
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|_| PathBuf::from(path.file_name().unwrap_or_default()));
+
+    let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%S%3fZ").to_string();
+    let trash_root = PathBuf::from(character_data_dir).join("trash").join(&stamp);
+    let trash_target = trash_root.join(&relative_under_workspace);
+
+    if let Some(parent) = trash_target.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| ToolError::Io(format!("could not create trash directory: {e}")))?;
+    }
+
+    if let Err(rename_err) = tokio::fs::rename(&path, &trash_target).await {
+        // Cross-device rename can fail with EXDEV. Fall back to copy + remove.
+        tokio::fs::copy(&path, &trash_target).await.map_err(|e| {
+            ToolError::Io(format!(
+                "could not move file to trash (rename: {rename_err}, copy fallback: {e})"
+            ))
+        })?;
+        tokio::fs::remove_file(&path)
+            .await
+            .map_err(|e| ToolError::Io(format!("could not remove original after copy: {e}")))?;
+    }
+
+    let trashed_display = trash_target
+        .strip_prefix(
+            PathBuf::from(character_data_dir)
+                .parent()
+                .unwrap_or(Path::new("")),
+        )
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_else(|_| trash_target.to_string_lossy().replace('\\', "/"));
+
+    Ok(json!({
+        "path": path_str,
+        "deleted": true,
+        "trashed_to": trashed_display,
+    }))
+}
+
 // ---------------------------------------------------------------------------
 // Exec allowlist
 // ---------------------------------------------------------------------------
@@ -955,7 +1048,7 @@ mod tests {
 
     #[test]
     fn tool_defs_count() {
-        assert_eq!(tool_defs().len(), 6);
+        assert_eq!(tool_defs().len(), 7);
     }
 
     #[test]
@@ -1424,5 +1517,155 @@ mod tests {
             stdout.contains("subdir"),
             "expected subdir in pwd output: {stdout}"
         );
+    }
+
+    #[tokio::test]
+    async fn delete_moves_file_to_trash() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("workspace");
+        let ws_str = ws.to_string_lossy().to_string();
+        let data_dir = tmp.path().join("data");
+        let data_str = data_dir.to_string_lossy().to_string();
+
+        handle_write(json!({"path": "notes/old.md", "content": "stale"}), &ws_str)
+            .await
+            .unwrap();
+
+        let result = handle_delete(json!({"path": "notes/old.md"}), &ws_str, &data_str)
+            .await
+            .unwrap();
+        assert_eq!(result["deleted"], true);
+        assert_eq!(result["path"], "notes/old.md");
+
+        assert!(!ws.join("notes/old.md").exists(), "file should be moved");
+        let trash = data_dir.join("trash");
+        assert!(trash.exists(), "trash directory should exist");
+
+        let mut found = None;
+        for entry in std::fs::read_dir(&trash).unwrap() {
+            let entry = entry.unwrap();
+            let candidate = entry.path().join("notes/old.md");
+            if candidate.exists() {
+                found = Some(candidate);
+                break;
+            }
+        }
+        let trashed = found.expect("trashed file should exist under timestamped folder");
+        assert_eq!(std::fs::read_to_string(trashed).unwrap(), "stale");
+    }
+
+    #[tokio::test]
+    async fn delete_preserves_memory_namespace_under_trash() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("workspace");
+        let ws_str = ws.to_string_lossy().to_string();
+        let data_dir = tmp.path().join("data");
+        let data_str = data_dir.to_string_lossy().to_string();
+
+        handle_write(
+            json!({"path": "memory/people/ren.md", "content": "Ren"}),
+            &ws_str,
+        )
+        .await
+        .unwrap();
+
+        handle_delete(json!({"path": "memory/people/ren.md"}), &ws_str, &data_str)
+            .await
+            .unwrap();
+
+        assert!(!ws.join("memory/people/ren.md").exists());
+        let trash = data_dir.join("trash");
+        let mut paths = Vec::new();
+        for entry in std::fs::read_dir(&trash).unwrap() {
+            let entry = entry.unwrap();
+            paths.push(entry.path().join("memory/people/ren.md"));
+        }
+        assert!(
+            paths.iter().any(|p| p.exists()),
+            "memory file should land under trash/<ts>/memory/people/ren.md"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_rejects_protected_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("workspace");
+        let ws_str = ws.to_string_lossy().to_string();
+        let data_dir = tmp.path().join("data");
+        let data_str = data_dir.to_string_lossy().to_string();
+
+        handle_write(json!({"path": "SOUL.md", "content": "soul"}), &ws_str)
+            .await
+            .unwrap();
+        handle_write(json!({"path": "MEMORY.md", "content": "idx"}), &ws_str)
+            .await
+            .unwrap();
+
+        for path in [
+            "SOUL.md",
+            "USER.md",
+            "AGENTS.md",
+            "TOOLS.md",
+            "HEARTBEAT.md",
+            "MEMORY.md",
+            "workspace/SOUL.md",
+        ] {
+            let result = handle_delete(json!({"path": path}), &ws_str, &data_str).await;
+            assert!(result.is_err(), "delete must refuse {path}");
+        }
+
+        assert!(ws.join("SOUL.md").exists(), "SOUL.md must remain in place");
+    }
+
+    #[tokio::test]
+    async fn delete_rejects_missing_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("workspace");
+        tokio::fs::create_dir_all(&ws).await.unwrap();
+        let ws_str = ws.to_string_lossy().to_string();
+        let data_str = tmp.path().join("data").to_string_lossy().to_string();
+
+        let result = handle_delete(json!({"path": "ghost.md"}), &ws_str, &data_str).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn delete_rejects_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("workspace");
+        tokio::fs::create_dir_all(ws.join("notes")).await.unwrap();
+        let ws_str = ws.to_string_lossy().to_string();
+        let data_str = tmp.path().join("data").to_string_lossy().to_string();
+
+        let result = handle_delete(json!({"path": "notes"}), &ws_str, &data_str).await;
+        assert!(result.is_err(), "delete must refuse directories");
+        assert!(ws.join("notes").exists(), "directory must remain");
+    }
+
+    #[tokio::test]
+    async fn delete_rejects_path_traversal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("workspace");
+        tokio::fs::create_dir_all(&ws).await.unwrap();
+        let ws_str = ws.to_string_lossy().to_string();
+        let data_str = tmp.path().join("data").to_string_lossy().to_string();
+
+        let result = handle_delete(json!({"path": "../escape.md"}), &ws_str, &data_str).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn delete_rejects_when_data_dir_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("workspace");
+        let ws_str = ws.to_string_lossy().to_string();
+
+        handle_write(json!({"path": "foo.md", "content": "x"}), &ws_str)
+            .await
+            .unwrap();
+
+        let result = handle_delete(json!({"path": "foo.md"}), &ws_str, "").await;
+        assert!(result.is_err());
+        assert!(ws.join("foo.md").exists(), "file should not be moved");
     }
 }

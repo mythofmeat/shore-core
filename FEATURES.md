@@ -61,13 +61,6 @@ The old runtime SQLite/vector/RAG memory stack is not the normal source of truth
 on this branch. Historical migration helpers live in git history rather than
 the active runtime surface.
 
-<<<<<<< HEAD
-```sh
-scripts/migrate-memory.py
-```
-
-=======
->>>>>>> main
 Current LLM-facing memory surfaces:
 
 | Surface | Purpose |
@@ -80,19 +73,12 @@ Current LLM-facing memory surfaces:
 There are no separate LLM-facing `memory_read`, `memory_write`,
 `memory_search`, or `memory_list` tools on this branch.
 
-<<<<<<< HEAD
 `workspace/MEMORY.md` is the canonical memory index. Chat uses the
 snapshot under `active_prompt/MEMORY.md`, so edits to the index only become
 prompt-active after compaction/reload, matching the protected prompt files.
 It is a concise index of memory files, recently updated files, and
 still-relevant conversational throughlines; it is not the character definition,
 user profile, standing behavior, tool guide, or heartbeat guide.
-=======
-`workspace/MEMORY.md` is prompt-visible. It is a concise index of memory
-files, recently updated files, and still-relevant conversational throughlines;
-it is not the character definition, user profile, standing behavior, tool guide,
-or heartbeat guide.
->>>>>>> main
 
 Search is lexical by default. If an embedding profile is configured, retrieval can use a rebuildable hybrid semantic+lexical index. The index is a ranking aid only; markdown files remain authoritative.
 
@@ -166,7 +152,7 @@ Tools are part of the character experience, not just an automation API.
 
 Main tool groups:
 
-- workspace `read`, `write`, `edit`, `list_files`, `search`, and `exec`
+- workspace `read`, `write`, `edit`, `delete`, `list_files`, `search`, and `exec`
 - workspace `memory/...` access when memory gates allow it
 - conversation transcript search via `search_history`
 - web search and fetch
@@ -175,6 +161,8 @@ Main tool groups:
 - time and dice
 
 `exec` runs only allowlisted commands, does not invoke a shell, and now rejects path arguments outside the character workspace.
+
+`delete` removes a workspace file by moving it into a timestamped folder under the character data directory's `trash/` subdirectory rather than erasing it. Prompt-visible files (SOUL.md, USER.md, AGENTS.md, TOOLS.md, HEARTBEAT.md, MEMORY.md) and directories cannot be deleted.
 
 Memory access gates apply consistently: disabling memory blocks `memory/...`
 paths through workspace tools, hides or disables history/memory read surfaces as

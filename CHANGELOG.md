@@ -9,6 +9,7 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 See `README.md`, `FEATURES.md`, and `CONFIGURATION.md` for current branch guidance.
 
 ### Added
+- Time-aware prompt assembly: user messages now carry inline time markers when the gap from the previous turn is large, when an hour has elapsed since the last marker (so long, slow conversations stay anchored), or when prior context was lost to compaction (so the first user message after a cut still has an absolute date/time reference)
 - Character workspaces with protected prompt files: `SOUL.md`, `USER.md`, `AGENTS.md`, `TOOLS.md`, and `HEARTBEAT.md`
 - Markdown long-term memory under `characters/<Character>/workspace/memory/`
 - `active_prompt/` snapshots and deferred protected self-edit activation
@@ -17,9 +18,11 @@ See `README.md`, `FEATURES.md`, and `CONFIGURATION.md` for current branch guidan
 - Dreaming now reuses the cached chat request prefix when available, and `MEMORY.md` index edits activate at compaction instead of immediately changing the hot prompt prefix
 - Optional hybrid semantic+lexical markdown retrieval backed by a rebuildable index
 - Workspace file tools and sandboxed `exec`
+- Workspace `delete` tool that moves files into a timestamped trash directory under the character data dir; refuses prompt-visible files and directories
 - Repository ownership layout: `core/`, `backend/`, `clients/`, `bridges/`, and `dev/`, with default Cargo members for faster local daemon/CLI builds
 
 ### Changed
+- TUI keystroke latency no longer scales with conversation length: the conversation pane caches its rendered lines and rebuilds only when a fingerprint of rendering-relevant state changes
 - Runtime memory source of truth moved from hidden SQLite/vector/RAG state to markdown files
 - Interiority naming standardized to heartbeat/autonomy
 - Compaction now writes markdown memory notes and activates staged protected edits without generating recap prompt files

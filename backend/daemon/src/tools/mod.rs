@@ -232,7 +232,7 @@ fn workspace_memory_namespace_available(
     }
     match name {
         "read" | "list_files" | "search" => toggles.memory_read(),
-        "write" => toggles.memory_write(),
+        "write" | "delete" => toggles.memory_write(),
         "edit" => toggles.memory_read() && toggles.memory_write(),
         _ => toggles.memory(),
     }
@@ -273,7 +273,7 @@ fn ensure_workspace_memory_access(
 
     let allowed = match name {
         "read" | "list_files" | "search" => ctx.memory_read_allowed(),
-        "write" => ctx.memory_write_allowed(),
+        "write" | "delete" => ctx.memory_write_allowed(),
         "edit" => ctx.memory_read_allowed() && ctx.memory_write_allowed(),
         _ => true,
     };
@@ -393,6 +393,10 @@ pub fn dispatch_tool<'a>(
                 workspace::handle_search(input, ctx.workspace_dir(), ctx.memory_read_allowed())
                     .await
             }
+            "delete" => {
+                ensure_workspace_memory_access(name, &input, ctx)?;
+                workspace::handle_delete(input, ctx.workspace_dir(), ctx.character_data_dir()).await
+            }
             "exec" => {
                 ensure_workspace_memory_access(name, &input, ctx)?;
                 workspace::handle_exec(input, ctx.workspace_dir()).await
@@ -456,8 +460,8 @@ mod tests {
     #[test]
     fn test_all_tools_returns_expected_count() {
         let tools = all_tools();
-        // images(1) + web(2) + activity(1) + basic(3) + workspace(6) + history(1) = 14
-        assert_eq!(tools.len(), 14);
+        // images(1) + web(2) + activity(1) + basic(3) + workspace(7) + history(1) = 15
+        assert_eq!(tools.len(), 15);
     }
 
     #[test]
@@ -512,7 +516,7 @@ mod tests {
         assert!(names.contains(&"search"));
         assert!(names.contains(&"search_history"));
         assert!(names.contains(&"check_time"));
-        assert_eq!(tools.len(), 12); // 14 - 2 disabled
+        assert_eq!(tools.len(), 13); // 15 - 2 disabled
     }
 
     #[test]

@@ -189,7 +189,11 @@ pub(super) async fn handle_generation(
         ctx.autonomy.notify_user_message(&char_name, turn_count);
     }
 
-    let messages = engine_arc.lock().await.messages().to_vec();
+    let (messages, has_prior_context) = {
+        let engine = engine_arc.lock().await;
+        let has_prior = engine.segments().segment_count() > 0;
+        (engine.messages().to_vec(), has_prior)
+    };
 
     let character_data_dir = data_dir.join(&char_name);
     if let Err(e) = crate::memory::deferred_edits::ensure_active_prompt_snapshot(
@@ -223,6 +227,7 @@ pub(super) async fn handle_generation(
         user_definition: user_definition.as_deref(),
         memory_index: memory_index.as_deref(),
         is_private: false,
+        has_prior_context,
         messages: &messages,
         max_context_tokens: resolved.max_context_tokens,
         max_output_tokens: resolved.max_tokens,

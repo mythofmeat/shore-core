@@ -243,6 +243,14 @@ impl ImageCache {
         self.cache.get(path)
     }
 
+    /// Cheap fingerprint of cache state, used as a cache-invalidation key
+    /// by the renderer. `next_id` is monotonic across the cache's lifetime
+    /// (insertions only ever bump it), so combined with `cache.len()` it
+    /// uniquely identifies "the set of images currently visible."
+    pub fn version(&self) -> u64 {
+        ((self.next_id as u64) << 32) | (self.cache.len() as u64)
+    }
+
     /// Delete all transmitted images and clear the cache.
     pub fn clear(&mut self) {
         if self.protocol == Some(ImageProtocol::Kitty) && !self.cache.is_empty() {

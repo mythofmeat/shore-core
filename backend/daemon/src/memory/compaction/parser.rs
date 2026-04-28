@@ -2,16 +2,17 @@ use super::types::CompactionError;
 use tracing::debug;
 
 // ---------------------------------------------------------------------------
-// Default prompt template
+// Default prompt templates
 // ---------------------------------------------------------------------------
 
-/// Default compaction prompt template. In production, loaded from `compact.md`.
+/// Default compaction system prompt template. In production, loaded from `compact_system.md`.
 ///
 /// Placeholders:
 /// - `{{char}}`, `{{user}}` — character and user names
-/// - `{{conversation}}` — formatted conversation messages
-/// - `{{existing_memories}}` — bounded snapshot of current markdown memories
-pub const DEFAULT_COMPACT_PROMPT: &str = r#"You are {{char}}. This conversation with {{user}} is about to be archived and your active context will be cleared. Before that happens, you must save anything important to your long-term memory files.
+///
+/// Contains only stable instructions (no conversation or memory snapshot), so
+/// it is cacheable across compaction calls for the same character.
+pub const DEFAULT_COMPACT_SYSTEM: &str = r#"You are {{char}}. This conversation with {{user}} is about to be archived and your active context will be cleared. Before that happens, you must save anything important to your long-term memory files.
 
 You have access to your memories directory. Use the <memory> section below to write or update markdown files. Be concise and organized.
 
@@ -22,11 +23,6 @@ Guidelines:
 - Include timestamps or session context when relevant
 - If {{user}} corrected previous information, update the file rather than appending
 - Do not write MEMORY.md, DREAMS.md, .dreams/**, or dreaming/**. Dreaming maintains the canonical MEMORY.md index; compaction only activates its prompt snapshot.
-
-Existing memory files:
-<existing_memories>
-{{existing_memories}}
-</existing_memories>
 
 Your response MUST contain a <memory> block containing zero or more <write> operations.
 
@@ -48,10 +44,21 @@ Each <write> creates or overwrites a single memory file. The path is relative to
 </write>
 </memory>
 
-If nothing new needs to be saved, output an empty <memory></memory> block.
+If nothing new needs to be saved, output an empty <memory></memory> block."#;
 
-Conversation:
-{{conversation}}"#;
+/// Default compaction final-message template. In production, loaded from `compact.md`.
+///
+/// Appended as the last user message after the structured conversation history.
+///
+/// Placeholders:
+/// - `{{char}}`, `{{user}}` — character and user names
+/// - `{{existing_memories}}` — bounded snapshot of current markdown memories
+pub const DEFAULT_COMPACT_PROMPT: &str = r#"The conversation above is now complete and will be archived. Please review it and save anything important to your memory files.
+
+Existing memory files:
+<existing_memories>
+{{existing_memories}}
+</existing_memories>"#;
 
 // ---------------------------------------------------------------------------
 // XML parsing helpers

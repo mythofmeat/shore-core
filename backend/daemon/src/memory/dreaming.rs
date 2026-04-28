@@ -542,7 +542,14 @@ pub async fn run_legacy_diagnostic_sweep(
         &deep,
     )
     .await?;
-    write_memory_index(&store, &memory_index_path, character, &ran_at, &deep.promoted).await?;
+    write_memory_index(
+        &store,
+        &memory_index_path,
+        character,
+        &ran_at,
+        &deep.promoted,
+    )
+    .await?;
 
     let mut next_state = state;
     next_state.last_run_at = Some(ran_at.clone());
