@@ -21,9 +21,15 @@ const PROTECTED_PATHS: &[&str] = &[
 /// Persisted snapshot directory under the character data dir.
 const ACTIVE_PROMPT_DIR: &str = "active_prompt";
 
-/// Prompt-visible index maintained in the character workspace memory dir.
+/// Prompt-visible memory index, maintained at the workspace root alongside
+/// the other top-level prompt files (SOUL.md, USER.md, AGENTS.md, etc.).
 pub const MEMORY_INDEX_FILE: &str = "MEMORY.md";
-pub const MEMORY_INDEX_DEFERRED_PATH: &str = "memory/MEMORY.md";
+pub const MEMORY_INDEX_DEFERRED_PATH: &str = "MEMORY.md";
+
+/// Stale active-prompt snapshot left behind by the pre-rename `<recent_memory>`
+/// block. Cleaned up opportunistically when the active prompt directory is
+/// (re)seeded so it doesn't accumulate forever.
+const LEGACY_RECENT_MEMORY_SNAPSHOT: &str = "RECENT_MEMORY.md";
 
 const DEFAULT_TOOLS_GUIDANCE: &str = "\
 # TOOLS
@@ -101,7 +107,7 @@ pub fn active_prompt_file(character_data_dir: &Path, name: &str) -> PathBuf {
 }
 
 pub fn memory_index_path(config_dir: &Path, char_name: &str) -> PathBuf {
-    character_memory_dir(config_dir, char_name).join(MEMORY_INDEX_FILE)
+    character_workspace_dir(config_dir, char_name).join(MEMORY_INDEX_FILE)
 }
 
 pub fn load_memory_index(
@@ -327,6 +333,11 @@ pub fn ensure_active_prompt_snapshot(
         true,
     )?;
 
+    let legacy_snapshot = active_dir.join(LEGACY_RECENT_MEMORY_SNAPSHOT);
+    if legacy_snapshot.exists() {
+        fs::remove_file(legacy_snapshot)?;
+    }
+
     Ok(())
 }
 
@@ -451,15 +462,15 @@ mod tests {
         queue_deferred_edit(&char_dir, "workspace/SOUL.md").unwrap();
         queue_deferred_edit(&char_dir, "SOUL.md").unwrap();
         queue_deferred_edit(&char_dir, "AGENTS.md").unwrap();
-        queue_deferred_edit(&char_dir, "workspace/memory/MEMORY.md").unwrap();
+        queue_deferred_edit(&char_dir, "workspace/MEMORY.md").unwrap();
 
         let paths = pending_deferred_edit_paths(&char_dir).unwrap();
         assert_eq!(
             paths,
             vec![
                 "AGENTS.md".to_string(),
+                "MEMORY.md".to_string(),
                 "SOUL.md".to_string(),
-                "memory/MEMORY.md".to_string()
             ]
         );
     }
@@ -581,14 +592,14 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let char_dir = tmp.path().join("data").join("TestChar");
         let config_dir = tmp.path().join("config");
-        let memory = character_memory_dir(&config_dir, "TestChar");
+        let workspace = character_workspace_dir(&config_dir, "TestChar");
 
-        fs::create_dir_all(&memory).unwrap();
-        fs::write(memory.join(MEMORY_INDEX_FILE), "active index").unwrap();
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(workspace.join(MEMORY_INDEX_FILE), "active index").unwrap();
         ensure_active_prompt_snapshot(&char_dir, &config_dir, "TestChar").unwrap();
 
-        fs::write(memory.join(MEMORY_INDEX_FILE), "edited index").unwrap();
-        queue_deferred_edit(&char_dir, "memory/MEMORY.md").unwrap();
+        fs::write(workspace.join(MEMORY_INDEX_FILE), "edited index").unwrap();
+        queue_deferred_edit(&char_dir, "MEMORY.md").unwrap();
         ensure_active_prompt_snapshot(&char_dir, &config_dir, "TestChar").unwrap();
 
         assert_eq!(
@@ -597,7 +608,7 @@ mod tests {
         );
         assert_eq!(
             pending_deferred_edit_paths(&char_dir).unwrap(),
-            vec!["memory/MEMORY.md"]
+            vec!["MEMORY.md"]
         );
 
         apply_deferred_edits(&char_dir, &config_dir, "TestChar").unwrap();
@@ -613,12 +624,12 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let char_dir = tmp.path().join("data").join("TestChar");
         let config_dir = tmp.path().join("config");
-        let memory = character_memory_dir(&config_dir, "TestChar");
+        let workspace = character_workspace_dir(&config_dir, "TestChar");
 
         ensure_active_prompt_snapshot(&char_dir, &config_dir, "TestChar").unwrap();
-        fs::create_dir_all(&memory).unwrap();
-        fs::write(memory.join(MEMORY_INDEX_FILE), "new index").unwrap();
-        queue_deferred_edit(&char_dir, "memory/MEMORY.md").unwrap();
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(workspace.join(MEMORY_INDEX_FILE), "new index").unwrap();
+        queue_deferred_edit(&char_dir, "MEMORY.md").unwrap();
         ensure_active_prompt_snapshot(&char_dir, &config_dir, "TestChar").unwrap();
 
         assert!(load_memory_index(&char_dir, &config_dir, "TestChar").is_none());
@@ -627,6 +638,32 @@ mod tests {
         assert_eq!(
             load_memory_index(&char_dir, &config_dir, "TestChar").unwrap(),
             "new index"
+        );
+    }
+
+    #[test]
+    fn test_legacy_recent_memory_snapshot_cleaned_on_seed() {
+        let tmp = TempDir::new().unwrap();
+        let char_dir = tmp.path().join("data").join("TestChar");
+        let config_dir = tmp.path().join("config");
+        let workspace = character_workspace_dir(&config_dir, "TestChar");
+
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(workspace.join(SOUL_FILE), "soul").unwrap();
+        fs::write(workspace.join(USER_FILE), "user").unwrap();
+        fs::write(workspace.join(AGENTS_FILE), "agents").unwrap();
+        fs::write(workspace.join(TOOLS_FILE), "tools").unwrap();
+        fs::write(workspace.join(HEARTBEAT_FILE), "heartbeat").unwrap();
+
+        let active_dir = active_prompt_dir(&char_dir);
+        fs::create_dir_all(&active_dir).unwrap();
+        fs::write(active_dir.join(LEGACY_RECENT_MEMORY_SNAPSHOT), "stale").unwrap();
+        assert!(active_dir.join(LEGACY_RECENT_MEMORY_SNAPSHOT).exists());
+
+        ensure_active_prompt_snapshot(&char_dir, &config_dir, "TestChar").unwrap();
+        assert!(
+            !active_dir.join(LEGACY_RECENT_MEMORY_SNAPSHOT).exists(),
+            "legacy RECENT_MEMORY.md snapshot must be cleaned up on seed"
         );
     }
 }

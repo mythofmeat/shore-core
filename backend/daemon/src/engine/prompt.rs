@@ -141,7 +141,7 @@ pub struct PromptParams<'a> {
     pub character_definition: Option<&'a str>,
     /// User definition (from USER.md).
     pub user_definition: Option<&'a str>,
-    /// Prompt-visible memory index from workspace/memory/MEMORY.md.
+    /// Prompt-visible memory index from workspace/MEMORY.md.
     pub memory_index: Option<&'a str>,
     /// Whether this is a private conversation.
     pub is_private: bool,
@@ -238,7 +238,7 @@ pub fn assemble_prompt(params: &PromptParams<'_>) -> AssembledPrompt {
                 label: "memory_index".into(),
                 content: format!(
                     "<memory_index>\n\
-                     The following is your prompt-visible memory index from workspace/memory/MEMORY.md. \
+                     The following is your prompt-visible memory index from workspace/MEMORY.md. \
                      It is a map of memory files, recently updated files, and still-relevant conversational throughlines; \
                      it does not replace SOUL.md, USER.md, AGENTS.md, TOOLS.md, or HEARTBEAT.md.\n\n\
                      {index}\n\

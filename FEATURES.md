@@ -81,14 +81,14 @@ There are no separate LLM-facing `memory_read`, `memory_write`,
 `memory_search`, or `memory_list` tools on this branch.
 
 <<<<<<< HEAD
-`workspace/memory/MEMORY.md` is the canonical memory index. Chat uses the
+`workspace/MEMORY.md` is the canonical memory index. Chat uses the
 snapshot under `active_prompt/MEMORY.md`, so edits to the index only become
 prompt-active after compaction/reload, matching the protected prompt files.
 It is a concise index of memory files, recently updated files, and
 still-relevant conversational throughlines; it is not the character definition,
 user profile, standing behavior, tool guide, or heartbeat guide.
 =======
-`workspace/memory/MEMORY.md` is prompt-visible. It is a concise index of memory
+`workspace/MEMORY.md` is prompt-visible. It is a concise index of memory
 files, recently updated files, and still-relevant conversational throughlines;
 it is not the character definition, user profile, standing behavior, tool guide,
 or heartbeat guide.
@@ -132,7 +132,7 @@ Prompt-visible snapshot files:
 - `AGENTS.md`
 - `TOOLS.md`
 - `HEARTBEAT.md`
-- `MEMORY.md` snapshot from `workspace/memory/MEMORY.md`
+- `MEMORY.md` snapshot from `workspace/MEMORY.md`
 
 `HEARTBEAT.md` is only injected into heartbeat ticks, not ordinary chat turns.
 
@@ -156,7 +156,7 @@ Heartbeat does not force a recap or write memory by itself. Durable notes are cr
 
 Dreaming is an opt-in scheduled AI librarian pass. When due, the character privately uses memory tools to list, read, search, write, and edit markdown memory files. Its job is to organize, dedupe, consolidate, and mark stale memory so future recall is easier.
 
-`workspace/memory/MEMORY.md` is the canonical memory index and replaces the old recap/digest concept. Its active prompt snapshot refreshes at compaction, so dreaming can reorganize memory without changing the hot chat prefix immediately. It should point to useful files and throughlines without duplicating `USER.md` or `AGENTS.md`. `workspace/memory/DREAMS.md` is the human-readable audit/review diary for each dreaming pass. Machine-readable state lives under `.dreams/`.
+`workspace/MEMORY.md` is the canonical memory index and replaces the old recap/digest concept. Its active prompt snapshot refreshes at compaction, so dreaming can reorganize memory without changing the hot chat prefix immediately. It should point to useful files and throughlines without duplicating `USER.md` or `AGENTS.md`. `workspace/memory/DREAMS.md` is the human-readable audit/review diary for each dreaming pass. Machine-readable state lives under `.dreams/`.
 
 Generated dreaming output is excluded from ordinary memory-source ingestion, including `.dreams/**`, `DREAMS.md`, `dreams.md`, `MEMORY.md`, and `memory/dreaming/**`.
 
