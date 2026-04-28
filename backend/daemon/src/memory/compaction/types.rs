@@ -89,14 +89,16 @@ pub enum CompactionError {
 // Traits for external dependencies
 // ---------------------------------------------------------------------------
 
-/// LLM client for compaction. Takes a rendered prompt, returns raw LLM text.
+/// LLM client for compaction.
 ///
-/// The library owns the prompt format (XML) and handles parsing the response
-/// into markdown file operations. The impl just sends text and returns text.
+/// Takes a system prompt and structured messages (conversation history with the
+/// compaction instruction appended), returns raw LLM text. Splitting system from
+/// messages enables prompt-prefix caching of the stable system instructions.
 pub trait CompactionLlm: Send + Sync {
     fn summarize(
         &self,
-        prompt: &str,
+        system: &str,
+        messages: Vec<serde_json::Value>,
     ) -> Pin<Box<dyn Future<Output = Result<String, CompactionError>> + Send + '_>>;
 }
 
