@@ -372,10 +372,76 @@ fn spinner_glyphs(frame: usize) -> &'static str {
 }
 
 /// Render the scrollable conversation log.
+///
+/// Building the full line list from `app.entries` is expensive — markdown
+/// rendering and word-wrap run for every text entry. To keep keystroke
+/// latency flat as the conversation grows, the lines are cached in
+/// `app.conv_cache` and reused on frames where a cheap fingerprint of
+/// rendering-relevant state matches the previous build.
 fn draw_conversation(frame: &mut Frame, app: &mut App, area: Rect) {
+    let content_width = area.width;
+
+    let fingerprint = app.conversation_fingerprint(content_width);
+    if app.conv_cache.fingerprint != fingerprint {
+        let (lines, image_index, content_visual) = build_conversation_lines(app, content_width);
+        app.image_index = image_index;
+        app.conv_cache.fingerprint = fingerprint;
+        app.conv_cache.lines = lines;
+        app.conv_cache.content_visual = content_visual;
+    }
+
+    let visible_height = area.height;
+    let content_visual = app.conv_cache.content_visual;
+    let total_visual = content_visual.max(visible_height);
+    let max_scroll = total_visual.saturating_sub(visible_height);
+    if app.scroll_offset > max_scroll {
+        app.scroll_offset = max_scroll;
+        if max_scroll == 0 {
+            app.auto_scroll = true;
+        }
+    }
+    let scroll = if app.auto_scroll {
+        max_scroll
+    } else {
+        max_scroll.saturating_sub(app.scroll_offset)
+    };
+
+    // Bottom-anchor short conversations by shifting the render rect rather
+    // than allocating padding lines — saves an O(n_lines) clone every frame
+    // and keeps the cache reusable across resizes that fit inline.
+    let render_area = if content_visual < visible_height {
+        let top_pad = visible_height - content_visual;
+        Rect {
+            x: area.x,
+            y: area.y + top_pad,
+            width: area.width,
+            height: content_visual,
+        }
+    } else {
+        area
+    };
+
+    let paragraph = Paragraph::new(Text::from(app.conv_cache.lines.clone()))
+        .wrap(Wrap { trim: false })
+        .scroll((scroll, 0));
+
+    frame.render_widget(paragraph, render_area);
+
+    // Swap U+2800 stand-in → U+10EEEE kitty placeholder in rendered cells.
+    if !app.image_index.is_empty() {
+        images::fixup_placeholder_cells(frame.buffer_mut(), render_area);
+    }
+}
+
+/// Build the full Vec<Line> for the conversation pane from `app.entries`,
+/// the live stream state, and the active image cache. Returns the lines,
+/// the rebuilt image index, and the visual line count.
+fn build_conversation_lines(
+    app: &App,
+    content_width: u16,
+) -> (Vec<Line<'static>>, Vec<crate::app::ImageEntry>, u16) {
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut image_index: Vec<crate::app::ImageEntry> = Vec::new();
-    let content_width = area.width;
 
     // During streaming, skip trailing Thinking entries — they duplicate
     // what's already being shown from the live stream blocks.
@@ -594,47 +660,9 @@ fn draw_conversation(frame: &mut Frame, app: &mut App, area: Rect) {
     // Squeeze runs of blank lines (max 2 consecutive)
     squeeze_blank_lines(&mut lines);
 
-    app.image_index = image_index;
-
-    let visible_height = area.height;
-
     let content_visual = visual_line_count(&lines, content_width);
 
-    // Bottom-anchor: pad short conversations so content sits near the input
-    if content_visual < visible_height {
-        let padding = (visible_height - content_visual) as usize;
-        let mut padded = vec![Line::from(""); padding];
-        padded.append(&mut lines);
-        lines = padded;
-    }
-
-    // After padding, total visual = max(content_visual, visible_height)
-    let total_visual = content_visual.max(visible_height);
-    let max_scroll = total_visual.saturating_sub(visible_height);
-    // Clamp scroll_offset so it never drifts past max_scroll (e.g. after
-    // toggling thinking/tool blocks reduces content height).
-    if app.scroll_offset > max_scroll {
-        app.scroll_offset = max_scroll;
-        if max_scroll == 0 {
-            app.auto_scroll = true;
-        }
-    }
-    let scroll = if app.auto_scroll {
-        max_scroll
-    } else {
-        max_scroll.saturating_sub(app.scroll_offset)
-    };
-
-    let paragraph = Paragraph::new(Text::from(lines))
-        .wrap(Wrap { trim: false })
-        .scroll((scroll, 0));
-
-    frame.render_widget(paragraph, area);
-
-    // Swap U+2800 stand-in → U+10EEEE kitty placeholder in rendered cells.
-    if !app.image_index.is_empty() {
-        images::fixup_placeholder_cells(frame.buffer_mut(), area);
-    }
+    (lines, image_index, content_visual)
 }
 
 /// Render the fullscreen image viewer overlay.
