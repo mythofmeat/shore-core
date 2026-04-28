@@ -6,7 +6,7 @@ use tracing::{debug, info};
 use crate::engine::ConversationEngine;
 use crate::memory::compaction::{
     CompactionError, CompactionManager, CompactionOutcome, ConversationMessage,
-    DEFAULT_COMPACT_PROMPT,
+    DEFAULT_COMPACT_PROMPT, DEFAULT_COMPACT_SYSTEM,
 };
 use crate::memory::compaction_impls::{RealCompactionLlm, RealConversationManager};
 use crate::memory::markdown_query;
@@ -277,6 +277,9 @@ pub async fn compact(
 
     info!(character = %char_name, message_count = messages.len(), dry_run, "Compaction started");
 
+    let system_template =
+        resolve_prompt_template(&ctx.config.dirs.config, &char_name, "compact_system.md")
+            .unwrap_or_else(|| DEFAULT_COMPACT_SYSTEM.to_string());
     let prompt_template =
         resolve_prompt_template(&ctx.config.dirs.config, &char_name, "compact.md")
             .unwrap_or_else(|| DEFAULT_COMPACT_PROMPT.to_string());
@@ -311,6 +314,7 @@ pub async fn compact(
             &messages,
             &active_content,
             false,
+            &system_template,
             &prompt_template,
             &char_name,
             &display_name,

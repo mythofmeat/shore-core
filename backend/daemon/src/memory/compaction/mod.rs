@@ -3,7 +3,7 @@ pub mod parser;
 pub mod types;
 
 pub use background::run_compaction;
-pub use parser::{parse_compaction_response, MemoryFileOp, DEFAULT_COMPACT_PROMPT};
+pub use parser::{parse_compaction_response, MemoryFileOp, DEFAULT_COMPACT_PROMPT, DEFAULT_COMPACT_SYSTEM};
 pub use types::*;
 
 use crate::memory::markdown_query;
@@ -101,11 +101,66 @@ impl CompactionManager {
         turn_count >= self.config.min_turns
     }
 
+    /// Render the system prompt template, substituting `{{char}}` and `{{user}}`.
+    pub fn build_system(template: &str, char_name: &str, user_name: &str) -> String {
+        template
+            .replace("{{char}}", char_name)
+            .replace("{{user}}", user_name)
+    }
+
+    /// Build the structured messages array for a compaction LLM call.
+    ///
+    /// Returns the conversation messages as role/content JSON objects followed
+    /// by a final user message rendered from `final_message_template`.
+    ///
+    /// The final message template supports:
+    /// - `{{existing_memories}}` — bounded snapshot of current markdown memories
+    /// - `{{char}}` / `{{user}}` — character and user names
+    pub fn build_messages(
+        final_message_template: &str,
+        messages: &[ConversationMessage],
+        existing_memories: Option<&str>,
+        char_name: &str,
+        user_name: &str,
+    ) -> Vec<serde_json::Value> {
+        let mut result: Vec<serde_json::Value> = messages
+            .iter()
+            .map(|msg| serde_json::json!({"role": msg.role, "content": msg.content}))
+            .collect();
+
+        let existing_memories_text = existing_memories
+            .filter(|m| !m.trim().is_empty())
+            .unwrap_or("No existing memory files were available.");
+
+        let mut final_msg = final_message_template
+            .replace("{{existing_memories}}", existing_memories_text)
+            .replace("{{char}}", char_name)
+            .replace("{{user}}", user_name);
+
+        // Legacy custom compaction prompts may still contain recap placeholders.
+        // Recaps are no longer generated or injected, so strip those blocks.
+        while let (Some(if_start), Some(endif_pos)) =
+            (final_msg.find("{{#if recap}}"), final_msg.find("{{/if}}"))
+        {
+            final_msg = format!(
+                "{}{}",
+                &final_msg[..if_start],
+                &final_msg[endif_pos + "{{/if}}".len()..],
+            );
+        }
+        final_msg = final_msg.replace("{{recap}}", "");
+
+        result.push(serde_json::json!({"role": "user", "content": final_msg}));
+        result
+    }
+
     /// Build a compaction prompt from a template and conversation messages.
     ///
+    /// Legacy helper used by tests that check the flattened prompt string.
     /// Replaces `{{conversation}}` with formatted messages, replaces
     /// `{{existing_memories}}` with a bounded markdown-memory snapshot, and
     /// substitutes `{{char}}` / `{{user}}` with the provided names.
+    #[cfg(test)]
     pub fn build_prompt(
         template: &str,
         messages: &[ConversationMessage],
@@ -127,8 +182,6 @@ impl CompactionManager {
             .unwrap_or("No existing memory files were available.");
         result = result.replace("{{existing_memories}}", existing_memories_text);
 
-        // Legacy custom compaction prompts may still contain recap placeholders.
-        // Recaps are no longer generated or injected, so strip those blocks.
         while let (Some(if_start), Some(endif_pos)) =
             (result.find("{{#if recap}}"), result.find("{{/if}}"))
         {
@@ -140,7 +193,6 @@ impl CompactionManager {
         }
         result = result.replace("{{recap}}", "");
 
-        // Substitute character and user names.
         result = result.replace("{{char}}", char_name);
         result = result.replace("{{user}}", user_name);
 
@@ -237,7 +289,7 @@ impl CompactionManager {
     /// operations from the compacted messages.
     ///
     /// If `dry_run` is true, returns what would be created without side effects.
-    #[instrument(skip(self, messages, active_content, prompt_template, llm, conversation_mgr, markdown_store), fields(char = char_name, user = user_name, msg_count = messages.len(), dry_run))]
+    #[instrument(skip(self, messages, active_content, system_template, prompt_template, llm, conversation_mgr, markdown_store), fields(char = char_name, user = user_name, msg_count = messages.len(), dry_run))]
     #[allow(clippy::too_many_arguments)]
     pub async fn compact(
         &self,
@@ -245,6 +297,7 @@ impl CompactionManager {
         messages: &[ConversationMessage],
         active_content: &str,
         is_private: bool,
+        system_template: &str,
         prompt_template: &str,
         char_name: &str,
         user_name: &str,
@@ -294,15 +347,17 @@ impl CompactionManager {
 
         let existing_memory_context = Self::build_existing_memory_context(markdown_store).await;
 
-        // Build and send prompt to LLM (only compacted messages, not retained).
-        let prompt = Self::build_prompt(
+        // Build system prompt (stable instructions, cacheable) and structured
+        // messages (conversation history + appended compaction instruction).
+        let system = Self::build_system(system_template, char_name, user_name);
+        let llm_messages = Self::build_messages(
             prompt_template,
             compacted_part,
             Some(&existing_memory_context),
             char_name,
             user_name,
         );
-        let raw_response = llm.summarize(&prompt).await?;
+        let raw_response = llm.summarize(&system, llm_messages).await?;
 
         // Parse memory file operations from LLM response.
         let raw_file_ops = parse_compaction_response(&raw_response)?;
@@ -521,7 +576,8 @@ mod tests {
     impl CompactionLlm for MockLlm {
         fn summarize(
             &self,
-            _prompt: &str,
+            _system: &str,
+            _messages: Vec<serde_json::Value>,
         ) -> Pin<Box<dyn Future<Output = Result<String, CompactionError>> + Send + '_>> {
             let result = Ok(self.response.clone());
             Box::pin(async move { result })
@@ -530,28 +586,37 @@ mod tests {
 
     struct CapturingLlm {
         response: String,
-        prompt: StdMutex<Option<String>>,
+        /// Captures the content of the last user message from the messages array.
+        last_user_message: StdMutex<Option<String>>,
     }
 
     impl CapturingLlm {
         fn new(response: String) -> Self {
             Self {
                 response,
-                prompt: StdMutex::new(None),
+                last_user_message: StdMutex::new(None),
             }
         }
 
         fn prompt(&self) -> Option<String> {
-            self.prompt.lock().unwrap().clone()
+            self.last_user_message.lock().unwrap().clone()
         }
     }
 
     impl CompactionLlm for CapturingLlm {
         fn summarize(
             &self,
-            prompt: &str,
+            _system: &str,
+            messages: Vec<serde_json::Value>,
         ) -> Pin<Box<dyn Future<Output = Result<String, CompactionError>> + Send + '_>> {
-            *self.prompt.lock().unwrap() = Some(prompt.to_string());
+            let captured = messages
+                .iter()
+                .rev()
+                .find(|m| m.get("role").and_then(|r| r.as_str()) == Some("user"))
+                .and_then(|m| m.get("content"))
+                .and_then(|c| c.as_str())
+                .map(|s| s.to_string());
+            *self.last_user_message.lock().unwrap() = captured;
             let result = Ok(self.response.clone());
             Box::pin(async move { result })
         }
@@ -985,6 +1050,7 @@ mod tests {
                 &messages,
                 "",
                 false,
+                DEFAULT_COMPACT_SYSTEM,
                 DEFAULT_COMPACT_PROMPT,
                 "TestChar",
                 "TestUser",
@@ -1042,6 +1108,7 @@ mod tests {
                 &make_messages(10),
                 "",
                 false,
+                DEFAULT_COMPACT_SYSTEM,
                 DEFAULT_COMPACT_PROMPT,
                 "TestChar",
                 "TestUser",
@@ -1088,6 +1155,7 @@ mod tests {
             &messages,
             "",
             false,
+            DEFAULT_COMPACT_SYSTEM,
             DEFAULT_COMPACT_PROMPT,
             "TestChar",
             "TestUser",
@@ -1124,6 +1192,7 @@ mod tests {
                 &make_messages(10),
                 "",
                 false,
+                DEFAULT_COMPACT_SYSTEM,
                 DEFAULT_COMPACT_PROMPT,
                 "TestChar",
                 "TestUser",
@@ -1168,6 +1237,7 @@ mod tests {
                 &make_messages(10),
                 "",
                 false,
+                DEFAULT_COMPACT_SYSTEM,
                 DEFAULT_COMPACT_PROMPT,
                 "TestChar",
                 "TestUser",
@@ -1209,6 +1279,7 @@ mod tests {
                 &make_messages(10),
                 "",
                 false,
+                DEFAULT_COMPACT_SYSTEM,
                 DEFAULT_COMPACT_PROMPT,
                 "TestChar",
                 "TestUser",
@@ -1248,6 +1319,7 @@ mod tests {
                 &make_messages(10),
                 "",
                 false,
+                DEFAULT_COMPACT_SYSTEM,
                 DEFAULT_COMPACT_PROMPT,
                 "TestChar",
                 "TestUser",
@@ -1308,6 +1380,7 @@ mod tests {
                 &make_messages(10),
                 "",
                 true,
+                DEFAULT_COMPACT_SYSTEM,
                 DEFAULT_COMPACT_PROMPT,
                 "TestChar",
                 "TestUser",
@@ -1341,6 +1414,7 @@ mod tests {
                 &make_messages(10),
                 "",
                 false,
+                DEFAULT_COMPACT_SYSTEM,
                 DEFAULT_COMPACT_PROMPT,
                 "TestChar",
                 "TestUser",
@@ -1385,6 +1459,7 @@ mod tests {
                 &[],
                 "",
                 false,
+                DEFAULT_COMPACT_SYSTEM,
                 DEFAULT_COMPACT_PROMPT,
                 "TestChar",
                 "TestUser",
@@ -1417,6 +1492,7 @@ mod tests {
                 &make_messages(5),
                 "",
                 false,
+                DEFAULT_COMPACT_SYSTEM,
                 DEFAULT_COMPACT_PROMPT,
                 "TestChar",
                 "TestUser",
@@ -1520,6 +1596,7 @@ mod tests {
                 &make_messages(10),
                 "",
                 false,
+                DEFAULT_COMPACT_SYSTEM,
                 DEFAULT_COMPACT_PROMPT,
                 "TestChar",
                 "TestUser",
