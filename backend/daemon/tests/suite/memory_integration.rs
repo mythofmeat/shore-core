@@ -1,6 +1,6 @@
 use shore_daemon::memory::compaction::{
     CompactionConfig, CompactionError, CompactionLlm, CompactionManager, CompactionOutcome,
-    ConversationMessage, DEFAULT_COMPACT_PROMPT,
+    ConversationMessage, DEFAULT_COMPACT_PROMPT, DEFAULT_COMPACT_SYSTEM,
 };
 use shore_daemon::memory::compaction_impls::RealConversationManager;
 use shore_daemon::memory::markdown_query;
@@ -26,7 +26,8 @@ impl MockCompactionLlm {
 impl CompactionLlm for MockCompactionLlm {
     fn summarize(
         &self,
-        _prompt: &str,
+        _system: &str,
+        _messages: Vec<serde_json::Value>,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<String, CompactionError>> + Send + '_>,
     > {
@@ -116,6 +117,7 @@ async fn test_markdown_memory_compaction_end_to_end() {
             &messages,
             &active,
             false,
+            DEFAULT_COMPACT_SYSTEM,
             DEFAULT_COMPACT_PROMPT,
             "Shore",
             "User",
@@ -164,6 +166,7 @@ async fn test_compaction_rejects_private_conversation() {
             &make_conversation(),
             "",
             true,
+            DEFAULT_COMPACT_SYSTEM,
             DEFAULT_COMPACT_PROMPT,
             "Shore",
             "User",

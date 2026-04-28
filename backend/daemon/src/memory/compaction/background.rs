@@ -1,4 +1,4 @@
-use super::parser::DEFAULT_COMPACT_PROMPT;
+use super::parser::{DEFAULT_COMPACT_PROMPT, DEFAULT_COMPACT_SYSTEM};
 use super::types::{CompactionOutcome, ConversationMessage};
 use super::CompactionManager;
 
@@ -55,7 +55,10 @@ pub async fn run_compaction(
         .flatten()
         .unwrap_or_else(|| config.clone());
 
-    // Resolve prompt template.
+    // Resolve prompt templates.
+    let system_template =
+        resolve_prompt_template(&effective.dirs.config, character, "compact_system.md")
+            .unwrap_or_else(|| DEFAULT_COMPACT_SYSTEM.to_string());
     let prompt_template = resolve_prompt_template(&effective.dirs.config, character, "compact.md")
         .unwrap_or_else(|| DEFAULT_COMPACT_PROMPT.to_string());
 
@@ -87,6 +90,7 @@ pub async fn run_compaction(
             &messages,
             &content,
             false,
+            &system_template,
             &prompt_template,
             character,
             &display_name,
