@@ -94,6 +94,54 @@ model_id = "text-embedding-3-large"
 api_key_env = "OPENAI_API_KEY"
 ```
 
+## Providers
+
+Provider entries replace per-model `api_key_env` duplication and unlock
+runtime `/v1/models` discovery. Multiple keys rotate on auth failure;
+`warn_on_fallback` surfaces a one-line warning when the daemon falls
+back to a non-primary key.
+
+```toml
+[providers.openrouter]
+sdk = "openai"
+base_url = "https://openrouter.ai/api/v1"
+
+[[providers.openrouter.keys]]
+name = "primary"
+env = "OPENROUTER_API_KEY"
+warn_on_fallback = true
+
+[[providers.openrouter.keys]]
+name = "backup"
+env = "OPENROUTER_BACKUP_KEY"
+
+[providers.openrouter.discovery]
+enabled = true
+# gitignore-style; last match wins. `*` opt-out, `!pattern` opt-in.
+visibility = ["meta-llama/*", "!meta-llama/llama-3-70b"]
+```
+
+Discovered models populate the cache at
+`$XDG_DATA_HOME/shore/providers/<name>/models.json`. Run
+`shore provider refresh <name>` to update it. Hidden models stay in the
+cache but are filtered out of `shore model` until `--all` (CLI) or
+`:model all` (TUI) is used. Manual `[chat.<provider>.<name>]` entries
+are never filtered — they are intentional.
+
+## Sampler Preferences
+
+`shore model setting <key> <value>` and `:setting <key> <value>` write
+saved sampler overrides keyed by `(provider, model_id)`. Storage:
+
+```text
+$XDG_DATA_HOME/shore/preferences/global.toml
+$XDG_DATA_HOME/shore/characters/<Character>/preferences/models.toml
+```
+
+Character-scope wins over global; both win over the static catalog.
+`reasoning_effort` accepts `low`/`medium`/`high` or `off` (cleared).
+The legacy `shore reasoning ...` command writes through the same store.
+
 ## Character Workspaces
 
 Characters live under:

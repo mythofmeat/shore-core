@@ -984,7 +984,15 @@ fn draw_help(frame: &mut Frame, area: Rect) {
             Style::default().fg(Color::White),
         )),
         Line::from(Span::styled(
-            "    :model          switch model",
+            "    :model          switch model (`:model all` includes hidden)",
+            Style::default().fg(Color::White),
+        )),
+        Line::from(Span::styled(
+            "    :provider       list providers / refresh discovery",
+            Style::default().fg(Color::White),
+        )),
+        Line::from(Span::styled(
+            "    :setting        view/set sampler settings (temperature, ...)",
             Style::default().fg(Color::White),
         )),
         Line::from(Span::styled(

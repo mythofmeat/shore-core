@@ -149,9 +149,20 @@ pub enum CliCommand {
         subcommand: DebugCommand,
     },
 
-    /// List or switch models (no args = list, with name = switch)
+    /// List or switch models, or manage saved sampler settings.
+    ///
+    /// `shore model`                      list visible models
+    /// `shore model <name>`               switch active model
+    /// `shore model --info [<name>]`      show detailed model info
+    /// `shore model --reset`              clear active model selection
+    /// `shore model --all`                include hidden discovered models
+    /// `shore model setting [...]`        manage saved sampler settings
+    #[command(args_conflicts_with_subcommands = true)]
     Model {
-        /// Model name to switch to
+        #[command(subcommand)]
+        subcommand: Option<ModelCommand>,
+
+        /// Model name to switch to (or look up with --info)
         name: Option<String>,
 
         /// Show detailed model info
@@ -161,6 +172,25 @@ pub enum CliCommand {
         /// Reset to config default model
         #[arg(long)]
         reset: bool,
+
+        /// Include hidden discovered models in the list
+        #[arg(long)]
+        all: bool,
+
+        /// Output raw JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Inspect or manage configured providers.
+    ///
+    /// `shore provider`                  list providers + key/cache status
+    /// `shore provider models <name>`    list discovered + static models
+    /// `shore provider refresh <name>`   re-fetch the provider's catalog
+    #[command(args_conflicts_with_subcommands = true)]
+    Provider {
+        #[command(subcommand)]
+        subcommand: Option<ProviderCommand>,
 
         /// Output raw JSON
         #[arg(long)]
@@ -346,6 +376,67 @@ pub enum LogCommand {
 }
 
 #[derive(Subcommand, Debug)]
+pub enum ModelCommand {
+    /// Show, set, or reset saved sampler settings (temperature, top_p,
+    /// reasoning_effort, thinking_enabled, budget_tokens, max_tokens,
+    /// cache_ttl) for the active model.
+    ///
+    /// `shore model setting`                          show effective sampler
+    /// `shore model setting <key>`                    show one key
+    /// `shore model setting <key> <value>`            set saved value
+    /// `shore model setting --reset <key>`            clear saved value
+    /// `shore model setting --reset` (no key)         (unsupported — pass a key)
+    Setting {
+        /// Setting key (temperature, top_p, reasoning_effort, ...)
+        key: Option<String>,
+
+        /// Value to assign. For booleans pass true/false.
+        /// "off"/"none" map to no-reasoning for `reasoning_effort`.
+        value: Option<String>,
+
+        /// Apply to the global preferences file instead of the active
+        /// character's. Without this flag, character-scope is used.
+        #[arg(long)]
+        global: bool,
+
+        /// Clear the saved value for the named key.
+        #[arg(long)]
+        reset: bool,
+
+        /// Output raw JSON
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ProviderCommand {
+    /// List discovered + statically configured models for one provider.
+    Models {
+        /// Provider key (e.g. `openrouter`, `anthropic`)
+        name: String,
+
+        /// Include hidden discovered models in the main list
+        #[arg(long)]
+        all: bool,
+
+        /// Output raw JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Re-fetch the provider's `/v1/models` catalog and update the cache.
+    Refresh {
+        /// Provider key to refresh
+        name: String,
+
+        /// Output raw JSON
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
 pub enum MemoryCommand {
     /// Compact conversation into markdown memory.
     /// Optional positional: number of recent user turns to retain
@@ -414,6 +505,44 @@ pub fn fish_dynamic_completions_footer() -> &'static str {
 # ── Dynamic completions (populated by the daemon) ────────────────────\n\
 complete -c shore -n \"__fish_shore_using_subcommand model\" -f -a \"(shore complete models 2>/dev/null)\"\n\
 complete -c shore -n \"__fish_shore_using_subcommand character\" -f -a \"(shore complete characters 2>/dev/null)\"\n"
+}
+
+/// Parse a CLI-supplied sampler value into the JSON shape the daemon
+/// expects. The daemon validates types per-key, so this only needs to
+/// decide between number/bool/string/null without losing information.
+///
+/// - `reasoning_effort`: pass through as a string. "off"/"none"/"" map
+///   to a JSON null so saved settings clear reasoning rather than store
+///   a literal "off".
+/// - `thinking_enabled`: parse "true"/"false"/"yes"/"no"/"on"/"off".
+/// - `temperature`, `top_p`: parse as f64.
+/// - `budget_tokens`, `max_tokens`: parse as integer.
+/// - `cache_ttl`: pass through as a string.
+fn parse_setting_value(key: &str, raw: &str) -> serde_json::Value {
+    use serde_json::Value;
+    let trimmed = raw.trim();
+    match key {
+        "thinking_enabled" => match trimmed.to_ascii_lowercase().as_str() {
+            "true" | "yes" | "on" | "1" => Value::Bool(true),
+            "false" | "no" | "off" | "0" => Value::Bool(false),
+            _ => Value::String(trimmed.to_string()),
+        },
+        "temperature" | "top_p" => trimmed
+            .parse::<f64>()
+            .ok()
+            .and_then(serde_json::Number::from_f64)
+            .map(Value::Number)
+            .unwrap_or_else(|| Value::String(trimmed.to_string())),
+        "budget_tokens" | "max_tokens" => trimmed
+            .parse::<u64>()
+            .map(|n| Value::Number(n.into()))
+            .unwrap_or_else(|_| Value::String(trimmed.to_string())),
+        "reasoning_effort" => match trimmed.to_ascii_lowercase().as_str() {
+            "off" | "none" | "disable" | "disabled" | "unset" | "" => Value::Null,
+            _ => Value::String(trimmed.to_string()),
+        },
+        _ => Value::String(trimmed.to_string()),
+    }
 }
 
 /// Map a CLI command to its SWP command name and JSON args.
@@ -491,7 +620,48 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
         },
 
         CliCommand::Model {
-            name, info, reset, ..
+            subcommand:
+                Some(ModelCommand::Setting {
+                    key,
+                    value,
+                    global,
+                    reset,
+                    ..
+                }),
+            ..
+        } => {
+            // No key → show current effective sampler. With a key:
+            // value=Some → set; --reset → clear; otherwise → show one.
+            // The CLI dispatch in run.rs is what actually picks the
+            // right daemon command per case; keep this mapping aligned
+            // with the "show" path (model_settings).
+            match (key.as_deref(), value.as_deref(), *reset) {
+                (None, _, _) => Some(("model_settings", json!({}))),
+                (Some(k), _, true) => Some((
+                    "set_model_setting",
+                    json!({
+                        "key": k,
+                        "value": serde_json::Value::Null,
+                        "scope": if *global { "global" } else { "character" },
+                    }),
+                )),
+                (Some(_), None, false) => Some(("model_settings", json!({}))),
+                (Some(k), Some(v), false) => Some((
+                    "set_model_setting",
+                    json!({
+                        "key": k,
+                        "value": parse_setting_value(k, v),
+                        "scope": if *global { "global" } else { "character" },
+                    }),
+                )),
+            }
+        }
+        CliCommand::Model {
+            name,
+            info,
+            reset,
+            all,
+            ..
         } => {
             if *reset {
                 Some(("reset_model", json!({})))
@@ -499,11 +669,38 @@ pub fn to_swp_command(cmd: &CliCommand) -> Option<(&'static str, serde_json::Val
                 match (name, info) {
                     (Some(name), true) => Some(("model_info", json!({ "name": name }))),
                     (None, true) => Some(("model_info", json!({}))),
-                    (None, false) => Some(("list_models", json!({}))),
-                    (Some(name), false) => Some(("switch_model", json!({ "name": name }))),
+                    (None, false) => {
+                        let mut args = json!({});
+                        if *all {
+                            args["include_hidden"] = json!(true);
+                        }
+                        Some(("list_models", args))
+                    }
+                    (Some(name), false) => {
+                        let mut args = json!({ "name": name });
+                        if *all {
+                            args["include_hidden"] = json!(true);
+                        }
+                        Some(("switch_model", args))
+                    }
                 }
             }
         }
+
+        CliCommand::Provider {
+            subcommand: Some(ProviderCommand::Models { name, all, .. }),
+            ..
+        } => Some((
+            "list_provider_models",
+            json!({ "provider": name, "include_hidden": *all }),
+        )),
+        CliCommand::Provider {
+            subcommand: Some(ProviderCommand::Refresh { name, .. }),
+            ..
+        } => Some(("refresh_provider_models", json!({ "provider": name }))),
+        CliCommand::Provider {
+            subcommand: None, ..
+        } => Some(("list_providers", json!({}))),
 
         CliCommand::Reasoning { value, reset, .. } => {
             if *reset {
@@ -950,9 +1147,17 @@ mod tests {
     fn parse_model_list() {
         let cli = parse(&["model"]);
         match &cli.command {
-            CliCommand::Model { name, info, .. } => {
+            CliCommand::Model {
+                name,
+                info,
+                subcommand,
+                all,
+                ..
+            } => {
                 assert!(name.is_none());
                 assert!(!info);
+                assert!(subcommand.is_none());
+                assert!(!all);
             }
             other => panic!("expected Model, got: {other:?}"),
         }
@@ -962,9 +1167,15 @@ mod tests {
     fn parse_model_switch() {
         let cli = parse(&["model", "claude-haiku-4-5-20251001"]);
         match &cli.command {
-            CliCommand::Model { name, info, .. } => {
+            CliCommand::Model {
+                name,
+                info,
+                subcommand,
+                ..
+            } => {
                 assert_eq!(name.as_deref(), Some("claude-haiku-4-5-20251001"));
                 assert!(!info);
+                assert!(subcommand.is_none());
             }
             other => panic!("expected Model, got: {other:?}"),
         }
@@ -979,6 +1190,137 @@ mod tests {
                 assert!(info);
             }
             other => panic!("expected Model, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_model_all_flag() {
+        let cli = parse(&["model", "--all"]);
+        match &cli.command {
+            CliCommand::Model { all, .. } => assert!(all),
+            other => panic!("expected Model, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_model_setting_show() {
+        let cli = parse(&["model", "setting"]);
+        match &cli.command {
+            CliCommand::Model {
+                subcommand: Some(ModelCommand::Setting { key, value, .. }),
+                ..
+            } => {
+                assert!(key.is_none());
+                assert!(value.is_none());
+            }
+            other => panic!("expected Model Setting, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_model_setting_with_value() {
+        let cli = parse(&["model", "setting", "temperature", "0.8"]);
+        match &cli.command {
+            CliCommand::Model {
+                subcommand:
+                    Some(ModelCommand::Setting {
+                        key,
+                        value,
+                        global,
+                        reset,
+                        ..
+                    }),
+                ..
+            } => {
+                assert_eq!(key.as_deref(), Some("temperature"));
+                assert_eq!(value.as_deref(), Some("0.8"));
+                assert!(!global);
+                assert!(!reset);
+            }
+            other => panic!("expected Model Setting, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_model_setting_reset() {
+        let cli = parse(&["model", "setting", "--reset", "temperature"]);
+        match &cli.command {
+            CliCommand::Model {
+                subcommand:
+                    Some(ModelCommand::Setting {
+                        key, reset, value, ..
+                    }),
+                ..
+            } => {
+                assert_eq!(key.as_deref(), Some("temperature"));
+                assert!(reset);
+                assert!(value.is_none());
+            }
+            other => panic!("expected Model Setting reset, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_model_setting_global_flag() {
+        let cli = parse(&["model", "setting", "--global", "top_p", "0.9"]);
+        match &cli.command {
+            CliCommand::Model {
+                subcommand: Some(ModelCommand::Setting { global, .. }),
+                ..
+            } => {
+                assert!(global);
+            }
+            other => panic!("expected Model Setting global, got: {other:?}"),
+        }
+    }
+
+    // ── Provider ─────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_provider_list() {
+        let cli = parse(&["provider"]);
+        match &cli.command {
+            CliCommand::Provider { subcommand, .. } => assert!(subcommand.is_none()),
+            other => panic!("expected Provider, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_provider_models() {
+        let cli = parse(&["provider", "models", "openrouter"]);
+        match &cli.command {
+            CliCommand::Provider {
+                subcommand: Some(ProviderCommand::Models { name, all, .. }),
+                ..
+            } => {
+                assert_eq!(name, "openrouter");
+                assert!(!all);
+            }
+            other => panic!("expected Provider Models, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_provider_models_all() {
+        let cli = parse(&["provider", "models", "openrouter", "--all"]);
+        match &cli.command {
+            CliCommand::Provider {
+                subcommand: Some(ProviderCommand::Models { all, .. }),
+                ..
+            } => assert!(all),
+            other => panic!("expected Provider Models, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_provider_refresh() {
+        let cli = parse(&["provider", "refresh", "openrouter"]);
+        match &cli.command {
+            CliCommand::Provider {
+                subcommand: Some(ProviderCommand::Refresh { name, .. }),
+                ..
+            } => assert_eq!(name, "openrouter"),
+            other => panic!("expected Provider Refresh, got: {other:?}"),
         }
     }
 
@@ -1276,14 +1618,179 @@ mod tests {
     #[test]
     fn model_info_maps_to_command() {
         let cmd = CliCommand::Model {
+            subcommand: None,
             name: Some("opus".into()),
             info: true,
             reset: false,
+            all: false,
             json: false,
         };
         let (name, args) = to_swp_command(&cmd).unwrap();
         assert_eq!(name, "model_info");
         assert_eq!(args["name"], "opus");
+    }
+
+    #[test]
+    fn model_list_with_all_includes_hidden_arg() {
+        let cmd = CliCommand::Model {
+            subcommand: None,
+            name: None,
+            info: false,
+            reset: false,
+            all: true,
+            json: false,
+        };
+        let (cmd_name, args) = to_swp_command(&cmd).unwrap();
+        assert_eq!(cmd_name, "list_models");
+        assert_eq!(args["include_hidden"], true);
+    }
+
+    #[test]
+    fn model_setting_no_key_maps_to_show() {
+        let cmd = CliCommand::Model {
+            subcommand: Some(ModelCommand::Setting {
+                key: None,
+                value: None,
+                global: false,
+                reset: false,
+                json: false,
+            }),
+            name: None,
+            info: false,
+            reset: false,
+            all: false,
+            json: false,
+        };
+        let (name, _) = to_swp_command(&cmd).unwrap();
+        assert_eq!(name, "model_settings");
+    }
+
+    #[test]
+    fn model_setting_with_value_maps_to_set_model_setting() {
+        let cmd = CliCommand::Model {
+            subcommand: Some(ModelCommand::Setting {
+                key: Some("temperature".into()),
+                value: Some("0.8".into()),
+                global: false,
+                reset: false,
+                json: false,
+            }),
+            name: None,
+            info: false,
+            reset: false,
+            all: false,
+            json: false,
+        };
+        let (name, args) = to_swp_command(&cmd).unwrap();
+        assert_eq!(name, "set_model_setting");
+        assert_eq!(args["key"], "temperature");
+        assert_eq!(args["value"], 0.8);
+        assert_eq!(args["scope"], "character");
+    }
+
+    #[test]
+    fn model_setting_reset_clears_with_null_value() {
+        let cmd = CliCommand::Model {
+            subcommand: Some(ModelCommand::Setting {
+                key: Some("budget_tokens".into()),
+                value: None,
+                global: false,
+                reset: true,
+                json: false,
+            }),
+            name: None,
+            info: false,
+            reset: false,
+            all: false,
+            json: false,
+        };
+        let (name, args) = to_swp_command(&cmd).unwrap();
+        assert_eq!(name, "set_model_setting");
+        assert!(args["value"].is_null());
+    }
+
+    #[test]
+    fn model_setting_global_scope_routes_correctly() {
+        let cmd = CliCommand::Model {
+            subcommand: Some(ModelCommand::Setting {
+                key: Some("top_p".into()),
+                value: Some("0.95".into()),
+                global: true,
+                reset: false,
+                json: false,
+            }),
+            name: None,
+            info: false,
+            reset: false,
+            all: false,
+            json: false,
+        };
+        let (_, args) = to_swp_command(&cmd).unwrap();
+        assert_eq!(args["scope"], "global");
+    }
+
+    #[test]
+    fn model_setting_reasoning_off_becomes_null() {
+        // "off" is the natural CLI verb for "no reasoning"; the daemon's
+        // setter clears the saved override when value is null, so this
+        // mapping lets `shore model setting reasoning_effort off` work
+        // without needing a separate CLI flag.
+        let cmd = CliCommand::Model {
+            subcommand: Some(ModelCommand::Setting {
+                key: Some("reasoning_effort".into()),
+                value: Some("off".into()),
+                global: false,
+                reset: false,
+                json: false,
+            }),
+            name: None,
+            info: false,
+            reset: false,
+            all: false,
+            json: false,
+        };
+        let (_, args) = to_swp_command(&cmd).unwrap();
+        assert!(args["value"].is_null());
+    }
+
+    #[test]
+    fn provider_no_subcommand_lists_providers() {
+        let cmd = CliCommand::Provider {
+            subcommand: None,
+            json: false,
+        };
+        let (name, _) = to_swp_command(&cmd).unwrap();
+        assert_eq!(name, "list_providers");
+    }
+
+    #[test]
+    fn provider_models_maps_to_command() {
+        let cmd = CliCommand::Provider {
+            subcommand: Some(ProviderCommand::Models {
+                name: "openrouter".into(),
+                all: true,
+                json: false,
+            }),
+            json: false,
+        };
+        let (name, args) = to_swp_command(&cmd).unwrap();
+        assert_eq!(name, "list_provider_models");
+        assert_eq!(args["provider"], "openrouter");
+        assert_eq!(args["include_hidden"], true);
+    }
+
+    #[test]
+    fn provider_refresh_maps_to_command() {
+        let cmd = CliCommand::Provider {
+            subcommand: Some(ProviderCommand::Refresh {
+                name: "openrouter".into(),
+                json: false,
+            }),
+            json: false,
+        };
+        let (name, args) = to_swp_command(&cmd).unwrap();
+        assert_eq!(name, "refresh_provider_models");
+        assert_eq!(args["provider"], "openrouter");
     }
 
     #[test]
@@ -1482,27 +1989,68 @@ mod tests {
                 subcommand: DebugCommand::StatusActive,
             },
             CliCommand::Model {
+                subcommand: None,
                 name: None,
                 info: false,
                 reset: false,
+                all: false,
                 json: false,
             },
             CliCommand::Model {
+                subcommand: None,
                 name: Some("m".into()),
                 info: false,
                 reset: false,
+                all: false,
                 json: false,
             },
             CliCommand::Model {
+                subcommand: None,
                 name: Some("m".into()),
                 info: true,
                 reset: false,
+                all: false,
                 json: false,
             },
             CliCommand::Model {
+                subcommand: None,
                 name: None,
                 info: false,
                 reset: true,
+                all: false,
+                json: false,
+            },
+            CliCommand::Model {
+                subcommand: Some(ModelCommand::Setting {
+                    key: None,
+                    value: None,
+                    global: false,
+                    reset: false,
+                    json: false,
+                }),
+                name: None,
+                info: false,
+                reset: false,
+                all: false,
+                json: false,
+            },
+            CliCommand::Provider {
+                subcommand: None,
+                json: false,
+            },
+            CliCommand::Provider {
+                subcommand: Some(ProviderCommand::Models {
+                    name: "openrouter".into(),
+                    all: false,
+                    json: false,
+                }),
+                json: false,
+            },
+            CliCommand::Provider {
+                subcommand: Some(ProviderCommand::Refresh {
+                    name: "openrouter".into(),
+                    json: false,
+                }),
                 json: false,
             },
             CliCommand::Character {

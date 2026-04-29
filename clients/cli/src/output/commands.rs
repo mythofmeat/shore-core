@@ -258,6 +258,11 @@ pub fn format_command(name: &str, data: &serde_json::Value) {
         "reset_model" => print_model_reset(data),
         "model_info" => print_model_info(data),
         "set_reasoning_effort" => print_reasoning_effort(data),
+        "model_settings" => print_model_settings(data),
+        "set_model_setting" => print_set_model_setting(data),
+        "list_providers" => print_provider_list(data),
+        "list_provider_models" => print_provider_models(data),
+        "refresh_provider_models" => print_provider_refresh(data),
         "memory" => print_memory(data),
         "compact" => print_compact_result(data),
         "memory_changelog" => print_changelog(data),
@@ -400,19 +405,27 @@ fn print_delete_confirmation(data: &serde_json::Value) {
 }
 
 /// Print model list.
+///
+/// Phase 8: rows include the source tag (`static`/`discovered`) so users
+/// can tell aliases from upstream-discovered ids at a glance, and an
+/// optional `hidden_count` footer points them at `--all` when filtered
+/// models exist.
 fn print_model_list(data: &serde_json::Value) {
     let stdout = io::stdout();
     let mut out = stdout.lock();
     let width = term_width();
 
     let active = data["active"].as_str().unwrap_or("");
-
-    write_section_header(&mut out, "Models", "", width);
+    let include_hidden = data["include_hidden"].as_bool().unwrap_or(false);
+    let suffix = if include_hidden { "all" } else { "" };
+    write_section_header(&mut out, "Models", suffix, width);
 
     if let Some(models) = data["models"].as_array() {
         for m in models {
             let name = m["name"].as_str().unwrap_or("?");
             let provider = m["provider"].as_str().unwrap_or("?");
+            let source = m["source"].as_str().unwrap_or("");
+            let hidden = m["hidden"].as_bool().unwrap_or(false);
             let is_active = name == active || m["qualified_name"].as_str() == Some(active);
 
             let marker = if is_active { "*" } else { " " };
@@ -426,16 +439,38 @@ fn print_model_list(data: &serde_json::Value) {
             if use_color() {
                 let _ = crossterm::execute!(out, ResetColor);
             }
-            let _ = write!(out, "{name:<24}");
+            let _ = write!(out, "{name:<28}");
             if use_color() {
                 let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
             }
-            let _ = write!(out, "{provider}");
+            let _ = write!(out, "{provider:<14}");
+            // Tag like `static` / `discovered`. Hidden rows (only seen
+            // with `--all`) carry an extra `hidden` so users can spot
+            // why their default list filtered them.
+            if !source.is_empty() {
+                let tag = if hidden {
+                    format!("{source}, hidden")
+                } else {
+                    source.to_string()
+                };
+                let _ = write!(out, "[{tag}]");
+            }
             if use_color() {
                 let _ = crossterm::execute!(out, ResetColor);
             }
             let _ = writeln!(out);
         }
+    }
+
+    // Hint about hidden models the user is not currently seeing.
+    let hidden_count = data["hidden_count"].as_u64().unwrap_or(0);
+    if !include_hidden && hidden_count > 0 {
+        let _ = writeln!(out);
+        write_dim(
+            &mut out,
+            &format!("  ({hidden_count} hidden — use `shore model --all` to include them)"),
+        );
+        let _ = writeln!(out);
     }
     let _ = writeln!(out);
 }
@@ -549,6 +584,219 @@ fn print_model_info(data: &serde_json::Value) {
         write_row(&mut out, "Max tokens", &mt.to_string());
     }
     let _ = writeln!(out);
+}
+
+/// Print effective sampler settings + which scope set each value.
+fn print_model_settings(data: &serde_json::Value) {
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    let width = term_width();
+
+    let model = data["model"].as_str().unwrap_or("?");
+    write_section_header(&mut out, "Model Settings", model, width);
+
+    let sampler = data.get("effective_sampler").cloned().unwrap_or_default();
+    let scopes = data.get("scopes").cloned().unwrap_or_default();
+    let keys = [
+        "temperature",
+        "top_p",
+        "reasoning_effort",
+        "thinking_enabled",
+        "budget_tokens",
+        "max_tokens",
+        "cache_ttl",
+    ];
+    for key in keys {
+        let value = match sampler.get(key) {
+            Some(v) if v.is_null() => "(unset)".to_string(),
+            Some(v) => v
+                .as_str()
+                .map(String::from)
+                .unwrap_or_else(|| v.to_string()),
+            None => "(unset)".to_string(),
+        };
+        let scope = scopes
+            .get(key)
+            .and_then(|v| v.as_str())
+            .unwrap_or("(default)");
+        let label = format!("{key:<17}");
+        write_row(&mut out, &label, &format!("{value}  [{scope}]"));
+    }
+    let _ = writeln!(out);
+}
+
+/// Print confirmation after `set_model_setting`.
+fn print_set_model_setting(data: &serde_json::Value) {
+    let key = data["key"].as_str().unwrap_or("?");
+    let scope = data["scope"].as_str().unwrap_or("?");
+    let value = match data.get("value") {
+        Some(v) if v.is_null() => "(cleared)".to_string(),
+        Some(v) => v
+            .as_str()
+            .map(String::from)
+            .unwrap_or_else(|| v.to_string()),
+        None => "(cleared)".to_string(),
+    };
+    let model = data["model"].as_str().unwrap_or("?");
+    println!("[{scope}] {key} = {value}  ({})", abbreviate_model(model));
+}
+
+/// Print the configured provider list with key + cache status.
+fn print_provider_list(data: &serde_json::Value) {
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    let width = term_width();
+
+    write_section_header(&mut out, "Providers", "", width);
+
+    let providers = match data["providers"].as_array() {
+        Some(p) if !p.is_empty() => p,
+        _ => {
+            print_dim_line(&mut out, "(no providers configured)");
+            let _ = writeln!(out);
+            return;
+        }
+    };
+
+    for p in providers {
+        let name = p["name"].as_str().unwrap_or("?");
+        let enabled = p["enabled"].as_bool().unwrap_or(true);
+        let sdk = p["sdk"].as_str().unwrap_or("?");
+        let base_url = p["base_url"].as_str().unwrap_or("");
+        let discovery = p["discovery_enabled"].as_bool().unwrap_or(false);
+
+        // Header line: bold provider name + sdk tag, dim base_url.
+        if use_color() {
+            let _ = crossterm::execute!(out, SetAttribute(Attribute::Bold));
+        }
+        let _ = write!(out, "  {name}");
+        if use_color() {
+            let _ = crossterm::execute!(out, SetAttribute(Attribute::Reset));
+        }
+        if !enabled {
+            write_fg(&mut out, Color::Yellow, "  [disabled]");
+        }
+        if discovery {
+            write_dim(&mut out, "  [discovery]");
+        }
+        let _ = writeln!(out);
+
+        write_row(&mut out, "SDK", sdk);
+        if !base_url.is_empty() {
+            write_row(&mut out, "Base URL", base_url);
+        }
+
+        if let Some(keys) = p["keys"].as_array() {
+            if keys.is_empty() {
+                write_row(&mut out, "Keys", "(none configured)");
+            } else {
+                let mut parts: Vec<String> = Vec::new();
+                for k in keys {
+                    let kn = k["name"].as_str().unwrap_or("?");
+                    let env_set = k["env_set"].as_bool().unwrap_or(false);
+                    let warn = k["warn_on_fallback"].as_bool().unwrap_or(false);
+                    let mark = if env_set { "set" } else { "missing" };
+                    let warn_tag = if warn { "*" } else { "" };
+                    parts.push(format!("{kn}{warn_tag}={mark}"));
+                }
+                write_row(&mut out, "Keys", &parts.join(", "));
+            }
+        }
+
+        let cache = &p["cache"];
+        if cache["present"].as_bool().unwrap_or(false) {
+            let total = cache["models"].as_u64().unwrap_or(0);
+            let visible = cache["visible"].as_u64().unwrap_or(total);
+            let hidden = cache["hidden"].as_u64().unwrap_or(0);
+            let fetched = cache["fetched_at"].as_str().unwrap_or("?");
+            let summary = if hidden > 0 {
+                format!("{visible} visible / {hidden} hidden / {total} total · fetched {fetched}")
+            } else {
+                format!("{total} models · fetched {fetched}")
+            };
+            write_row(&mut out, "Cache", &summary);
+        } else {
+            write_row(
+                &mut out,
+                "Cache",
+                "(empty — `shore provider refresh <name>`)",
+            );
+        }
+        let _ = writeln!(out);
+    }
+}
+
+/// Print discovered + static models for a single provider.
+fn print_provider_models(data: &serde_json::Value) {
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+    let width = term_width();
+
+    let provider = data["provider"].as_str().unwrap_or("?");
+    let include_hidden = data["include_hidden"].as_bool().unwrap_or(false);
+    let suffix = if include_hidden { "all" } else { "" };
+    write_section_header(&mut out, &format!("Provider — {provider}"), suffix, width);
+
+    let static_models = data["static"].as_array().cloned().unwrap_or_default();
+    if !static_models.is_empty() {
+        write_dim(&mut out, "  static\n");
+        for m in &static_models {
+            let name = m["name"].as_str().unwrap_or("?");
+            let id = m["model_id"].as_str().unwrap_or("?");
+            let _ = writeln!(out, "    {name:<28}{id}");
+        }
+        let _ = writeln!(out);
+    }
+
+    let discovered = data["discovered"].as_array().cloned().unwrap_or_default();
+    if !discovered.is_empty() {
+        write_dim(&mut out, "  discovered\n");
+        for m in &discovered {
+            let id = m["model_id"].as_str().unwrap_or("?");
+            let display = m["display_name"].as_str().unwrap_or("");
+            if display.is_empty() {
+                let _ = writeln!(out, "    {id}");
+            } else {
+                let _ = writeln!(out, "    {id:<48}{display}");
+            }
+        }
+        let _ = writeln!(out);
+    }
+
+    let hidden = data["hidden"].as_array().cloned().unwrap_or_default();
+    if !hidden.is_empty() {
+        write_dim(
+            &mut out,
+            &format!("  hidden ({} — pass --all to include)\n", hidden.len()),
+        );
+        for m in &hidden {
+            let id = m["model_id"].as_str().unwrap_or("?");
+            let _ = writeln!(out, "    {id}");
+        }
+        let _ = writeln!(out);
+    }
+
+    if static_models.is_empty() && discovered.is_empty() && hidden.is_empty() {
+        print_dim_line(
+            &mut out,
+            "no models — run `shore provider refresh <name>` if discovery is configured",
+        );
+        let _ = writeln!(out);
+    }
+
+    if let Some(cache) = data.get("cache") {
+        if let Some(fetched) = cache["fetched_at"].as_str() {
+            write_dim(&mut out, &format!("  cache fetched {fetched}\n"));
+        }
+    }
+}
+
+/// Print the result of `shore provider refresh <name>`.
+fn print_provider_refresh(data: &serde_json::Value) {
+    let provider = data["provider"].as_str().unwrap_or("?");
+    let count = data["model_count"].as_u64().unwrap_or(0);
+    let fetched = data["fetched_at"].as_str().unwrap_or("?");
+    println!("Refreshed {provider}: {count} models (fetched {fetched})");
 }
 
 /// Print character info.

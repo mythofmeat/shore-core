@@ -176,6 +176,50 @@ sends newly generated images.
 
 Private conversations suppress memory access.
 
+## Models And Providers
+
+Shore resolves models from an effective catalog that merges three sources:
+
+- Manual entries under `[chat.<provider>.<name>]` (`shore_config::models`).
+- Provider-discovered models cached from `[providers.<name>]`'s
+  `/v1/models` endpoint (Phase 5+).
+- Hardcoded provider defaults (sdk + base_url) for well-known providers.
+
+Saved sampler preferences (Phase 3) layer on top: character-scope wins
+over global, both win over the static catalog. Visibility patterns on
+the provider entry hide noisy upstream catalogs by default.
+
+CLI surface (Phase 8):
+
+```sh
+shore model                         # list visible models (source-tagged)
+shore model --all                   # also include hidden discovered models
+shore model <name>                  # switch (alias / id / provider:id)
+shore model --info [<name>]
+shore model --reset
+
+shore model setting                 # show effective sampler + scopes
+shore model setting temperature 0.8
+shore model setting reasoning_effort medium     # or "off" to clear
+shore model setting --reset budget_tokens
+shore model setting --global top_p 0.9          # write to global prefs
+
+shore provider                      # list providers + key + cache status
+shore provider models <name>        # discovered + static for one provider
+shore provider models <name> --all  # also include hidden discovered models
+shore provider refresh <name>       # re-fetch /v1/models, rewrite cache
+```
+
+`shore reasoning ...` keeps working and is internally routed through the
+shared sampler-preferences storage.
+
+The TUI exposes the same surface via `:model`, `:model all`, `:provider`,
+`:provider refresh <name>`, and `:setting <key> <value>`.
+
+Hidden discovered models cannot be selected by ambiguous name. Pass
+`--all` (CLI) or `:model all <name>` (TUI) to opt in for one call, or
+edit the provider's `discovery.visibility` rules to opt in permanently.
+
 ## Clients
 
 All clients connect to the daemon:

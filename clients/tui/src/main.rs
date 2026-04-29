@@ -1041,19 +1041,47 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> UiEffe
                         if app.show_model_list {
                             app.show_model_list = false;
                             let active = &app.model;
-                            let list = names
+                            let hidden_count = co
+                                .data
+                                .get("hidden_count")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0);
+                            let include_hidden = co
+                                .data
+                                .get("include_hidden")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false);
+                            let list = models
                                 .iter()
-                                .map(|n| {
-                                    if *n == active {
-                                        format!("  * {n}")
+                                .map(|m| {
+                                    let n = m.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                                    let provider =
+                                        m.get("provider").and_then(|v| v.as_str()).unwrap_or("?");
+                                    let source =
+                                        m.get("source").and_then(|v| v.as_str()).unwrap_or("");
+                                    let hidden =
+                                        m.get("hidden").and_then(|v| v.as_bool()).unwrap_or(false);
+                                    let marker = if n == active { "*" } else { " " };
+                                    let tag = if hidden {
+                                        format!(" [{source}, hidden]")
+                                    } else if !source.is_empty() {
+                                        format!(" [{source}]")
                                     } else {
-                                        format!("    {n}")
-                                    }
+                                        String::new()
+                                    };
+                                    format!("  {marker} {n:<28}{provider}{tag}")
                                 })
                                 .collect::<Vec<_>>()
                                 .join("\n");
+                            let footer = if !include_hidden && hidden_count > 0 {
+                                format!(
+                                    "\n  ({hidden_count} hidden — use `:model all` to include them)"
+                                )
+                            } else {
+                                String::new()
+                            };
                             app.entries.push(ConversationEntry::System {
-                                content: format!("Models:\n{list}"),
+                                content: format!("Models:\n{list}{footer}"),
                                 count: 1,
                                 timestamp: String::new(),
                             });
@@ -1064,10 +1092,103 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> UiEffe
                     }
                 }
                 "switch_model" => {
-                    if let Some(name) = co.data.get("model").and_then(|v| v.as_str()) {
+                    // Daemon returns `active` (the user-supplied alias) and
+                    // `qualified_name` (provider/model_id). Prefer the
+                    // qualified name for the displayed status because
+                    // discovered models often only resolve under their
+                    // upstream id.
+                    let name = co
+                        .data
+                        .get("active")
+                        .and_then(|v| v.as_str())
+                        .or_else(|| co.data.get("qualified_name").and_then(|v| v.as_str()));
+                    if let Some(name) = name {
                         app.model = name.to_string();
                         app.set_status(format!("model: {name}"));
                     }
+                }
+                "list_providers" => {
+                    if let Some(providers) = co.data.get("providers").and_then(|v| v.as_array()) {
+                        let lines: Vec<String> = providers
+                            .iter()
+                            .map(|p| {
+                                let name = p.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                                let enabled =
+                                    p.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true);
+                                let cache_count = p
+                                    .get("cache")
+                                    .and_then(|c| c.get("models"))
+                                    .and_then(|v| v.as_u64())
+                                    .unwrap_or(0);
+                                let suffix = if enabled { "" } else { " [disabled]" };
+                                format!("  {name:<16}{cache_count} models{suffix}")
+                            })
+                            .collect();
+                        app.entries.push(ConversationEntry::System {
+                            content: format!("Providers:\n{}", lines.join("\n")),
+                            count: 1,
+                            timestamp: String::new(),
+                        });
+                        if app.auto_scroll {
+                            app.scroll_to_bottom();
+                        }
+                    }
+                }
+                "list_provider_models" => {
+                    let provider = co
+                        .data
+                        .get("provider")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("?");
+                    let mut sections: Vec<String> = Vec::new();
+                    for (label, key) in [
+                        ("static", "static"),
+                        ("discovered", "discovered"),
+                        ("hidden", "hidden"),
+                    ] {
+                        let arr = co.data.get(key).and_then(|v| v.as_array());
+                        if let Some(arr) = arr {
+                            if !arr.is_empty() {
+                                let lines: Vec<String> = arr
+                                    .iter()
+                                    .map(|m| {
+                                        let id = m
+                                            .get("model_id")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("?");
+                                        format!("    {id}")
+                                    })
+                                    .collect();
+                                sections.push(format!("  {label}:\n{}", lines.join("\n")));
+                            }
+                        }
+                    }
+                    let body = if sections.is_empty() {
+                        "  (no models)".to_string()
+                    } else {
+                        sections.join("\n")
+                    };
+                    app.entries.push(ConversationEntry::System {
+                        content: format!("Provider — {provider}\n{body}"),
+                        count: 1,
+                        timestamp: String::new(),
+                    });
+                    if app.auto_scroll {
+                        app.scroll_to_bottom();
+                    }
+                }
+                "refresh_provider_models" => {
+                    let provider = co
+                        .data
+                        .get("provider")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("?");
+                    let count = co
+                        .data
+                        .get("model_count")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    app.set_status(format!("refreshed {provider}: {count} models"));
                 }
                 "reset_model" => {
                     app.model.clear();

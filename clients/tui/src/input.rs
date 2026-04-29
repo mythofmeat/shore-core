@@ -527,36 +527,125 @@ fn parse_command(app: &mut App, input: &str) -> Action {
         }
 
         "model" => {
-            if arg.is_empty() {
+            // Recognize `:model all` (include hidden in the list) and
+            // `:model all <name>` (switch to a possibly-hidden model)
+            // before falling through to the normal switch path.
+            let (include_hidden, rest) = match arg.split_once(' ') {
+                Some(("all", rest)) => (true, rest.trim()),
+                _ if arg == "all" => (true, ""),
+                _ => (false, arg),
+            };
+            if rest.is_empty() {
                 app.show_model_list = true;
+                let mut args = serde_json::json!({});
+                if include_hidden {
+                    args["include_hidden"] = serde_json::json!(true);
+                }
                 Action::Send(ConnCommand::Send(ClientMessage::Command(Command {
                     rid: None,
-
                     name: "list_models".into(),
-                    args: serde_json::json!({}),
+                    args,
                 })))
-            } else if arg == "reset" {
+            } else if rest == "reset" {
                 Action::Send(ConnCommand::Send(ClientMessage::Command(Command {
                     rid: None,
-
                     name: "reset_model".into(),
                     args: serde_json::json!({}),
                 })))
             } else {
+                let mut args = serde_json::json!({ "name": rest });
+                if include_hidden {
+                    args["include_hidden"] = serde_json::json!(true);
+                }
                 Action::SendMulti(vec![
                     ConnCommand::Send(ClientMessage::Command(Command {
                         rid: None,
-
                         name: "switch_model".into(),
-                        args: serde_json::json!({ "name": arg }),
+                        args,
                     })),
                     ConnCommand::Send(ClientMessage::Command(Command {
                         rid: None,
-
                         name: "status".into(),
                         args: serde_json::json!({}),
                     })),
                 ])
+            }
+        }
+
+        // `:provider` lists providers; `:provider <name>` shows that
+        // provider's discovered + static models; `:provider refresh
+        // <name>` re-fetches the cache. Surface for users who manage
+        // many keys / catalogs without dropping to the CLI.
+        "provider" => {
+            let trimmed = arg.trim();
+            if trimmed.is_empty() {
+                Action::Send(ConnCommand::Send(ClientMessage::Command(Command {
+                    rid: None,
+                    name: "list_providers".into(),
+                    args: serde_json::json!({}),
+                })))
+            } else if let Some(("refresh", name)) = trimmed.split_once(' ') {
+                let name = name.trim();
+                if name.is_empty() {
+                    app.set_status("usage: :provider refresh <name>");
+                    Action::Redraw
+                } else {
+                    Action::Send(ConnCommand::Send(ClientMessage::Command(Command {
+                        rid: None,
+                        name: "refresh_provider_models".into(),
+                        args: serde_json::json!({ "provider": name }),
+                    })))
+                }
+            } else {
+                Action::Send(ConnCommand::Send(ClientMessage::Command(Command {
+                    rid: None,
+                    name: "list_provider_models".into(),
+                    args: serde_json::json!({ "provider": trimmed }),
+                })))
+            }
+        }
+
+        // `:setting` shows effective sampler; `:setting <key> <value>`
+        // sets it on the active character; `:setting reset <key>`
+        // clears the saved override.
+        "setting" => {
+            let trimmed = arg.trim();
+            if trimmed.is_empty() {
+                Action::Send(ConnCommand::Send(ClientMessage::Command(Command {
+                    rid: None,
+                    name: "model_settings".into(),
+                    args: serde_json::json!({}),
+                })))
+            } else if let Some(("reset", key)) = trimmed.split_once(' ') {
+                let key = key.trim();
+                if key.is_empty() {
+                    app.set_status("usage: :setting reset <key>");
+                    Action::Redraw
+                } else {
+                    Action::Send(ConnCommand::Send(ClientMessage::Command(Command {
+                        rid: None,
+                        name: "set_model_setting".into(),
+                        args: serde_json::json!({
+                            "key": key,
+                            "value": serde_json::Value::Null,
+                            "scope": "character",
+                        }),
+                    })))
+                }
+            } else if let Some((key, value)) = trimmed.split_once(' ') {
+                let value = value.trim();
+                Action::Send(ConnCommand::Send(ClientMessage::Command(Command {
+                    rid: None,
+                    name: "set_model_setting".into(),
+                    args: serde_json::json!({
+                        "key": key,
+                        "value": parse_setting_value_str(key, value),
+                        "scope": "character",
+                    }),
+                })))
+            } else {
+                app.set_status("usage: :setting [<key> <value>] | :setting reset <key>");
+                Action::Redraw
             }
         }
 
@@ -783,6 +872,35 @@ fn parse_command(app: &mut App, input: &str) -> Action {
             app.set_status(format!("unknown command: {cmd}"));
             Action::Redraw
         }
+    }
+}
+
+/// Map a TUI-supplied sampler value to the JSON shape the daemon's
+/// `set_model_setting` expects. Mirror of `cli::parse_setting_value`.
+fn parse_setting_value_str(key: &str, raw: &str) -> serde_json::Value {
+    use serde_json::Value;
+    let trimmed = raw.trim();
+    match key {
+        "thinking_enabled" => match trimmed.to_ascii_lowercase().as_str() {
+            "true" | "yes" | "on" | "1" => Value::Bool(true),
+            "false" | "no" | "off" | "0" => Value::Bool(false),
+            _ => Value::String(trimmed.to_string()),
+        },
+        "temperature" | "top_p" => trimmed
+            .parse::<f64>()
+            .ok()
+            .and_then(serde_json::Number::from_f64)
+            .map(Value::Number)
+            .unwrap_or_else(|| Value::String(trimmed.to_string())),
+        "budget_tokens" | "max_tokens" => trimmed
+            .parse::<u64>()
+            .map(|n| Value::Number(n.into()))
+            .unwrap_or_else(|_| Value::String(trimmed.to_string())),
+        "reasoning_effort" => match trimmed.to_ascii_lowercase().as_str() {
+            "off" | "none" | "disable" | "disabled" | "unset" | "" => Value::Null,
+            _ => Value::String(trimmed.to_string()),
+        },
+        _ => Value::String(trimmed.to_string()),
     }
 }
 

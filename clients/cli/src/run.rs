@@ -361,7 +361,10 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         // but no longer written here. Best-effort cleanup of any stale
         // mirror keeps `shore status` honest after the upgrade.
         CliCommand::Model {
-            reset: true, json, ..
+            subcommand: None,
+            reset: true,
+            json,
+            ..
         } => {
             conn.send_command("reset_model", serde_json::json!({}))
                 .await?;
@@ -374,14 +377,21 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         CliCommand::Model {
+            subcommand: None,
             name: Some(name),
             info: false,
             reset: false,
+            all,
             json,
-            ..
         } => {
-            conn.send_command("switch_model", serde_json::json!({ "name": name }))
-                .await?;
+            // `--all` propagates `include_hidden = true` so `shore model
+            // <hidden-id> --all` is the documented escape hatch from the
+            // visibility error message.
+            let mut args = serde_json::json!({ "name": name });
+            if *all {
+                args["include_hidden"] = serde_json::json!(true);
+            }
+            conn.send_command("switch_model", args).await?;
             let data = recv_command_data(&mut conn).await?;
             let _ = state::clear_active_model();
             if *json {
@@ -413,7 +423,8 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 CliCommand::Model { json, .. }
                 | CliCommand::Character { json, .. }
                 | CliCommand::Memory { json, .. }
-                | CliCommand::Config { json, .. } => *json,
+                | CliCommand::Config { json, .. }
+                | CliCommand::Provider { json, .. } => *json,
                 _ => false,
             };
             let (name, args) = crate::cli::to_swp_command(other)

@@ -9,6 +9,11 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 See `README.md`, `FEATURES.md`, and `CONFIGURATION.md` for current branch guidance.
 
 ### Added
+- Effective model catalog (Phase 7): `shore model <name>` accepts manual aliases, upstream `<provider>/<id>` strings, and explicit `provider:model_id` selectors against a catalog merged from static config, provider discovery, and saved preferences
+- Provider registry + discovery: `[providers.<name>]` tables with `[[keys]]` rotation, `discovery.enabled`, and gitignore-style `discovery.visibility` patterns; provider catalogs cache to `<data>/providers/<name>/models.json`
+- CLI: `shore provider`, `shore provider models <name>`, `shore provider models <name> --all`, and `shore provider refresh <name>`
+- CLI: `shore model setting [<key> [<value>]]` (with `--global`, `--reset`, and `--all`) for sampler preferences; `shore reasoning ...` keeps working and now writes through the same store
+- TUI: `:provider`, `:provider refresh <name>`, `:model all`, and `:setting <key> <value>` slash commands; model picker tags rows with their source (`static`/`discovered`) and footer hints at hidden models
 - Time-aware prompt assembly: user messages now carry inline time markers when the gap from the previous turn is large, when an hour has elapsed since the last marker (so long, slow conversations stay anchored), or when prior context was lost to compaction (so the first user message after a cut still has an absolute date/time reference)
 - Character workspaces with protected prompt files: `SOUL.md`, `USER.md`, `AGENTS.md`, `TOOLS.md`, and `HEARTBEAT.md`
 - Markdown long-term memory under `characters/<Character>/workspace/memory/`
