@@ -177,6 +177,16 @@ impl SessionRouter {
             false
         }
     }
+
+    /// Snapshot connected sessions and their selected characters.
+    pub async fn sessions(&self) -> Vec<(SessionId, Option<String>)> {
+        self.clients
+            .read()
+            .await
+            .values()
+            .map(|client| (SessionId(client.id), client.character.clone()))
+            .collect()
+    }
 }
 
 /// Messages the server routes internally after handshake.

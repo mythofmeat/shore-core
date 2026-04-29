@@ -540,9 +540,7 @@ fn parse_setting_value(key: &str, raw: &str) -> serde_json::Value {
             .map(|n| Value::Number(n.into()))
             .unwrap_or_else(|_| Value::String(trimmed.to_string())),
         "reasoning_effort" => match trimmed.to_ascii_lowercase().as_str() {
-            "off" | "none" | "disable" | "disabled" | "unset" | "" => {
-                Value::String("off".into())
-            }
+            "off" | "none" | "disable" | "disabled" | "unset" | "" => Value::String("off".into()),
             _ => Value::String(trimmed.to_string()),
         },
         _ => Value::String(trimmed.to_string()),

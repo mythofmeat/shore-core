@@ -52,6 +52,7 @@ fn make_ctx_with_models(
     );
 
     let ctx = CommandContext {
+        config_path: config.dirs.config.join("config.toml"),
         config,
         push_tx,
         data_dir: data_dir.clone(),
@@ -970,9 +971,7 @@ mod phase7 {
                     "{providers_toml}\n[providers.{provider}.discovery]\nenabled = true\nvisibility = [\n{pats_lit}\n]\n"
                 )
             }
-            None => format!(
-                "{providers_toml}\n[providers.{provider}.discovery]\nenabled = true\n"
-            ),
+            None => format!("{providers_toml}\n[providers.{provider}.discovery]\nenabled = true\n"),
         };
 
         let providers = if providers_toml_full.trim().is_empty() {

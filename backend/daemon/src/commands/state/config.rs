@@ -147,7 +147,7 @@ fn config_set(ctx: &mut CommandContext, key: &str, value: &str) -> CommandResult
 
 /// Reset all runtime config overrides by reloading from disk.
 pub fn config_reset(ctx: &mut CommandContext) -> CommandResult {
-    let config_path = ctx.config.dirs.config.join("config.toml");
+    let config_path = ctx.config_path.clone();
     match shore_config::load_config(Some(&config_path)) {
         Ok(fresh) => {
             ctx.active_model = None;

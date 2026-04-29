@@ -26,6 +26,7 @@ See `README.md`, `FEATURES.md`, and `CONFIGURATION.md` for current branch guidan
 - Optional hybrid semantic+lexical markdown retrieval backed by a rebuildable index
 - Workspace file tools and sandboxed `exec`
 - Workspace `delete` tool that moves files into a timestamped trash directory under the character data dir; refuses prompt-visible files and directories
+- Daemon config hot reload for runtime config inputs, with invalid-config rollback and protected workspace exclusions
 - Repository ownership layout: `core/`, `backend/`, `clients/`, `bridges/`, and `dev/`, with default Cargo members for faster local daemon/CLI builds
 
 ### Changed

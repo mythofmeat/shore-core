@@ -786,9 +786,10 @@ base_url = "https://acme.example.com/v1"
 "#
         .parse()
         .unwrap();
-        let registry =
-            ProviderRegistry::from_section(providers_table.get("providers").and_then(|v| v.as_table()))
-                .unwrap();
+        let registry = ProviderRegistry::from_section(
+            providers_table.get("providers").and_then(|v| v.as_table()),
+        )
+        .unwrap();
 
         let table = parse_table(
             r#"
@@ -800,7 +801,10 @@ model_id = "acme/fast"
 
         let fast = &models["chat.acme.fast"];
         assert_eq!(fast.sdk, Sdk::Openai);
-        assert_eq!(fast.base_url.as_deref(), Some("https://acme.example.com/v1"));
+        assert_eq!(
+            fast.base_url.as_deref(),
+            Some("https://acme.example.com/v1")
+        );
     }
 
     #[test]
@@ -819,9 +823,10 @@ api_key_env = "ACME_KEY"
 "#
         .parse()
         .unwrap();
-        let registry =
-            ProviderRegistry::from_section(providers_table.get("providers").and_then(|v| v.as_table()))
-                .unwrap();
+        let registry = ProviderRegistry::from_section(
+            providers_table.get("providers").and_then(|v| v.as_table()),
+        )
+        .unwrap();
 
         let table = parse_table(
             r#"
@@ -834,7 +839,10 @@ model_id = "acme/fast"
         let fast = &models["chat.acme.fast"];
         // sdk and base_url cascade.
         assert_eq!(fast.sdk, Sdk::Openai);
-        assert_eq!(fast.base_url.as_deref(), Some("https://acme.example.com/v1"));
+        assert_eq!(
+            fast.base_url.as_deref(),
+            Some("https://acme.example.com/v1")
+        );
         // api_key_env stays None — the credential resolver reads
         // `[providers.acme].keys` directly.
         assert!(fast.api_key_env.is_none());
@@ -854,9 +862,10 @@ base_url = "https://acme.example.com/v1"
 "#
         .parse()
         .unwrap();
-        let registry =
-            ProviderRegistry::from_section(providers_table.get("providers").and_then(|v| v.as_table()))
-                .unwrap();
+        let registry = ProviderRegistry::from_section(
+            providers_table.get("providers").and_then(|v| v.as_table()),
+        )
+        .unwrap();
 
         let table = parse_table(
             r#"

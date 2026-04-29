@@ -335,9 +335,7 @@ mod tests {
             ProviderRegistry::default()
         } else {
             let mut table: toml::Table = providers_toml.parse().unwrap();
-            if let Some(providers_table) = table
-                .get_mut("providers")
-                .and_then(|v| v.as_table_mut())
+            if let Some(providers_table) = table.get_mut("providers").and_then(|v| v.as_table_mut())
             {
                 for (_, value) in providers_table.iter_mut() {
                     if let Some(provider_entry) = value.as_table_mut() {
@@ -345,8 +343,7 @@ mod tests {
                         if needs_discovery {
                             let mut disc = toml::Table::new();
                             disc.insert("enabled".into(), toml::Value::Boolean(true));
-                            provider_entry
-                                .insert("discovery".into(), toml::Value::Table(disc));
+                            provider_entry.insert("discovery".into(), toml::Value::Table(disc));
                         }
                     }
                 }
@@ -885,9 +882,8 @@ base_url = "https://openrouter.ai/api/v1"
         );
         write_cache_for(&tmp, "openrouter", &["anthropic/claude-sonnet-4.5"]);
 
-        let err =
-            find_effective_model(&loaded, tmp.path(), "anthropic/claude-sonnet-4.5", false)
-                .unwrap_err();
+        let err = find_effective_model(&loaded, tmp.path(), "anthropic/claude-sonnet-4.5", false)
+            .unwrap_err();
         assert!(
             matches!(err, EffectiveCatalogError::NotFound { .. }),
             "stale cache for a disabled provider must not be searched"
@@ -911,9 +907,8 @@ enabled = false
         );
         write_cache_for(&tmp, "openrouter", &["anthropic/claude-sonnet-4.5"]);
 
-        let err =
-            find_effective_model(&loaded, tmp.path(), "anthropic/claude-sonnet-4.5", false)
-                .unwrap_err();
+        let err = find_effective_model(&loaded, tmp.path(), "anthropic/claude-sonnet-4.5", false)
+            .unwrap_err();
         assert!(
             matches!(err, EffectiveCatalogError::NotFound { .. }),
             "cache from previously-enabled discovery must not be honored once disabled"
@@ -996,14 +991,13 @@ visibility = ["meta-llama/*"]
         write_cache_for(&tmp, "together", &["meta-llama/llama-3-70b"]);
 
         // openrouter visible (default-show), together hidden (hide pattern).
-        let m = find_effective_model(&loaded, tmp.path(), "meta-llama/llama-3-70b", false)
-            .unwrap();
+        let m = find_effective_model(&loaded, tmp.path(), "meta-llama/llama-3-70b", false).unwrap();
         assert_eq!(m.provider_key, "openrouter");
 
         // With include_hidden=true, both participate and the resolution
         // becomes genuinely ambiguous.
-        let err = find_effective_model(&loaded, tmp.path(), "meta-llama/llama-3-70b", true)
-            .unwrap_err();
+        let err =
+            find_effective_model(&loaded, tmp.path(), "meta-llama/llama-3-70b", true).unwrap_err();
         assert!(matches!(err, EffectiveCatalogError::Ambiguous { .. }));
     }
 }

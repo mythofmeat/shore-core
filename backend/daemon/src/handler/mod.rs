@@ -34,7 +34,7 @@ use shore_protocol::server_msg::{
     ServerMessage,
 };
 use tokio::sync::{broadcast, mpsc, Mutex};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use crate::autonomy::manager::AutonomyManager;
 use crate::characters::CharacterRegistry;
@@ -44,7 +44,7 @@ use crate::notifications::{NotificationEvent, NotificationService};
 use crate::tools::context::SharedToolContext;
 use crate::tools::ToolContext;
 use shore_config::app::SearchConfig;
-use shore_config::LoadedConfig;
+use shore_config::{discover_characters, load_character_config, LoadedConfig};
 use shore_ledger::LedgerClient;
 use shore_swp_server::{RequestMeta, RoutedMessage, SessionId, SessionRouter};
 
@@ -156,6 +156,18 @@ struct SessionState {
     generation_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
+/// Internal daemon control messages handled on the same task as SWP commands.
+#[derive(Debug)]
+pub enum HandlerControl {
+    ReloadConfig { changed_paths: Vec<PathBuf> },
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) enum RuntimeReloadSource {
+    ManualReset,
+    HotReload,
+}
+
 /// The message processing handler.
 ///
 /// Routes commands inline (fast path) and spawns tokio tasks for generation
@@ -172,6 +184,7 @@ pub struct MessageHandler {
     pub live_speak: Arc<AtomicBool>,
     /// TTS client (None if TTS is not configured).
     pub tts_client: Option<TtsClient>,
+    control_rx: mpsc::Receiver<HandlerControl>,
     sessions: HashMap<SessionId, SessionState>,
 }
 
@@ -185,6 +198,7 @@ pub struct MessageHandlerDeps {
     pub notifier: NotificationService,
     pub live_speak: Arc<AtomicBool>,
     pub tts_client: Option<TtsClient>,
+    pub control_rx: mpsc::Receiver<HandlerControl>,
 }
 
 impl MessageHandler {
@@ -199,6 +213,7 @@ impl MessageHandler {
             notifier: deps.notifier,
             live_speak: deps.live_speak,
             tts_client: deps.tts_client,
+            control_rx: deps.control_rx,
             sessions: HashMap::new(),
         }
     }
@@ -215,257 +230,418 @@ impl MessageHandler {
     pub async fn run(&mut self, route_rx: Arc<Mutex<tokio::sync::mpsc::Receiver<RoutedMessage>>>) {
         info!("message handler started");
         let mut rx = route_rx.lock().await;
-        while let Some(msg) = rx.recv().await {
-            match msg {
-                RoutedMessage::Command { cmd, meta } => {
-                    debug!(
-                        client_id = meta.session.client_id.0,
-                        session_id = meta.session.session_id.0,
-                        client_type = %meta.session.client_type,
-                        rid = meta.rid.as_deref().unwrap_or("-"),
-                        character = ?meta.session.selected_character,
-                        "handling command"
-                    );
-                    let result = self.dispatch_command(&cmd, &meta).await;
-                    let _ = self
-                        .session_router
-                        .send_to_session(meta.session.session_id, result)
-                        .await;
+        let mut control_open = true;
+        loop {
+            tokio::select! {
+                routed = rx.recv() => {
+                    let Some(msg) = routed else {
+                        break;
+                    };
+                    self.handle_routed_message(msg).await;
                 }
-                RoutedMessage::Engine { msg, meta } => {
-                    let msg_kind = match &msg {
-                        ClientMessage::Message(_) => "message",
-                        ClientMessage::Regen(_) => "regen",
-                        ClientMessage::Cancel(_) => "cancel",
-                        ClientMessage::Speak(_) => "speak",
-                        ClientMessage::SetLiveSpeak(_) => "set_live_speak",
-                        _ => "other",
-                    };
-                    debug!(
-                        client_id = meta.session.client_id.0,
-                        session_id = meta.session.session_id.0,
-                        client_type = %meta.session.client_type,
-                        rid = meta.rid.as_deref().unwrap_or("-"),
-                        character = ?meta.session.selected_character,
-                        kind = msg_kind,
-                        "handling engine message"
-                    );
-                    if let ClientMessage::SetLiveSpeak(ref toggle) = msg {
-                        let prev = self.live_speak.swap(toggle.enabled, Ordering::Relaxed);
-                        info!(enabled = toggle.enabled, prev, "Live TTS toggled");
-                        let _ = self
-                            .session_router
-                            .send_to_session(
-                                meta.session.session_id,
-                                ServerMessage::CommandOutput(SwpCommandOutput {
-                                    rid: meta.rid.clone(),
-                                    name: "set_live_speak".into(),
-                                    data: serde_json::json!({ "enabled": toggle.enabled }),
-                                }),
-                            )
-                            .await;
-                        continue;
-                    }
-
-                    if let ClientMessage::Speak(ref speak) = msg {
-                        let Some(tts_client) = self.tts_client.clone() else {
-                            let _ = self.push_tx.send(ServerMessage::AudioError(SwpAudioError {
-                                rid: speak.rid.clone(),
-                                message: "TTS not configured".into(),
-                            }));
-                            continue;
-                        };
-                        let push_tx = self.push_tx.clone();
-                        let registry = self.registry.clone();
-                        let rid = speak.rid.clone();
-                        let msg_id = speak.msg_id.clone();
-                        let character = meta.session.selected_character.clone();
-                        tokio::spawn(async move {
-                            if let Err(e) = handle_speak_request(
-                                &tts_client,
-                                &push_tx,
-                                &registry,
-                                rid.clone(),
-                                msg_id,
-                                character.as_deref(),
-                            )
-                            .await
-                            {
-                                error!(error = %e, "TTS speak failed");
-                                let _ = push_tx.send(ServerMessage::AudioError(SwpAudioError {
-                                    rid,
-                                    message: e.to_string(),
-                                }));
-                            }
-                        });
-                        continue;
-                    }
-
-                    if matches!(msg, ClientMessage::Cancel(_)) {
-                        info!(
-                            client_id = meta.session.client_id.0,
-                            session_id = meta.session.session_id.0,
-                            rid = meta.rid.as_deref().unwrap_or("-"),
-                            "cancelling generation from routed cancel request"
-                        );
-                        self.cancel_generation(
-                            meta.session.session_id,
-                            meta.rid.clone(),
-                            "user cancelled",
-                        )
-                        .await;
-                        continue;
-                    }
-
-                    let (char_name, effective_config) = {
-                        let mut registry = self.registry.lock().await;
-                        let char_name = match registry
-                            .resolve_character(meta.session.selected_character.as_deref())
-                        {
-                            Ok(name) => name,
-                            Err(e) => {
-                                let _ = self
-                                    .session_router
-                                    .send_to_session(
-                                        meta.session.session_id,
-                                        ServerMessage::Error(SwpError {
-                                            rid: None,
-                                            code: ErrorCode::InvalidRequest,
-                                            message: e.to_string(),
-                                        })
-                                        .with_rid(meta.rid.clone()),
-                                    )
-                                    .await;
-                                continue;
-                            }
-                        };
-                        let effective_config = registry.effective_config(&char_name).clone();
-                        (char_name, effective_config)
-                    };
-
-                    let (body, regen) = match msg {
-                        ClientMessage::Message(body) => (body, false),
-                        ClientMessage::Regen(regen) => {
-                            let body = ClientMessageBody {
-                                rid: regen.rid,
-                                text: String::new(),
-                                stream: regen.stream,
-                                images: vec![],
-                                image_data: vec![],
-                                absence_seconds: None,
-                                overrides: None,
-                            };
-                            (body, true)
-                        }
-                        _ => continue,
-                    };
-
-                    let rid = body
-                        .rid
-                        .clone()
-                        .filter(|r| r.is_ascii() && !r.contains('\0'));
-                    let direct_tx = match self
-                        .session_router
-                        .sender_for(meta.session.session_id)
-                        .await
-                    {
-                        Some(tx) => tx,
-                        None => continue,
-                    };
-                    // Phase 3: preferences are authoritative.
-                    // Legacy `runtime_state.json` remains as a migration
-                    // fallback for one release; it is read but never
-                    // written by Phase 3+ code paths.
-                    let (active_model, sampler_overlay) = {
-                        let character_data_dir = self.cmd_ctx.data_dir.join(&char_name);
-                        let (global_prefs, char_prefs) =
-                            crate::preferences::load_for_character(&self.cmd_ctx.data_dir, &char_name)
-                                .unwrap_or_else(|e| {
-                                    tracing::warn!(error = %e, character = %char_name, "Failed to load preferences; using empty defaults");
-                                    (
-                                        crate::preferences::ModelPreferences::default(),
-                                        crate::preferences::ModelPreferences::default(),
-                                    )
-                                });
-                        let legacy = crate::runtime_state::load_active_model(&character_data_dir);
-                        let resolved = crate::preferences::resolve_active_for_character(
-                            &effective_config,
-                            &self.cmd_ctx.data_dir,
-                            &global_prefs,
-                            &char_prefs,
-                            legacy.as_deref(),
-                            effective_config.app.defaults.model.as_deref(),
-                        );
-                        let overlay = match resolved.as_ref() {
-                            Some(m) => crate::preferences::resolve_sampler_settings(
-                                &global_prefs,
-                                Some(&char_prefs),
-                                &m.provider_key,
-                                &m.model_id,
-                            ),
-                            None => crate::preferences::SamplerSettings::default(),
-                        };
-                        (resolved, overlay)
-                    };
-                    let reasoning_effort_override = {
-                        let session = self.session_state_mut(meta.session.session_id);
-                        session.reasoning_effort_override.clone()
-                    };
-                    let gen = self.gen_context(meta.session.session_id, direct_tx.clone());
-                    let notifier = self.notifier.clone();
-                    let params = GenerationParams {
-                        request: meta.clone(),
-                        body,
-                        regen,
-                        char_name,
-                        rid,
-                        effective_config,
-                        data_dir: self.cmd_ctx.data_dir.clone(),
-                        active_model,
-                        reasoning_effort_override,
-                        sampler_overlay,
-                    };
-
-                    let session = self.session_state_mut(meta.session.session_id);
-                    if let Some(prev) = session.generation_handle.take() {
-                        info!("Aborting previous generation (superseded by new request)");
-                        prev.abort();
-                    }
-                    session.generation_handle = Some(tokio::spawn(async move {
-                        let notify_name = params.char_name.clone();
-                        let request_rid = params.rid.clone();
-                        if let Err(e) = handle_generation(gen, params).await {
-                            error!(error = %e, "Error processing engine message");
-                            let err_msg = e.to_string();
-                            let _ = direct_tx
-                                .send(
-                                    ServerMessage::Error(SwpError {
-                                        rid: None,
-                                        code: ErrorCode::InternalError,
-                                        message: err_msg.clone(),
-                                    })
-                                    .with_rid(request_rid),
-                                )
-                                .await;
-                            notifier.notify(
-                                NotificationEvent::Error,
-                                &format!("Shore - {notify_name}"),
-                                &err_msg,
-                            );
-                        }
-                    }));
-                }
-                RoutedMessage::AllClientsDisconnected => {
-                    let session_ids: Vec<SessionId> = self.sessions.keys().copied().collect();
-                    for session_id in session_ids {
-                        self.cancel_generation(session_id, None, "all clients disconnected")
-                            .await;
+                control = self.control_rx.recv(), if control_open => {
+                    match control {
+                        Some(control) => self.handle_control(control).await,
+                        None => control_open = false,
                     }
                 }
             }
         }
         info!("Message handler shutting down (route channel closed)");
     }
+
+    async fn handle_routed_message(&mut self, msg: RoutedMessage) {
+        match msg {
+            RoutedMessage::Command { cmd, meta } => {
+                debug!(
+                    client_id = meta.session.client_id.0,
+                    session_id = meta.session.session_id.0,
+                    client_type = %meta.session.client_type,
+                    rid = meta.rid.as_deref().unwrap_or("-"),
+                    character = ?meta.session.selected_character,
+                    "handling command"
+                );
+                let result = self.dispatch_command(&cmd, &meta).await;
+                let _ = self
+                    .session_router
+                    .send_to_session(meta.session.session_id, result)
+                    .await;
+            }
+            RoutedMessage::Engine { msg, meta } => {
+                self.handle_engine_message(msg, meta).await;
+            }
+            RoutedMessage::AllClientsDisconnected => {
+                let session_ids: Vec<SessionId> = self.sessions.keys().copied().collect();
+                for session_id in session_ids {
+                    self.cancel_generation(session_id, None, "all clients disconnected")
+                        .await;
+                }
+            }
+        }
+    }
+
+    async fn handle_engine_message(&mut self, msg: ClientMessage, meta: RequestMeta) {
+        let msg_kind = match &msg {
+            ClientMessage::Message(_) => "message",
+            ClientMessage::Regen(_) => "regen",
+            ClientMessage::Cancel(_) => "cancel",
+            ClientMessage::Speak(_) => "speak",
+            ClientMessage::SetLiveSpeak(_) => "set_live_speak",
+            _ => "other",
+        };
+        debug!(
+            client_id = meta.session.client_id.0,
+            session_id = meta.session.session_id.0,
+            client_type = %meta.session.client_type,
+            rid = meta.rid.as_deref().unwrap_or("-"),
+            character = ?meta.session.selected_character,
+            kind = msg_kind,
+            "handling engine message"
+        );
+
+        if let ClientMessage::SetLiveSpeak(ref toggle) = msg {
+            let prev = self.live_speak.swap(toggle.enabled, Ordering::Relaxed);
+            info!(enabled = toggle.enabled, prev, "Live TTS toggled");
+            let _ = self
+                .session_router
+                .send_to_session(
+                    meta.session.session_id,
+                    ServerMessage::CommandOutput(SwpCommandOutput {
+                        rid: meta.rid.clone(),
+                        name: "set_live_speak".into(),
+                        data: serde_json::json!({ "enabled": toggle.enabled }),
+                    }),
+                )
+                .await;
+            return;
+        }
+
+        if let ClientMessage::Speak(ref speak) = msg {
+            let Some(tts_client) = self.tts_client.clone() else {
+                let _ = self.push_tx.send(ServerMessage::AudioError(SwpAudioError {
+                    rid: speak.rid.clone(),
+                    message: "TTS not configured".into(),
+                }));
+                return;
+            };
+            let push_tx = self.push_tx.clone();
+            let registry = self.registry.clone();
+            let rid = speak.rid.clone();
+            let msg_id = speak.msg_id.clone();
+            let character = meta.session.selected_character.clone();
+            tokio::spawn(async move {
+                if let Err(e) = handle_speak_request(
+                    &tts_client,
+                    &push_tx,
+                    &registry,
+                    rid.clone(),
+                    msg_id,
+                    character.as_deref(),
+                )
+                .await
+                {
+                    error!(error = %e, "TTS speak failed");
+                    let _ = push_tx.send(ServerMessage::AudioError(SwpAudioError {
+                        rid,
+                        message: e.to_string(),
+                    }));
+                }
+            });
+            return;
+        }
+
+        if matches!(msg, ClientMessage::Cancel(_)) {
+            info!(
+                client_id = meta.session.client_id.0,
+                session_id = meta.session.session_id.0,
+                rid = meta.rid.as_deref().unwrap_or("-"),
+                "cancelling generation from routed cancel request"
+            );
+            self.cancel_generation(meta.session.session_id, meta.rid.clone(), "user cancelled")
+                .await;
+            return;
+        }
+
+        let (char_name, effective_config) = {
+            let mut registry = self.registry.lock().await;
+            let char_name =
+                match registry.resolve_character(meta.session.selected_character.as_deref()) {
+                    Ok(name) => name,
+                    Err(e) => {
+                        let _ = self
+                            .session_router
+                            .send_to_session(
+                                meta.session.session_id,
+                                ServerMessage::Error(SwpError {
+                                    rid: None,
+                                    code: ErrorCode::InvalidRequest,
+                                    message: e.to_string(),
+                                })
+                                .with_rid(meta.rid.clone()),
+                            )
+                            .await;
+                        return;
+                    }
+                };
+            let effective_config = registry.effective_config(&char_name).clone();
+            (char_name, effective_config)
+        };
+
+        let (body, regen) = match msg {
+            ClientMessage::Message(body) => (body, false),
+            ClientMessage::Regen(regen) => {
+                let body = ClientMessageBody {
+                    rid: regen.rid,
+                    text: String::new(),
+                    stream: regen.stream,
+                    images: vec![],
+                    image_data: vec![],
+                    absence_seconds: None,
+                    overrides: None,
+                };
+                (body, true)
+            }
+            _ => return,
+        };
+
+        let rid = body
+            .rid
+            .clone()
+            .filter(|r| r.is_ascii() && !r.contains('\0'));
+        let direct_tx = match self
+            .session_router
+            .sender_for(meta.session.session_id)
+            .await
+        {
+            Some(tx) => tx,
+            None => return,
+        };
+        // Phase 3: preferences are authoritative. Legacy
+        // `runtime_state.json` remains as a migration fallback for one
+        // release; it is read but never written by Phase 3+ code paths.
+        let (active_model, sampler_overlay) = {
+            let character_data_dir = self.cmd_ctx.data_dir.join(&char_name);
+            let (global_prefs, char_prefs) =
+                crate::preferences::load_for_character(&self.cmd_ctx.data_dir, &char_name)
+                    .unwrap_or_else(|e| {
+                        tracing::warn!(error = %e, character = %char_name, "Failed to load preferences; using empty defaults");
+                        (
+                            crate::preferences::ModelPreferences::default(),
+                            crate::preferences::ModelPreferences::default(),
+                        )
+                    });
+            let legacy = crate::runtime_state::load_active_model(&character_data_dir);
+            let resolved = crate::preferences::resolve_active_for_character(
+                &effective_config,
+                &self.cmd_ctx.data_dir,
+                &global_prefs,
+                &char_prefs,
+                legacy.as_deref(),
+                effective_config.app.defaults.model.as_deref(),
+            );
+            let overlay = match resolved.as_ref() {
+                Some(m) => crate::preferences::resolve_sampler_settings(
+                    &global_prefs,
+                    Some(&char_prefs),
+                    &m.provider_key,
+                    &m.model_id,
+                ),
+                None => crate::preferences::SamplerSettings::default(),
+            };
+            (resolved, overlay)
+        };
+        let reasoning_effort_override = {
+            let session = self.session_state_mut(meta.session.session_id);
+            session.reasoning_effort_override.clone()
+        };
+        let gen = self.gen_context(meta.session.session_id, direct_tx.clone());
+        let notifier = self.notifier.clone();
+        let params = GenerationParams {
+            request: meta.clone(),
+            body,
+            regen,
+            char_name,
+            rid,
+            effective_config,
+            data_dir: self.cmd_ctx.data_dir.clone(),
+            active_model,
+            reasoning_effort_override,
+            sampler_overlay,
+        };
+
+        let session = self.session_state_mut(meta.session.session_id);
+        if let Some(prev) = session.generation_handle.take() {
+            info!("Aborting previous generation (superseded by new request)");
+            prev.abort();
+        }
+        session.generation_handle = Some(tokio::spawn(async move {
+            let notify_name = params.char_name.clone();
+            let request_rid = params.rid.clone();
+            if let Err(e) = handle_generation(gen, params).await {
+                error!(error = %e, "Error processing engine message");
+                let err_msg = e.to_string();
+                let _ = direct_tx
+                    .send(
+                        ServerMessage::Error(SwpError {
+                            rid: None,
+                            code: ErrorCode::InternalError,
+                            message: err_msg.clone(),
+                        })
+                        .with_rid(request_rid),
+                    )
+                    .await;
+                notifier.notify(
+                    NotificationEvent::Error,
+                    &format!("Shore - {notify_name}"),
+                    &err_msg,
+                );
+            }
+        }));
+    }
+
+    async fn handle_control(&mut self, control: HandlerControl) {
+        match control {
+            HandlerControl::ReloadConfig { changed_paths } => {
+                self.reload_config_from_disk(changed_paths).await;
+            }
+        }
+    }
+
+    pub(super) async fn reload_config_from_disk(&mut self, changed_paths: Vec<PathBuf>) {
+        let config_path = self.cmd_ctx.config_path.clone();
+        let config = match shore_config::load_config(Some(&config_path)) {
+            Ok(config) => config,
+            Err(e) => {
+                warn!(
+                    path = %config_path.display(),
+                    changed_paths = ?changed_paths,
+                    error = %e,
+                    "Configuration hot reload failed; keeping previous runtime config"
+                );
+                return;
+            }
+        };
+
+        // Validate per-character overlays against the new global config before
+        // committing. `load_config` only parses the global config, so a broken
+        // `characters/<name>/config.toml` would otherwise silently invalidate
+        // the cached merged config and fall back to the global config.
+        let candidate_chars = discover_characters(&config.dirs.config);
+        for name in &candidate_chars {
+            if let Err(e) = load_character_config(&config, name) {
+                warn!(
+                    path = %config_path.display(),
+                    changed_paths = ?changed_paths,
+                    character = %name,
+                    error = %e,
+                    "Configuration hot reload failed; keeping previous runtime config"
+                );
+                return;
+            }
+        }
+
+        let summary = self
+            .apply_reloaded_config(config, RuntimeReloadSource::HotReload)
+            .await;
+        info!(
+            path = %config_path.display(),
+            changed_paths = ?changed_paths,
+            character_discovery_changed = summary.character_discovery_changed,
+            dropped_engines = summary.dropped_engines,
+            "Configuration hot-reloaded from disk"
+        );
+    }
+
+    pub(super) async fn apply_reloaded_config(
+        &mut self,
+        reloaded_config: LoadedConfig,
+        source: RuntimeReloadSource,
+    ) -> crate::characters::RuntimeReloadSummary {
+        let restart_required = restart_required_changes(&self.cmd_ctx.config, &reloaded_config);
+        if matches!(source, RuntimeReloadSource::HotReload) && !restart_required.is_empty() {
+            warn!(
+                restart_required = ?restart_required,
+                "Config hot reload saw startup-owned changes; restart shore-daemon to apply them"
+            );
+        }
+
+        self.cmd_ctx.config = reloaded_config.clone();
+        self.cmd_ctx
+            .autonomy
+            .reload_runtime_config(reloaded_config.clone());
+        self.autonomy.reload_runtime_config(reloaded_config.clone());
+
+        let summary = {
+            let mut registry = self.registry.lock().await;
+            registry.reload_runtime_state(reloaded_config)
+        };
+
+        self.push_session_history_snapshots().await;
+        summary
+    }
+
+    async fn push_session_history_snapshots(&self) {
+        let sessions = self.session_router.sessions().await;
+        for (session_id, selected_character) in sessions {
+            let snapshot = crate::handshake::build_session_history_snapshot(
+                self.registry.clone(),
+                selected_character.clone(),
+                None,
+            )
+            .await;
+
+            // If the session's selected character was removed by this reload,
+            // clear the router's stored character so subsequent requests don't
+            // route with a stale name (e.g. switch_character would otherwise
+            // fail to resolve the dead selection).
+            if snapshot.selected_character != selected_character {
+                let _ = self
+                    .session_router
+                    .set_selected_character(session_id, snapshot.selected_character.clone())
+                    .await;
+            }
+
+            let _ = self
+                .session_router
+                .send_to_session(
+                    session_id,
+                    ServerMessage::History(shore_protocol::server_msg::History {
+                        rid: None,
+                        messages: snapshot.messages,
+                        config: snapshot.config,
+                        selected_character: snapshot.selected_character,
+                        revision: snapshot.revision,
+                    }),
+                )
+                .await;
+        }
+    }
+}
+
+fn restart_required_changes(old: &LoadedConfig, new: &LoadedConfig) -> Vec<&'static str> {
+    let mut changes = Vec::new();
+    if old.app.daemon != new.app.daemon {
+        changes.push("[daemon]");
+    }
+    if old.app.connections.matrix != new.app.connections.matrix {
+        changes.push("[connections.matrix]");
+    }
+    if old.app.tts != new.app.tts {
+        changes.push("[tts]");
+    }
+    if old.app.notifications != new.app.notifications {
+        changes.push("[notifications]");
+    }
+    if old.app.services != new.app.services {
+        changes.push("[services]");
+    }
+    if old.app.advanced.api_payload_logging != new.app.advanced.api_payload_logging {
+        changes.push("[advanced].api_payload_logging");
+    }
+    if old.app.advanced.cache_forensics != new.app.advanced.cache_forensics {
+        changes.push("[advanced].cache_forensics");
+    }
+    changes
 }
 
 /// Handle a client `Speak` request: resolve character + voice + message text,

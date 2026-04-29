@@ -83,6 +83,7 @@ async fn make_handler(
 
     let cmd_ctx = CommandContext {
         config: loaded_config.clone(),
+        config_path: loaded_config.dirs.config.join("config.toml"),
         push_tx: push_tx.clone(),
         data_dir: data_dir.clone(),
         character_name: None,
@@ -96,6 +97,7 @@ async fn make_handler(
         )),
     };
 
+    let (_control_tx, control_rx) = tokio::sync::mpsc::channel(16);
     let handler = MessageHandler::new(MessageHandlerDeps {
         registry: Arc::new(Mutex::new(registry)),
         cmd_ctx,
@@ -106,6 +108,7 @@ async fn make_handler(
         notifier: NotificationService::new(Default::default()),
         live_speak: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         tts_client: None,
+        control_rx,
     });
 
     (handler, push_rx, direct_rx)
@@ -326,6 +329,173 @@ async fn config_reset_refreshes_registry_runtime_state() {
         assert!(registry.has_character("Bob"));
         assert!(registry.effective_config("Alice").app.defaults.stream);
     }
+}
+
+#[tokio::test]
+async fn hot_reload_refreshes_global_and_character_config() {
+    let tmp = TempDir::new().unwrap();
+    let (mut handler, _rx, _direct_rx) = make_handler(&tmp, &["Alice"]).await;
+
+    let config_path = tmp.path().join("config").join("config.toml");
+    std::fs::write(&config_path, "[defaults]\nstream = false\n").unwrap();
+    handler
+        .reload_config_from_disk(vec![config_path.clone()])
+        .await;
+
+    assert!(!handler.cmd_ctx.config.app.defaults.stream);
+
+    let alice_config = tmp
+        .path()
+        .join("config")
+        .join("characters")
+        .join("Alice")
+        .join("config.toml");
+    std::fs::write(&alice_config, "[defaults]\nstream = true\n").unwrap();
+    handler.reload_config_from_disk(vec![alice_config]).await;
+
+    let mut registry = handler.registry.lock().await;
+    assert!(registry.effective_config("Alice").app.defaults.stream);
+}
+
+#[tokio::test]
+async fn hot_reload_keeps_previous_config_when_reload_fails() {
+    let tmp = TempDir::new().unwrap();
+    let (mut handler, _rx, _direct_rx) = make_handler(&tmp, &["Alice"]).await;
+
+    assert!(handler.cmd_ctx.config.app.defaults.stream);
+    let config_path = tmp.path().join("config").join("config.toml");
+    std::fs::write(&config_path, "[not_a_real_section]\nvalue = true\n").unwrap();
+
+    handler
+        .reload_config_from_disk(vec![config_path.clone()])
+        .await;
+
+    assert!(
+        handler.cmd_ctx.config.app.defaults.stream,
+        "invalid hot reload should keep the last valid runtime config"
+    );
+}
+
+#[tokio::test]
+async fn hot_reload_keeps_previous_config_when_character_overlay_is_invalid() {
+    let tmp = TempDir::new().unwrap();
+    let (mut handler, _rx, _direct_rx) = make_handler(&tmp, &["Alice"]).await;
+
+    // Establish a valid Alice overlay first.
+    let alice_config = tmp
+        .path()
+        .join("config")
+        .join("characters")
+        .join("Alice")
+        .join("config.toml");
+    std::fs::write(&alice_config, "[defaults]\nstream = true\n").unwrap();
+    handler
+        .reload_config_from_disk(vec![alice_config.clone()])
+        .await;
+    {
+        let mut registry = handler.registry.lock().await;
+        assert!(registry.effective_config("Alice").app.defaults.stream);
+    }
+
+    // Now corrupt the overlay with invalid TOML and reload.
+    std::fs::write(&alice_config, "this is = not valid TOML [[[").unwrap();
+    handler.reload_config_from_disk(vec![alice_config]).await;
+
+    let mut registry = handler.registry.lock().await;
+    assert!(
+        registry.effective_config("Alice").app.defaults.stream,
+        "invalid character overlay should keep the previously merged character config"
+    );
+}
+
+#[tokio::test]
+async fn hot_reload_clears_router_character_when_removed() {
+    let tmp = TempDir::new().unwrap();
+    let (mut handler, _rx, _direct_rx) = make_handler(&tmp, &["Alice"]).await;
+
+    handler
+        .session_router
+        .set_selected_character(SessionId(1), Some("Alice".into()))
+        .await;
+
+    let alice_dir = tmp.path().join("config").join("characters").join("Alice");
+    std::fs::remove_dir_all(&alice_dir).unwrap();
+
+    let config_path = tmp.path().join("config").join("config.toml");
+    std::fs::write(&config_path, "[defaults]\nstream = false\n").unwrap();
+    handler.reload_config_from_disk(vec![config_path]).await;
+
+    let sessions = handler.session_router.sessions().await;
+    let stored = sessions
+        .into_iter()
+        .find(|(id, _)| *id == SessionId(1))
+        .map(|(_, c)| c);
+    assert_eq!(
+        stored,
+        Some(None),
+        "router should clear the selected character after it is removed"
+    );
+}
+
+#[tokio::test]
+async fn hot_reload_preserves_session_overrides() {
+    let tmp = TempDir::new().unwrap();
+    let (mut handler, _rx, _direct_rx) = make_handler(&tmp, &["Alice"]).await;
+
+    {
+        let session = handler.session_state_mut(SessionId(1));
+        session.active_model = Some("manual-model".into());
+        session.reasoning_effort_override = Some(Some("low".into()));
+    }
+
+    let config_path = tmp.path().join("config").join("config.toml");
+    std::fs::write(&config_path, "[defaults]\nstream = false\n").unwrap();
+    handler.reload_config_from_disk(vec![config_path]).await;
+
+    let session = handler.session_state_mut(SessionId(1));
+    assert_eq!(session.active_model.as_deref(), Some("manual-model"));
+    assert_eq!(
+        session
+            .reasoning_effort_override
+            .as_ref()
+            .and_then(|v| v.as_deref()),
+        Some("low")
+    );
+}
+
+#[tokio::test]
+async fn hot_reload_does_not_activate_protected_prompt_edits() {
+    let tmp = TempDir::new().unwrap();
+    let (mut handler, _rx, _direct_rx) = make_handler(&tmp, &["Alice"]).await;
+
+    let character_data_dir = tmp.path().join("data").join("Alice");
+    let workspace_soul = tmp
+        .path()
+        .join("config")
+        .join("characters")
+        .join("Alice")
+        .join("workspace")
+        .join(shore_config::SOUL_FILE);
+    let active_soul = crate::memory::deferred_edits::active_prompt_file(
+        &character_data_dir,
+        shore_config::SOUL_FILE,
+    );
+
+    assert_eq!(
+        std::fs::read_to_string(&active_soul).unwrap(),
+        "Alice system prompt"
+    );
+    std::fs::write(&workspace_soul, "edited soul").unwrap();
+
+    let config_path = tmp.path().join("config").join("config.toml");
+    std::fs::write(&config_path, "[defaults]\nstream = false\n").unwrap();
+    handler.reload_config_from_disk(vec![config_path]).await;
+
+    assert_eq!(
+        std::fs::read_to_string(&active_soul).unwrap(),
+        "Alice system prompt",
+        "hot reload should not refresh protected active_prompt snapshots"
+    );
 }
 
 #[tokio::test]
@@ -716,6 +886,7 @@ async fn make_handler_with_models(
 
     let cmd_ctx = CommandContext {
         config: loaded_config.clone(),
+        config_path: loaded_config.dirs.config.join("config.toml"),
         push_tx: push_tx.clone(),
         data_dir: data_dir.clone(),
         character_name: None,
@@ -729,6 +900,7 @@ async fn make_handler_with_models(
         )),
     };
 
+    let (_control_tx, control_rx) = tokio::sync::mpsc::channel(16);
     let handler = MessageHandler::new(MessageHandlerDeps {
         registry: Arc::new(Mutex::new(registry)),
         cmd_ctx,
@@ -739,6 +911,7 @@ async fn make_handler_with_models(
         notifier: NotificationService::new(Default::default()),
         live_speak: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         tts_client: None,
+        control_rx,
     });
 
     (handler, push_rx, direct_rx)

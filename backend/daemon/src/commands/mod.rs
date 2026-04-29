@@ -32,6 +32,8 @@ pub struct SessionTokens {
 pub struct CommandContext {
     /// Loaded configuration.
     pub config: LoadedConfig,
+    /// Config file path used to load the daemon.
+    pub config_path: PathBuf,
     /// Broadcast sender for push messages.
     pub push_tx: broadcast::Sender<ServerMessage>,
     /// Data directory (`$XDG_DATA_HOME/shore/`).
@@ -197,6 +199,7 @@ mod tests {
             AutonomyManager::new(Default::default(), Default::default(), data_dir.clone(), rx);
 
         let ctx = CommandContext {
+            config_path: config.dirs.config.join("config.toml"),
             config,
             push_tx,
             data_dir: data_dir.clone(),

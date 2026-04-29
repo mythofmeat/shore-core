@@ -491,7 +491,12 @@ env = "FALLBACK_KEY_017"
         let model = test_model("test", "openrouter", Sdk::Openai);
 
         let req = LlmClient::build_request_with_provider_keys(
-            &model, &registry, vec![], None, None, None,
+            &model,
+            &registry,
+            vec![],
+            None,
+            None,
+            None,
         )
         .unwrap();
         assert_eq!(req.api_key, "sk-fallback");
@@ -524,7 +529,12 @@ base_url = "https://openrouter.ai/api/v1"
         model.api_key_env = Some("LEGACY_KEY_017".into());
 
         let req = LlmClient::build_request_with_provider_keys(
-            &model, &registry, vec![], None, None, None,
+            &model,
+            &registry,
+            vec![],
+            None,
+            None,
+            None,
         )
         .unwrap();
         assert_eq!(req.api_key, "sk-legacy");
@@ -552,7 +562,12 @@ sdk = "openai"
 
         let model = test_model("test", "openrouter", Sdk::Openai);
         let err = LlmClient::build_request_with_provider_keys(
-            &model, &registry, vec![], None, None, None,
+            &model,
+            &registry,
+            vec![],
+            None,
+            None,
+            None,
         )
         .unwrap_err();
         match err {

@@ -1094,13 +1094,11 @@ model_id = "kimi-k2"
         // (c) Legacy runtime_state.json fallback (migration path).
         let g = ModelPreferences::default();
         let c = ModelPreferences::default();
-        let active =
-            resolve_active_for_character(&loaded, dd, &g, &c, Some("opus"), None).unwrap();
+        let active = resolve_active_for_character(&loaded, dd, &g, &c, Some("opus"), None).unwrap();
         assert_eq!(active.qualified_name, "chat.anthropic.opus");
 
         // (d) app.defaults.model fallback when no preferences and no legacy.
-        let active =
-            resolve_active_for_character(&loaded, dd, &g, &c, None, Some("kimi")).unwrap();
+        let active = resolve_active_for_character(&loaded, dd, &g, &c, None, Some("kimi")).unwrap();
         assert_eq!(active.qualified_name, "chat.openrouter.kimi");
 
         // (e) First chat model is the final fallback.
@@ -1116,8 +1114,9 @@ model_id = "kimi-k2"
         // discovered-only model must restore through the discovery cache,
         // not silently fall through to the static default.
         use shore_config::providers::ProviderRegistry;
-        use shore_llm::discovery::{cache_path, write_cache, ProviderModelsCache, CACHE_VERSION,
-                                    DiscoveredModel};
+        use shore_llm::discovery::{
+            cache_path, write_cache, DiscoveredModel, ProviderModelsCache, CACHE_VERSION,
+        };
 
         let tmp = tempfile::tempdir().unwrap();
         let catalog = make_catalog(
@@ -1173,8 +1172,7 @@ enabled = true
         c.selected.provider = Some("openrouter".into());
         c.selected.model_id = Some("anthropic/claude-sonnet-4.5".into());
 
-        let active =
-            resolve_active_for_character(&loaded, tmp.path(), &g, &c, None, None).unwrap();
+        let active = resolve_active_for_character(&loaded, tmp.path(), &g, &c, None, None).unwrap();
         assert_eq!(active.provider_key, "openrouter");
         assert_eq!(active.model_id, "anthropic/claude-sonnet-4.5");
         // Importantly: did NOT silently fall through to the static opus.

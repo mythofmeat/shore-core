@@ -318,6 +318,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let cmd_ctx = CommandContext {
         config: loaded.clone(),
+        config_path: config_path.clone(),
         push_tx: push_tx.clone(),
         data_dir: loaded.dirs.data.clone(),
         character_name: None,
@@ -341,6 +342,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
+    let (handler_control_tx, handler_control_rx) = tokio::sync::mpsc::channel(16);
+
     let mut msg_handler = MessageHandler::new(MessageHandlerDeps {
         registry: char_registry,
         cmd_ctx,
@@ -351,12 +354,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         notifier,
         live_speak,
         tts_client,
+        control_rx: handler_control_rx,
     });
 
     // Spawn message handler as a background task.
     let handler_handle = tokio::spawn(async move {
         msg_handler.run(route_rx).await;
     });
+
+    let hot_reload_handle = shore_daemon::hot_reload::spawn_config_watcher(
+        config_path.clone(),
+        loaded.dirs.config.clone(),
+        handler_control_tx,
+        shutdown_rx.clone(),
+    );
 
     // ── Spawn Matrix bridge supervisor (if configured) ───────────────
     let matrix_supervisor = loaded
@@ -389,6 +400,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         sup.shutdown(std::time::Duration::from_secs(6)).await;
     }
 
+    if let Some(handle) = hot_reload_handle {
+        let _ = tokio::time::timeout(shutdown_timeout, handle).await;
+    }
     let _ = tokio::time::timeout(shutdown_timeout, handler_handle).await;
     let _ = tokio::time::timeout(shutdown_timeout, autonomy.shutdown()).await;
 

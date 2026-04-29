@@ -420,14 +420,18 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         }
         other => {
             let json_mode = match other {
-                CliCommand::Model { json, subcommand, .. } => {
+                CliCommand::Model {
+                    json, subcommand, ..
+                } => {
                     *json
                         || matches!(
                             subcommand,
                             Some(crate::cli::ModelCommand::Setting { json: true, .. })
                         )
                 }
-                CliCommand::Provider { json, subcommand, .. } => {
+                CliCommand::Provider {
+                    json, subcommand, ..
+                } => {
                     *json
                         || matches!(
                             subcommand,

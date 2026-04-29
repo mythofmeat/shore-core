@@ -901,9 +901,7 @@ fn parse_setting_value_str(key: &str, raw: &str) -> serde_json::Value {
             // overlay explicitly suppresses reasoning_effort. Null would
             // *clear* the saved override, letting the model's default
             // value leak through.
-            "off" | "none" | "disable" | "disabled" | "unset" | "" => {
-                Value::String("off".into())
-            }
+            "off" | "none" | "disable" | "disabled" | "unset" | "" => Value::String("off".into()),
             _ => Value::String(trimmed.to_string()),
         },
         _ => Value::String(trimmed.to_string()),

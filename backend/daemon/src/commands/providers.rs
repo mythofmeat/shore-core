@@ -335,6 +335,7 @@ mod tests {
             AutonomyManager::new(Default::default(), Default::default(), data_dir.clone(), rx);
 
         CommandContext {
+            config_path: loaded.dirs.config.join("config.toml"),
             config: loaded,
             push_tx,
             data_dir: data_dir.clone(),

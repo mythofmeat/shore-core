@@ -90,6 +90,23 @@ Ledger:
 $XDG_DATA_HOME/shore/ledger.db
 ```
 
+## Config Runtime
+
+The daemon loads config once at startup, then keeps a runtime copy in the
+message handler, command context, autonomy manager, and character registry.
+Manual `config_reset` and automatic hot reload both use the same reload
+application path: parse config from the resolved startup file, replace runtime
+config, invalidate merged per-character config caches, rescan character
+discovery, update autonomy runtime config, and push fresh history/config
+snapshots to connected sessions.
+
+The filesystem watcher is runtime-only. It watches config TOML inputs, `.env`,
+`conf.d/`, and per-character `config.toml` overlays, but filters out
+`characters/<Character>/workspace/**` so ordinary prompt or memory edits do not
+become config reload triggers. Startup-owned settings such as socket binding,
+Matrix supervision, notifications, TTS connection setup, and startup diagnostics
+are logged as restart-required when they change.
+
 ## Prompt Assembly
 
 Prompt assembly reads prompt-visible files from `active_prompt/`, not directly
