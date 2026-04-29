@@ -28,6 +28,23 @@ Legacy files are migrated on first load:
 
 The character may edit these files through workspace tools. Edits to protected prompt files are staged and only become prompt-active after compaction/reload so cache invalidation is explicit.
 
+## Config Hot Reload
+
+The daemon watches Shore config inputs and reloads runtime config automatically
+after edits. Hot reload covers the global config, included TOML files,
+`conf.d/*.toml`, `.env`, per-character `config.toml` overlays, model catalogs,
+behavior/tool settings, memory settings, autonomy config, and character
+discovery.
+
+If a changed config file is invalid, the daemon keeps using the previous valid
+runtime config and logs the reload failure. Startup-owned settings such as the
+daemon listener, Matrix supervision, notification backend, TTS connection, and
+startup diagnostics still require a daemon restart.
+
+Hot reload does not watch `characters/<Character>/workspace/**`; protected
+prompt files and markdown memory keep their explicit compaction/reload
+activation boundary.
+
 ## Conversations
 
 The daemon owns the authoritative conversation log. Clients are views and command senders.

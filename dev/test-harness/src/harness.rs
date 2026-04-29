@@ -140,6 +140,7 @@ impl TestHarness {
         // ── Command Context ──────────────────────────────────────────
         let cmd_ctx = CommandContext {
             config: config.clone(),
+            config_path: config.dirs.config.join("config.toml"),
             push_tx: push_tx.clone(),
             data_dir: config.dirs.data.clone(),
             active_model: config.app.defaults.model.clone(),
@@ -158,6 +159,7 @@ impl TestHarness {
         let stored_autonomy = autonomy.clone();
 
         // ── Message Handler ──────────────────────────────────────────
+        let (_control_tx, control_rx) = tokio::sync::mpsc::channel(16);
         let mut msg_handler = MessageHandler::new(MessageHandlerDeps {
             registry: char_registry,
             cmd_ctx,
@@ -168,6 +170,7 @@ impl TestHarness {
             notifier,
             live_speak: Arc::new(AtomicBool::new(false)),
             tts_client: None,
+            control_rx,
         });
 
         // Spawn handler loop.

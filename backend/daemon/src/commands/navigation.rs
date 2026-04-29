@@ -191,6 +191,7 @@ mod tests {
         );
 
         let ctx = CommandContext {
+            config_path: config.dirs.config.join("config.toml"),
             config,
             push_tx,
             data_dir: data_dir.clone(),

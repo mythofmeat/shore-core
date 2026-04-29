@@ -52,6 +52,7 @@ fn make_ctx_with_models(
     );
 
     let ctx = CommandContext {
+        config_path: config.dirs.config.join("config.toml"),
         config,
         push_tx,
         data_dir: data_dir.clone(),

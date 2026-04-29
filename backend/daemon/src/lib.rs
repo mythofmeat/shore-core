@@ -9,6 +9,7 @@ pub mod content_util;
 pub mod engine;
 pub mod handler;
 pub mod handshake;
+pub mod hot_reload;
 pub mod memory;
 pub mod notifications;
 pub mod runtime_state;

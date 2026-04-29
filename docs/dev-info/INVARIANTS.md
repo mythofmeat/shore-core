@@ -41,6 +41,7 @@ These are correctness constraints for Shore. `GOALS.md` is the source of user in
 
 - Normal chat prompt assembly reads protected files from `active_prompt/`.
 - Workspace edits to protected prompt files remain staged until compaction/reload.
+- Config hot reload must not watch `characters/<Character>/workspace/**` as a reload trigger.
 - Prompt prefix changes should have an obvious cause.
 - Compaction/reload is an allowed activation boundary.
 

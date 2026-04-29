@@ -20,6 +20,32 @@ Common variables:
 
 A `.env` file in the config directory is loaded on startup.
 
+## Hot Reload
+
+The daemon watches supported config inputs and reloads runtime config after
+changes settle briefly. This is always enabled.
+
+Reloaded without restart:
+
+- `config.toml`, explicit `include = [...]` TOML files, and `conf.d/*.toml`
+- `.env`
+- `characters/<Character>/config.toml`
+- character discovery when character directories or legacy `character.md` files change
+
+Hot reload updates model catalogs, defaults, behavior/tool settings, memory
+settings, autonomy config, and merged per-character config for future work. It
+keeps the previous runtime config if the changed files fail to parse or
+validate.
+
+Startup-owned settings still require a daemon restart, including `[daemon]`
+listener settings, `[connections.matrix]`, `[tts]` connection setup,
+`[notifications]`, `[services]`, and startup-only `[advanced]` diagnostics
+toggles. Shore logs these as restart-required when it sees them change.
+
+The watcher deliberately ignores `characters/<Character>/workspace/**`,
+including prompt files and `workspace/memory/**`. Those files keep the normal
+compaction/reload activation boundary described below.
+
 ## Minimal Config
 
 ```toml

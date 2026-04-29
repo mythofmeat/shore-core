@@ -223,6 +223,7 @@ async fn e2e_conversation_milestone() {
 
     let cmd_ctx = CommandContext {
         config: loaded.clone(),
+        config_path: loaded.dirs.config.join("config.toml"),
         push_tx: push_tx.clone(),
         data_dir: loaded.dirs.data.clone(),
         active_model: loaded.app.defaults.model.clone(),
@@ -235,6 +236,7 @@ async fn e2e_conversation_milestone() {
         )),
     };
 
+    let (_control_tx, control_rx) = tokio::sync::mpsc::channel(16);
     let mut msg_handler = MessageHandler::new(MessageHandlerDeps {
         registry: char_registry,
         cmd_ctx,
@@ -245,6 +247,7 @@ async fn e2e_conversation_milestone() {
         notifier: shore_daemon::notifications::NotificationService::new(Default::default()),
         live_speak: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         tts_client: None,
+        control_rx,
     });
 
     // Spawn message handler.
@@ -711,6 +714,7 @@ impl E2EHarness {
 
         let cmd_ctx = CommandContext {
             config: loaded.clone(),
+            config_path: loaded.dirs.config.join("config.toml"),
             push_tx: push_tx.clone(),
             data_dir: loaded.dirs.data.clone(),
             active_model: loaded.app.defaults.model.clone(),
@@ -723,6 +727,7 @@ impl E2EHarness {
             )),
         };
 
+        let (_control_tx, control_rx) = tokio::sync::mpsc::channel(16);
         let mut msg_handler = MessageHandler::new(MessageHandlerDeps {
             registry: char_registry,
             cmd_ctx,
@@ -733,6 +738,7 @@ impl E2EHarness {
             notifier: shore_daemon::notifications::NotificationService::new(Default::default()),
             live_speak: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             tts_client: None,
+            control_rx,
         });
 
         let handler_handle = tokio::spawn(async move {

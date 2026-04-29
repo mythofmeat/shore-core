@@ -10,7 +10,7 @@ use crate::commands::{self, CommandContext};
 use crate::handshake::build_session_history_snapshot;
 use crate::runtime_state::{load_active_model, save_active_model};
 
-use super::{GenContext, MessageHandler};
+use super::{GenContext, MessageHandler, RuntimeReloadSource};
 
 impl MessageHandler {
     /// Cancel any active generation task and send a minimal StreamEnd.
@@ -107,6 +107,7 @@ impl MessageHandler {
             };
             let ctx = CommandContext {
                 config: self.cmd_ctx.config.clone(),
+                config_path: self.cmd_ctx.config_path.clone(),
                 push_tx: self.push_tx.clone(),
                 data_dir: self.cmd_ctx.data_dir.clone(),
                 active_model,
@@ -184,6 +185,7 @@ impl MessageHandler {
 
         let mut cmd_ctx = CommandContext {
             config: effective_config,
+            config_path: self.cmd_ctx.config_path.clone(),
             push_tx: self.push_tx.clone(),
             data_dir: self.cmd_ctx.data_dir.clone(),
             active_model: persisted_active_model,
@@ -246,16 +248,10 @@ impl MessageHandler {
         if cmd.name == "config_reset" {
             if let ServerMessage::CommandOutput(output) = &mut result {
                 let reloaded_config = cmd_ctx.config.clone();
-                self.cmd_ctx.config = reloaded_config.clone();
-                self.cmd_ctx
-                    .autonomy
-                    .reload_runtime_config(reloaded_config.clone());
-                self.autonomy.reload_runtime_config(reloaded_config.clone());
-
-                let summary = {
-                    let mut registry = self.registry.lock().await;
-                    registry.reload_runtime_state(reloaded_config)
-                };
+                self.cmd_ctx.active_model = None;
+                let summary = self
+                    .apply_reloaded_config(reloaded_config, RuntimeReloadSource::ManualReset)
+                    .await;
 
                 if output
                     .data
