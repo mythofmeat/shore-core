@@ -900,17 +900,13 @@ fn remember_final_report(loop_result: &mut LibrarianLoopResult, resp: &GenerateR
 }
 
 fn push_assistant_response(request: &mut LlmRequest, resp: &GenerateResponse) {
-    let assistant_content: Vec<Value> = if request.sdk == shore_config::models::Sdk::Zai {
-        resp.content_blocks
-            .iter()
-            .map(crate::content_util::content_block_to_json)
-            .collect()
-    } else {
-        resp.content_blocks
-            .iter()
-            .filter_map(crate::content_util::content_block_to_api_json)
-            .collect()
-    };
+    let assistant_content: Vec<Value> = resp
+        .content_blocks
+        .iter()
+        .filter_map(|block| {
+            crate::content_util::content_block_to_request_json_for_sdk(block, &request.sdk)
+        })
+        .collect();
 
     if !assistant_content.is_empty() {
         request

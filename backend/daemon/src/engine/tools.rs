@@ -112,19 +112,14 @@ pub async fn run_tool_loop(
             result.content_blocks.clone()
         };
 
-        // Build LLM payload from content blocks.
-        // Z.AI thinking blocks have no signature — include them unconditionally.
-        let assistant_content: Vec<Value> = if request.sdk == shore_config::models::Sdk::Zai {
-            assistant_blocks
-                .iter()
-                .map(crate::content_util::content_block_to_json)
-                .collect()
-        } else {
-            assistant_blocks
-                .iter()
-                .filter_map(crate::content_util::content_block_to_api_json)
-                .collect()
-        };
+        // Build LLM payload from content blocks. Provider adapters decide how
+        // to project unsigned reasoning for SDKs that can accept it.
+        let assistant_content: Vec<Value> = assistant_blocks
+            .iter()
+            .filter_map(|block| {
+                crate::content_util::content_block_to_request_json_for_sdk(block, &request.sdk)
+            })
+            .collect();
 
         request.messages.push(json!({
             "role": "assistant",

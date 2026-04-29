@@ -1,9 +1,14 @@
-# deepseek error
-error: InternalError - LLM error during tool loop: HTTP 400: {"error":{"message":"The `reasoning_content` in the thinking mode must be passed back to the API.","type":"invalid_request_error","param":null,"code":"invalid_request_error"}}
+# OpenAI-compatible tool use with reasoning content
 
-# moonshot error
-error: InternalError - LLM error during tool loop: HTTP 400: {"error":{"message":"Error from provider: Provider returned error","code":400,"metadata":{"raw":"{\"error\":{\"message\":\"thinking is enabled but reasoning_content is missing in assistant tool call message at index 4\",\"type\":\"invalid_request_error\"}}","provider_name":"Moonshot AI","is_byok":true}},"user_id":"user_2z4xm5LomaIHfsnVqMhFsWrVrGY"}
+Fixed:
 
----
+- DeepSeek and Moonshot now use `reasoning_content` as their reasoning replay
+  field.
+- OpenAI-compatible tool-loop continuations preserve Shore `thinking` blocks
+  until the OpenAI adapter can project them into `reasoning` /
+  `reasoning_content`.
+- In-progress tool loops no longer use the Anthropic-only unsigned-thinking
+  filter for OpenAI-compatible providers.
 
-looks like we are not doing tool use in openai_compatible apis correctly at all.
+Validation is recorded in
+`docs/exec-plans/completed/openai-compatible-reasoning-tool-use.md`.

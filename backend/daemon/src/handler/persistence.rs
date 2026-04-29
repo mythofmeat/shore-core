@@ -95,7 +95,9 @@ pub(super) async fn persist_and_notify(
             let mut full_request = request.clone();
             let assistant_api_content: Vec<serde_json::Value> = content_blocks
                 .iter()
-                .filter_map(crate::content_util::content_block_to_api_json)
+                .filter_map(|block| {
+                    crate::content_util::content_block_to_request_json_for_sdk(block, &request.sdk)
+                })
                 .collect();
             full_request.messages.push(serde_json::json!({
                 "role": "assistant",

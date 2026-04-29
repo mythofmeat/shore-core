@@ -2,6 +2,7 @@
 //! extracting structured data from content block sequences.
 
 use serde_json::{json, Value};
+use shore_config::models::Sdk;
 use shore_protocol::types::ContentBlock;
 
 /// Convert a `ContentBlock` to its LLM API JSON representation, filtering
@@ -78,6 +79,21 @@ pub fn content_block_to_json(block: &ContentBlock) -> Value {
             }
             v
         }
+    }
+}
+
+/// Convert a `ContentBlock` to the provider-neutral request JSON Shore passes
+/// into `shore-llm` for a specific SDK.
+///
+/// Anthropic requires signatures on replayed thinking blocks, so it uses the
+/// stricter API projection. OpenAI-compatible providers and Z.AI receive the
+/// full internal block so their provider adapters can project unsigned
+/// reasoning into `reasoning` / `reasoning_content`.
+pub fn content_block_to_request_json_for_sdk(block: &ContentBlock, sdk: &Sdk) -> Option<Value> {
+    if matches!(sdk, Sdk::Openai | Sdk::Zai) {
+        Some(content_block_to_json(block))
+    } else {
+        content_block_to_api_json(block)
     }
 }
 
@@ -312,6 +328,28 @@ mod tests {
         };
         let result = content_block_to_json(&block);
         assert!(result.get("is_error").is_none());
+    }
+
+    // ── content_block_to_request_json_for_sdk ─────────────────────────
+
+    #[test]
+    fn request_json_openai_keeps_unsigned_thinking() {
+        let block = ContentBlock::Thinking {
+            thinking: "tool reasoning".into(),
+            signature: None,
+        };
+        let result = content_block_to_request_json_for_sdk(&block, &Sdk::Openai).unwrap();
+        assert_eq!(result["type"], "thinking");
+        assert_eq!(result["thinking"], "tool reasoning");
+    }
+
+    #[test]
+    fn request_json_anthropic_filters_unsigned_thinking() {
+        let block = ContentBlock::Thinking {
+            thinking: "unsigned thought".into(),
+            signature: None,
+        };
+        assert!(content_block_to_request_json_for_sdk(&block, &Sdk::Anthropic).is_none());
     }
 
     // ── extract_tool_uses ─────────────────────────────────────────────

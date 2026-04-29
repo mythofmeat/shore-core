@@ -41,7 +41,7 @@ pub(crate) fn build_provider_context(request: &LlmRequest) -> ProviderContext {
         .unwrap_or(request.sdk.as_str());
 
     let reasoning_field = match pk {
-        "deepseek" => "reasoning_content",
+        "deepseek" | "moonshot" => "reasoning_content",
         _ => "reasoning",
     };
 
@@ -55,7 +55,10 @@ pub(crate) fn build_provider_context(request: &LlmRequest) -> ProviderContext {
         }
     }
 
-    let supports_reasoning_effort = matches!(pk, "deepseek" | "openrouter" | "xai" | "openai");
+    let supports_reasoning_effort = matches!(
+        pk,
+        "deepseek" | "moonshot" | "openrouter" | "xai" | "openai"
+    );
 
     let routing_config = if pk == "openrouter" {
         build_routing_config(request)
@@ -138,6 +141,13 @@ mod tests {
     }
 
     #[test]
+    fn moonshot_uses_reasoning_content_field() {
+        let req = make_request(Sdk::Openai, Some("moonshot"));
+        let ctx = build_provider_context(&req);
+        assert_eq!(ctx.reasoning_field, "reasoning_content");
+    }
+
+    #[test]
     fn non_deepseek_uses_reasoning_field() {
         let req = make_request(Sdk::Openai, Some("openai"));
         let ctx = build_provider_context(&req);
@@ -172,7 +182,7 @@ mod tests {
 
     #[test]
     fn reasoning_effort_supported_providers() {
-        for pk in &["deepseek", "openrouter", "xai", "openai"] {
+        for pk in &["deepseek", "moonshot", "openrouter", "xai", "openai"] {
             let req = make_request(Sdk::Openai, Some(pk));
             let ctx = build_provider_context(&req);
             assert!(
