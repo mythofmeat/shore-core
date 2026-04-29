@@ -15,6 +15,7 @@ See `README.md`, `FEATURES.md`, and `CONFIGURATION.md` for current branch guidan
 - CLI: `shore model setting [<key> [<value>]]` (with `--global`, `--reset`, and `--all`) for sampler preferences; `shore reasoning ...` keeps working and now writes through the same store
 - TUI: `:provider`, `:provider refresh <name>`, `:model all`, and `:setting <key> <value>` slash commands; model picker tags rows with their source (`static`/`discovered`) and footer hints at hidden models
 - Documentation: `examples/config.toml` ships an opt-in OpenRouter budget/overflow + discovery + visibility filter snippet; `CONFIGURATION.md` documents the effective-catalog merge order and the sampler-preferences precedence chain
+- Tests: end-to-end suite coverage for the static-only setup, discovery+visibility filtering through the daemon, and per-model + per-character sampler preferences surviving a daemon restart
 - Time-aware prompt assembly: user messages now carry inline time markers when the gap from the previous turn is large, when an hour has elapsed since the last marker (so long, slow conversations stay anchored), or when prior context was lost to compaction (so the first user message after a cut still has an absolute date/time reference)
 - Character workspaces with protected prompt files: `SOUL.md`, `USER.md`, `AGENTS.md`, `TOOLS.md`, and `HEARTBEAT.md`
 - Markdown long-term memory under `characters/<Character>/workspace/memory/`

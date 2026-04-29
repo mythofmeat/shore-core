@@ -310,8 +310,19 @@ impl TestHarness {
 
     /// Send a slash command and collect responses until `CommandOutput` or timeout.
     pub async fn send_command(&mut self, cmd: &str) -> Vec<ServerMessage> {
+        self.send_command_with_args(cmd, json!({})).await
+    }
+
+    /// Send a slash command with explicit args and collect responses until
+    /// `CommandOutput` or timeout. Used by Phase 10 E2E coverage where the
+    /// command needs structured arguments (e.g. `set_model_setting`).
+    pub async fn send_command_with_args(
+        &mut self,
+        cmd: &str,
+        args: serde_json::Value,
+    ) -> Vec<ServerMessage> {
         self.conn
-            .send_command(cmd, json!({}))
+            .send_command(cmd, args)
             .await
             .expect("failed to send command");
 
@@ -448,6 +459,60 @@ impl TestHarness {
         .await
         .expect("Failed to connect second client");
         conn
+    }
+
+    /// Connect an additional SWP client with a specific selected character.
+    /// Used by Phase 10 per-character preference tests where each
+    /// connection drives commands against its own character workspace.
+    pub async fn connect_as_character(&self, character: &str) -> SWPConnection {
+        let (conn, _hello, _history) = SWPConnection::connect(
+            &ServerAddr(self.addr.clone()),
+            "test",
+            character,
+            Some(character.to_string()),
+        )
+        .await
+        .expect("Failed to connect as character");
+        conn
+    }
+
+    /// Send a command on an arbitrary SWP connection (e.g. a per-character
+    /// connection from `connect_as_character`) and collect responses until
+    /// `CommandOutput`/`Error` or timeout. Mirrors `send_command_with_args`
+    /// but accepts the connection explicitly.
+    pub async fn send_command_on(
+        conn: &mut SWPConnection,
+        cmd: &str,
+        args: serde_json::Value,
+    ) -> Vec<ServerMessage> {
+        conn.send_command(cmd, args)
+            .await
+            .expect("failed to send command");
+
+        let mut messages = Vec::new();
+        let deadline = tokio::time::Instant::now() + CMD_TIMEOUT;
+
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            match timeout(remaining, conn.recv()).await {
+                Ok(Ok(msg)) => {
+                    let is_terminal = matches!(
+                        &msg,
+                        ServerMessage::CommandOutput(_) | ServerMessage::Error(_)
+                    );
+                    messages.push(msg);
+                    if is_terminal {
+                        break;
+                    }
+                }
+                Ok(Err(_)) => break,
+                Err(_) => break,
+            }
+        }
+        messages
     }
 
     /// Graceful shutdown: signal the server and handler, then await both tasks.

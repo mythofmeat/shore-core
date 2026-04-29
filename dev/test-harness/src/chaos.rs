@@ -20,8 +20,15 @@ impl CrashedHarness {
     /// Boot a new daemon from the existing on-disk state, reusing the same
     /// temp directory, mock LLM server, data dir, and TCP address.
     pub async fn reboot(self) -> TestHarness {
-        let config =
-            TestConfigBuilder::default().build(self.tmp_dir.path(), &self.mock_llm.base_url());
+        self.reboot_with(TestConfigBuilder::default()).await
+    }
+
+    /// Reboot using a specific `TestConfigBuilder`. Required when the
+    /// original boot used non-default model aliases or extra characters
+    /// — the persistent daemon state on disk is meaningful only against
+    /// the same catalog/character set.
+    pub async fn reboot_with(self, builder: TestConfigBuilder) -> TestHarness {
+        let config = builder.build(self.tmp_dir.path(), &self.mock_llm.base_url());
 
         TestHarness::wire_daemon(
             config,
