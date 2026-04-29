@@ -382,13 +382,14 @@ impl MessageHandler {
                                 });
                         let legacy = crate::runtime_state::load_active_model(&character_data_dir);
                         let resolved = crate::preferences::resolve_active_for_character(
-                            &effective_config.models,
+                            &effective_config,
+                            &self.cmd_ctx.data_dir,
                             &global_prefs,
                             &char_prefs,
                             legacy.as_deref(),
                             effective_config.app.defaults.model.as_deref(),
                         );
-                        let overlay = match resolved {
+                        let overlay = match resolved.as_ref() {
                             Some(m) => crate::preferences::resolve_sampler_settings(
                                 &global_prefs,
                                 Some(&char_prefs),

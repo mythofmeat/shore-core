@@ -444,11 +444,12 @@ pub fn save_global_preferences(
 /// Look up the resolved model that matches `(provider, model_id)` in the
 /// static catalog.
 ///
-/// This is the inverse of "save selection": users select by short name,
-/// the catalog resolves it to a `ResolvedModel`, and we persist
-/// `(provider_key, model_id)`. On reload we walk the catalog to find a
-/// matching entry. Returns `None` if no static entry matches — Phase 5
-/// adds discovered-model lookup and Phase 7 unifies the two.
+/// This is the inverse of "save selection" for static entries only: users
+/// select by short name, the catalog resolves it to a `ResolvedModel`, and
+/// we persist `(provider_key, model_id)`. On reload we walk the catalog to
+/// find a matching entry. Returns `None` if no static entry matches —
+/// discovered-model lookups go through
+/// [`resolve_active_for_character`] / [`crate::effective_catalog`].
 pub fn find_static_model<'a>(
     catalog: &'a shore_config::models::ModelCatalog,
     provider: &str,
@@ -461,13 +462,38 @@ pub fn find_static_model<'a>(
         .find(|m| m.provider_key == provider && m.model_id == model_id)
 }
 
+/// Resolve a saved `(provider, model_id)` selection against the effective
+/// catalog (static entries + discovery cache).
+///
+/// `include_hidden = true`: a previously selected discovered model should
+/// keep resolving across restarts even if the current visibility list
+/// would now hide it. The user explicitly chose it; visibility filters
+/// scope listing, not restoration.
+fn resolve_provider_model(
+    config: &shore_config::LoadedConfig,
+    data_dir: &Path,
+    provider: &str,
+    model_id: &str,
+) -> Option<shore_config::models::ResolvedModel> {
+    if let Some(rm) = find_static_model(&config.models, provider, model_id) {
+        return Some(rm.clone());
+    }
+    crate::effective_catalog::find_effective_model(
+        config,
+        data_dir,
+        &format!("{provider}:{model_id}"),
+        true,
+    )
+    .ok()
+}
+
 /// Resolve the active model for a session.
 ///
-/// Returns the ResolvedModel and the `(provider, model_id)` pair the
-/// preferences store expects. Resolution order:
+/// Resolution order:
 ///
-/// 1. Character preferences `[selected]` (provider, model_id) →
-///    catalog lookup by `(provider_key, model_id)`.
+/// 1. Character preferences `[selected]` (provider, model_id) → effective
+///    catalog lookup by `(provider_key, model_id)`. Discovered models
+///    resolve through the discovery cache.
 /// 2. Global preferences `[selected]` → same lookup.
 /// 3. Legacy `runtime_state.json::active_model` (string name) →
 ///    catalog `find_model` by name. Migration fallback for installs
@@ -475,36 +501,37 @@ pub fn find_static_model<'a>(
 /// 4. `app.defaults.model` from config.
 /// 5. First chat model in the catalog.
 ///
-/// The legacy `runtime_state.json` is read but never written by Phase 3
+/// The legacy `runtime_state.json` is read but never written by Phase 3+
 /// code — preferences are now authoritative.
-pub fn resolve_active_for_character<'a>(
-    catalog: &'a shore_config::models::ModelCatalog,
+pub fn resolve_active_for_character(
+    config: &shore_config::LoadedConfig,
+    data_dir: &Path,
     global: &ModelPreferences,
     character: &ModelPreferences,
     legacy_active_model: Option<&str>,
     app_default_model: Option<&str>,
-) -> Option<&'a shore_config::models::ResolvedModel> {
+) -> Option<shore_config::models::ResolvedModel> {
     if let Some((p, m)) = character.selected.pair() {
-        if let Some(rm) = find_static_model(catalog, p, m) {
+        if let Some(rm) = resolve_provider_model(config, data_dir, p, m) {
             return Some(rm);
         }
     }
     if let Some((p, m)) = global.selected.pair() {
-        if let Some(rm) = find_static_model(catalog, p, m) {
+        if let Some(rm) = resolve_provider_model(config, data_dir, p, m) {
             return Some(rm);
         }
     }
     if let Some(name) = legacy_active_model {
-        if let Ok(rm) = catalog.find_model(name) {
-            return Some(rm);
+        if let Ok(rm) = config.models.find_model(name) {
+            return Some(rm.clone());
         }
     }
     if let Some(name) = app_default_model {
-        if let Ok(rm) = catalog.find_model(name) {
-            return Some(rm);
+        if let Ok(rm) = config.models.find_model(name) {
+            return Some(rm.clone());
         }
     }
-    catalog.first_chat_model()
+    config.models.first_chat_model().cloned()
 }
 
 /// Patch a `ResolvedModel` with the given sampler overlay. Returns a
@@ -1014,8 +1041,25 @@ model_id = "kimi-k2"
         assert!(find_static_model(&catalog, "openrouter", "claude-opus-4-6").is_none());
     }
 
+    fn make_loaded_config(
+        tmp: &tempfile::TempDir,
+        catalog: shore_config::models::ModelCatalog,
+    ) -> shore_config::LoadedConfig {
+        shore_config::LoadedConfig::new_for_test(
+            shore_config::app::AppConfig::default(),
+            catalog,
+            shore_config::ShoreDirs {
+                config: tmp.path().join("config"),
+                data: tmp.path().to_path_buf(),
+                runtime: tmp.path().join("runtime"),
+                cache: tmp.path().join("cache"),
+            },
+        )
+    }
+
     #[test]
     fn resolve_active_prefers_character_then_global_then_legacy_then_default() {
+        let tmp = tempfile::tempdir().unwrap();
         let catalog = make_catalog(
             r#"
 [chat.anthropic.opus]
@@ -1028,13 +1072,15 @@ model_id = "claude-sonnet-4-6"
 model_id = "kimi-k2"
 "#,
         );
+        let loaded = make_loaded_config(&tmp, catalog);
+        let dd = tmp.path();
 
         // (a) Character preference wins.
         let g = ModelPreferences::default();
         let mut c = ModelPreferences::default();
         c.selected.provider = Some("anthropic".into());
         c.selected.model_id = Some("claude-sonnet-4-6".into());
-        let active = resolve_active_for_character(&catalog, &g, &c, None, None).unwrap();
+        let active = resolve_active_for_character(&loaded, dd, &g, &c, None, None).unwrap();
         assert_eq!(active.qualified_name, "chat.anthropic.sonnet");
 
         // (b) Global preference falls in when character is empty.
@@ -1042,24 +1088,97 @@ model_id = "kimi-k2"
         g.selected.provider = Some("openrouter".into());
         g.selected.model_id = Some("kimi-k2".into());
         let c = ModelPreferences::default();
-        let active = resolve_active_for_character(&catalog, &g, &c, None, None).unwrap();
+        let active = resolve_active_for_character(&loaded, dd, &g, &c, None, None).unwrap();
         assert_eq!(active.qualified_name, "chat.openrouter.kimi");
 
         // (c) Legacy runtime_state.json fallback (migration path).
         let g = ModelPreferences::default();
         let c = ModelPreferences::default();
-        let active = resolve_active_for_character(&catalog, &g, &c, Some("opus"), None).unwrap();
+        let active =
+            resolve_active_for_character(&loaded, dd, &g, &c, Some("opus"), None).unwrap();
         assert_eq!(active.qualified_name, "chat.anthropic.opus");
 
         // (d) app.defaults.model fallback when no preferences and no legacy.
-        let active = resolve_active_for_character(&catalog, &g, &c, None, Some("kimi")).unwrap();
+        let active =
+            resolve_active_for_character(&loaded, dd, &g, &c, None, Some("kimi")).unwrap();
         assert_eq!(active.qualified_name, "chat.openrouter.kimi");
 
         // (e) First chat model is the final fallback.
-        let active = resolve_active_for_character(&catalog, &g, &c, None, None).unwrap();
+        let active = resolve_active_for_character(&loaded, dd, &g, &c, None, None).unwrap();
         // BTreeMap iteration is lexicographic by qualified_name, so
         // "chat.anthropic.opus" comes first.
         assert_eq!(active.qualified_name, "chat.anthropic.opus");
+    }
+
+    #[test]
+    fn resolve_active_finds_discovered_model_via_provider_cache() {
+        // P1 regression coverage: a saved selection pointing at a
+        // discovered-only model must restore through the discovery cache,
+        // not silently fall through to the static default.
+        use shore_config::providers::ProviderRegistry;
+        use shore_llm::discovery::{cache_path, write_cache, ProviderModelsCache, CACHE_VERSION,
+                                    DiscoveredModel};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let catalog = make_catalog(
+            r#"
+[chat.anthropic.opus]
+model_id = "claude-opus-4-6"
+"#,
+        );
+        let mut loaded = make_loaded_config(&tmp, catalog);
+        let providers_table: toml::Table = r#"
+[providers.openrouter]
+api_key_env = "OR_KEY"
+base_url = "https://openrouter.ai/api/v1"
+
+[providers.openrouter.discovery]
+enabled = true
+"#
+        .parse()
+        .unwrap();
+        loaded.providers = ProviderRegistry::from_section(
+            providers_table.get("providers").and_then(|v| v.as_table()),
+        )
+        .unwrap();
+
+        let cache = ProviderModelsCache {
+            version: CACHE_VERSION,
+            provider_key: "openrouter".into(),
+            fetched_at: "2026-04-29T00:00:00Z".into(),
+            base_url: Some("https://openrouter.ai/api/v1".into()),
+            models: vec![DiscoveredModel {
+                provider_key: "openrouter".into(),
+                model_id: "anthropic/claude-sonnet-4.5".into(),
+                display_name: None,
+                sdk: "openai".into(),
+                base_url: Some("https://openrouter.ai/api/v1".into()),
+                created_at: None,
+                owned_by: None,
+                description: None,
+                context_length: Some(200_000),
+                max_output_tokens: Some(8192),
+                supports_tools: None,
+                supports_images: None,
+                supports_reasoning: None,
+                supports_prompt_cache: None,
+                raw_provider_metadata: serde_json::Value::Null,
+                discovered_at: "2026-04-29T00:00:00Z".into(),
+            }],
+        };
+        write_cache(&cache_path(tmp.path(), "openrouter"), &cache).unwrap();
+
+        let g = ModelPreferences::default();
+        let mut c = ModelPreferences::default();
+        c.selected.provider = Some("openrouter".into());
+        c.selected.model_id = Some("anthropic/claude-sonnet-4.5".into());
+
+        let active =
+            resolve_active_for_character(&loaded, tmp.path(), &g, &c, None, None).unwrap();
+        assert_eq!(active.provider_key, "openrouter");
+        assert_eq!(active.model_id, "anthropic/claude-sonnet-4.5");
+        // Importantly: did NOT silently fall through to the static opus.
+        assert_ne!(active.qualified_name, "chat.anthropic.opus");
     }
 
     #[test]

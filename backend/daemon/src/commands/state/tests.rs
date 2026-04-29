@@ -956,7 +956,9 @@ mod phase7 {
             .unwrap()
         };
 
-        // Optionally append visibility rules to the providers TOML.
+        // Always enable discovery for `provider` — caches in production only
+        // exist after a successful refresh, which requires discovery.enabled.
+        // Tests that write a cache should mirror that invariant.
         let providers_toml_full = match visible_pattern {
             Some(pats) => {
                 let pats_lit = pats
@@ -968,7 +970,9 @@ mod phase7 {
                     "{providers_toml}\n[providers.{provider}.discovery]\nenabled = true\nvisibility = [\n{pats_lit}\n]\n"
                 )
             }
-            None => providers_toml.to_string(),
+            None => format!(
+                "{providers_toml}\n[providers.{provider}.discovery]\nenabled = true\n"
+            ),
         };
 
         let providers = if providers_toml_full.trim().is_empty() {

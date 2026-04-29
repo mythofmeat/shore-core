@@ -420,11 +420,24 @@ pub async fn execute(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         }
         other => {
             let json_mode = match other {
-                CliCommand::Model { json, .. }
-                | CliCommand::Character { json, .. }
+                CliCommand::Model { json, subcommand, .. } => {
+                    *json
+                        || matches!(
+                            subcommand,
+                            Some(crate::cli::ModelCommand::Setting { json: true, .. })
+                        )
+                }
+                CliCommand::Provider { json, subcommand, .. } => {
+                    *json
+                        || matches!(
+                            subcommand,
+                            Some(crate::cli::ProviderCommand::Models { json: true, .. })
+                                | Some(crate::cli::ProviderCommand::Refresh { json: true, .. })
+                        )
+                }
+                CliCommand::Character { json, .. }
                 | CliCommand::Memory { json, .. }
-                | CliCommand::Config { json, .. }
-                | CliCommand::Provider { json, .. } => *json,
+                | CliCommand::Config { json, .. } => *json,
                 _ => false,
             };
             let (name, args) = crate::cli::to_swp_command(other)

@@ -226,18 +226,23 @@ pub struct KeyCandidate {
 ///
 /// Resolution order:
 ///
-/// 1. If `[providers.<provider_key>]` exists and is enabled, return its
-///    enabled `[[keys]]` in configured order. Disabled keys are filtered
-///    out here, not silently dropped — they remain visible in the registry
-///    via `ProviderRegistry::get`.
-/// 2. Otherwise, fall back to the legacy single-key path: synthesize one
-///    `KeyCandidate { name: "default", env: model.api_key_env || default,
-///    warn_on_fallback: false }`. This preserves Phase-0 behavior for
-///    providers that have not been migrated to the registry.
+/// 1. If `[providers.<provider_key>]` exists and is disabled, return empty.
+/// 2. If the provider entry has any enabled `[[keys]]`, return them in
+///    configured order. Disabled keys are filtered out here, not silently
+///    dropped — they remain visible via `ProviderRegistry::get`.
+/// 3. Otherwise (either no provider entry, or an enabled provider entry
+///    that declares no keys — e.g. a registry entry added only for
+///    sdk/base_url/discovery), fall back to the legacy single-key path:
+///    synthesize one `KeyCandidate { name: "default",
+///    env: model.api_key_env || default_api_key_env(provider_key) }`.
 ///
-/// The returned vector is empty only when the provider is registered but
-/// disabled, or when it has no enabled keys. The dispatcher treats that
-/// as a hard failure (`MissingApiKey`) without rotation.
+/// Falling back when an enabled provider has no keys preserves the
+/// pre-Phase-1 contract that a static `[chat.X.Y].api_key_env` keeps
+/// working when the user adds `[providers.X]` for non-credential reasons.
+///
+/// The returned vector is empty only when the provider is explicitly
+/// disabled. The dispatcher treats that as a hard failure
+/// (`MissingApiKey`) without rotation.
 pub fn resolve_key_candidates(
     provider_key: &str,
     registry: &ProviderRegistry,
@@ -247,7 +252,7 @@ pub fn resolve_key_candidates(
         if !entry.enabled {
             return Vec::new();
         }
-        return entry
+        let candidates: Vec<KeyCandidate> = entry
             .enabled_keys()
             .map(|k| KeyCandidate {
                 name: k.name.clone(),
@@ -255,11 +260,17 @@ pub fn resolve_key_candidates(
                 warn_on_fallback: k.warn_on_fallback,
             })
             .collect();
+        if !candidates.is_empty() {
+            return candidates;
+        }
+        // Enabled provider with no usable keys → fall through to legacy
+        // single-key synthesis below so static api_key_env still works.
     }
 
     // Legacy single-key fallback. Mirrors `LlmClient::build_request`'s
-    // env resolution so providers not yet in the registry behave
-    // identically to pre-Phase-4 code.
+    // env resolution so providers not yet in the registry — or registered
+    // for sdk/base_url/discovery only — behave identically to pre-Phase-4
+    // code.
     let env = model
         .api_key_env
         .clone()
@@ -563,6 +574,45 @@ api_key_env = "OPENAI_API_KEY"
         assert_eq!(cands.len(), 1);
         assert_eq!(cands[0].name, "default");
         assert_eq!(cands[0].env, "OPENAI_API_KEY");
+    }
+
+    #[test]
+    fn enabled_provider_with_no_keys_falls_back_to_static_api_key_env() {
+        // P2 regression: a [providers.X] block added only for sdk/base_url/
+        // discovery (no [[keys]], no compact api_key_env) must NOT yield an
+        // empty candidate list — the static model's api_key_env should keep
+        // working unchanged.
+        let registry = registry_from(
+            r#"
+[providers.openrouter]
+sdk = "openai"
+base_url = "https://openrouter.ai/api/v1"
+
+[providers.openrouter.discovery]
+enabled = true
+"#,
+        );
+        let model = test_model("openrouter", Some("OPENROUTER_API_KEY"));
+        let cands = resolve_key_candidates("openrouter", &registry, &model);
+        assert_eq!(cands.len(), 1);
+        assert_eq!(cands[0].name, "default");
+        assert_eq!(cands[0].env, "OPENROUTER_API_KEY");
+    }
+
+    #[test]
+    fn enabled_provider_with_no_keys_falls_back_to_default_env() {
+        // Same fallback path, but the static model has no api_key_env —
+        // synthesize from default_api_key_env(provider_key).
+        let registry = registry_from(
+            r#"
+[providers.anthropic]
+base_url = "https://api.anthropic.com"
+"#,
+        );
+        let model = test_model("anthropic", None);
+        let cands = resolve_key_candidates("anthropic", &registry, &model);
+        assert_eq!(cands.len(), 1);
+        assert_eq!(cands[0].env, "ANTHROPIC_API_KEY");
     }
 
     #[test]

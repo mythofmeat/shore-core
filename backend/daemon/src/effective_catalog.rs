@@ -90,54 +90,77 @@ pub fn find_effective_model(
     if let Some((provider, model_id)) = name.split_once(':') {
         if !provider.is_empty() && !model_id.is_empty() {
             if let Some(entry) = config.providers.get(provider) {
-                if let Some(disc) = read_provider_discovery(data_dir, provider, model_id) {
-                    if let Some(static_match) =
-                        find_static_by_upstream(&config.models, provider, model_id)
-                    {
-                        return Ok(static_match.clone());
+                // Static-by-upstream wins regardless of discovery state.
+                if let Some(static_match) =
+                    find_static_by_upstream(&config.models, provider, model_id)
+                {
+                    return Ok(static_match.clone());
+                }
+                // Discovered match only honored when the provider and its
+                // discovery are both enabled — never trust a stale cache
+                // for a provider the user has turned off.
+                if entry.enabled && entry.discovery.enabled {
+                    if let Some(disc) = read_provider_discovery(data_dir, provider, model_id) {
+                        let hidden = !entry.discovery.is_visible(&disc.model_id);
+                        if hidden && !include_hidden {
+                            return Err(EffectiveCatalogError::Hidden {
+                                name: name.into(),
+                                provider: provider.into(),
+                            });
+                        }
+                        return Ok(build_resolved_from_discovered(provider, entry, &disc));
                     }
-                    let hidden = !entry.discovery.is_visible(&disc.model_id);
-                    if hidden && !include_hidden {
-                        return Err(EffectiveCatalogError::Hidden {
-                            name: name.into(),
-                            provider: provider.into(),
-                        });
-                    }
-                    return Ok(build_resolved_from_discovered(provider, entry, &disc));
                 }
             }
         }
     }
 
-    // Bare upstream id: collect matches across all providers.
+    // Bare upstream id: collect matches across all providers. Static
+    // entries are always considered; discovered matches require both
+    // provider.enabled and discovery.enabled.
     let mut hits: Vec<(String, ResolvedModel, bool)> = Vec::new();
     for (provider_key, entry) in config.providers.iter() {
+        if let Some(static_match) = find_static_by_upstream(&config.models, provider_key, name) {
+            hits.push((provider_key.into(), static_match.clone(), false));
+            continue;
+        }
+        if !entry.enabled || !entry.discovery.enabled {
+            continue;
+        }
         let Some(disc) = read_provider_discovery(data_dir, provider_key, name) else {
             continue;
         };
-        if let Some(static_match) = find_static_by_upstream(&config.models, provider_key, name) {
-            hits.push((provider_key.into(), static_match.clone(), false));
-        } else {
-            let hidden = !entry.discovery.is_visible(&disc.model_id);
-            let resolved = build_resolved_from_discovered(provider_key, entry, &disc);
-            hits.push((provider_key.into(), resolved, hidden));
-        }
+        let hidden = !entry.discovery.is_visible(&disc.model_id);
+        let resolved = build_resolved_from_discovered(provider_key, entry, &disc);
+        hits.push((provider_key.into(), resolved, hidden));
     }
 
-    match hits.len() {
-        0 => Err(EffectiveCatalogError::NotFound { name: name.into() }),
-        1 => {
-            let (provider, resolved, hidden) = hits.into_iter().next().unwrap();
-            if hidden && !include_hidden {
-                return Err(EffectiveCatalogError::Hidden {
+    // Hidden hits don't participate in the ambiguity count unless the
+    // caller explicitly opted in. A single hidden-only match still
+    // surfaces as `Hidden` (clearer than `NotFound`).
+    let (visible_hits, hidden_hits): (Vec<_>, Vec<_>) = if include_hidden {
+        (hits, Vec::new())
+    } else {
+        hits.into_iter().partition(|(_, _, h)| !*h)
+    };
+
+    match visible_hits.len() {
+        0 => {
+            if let Some((provider, _, _)) = hidden_hits.into_iter().next() {
+                Err(EffectiveCatalogError::Hidden {
                     name: name.into(),
                     provider,
-                });
+                })
+            } else {
+                Err(EffectiveCatalogError::NotFound { name: name.into() })
             }
+        }
+        1 => {
+            let (_, resolved, _) = visible_hits.into_iter().next().unwrap();
             Ok(resolved)
         }
         _ => {
-            let locations = hits
+            let locations = visible_hits
                 .iter()
                 .map(|(p, r, _)| format!("{p}:{}", r.model_id))
                 .collect::<Vec<_>>()
@@ -174,6 +197,9 @@ pub fn list_effective_models(
         .collect();
 
     for (provider_key, entry) in config.providers.iter() {
+        if !entry.enabled || !entry.discovery.enabled {
+            continue;
+        }
         let cache_p = cache_path(data_dir, provider_key);
         let Some(cache) = read_cache(&cache_p).ok().flatten() else {
             continue;
@@ -299,10 +325,32 @@ mod tests {
     use shore_llm::discovery::{ProviderModelsCache, CACHE_VERSION};
 
     fn make_loaded(tmp: &tempfile::TempDir, providers_toml: &str, chat_toml: &str) -> LoadedConfig {
+        // Caches in production only exist after a successful refresh, which
+        // requires discovery.enabled = true. Mirror that invariant for tests:
+        // any provider without an explicit discovery block gets enabled = true,
+        // so cache writes match real-world conditions. Tests that need the
+        // disabled-discovery path set `[providers.X.discovery] enabled = false`
+        // explicitly.
         let providers = if providers_toml.is_empty() {
             ProviderRegistry::default()
         } else {
-            let table: toml::Table = providers_toml.parse().unwrap();
+            let mut table: toml::Table = providers_toml.parse().unwrap();
+            if let Some(providers_table) = table
+                .get_mut("providers")
+                .and_then(|v| v.as_table_mut())
+            {
+                for (_, value) in providers_table.iter_mut() {
+                    if let Some(provider_entry) = value.as_table_mut() {
+                        let needs_discovery = !provider_entry.contains_key("discovery");
+                        if needs_discovery {
+                            let mut disc = toml::Table::new();
+                            disc.insert("enabled".into(), toml::Value::Boolean(true));
+                            provider_entry
+                                .insert("discovery".into(), toml::Value::Table(disc));
+                        }
+                    }
+                }
+            }
             ProviderRegistry::from_section(table.get("providers").and_then(|v| v.as_table()))
                 .unwrap()
         };
@@ -784,5 +832,144 @@ base_url = "https://openrouter.ai/api/v1"
         let m = find_effective_model(&loaded, tmp.path(), "anthropic/claude-sonnet-4.5", false)
             .unwrap();
         assert_eq!(m.sdk, Sdk::Anthropic, "registry sdk wins over discovered");
+    }
+
+    // ── Disabled provider / disabled discovery filtering ────────────────
+
+    #[test]
+    fn disabled_provider_cache_is_ignored_for_bare_id() {
+        let tmp = tempfile::tempdir().unwrap();
+        let loaded = make_loaded(
+            &tmp,
+            r#"
+[providers.openrouter]
+enabled = false
+api_key_env = "OR_KEY"
+base_url = "https://openrouter.ai/api/v1"
+"#,
+            "",
+        );
+        write_cache_for(&tmp, "openrouter", &["anthropic/claude-sonnet-4.5"]);
+
+        let err =
+            find_effective_model(&loaded, tmp.path(), "anthropic/claude-sonnet-4.5", false)
+                .unwrap_err();
+        assert!(
+            matches!(err, EffectiveCatalogError::NotFound { .. }),
+            "stale cache for a disabled provider must not be searched"
+        );
+    }
+
+    #[test]
+    fn discovery_disabled_cache_is_ignored_for_bare_id() {
+        let tmp = tempfile::tempdir().unwrap();
+        let loaded = make_loaded(
+            &tmp,
+            r#"
+[providers.openrouter]
+api_key_env = "OR_KEY"
+base_url = "https://openrouter.ai/api/v1"
+
+[providers.openrouter.discovery]
+enabled = false
+"#,
+            "",
+        );
+        write_cache_for(&tmp, "openrouter", &["anthropic/claude-sonnet-4.5"]);
+
+        let err =
+            find_effective_model(&loaded, tmp.path(), "anthropic/claude-sonnet-4.5", false)
+                .unwrap_err();
+        assert!(
+            matches!(err, EffectiveCatalogError::NotFound { .. }),
+            "cache from previously-enabled discovery must not be honored once disabled"
+        );
+    }
+
+    #[test]
+    fn disabled_provider_cache_is_ignored_for_provider_prefix_lookup() {
+        // Even with the explicit `provider:model_id` form the cache must not
+        // be consulted when the provider is disabled.
+        let tmp = tempfile::tempdir().unwrap();
+        let loaded = make_loaded(
+            &tmp,
+            r#"
+[providers.openrouter]
+enabled = false
+api_key_env = "OR_KEY"
+base_url = "https://openrouter.ai/api/v1"
+"#,
+            "",
+        );
+        write_cache_for(&tmp, "openrouter", &["anthropic/claude-sonnet-4.5"]);
+
+        let err = find_effective_model(
+            &loaded,
+            tmp.path(),
+            "openrouter:anthropic/claude-sonnet-4.5",
+            false,
+        )
+        .unwrap_err();
+        assert!(matches!(err, EffectiveCatalogError::NotFound { .. }));
+    }
+
+    #[test]
+    fn disabled_provider_dropped_from_list() {
+        let tmp = tempfile::tempdir().unwrap();
+        let loaded = make_loaded(
+            &tmp,
+            r#"
+[providers.openrouter]
+enabled = false
+api_key_env = "OR_KEY"
+base_url = "https://openrouter.ai/api/v1"
+"#,
+            "",
+        );
+        write_cache_for(&tmp, "openrouter", &["anthropic/claude-sonnet-4.5"]);
+
+        let list = list_effective_models(&loaded, tmp.path(), true);
+        let names: Vec<&str> = list.iter().map(|e| e.resolved.model_id.as_str()).collect();
+        assert!(!names.contains(&"anthropic/claude-sonnet-4.5"));
+    }
+
+    // ── Hidden/visible ambiguity ────────────────────────────────────────
+
+    #[test]
+    fn one_visible_one_hidden_resolves_to_visible_not_ambiguous() {
+        // P3 regression: when one provider has a visible match and another
+        // has a hidden match for the same upstream id, `include_hidden=false`
+        // must resolve to the visible one — not error as ambiguous.
+        let tmp = tempfile::tempdir().unwrap();
+        let loaded = make_loaded(
+            &tmp,
+            r#"
+[providers.openrouter]
+api_key_env = "OR_KEY"
+base_url = "https://openrouter.ai/api/v1"
+
+[providers.together]
+api_key_env = "TG_KEY"
+base_url = "https://api.together.xyz/v1"
+
+[providers.together.discovery]
+enabled = true
+visibility = ["meta-llama/*"]
+"#,
+            "",
+        );
+        write_cache_for(&tmp, "openrouter", &["meta-llama/llama-3-70b"]);
+        write_cache_for(&tmp, "together", &["meta-llama/llama-3-70b"]);
+
+        // openrouter visible (default-show), together hidden (hide pattern).
+        let m = find_effective_model(&loaded, tmp.path(), "meta-llama/llama-3-70b", false)
+            .unwrap();
+        assert_eq!(m.provider_key, "openrouter");
+
+        // With include_hidden=true, both participate and the resolution
+        // becomes genuinely ambiguous.
+        let err = find_effective_model(&loaded, tmp.path(), "meta-llama/llama-3-70b", true)
+            .unwrap_err();
+        assert!(matches!(err, EffectiveCatalogError::Ambiguous { .. }));
     }
 }

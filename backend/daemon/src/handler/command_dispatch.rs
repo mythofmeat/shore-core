@@ -228,7 +228,8 @@ impl MessageHandler {
                 });
             let legacy = load_active_model(&character_data_dir);
             preferences::resolve_active_for_character(
-                &effective_config.models,
+                &effective_config,
+                data_dir,
                 &global_prefs,
                 &char_prefs,
                 legacy.as_deref(),
