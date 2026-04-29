@@ -1153,6 +1153,10 @@ pub(crate) fn handle_server_message(app: &mut App, msg: ServerMessage) -> UiEffe
             for msg in hist.messages {
                 expand_msg(msg, &mut app.entries);
             }
+            // Bump so the conv-cache fingerprint changes even when the
+            // entry count and last-two summaries collide with the prior
+            // value (e.g. :edit on an earlier message).
+            app.history_version = app.history_version.wrapping_add(1);
             transmit_entry_images(app);
             RedrawEffect::Immediate
         }
