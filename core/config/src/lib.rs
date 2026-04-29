@@ -490,7 +490,11 @@ fn create_default_config(config_dir: &Path) {
 
 /// Validate cross-field config constraints.
 fn validate_config(app: &AppConfig, catalog: &ModelCatalog) -> Result<(), ConfigError> {
-    // Validate model references exist in the catalog.
+    // Validate model references exist in the catalog. heartbeat/dreaming
+    // resolve against chat+tools models; embedding/image_generation resolve
+    // against their respective profile maps. Without these checks a typo
+    // silently falls back to defaults.model (heartbeat) or surfaces only at
+    // tool-invocation time (dreaming/embedding/image_generation).
     validate_model_ref(catalog, "defaults.model", app.defaults.model.as_deref())?;
     validate_model_ref(
         catalog,
@@ -512,9 +516,38 @@ fn validate_config(app: &AppConfig, catalog: &ModelCatalog) -> Result<(), Config
         "defaults.background.dreaming",
         app.defaults.background.dreaming.as_deref(),
     )?;
+    validate_profile_ref(
+        &catalog.embedding,
+        "defaults.embedding",
+        "embedding",
+        app.defaults.embedding.as_deref(),
+    )?;
+    validate_profile_ref(
+        &catalog.image_generation,
+        "defaults.image_generation",
+        "image_generation",
+        app.defaults.image_generation.as_deref(),
+    )?;
 
     validate_daily_cron(&app.memory.dreaming.frequency)?;
 
+    Ok(())
+}
+
+/// Validate that an optional profile reference exists in a profile map.
+fn validate_profile_ref(
+    profiles: &std::collections::BTreeMap<String, toml::Value>,
+    field: &str,
+    catalog_section: &str,
+    name: Option<&str>,
+) -> Result<(), ConfigError> {
+    if let Some(name) = name {
+        if !profiles.contains_key(name) {
+            return Err(ConfigError::Validation(format!(
+                "{field} \"{name}\" not found in [{catalog_section}] profiles"
+            )));
+        }
+    }
     Ok(())
 }
 
@@ -857,6 +890,101 @@ model = "nonexistent-model"
             msg.contains("nonexistent-model"),
             "Should mention the missing model: {msg}"
         );
+    }
+
+    #[test]
+    fn invalid_default_heartbeat_reference() {
+        let tmp = setup_config_dir(&[(
+            "config.toml",
+            r#"
+[defaults]
+heartbeat = "ghost-haiku"
+
+[chat.anthropic.opus]
+model_id = "claude-opus-4-6"
+"#,
+        )]);
+        let err = load_config(Some(&tmp.path().join("config.toml"))).unwrap_err();
+        let msg = err.to_string();
+        // Legacy `defaults.heartbeat` is forwarded to `defaults.background.heartbeat`
+        // at parse time, so validation surfaces the new path.
+        assert!(msg.contains("defaults.background.heartbeat"), "{msg}");
+        assert!(msg.contains("ghost-haiku"), "{msg}");
+    }
+
+    #[test]
+    fn invalid_default_dreaming_reference() {
+        let tmp = setup_config_dir(&[(
+            "config.toml",
+            r#"
+[defaults]
+dreaming = "no-such-model"
+
+[chat.anthropic.opus]
+model_id = "claude-opus-4-6"
+"#,
+        )]);
+        let err = load_config(Some(&tmp.path().join("config.toml"))).unwrap_err();
+        assert!(err.to_string().contains("defaults.background.dreaming"));
+    }
+
+    #[test]
+    fn invalid_default_embedding_reference() {
+        let tmp = setup_config_dir(&[(
+            "config.toml",
+            r#"
+[defaults]
+embedding = "missing-profile"
+
+[embedding.text-large]
+model_id = "openai/text-embedding-3-large"
+"#,
+        )]);
+        let err = load_config(Some(&tmp.path().join("config.toml"))).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("defaults.embedding"), "{msg}");
+        assert!(msg.contains("missing-profile"), "{msg}");
+    }
+
+    #[test]
+    fn invalid_default_image_generation_reference() {
+        let tmp = setup_config_dir(&[(
+            "config.toml",
+            r#"
+[defaults]
+image_generation = "missing-profile"
+
+[image_generation.gemini-flash]
+model_id = "google/gemini-flash"
+"#,
+        )]);
+        let err = load_config(Some(&tmp.path().join("config.toml"))).unwrap_err();
+        assert!(err.to_string().contains("defaults.image_generation"));
+    }
+
+    #[test]
+    fn valid_defaults_pass_validation() {
+        let tmp = setup_config_dir(&[(
+            "config.toml",
+            r#"
+[defaults]
+model = "opus"
+heartbeat = "opus"
+dreaming = "opus"
+embedding = "text-large"
+image_generation = "gemini-flash"
+
+[chat.anthropic.opus]
+model_id = "claude-opus-4-6"
+
+[embedding.text-large]
+model_id = "openai/text-embedding-3-large"
+
+[image_generation.gemini-flash]
+model_id = "google/gemini-flash"
+"#,
+        )]);
+        load_config(Some(&tmp.path().join("config.toml"))).unwrap();
     }
 
     #[test]
