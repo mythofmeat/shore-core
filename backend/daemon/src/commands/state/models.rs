@@ -194,12 +194,14 @@ pub fn model_info(ctx: &CommandContext, args: &Value) -> CommandResult {
             Some(&char_prefs),
             &resolved.provider_key,
             &resolved.model_id,
+            Some(&resolved),
         );
         let scopes = preferences::resolve_sampler_scopes(
             &global,
             Some(&char_prefs),
             &resolved.provider_key,
             &resolved.model_id,
+            Some(&resolved),
         );
         data["effective_sampler"] = serde_json::to_value(&sampler).unwrap_or(Value::Null);
         data["scopes"] = json!({
@@ -631,12 +633,14 @@ pub fn model_settings(ctx: &CommandContext, args: &Value) -> CommandResult {
         char_prefs_opt,
         &active.provider_key,
         &active.model_id,
+        Some(&active),
     );
     let scopes = preferences::resolve_sampler_scopes(
         &global,
         char_prefs_opt,
         &active.provider_key,
         &active.model_id,
+        Some(&active),
     );
     let saved_global = global
         .model(&active.provider_key, &active.model_id)

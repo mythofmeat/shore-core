@@ -376,6 +376,25 @@ pub fn default_api_key_env(provider_key: &str) -> &'static str {
     }
 }
 
+/// Return the conventional HTTPS base URL for a provider key, when one
+/// is well-known. Returns `None` for providers whose endpoint is
+/// deployment-specific (custom OpenAI-compatible upstreams, on-prem,
+/// etc.) — those must set `base_url` explicitly.
+///
+/// Mirrors the hardcoded fallbacks the chat path already applies so
+/// discovery (`refresh_provider_models`) doesn't demand a redundant
+/// `base_url` line in `[providers.<key>]`.
+pub fn default_base_url(provider_key: &str) -> Option<&'static str> {
+    match provider_key {
+        "anthropic" => Some("https://api.anthropic.com"),
+        "openai" => Some("https://api.openai.com/v1"),
+        "openrouter" => Some("https://openrouter.ai/api/v1"),
+        "deepseek" => Some("https://api.deepseek.com"),
+        "xai" => Some("https://api.x.ai/v1"),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -606,6 +625,30 @@ sdk = "openai"
         assert_eq!(default_api_key_env("zai"), "ZAI_API_KEY");
         assert_eq!(default_api_key_env("nanogpt"), "NANOGPT_API_KEY");
         assert_eq!(default_api_key_env("unknown"), "LLM_API_KEY");
+    }
+
+    #[test]
+    fn default_base_url_for_known_providers() {
+        assert_eq!(
+            default_base_url("openrouter"),
+            Some("https://openrouter.ai/api/v1")
+        );
+        assert_eq!(
+            default_base_url("openai"),
+            Some("https://api.openai.com/v1")
+        );
+        assert_eq!(
+            default_base_url("anthropic"),
+            Some("https://api.anthropic.com")
+        );
+        assert_eq!(
+            default_base_url("deepseek"),
+            Some("https://api.deepseek.com")
+        );
+        assert_eq!(default_base_url("xai"), Some("https://api.x.ai/v1"));
+        // Custom or unknown providers must still set base_url explicitly.
+        assert_eq!(default_base_url("opencode"), None);
+        assert_eq!(default_base_url("unknown"), None);
     }
 
     #[test]

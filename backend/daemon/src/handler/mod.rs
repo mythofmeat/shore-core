@@ -440,11 +440,16 @@ impl MessageHandler {
                 effective_config.app.defaults.model.as_deref(),
             );
             let overlay = match resolved.as_ref() {
+                // None for static_default: the chat path layers the
+                // static catalog by patching the resolved model directly
+                // via `apply_sampler_overlay`. Including it here would
+                // double-count.
                 Some(m) => crate::preferences::resolve_sampler_settings(
                     &global_prefs,
                     Some(&char_prefs),
                     &m.provider_key,
                     &m.model_id,
+                    None,
                 ),
                 None => crate::preferences::SamplerSettings::default(),
             };

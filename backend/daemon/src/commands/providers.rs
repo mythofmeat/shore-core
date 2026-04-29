@@ -128,10 +128,17 @@ pub async fn refresh_provider_models(ctx: &CommandContext, args: &Value) -> Comm
         ));
     }
 
-    let base_url = entry.base_url.clone().ok_or((
-        ErrorCode::InvalidRequest,
-        format!("provider {provider:?} has no base_url; required for OpenAI-compatible discovery"),
-    ))?;
+    let base_url = entry
+        .base_url
+        .clone()
+        .or_else(|| shore_llm::default_base_url(provider).map(String::from))
+        .ok_or((
+            ErrorCode::InvalidRequest,
+            format!(
+                "provider {provider:?} has no base_url; \
+                 required for OpenAI-compatible discovery"
+            ),
+        ))?;
 
     // Pick the first enabled key whose env var holds a non-empty value.
     // We do not rotate on failure here (Phase 4 fallback is reserved for
@@ -809,6 +816,63 @@ enabled = false
             .unwrap_err();
         assert_eq!(err.0, ErrorCode::InvalidRequest);
         assert!(err.1.contains("discovery"));
+    }
+
+    #[tokio::test]
+    async fn refresh_well_known_provider_falls_back_to_default_base_url() {
+        // openrouter has a well-known base_url default; omitting it from
+        // the registry must not block discovery. The refresh proceeds
+        // past the base_url check and fails later on missing key — that
+        // failure point is what proves the default kicked in.
+        let tmp = tempfile::tempdir().unwrap();
+        let unique = format!("PROV_TEST_DEFAULT_BASE_{}", std::process::id());
+        std::env::remove_var(&unique);
+        let ctx = build_ctx_with_registry(
+            &tmp,
+            &format!(
+                r#"
+[[providers.openrouter.keys]]
+name = "main"
+env = "{unique}"
+
+[providers.openrouter.discovery]
+enabled = true
+"#
+            ),
+        );
+        let err = refresh_provider_models(&ctx, &json!({ "provider": "openrouter" }))
+            .await
+            .unwrap_err();
+        // No base_url set, but openrouter has a default → we reach the
+        // key check instead of the base_url check.
+        assert_eq!(err.0, ErrorCode::ProviderError);
+        assert!(
+            !err.1.contains("base_url"),
+            "expected default to kick in; got: {}",
+            err.1
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_unknown_provider_without_base_url_still_errors() {
+        // Custom provider keys (no well-known default) must still get the
+        // explicit "no base_url" error so users know they have to set it.
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = build_ctx_with_registry(
+            &tmp,
+            r#"
+[providers.opencode]
+api_key_env = "OC_KEY"
+
+[providers.opencode.discovery]
+enabled = true
+"#,
+        );
+        let err = refresh_provider_models(&ctx, &json!({ "provider": "opencode" }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.0, ErrorCode::InvalidRequest);
+        assert!(err.1.contains("base_url"));
     }
 
     #[tokio::test]

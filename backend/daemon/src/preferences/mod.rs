@@ -123,6 +123,21 @@ impl SamplerSettings {
             && self.max_tokens.is_none()
             && self.cache_ttl.is_none()
     }
+
+    /// Extract the sampler-shaped fields from a resolved static-catalog
+    /// model. `thinking_enabled` has no catalog counterpart and stays
+    /// `None`.
+    pub fn from_resolved_model(model: &shore_config::models::ResolvedModel) -> Self {
+        Self {
+            temperature: model.temperature,
+            top_p: model.top_p,
+            reasoning_effort: model.reasoning_effort.clone(),
+            thinking_enabled: None,
+            budget_tokens: model.budget_tokens,
+            max_tokens: model.max_tokens,
+            cache_ttl: model.cache_ttl.clone(),
+        }
+    }
 }
 
 // ── Selected model ──────────────────────────────────────────────────────
@@ -307,6 +322,12 @@ pub fn resolve_selected_model(
 ///
 /// Layer order (lowest to highest precedence):
 ///
+/// 0. `static_default` — sampler-shaped fields from the static catalog
+///    `ResolvedModel`. Pass `None` for callers that already merge the
+///    static catalog separately (e.g. the chat request path applies
+///    overlay on top of a `ResolvedModel` via `apply_sampler_overlay`).
+///    Pass `Some(&resolved)` for display/inspection paths so the
+///    effective view matches what a request would actually use.
 /// 1. `global.defaults.sampler`
 /// 2. `character.defaults.sampler`
 /// 3. `global.models[<provider:model_id>]`
@@ -319,8 +340,12 @@ pub fn resolve_sampler_settings(
     character: Option<&ModelPreferences>,
     provider: &str,
     model_id: &str,
+    static_default: Option<&shore_config::models::ResolvedModel>,
 ) -> SamplerSettings {
-    let mut effective = global.defaults.sampler.clone();
+    let mut effective = static_default
+        .map(SamplerSettings::from_resolved_model)
+        .unwrap_or_default();
+    effective.apply_overlay(&global.defaults.sampler);
     if let Some(c) = character {
         effective.apply_overlay(&c.defaults.sampler);
     }
@@ -374,6 +399,7 @@ pub fn resolve_sampler_scopes(
     character: Option<&ModelPreferences>,
     provider: &str,
     model_id: &str,
+    static_default: Option<&shore_config::models::ResolvedModel>,
 ) -> SamplerScopes {
     let mut scopes = SamplerScopes::default();
     let mut update = |layer: &SamplerSettings, scope: PreferenceScope| {
@@ -392,6 +418,12 @@ pub fn resolve_sampler_scopes(
         note!(max_tokens);
         note!(cache_ttl);
     };
+    if let Some(rm) = static_default {
+        update(
+            &SamplerSettings::from_resolved_model(rm),
+            PreferenceScope::StaticDefault,
+        );
+    }
     update(&global.defaults.sampler, PreferenceScope::GlobalDefault);
     if let Some(c) = character {
         update(&c.defaults.sampler, PreferenceScope::CharacterDefault);
@@ -808,7 +840,7 @@ typo_setting = "x"
         let mut g = ModelPreferences::default();
         g.defaults.sampler.temperature = Some(1.0);
         g.defaults.sampler.top_p = Some(0.9);
-        let s = resolve_sampler_settings(&g, None, "anthropic", "opus");
+        let s = resolve_sampler_settings(&g, None, "anthropic", "opus", None);
         assert_eq!(s.temperature, Some(1.0));
         assert_eq!(s.top_p, Some(0.9));
     }
@@ -827,7 +859,7 @@ typo_setting = "x"
                 },
             },
         );
-        let s = resolve_sampler_settings(&g, None, "anthropic", "opus");
+        let s = resolve_sampler_settings(&g, None, "anthropic", "opus", None);
         assert_eq!(s.temperature, Some(0.7));
     }
 
@@ -858,7 +890,7 @@ typo_setting = "x"
             },
         );
 
-        let s = resolve_sampler_settings(&g, Some(&c), "anthropic", "opus");
+        let s = resolve_sampler_settings(&g, Some(&c), "anthropic", "opus", None);
         // Character overrides temperature.
         assert_eq!(s.temperature, Some(0.5));
         // top_p falls through from global per-model.
@@ -899,7 +931,7 @@ typo_setting = "x"
             },
         );
 
-        let s = resolve_sampler_settings(&g, Some(&c), "anthropic", "opus");
+        let s = resolve_sampler_settings(&g, Some(&c), "anthropic", "opus", None);
         assert_eq!(s.temperature, Some(0.4), "char per-model wins");
         assert_eq!(s.top_p, Some(0.20), "global per-model beats char defaults");
         assert_eq!(
@@ -908,6 +940,92 @@ typo_setting = "x"
             "char defaults beat global defaults"
         );
         assert_eq!(s.budget_tokens, Some(1000), "global defaults are floor");
+    }
+
+    #[test]
+    fn resolve_sampler_static_default_is_bottom_layer() {
+        // Catalog has cache_ttl + max_tokens; preferences have neither.
+        // Display path should surface the catalog values.
+        let catalog = make_catalog(
+            r#"
+[chat.anthropic.opus]
+model_id = "claude-opus-4-6"
+cache_ttl = "1h"
+max_tokens = 8192
+"#,
+        );
+        let model = catalog.find_model("opus").unwrap();
+        let g = ModelPreferences::default();
+        let s = resolve_sampler_settings(&g, None, "anthropic", "claude-opus-4-6", Some(model));
+        assert_eq!(s.cache_ttl.as_deref(), Some("1h"));
+        assert_eq!(s.max_tokens, Some(8192));
+    }
+
+    #[test]
+    fn resolve_sampler_preferences_override_static_default() {
+        // Catalog says cache_ttl = "1h"; character pref says "5m".
+        // Character pref wins.
+        let catalog = make_catalog(
+            r#"
+[chat.anthropic.opus]
+model_id = "claude-opus-4-6"
+cache_ttl = "1h"
+max_tokens = 8192
+"#,
+        );
+        let model = catalog.find_model("opus").unwrap();
+        let g = ModelPreferences::default();
+        let mut c = ModelPreferences::default();
+        c.set_model(
+            "anthropic",
+            "claude-opus-4-6",
+            ModelPreference {
+                sampler: SamplerSettings {
+                    cache_ttl: Some("5m".into()),
+                    max_tokens: Some(32768),
+                    ..Default::default()
+                },
+            },
+        );
+        let s = resolve_sampler_settings(&g, Some(&c), "anthropic", "claude-opus-4-6", Some(model));
+        assert_eq!(s.cache_ttl.as_deref(), Some("5m"));
+        assert_eq!(s.max_tokens, Some(32768));
+    }
+
+    #[test]
+    fn resolve_sampler_scopes_attributes_static_default() {
+        // Field set only in the catalog should report StaticDefault scope.
+        // Field overridden in preferences should report the higher layer.
+        let catalog = make_catalog(
+            r#"
+[chat.anthropic.opus]
+model_id = "claude-opus-4-6"
+cache_ttl = "1h"
+max_tokens = 8192
+"#,
+        );
+        let model = catalog.find_model("opus").unwrap();
+        let g = ModelPreferences::default();
+        let mut c = ModelPreferences::default();
+        c.set_model(
+            "anthropic",
+            "claude-opus-4-6",
+            ModelPreference {
+                sampler: SamplerSettings {
+                    max_tokens: Some(32768),
+                    ..Default::default()
+                },
+            },
+        );
+        let scopes =
+            resolve_sampler_scopes(&g, Some(&c), "anthropic", "claude-opus-4-6", Some(model));
+        assert_eq!(scopes.cache_ttl, Some(PreferenceScope::StaticDefault));
+        assert_eq!(scopes.max_tokens, Some(PreferenceScope::CharacterModel));
+        // temperature lands on StaticDefault from the anthropic provider's
+        // hardcoded baseline (temperature = 1.0). top_p has no default at
+        // any layer, so it stays None.
+        assert_eq!(scopes.temperature, Some(PreferenceScope::StaticDefault));
+        assert_eq!(scopes.top_p, None, "unset everywhere → None");
     }
 
     // ── Sticky-per-model behavior ────────────────────────────────────
@@ -1272,7 +1390,7 @@ temperature = 1.0
             },
         );
 
-        let scopes = resolve_sampler_scopes(&g, Some(&c), "anthropic", "opus");
+        let scopes = resolve_sampler_scopes(&g, Some(&c), "anthropic", "opus", None);
         assert_eq!(scopes.temperature, Some(PreferenceScope::CharacterModel));
         assert_eq!(scopes.top_p, Some(PreferenceScope::GlobalModel));
         assert_eq!(scopes.max_tokens, None, "unset → None");
