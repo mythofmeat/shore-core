@@ -1539,4 +1539,94 @@ model_id = "claude-opus-4-6"
         let opus = loaded.models.find_model("opus").unwrap();
         assert_eq!(opus.api_key_env.as_deref(), Some("MY_LEGACY_KEY"));
     }
+
+    /// `examples/config.toml` is the documented entry point for new
+    /// users. Drift between it and the parser is a real regression, so
+    /// load it through the full two-phase loader and assert the bundled
+    /// example reaches a valid `LoadedConfig`. New commented-out
+    /// snippets in the example file are exercised via the per-section
+    /// tests below.
+    #[test]
+    fn bundled_example_config_parses() {
+        const EXAMPLE: &str = include_str!("../../../examples/config.toml");
+        let tmp = setup_config_dir(&[("config.toml", EXAMPLE)]);
+        let loaded = load_config(Some(&tmp.path().join("config.toml")))
+            .expect("examples/config.toml must parse end-to-end");
+        // The committed example defines [defaults].model = "claude-sonnet"
+        // and the matching [chat.anthropic.claude-sonnet] entry. Both
+        // sides being live is what protects users from copy/paste rot.
+        assert_eq!(loaded.app.defaults.model.as_deref(), Some("claude-sonnet"));
+        assert!(loaded.models.find_model("claude-sonnet").is_ok());
+    }
+
+    /// The Phase 9 OpenRouter budget/overflow + discovery snippet
+    /// documented in `examples/config.toml` must continue to parse,
+    /// even though it is commented out by default. Inline a copy here
+    /// (uncommented) so an accidental rename of a parser field is
+    /// caught immediately.
+    #[test]
+    fn documented_provider_snippet_parses() {
+        let tmp = setup_config_dir(&[(
+            "config.toml",
+            r#"
+[providers.openai]
+api_key_env = "OPENAI_API_KEY"
+
+[providers.openrouter]
+enabled = true
+sdk = "openai"
+base_url = "https://openrouter.ai/api/v1"
+
+[[providers.openrouter.keys]]
+name = "budget"
+env = "OPENROUTER_API_KEY_BUDGET"
+warn_on_fallback = true
+
+[[providers.openrouter.keys]]
+name = "overflow"
+env = "OPENROUTER_API_KEY_OVERFLOW"
+
+[providers.openrouter.discovery]
+enabled = true
+visibility = [
+  "*",
+  "!anthropic/*",
+  "!openai/*",
+  "!google/gemini-*",
+]
+
+[chat.openrouter.sonnet]
+model_id = "anthropic/claude-sonnet-4.5"
+cache_ttl = "1h"
+max_tokens = 16384
+
+[defaults]
+model = "sonnet"
+"#,
+        )]);
+        let loaded = load_config(Some(&tmp.path().join("config.toml"))).unwrap();
+
+        // Provider registry shape.
+        let or = loaded
+            .providers
+            .get("openrouter")
+            .expect("openrouter present");
+        assert!(or.enabled);
+        assert_eq!(or.keys.len(), 2);
+        assert_eq!(or.keys[0].name, "budget");
+        assert!(or.keys[0].warn_on_fallback);
+        assert_eq!(or.keys[1].name, "overflow");
+        assert!(or.discovery.enabled);
+        assert_eq!(or.discovery.visibility.len(), 4);
+
+        // Compact form folds into a synthetic "default" key.
+        let openai = loaded.providers.get("openai").unwrap();
+        assert_eq!(openai.keys.len(), 1);
+        assert_eq!(openai.keys[0].name, "default");
+
+        // Static alias still drives [defaults].model validation.
+        let sonnet = loaded.models.find_model("sonnet").unwrap();
+        assert_eq!(sonnet.model_id, "anthropic/claude-sonnet-4.5");
+        assert_eq!(sonnet.cache_ttl.as_deref(), Some("1h"));
+    }
 }

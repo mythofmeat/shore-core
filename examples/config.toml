@@ -252,6 +252,60 @@ model_id = "claude-sonnet-4-6"
 # [chat.nanogpt.claude-opus]
 # model_id = "anthropic/claude-opus-4.6"   # NanoGPT uses provider/model format
 
+# ── Provider registry & discovery ────────────────────────────────────────
+# Optional. A `[providers.<name>]` block configures a provider once
+# (sdk + base_url + ordered keys + /v1/models discovery) so you don't have
+# to define every model inline. Manual `[chat.<provider>.<alias>]` entries
+# above keep working alongside discovered models — they win on conflict
+# and are never hidden by visibility filters.
+#
+# Use `shore provider` and `shore model` to inspect, refresh, and switch.
+
+# ── Single-key form (compact) ────────────────────────────────────────────
+# [providers.openai]
+# api_key_env = "OPENAI_API_KEY"
+
+# ── Multiple keys with budget/overflow rotation ──────────────────────────
+# Keys are tried in configured order on every request. When the daemon
+# falls back away from a key marked `warn_on_fallback = true` (e.g. your
+# capped budget key), a one-line warning surfaces in the client.
+# [providers.openrouter]
+# enabled = true
+# sdk = "openai"
+# base_url = "https://openrouter.ai/api/v1"
+#
+# [[providers.openrouter.keys]]
+# name = "budget"
+# env = "OPENROUTER_API_KEY_BUDGET"
+# warn_on_fallback = true
+#
+# [[providers.openrouter.keys]]
+# name = "overflow"
+# env = "OPENROUTER_API_KEY_OVERFLOW"
+#
+# [providers.openrouter.discovery]
+# enabled = true
+# # Gitignore-style; last match wins. `*` opt-out, `!pattern` opt-in.
+# # Hidden discovered models stay in the cache but are filtered from
+# # `shore model` and `shore provider models <name>` until `--all`
+# # (CLI) / `:model all` (TUI) is used.
+# visibility = [
+#   "*",
+#   "!anthropic/*",
+#   "!openai/*",
+#   "!google/gemini-*",
+# ]
+
+# ── Manual alias for the default model ───────────────────────────────────
+# [defaults].model must reference a static `[chat.*.*]` alias, so define
+# one even when discovery is enabled. The alias's overrides (cache_ttl,
+# temperature, ...) win over both discovered metadata and saved sampler
+# preferences for that (provider, model_id).
+# [chat.openrouter.sonnet]
+# model_id = "anthropic/claude-sonnet-4.5"
+# cache_ttl = "1h"
+# max_tokens = 16384
+
 # ── Thinking / reasoning ─────────────────────────────────────────────────
 #
 # Anthropic (Opus 4.6, Sonnet 4.6) — reasoning_effort (recommended):

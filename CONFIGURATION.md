@@ -97,9 +97,22 @@ api_key_env = "OPENAI_API_KEY"
 ## Providers
 
 Provider entries replace per-model `api_key_env` duplication and unlock
-runtime `/v1/models` discovery. Multiple keys rotate on auth failure;
-`warn_on_fallback` surfaces a one-line warning when the daemon falls
-back to a non-primary key.
+runtime `/v1/models` discovery. Static `[chat.<provider>.<alias>]`
+entries keep working unchanged alongside the registry — they never
+require migration.
+
+### Single-key form (compact)
+
+```toml
+[providers.openai]
+api_key_env = "OPENAI_API_KEY"
+```
+
+The compact `api_key_env` is folded into a synthetic key named
+`default`. Combining it with explicit `[[keys]]` is rejected; pick one
+form per provider.
+
+### Multiple keys: budget/overflow rotation
 
 ```toml
 [providers.openrouter]
@@ -107,26 +120,65 @@ sdk = "openai"
 base_url = "https://openrouter.ai/api/v1"
 
 [[providers.openrouter.keys]]
-name = "primary"
-env = "OPENROUTER_API_KEY"
+name = "budget"
+env = "OPENROUTER_API_KEY_BUDGET"
 warn_on_fallback = true
 
 [[providers.openrouter.keys]]
-name = "backup"
-env = "OPENROUTER_BACKUP_KEY"
+name = "overflow"
+env = "OPENROUTER_API_KEY_OVERFLOW"
+```
 
+Keys are tried in configured order on every request. When the daemon
+falls back away from a key marked `warn_on_fallback = true` (e.g. an
+exhausted budget cap), a one-line client warning surfaces. The
+fallback is non-sticky: the next request retries from the top of the
+list.
+
+### Discovery and visibility
+
+```toml
 [providers.openrouter.discovery]
 enabled = true
 # gitignore-style; last match wins. `*` opt-out, `!pattern` opt-in.
-visibility = ["meta-llama/*", "!meta-llama/llama-3-70b"]
+visibility = [
+  "*",
+  "!anthropic/*",
+  "!openai/*",
+  "!google/gemini-*",
+]
 ```
 
 Discovered models populate the cache at
 `$XDG_DATA_HOME/shore/providers/<name>/models.json`. Run
 `shore provider refresh <name>` to update it. Hidden models stay in the
-cache but are filtered out of `shore model` until `--all` (CLI) or
-`:model all` (TUI) is used. Manual `[chat.<provider>.<name>]` entries
-are never filtered — they are intentional.
+cache but are filtered out of `shore model` and `shore provider models
+<name>` until `--all` (CLI) or `:model all` (TUI) is used. Manual
+`[chat.<provider>.<alias>]` entries are never filtered — they are
+intentional.
+
+### Effective catalog and merge order
+
+At runtime the daemon resolves models against an effective catalog
+that merges three sources:
+
+1. Static `[chat.<provider>.<alias>]` entries (this file).
+2. Discovered `[providers.<name>]` cache rows.
+3. Hardcoded provider defaults for well-known providers.
+
+Conflict rules:
+
+- Static aliases always win when matched by short name (`sonnet`) or
+  qualified name (`chat.openrouter.sonnet`).
+- When a static entry shares `(provider, model_id)` with a discovered
+  row, the static entry wins for explicit fields and the discovered
+  row is hidden from listings (no duplicate row).
+- Discovered models can be selected at runtime via the bare upstream
+  id (`anthropic/claude-sonnet-4.5`) or the disambiguated form
+  (`openrouter:anthropic/claude-sonnet-4.5`). `[defaults].model` must
+  still reference a static alias — define one (see
+  `examples/config.toml`) when you want a discovered model to be the
+  startup default.
 
 ## Sampler Preferences
 
@@ -138,9 +190,19 @@ $XDG_DATA_HOME/shore/preferences/global.toml
 $XDG_DATA_HOME/shore/characters/<Character>/preferences/models.toml
 ```
 
-Character-scope wins over global; both win over the static catalog.
+Merge order (lowest to highest precedence):
+
+1. Hardcoded provider defaults.
+2. Discovered model metadata.
+3. Static `[chat.<provider>.<alias>]` overrides.
+4. Saved global preferences (`preferences/global.toml`).
+5. Saved per-character preferences (`characters/<C>/preferences/models.toml`).
+
 `reasoning_effort` accepts `low`/`medium`/`high` or `off` (cleared).
-The legacy `shore reasoning ...` command writes through the same store.
+The legacy `shore reasoning ...` command writes through the same
+store. One-shot overrides — `shore model --all <name>`, `:model all
+<name>`, `shore provider refresh <name>` — apply to a single call and
+are never persisted.
 
 ## Character Workspaces
 
