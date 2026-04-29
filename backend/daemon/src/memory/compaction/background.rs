@@ -70,7 +70,12 @@ pub async fn run_compaction(
             .ok_or("No model configured for background compaction")?;
 
     // Create trait implementations.
-    let llm = RealCompactionLlm::new(llm_client.clone(), model, character.to_string());
+    let llm = RealCompactionLlm::new(
+        llm_client.clone(),
+        model,
+        effective.providers.clone(),
+        character.to_string(),
+    );
     let conv_mgr = RealConversationManager::new(&character_dir);
 
     let mgr = CompactionManager::new(effective.app.memory.compaction.clone());

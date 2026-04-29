@@ -14,6 +14,7 @@ use uuid::Uuid;
 
 use crate::engine::segments::{CompactionManifest, SegmentEntry};
 use shore_config::models::ResolvedModel;
+use shore_config::providers::ProviderRegistry;
 use shore_ledger::{CallType, LedgerClient};
 
 use super::compaction::{CompactionError, CompactionLlm, ConversationManager, RetentionParams};
@@ -140,14 +141,25 @@ pub fn resolve_image_gen_config(
 pub struct RealCompactionLlm {
     client: LedgerClient,
     model: ResolvedModel,
+    /// Snapshot of the provider registry so the request honors
+    /// `[providers.<name>].keys`. Without this, compaction would only
+    /// look at `model.api_key_env` and fail with `MissingApiKey` for
+    /// users who configure provider-level keys.
+    providers: ProviderRegistry,
     character: String,
 }
 
 impl RealCompactionLlm {
-    pub fn new(client: LedgerClient, model: ResolvedModel, character: String) -> Self {
+    pub fn new(
+        client: LedgerClient,
+        model: ResolvedModel,
+        providers: ProviderRegistry,
+        character: String,
+    ) -> Self {
         Self {
             client,
             model,
+            providers,
             character,
         }
     }
@@ -162,9 +174,15 @@ impl CompactionLlm for RealCompactionLlm {
         let system = system.to_string();
         Box::pin(async move {
             let msg_count = messages.len();
-            let request =
-                LedgerClient::build_request(&self.model, messages, Some(json!(system)), None, None)
-                    .map_err(|e| CompactionError::Llm(e.to_string()))?;
+            let request = LedgerClient::build_request_with_provider_keys(
+                &self.model,
+                &self.providers,
+                messages,
+                Some(json!(system)),
+                None,
+                None,
+            )
+            .map_err(|e| CompactionError::Llm(e.to_string()))?;
 
             debug!(
                 system_len = system.len(),

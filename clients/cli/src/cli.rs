@@ -511,9 +511,11 @@ complete -c shore -n \"__fish_shore_using_subcommand character\" -f -a \"(shore 
 /// expects. The daemon validates types per-key, so this only needs to
 /// decide between number/bool/string/null without losing information.
 ///
-/// - `reasoning_effort`: pass through as a string. "off"/"none"/"" map
-///   to a JSON null so saved settings clear reasoning rather than store
-///   a literal "off".
+/// - `reasoning_effort`: pass through as a string. Synonyms for
+///   "disable" ("none"/"disable"/"disabled"/"unset"/"") collapse to the
+///   sentinel "off"; the daemon's overlay then explicitly suppresses
+///   `reasoning_effort` on the resolved model. JSON null is reserved
+///   for *clearing* a saved preference (handled by `unset` flows).
 /// - `thinking_enabled`: parse "true"/"false"/"yes"/"no"/"on"/"off".
 /// - `temperature`, `top_p`: parse as f64.
 /// - `budget_tokens`, `max_tokens`: parse as integer.
@@ -538,7 +540,9 @@ fn parse_setting_value(key: &str, raw: &str) -> serde_json::Value {
             .map(|n| Value::Number(n.into()))
             .unwrap_or_else(|_| Value::String(trimmed.to_string())),
         "reasoning_effort" => match trimmed.to_ascii_lowercase().as_str() {
-            "off" | "none" | "disable" | "disabled" | "unset" | "" => Value::Null,
+            "off" | "none" | "disable" | "disabled" | "unset" | "" => {
+                Value::String("off".into())
+            }
             _ => Value::String(trimmed.to_string()),
         },
         _ => Value::String(trimmed.to_string()),
@@ -1730,11 +1734,12 @@ mod tests {
     }
 
     #[test]
-    fn model_setting_reasoning_off_becomes_null() {
-        // "off" is the natural CLI verb for "no reasoning"; the daemon's
-        // setter clears the saved override when value is null, so this
-        // mapping lets `shore model setting reasoning_effort off` work
-        // without needing a separate CLI flag.
+    fn model_setting_reasoning_off_sends_off_sentinel() {
+        // `shore model setting reasoning_effort off` must send the
+        // string "off" (not JSON null). The daemon's overlay maps
+        // Some("off") → unset reasoning_effort on the resolved model,
+        // while null clears the saved override and lets the model's
+        // intrinsic value leak through.
         let cmd = CliCommand::Model {
             subcommand: Some(ModelCommand::Setting {
                 key: Some("reasoning_effort".into()),
@@ -1750,7 +1755,29 @@ mod tests {
             json: false,
         };
         let (_, args) = to_swp_command(&cmd).unwrap();
-        assert!(args["value"].is_null());
+        assert_eq!(args["value"], "off");
+    }
+
+    #[test]
+    fn model_setting_reasoning_disable_synonyms_normalize_to_off() {
+        for synonym in ["none", "DISABLE", "Disabled", "unset", ""] {
+            let cmd = CliCommand::Model {
+                subcommand: Some(ModelCommand::Setting {
+                    key: Some("reasoning_effort".into()),
+                    value: Some(synonym.into()),
+                    global: false,
+                    reset: false,
+                    json: false,
+                }),
+                name: None,
+                info: false,
+                reset: false,
+                all: false,
+                json: false,
+            };
+            let (_, args) = to_swp_command(&cmd).unwrap();
+            assert_eq!(args["value"], "off", "synonym {synonym:?}");
+        }
     }
 
     #[test]

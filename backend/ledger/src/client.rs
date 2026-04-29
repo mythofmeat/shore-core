@@ -239,6 +239,12 @@ impl LedgerClient {
     }
 
     /// Passthrough to `LlmClient::build_request`.
+    ///
+    /// Honors only the per-model `api_key_env`. Callers that have a
+    /// `ProviderRegistry` available should prefer
+    /// [`Self::build_request_with_provider_keys`] so users with
+    /// `[providers.<name>].keys` (and no per-model `api_key_env`) don't
+    /// hit `MissingApiKey` on non-streaming paths.
     pub fn build_request(
         model: &ResolvedModel,
         messages: Vec<serde_json::Value>,
@@ -247,6 +253,25 @@ impl LedgerClient {
         provider_options: Option<serde_json::Value>,
     ) -> Result<LlmRequest, LlmError> {
         LlmClient::build_request(model, messages, system, tools, provider_options)
+    }
+
+    /// Passthrough to `LlmClient::build_request_with_provider_keys`.
+    pub fn build_request_with_provider_keys(
+        model: &ResolvedModel,
+        registry: &shore_config::providers::ProviderRegistry,
+        messages: Vec<serde_json::Value>,
+        system: Option<serde_json::Value>,
+        tools: Option<Vec<serde_json::Value>>,
+        provider_options: Option<serde_json::Value>,
+    ) -> Result<LlmRequest, LlmError> {
+        LlmClient::build_request_with_provider_keys(
+            model,
+            registry,
+            messages,
+            system,
+            tools,
+            provider_options,
+        )
     }
 
     /// Send a non-streaming request, then record the call to the ledger.

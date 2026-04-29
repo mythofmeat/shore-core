@@ -133,7 +133,14 @@ struct GenerationParams {
     rid: Option<String>,
     effective_config: LoadedConfig,
     data_dir: PathBuf,
-    active_model: Option<String>,
+    /// Pre-resolved active model, threaded through from preference
+    /// resolution. Carrying the `ResolvedModel` directly (rather than
+    /// just a name string) avoids a re-resolve in `task.rs` — important
+    /// because discovered-only models have a synthetic `qualified_name`
+    /// (`chat.<provider>.<model_id>`) that `find_effective_model` does
+    /// not accept as input. `None` means fall back to the configured
+    /// default at generation time.
+    active_model: Option<shore_config::models::ResolvedModel>,
     reasoning_effort_override: Option<Option<String>>,
     /// Phase 3+: per-model sampler overlay derived from the merged
     /// global+character preferences for the active `(provider, model_id)`.
@@ -398,7 +405,7 @@ impl MessageHandler {
                             ),
                             None => crate::preferences::SamplerSettings::default(),
                         };
-                        (resolved.map(|m| m.qualified_name.clone()), overlay)
+                        (resolved, overlay)
                     };
                     let reasoning_effort_override = {
                         let session = self.session_state_mut(meta.session.session_id);

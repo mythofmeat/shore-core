@@ -287,7 +287,12 @@ pub async fn compact(
     let model = resolve_compaction_model(&ctx.config, ctx.active_model.as_deref())
         .ok_or_else(|| (ErrorCode::InternalError, "No model configured".to_string()))?;
 
-    let llm = RealCompactionLlm::new(ctx.llm_client.clone(), model, char_name.clone());
+    let llm = RealCompactionLlm::new(
+        ctx.llm_client.clone(),
+        model,
+        ctx.config.providers.clone(),
+        char_name.clone(),
+    );
     let conv_mgr = RealConversationManager::new(engine.character_dir());
 
     let mgr = CompactionManager::new(ctx.config.app.memory.compaction.clone());

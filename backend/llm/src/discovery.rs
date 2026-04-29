@@ -262,7 +262,10 @@ fn truncate_for_log(body: &str) -> String {
     if body.len() <= MAX {
         body.to_string()
     } else {
-        format!("{}…", &body[..MAX])
+        // Round down to the nearest UTF-8 char boundary so a multibyte
+        // character straddling byte 512 doesn't panic the slice.
+        let end = body.floor_char_boundary(MAX);
+        format!("{}…", &body[..end])
     }
 }
 
@@ -553,5 +556,17 @@ mod tests {
     #[test]
     fn truncate_for_log_passes_short_bodies() {
         assert_eq!(truncate_for_log("hi"), "hi");
+    }
+
+    #[test]
+    fn truncate_for_log_handles_multibyte_at_boundary() {
+        // Pad with 510 ASCII bytes, then a 3-byte char so byte 512 lands
+        // mid-character. A naive `&body[..512]` would panic here.
+        let mut body = "x".repeat(510);
+        body.push('世');
+        body.push_str(&"y".repeat(2000));
+        let truncated = truncate_for_log(&body);
+        assert!(truncated.ends_with('…'));
+        assert!(truncated.len() < body.len());
     }
 }

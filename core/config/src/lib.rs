@@ -328,16 +328,19 @@ fn parse_config_table(table: toml::Table, dirs: ShoreDirs) -> Result<LoadedConfi
     // into `defaults.background.*` with a one-time deprecation warning.
     app.defaults.normalize_deprecated_aliases();
 
-    // Build model catalog from the extracted sections.
-    let catalog = ModelCatalog::from_sections(
+    // Build the provider registry first so the model catalog can
+    // inherit registry-level transport defaults (sdk, base_url,
+    // api_key_env) into static `[chat.<provider>]` entries.
+    let providers =
+        ProviderRegistry::from_section(providers_section.as_ref().and_then(|v| v.as_table()))?;
+
+    let catalog = ModelCatalog::from_sections_with_providers(
         chat_section.as_ref().and_then(|v| v.as_table()),
         tools_section.as_ref().and_then(|v| v.as_table()),
         embedding_section.as_ref().and_then(|v| v.as_table()),
         image_generation_section.as_ref().and_then(|v| v.as_table()),
+        Some(&providers),
     )?;
-
-    let providers =
-        ProviderRegistry::from_section(providers_section.as_ref().and_then(|v| v.as_table()))?;
 
     validate_config(&app, &catalog)?;
 

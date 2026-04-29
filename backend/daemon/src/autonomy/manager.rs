@@ -1219,7 +1219,14 @@ fn rebuild_request_from_disk(
         None
     };
 
-    match LedgerClient::build_request(resolved, llm_messages, system, tool_defs, None) {
+    match LedgerClient::build_request_with_provider_keys(
+        resolved,
+        &config.providers,
+        llm_messages,
+        system,
+        tool_defs,
+        None,
+    ) {
         Ok(req) => {
             info!(
                 character,
@@ -1261,8 +1268,9 @@ fn apply_heartbeat_model_override(
     if resolved.model_id == request.model {
         return false;
     }
-    match LedgerClient::build_request(
+    match LedgerClient::build_request_with_provider_keys(
         resolved,
+        &config.providers,
         request.messages.clone(),
         request.system.clone(),
         request.tools.clone(),

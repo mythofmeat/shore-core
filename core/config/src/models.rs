@@ -327,18 +327,40 @@ impl ModelCatalog {
     /// Build a catalog from the raw TOML table (the full merged config).
     ///
     /// Extracts `chat`, `tools`, `embedding`, and `image_generation` sections.
+    /// See `from_sections_with_providers` for the variant that lets the
+    /// `[providers.<name>]` registry cascade transport defaults (`sdk`,
+    /// `base_url`, `api_key_env`) into static model entries.
     pub fn from_sections(
         chat: Option<&toml::Table>,
         tools: Option<&toml::Table>,
         embedding: Option<&toml::Table>,
         image_generation: Option<&toml::Table>,
     ) -> Result<Self, CatalogError> {
+        Self::from_sections_with_providers(chat, tools, embedding, image_generation, None)
+    }
+
+    /// Build a catalog with optional provider-registry transport overlay.
+    ///
+    /// When `providers` is `Some`, each `[chat.<name>]` entry inherits
+    /// the registry's `sdk`, `base_url`, and `api_key_env` as defaults
+    /// (lower precedence than `[chat.<name>]` scalars and per-model
+    /// fields, higher than the hardcoded provider defaults). This lets
+    /// custom OpenAI-compatible providers configured solely under
+    /// `[providers.<name>]` route their static aliases through the
+    /// correct transport without duplicating fields under `[chat.<name>]`.
+    pub fn from_sections_with_providers(
+        chat: Option<&toml::Table>,
+        tools: Option<&toml::Table>,
+        embedding: Option<&toml::Table>,
+        image_generation: Option<&toml::Table>,
+        providers: Option<&crate::providers::ProviderRegistry>,
+    ) -> Result<Self, CatalogError> {
         let chat_models = match chat {
-            Some(t) => parse_category("chat", t)?,
+            Some(t) => parse_category("chat", t, providers)?,
             None => BTreeMap::new(),
         };
         let tool_models = match tools {
-            Some(t) => parse_category("tools", t)?,
+            Some(t) => parse_category("tools", t, providers)?,
             None => BTreeMap::new(),
         };
 
@@ -456,6 +478,7 @@ impl ModelCatalog {
 fn parse_category(
     category: &str,
     section: &toml::Table,
+    providers: Option<&crate::providers::ProviderRegistry>,
 ) -> Result<BTreeMap<String, ResolvedModel>, CatalogError> {
     let mut models = BTreeMap::new();
     debug!(
@@ -487,8 +510,33 @@ fn parse_category(
             }
         }
 
-        // Start from hardcoded defaults for this provider.
+        // Cascade order (lowest → highest precedence):
+        //   1. hardcoded provider defaults
+        //   2. `[providers.<provider>]` registry transport (sdk + base_url)
+        //      — lets custom OpenAI-compatible providers configured only
+        //      under `[providers]` route static aliases through the
+        //      right transport without duplicating fields under `[chat]`
+        //   3. `[chat.<provider>]` scalar fields
+        //   4. `[chat.<provider>.<model>]` per-model fields (applied below)
+        //
+        // Credentials (`api_key_env` and the named-key list) intentionally
+        // do NOT cascade through this path; the registry's compact
+        // `api_key_env` is folded into `keys[]` at parse time, and the
+        // credential resolver reads that list directly. Overlaying a
+        // single env name back onto the static model would defeat the
+        // multi-key fallback machinery.
         let mut provider_config = hardcoded_defaults(provider_key);
+
+        if let Some(registry) = providers {
+            if let Some(entry) = registry.get(provider_key) {
+                let registry_overlay = ModelConfigFields {
+                    sdk: entry.sdk.clone(),
+                    base_url: entry.base_url.clone(),
+                    ..ModelConfigFields::default()
+                };
+                provider_config.fields.merge_from(&registry_overlay);
+            }
+        }
 
         // Overlay explicit TOML scalars.
         if let Ok(explicit) = toml::Value::Table(provider_scalars).try_into::<ProviderConfig>() {
@@ -657,7 +705,7 @@ api_key_env = "MY_KEY"
 model_id = "claude-opus-4-6"
 "#,
         );
-        let models = parse_category("chat", &table).unwrap();
+        let models = parse_category("chat", &table, None).unwrap();
         assert_eq!(models.len(), 1);
 
         let opus = &models["chat.anthropic.opus"];
@@ -687,7 +735,7 @@ model_id = "claude-sonnet-4-6"
 cache_ttl = "5m"
 "#,
         );
-        let models = parse_category("chat", &table).unwrap();
+        let models = parse_category("chat", &table, None).unwrap();
 
         // opus inherits provider defaults
         let opus = &models["chat.anthropic.opus"];
@@ -709,7 +757,7 @@ cache_ttl = "5m"
 model_id = "claude-opus-4-6"
 "#,
         );
-        let models = parse_category("chat", &table).unwrap();
+        let models = parse_category("chat", &table, None).unwrap();
         let opus = &models["chat.anthropic.opus"];
 
         // Should get hardcoded anthropic defaults.
@@ -718,6 +766,117 @@ model_id = "claude-opus-4-6"
         assert_eq!(opus.temperature, Some(1.0));
         assert_eq!(opus.max_tokens, Some(8192));
         assert_eq!(opus.max_context_tokens, Some(200_000));
+    }
+
+    #[test]
+    fn provider_registry_transport_cascades_into_static_models() {
+        // Regression pin: a custom OpenAI-compatible provider configured
+        // only under `[providers.<name>]` should propagate sdk and
+        // base_url into static `[chat.<name>]` aliases, so the request
+        // routes through the right transport without users duplicating
+        // those fields under `[chat.<name>]`. Credentials cascade
+        // through the provider key resolver instead, not through this
+        // overlay (see the `_credentials_do_not_cascade` test).
+        use crate::providers::ProviderRegistry;
+
+        let providers_table: toml::Table = r#"
+[providers.acme]
+sdk = "openai"
+base_url = "https://acme.example.com/v1"
+"#
+        .parse()
+        .unwrap();
+        let registry =
+            ProviderRegistry::from_section(providers_table.get("providers").and_then(|v| v.as_table()))
+                .unwrap();
+
+        let table = parse_table(
+            r#"
+[acme.fast]
+model_id = "acme/fast"
+"#,
+        );
+        let models = parse_category("chat", &table, Some(&registry)).unwrap();
+
+        let fast = &models["chat.acme.fast"];
+        assert_eq!(fast.sdk, Sdk::Openai);
+        assert_eq!(fast.base_url.as_deref(), Some("https://acme.example.com/v1"));
+    }
+
+    #[test]
+    fn provider_registry_credentials_do_not_cascade_into_static_models() {
+        // The registry's compact `api_key_env` is folded into `keys[]`
+        // at parse time. Overlaying a single env name back onto the
+        // static model would bypass the multi-key fallback resolver,
+        // so credentials must stay out of the transport cascade.
+        use crate::providers::ProviderRegistry;
+
+        let providers_table: toml::Table = r#"
+[providers.acme]
+sdk = "openai"
+base_url = "https://acme.example.com/v1"
+api_key_env = "ACME_KEY"
+"#
+        .parse()
+        .unwrap();
+        let registry =
+            ProviderRegistry::from_section(providers_table.get("providers").and_then(|v| v.as_table()))
+                .unwrap();
+
+        let table = parse_table(
+            r#"
+[acme.fast]
+model_id = "acme/fast"
+"#,
+        );
+        let models = parse_category("chat", &table, Some(&registry)).unwrap();
+
+        let fast = &models["chat.acme.fast"];
+        // sdk and base_url cascade.
+        assert_eq!(fast.sdk, Sdk::Openai);
+        assert_eq!(fast.base_url.as_deref(), Some("https://acme.example.com/v1"));
+        // api_key_env stays None — the credential resolver reads
+        // `[providers.acme].keys` directly.
+        assert!(fast.api_key_env.is_none());
+    }
+
+    #[test]
+    fn chat_section_scalars_win_over_provider_registry() {
+        // Cascade ordering: explicit `[chat.<provider>]` scalars must
+        // override the registry's defaults, just as model-level fields
+        // override `[chat.<provider>]` scalars.
+        use crate::providers::ProviderRegistry;
+
+        let providers_table: toml::Table = r#"
+[providers.acme]
+sdk = "openai"
+base_url = "https://acme.example.com/v1"
+"#
+        .parse()
+        .unwrap();
+        let registry =
+            ProviderRegistry::from_section(providers_table.get("providers").and_then(|v| v.as_table()))
+                .unwrap();
+
+        let table = parse_table(
+            r#"
+[acme]
+base_url = "https://override.example.com/v2"
+
+[acme.fast]
+model_id = "acme/fast"
+"#,
+        );
+        let models = parse_category("chat", &table, Some(&registry)).unwrap();
+
+        let fast = &models["chat.acme.fast"];
+        // sdk still inherited from the registry (chat section did not set it)
+        assert_eq!(fast.sdk, Sdk::Openai);
+        // base_url from the chat section wins over the registry
+        assert_eq!(
+            fast.base_url.as_deref(),
+            Some("https://override.example.com/v2")
+        );
     }
 
     #[test]
@@ -732,7 +891,7 @@ temperature = 0.5
 model_id = "claude-opus-4-6"
 "#,
         );
-        let models = parse_category("chat", &table).unwrap();
+        let models = parse_category("chat", &table, None).unwrap();
         let opus = &models["chat.anthropic.opus"];
 
         assert_eq!(opus.api_key_env.as_deref(), Some("CUSTOM_KEY"));
@@ -752,7 +911,7 @@ openrouter_provider = {order = ["Vertex AI"]}
 model_id = "claude-opus-4-6"
 "#,
         );
-        let models = parse_category("chat", &table).unwrap();
+        let models = parse_category("chat", &table, None).unwrap();
 
         // Should only have "opus", not "openrouter_provider".
         assert_eq!(models.len(), 1);
@@ -771,7 +930,7 @@ model_id = "claude-opus-4-6"
 temperature = 0.5
 "#,
         );
-        let err = parse_category("chat", &table).unwrap_err();
+        let err = parse_category("chat", &table, None).unwrap_err();
         assert!(matches!(err, CatalogError::MissingModelId { .. }));
     }
 
@@ -786,7 +945,7 @@ model_id = "claude-opus-4-6"
 model_id = "google/gemini-3.1-pro-preview"
 "#,
         );
-        let models = parse_category("chat", &table).unwrap();
+        let models = parse_category("chat", &table, None).unwrap();
         assert_eq!(models.len(), 2);
         assert_eq!(models["chat.anthropic.opus"].sdk, Sdk::Anthropic);
         assert_eq!(models["chat.openrouter.gemini-pro"].sdk, Sdk::Openai); // openrouter default
@@ -1137,7 +1296,7 @@ model_id = "anthropic/claude-opus-4.6"
 sdk = "anthropic"
 "#,
         );
-        let models = parse_category("chat", &table).unwrap();
+        let models = parse_category("chat", &table, None).unwrap();
         let opus = &models["chat.openrouter.claude-opus"];
 
         // SDK should be overridden to Anthropic
@@ -1164,7 +1323,7 @@ base_url = "https://openrouter.ai/api/v1"
 api_key_env = "OPENROUTER_API_KEY"
 "#,
         );
-        let models = parse_category("chat", &table).unwrap();
+        let models = parse_category("chat", &table, None).unwrap();
         let opus = &models["chat.anthropic.opus-via-or"];
 
         assert_eq!(opus.sdk, Sdk::Anthropic);

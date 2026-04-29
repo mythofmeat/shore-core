@@ -97,24 +97,31 @@ pub(super) async fn handle_generation(
         }
     }
 
-    let model_name = active_model
-        .as_deref()
-        .or(effective_config.app.defaults.model.as_deref());
-    let resolved_base_owned: shore_config::models::ResolvedModel = match model_name {
-        Some(name) => crate::effective_catalog::find_effective_model(
-            &effective_config,
-            &effective_config.dirs.data,
-            name,
-            // Once a model is the active selection, it has already been
-            // explicitly chosen — visibility is enforced at switch time.
-            true,
-        )
-        .map_err(|e| e.to_string())?,
-        None => effective_config
-            .models
-            .first_chat_model()
-            .cloned()
-            .ok_or("No model configured")?,
+    // The handler resolves the active model (via preferences +
+    // discovery) and passes the `ResolvedModel` through directly, so we
+    // do not re-run `find_effective_model` here — discovered-only models
+    // have a synthetic `qualified_name` that the resolver does not
+    // accept as input. If nothing was passed, fall back to the
+    // configured app default, then the first static chat model.
+    let resolved_base_owned: shore_config::models::ResolvedModel = match active_model {
+        Some(m) => m,
+        None => match effective_config.app.defaults.model.as_deref() {
+            Some(name) => crate::effective_catalog::find_effective_model(
+                &effective_config,
+                &effective_config.dirs.data,
+                name,
+                // App-level defaults are user configuration, not a
+                // discovery-cache selection — visibility still applies
+                // for safety, but a misspelled default should surface.
+                true,
+            )
+            .map_err(|e| e.to_string())?,
+            None => effective_config
+                .models
+                .first_chat_model()
+                .cloned()
+                .ok_or("No model configured")?,
+        },
     };
     let resolved_base = &resolved_base_owned;
     // Phase 3+: apply preference-derived sampler overlay first

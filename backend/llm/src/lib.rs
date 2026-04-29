@@ -104,6 +104,12 @@ impl LlmClient {
     /// [`Self::build_request_with_resolved_key`] instead — that variant takes
     /// a pre-resolved API key string so the dispatcher can rotate keys on
     /// credential failures without rebuilding the rest of the request.
+    ///
+    /// **Non-streaming callers with a `ProviderRegistry` available should
+    /// prefer [`Self::build_request_with_provider_keys`]**, which honors
+    /// `[providers.<name>].keys` instead of only the per-model
+    /// `api_key_env`. This entry point remains for callers that pre-date
+    /// the registry or operate without one (e.g. examples and unit tests).
     pub fn build_request(
         model: &ResolvedModel,
         messages: Vec<serde_json::Value>,
@@ -128,6 +134,60 @@ impl LlmClient {
             tools,
             provider_options,
         ))
+    }
+
+    /// Build an `LlmRequest` honoring the provider registry's key list.
+    ///
+    /// Walks `resolve_key_candidates(provider, registry, model)` in
+    /// configured order and picks the first candidate whose env var is
+    /// set. Falls back to the legacy single-key resolution when no
+    /// candidates are present (e.g. provider not in the registry).
+    /// Returns `LlmError::MissingApiKey` only when every candidate's env
+    /// var is missing or the provider is explicitly disabled.
+    ///
+    /// This is the right entry point for non-streaming callers
+    /// (compaction, dreaming, heartbeat rebuild, autonomy) so they
+    /// pick up `[providers.<name>].keys` instead of silently failing
+    /// when users configure provider-level keys without a per-model
+    /// `api_key_env`. The streaming chat path uses
+    /// `stream_with_credential_fallback`, which additionally rotates
+    /// across candidates on credential-shaped failures during the
+    /// network call itself.
+    pub fn build_request_with_provider_keys(
+        model: &ResolvedModel,
+        registry: &shore_config::providers::ProviderRegistry,
+        messages: Vec<serde_json::Value>,
+        system: Option<serde_json::Value>,
+        tools: Option<Vec<serde_json::Value>>,
+        provider_options: Option<serde_json::Value>,
+    ) -> Result<LlmRequest, LlmError> {
+        let candidates =
+            crate::credentials::resolve_key_candidates(&model.provider_key, registry, model);
+
+        if candidates.is_empty() {
+            // Provider explicitly disabled — surface a recognizable error
+            // rather than falling back to ambient env lookup.
+            return Err(LlmError::MissingApiKey {
+                var: format!("provider '{}' has no enabled keys", model.provider_key),
+            });
+        }
+
+        let mut last_env = candidates[0].env.clone();
+        for cand in &candidates {
+            if let Some(api_key) = crate::credentials::read_candidate_env(cand) {
+                return Ok(Self::build_request_with_resolved_key(
+                    model,
+                    api_key,
+                    messages,
+                    system,
+                    tools,
+                    provider_options,
+                ));
+            }
+            last_env = cand.env.clone();
+        }
+
+        Err(LlmError::MissingApiKey { var: last_env })
     }
 
     /// Build an `LlmRequest` using a pre-resolved API key string.
@@ -393,6 +453,114 @@ mod tests {
         assert_eq!(req.max_tokens, 4096);
 
         std::env::remove_var("ANTHROPIC_API_KEY");
+    }
+
+    #[test]
+    fn build_request_with_provider_keys_uses_first_set_env() {
+        // Regression pin: non-streaming callers (compaction, dreaming,
+        // heartbeat) must honor `[providers.<name>].keys` and not only
+        // the per-model `api_key_env`. Otherwise a provider configured
+        // with provider-level keys but no per-model api_key_env fails
+        // these paths with `MissingApiKey` while chat works fine.
+        use shore_config::providers::ProviderRegistry;
+
+        std::env::remove_var("PRIMARY_KEY_017");
+        std::env::set_var("FALLBACK_KEY_017", "sk-fallback");
+
+        let providers_table: toml::Table = r#"
+[providers.openrouter]
+sdk = "openai"
+
+[[providers.openrouter.keys]]
+name = "primary"
+env = "PRIMARY_KEY_017"
+
+[[providers.openrouter.keys]]
+name = "fallback"
+env = "FALLBACK_KEY_017"
+"#
+        .parse()
+        .unwrap();
+        let registry = ProviderRegistry::from_section(
+            providers_table.get("providers").and_then(|v| v.as_table()),
+        )
+        .unwrap();
+
+        // Model has *no* api_key_env — without provider-key resolution,
+        // `build_request` would fall back to OPENROUTER_API_KEY and fail.
+        let model = test_model("test", "openrouter", Sdk::Openai);
+
+        let req = LlmClient::build_request_with_provider_keys(
+            &model, &registry, vec![], None, None, None,
+        )
+        .unwrap();
+        assert_eq!(req.api_key, "sk-fallback");
+
+        std::env::remove_var("FALLBACK_KEY_017");
+    }
+
+    #[test]
+    fn build_request_with_provider_keys_falls_back_to_legacy_when_no_keys() {
+        // Provider in the registry only for sdk/base_url (no keys list)
+        // must keep the legacy single-key path working — the test
+        // mirrors `resolve_key_candidates`'s documented contract.
+        use shore_config::providers::ProviderRegistry;
+
+        std::env::set_var("LEGACY_KEY_017", "sk-legacy");
+
+        let providers_table: toml::Table = r#"
+[providers.openrouter]
+sdk = "openai"
+base_url = "https://openrouter.ai/api/v1"
+"#
+        .parse()
+        .unwrap();
+        let registry = ProviderRegistry::from_section(
+            providers_table.get("providers").and_then(|v| v.as_table()),
+        )
+        .unwrap();
+
+        let mut model = test_model("test", "openrouter", Sdk::Openai);
+        model.api_key_env = Some("LEGACY_KEY_017".into());
+
+        let req = LlmClient::build_request_with_provider_keys(
+            &model, &registry, vec![], None, None, None,
+        )
+        .unwrap();
+        assert_eq!(req.api_key, "sk-legacy");
+
+        std::env::remove_var("LEGACY_KEY_017");
+    }
+
+    #[test]
+    fn build_request_with_provider_keys_errors_when_disabled() {
+        // Explicitly disabled providers must surface a clear error
+        // instead of falling through to ambient env lookup.
+        use shore_config::providers::ProviderRegistry;
+
+        let providers_table: toml::Table = r#"
+[providers.openrouter]
+enabled = false
+sdk = "openai"
+"#
+        .parse()
+        .unwrap();
+        let registry = ProviderRegistry::from_section(
+            providers_table.get("providers").and_then(|v| v.as_table()),
+        )
+        .unwrap();
+
+        let model = test_model("test", "openrouter", Sdk::Openai);
+        let err = LlmClient::build_request_with_provider_keys(
+            &model, &registry, vec![], None, None, None,
+        )
+        .unwrap_err();
+        match err {
+            LlmError::MissingApiKey { var } => {
+                assert!(var.contains("openrouter"), "got {var}");
+            }
+            other => panic!("Expected MissingApiKey, got {other:?}"),
+        }
     }
 
     #[test]

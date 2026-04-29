@@ -653,8 +653,9 @@ async fn build_librarian_request(
 
     let resolved = resolve_dreaming_model(loaded_config)?;
     let tools = build_librarian_tool_defs(character, &display_name, dry_run);
-    LedgerClient::build_request(
+    LedgerClient::build_request_with_provider_keys(
         resolved,
+        &loaded_config.providers,
         vec![json!({"role": "user", "content": user_prompt})],
         Some(json!(system)),
         Some(tools),

@@ -443,6 +443,40 @@ base_url = "https://openrouter.ai/api/v1"
     }
 
     #[test]
+    fn synthetic_discovered_qualified_name_is_not_a_resolver_input() {
+        // Regression pin: discovered models receive a synthetic
+        // `qualified_name` of the form `chat.<provider>.<model_id>`,
+        // which is *not* a valid input to `find_effective_model` — it
+        // is purely a presentation/identification field. Callers must
+        // pass the bare upstream id, the `provider:model_id` form, or
+        // a static alias. This test exists so future code that tries
+        // to round-trip a `ResolvedModel.qualified_name` back into the
+        // resolver fails loudly rather than silently NotFound-ing on
+        // discovered-only selections (the regression that broke chat
+        // after `switch_model` to a discovered model).
+        let tmp = tempfile::tempdir().unwrap();
+        let loaded = make_loaded(
+            &tmp,
+            r#"
+[providers.openrouter]
+api_key_env = "OR_KEY"
+base_url = "https://openrouter.ai/api/v1"
+"#,
+            "",
+        );
+        write_cache_for(&tmp, "openrouter", &["anthropic/claude-sonnet-4.5"]);
+
+        // Sanity: the synthetic qualified_name has no `:` and is not a
+        // bare upstream id (it carries the `chat.<provider>.` prefix).
+        let synthetic = "chat.openrouter.anthropic/claude-sonnet-4.5";
+        let err = find_effective_model(&loaded, tmp.path(), synthetic, true).unwrap_err();
+        assert!(
+            matches!(err, EffectiveCatalogError::NotFound { .. }),
+            "expected NotFound for synthetic qualified_name, got {err:?}"
+        );
+    }
+
+    #[test]
     fn discovered_model_selectable_by_provider_prefix() {
         let tmp = tempfile::tempdir().unwrap();
         let loaded = make_loaded(

@@ -897,7 +897,13 @@ fn parse_setting_value_str(key: &str, raw: &str) -> serde_json::Value {
             .map(|n| Value::Number(n.into()))
             .unwrap_or_else(|_| Value::String(trimmed.to_string())),
         "reasoning_effort" => match trimmed.to_ascii_lowercase().as_str() {
-            "off" | "none" | "disable" | "disabled" | "unset" | "" => Value::Null,
+            // Send the literal "off" sentinel (not null) so the daemon's
+            // overlay explicitly suppresses reasoning_effort. Null would
+            // *clear* the saved override, letting the model's default
+            // value leak through.
+            "off" | "none" | "disable" | "disabled" | "unset" | "" => {
+                Value::String("off".into())
+            }
             _ => Value::String(trimmed.to_string()),
         },
         _ => Value::String(trimmed.to_string()),
