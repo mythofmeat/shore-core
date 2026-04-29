@@ -33,6 +33,11 @@ pub struct ConvFingerprint {
     pub entries_len: u32,
     pub last_entry: u64,
     pub second_last_entry: u64,
+    /// Bumped whenever the entries vec is replaced wholesale (History resync,
+    /// :edit, :delete). Counts/summaries can collide across replacements when
+    /// only entries before the last two change, so a monotonic counter is the
+    /// only reliable way to invalidate the cache for those edits.
+    pub history_version: u64,
     pub stream_active: bool,
     pub stream_regen: bool,
     pub stream_blocks_len: u32,
@@ -479,6 +484,10 @@ pub struct App {
     /// frames where the fingerprint of conversation-affecting state hasn't
     /// changed — the common case while the user is just typing.
     pub conv_cache: ConvCache,
+    /// Bumped on every wholesale entries replacement so the conv cache
+    /// fingerprint changes even when entry counts and last-two summaries
+    /// happen to match.
+    pub history_version: u64,
 }
 
 impl Default for App {
@@ -519,6 +528,7 @@ impl Default for App {
             live_speak: false,
             spinner_frame: 0,
             conv_cache: ConvCache::default(),
+            history_version: 0,
         }
     }
 }
@@ -595,6 +605,7 @@ impl App {
             entries_len: self.entries.len() as u32,
             last_entry,
             second_last_entry,
+            history_version: self.history_version,
             stream_active: self.stream.active,
             stream_regen: self.stream.regen,
             stream_blocks_len,

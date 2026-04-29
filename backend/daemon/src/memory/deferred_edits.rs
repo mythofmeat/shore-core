@@ -50,18 +50,26 @@ const DEFAULT_HEARTBEAT_GUIDANCE: &str = "\
 ";
 
 fn normalize_workspace_path(path: &str) -> String {
-    let mut normalized = path
-        .trim()
-        .trim_start_matches('/')
-        .trim_start_matches('\\')
-        .replace('\\', "/");
+    let mut normalized = path.trim().replace('\\', "/");
 
-    while let Some(rest) = normalized.strip_prefix("./") {
-        normalized = rest.to_string();
-    }
-
-    if let Some(rest) = normalized.strip_prefix("workspace/") {
-        normalized = rest.to_string();
+    // Strip any combination of leading separators, "./", and "workspace/"
+    // segments until none apply. A single pass missed inputs like
+    // "workspace/./SOUL.md" (./ only checked before workspace/) and
+    // "./workspace/SOUL.md", letting them slip past the protected-path guard.
+    loop {
+        let before = normalized.len();
+        while normalized.starts_with('/') {
+            normalized.remove(0);
+        }
+        while let Some(rest) = normalized.strip_prefix("./") {
+            normalized = rest.to_string();
+        }
+        if let Some(rest) = normalized.strip_prefix("workspace/") {
+            normalized = rest.to_string();
+        }
+        if normalized.len() == before {
+            break;
+        }
     }
 
     normalized
@@ -421,6 +429,15 @@ mod tests {
         assert!(is_protected_path(r"workspace\AGENTS.md"));
         assert!(is_protected_path("TOOLS.md"));
         assert!(!is_protected_path("notes.md"));
+
+        // Mixed prefixes must still resolve to the canonical name. A single
+        // pass left "./" behind after stripping "workspace/", letting these
+        // bypass the guard.
+        assert!(is_protected_path("workspace/./SOUL.md"));
+        assert!(is_protected_path("./SOUL.md"));
+        assert!(is_protected_path("./workspace/SOUL.md"));
+        assert!(is_protected_path("/./workspace/SOUL.md"));
+        assert!(is_protected_path("workspace/workspace/SOUL.md"));
     }
 
     #[test]

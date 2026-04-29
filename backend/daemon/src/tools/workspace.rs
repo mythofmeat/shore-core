@@ -689,10 +689,19 @@ pub async fn handle_search(
             break;
         }
 
-        let meta = match tokio::fs::metadata(&path).await {
+        // Use symlink_metadata so symlinks aren't transparently followed during
+        // recursive search. resolve_path canonicalizes for direct read/delete,
+        // but here each descendant is joined onto the workspace root without
+        // re-checking containment — a workspace symlink pointing outside
+        // (e.g. → /etc/passwd) would otherwise be read like any regular file.
+        let meta = match tokio::fs::symlink_metadata(&path).await {
             Ok(meta) => meta,
             Err(_) => continue,
         };
+
+        if meta.file_type().is_symlink() {
+            continue;
+        }
 
         if meta.is_dir() {
             if !include_memory && is_root_memory_dir(workspace_dir, &path) {
@@ -1363,6 +1372,36 @@ mod tests {
         assert!(excerpt.contains("German Shepherd"));
         assert!(excerpt.starts_with("..."));
         assert!(excerpt.chars().count() <= SEARCH_EXCERPT_CHARS + 6);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn search_skips_symlinks_pointing_outside_workspace() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("workspace");
+        let ws_str = ws.to_string_lossy().to_string();
+
+        handle_write(
+            json!({"path": "notes.md", "content": "no match here"}),
+            &ws_str,
+        )
+        .await
+        .unwrap();
+
+        let outside_dir = tmp.path().join("outside");
+        std::fs::create_dir_all(&outside_dir).unwrap();
+        let secret = outside_dir.join("secret.md");
+        std::fs::write(&secret, "secret_token_xyzzy").unwrap();
+
+        std::os::unix::fs::symlink(&secret, ws.join("link_to_secret.md")).unwrap();
+        std::os::unix::fs::symlink(&outside_dir, ws.join("outside_dir")).unwrap();
+
+        let result = handle_search(json!({"query": "xyzzy"}), &ws_str, true)
+            .await
+            .unwrap();
+        assert_eq!(result["count"], 0, "symlinked file content must not leak");
+        let results = result["results"].as_array().unwrap();
+        assert!(results.is_empty());
     }
 
     #[tokio::test]
