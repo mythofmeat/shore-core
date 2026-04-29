@@ -782,11 +782,25 @@ impl App {
         "image",
         "memory",
         "model",
+        "provider",
         "quit",
         "regen",
+        "setting",
         "speak",
         "status",
         "sys",
+    ];
+
+    /// Sampler keys accepted by `:setting <key> <value>`. Mirrors the
+    /// daemon's `SAMPLER_KEYS` constant.
+    const SETTING_KEYS: &'static [&'static str] = &[
+        "temperature",
+        "top_p",
+        "reasoning_effort",
+        "thinking_enabled",
+        "budget_tokens",
+        "max_tokens",
+        "cache_ttl",
     ];
 
     /// Update completion candidates based on current command input.
@@ -846,6 +860,55 @@ impl App {
                         .filter(|s| s.starts_with(&arg.to_lowercase()))
                         .map(|s| format!("image {s}"))
                         .collect();
+                }
+                "setting" => {
+                    // First word completes either a sampler key or `reset`.
+                    // After a space we leave value entry to the user.
+                    let (head, has_second) = match arg.split_once(' ') {
+                        Some((h, _)) => (h, true),
+                        None => (arg, false),
+                    };
+                    if has_second {
+                        // `:setting reset <key>` — complete the key list.
+                        if head == "reset" {
+                            let key_arg = arg.split_once(' ').map(|x| x.1).unwrap_or("").trim();
+                            self.completion.candidates = Self::SETTING_KEYS
+                                .iter()
+                                .filter(|k| {
+                                    key_arg.is_empty()
+                                        || k.to_lowercase().starts_with(&key_arg.to_lowercase())
+                                })
+                                .map(|k| format!("setting reset {k}"))
+                                .collect();
+                        } else {
+                            // Value position — no canned suggestions.
+                            self.completion.candidates.clear();
+                        }
+                    } else {
+                        let mut candidates: Vec<String> = Self::SETTING_KEYS
+                            .iter()
+                            .filter(|k| {
+                                head.is_empty()
+                                    || k.to_lowercase().starts_with(&head.to_lowercase())
+                            })
+                            .map(|k| format!("setting {k}"))
+                            .collect();
+                        if "reset".starts_with(&head.to_lowercase()) {
+                            candidates.push("setting reset".into());
+                        }
+                        self.completion.candidates = candidates;
+                    }
+                }
+                "provider" => {
+                    // `:provider [<name>]` and `:provider refresh <name>`.
+                    // Provider names aren't cached client-side yet, so
+                    // only suggest the `refresh` subcommand.
+                    let trimmed = arg.trim();
+                    if trimmed.is_empty() || "refresh".starts_with(&trimmed.to_lowercase()) {
+                        self.completion.candidates = vec!["provider refresh".into()];
+                    } else {
+                        self.completion.candidates.clear();
+                    }
                 }
                 _ => {
                     self.completion.candidates.clear();
