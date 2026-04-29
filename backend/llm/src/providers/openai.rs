@@ -11,6 +11,7 @@ use crate::types::{
 };
 use crate::LlmError;
 
+use super::context::ProviderContext;
 use super::sse::{read_sse_events, SseEvent};
 use super::stream_helpers::{
     apply_common_params, build_done_event, build_start_event, build_tool_use_event,
@@ -25,7 +26,7 @@ const OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 // ── Message & tool translation ──────────────────────────────────────
 
 /// Translate Anthropic-format messages into OpenAI chat completion messages.
-fn translate_messages(request: &LlmRequest) -> Vec<Value> {
+fn translate_messages(request: &LlmRequest, ctx: &ProviderContext) -> Vec<Value> {
     let mut out = Vec::new();
 
     // Inject system prompt if present.
@@ -71,6 +72,11 @@ fn translate_messages(request: &LlmRequest) -> Vec<Value> {
                         .iter()
                         .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_use"))
                         .collect();
+                    let reasoning: String = blocks
+                        .iter()
+                        .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("thinking"))
+                        .map(|b| b.get("thinking").and_then(|t| t.as_str()).unwrap_or(""))
+                        .collect();
 
                     let content_str: String = text_parts
                         .iter()
@@ -112,6 +118,9 @@ fn translate_messages(request: &LlmRequest) -> Vec<Value> {
                     let mut msg_obj = json!({"role": "assistant", "content": content_val});
                     if !tool_calls.is_empty() {
                         msg_obj["tool_calls"] = Value::Array(tool_calls);
+                    }
+                    if !reasoning.is_empty() {
+                        msg_obj[ctx.reasoning_field] = Value::String(reasoning);
                     }
                     out.push(msg_obj);
                 }
@@ -227,8 +236,6 @@ fn translate_tools(tools: &Option<Vec<Value>>) -> Option<Vec<Value>> {
 
 // ── Request body builder ────────────────────────────────────────────
 
-use super::context::ProviderContext;
-
 /// Resolve base URL for an OpenAI-compatible request.
 fn resolve_base_url(request: &LlmRequest) -> &str {
     request.base_url.as_deref().unwrap_or(OPENAI_BASE_URL)
@@ -277,7 +284,7 @@ fn build_headers(request: &LlmRequest, ctx: &ProviderContext) -> reqwest::header
 
 /// Build the JSON body for chat completions (shared by stream and generate).
 fn build_chat_body(request: &LlmRequest, ctx: &ProviderContext, streaming: bool) -> Value {
-    let messages = translate_messages(request);
+    let messages = translate_messages(request, ctx);
     let tools = translate_tools(&request.tools);
 
     let mut body = json!({
@@ -915,12 +922,17 @@ mod tests {
         }
     }
 
+    fn translate_test_messages(request: &LlmRequest) -> Vec<Value> {
+        let ctx = build_provider_context(request);
+        translate_messages(request, &ctx)
+    }
+
     // ── translate_messages ─────────────────────────────────────────────
 
     #[test]
     fn test_translate_messages_system_string() {
         let request = make_request(vec![], Some(json!("Be helpful.")));
-        let msgs = translate_messages(&request);
+        let msgs = translate_test_messages(&request);
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0]["role"], "system");
         assert_eq!(msgs[0]["content"], "Be helpful.");
@@ -935,7 +947,7 @@ mod tests {
                 {"type": "text", "text": "Part two."}
             ])),
         );
-        let msgs = translate_messages(&request);
+        let msgs = translate_test_messages(&request);
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0]["role"], "system");
         assert_eq!(msgs[0]["content"], "Part one. Part two.");
@@ -953,7 +965,7 @@ mod tests {
             })],
             None,
         );
-        let msgs = translate_messages(&request);
+        let msgs = translate_test_messages(&request);
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0]["role"], "assistant");
         assert_eq!(msgs[0]["content"], "Let me search.");
@@ -968,6 +980,31 @@ mod tests {
     }
 
     #[test]
+    fn test_translate_messages_assistant_tool_use_preserves_reasoning_content() {
+        let mut request = make_request(
+            vec![json!({
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": "Need current context."},
+                    {"type": "tool_use", "id": "call_1", "name": "search", "input": {"q": "cats"}}
+                ]
+            })],
+            None,
+        );
+        request.provider_key = Some("deepseek".into());
+        let ctx = build_provider_context(&request);
+
+        let msgs = translate_messages(&request, &ctx);
+
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0]["role"], "assistant");
+        assert_eq!(msgs[0]["content"], Value::Null);
+        assert_eq!(msgs[0]["reasoning_content"], "Need current context.");
+        assert!(msgs[0].get("reasoning").is_none());
+        assert_eq!(msgs[0]["tool_calls"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
     fn test_translate_messages_user_with_tool_result() {
         let request = make_request(
             vec![json!({
@@ -978,7 +1015,7 @@ mod tests {
             })],
             None,
         );
-        let msgs = translate_messages(&request);
+        let msgs = translate_test_messages(&request);
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0]["role"], "tool");
         assert_eq!(msgs[0]["tool_call_id"], "call_1");
@@ -1004,7 +1041,7 @@ mod tests {
             })],
             None,
         );
-        let msgs = translate_messages(&request);
+        let msgs = translate_test_messages(&request);
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0]["role"], "user");
         let parts = msgs[0]["content"].as_array().unwrap();
@@ -1029,7 +1066,7 @@ mod tests {
             vec![json!({"role": "system", "content": "Be concise."})],
             None,
         );
-        let msgs = translate_messages(&request);
+        let msgs = translate_test_messages(&request);
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0]["role"], "user");
         let content = msgs[0]["content"].as_str().unwrap();
@@ -1053,7 +1090,7 @@ mod tests {
             })],
             None,
         );
-        let msgs = translate_messages(&request);
+        let msgs = translate_test_messages(&request);
         assert_eq!(
             msgs.len(),
             1,
@@ -1084,7 +1121,7 @@ mod tests {
         // The top-level request.system field is the real system prompt
         // and must NOT be wrapped — it remains a role:"system" entry.
         let request = make_request(vec![], Some(json!("Real system prompt.")));
-        let msgs = translate_messages(&request);
+        let msgs = translate_test_messages(&request);
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0]["role"], "system");
         assert_eq!(msgs[0]["content"], "Real system prompt.");

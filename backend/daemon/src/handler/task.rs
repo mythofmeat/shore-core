@@ -246,7 +246,7 @@ pub(super) async fn handle_generation(
         cache_dir,
     )
     .await;
-    let include_unsigned_thinking = matches!(resolved.sdk, Sdk::Zai);
+    let include_unsigned_thinking = matches!(resolved.sdk, Sdk::Openai | Sdk::Zai);
     let (mut llm_messages, system) = build_llm_messages(
         &prompt_result,
         include_unsigned_thinking,
