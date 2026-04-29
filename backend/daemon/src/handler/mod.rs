@@ -43,7 +43,7 @@ use crate::notifications::{NotificationEvent, NotificationService};
 use crate::tools::context::SharedToolContext;
 use crate::tools::ToolContext;
 use shore_config::app::SearchConfig;
-use shore_config::LoadedConfig;
+use shore_config::{discover_characters, load_character_config, LoadedConfig};
 use shore_ledger::LedgerClient;
 use shore_swp_server::{RequestMeta, RoutedMessage, SessionId, SessionRouter};
 
@@ -464,19 +464,8 @@ impl MessageHandler {
 
     pub(super) async fn reload_config_from_disk(&mut self, changed_paths: Vec<PathBuf>) {
         let config_path = self.cmd_ctx.config_path.clone();
-        match shore_config::load_config(Some(&config_path)) {
-            Ok(config) => {
-                let summary = self
-                    .apply_reloaded_config(config, RuntimeReloadSource::HotReload)
-                    .await;
-                info!(
-                    path = %config_path.display(),
-                    changed_paths = ?changed_paths,
-                    character_discovery_changed = summary.character_discovery_changed,
-                    dropped_engines = summary.dropped_engines,
-                    "Configuration hot-reloaded from disk"
-                );
-            }
+        let config = match shore_config::load_config(Some(&config_path)) {
+            Ok(config) => config,
             Err(e) => {
                 warn!(
                     path = %config_path.display(),
@@ -484,8 +473,38 @@ impl MessageHandler {
                     error = %e,
                     "Configuration hot reload failed; keeping previous runtime config"
                 );
+                return;
+            }
+        };
+
+        // Validate per-character overlays against the new global config before
+        // committing. `load_config` only parses the global config, so a broken
+        // `characters/<name>/config.toml` would otherwise silently invalidate
+        // the cached merged config and fall back to the global config.
+        let candidate_chars = discover_characters(&config.dirs.config);
+        for name in &candidate_chars {
+            if let Err(e) = load_character_config(&config, name) {
+                warn!(
+                    path = %config_path.display(),
+                    changed_paths = ?changed_paths,
+                    character = %name,
+                    error = %e,
+                    "Configuration hot reload failed; keeping previous runtime config"
+                );
+                return;
             }
         }
+
+        let summary = self
+            .apply_reloaded_config(config, RuntimeReloadSource::HotReload)
+            .await;
+        info!(
+            path = %config_path.display(),
+            changed_paths = ?changed_paths,
+            character_discovery_changed = summary.character_discovery_changed,
+            dropped_engines = summary.dropped_engines,
+            "Configuration hot-reloaded from disk"
+        );
     }
 
     pub(super) async fn apply_reloaded_config(
@@ -521,10 +540,21 @@ impl MessageHandler {
         for (session_id, selected_character) in sessions {
             let snapshot = crate::handshake::build_session_history_snapshot(
                 self.registry.clone(),
-                selected_character,
+                selected_character.clone(),
                 None,
             )
             .await;
+
+            // If the session's selected character was removed by this reload,
+            // clear the router's stored character so subsequent requests don't
+            // route with a stale name (e.g. switch_character would otherwise
+            // fail to resolve the dead selection).
+            if snapshot.selected_character != selected_character {
+                let _ = self
+                    .session_router
+                    .set_selected_character(session_id, snapshot.selected_character.clone())
+                    .await;
+            }
 
             let _ = self
                 .session_router

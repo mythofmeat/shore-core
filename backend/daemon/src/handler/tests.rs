@@ -376,6 +376,67 @@ async fn hot_reload_keeps_previous_config_when_reload_fails() {
 }
 
 #[tokio::test]
+async fn hot_reload_keeps_previous_config_when_character_overlay_is_invalid() {
+    let tmp = TempDir::new().unwrap();
+    let (mut handler, _rx, _direct_rx) = make_handler(&tmp, &["Alice"]).await;
+
+    // Establish a valid Alice overlay first.
+    let alice_config = tmp
+        .path()
+        .join("config")
+        .join("characters")
+        .join("Alice")
+        .join("config.toml");
+    std::fs::write(&alice_config, "[defaults]\nstream = true\n").unwrap();
+    handler
+        .reload_config_from_disk(vec![alice_config.clone()])
+        .await;
+    {
+        let mut registry = handler.registry.lock().await;
+        assert!(registry.effective_config("Alice").app.defaults.stream);
+    }
+
+    // Now corrupt the overlay with invalid TOML and reload.
+    std::fs::write(&alice_config, "this is = not valid TOML [[[").unwrap();
+    handler.reload_config_from_disk(vec![alice_config]).await;
+
+    let mut registry = handler.registry.lock().await;
+    assert!(
+        registry.effective_config("Alice").app.defaults.stream,
+        "invalid character overlay should keep the previously merged character config"
+    );
+}
+
+#[tokio::test]
+async fn hot_reload_clears_router_character_when_removed() {
+    let tmp = TempDir::new().unwrap();
+    let (mut handler, _rx, _direct_rx) = make_handler(&tmp, &["Alice"]).await;
+
+    handler
+        .session_router
+        .set_selected_character(SessionId(1), Some("Alice".into()))
+        .await;
+
+    let alice_dir = tmp.path().join("config").join("characters").join("Alice");
+    std::fs::remove_dir_all(&alice_dir).unwrap();
+
+    let config_path = tmp.path().join("config").join("config.toml");
+    std::fs::write(&config_path, "[defaults]\nstream = false\n").unwrap();
+    handler.reload_config_from_disk(vec![config_path]).await;
+
+    let sessions = handler.session_router.sessions().await;
+    let stored = sessions
+        .into_iter()
+        .find(|(id, _)| *id == SessionId(1))
+        .map(|(_, c)| c);
+    assert_eq!(
+        stored,
+        Some(None),
+        "router should clear the selected character after it is removed"
+    );
+}
+
+#[tokio::test]
 async fn hot_reload_preserves_session_overrides() {
     let tmp = TempDir::new().unwrap();
     let (mut handler, _rx, _direct_rx) = make_handler(&tmp, &["Alice"]).await;
