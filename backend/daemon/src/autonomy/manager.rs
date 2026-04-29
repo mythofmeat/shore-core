@@ -1156,21 +1156,13 @@ fn rebuild_request_from_disk(
         return None;
     }
 
-    // Resolve model: defaults.heartbeat → defaults.model → first chat model.
+    // Resolve model: defaults.background.heartbeat → defaults.background.model
+    // → defaults.model → first chat model.
     let resolved = config
         .app
         .defaults
-        .heartbeat
-        .as_deref()
+        .resolve_background_model_name(shore_config::app::BackgroundTask::Heartbeat)
         .and_then(|name| config.models.find_model(name).ok())
-        .or_else(|| {
-            config
-                .app
-                .defaults
-                .model
-                .as_deref()
-                .and_then(|name| config.models.find_model(name).ok())
-        })
         .or_else(|| config.models.first_chat_model())?;
 
     let display_name = config.app.defaults.resolve_display_name();
@@ -1247,7 +1239,11 @@ fn apply_heartbeat_model_override(
     config: &LoadedConfig,
     character: &str,
 ) -> bool {
-    let Some(heartbeat_name) = config.app.defaults.heartbeat.as_deref() else {
+    let Some(heartbeat_name) = config
+        .app
+        .defaults
+        .resolve_background_model_name(shore_config::app::BackgroundTask::Heartbeat)
+    else {
         return false;
     };
     let resolved = match config.models.find_model(heartbeat_name) {
@@ -2489,7 +2485,7 @@ api_key_env = "{heartbeat_env}"
                 .unwrap();
 
         let mut app = shore_config::app::AppConfig::default();
-        app.defaults.heartbeat = heartbeat.map(str::to_string);
+        app.defaults.background.heartbeat = heartbeat.map(str::to_string);
 
         let tmp = tempfile::tempdir().unwrap();
         shore_config::LoadedConfig::new_for_test(

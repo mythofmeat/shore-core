@@ -401,23 +401,21 @@ fn compaction_err(e: CompactionError) -> (ErrorCode, String) {
 
 /// Resolve the model to use for compaction.
 ///
-/// Chain: active character model → `defaults.model` → first chat model.
-/// Background and interactive compaction entry points depend on this returning
-/// the same value.
+/// Chain: `defaults.background.compaction → defaults.background.model →
+/// defaults.model → first chat model`. The per-character active chat
+/// model is intentionally *not* consulted here — compaction is a
+/// background task and its model is configured independently of the
+/// chat selection so `switch_model` doesn't move it. The `active_model`
+/// argument is retained for API stability and currently ignored.
 pub fn resolve_compaction_model(
     config: &shore_config::LoadedConfig,
-    active_model: Option<&str>,
+    _active_model: Option<&str>,
 ) -> Option<shore_config::models::ResolvedModel> {
-    active_model
+    config
+        .app
+        .defaults
+        .resolve_background_model_name(shore_config::app::BackgroundTask::Compaction)
         .and_then(|name| config.models.find_model(name).ok())
-        .or_else(|| {
-            config
-                .app
-                .defaults
-                .model
-                .as_deref()
-                .and_then(|name| config.models.find_model(name).ok())
-        })
         .or_else(|| config.models.first_chat_model())
         .cloned()
 }
@@ -426,12 +424,13 @@ pub fn resolve_compaction_model(
 mod resolver_tests {
     //! Regression tests for [`resolve_compaction_model`].
     //!
-    //! Compaction follows the character's persisted active chat model, then
-    //! falls back through the normal chat default. This keeps manual and
-    //! background compaction aligned without a separate compaction selector.
-    //! Don't delete without a matching DECISIONS.md entry.
+    //! Compaction is a background task and follows the
+    //! `defaults.background.compaction → defaults.background.model →
+    //! defaults.model → first chat model` chain. The per-character
+    //! active chat model is **not** consulted, so a runtime
+    //! `switch_model` does not move the compaction model.
     use super::resolve_compaction_model;
-    use shore_config::app::{AppConfig, DefaultsConfig};
+    use shore_config::app::{AppConfig, BackgroundDefaultsConfig, DefaultsConfig};
     use shore_config::models::ModelCatalog;
     use shore_config::{LoadedConfig, ShoreDirs};
     use std::path::PathBuf;
@@ -475,32 +474,54 @@ model_id = "minimax-tool"
     }
 
     #[test]
-    fn compaction_prefers_active_character_model() {
+    fn compaction_prefers_per_task_override() {
         let config = make_config(DefaultsConfig {
             model: Some("primary".to_string()),
+            background: BackgroundDefaultsConfig {
+                model: Some("primary".to_string()),
+                compaction: Some("bg".to_string()),
+                ..BackgroundDefaultsConfig::default()
+            },
             ..DefaultsConfig::default()
         });
-        let model = resolve_compaction_model(&config, Some("bg")).expect("resolved");
+        let model = resolve_compaction_model(&config, None).expect("resolved");
         assert_eq!(model.name, "bg");
     }
 
     #[test]
-    fn compaction_ignores_unknown_active_model() {
+    fn compaction_falls_back_to_background_model() {
         let config = make_config(DefaultsConfig {
             model: Some("primary".to_string()),
+            background: BackgroundDefaultsConfig {
+                model: Some("bg".to_string()),
+                ..BackgroundDefaultsConfig::default()
+            },
             ..DefaultsConfig::default()
         });
-        let model = resolve_compaction_model(&config, Some("missing")).expect("resolved");
-        assert_eq!(model.name, "primary");
+        let model = resolve_compaction_model(&config, None).expect("resolved");
+        assert_eq!(model.name, "bg");
     }
 
     #[test]
-    fn compaction_falls_back_to_default_model_when_active_unset() {
+    fn compaction_falls_back_to_chat_default_when_background_unset() {
         let config = make_config(DefaultsConfig {
             model: Some("primary".to_string()),
             ..DefaultsConfig::default()
         });
         let model = resolve_compaction_model(&config, None).expect("resolved");
+        assert_eq!(model.name, "primary");
+    }
+
+    #[test]
+    fn compaction_ignores_per_character_active_chat_model() {
+        // Even when an active chat model name is passed in, the resolver
+        // must use the configured background chain. This is the headline
+        // behavior change: `switch_model` must not move compaction.
+        let config = make_config(DefaultsConfig {
+            model: Some("primary".to_string()),
+            ..DefaultsConfig::default()
+        });
+        let model = resolve_compaction_model(&config, Some("bg")).expect("resolved");
         assert_eq!(model.name, "primary");
     }
 

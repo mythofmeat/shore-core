@@ -666,13 +666,11 @@ async fn build_librarian_request(
 fn resolve_dreaming_model(
     loaded_config: &LoadedConfig,
 ) -> Result<&shore_config::models::ResolvedModel, DreamingError> {
-    if let Some(name) = loaded_config.app.defaults.dreaming.as_deref() {
-        return loaded_config
-            .models
-            .find_model(name)
-            .map_err(|e| DreamingError::Config(e.to_string()));
-    }
-    if let Some(name) = loaded_config.app.defaults.model.as_deref() {
+    if let Some(name) = loaded_config
+        .app
+        .defaults
+        .resolve_background_model_name(shore_config::app::BackgroundTask::Dreaming)
+    {
         return loaded_config
             .models
             .find_model(name)

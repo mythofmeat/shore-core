@@ -29,6 +29,7 @@ See `README.md`, `FEATURES.md`, and `CONFIGURATION.md` for current branch guidan
 - Repository ownership layout: `core/`, `backend/`, `clients/`, `bridges/`, and `dev/`, with default Cargo members for faster local daemon/CLI builds
 
 ### Changed
+- Background-task model configuration moved under `[defaults.background]` with `model`, `heartbeat`, `compaction`, and `dreaming` selectors; resolvers chain per-task → `background.model` → `defaults.model` → first chat model. Compaction is now a background task and no longer follows the per-character active chat model, so a runtime `switch_model` only affects chat. The legacy `defaults.heartbeat` / `defaults.dreaming` keys still parse but log a deprecation warning and forward into `[defaults.background]`
 - TUI keystroke latency no longer scales with conversation length: the conversation pane caches its rendered lines and rebuilds only when a fingerprint of rendering-relevant state changes
 - Runtime memory source of truth moved from hidden SQLite/vector/RAG state to markdown files
 - Interiority naming standardized to heartbeat/autonomy

@@ -17,13 +17,22 @@
 # ── Defaults ─────────────────────────────────────────────────────────────
 
 [defaults]
-model = "claude-sonnet"            # Must match a key in [chat.*.*] below
-# heartbeat = "claude-sonnet"     # Model for autonomous heartbeat ticks
-# dreaming = "claude-sonnet"      # Model for private memory librarian passes
+model = "claude-sonnet"            # Chat default; also fallback for background tasks
 # embedding = "text-large"          # Embedding profile
 # image_generation = "gemini-flash" # Image generation profile
 # display_name = "Your Name"        # {{user}} in templates; falls back to $USER
 # stream = true
+
+# Optional: split chat from background tasks (heartbeat/compaction/dreaming).
+# - Set only `defaults.model` above for one model everywhere.
+# - Set `[defaults.background] model` to send all background work to a different
+#   model (the most common split — two fields total).
+# - Per-task keys override `background.model` for that one task.
+# [defaults.background]
+# model = "claude-haiku"
+# heartbeat = "claude-haiku"
+# compaction = "claude-sonnet"
+# dreaming = "claude-sonnet"
 
 # ── Autonomy ─────────────────────────────────────────────────────────────
 # Controls the character's autonomous behavior — what makes it feel present

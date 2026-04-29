@@ -80,16 +80,50 @@ impl Default for DaemonConfig {
 
 // ── [defaults] ──────────────────────────────────────────────────────────
 
+/// Background-task model selectors. All resolvers chain
+/// `<task> → background.model → defaults.model → first chat`, so the
+/// common case of "split chat from everything else" is two fields
+/// (`defaults.model` + `defaults.background.model`).
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct BackgroundDefaultsConfig {
+    /// Blanket model used by every background task unless a per-task
+    /// override below is set.
+    pub model: Option<String>,
+
+    /// Per-task override for autonomous heartbeat ticks.
+    pub heartbeat: Option<String>,
+
+    /// Per-task override for memory compaction passes.
+    pub compaction: Option<String>,
+
+    /// Per-task override for the AI librarian dreaming pass.
+    pub dreaming: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct DefaultsConfig {
-    /// Default chat model name (must match a model in config).
+    /// Default chat model name (must match a model in config). Acts as the
+    /// fallback for every background task as well.
     pub model: Option<String>,
 
-    /// Default heartbeat model name (for autonomous heartbeat ticks).
+    /// Background-task model selectors (heartbeat, compaction, dreaming).
+    #[serde(default)]
+    pub background: BackgroundDefaultsConfig,
+
+    /// **Deprecated.** Old top-level shorthand for
+    /// `defaults.background.heartbeat`. Parse-only — the loader logs a
+    /// warning and forwards into `background.heartbeat` (only when the
+    /// new key is unset).
+    #[serde(default)]
     pub heartbeat: Option<String>,
 
-    /// Default dreaming model name (for private memory librarian passes).
+    /// **Deprecated.** Old top-level shorthand for
+    /// `defaults.background.dreaming`. Parse-only — the loader logs a
+    /// warning and forwards into `background.dreaming` (only when the
+    /// new key is unset).
+    #[serde(default)]
     pub dreaming: Option<String>,
 
     /// Default embedding profile name.
@@ -107,6 +141,14 @@ pub struct DefaultsConfig {
     pub stream: bool,
 }
 
+/// Symbolic background-task identifier for [`DefaultsConfig::resolve_background_model_name`].
+#[derive(Debug, Clone, Copy)]
+pub enum BackgroundTask {
+    Heartbeat,
+    Compaction,
+    Dreaming,
+}
+
 impl DefaultsConfig {
     /// Resolve the user's display name: config → $USER → "User".
     pub fn resolve_display_name(&self) -> String {
@@ -115,12 +157,65 @@ impl DefaultsConfig {
             .or_else(|| std::env::var("USER").ok())
             .unwrap_or_else(|| "User".to_string())
     }
+
+    /// Resolve the configured model *name* for a background task, walking
+    /// `background.<task> → background.model → defaults.model`. Catalog
+    /// validation and final fallback to "first chat model" live in the
+    /// per-task resolvers; this returns just the configured name (or
+    /// `None` when nothing is set anywhere).
+    pub fn resolve_background_model_name(&self, task: BackgroundTask) -> Option<&str> {
+        let per_task = match task {
+            BackgroundTask::Heartbeat => self.background.heartbeat.as_deref(),
+            BackgroundTask::Compaction => self.background.compaction.as_deref(),
+            BackgroundTask::Dreaming => self.background.dreaming.as_deref(),
+        };
+        per_task
+            .or(self.background.model.as_deref())
+            .or(self.model.as_deref())
+    }
+
+    /// Migrate the legacy top-level `defaults.heartbeat` /
+    /// `defaults.dreaming` keys into `defaults.background.*`. The new
+    /// keys win on conflict; old keys whose new counterpart is unset are
+    /// forwarded with a deprecation warning. Idempotent — calling it on
+    /// already-normalized values is a no-op.
+    pub fn normalize_deprecated_aliases(&mut self) {
+        if let Some(value) = self.heartbeat.take() {
+            if self.background.heartbeat.is_none() {
+                tracing::warn!(
+                    "`defaults.heartbeat = {value:?}` is deprecated; \
+                     move it under `[defaults.background]` as `heartbeat`."
+                );
+                self.background.heartbeat = Some(value);
+            } else {
+                tracing::warn!(
+                    "`defaults.heartbeat` is deprecated and was ignored \
+                     because `defaults.background.heartbeat` is already set."
+                );
+            }
+        }
+        if let Some(value) = self.dreaming.take() {
+            if self.background.dreaming.is_none() {
+                tracing::warn!(
+                    "`defaults.dreaming = {value:?}` is deprecated; \
+                     move it under `[defaults.background]` as `dreaming`."
+                );
+                self.background.dreaming = Some(value);
+            } else {
+                tracing::warn!(
+                    "`defaults.dreaming` is deprecated and was ignored \
+                     because `defaults.background.dreaming` is already set."
+                );
+            }
+        }
+    }
 }
 
 impl Default for DefaultsConfig {
     fn default() -> Self {
         Self {
             model: None,
+            background: BackgroundDefaultsConfig::default(),
             heartbeat: None,
             dreaming: None,
             embedding: None,
@@ -1280,6 +1375,160 @@ cache_forensics = true
         assert_eq!(config.tts.host, "");
         assert_eq!(config.tts.port, 8778);
         assert!(config.tts.voice.is_none());
+    }
+
+    // ── BackgroundDefaultsConfig + resolver ──────────────────────────
+
+    #[test]
+    fn background_resolver_uses_per_task_when_set() {
+        let d = DefaultsConfig {
+            model: Some("chat".into()),
+            background: BackgroundDefaultsConfig {
+                model: Some("bg".into()),
+                heartbeat: Some("hb".into()),
+                ..BackgroundDefaultsConfig::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(
+            d.resolve_background_model_name(BackgroundTask::Heartbeat),
+            Some("hb")
+        );
+        // Compaction has no per-task override → falls back to background.model.
+        assert_eq!(
+            d.resolve_background_model_name(BackgroundTask::Compaction),
+            Some("bg")
+        );
+    }
+
+    #[test]
+    fn background_resolver_falls_back_to_background_then_chat_default() {
+        let d_only_chat = DefaultsConfig {
+            model: Some("chat".into()),
+            ..Default::default()
+        };
+        // No background config at all → all three tasks fall back to defaults.model.
+        for task in [
+            BackgroundTask::Heartbeat,
+            BackgroundTask::Compaction,
+            BackgroundTask::Dreaming,
+        ] {
+            assert_eq!(
+                d_only_chat.resolve_background_model_name(task),
+                Some("chat")
+            );
+        }
+
+        let d_split = DefaultsConfig {
+            model: Some("chat".into()),
+            background: BackgroundDefaultsConfig {
+                model: Some("bg".into()),
+                ..BackgroundDefaultsConfig::default()
+            },
+            ..Default::default()
+        };
+        for task in [
+            BackgroundTask::Heartbeat,
+            BackgroundTask::Compaction,
+            BackgroundTask::Dreaming,
+        ] {
+            assert_eq!(d_split.resolve_background_model_name(task), Some("bg"));
+        }
+    }
+
+    #[test]
+    fn background_resolver_returns_none_when_nothing_set() {
+        let d = DefaultsConfig::default();
+        assert_eq!(
+            d.resolve_background_model_name(BackgroundTask::Heartbeat),
+            None
+        );
+    }
+
+    #[test]
+    fn deprecated_top_level_keys_forward_into_background() {
+        let toml_str = r#"
+[defaults]
+model = "primary"
+heartbeat = "hb-old"
+dreaming = "dream-old"
+"#;
+        let mut config: AppConfig = toml::from_str(toml_str).unwrap();
+        // Pre-normalize: old keys still populated, background empty.
+        assert_eq!(config.defaults.heartbeat.as_deref(), Some("hb-old"));
+        assert_eq!(config.defaults.dreaming.as_deref(), Some("dream-old"));
+        assert!(config.defaults.background.heartbeat.is_none());
+
+        config.defaults.normalize_deprecated_aliases();
+
+        // Old keys cleared, background filled.
+        assert!(config.defaults.heartbeat.is_none());
+        assert!(config.defaults.dreaming.is_none());
+        assert_eq!(
+            config.defaults.background.heartbeat.as_deref(),
+            Some("hb-old")
+        );
+        assert_eq!(
+            config.defaults.background.dreaming.as_deref(),
+            Some("dream-old")
+        );
+    }
+
+    #[test]
+    fn new_background_keys_win_over_deprecated_aliases() {
+        let toml_str = r#"
+[defaults]
+heartbeat = "hb-old"
+
+[defaults.background]
+heartbeat = "hb-new"
+"#;
+        let mut config: AppConfig = toml::from_str(toml_str).unwrap();
+        config.defaults.normalize_deprecated_aliases();
+        // The explicit new key is preserved; the legacy alias is dropped.
+        assert_eq!(
+            config.defaults.background.heartbeat.as_deref(),
+            Some("hb-new")
+        );
+        assert!(config.defaults.heartbeat.is_none());
+    }
+
+    #[test]
+    fn normalize_is_idempotent() {
+        let mut d = DefaultsConfig {
+            background: BackgroundDefaultsConfig {
+                heartbeat: Some("hb".into()),
+                ..BackgroundDefaultsConfig::default()
+            },
+            ..Default::default()
+        };
+        d.normalize_deprecated_aliases();
+        d.normalize_deprecated_aliases();
+        assert_eq!(d.background.heartbeat.as_deref(), Some("hb"));
+        assert!(d.heartbeat.is_none());
+    }
+
+    #[test]
+    fn background_section_parses_with_deny_unknown_fields() {
+        let toml_str = r#"
+[defaults.background]
+model = "bg"
+compaction = "bg-c"
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.defaults.background.model.as_deref(), Some("bg"));
+        assert_eq!(
+            config.defaults.background.compaction.as_deref(),
+            Some("bg-c")
+        );
+
+        // Unknown field is rejected.
+        let bad = r#"
+[defaults.background]
+typo_field = "x"
+"#;
+        let err = toml::from_str::<AppConfig>(bad).unwrap_err();
+        assert!(err.to_string().contains("unknown field"));
     }
 
     #[test]

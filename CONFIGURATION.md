@@ -48,24 +48,32 @@ Non-loopback binds require `unsafe_allow_remote_access = true`. `allowed_hosts` 
 
 ```toml
 [defaults]
-model = "claude-sonnet"
-heartbeat = "haiku"
-dreaming = "claude-sonnet"
+model = "claude-sonnet"           # chat default; also fallback for background tasks
 embedding = "text-large"
 image_generation = "image"
 display_name = "Ren"
 stream = true
+
+# Optional: split background tasks (heartbeat/compaction/dreaming) from chat.
+# Most users only need `model` (everything one model) or `model` + `background.model`
+# (split chat from all background work).
+[defaults.background]
+model = "haiku"                   # blanket model for every background task
+# heartbeat = "haiku-fast"        # per-task overrides (optional)
+# compaction = "claude-sonnet"
+# dreaming = "claude-sonnet"
 ```
 
 Selectors are aliases declared under `[chat.*]`, `[tools.*]`, `[embedding.*]`, or `[image_generation.*]`.
 
 Important slots:
 
-- `model` — normal conversation and conversation-to-memory compaction
-- `heartbeat` — autonomous heartbeat ticks
-- `dreaming` — private AI memory librarian passes; falls back to `model`
+- `model` — chat default. Acts as the final fallback for background tasks too.
+- `[defaults.background]` — heartbeat, compaction, and dreaming selectors. Each task chains `background.<task> → background.model → defaults.model → first chat model`. None of these consult the per-character active chat model, so a runtime `shore model <name>` (which only updates chat) does **not** move background tasks.
 - `embedding` — optional hybrid retrieval profile
 - `image_generation` — image generation profile
+
+> **Deprecated:** the older top-level `defaults.heartbeat` and `defaults.dreaming` keys still parse but emit a deprecation warning and are forwarded into `[defaults.background]` at load time. Move them under `[defaults.background]` to silence the warning.
 
 ## Model Sections
 

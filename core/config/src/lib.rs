@@ -320,9 +320,13 @@ fn parse_config_table(table: toml::Table, dirs: ShoreDirs) -> Result<LoadedConfi
     let providers_section = table.remove("providers");
 
     // Deserialize the remaining table into AppConfig.
-    let app: AppConfig = toml::Value::Table(table)
+    let mut app: AppConfig = toml::Value::Table(table)
         .try_into()
         .map_err(ConfigError::ParseApp)?;
+
+    // Forward legacy top-level `defaults.heartbeat` / `defaults.dreaming`
+    // into `defaults.background.*` with a one-time deprecation warning.
+    app.defaults.normalize_deprecated_aliases();
 
     // Build model catalog from the extracted sections.
     let catalog = ModelCatalog::from_sections(
@@ -488,6 +492,26 @@ fn create_default_config(config_dir: &Path) {
 fn validate_config(app: &AppConfig, catalog: &ModelCatalog) -> Result<(), ConfigError> {
     // Validate model references exist in the catalog.
     validate_model_ref(catalog, "defaults.model", app.defaults.model.as_deref())?;
+    validate_model_ref(
+        catalog,
+        "defaults.background.model",
+        app.defaults.background.model.as_deref(),
+    )?;
+    validate_model_ref(
+        catalog,
+        "defaults.background.heartbeat",
+        app.defaults.background.heartbeat.as_deref(),
+    )?;
+    validate_model_ref(
+        catalog,
+        "defaults.background.compaction",
+        app.defaults.background.compaction.as_deref(),
+    )?;
+    validate_model_ref(
+        catalog,
+        "defaults.background.dreaming",
+        app.defaults.background.dreaming.as_deref(),
+    )?;
 
     validate_daily_cron(&app.memory.dreaming.frequency)?;
 
