@@ -2,7 +2,7 @@ use std::io::{self, Write};
 
 use crossterm::style::{Attribute, Color, ResetColor, SetAttribute, SetForegroundColor};
 
-use super::transcript::character_color;
+use super::transcript::{character_color, format_time};
 use super::{
     abbreviate_model, parse_timestamp, print_dim_line, term_width, use_color, write_dim, write_fg,
     write_row, write_row_colored, write_section_header,
@@ -188,48 +188,7 @@ pub fn print_status(data: &serde_json::Value, character_name: &str) {
     // -- Autonomy --
     if let Some(autonomy) = data.get("autonomy") {
         if !autonomy.is_null() {
-            let paused = autonomy["paused"].as_bool().unwrap_or(false);
-            let suffix = if paused { "paused" } else { "" };
-            write_section_header(&mut out, "Autonomy", suffix, width);
-
-            let int_state = autonomy["heartbeat_state"].as_str().unwrap_or("Active");
-            let ticks = autonomy["ticks_without_user"].as_u64().unwrap_or(0);
-            let max_ticks = autonomy["dormant_after_heartbeat_turns"]
-                .as_u64()
-                .unwrap_or(3);
-            let description = heartbeat_description(int_state, ticks, max_ticks);
-
-            // Heartbeat row: description + state label.
-            if use_color() {
-                let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
-            }
-            let _ = write!(out, "  {:<13}", "Heartbeat");
-            if use_color() {
-                let _ = crossterm::execute!(out, ResetColor);
-            }
-            let _ = write!(out, "{description}  ");
-            if use_color() {
-                let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
-            }
-            let _ = write!(out, "({int_state})");
-            if use_color() {
-                let _ = crossterm::execute!(out, ResetColor);
-            }
-            let _ = writeln!(out);
-
-            // Effective tick interval.
-            if let Some(eff) = autonomy["effective_interval_secs"].as_u64() {
-                let mins = eff / 60;
-                let secs = eff % 60;
-                let label = if secs == 0 {
-                    format!("{mins}m")
-                } else {
-                    format!("{mins}m{secs}s")
-                };
-                write_row(&mut out, "Interval", &label);
-            }
-
-            let _ = writeln!(out);
+            write_autonomy_section(&mut out, autonomy, width);
         }
     }
 
@@ -1412,6 +1371,208 @@ pub fn print_usage(data: &serde_json::Value) {
             println!("\nAnomalies (last 7d): {anomaly_count}");
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Autonomy section — rendered inside `shore status`
+// ---------------------------------------------------------------------------
+
+/// Format a duration in seconds into a compact label like "1h 8m" or "32m".
+/// Negative inputs render with a leading "-".
+fn format_duration_compact(secs: i64) -> String {
+    let neg = secs < 0;
+    let mut s = secs.unsigned_abs();
+    let days = s / 86_400;
+    s %= 86_400;
+    let hours = s / 3_600;
+    s %= 3_600;
+    let minutes = s / 60;
+    let seconds = s % 60;
+
+    let body = if days > 0 {
+        format!("{days}d {hours}h")
+    } else if hours > 0 {
+        format!("{hours}h {minutes}m")
+    } else if minutes > 0 {
+        format!("{minutes}m")
+    } else {
+        format!("{seconds}s")
+    };
+    if neg {
+        format!("-{body}")
+    } else {
+        body
+    }
+}
+
+/// Format a duration in seconds for "threshold" rows like "100m" or "48h".
+fn format_threshold(secs: u64) -> String {
+    if secs >= 3_600 && secs.is_multiple_of(3_600) {
+        format!("{}h", secs / 3_600)
+    } else if secs >= 60 && secs.is_multiple_of(60) {
+        format!("{}m", secs / 60)
+    } else if secs >= 3_600 {
+        format!("{}h {}m", secs / 3_600, (secs % 3_600) / 60)
+    } else if secs >= 60 {
+        format!("{}m {}s", secs / 60, secs % 60)
+    } else {
+        format!("{secs}s")
+    }
+}
+
+/// Format an RFC3339 timestamp as "YYYY-MM-DD HH:MM" in local time, or the
+/// raw string on parse failure.
+fn format_local_timestamp(rfc3339: &str) -> String {
+    parse_timestamp(rfc3339)
+        .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
+        .unwrap_or_else(|| rfc3339.to_string())
+}
+
+/// Render the autonomy block of `shore status`. Reads the `AutonomyStatus`
+/// JSON snapshot from the daemon and renders state, schedule, thresholds,
+/// and the most recent heartbeat events.
+fn write_autonomy_section(out: &mut impl Write, autonomy: &serde_json::Value, width: usize) {
+    let paused = autonomy["paused"].as_bool().unwrap_or(false);
+    let suffix = if paused { "paused" } else { "" };
+    write_section_header(out, "Autonomy", suffix, width);
+
+    let int_state = autonomy["heartbeat_state"].as_str().unwrap_or("Active");
+    let ticks = autonomy["ticks_without_user"].as_u64().unwrap_or(0);
+    let max_ticks = autonomy["dormant_after_heartbeat_turns"]
+        .as_u64()
+        .unwrap_or(0);
+    let description = heartbeat_description(int_state, ticks, max_ticks);
+
+    // Heartbeat row: description + state label.
+    if use_color() {
+        let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+    }
+    let _ = write!(out, "  {:<13}", "Heartbeat");
+    if use_color() {
+        let _ = crossterm::execute!(out, ResetColor);
+    }
+    let _ = write!(out, "{description}  ");
+    if use_color() {
+        let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+    }
+    let _ = write!(out, "({int_state})");
+    if use_color() {
+        let _ = crossterm::execute!(out, ResetColor);
+    }
+    let _ = writeln!(out);
+
+    if let Some(eff) = autonomy["effective_interval_secs"].as_u64() {
+        let mins = eff / 60;
+        let secs = eff % 60;
+        let label = if secs == 0 {
+            format!("{mins}m")
+        } else {
+            format!("{mins}m{secs}s")
+        };
+        write_row(out, "Interval", &label);
+    }
+
+    if let Some(secs) = autonomy["seconds_until_wake"].as_i64() {
+        let abs_label = autonomy["next_wake_at"]
+            .as_str()
+            .map(format_local_timestamp)
+            .unwrap_or_default();
+        let rel = if secs >= 0 {
+            format!("in {}", format_duration_compact(secs))
+        } else {
+            format!("{} overdue", format_duration_compact(-secs))
+        };
+        let detail = if abs_label.is_empty() {
+            rel
+        } else {
+            format!("{rel}  ({abs_label})")
+        };
+        write_row(out, "Next Wake", &detail);
+    } else {
+        write_row(out, "Next Wake", "(none scheduled)");
+    }
+
+    if let Some(secs) = autonomy["seconds_since_user"].as_i64() {
+        let abs_label = autonomy["last_user_at"]
+            .as_str()
+            .map(format_local_timestamp)
+            .unwrap_or_default();
+        let rel = format!("{} ago", format_duration_compact(secs));
+        let detail = if abs_label.is_empty() {
+            rel
+        } else {
+            format!("{rel}  ({abs_label})")
+        };
+        write_row(out, "Last User", &detail);
+    }
+
+    write_row(out, "Idle Ticks", &format!("{ticks} / {max_ticks}"));
+
+    if let Some(secs) = autonomy["minimum_heartbeat_latency_secs"].as_u64() {
+        write_row(out, "Min Latency", &format_threshold(secs));
+    }
+    if let Some(secs) = autonomy["dormant_after_idle_time_secs"].as_u64() {
+        write_row(out, "Idle Limit", &format_threshold(secs));
+    }
+
+    // Recent events. Skip silently if the daemon didn't include any —
+    // there's nothing useful to show and the schedule rows above already
+    // tell the same story.
+    let events: Vec<serde_json::Value> = autonomy
+        .get("recent_events")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    if events.is_empty() {
+        let _ = writeln!(out);
+        return;
+    }
+
+    let _ = writeln!(out);
+    if use_color() {
+        let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+    }
+    let _ = writeln!(out, "  Recent events:");
+    if use_color() {
+        let _ = crossterm::execute!(out, ResetColor);
+    }
+    let mut prev_date: Option<String> = None;
+    for event in &events {
+        let ts = event["timestamp"].as_str().unwrap_or("");
+        let kind = event["kind"].as_str().unwrap_or("?");
+        let detail = event["detail"].as_str().unwrap_or("");
+        let time_str = parse_timestamp(ts)
+            .map(|dt| {
+                let formatted = format_time(&dt, prev_date.as_deref());
+                prev_date = Some(dt.format("%Y-%m-%d").to_string());
+                formatted
+            })
+            .unwrap_or_else(|| ts.chars().take(8).collect());
+        let kind_color = match kind {
+            "tick_fired" => Color::Blue,
+            "message_sent" => Color::Green,
+            "message_skipped" => Color::DarkGrey,
+            "tool_use" => Color::Cyan,
+            "dormant" => Color::Red,
+            "wake" => Color::Green,
+            "dormant_ping" => Color::Magenta,
+            "timeout" => Color::Yellow,
+            _ => Color::White,
+        };
+        if use_color() {
+            let _ = crossterm::execute!(out, SetForegroundColor(Color::DarkGrey));
+        }
+        let _ = write!(out, "    {time_str:<12}");
+        if use_color() {
+            let _ = crossterm::execute!(out, SetForegroundColor(kind_color));
+        }
+        let _ = write!(out, "{kind:<17}");
+        if use_color() {
+            let _ = crossterm::execute!(out, ResetColor);
+        }
+        let _ = writeln!(out, "{detail}");
+    }
+    let _ = writeln!(out);
 }
 
 #[cfg(test)]

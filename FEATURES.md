@@ -155,6 +155,10 @@ The character becomes dormant after configured idle/tick limits and wakes when t
 
 Heartbeat does not force a recap or write memory by itself. Durable notes are created only when the character uses a write-capable tool.
 
+The heartbeat event log is persisted at `$XDG_DATA_HOME/shore/<Character>/heartbeat.jsonl` and is reloaded on daemon start, so tick decisions, autonomous messages, and dormancy transitions remain inspectable across restarts. Disk writes batch on the autonomy tick cadence (every ~30s) and on graceful shutdown.
+
+`shore status` surfaces the autonomy block — heartbeat schedule (next wake, time since user, idle ticks, dormancy thresholds) and the most recent heartbeat events. `shore log --heartbeat` shows the full ring buffer.
+
 ## Dreaming
 
 Dreaming is an opt-in scheduled AI librarian pass. When due, the character privately uses memory tools to list, read, search, write, and edit markdown memory files. Its job is to organize, dedupe, consolidate, and mark stale memory so future recall is easier.

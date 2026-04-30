@@ -369,11 +369,15 @@ impl AutonomyManager {
             cache_keepalive.on_cache_warmed(Instant::now());
         }
 
+        let heartbeat_log_path = self.data_dir.join(character).join("heartbeat.jsonl");
+        let heartbeat_log = HeartbeatLog::load_from(heartbeat_log_path.clone())
+            .unwrap_or_else(|| HeartbeatLog::with_path(heartbeat_log_path));
+
         let state = Arc::new(Mutex::new(AutonomyState {
             heartbeat,
             cache_keepalive,
             activity: ActivityTracker::new(),
-            heartbeat_log: HeartbeatLog::new(),
+            heartbeat_log,
             paused: false,
             dirty: false,
             last_compaction_activity: Instant::now(),
@@ -662,12 +666,42 @@ impl AutonomyManager {
 
     /// Build an `AutonomyStatus` snapshot for the status command.
     pub fn status(&self, character: &str) -> Option<AutonomyStatus> {
-        self.with_state(character, |s| AutonomyStatus {
-            paused: s.paused,
-            heartbeat_state: s.heartbeat.state_at(Instant::now()).to_string(),
-            ticks_without_user: s.heartbeat.ticks_without_user(),
-            dormant_after_heartbeat_turns: s.heartbeat.max_idle_ticks(),
-            effective_interval_secs: s.heartbeat.default_interval().as_secs(),
+        const RECENT_EVENT_LIMIT: usize = 5;
+        self.with_state(character, |s| {
+            let now = Instant::now();
+            let next_wake_at = s.heartbeat.next_wake().map(instant_to_rfc3339);
+            let seconds_until_wake = s.heartbeat.next_wake().map(|w| {
+                if w >= now {
+                    w.duration_since(now).as_secs() as i64
+                } else {
+                    -(now.duration_since(w).as_secs() as i64)
+                }
+            });
+            let last_user_at = s.heartbeat.last_user_at().map(instant_to_rfc3339);
+            let seconds_since_user = s
+                .heartbeat
+                .last_user_at()
+                .map(|u| now.duration_since(u).as_secs() as i64);
+            let recent_events = s
+                .heartbeat_log
+                .recent(RECENT_EVENT_LIMIT)
+                .into_iter()
+                .cloned()
+                .collect();
+            AutonomyStatus {
+                paused: s.paused,
+                heartbeat_state: s.heartbeat.state_at(now).to_string(),
+                ticks_without_user: s.heartbeat.ticks_without_user(),
+                dormant_after_heartbeat_turns: s.heartbeat.max_idle_ticks(),
+                effective_interval_secs: s.heartbeat.default_interval().as_secs(),
+                next_wake_at,
+                seconds_until_wake,
+                last_user_at,
+                seconds_since_user,
+                minimum_heartbeat_latency_secs: s.heartbeat.min_wake_interval().as_secs(),
+                dormant_after_idle_time_secs: s.heartbeat.max_silent_duration().as_secs(),
+                recent_events,
+            }
         })
     }
 
@@ -746,6 +780,7 @@ async fn character_tick_loop(
                 let mut s = lock_state(&ctx.state);
                 s.mark_dirty();
                 save_state(&ctx.data_dir, &character, &mut s);
+                s.heartbeat_log.flush_if_dirty();
                 info!(character = %character, "Autonomy tick task shutting down");
                 break;
             }
@@ -837,6 +872,7 @@ async fn tick_character(character: &str, ctx: &TickContext) {
         }
 
         save_state(&ctx.data_dir, character, &mut s);
+        s.heartbeat_log.flush_if_dirty();
         (
             int_action,
             keepalive_action,
@@ -925,6 +961,7 @@ async fn tick_character(character: &str, ctx: &TickContext) {
     {
         let mut s = lock_state(&ctx.state);
         save_state(&ctx.data_dir, character, &mut s);
+        s.heartbeat_log.flush_if_dirty();
     }
 }
 

@@ -131,6 +131,14 @@ impl HeartbeatClock {
         self.default_interval
     }
 
+    pub fn min_wake_interval(&self) -> Duration {
+        self.min_wake_interval
+    }
+
+    pub fn max_silent_duration(&self) -> Duration {
+        self.max_silent_duration
+    }
+
     fn is_abandoned(&self, now: Instant) -> bool {
         if self.ticks_without_user >= self.max_idle_ticks {
             return true;

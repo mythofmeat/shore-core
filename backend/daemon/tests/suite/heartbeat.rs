@@ -125,3 +125,83 @@ async fn set_next_wake_still_schedules_from_tool_use() {
 
     harness.shutdown().await;
 }
+
+/// A tick run flushes the heartbeat log to disk so events survive an
+/// ungraceful crash. The tick loop calls `flush_if_dirty` alongside
+/// `save_state`, so by the time the tick returns the file should exist
+/// and contain the recorded events.
+#[tokio::test]
+async fn heartbeat_log_persists_to_disk_after_tick() {
+    init_tracing();
+    let harness = primed_harness(12).await;
+
+    harness.mock_llm.enqueue_json_text("HEARTBEAT_OK").await;
+    fire_tick(&harness).await;
+
+    let log_path = harness.data_dir.join(CHARACTER).join("heartbeat.jsonl");
+    assert!(
+        log_path.exists(),
+        "heartbeat.jsonl should exist after a tick fires"
+    );
+    let contents = std::fs::read_to_string(&log_path).expect("read heartbeat.jsonl");
+    assert!(
+        contents.contains("tick_fired"),
+        "disk log should record tick_fired event, got: {contents}"
+    );
+    assert!(
+        contents.contains("message_skipped"),
+        "disk log should record HEARTBEAT_OK as message_skipped, got: {contents}"
+    );
+
+    harness.shutdown().await;
+}
+
+/// Heartbeat events recorded before a crash are restored on reboot.
+/// `ensure_state` calls `HeartbeatLog::load_from` which seeds the in-memory
+/// ring from disk, so post-reboot `heartbeat_log()` includes pre-crash events.
+#[tokio::test]
+async fn heartbeat_log_survives_crash_and_reboot() {
+    init_tracing();
+    let harness = primed_harness(12).await;
+
+    harness
+        .mock_llm
+        .enqueue_json_text("<sendMessage>before crash</sendMessage>")
+        .await;
+    fire_tick(&harness).await;
+
+    // Sanity-check the pre-crash log shape so the post-reboot assertion is
+    // meaningful — without these the test would silently pass if the tick
+    // produced no events at all.
+    let pre_crash_events = harness.autonomy.heartbeat_log(CHARACTER, 20);
+    let pre_crash_message_sent = pre_crash_events
+        .iter()
+        .filter(|e| e.detail.contains("before crash"))
+        .count();
+    assert_eq!(
+        pre_crash_message_sent, 1,
+        "expected exactly one MessageSent event with 'before crash' detail before crash"
+    );
+
+    let crashed = harness.crash().await;
+    let mut harness = crashed.reboot().await;
+
+    // ensure_state runs lazily on first character access. Sending a message
+    // primes it the same way the original boot sequence did.
+    harness.mock_llm.enqueue_text("ack").await;
+    let _ = harness.send_and_collect("hello again").await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let events = harness.autonomy.heartbeat_log(CHARACTER, 20);
+    let recovered = events
+        .iter()
+        .filter(|e| e.detail.contains("before crash"))
+        .count();
+    assert_eq!(
+        recovered, 1,
+        "the pre-crash sendMessage event should be loaded from disk on reboot, \
+         got events: {events:?}"
+    );
+
+    harness.shutdown().await;
+}

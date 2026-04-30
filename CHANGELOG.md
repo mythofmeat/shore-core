@@ -9,6 +9,8 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 See `README.md`, `FEATURES.md`, and `CONFIGURATION.md` for current branch guidance.
 
 ### Added
+- Persistent heartbeat event log: events are written to `<data>/<Character>/heartbeat.jsonl` (batch-flushed on the autonomy tick cadence and on graceful shutdown) and reloaded on daemon start, so autonomy history survives restarts
+- `shore status` autonomy block now shows the heartbeat schedule (next wake, time since last user message, idle ticks, dormancy thresholds) and the most recent heartbeat events
 - Effective model catalog (Phase 7): `shore model <name>` accepts manual aliases, upstream `<provider>/<id>` strings, and explicit `provider:model_id` selectors against a catalog merged from static config, provider discovery, and saved preferences
 - Provider registry + discovery: `[providers.<name>]` tables with `[[keys]]` rotation, `discovery.enabled`, and gitignore-style `discovery.visibility` patterns; provider catalogs cache to `<data>/providers/<name>/models.json`
 - CLI: `shore provider`, `shore provider models <name>`, `shore provider models <name> --all`, and `shore provider refresh <name>`
