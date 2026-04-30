@@ -56,6 +56,7 @@ agent end-to-end harness.
 | Compacted segments | `$XDG_DATA_HOME/shore/<Character>/segments/` | Archived older conversation messages |
 | Active prompt snapshot | `$XDG_DATA_HOME/shore/<Character>/active_prompt/` | Prompt-active protected files |
 | Deferred prompt edits | `$XDG_DATA_HOME/shore/<Character>/deferred_edits.jsonl` | Protected workspace edits waiting for activation |
+| Dreaming state | `$XDG_DATA_HOME/shore/<Character>/dreams/` | Scheduler timestamps and machine-readable dreaming artifacts |
 
 Enable cache forensics with:
 

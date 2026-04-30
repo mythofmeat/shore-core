@@ -20,7 +20,7 @@ See `README.md`, `FEATURES.md`, and `CONFIGURATION.md` for current branch guidan
 - Character workspaces with protected prompt files: `SOUL.md`, `USER.md`, `AGENTS.md`, `TOOLS.md`, and `HEARTBEAT.md`
 - Markdown long-term memory under `characters/<Character>/workspace/memory/`
 - `active_prompt/` snapshots and deferred protected self-edit activation
-- Opt-in AI librarian dreaming with memory tools, `.dreams/`, `DREAMS.md`, and prompt-visible `MEMORY.md` indexing
+- Opt-in AI librarian dreaming with memory tools, data-backed machine state, `DREAMS.md`, and prompt-visible `MEMORY.md` indexing
 - Optional `[defaults].dreaming` model selector for private memory librarian passes
 - Dreaming now reuses the cached chat request prefix when available, and `MEMORY.md` index edits activate at compaction instead of immediately changing the hot prompt prefix
 - Optional hybrid semantic+lexical markdown retrieval backed by a rebuildable index
@@ -31,6 +31,7 @@ See `README.md`, `FEATURES.md`, and `CONFIGURATION.md` for current branch guidan
 
 ### Changed
 - Background-task model configuration moved under `[defaults.background]` with `model`, `heartbeat`, `compaction`, and `dreaming` selectors; resolvers chain per-task → `background.model` → `defaults.model` → first chat model. Compaction is now a background task and no longer follows the per-character active chat model, so a runtime `switch_model` only affects chat. The legacy `defaults.heartbeat` / `defaults.dreaming` keys still parse but log a deprecation warning and forward into `[defaults.background]`
+- Dreaming machine-readable JSON now lives under `<data>/<Character>/dreams/` instead of `characters/<Character>/workspace/memory/.dreams/`; existing legacy state is still read for scheduler continuity
 - TUI keystroke latency no longer scales with conversation length: the conversation pane caches its rendered lines and rebuilds only when a fingerprint of rendering-relevant state changes
 - Runtime memory source of truth moved from hidden SQLite/vector/RAG state to markdown files
 - Interiority naming standardized to heartbeat/autonomy

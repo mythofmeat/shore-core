@@ -456,7 +456,7 @@ pub enum MemoryCommand {
         #[arg(long)]
         status: bool,
 
-        /// Preview a sweep without writing .dreams, DREAMS.md, or MEMORY.md
+        /// Preview a sweep without writing dream state, DREAMS.md, or MEMORY.md
         #[arg(long)]
         dry_run: bool,
 

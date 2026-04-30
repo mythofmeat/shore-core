@@ -353,7 +353,7 @@ max_tool_rounds = 12
 
 Dreaming is opt-in and requires `[behavior.autonomy].enabled = true`. It runs independently of heartbeat as a private AI librarian pass. The character uses memory tools to inspect the existing flexible markdown layout, consolidate and dedupe durable notes, mark stale/superseded material, update the canonical `MEMORY.md`, and write an audit entry to `DREAMS.md`. When a cached chat request is available, the private librarian instruction is appended after that request prefix so the existing provider-side prompt cache can be reused.
 
-`MEMORY.md` is the index/map and replaces the old recap/digest concept. Normal chat reads `active_prompt/MEMORY.md`; edits to `workspace/MEMORY.md` only become prompt-active after compaction/reload. It should not duplicate `USER.md` or `AGENTS.md`, which remain pinned prompt files. `DREAMS.md` is review output, not long-term memory. Machine-readable staging/debug state is written under `.dreams/`. Dreaming excludes generated artifacts from ordinary memory-source ingestion, including `.dreams/**`, `DREAMS.md`, `dreams.md`, `MEMORY.md`, and `dreaming/**`.
+`MEMORY.md` is the index/map and replaces the old recap/digest concept. Normal chat reads `active_prompt/MEMORY.md`; edits to `workspace/MEMORY.md` only become prompt-active after compaction/reload. It should not duplicate `USER.md` or `AGENTS.md`, which remain pinned prompt files. `DREAMS.md` is review output, not long-term memory. Machine-readable staging/debug state is written under `$XDG_DATA_HOME/shore/<Character>/dreams/`. Dreaming excludes generated artifacts from ordinary memory-source ingestion, including legacy `.dreams/**`, `DREAMS.md`, `dreams.md`, `MEMORY.md`, and `dreaming/**`.
 
 ## `[memory.retrieval]`
 

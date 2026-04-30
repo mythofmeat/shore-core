@@ -72,7 +72,11 @@ Why:
 
 ## 2026-04-24: Dreaming Is Scheduled Memory Consolidation
 
-Dreaming is the opt-in consolidation path. It stages machine-readable state in `.dreams/`, writes human-reviewable reports to `DREAMS.md`, and rewrites `MEMORY.md` during Deep Sleep as the prompt-visible memory index. `MEMORY.md` points to memory files, recent updates, and current throughlines; durable notes live in ordinary markdown memory files. `DREAMS.md` is not memory and generated dreaming artifacts are excluded from later candidate ingestion.
+Dreaming is the opt-in consolidation path. It stages machine-readable state, writes human-reviewable reports to `DREAMS.md`, and rewrites `MEMORY.md` during Deep Sleep as the prompt-visible memory index. `MEMORY.md` points to memory files, recent updates, and current throughlines; durable notes live in ordinary markdown memory files. `DREAMS.md` is not memory and generated dreaming artifacts are excluded from later candidate ingestion.
+
+## 2026-04-30: Dreaming Machine State Belongs In Data
+
+Dreaming machine-readable JSON lives under `$XDG_DATA_HOME/shore/<Character>/dreams/`, not under `characters/<Character>/workspace/memory/`. Character memory workspaces are meant to be editable and git-manageable; scheduler timestamps, staged candidate JSON, and debug state are daemon-owned runtime data.
 
 ## 2026-04-24: Remove Separate Collation As A Runtime Requirement
 

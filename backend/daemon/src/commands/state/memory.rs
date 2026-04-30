@@ -118,9 +118,14 @@ pub async fn memory_dream(
     let cfg = &ctx.config.app.memory.dreaming;
 
     if status {
-        let status = crate::memory::dreaming::dream_status(&ctx.config.dirs.config, char_name, cfg)
-            .await
-            .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
+        let status = crate::memory::dreaming::dream_status(
+            &ctx.data_dir,
+            &ctx.config.dirs.config,
+            char_name,
+            cfg,
+        )
+        .await
+        .map_err(|e| (ErrorCode::InternalError, e.to_string()))?;
         return Ok(json!(status));
     }
 
@@ -139,6 +144,7 @@ pub async fn memory_dream(
         Ok(result) => result,
         Err(crate::memory::dreaming::DreamingError::Config(_)) if dry_run => {
             crate::memory::dreaming::run_legacy_diagnostic_sweep(
+                &ctx.data_dir,
                 &ctx.config.dirs.config,
                 char_name,
                 cfg,

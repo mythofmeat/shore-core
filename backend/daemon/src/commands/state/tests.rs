@@ -136,7 +136,7 @@ fn memory_dream_returns_useful_phase_json() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|path| path.as_str().unwrap().contains(".dreams")));
+            .any(|path| path.as_str().unwrap().contains("dreams")));
         assert!(!mem.join("DREAMS.md").exists());
         assert!(!workspace.join("MEMORY.md").exists());
     });

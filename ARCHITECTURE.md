@@ -212,7 +212,7 @@ Dreaming is the scheduled memory librarian path. When autonomy and `[memory.drea
 
 `workspace/MEMORY.md` is the canonical index; `active_prompt/MEMORY.md` is the prompt-active copy. It orients the character with a map of memory files, recently updated files, and still-relevant conversational throughlines. It should not duplicate the roles of `SOUL.md`, `USER.md`, `AGENTS.md`, `TOOLS.md`, or `HEARTBEAT.md`.
 
-Compaction captures and preserves older conversation material into ordinary markdown memory files. Dreaming reorganizes and collates those files afterward. `workspace/memory/DREAMS.md` is the human-readable audit diary for dreaming and compaction review, while `.dreams/` stores machine-readable staging/debug state. Generated outputs under `.dreams/**`, `DREAMS.md`, `dreams.md`, `MEMORY.md`, and `memory/dreaming/**` are excluded from ordinary memory-source ingestion.
+Compaction captures and preserves older conversation material into ordinary markdown memory files. Dreaming reorganizes and collates those files afterward. `workspace/memory/DREAMS.md` is the human-readable audit diary for dreaming and compaction review, while `$XDG_DATA_HOME/shore/<Character>/dreams/` stores machine-readable staging/debug state. Generated outputs under legacy `.dreams/**`, `DREAMS.md`, `dreams.md`, `MEMORY.md`, and `memory/dreaming/**` are excluded from ordinary memory-source ingestion.
 
 ## LLM Provider Boundary
 

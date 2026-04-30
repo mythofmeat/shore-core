@@ -159,9 +159,9 @@ Heartbeat does not force a recap or write memory by itself. Durable notes are cr
 
 Dreaming is an opt-in scheduled AI librarian pass. When due, the character privately uses memory tools to list, read, search, write, and edit markdown memory files. Its job is to organize, dedupe, consolidate, and mark stale memory so future recall is easier.
 
-`workspace/MEMORY.md` is the canonical memory index and replaces the old recap/digest concept. Its active prompt snapshot refreshes at compaction, so dreaming can reorganize memory without changing the hot chat prefix immediately. It should point to useful files and throughlines without duplicating `USER.md` or `AGENTS.md`. `workspace/memory/DREAMS.md` is the human-readable audit/review diary for each dreaming pass. Machine-readable state lives under `.dreams/`.
+`workspace/MEMORY.md` is the canonical memory index and replaces the old recap/digest concept. Its active prompt snapshot refreshes at compaction, so dreaming can reorganize memory without changing the hot chat prefix immediately. It should point to useful files and throughlines without duplicating `USER.md` or `AGENTS.md`. `workspace/memory/DREAMS.md` is the human-readable audit/review diary for each dreaming pass. Machine-readable state lives under `$XDG_DATA_HOME/shore/<Character>/dreams/`.
 
-Generated dreaming output is excluded from ordinary memory-source ingestion, including `.dreams/**`, `DREAMS.md`, `dreams.md`, `MEMORY.md`, and `memory/dreaming/**`.
+Generated dreaming output is excluded from ordinary memory-source ingestion, including legacy `.dreams/**`, `DREAMS.md`, `dreams.md`, `MEMORY.md`, and `memory/dreaming/**`.
 
 ## Tools
 

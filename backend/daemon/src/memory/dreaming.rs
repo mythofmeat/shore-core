@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Datelike, Local, Timelike, Utc};
 use serde::{Deserialize, Serialize};
@@ -26,7 +26,11 @@ const MAX_DIARY_ITEMS: usize = 12;
 const MAX_INDEX_FILES: usize = 40;
 const MAX_RECENT_INDEX_FILES: usize = 12;
 const MAX_INDEX_THROUGHLINES: usize = 16;
-const DREAM_DIARY_HEADER: &str = "# Dreams\n\nThis file is the human-readable Dream Diary for Shore's memory consolidation system.\n\nIt is not long-term memory.\nDurable notes live in ordinary markdown memory files.\n`MEMORY.md` is the prompt-visible memory index.\nMachine-facing dreaming state lives in `.dreams/`.\n\nEditing or deleting Dream Diary sections does not directly change memory notes or the prompt-visible index.\n\n";
+const DREAM_DATA_DIR: &str = "dreams";
+const DREAM_STATE_FILE: &str = "state.json";
+const DREAM_STATE_REL: &str = "dreams/state.json";
+const LEGACY_DREAM_STATE_REL: &str = ".dreams/state.json";
+const DREAM_DIARY_HEADER: &str = "# Dreams\n\nThis file is the human-readable Dream Diary for Shore's memory consolidation system.\n\nIt is not long-term memory.\nDurable notes live in ordinary markdown memory files.\n`MEMORY.md` is the prompt-visible memory index.\nMachine-facing dreaming state lives under the character data directory in `dreams/*.json`, not in markdown memory.\n\nEditing or deleting Dream Diary sections does not directly change memory notes or the prompt-visible index.\n\n";
 
 #[derive(Debug, thiserror::Error)]
 pub enum DreamingError {
@@ -211,12 +215,13 @@ struct DeepPhaseOutput {
 type PhaseReportPaths<'a> = (&'a str, &'a str, &'a str);
 
 pub async fn dream_status(
+    data_dir: &Path,
     config_dir: &Path,
     character: &str,
     cfg: &DreamingConfig,
 ) -> Result<DreamStatus, DreamingError> {
     let memory_dir = character_memory_dir(config_dir, character);
-    let state = read_state(&memory_dir).await?;
+    let state = read_state(data_dir, config_dir, character).await?;
     let due = cfg.enabled && is_due(cfg, state.last_run_at.as_deref())?;
     Ok(DreamStatus {
         character: character.to_string(),
@@ -224,7 +229,7 @@ pub async fn dream_status(
         frequency: cfg.frequency.clone(),
         last_run_at: state.last_run_at,
         due,
-        state_path: memory_dir.join(".dreams/state.json").display().to_string(),
+        state_path: dream_state_path(data_dir, character).display().to_string(),
         dreams_path: memory_dir.join("DREAMS.md").display().to_string(),
     })
 }
@@ -242,7 +247,8 @@ pub async fn run_librarian_sweep(
     let memory_dir = character_memory_dir(&loaded_config.dirs.config, character);
     let workspace_dir = character_workspace_dir(&loaded_config.dirs.config, character);
     let memory_index_path = workspace_dir.join(MEMORY_INDEX_FILE);
-    let state = read_state(&memory_dir).await?;
+    let state_path = dream_state_path(data_dir, character);
+    let state = read_state(data_dir, &loaded_config.dirs.config, character).await?;
     if !force && !dry_run && !is_due(cfg, state.last_run_at.as_deref())? {
         return Ok(None);
     }
@@ -284,7 +290,7 @@ pub async fn run_librarian_sweep(
         let would_write_paths = vec![
             memory_index_path.display().to_string(),
             memory_dir.join("DREAMS.md").display().to_string(),
-            memory_dir.join(".dreams/state.json").display().to_string(),
+            state_path.display().to_string(),
         ];
         return Ok(Some(DreamSweepResult {
             character: character.to_string(),
@@ -368,18 +374,20 @@ pub async fn run_librarian_sweep(
     next_state.last_candidates_path = None;
     next_state.last_signals_path = None;
     next_state.last_promotions_path = None;
-    write_state(&memory_dir, &next_state).await?;
+    write_state(data_dir, character, &next_state).await?;
 
     let after = snapshot_memory_files(&store, &memory_index_path).await?;
     let mut changed = changed_paths(&before, &after);
-    if !changed.iter().any(|path| path == ".dreams/state.json") {
-        changed.push(".dreams/state.json".to_string());
+    if !changed.iter().any(|path| path == DREAM_STATE_REL) {
+        changed.push(DREAM_STATE_REL.to_string());
     }
     let paths_written = changed
         .iter()
         .map(|path| {
             if path == MEMORY_INDEX_FILE {
                 memory_index_path.display().to_string()
+            } else if path == DREAM_STATE_REL {
+                state_path.display().to_string()
             } else {
                 memory_dir.join(path).display().to_string()
             }
@@ -421,7 +429,7 @@ pub async fn run_librarian_sweep(
         promoted: Vec::new(),
         paths_written,
         would_write_paths: Vec::new(),
-        staged_path: Some(memory_dir.join(".dreams/state.json").display().to_string()),
+        staged_path: Some(state_path.display().to_string()),
         dreams_path: Some(memory_dir.join("DREAMS.md").display().to_string()),
         memory_path: Some(memory_index_path.display().to_string()),
         inspected: loop_result.inspected,
@@ -437,6 +445,7 @@ pub async fn run_librarian_sweep(
 /// fallback-oriented unit coverage. Production scheduled and command-driven
 /// dreaming uses [`run_librarian_sweep`].
 pub async fn run_legacy_diagnostic_sweep(
+    data_dir: &Path,
     config_dir: &Path,
     character: &str,
     cfg: &DreamingConfig,
@@ -446,7 +455,10 @@ pub async fn run_legacy_diagnostic_sweep(
     let memory_dir = character_memory_dir(config_dir, character);
     let workspace_dir = character_workspace_dir(config_dir, character);
     let memory_index_path = workspace_dir.join(MEMORY_INDEX_FILE);
-    let state = read_state(&memory_dir).await?;
+    let character_data_dir = data_dir.join(character);
+    let dream_dir = dream_data_dir(data_dir, character);
+    let state_path = dream_state_path(data_dir, character);
+    let state = read_state(data_dir, config_dir, character).await?;
     if !force && !dry_run && !is_due(cfg, state.last_run_at.as_deref())? {
         return Ok(None);
     }
@@ -467,18 +479,24 @@ pub async fn run_legacy_diagnostic_sweep(
     let rem = run_rem_phase(&light.candidates);
     let deep = run_deep_phase(&store, light.candidates.clone(), &rem).await?;
 
-    let candidates_rel = format!(".dreams/candidates-{stamp}.json");
-    let signals_rel = format!(".dreams/phase-signals-{stamp}.json");
-    let promotions_rel = format!(".dreams/promotions-{stamp}.json");
+    let candidates_file = format!("candidates-{stamp}.json");
+    let signals_file = format!("phase-signals-{stamp}.json");
+    let promotions_file = format!("promotions-{stamp}.json");
+    let candidates_rel = dream_data_rel(&candidates_file);
+    let signals_rel = dream_data_rel(&signals_file);
+    let promotions_rel = dream_data_rel(&promotions_file);
+    let candidates_path = dream_dir.join(&candidates_file);
+    let signals_path = dream_dir.join(&signals_file);
+    let promotions_path = dream_dir.join(&promotions_file);
     let light_report_rel = format!("dreaming/light/{day}.md");
     let rem_report_rel = format!("dreaming/rem/{day}.md");
     let deep_report_rel = format!("dreaming/deep/{day}.md");
 
     let would_write_paths = vec![
-        memory_dir.join(&candidates_rel).display().to_string(),
-        memory_dir.join(&signals_rel).display().to_string(),
-        memory_dir.join(&promotions_rel).display().to_string(),
-        memory_dir.join(".dreams/state.json").display().to_string(),
+        candidates_path.display().to_string(),
+        signals_path.display().to_string(),
+        promotions_path.display().to_string(),
+        state_path.display().to_string(),
         memory_dir.join("DREAMS.md").display().to_string(),
         memory_index_path.display().to_string(),
         memory_dir.join(&light_report_rel).display().to_string(),
@@ -529,9 +547,9 @@ pub async fn run_legacy_diagnostic_sweep(
         }));
     }
 
-    write_json(&store, &candidates_rel, &deep.candidates).await?;
-    write_json(&store, &signals_rel, &rem).await?;
-    write_json(&store, &promotions_rel, &deep).await?;
+    write_data_json(&character_data_dir, &candidates_path, &deep.candidates).await?;
+    write_data_json(&character_data_dir, &signals_path, &rem).await?;
+    write_data_json(&character_data_dir, &promotions_path, &deep).await?;
     append_dream_diary(&store, &ran_at, &light, &rem, &deep).await?;
     write_phase_reports(
         &store,
@@ -558,7 +576,7 @@ pub async fn run_legacy_diagnostic_sweep(
     next_state.last_signals_path = Some(signals_rel.clone());
     next_state.last_promotions_path = Some(promotions_rel.clone());
     update_seen_state(&mut next_state, &deep.candidates);
-    write_state(&memory_dir, &next_state).await?;
+    write_state(data_dir, character, &next_state).await?;
 
     let paths_written = would_write_paths;
 
@@ -580,7 +598,7 @@ pub async fn run_legacy_diagnostic_sweep(
         promoted,
         paths_written,
         would_write_paths: Vec::new(),
-        staged_path: Some(memory_dir.join(&candidates_rel).display().to_string()),
+        staged_path: Some(candidates_path.display().to_string()),
         dreams_path: Some(memory_dir.join("DREAMS.md").display().to_string()),
         memory_path: Some(memory_index_path.display().to_string()),
         inspected: Vec::new(),
@@ -719,7 +737,7 @@ Write an audit entry to `memory/DREAMS.md` describing:
 - unresolved issues
 - whether `MEMORY.md` was updated
 
-Generated dreaming artifacts are not durable memory sources. Do not mine `.dreams/**`, `DREAMS.md`, `dreams.md`, `MEMORY.md`, or `dreaming/**` as facts, although you may read `MEMORY.md` and `DREAMS.md` for index and audit continuity.
+Generated dreaming artifacts are not durable memory sources. Do not mine legacy `.dreams/**`, `DREAMS.md`, `dreams.md`, `MEMORY.md`, or `dreaming/**` as facts, although you may read `MEMORY.md` and `DREAMS.md` for index and audit continuity.
 
 Do not silently rewrite protected prompt files: `SOUL.md`, `USER.md`, `AGENTS.md`, `TOOLS.md`, or `HEARTBEAT.md`. If information belongs there, record it under Needs Review in `MEMORY.md` and/or in `DREAMS.md`.
 
@@ -1179,11 +1197,37 @@ fn parse_daily_cron(expr: &str) -> Result<(u32, u32), DreamingError> {
     Ok((minute, hour))
 }
 
-async fn read_state(memory_dir: &Path) -> Result<DreamState, DreamingError> {
+fn dream_data_dir(data_dir: &Path, character: &str) -> PathBuf {
+    data_dir.join(character).join(DREAM_DATA_DIR)
+}
+
+fn dream_state_path(data_dir: &Path, character: &str) -> PathBuf {
+    dream_data_dir(data_dir, character).join(DREAM_STATE_FILE)
+}
+
+fn dream_data_rel(file_name: &str) -> String {
+    format!("{DREAM_DATA_DIR}/{file_name}")
+}
+
+async fn read_state(
+    data_dir: &Path,
+    config_dir: &Path,
+    character: &str,
+) -> Result<DreamState, DreamingError> {
+    let character_data_dir = data_dir.join(character);
+    let state_path = dream_state_path(data_dir, character);
+    if let Some(content) = read_data_text(&character_data_dir, &state_path).await? {
+        return serde_json::from_str(&content).map_err(|e| DreamingError::Io(e.to_string()));
+    }
+
+    read_legacy_state(&character_memory_dir(config_dir, character)).await
+}
+
+async fn read_legacy_state(memory_dir: &Path) -> Result<DreamState, DreamingError> {
     let store = MarkdownMemoryStore::open(memory_dir)
         .await
         .map_err(|e| DreamingError::Memory(e.to_string()))?;
-    match store.read(".dreams/state.json").await {
+    match store.read(LEGACY_DREAM_STATE_REL).await {
         Ok(entry) => {
             serde_json::from_str(&entry.content).map_err(|e| DreamingError::Io(e.to_string()))
         }
@@ -1192,15 +1236,96 @@ async fn read_state(memory_dir: &Path) -> Result<DreamState, DreamingError> {
     }
 }
 
-async fn write_state(memory_dir: &Path, state: &DreamState) -> Result<(), DreamingError> {
-    let json = serde_json::to_string_pretty(state).map_err(|e| DreamingError::Io(e.to_string()))?;
-    let store = MarkdownMemoryStore::open(memory_dir)
+async fn read_data_text(
+    character_data_dir: &Path,
+    path: &Path,
+) -> Result<Option<String>, DreamingError> {
+    if !path.starts_with(character_data_dir) {
+        return Err(DreamingError::Io(format!(
+            "dreaming data path escapes character data dir: {}",
+            path.display()
+        )));
+    }
+
+    let base = match fs::canonicalize(character_data_dir).await {
+        Ok(base) => base,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(DreamingError::Io(e.to_string())),
+    };
+    let canonical = match fs::canonicalize(path).await {
+        Ok(canonical) => canonical,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(DreamingError::Io(e.to_string())),
+    };
+    if !canonical.starts_with(&base) {
+        return Err(DreamingError::Io(format!(
+            "dreaming data path escapes character data dir: {}",
+            path.display()
+        )));
+    }
+    fs::read_to_string(path)
         .await
-        .map_err(|e| DreamingError::Memory(e.to_string()))?;
-    store
-        .write(".dreams/state.json", &json)
+        .map(Some)
+        .map_err(|e| DreamingError::Io(e.to_string()))
+}
+
+async fn write_state(
+    data_dir: &Path,
+    character: &str,
+    state: &DreamState,
+) -> Result<(), DreamingError> {
+    let character_data_dir = data_dir.join(character);
+    write_data_json(
+        &character_data_dir,
+        &dream_state_path(data_dir, character),
+        state,
+    )
+    .await
+}
+
+async fn ensure_data_write_path(
+    character_data_dir: &Path,
+    path: &Path,
+) -> Result<(), DreamingError> {
+    if !path.starts_with(character_data_dir) {
+        return Err(DreamingError::Io(format!(
+            "dreaming data path escapes character data dir: {}",
+            path.display()
+        )));
+    }
+
+    fs::create_dir_all(character_data_dir)
         .await
-        .map_err(|e| DreamingError::Memory(e.to_string()))
+        .map_err(|e| DreamingError::Io(e.to_string()))?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .await
+            .map_err(|e| DreamingError::Io(e.to_string()))?;
+    }
+
+    let base = fs::canonicalize(character_data_dir)
+        .await
+        .map_err(|e| DreamingError::Io(e.to_string()))?;
+    let parent = path.parent().unwrap_or(character_data_dir);
+    let canonical_parent = fs::canonicalize(parent)
+        .await
+        .map_err(|e| DreamingError::Io(e.to_string()))?;
+    if !canonical_parent.starts_with(&base) {
+        return Err(DreamingError::Io(format!(
+            "dreaming data path escapes character data dir: {}",
+            path.display()
+        )));
+    }
+
+    match fs::canonicalize(path).await {
+        Ok(canonical) if !canonical.starts_with(&base) => Err(DreamingError::Io(format!(
+            "dreaming data path escapes character data dir: {}",
+            path.display()
+        ))),
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(DreamingError::Io(e.to_string())),
+    }
 }
 
 fn run_light_phase(
@@ -1581,16 +1706,16 @@ async fn source_still_contains(
         .any(|text| normalize_candidate_text(&text) == wanted))
 }
 
-async fn write_json<T: Serialize>(
-    store: &MarkdownMemoryStore,
-    rel_path: &str,
+async fn write_data_json<T: Serialize>(
+    character_data_dir: &Path,
+    path: &Path,
     value: &T,
 ) -> Result<(), DreamingError> {
     let json = serde_json::to_string_pretty(value).map_err(|e| DreamingError::Io(e.to_string()))?;
-    store
-        .write(rel_path, &json)
+    ensure_data_write_path(character_data_dir, path).await?;
+    fs::write(path, json)
         .await
-        .map_err(|e| DreamingError::Memory(e.to_string()))
+        .map_err(|e| DreamingError::Io(e.to_string()))
 }
 
 async fn append_dream_diary(
@@ -2346,7 +2471,8 @@ mod tests {
         .await
         .unwrap();
         assert!(soul.contains("concise test assistant"));
-        assert!(mem.join(".dreams/state.json").exists());
+        assert!(config.dirs.data.join("alice/dreams/state.json").exists());
+        assert!(!mem.join(".dreams/state.json").exists());
     }
 
     #[tokio::test]
@@ -2483,6 +2609,7 @@ mod tests {
             .any(|path| path.ends_with("MEMORY.md")));
         assert!(!workspace.join("MEMORY.md").exists());
         assert!(!mem.join("DREAMS.md").exists());
+        assert!(!config.dirs.data.join("alice/dreams/state.json").exists());
         assert!(!mem.join(".dreams/state.json").exists());
     }
 
@@ -2569,6 +2696,7 @@ mod tests {
     async fn dry_run_does_not_write_files() {
         let tmp = tempfile::tempdir().unwrap();
         let cfg_dir = tmp.path().join("config");
+        let data_dir = tmp.path().join("data");
         let mem = character_memory_dir(&cfg_dir, "alice");
         let workspace = character_workspace_dir(&cfg_dir, "alice");
         fs::create_dir_all(&mem).await.unwrap();
@@ -2579,7 +2707,7 @@ mod tests {
         .await
         .unwrap();
         let cfg = DreamingConfig::default();
-        let result = run_legacy_diagnostic_sweep(&cfg_dir, "alice", &cfg, true, true)
+        let result = run_legacy_diagnostic_sweep(&data_dir, &cfg_dir, "alice", &cfg, true, true)
             .await
             .unwrap()
             .unwrap();
@@ -2588,11 +2716,12 @@ mod tests {
         assert!(result
             .would_write_paths
             .iter()
-            .any(|path| path.contains(".dreams")));
+            .any(|path| path.replace('\\', "/").contains("alice/dreams")));
         assert!(result
             .would_write_paths
             .iter()
             .any(|path| path.ends_with("MEMORY.md")));
+        assert!(!data_dir.join("alice/dreams").exists());
         assert!(!mem.join(".dreams").exists());
         assert!(!mem.join("DREAMS.md").exists());
         assert!(!workspace.join("MEMORY.md").exists());
@@ -2602,6 +2731,7 @@ mod tests {
     async fn sweep_writes_memory_index_even_without_throughlines() {
         let tmp = tempfile::tempdir().unwrap();
         let cfg_dir = tmp.path().join("config");
+        let data_dir = tmp.path().join("data");
         let mem = character_memory_dir(&cfg_dir, "alice");
         let workspace = character_workspace_dir(&cfg_dir, "alice");
         fs::create_dir_all(&mem).await.unwrap();
@@ -2609,7 +2739,7 @@ mod tests {
             .await
             .unwrap();
         let cfg = DreamingConfig::default();
-        let result = run_legacy_diagnostic_sweep(&cfg_dir, "alice", &cfg, false, true)
+        let result = run_legacy_diagnostic_sweep(&data_dir, &cfg_dir, "alice", &cfg, false, true)
             .await
             .unwrap()
             .unwrap();
@@ -2621,13 +2751,15 @@ mod tests {
         assert!(memory.contains("# Memory Index"));
         assert!(memory.contains("notes.md"));
         assert!(mem.join("DREAMS.md").exists());
-        assert!(mem.join(".dreams").join("state.json").exists());
+        assert!(data_dir.join("alice/dreams/state.json").exists());
+        assert!(!mem.join(".dreams").join("state.json").exists());
     }
 
     #[tokio::test]
     async fn deep_indexes_only_qualified_throughlines() {
         let tmp = tempfile::tempdir().unwrap();
         let cfg_dir = tmp.path().join("config");
+        let data_dir = tmp.path().join("data");
         let mem = character_memory_dir(&cfg_dir, "alice");
         let workspace = character_workspace_dir(&cfg_dir, "alice");
         fs::create_dir_all(&mem).await.unwrap();
@@ -2638,7 +2770,7 @@ mod tests {
         .await
         .unwrap();
         let cfg = DreamingConfig::default();
-        let result = run_legacy_diagnostic_sweep(&cfg_dir, "alice", &cfg, false, true)
+        let result = run_legacy_diagnostic_sweep(&data_dir, &cfg_dir, "alice", &cfg, false, true)
             .await
             .unwrap()
             .unwrap();
@@ -2657,6 +2789,7 @@ mod tests {
     async fn generated_dreaming_outputs_are_not_reingested() {
         let tmp = tempfile::tempdir().unwrap();
         let cfg_dir = tmp.path().join("config");
+        let data_dir = tmp.path().join("data");
         let mem = character_memory_dir(&cfg_dir, "alice");
         fs::create_dir_all(mem.join(".dreams")).await.unwrap();
         fs::create_dir_all(mem.join("dreaming/light"))
@@ -2694,7 +2827,7 @@ mod tests {
         .unwrap();
 
         let cfg = DreamingConfig::default();
-        let result = run_legacy_diagnostic_sweep(&cfg_dir, "alice", &cfg, true, true)
+        let result = run_legacy_diagnostic_sweep(&data_dir, &cfg_dir, "alice", &cfg, true, true)
             .await
             .unwrap()
             .unwrap();
@@ -2706,6 +2839,7 @@ mod tests {
     async fn existing_memory_index_is_regenerated_not_reingested() {
         let tmp = tempfile::tempdir().unwrap();
         let cfg_dir = tmp.path().join("config");
+        let data_dir = tmp.path().join("data");
         let mem = character_memory_dir(&cfg_dir, "alice");
         let workspace = character_workspace_dir(&cfg_dir, "alice");
         fs::create_dir_all(&mem).await.unwrap();
@@ -2724,7 +2858,7 @@ mod tests {
         .unwrap();
 
         let cfg = DreamingConfig::default();
-        let result = run_legacy_diagnostic_sweep(&cfg_dir, "alice", &cfg, false, true)
+        let result = run_legacy_diagnostic_sweep(&data_dir, &cfg_dir, "alice", &cfg, false, true)
             .await
             .unwrap()
             .unwrap();
@@ -2754,11 +2888,45 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn dream_status_reads_legacy_state_when_data_state_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_dir = tmp.path().join("config");
+        let data_dir = tmp.path().join("data");
+        let mem = character_memory_dir(&cfg_dir, "alice");
+        fs::create_dir_all(mem.join(".dreams")).await.unwrap();
+        let legacy_state = DreamState {
+            last_run_at: Some("2026-04-01T00:00:00+00:00".to_string()),
+            runs: 7,
+            ..DreamState::default()
+        };
+        let legacy_json = serde_json::to_string_pretty(&legacy_state).unwrap();
+        fs::write(mem.join(".dreams/state.json"), legacy_json)
+            .await
+            .unwrap();
+
+        let cfg = DreamingConfig::default();
+        let status = dream_status(&data_dir, &cfg_dir, "alice", &cfg)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            status.last_run_at.as_deref(),
+            Some("2026-04-01T00:00:00+00:00")
+        );
+        assert!(status
+            .state_path
+            .replace('\\', "/")
+            .ends_with("alice/dreams/state.json"));
+        assert!(!data_dir.join("alice/dreams/state.json").exists());
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn sweep_rejects_symlinked_dream_report_escape() {
         let tmp = tempfile::tempdir().unwrap();
         let cfg_dir = tmp.path().join("config");
+        let data_dir = tmp.path().join("data");
         let mem = character_memory_dir(&cfg_dir, "alice");
         let outside = tmp.path().join("outside");
         fs::create_dir_all(&mem).await.unwrap();
@@ -2776,7 +2944,7 @@ mod tests {
 
         let cfg = DreamingConfig::default();
         assert!(matches!(
-            run_legacy_diagnostic_sweep(&cfg_dir, "alice", &cfg, false, true).await,
+            run_legacy_diagnostic_sweep(&data_dir, &cfg_dir, "alice", &cfg, false, true).await,
             Err(DreamingError::Memory(_))
         ));
         assert_eq!(
@@ -2790,9 +2958,12 @@ mod tests {
     async fn sweep_rejects_symlinked_dream_state_escape() {
         let tmp = tempfile::tempdir().unwrap();
         let cfg_dir = tmp.path().join("config");
+        let data_dir = tmp.path().join("data");
+        let character_data_dir = data_dir.join("alice");
         let mem = character_memory_dir(&cfg_dir, "alice");
         let outside = tmp.path().join("outside");
         fs::create_dir_all(&mem).await.unwrap();
+        fs::create_dir_all(&character_data_dir).await.unwrap();
         fs::create_dir_all(&outside).await.unwrap();
         fs::write(
             mem.join("notes.md"),
@@ -2800,12 +2971,12 @@ mod tests {
         )
         .await
         .unwrap();
-        std::os::unix::fs::symlink(&outside, mem.join(".dreams")).unwrap();
+        std::os::unix::fs::symlink(&outside, character_data_dir.join("dreams")).unwrap();
 
         let cfg = DreamingConfig::default();
         assert!(matches!(
-            run_legacy_diagnostic_sweep(&cfg_dir, "alice", &cfg, false, true).await,
-            Err(DreamingError::Memory(_))
+            run_legacy_diagnostic_sweep(&data_dir, &cfg_dir, "alice", &cfg, false, true).await,
+            Err(DreamingError::Io(_))
         ));
         assert!(!outside.join("state.json").exists());
     }
