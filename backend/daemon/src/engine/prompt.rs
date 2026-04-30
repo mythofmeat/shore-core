@@ -63,76 +63,6 @@ pub struct AssembledPrompt {
 }
 
 // ---------------------------------------------------------------------------
-// Capabilities config
-// ---------------------------------------------------------------------------
-
-/// Flat boolean config for building the capabilities system block.
-///
-/// Extracted from `AppConfig` at the call site to avoid dragging the full
-/// config tree into prompt assembly.
-#[derive(Debug, Clone, Default)]
-pub struct CapabilitiesConfig {
-    pub heartbeat_enabled: bool,
-    pub scratchpad_enabled: bool,
-    pub memory_enabled: bool,
-    pub send_image_enabled: bool,
-    pub generate_image_enabled: bool,
-    pub web_search_enabled: bool,
-}
-
-impl CapabilitiesConfig {
-    pub fn any_enabled(&self) -> bool {
-        self.heartbeat_enabled
-            || self.scratchpad_enabled
-            || self.memory_enabled
-            || self.send_image_enabled
-            || self.generate_image_enabled
-            || self.web_search_enabled
-    }
-}
-
-/// Build a "Tool usage" system block — a short, always-identical stance that
-/// reaches the model whenever any tool is enabled.
-///
-/// Returns `None` when no capabilities are enabled. Per-tool when/why guidance
-/// lives in each tool's own `description` field (see Anthropic's tool-use docs
-/// on detailed descriptions — that's where the model's selection signal comes
-/// from). This block exists only to assert that reaching for a tool is
-/// in-character and in-scope, since a character-framed system prompt otherwise
-/// risks Claude treating tool calls as breaking frame.
-pub fn build_capabilities_block(config: &CapabilitiesConfig) -> Option<String> {
-    if !config.any_enabled() {
-        return None;
-    }
-
-    let mut parts = vec![
-        "**Tool usage**".to_string(),
-        String::new(),
-        "You have a number of tools available to help you during the \
-         conversation. You're encouraged to use them freely — reaching for a \
-         tool is in-character and enhances the conversation rather than \
-         interrupting it. Each tool's own description covers when it's useful."
-            .to_string(),
-    ];
-
-    if config.memory_enabled {
-        parts.push(String::new());
-        parts.push(
-            "**Memory retrieval**\n\
-             \n\
-             Before making a factual claim about {{user}} or past conversations, \
-             use `search` with path `memory` for curated memory files, or \
-             `search_history` for transcript facts. Do not guess facts you \
-             could verify. If `search` returns a relevant file, call `read` \
-             on its `memory/...` path to get the full content before answering."
-                .to_string(),
-        );
-    }
-
-    Some(parts.join("\n"))
-}
-
-// ---------------------------------------------------------------------------
 // Prompt parameters
 // ---------------------------------------------------------------------------
 
@@ -692,21 +622,6 @@ mod tests {
         let result = render_template(BUILTIN_SYSTEM_TEMPLATE, &vars);
         assert!(result.contains("You are TestChar, in conversation with TestUser."));
         assert!(result.contains("Communicate directly"));
-    }
-
-    #[test]
-    fn capabilities_block_names_current_memory_tools() {
-        let block = build_capabilities_block(&CapabilitiesConfig {
-            memory_enabled: true,
-            ..Default::default()
-        })
-        .expect("memory capabilities should produce a block");
-
-        assert!(block.contains("`search`"));
-        assert!(block.contains("`read`"));
-        assert!(block.contains("`search_history`"));
-        assert!(!block.contains("memory_search"));
-        assert!(!block.contains("memory_read"));
     }
 
     // ── XML tag helper ────────────────────────────────────────────────
