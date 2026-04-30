@@ -5,6 +5,7 @@
 //! mirroring OpenClaw's model of agent-curated files.
 
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use serde_json::{json, Value};
 
@@ -108,7 +109,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "search",
-            description: "Search text files across your workspace and memory directory. Bare paths resolve under workspace/. Use `memory/...` to search durable memory files. Returns matching file paths, line numbers, and excerpts. Use this for discovery before reading a full file.",
+            description: "Find files in your workspace and memory directory that mention a phrase. Bare paths resolve under workspace/. Use `memory/...` to search durable memory files. Returns matching paths, line numbers, and short excerpts, with the most-recently-updated files first. Treat results as discovery only: excerpts are line-level snippets, so almost always follow up with `read` on the top files for full context, then chase any cross-references from there.",
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -179,7 +180,7 @@ pub(super) fn description_for_memory_access(
         "write" => Some("Write or overwrite a file in your workspace. Bare paths resolve under workspace/. Parent directories are created automatically. Overwrites without confirmation."),
         "edit" => Some("Edit an existing workspace file by replacing specific text. Bare paths resolve under workspace/. Each replacement must match the old_string exactly, including whitespace and newlines."),
         "list_files" => Some("List files and directories under a path in your workspace. Bare paths resolve under workspace/. Returns each entry's name, type, and size."),
-        "search" => Some("Search text files across your workspace. Bare paths resolve under workspace/. Returns matching file paths, line numbers, and excerpts. Use this for discovery before reading a full file."),
+        "search" => Some("Find files in your workspace that mention a phrase. Bare paths resolve under workspace/. Returns matching paths, line numbers, and short excerpts, with the most-recently-updated files first. Treat results as discovery only: almost always follow up with `read` on the top files for full context."),
         "delete" => Some("Move a file in your workspace to a trash folder. Bare paths resolve under workspace/. The file is moved out of your workspace into a timestamped trash folder, not permanently erased. Refuses prompt-visible files (SOUL.md, USER.md, AGENTS.md, TOOLS.md, HEARTBEAT.md, MEMORY.md) and directories."),
         _ => None,
     }
@@ -679,21 +680,19 @@ pub async fn handle_search(
         }));
     }
 
+    // ── Phase 1: enumerate candidate files and capture mtimes. ────────
+    //
+    // We collect every searchable file up front so results can be ranked by
+    // recency rather than by directory traversal order. Symlinks are still
+    // skipped here — resolve_path canonicalizes for direct read/delete, but
+    // descendants discovered by walking are joined onto the workspace root
+    // without re-checking containment, so a symlink pointing outside (e.g.
+    // → /etc/passwd) would otherwise be read like any regular file.
     let mut pending = vec![root];
-    let mut results = Vec::new();
-    let mut searched_files = 0usize;
+    let mut candidates: Vec<(PathBuf, SystemTime)> = Vec::new();
     let mut skipped_binary_or_large = 0usize;
 
     while let Some(path) = pending.pop() {
-        if results.len() >= max_results {
-            break;
-        }
-
-        // Use symlink_metadata so symlinks aren't transparently followed during
-        // recursive search. resolve_path canonicalizes for direct read/delete,
-        // but here each descendant is joined onto the workspace root without
-        // re-checking containment — a workspace symlink pointing outside
-        // (e.g. → /etc/passwd) would otherwise be read like any regular file.
         let meta = match tokio::fs::symlink_metadata(&path).await {
             Ok(meta) => meta,
             Err(_) => continue,
@@ -716,7 +715,6 @@ pub async fn handle_search(
             while let Ok(Some(entry)) = read_dir.next_entry().await {
                 entries.push(entry.path());
             }
-            entries.sort_by(|a, b| b.cmp(a));
             pending.extend(entries);
             continue;
         }
@@ -730,6 +728,19 @@ pub async fn handle_search(
             continue;
         }
 
+        let mtime = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+        candidates.push((path, mtime));
+    }
+
+    // Newest first; fall back to path order so output is stable when mtimes
+    // tie (e.g. tests that write files in quick succession).
+    candidates.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+
+    let mut results = Vec::new();
+    let mut files_summary: Vec<Value> = Vec::new();
+    let mut searched_files = 0usize;
+
+    for (path, _) in candidates {
         let bytes = match tokio::fs::read(&path).await {
             Ok(bytes) => bytes,
             Err(_) => continue,
@@ -740,30 +751,51 @@ pub async fn handle_search(
         };
 
         searched_files += 1;
+        let display = display_path_for(workspace_dir, &path);
+        let mut file_hits = 0usize;
         for (line_idx, line) in content.lines().enumerate() {
             let Some((match_start, match_end)) = find_case_insensitive_match(line, &query_lower)
             else {
                 continue;
             };
             results.push(json!({
-                "path": display_path_for(workspace_dir, &path),
+                "path": display.clone(),
                 "line": line_idx + 1,
                 "excerpt": excerpt_line(line, match_start, match_end),
             }));
+            file_hits += 1;
             if results.len() >= max_results {
                 break;
             }
         }
+        if file_hits > 0 {
+            files_summary.push(json!({"path": display, "hits": file_hits}));
+        }
+        if results.len() >= max_results {
+            break;
+        }
     }
 
     let count = results.len();
-    Ok(json!({
+    let mut response = json!({
         "query": query,
         "results": results,
         "count": count,
         "searched_files": searched_files,
         "skipped_binary_or_large": skipped_binary_or_large,
-    }))
+    });
+
+    if count > 0 {
+        response["files"] = json!(files_summary);
+        response["note"] = json!(
+            "These are line-level excerpts, ordered by file recency. \
+             Call `read` on the top file paths to see surrounding context — \
+             excerpts almost never contain the full answer, and one file \
+             often references others worth reading too."
+        );
+    }
+
+    Ok(response)
 }
 
 pub async fn handle_delete(
@@ -1341,6 +1373,74 @@ mod tests {
             .collect();
         assert!(paths.contains(&"notes/ideas.md"));
         assert!(paths.contains(&"memory/people/ren.md"));
+    }
+
+    #[tokio::test]
+    async fn search_orders_results_newest_file_first() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("workspace");
+        let ws_str = ws.to_string_lossy().to_string();
+
+        handle_write(
+            json!({"path": "older.md", "content": "tea in the garden"}),
+            &ws_str,
+        )
+        .await
+        .unwrap();
+
+        // mtime resolution can be coarse (e.g. 1s on some filesystems), so
+        // bump the older file backwards in time rather than relying on the
+        // write order alone.
+        let past = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        std::fs::File::options()
+            .write(true)
+            .open(ws.join("older.md"))
+            .unwrap()
+            .set_modified(past)
+            .unwrap();
+
+        handle_write(
+            json!({"path": "newer.md", "content": "tea on the porch"}),
+            &ws_str,
+        )
+        .await
+        .unwrap();
+
+        let result = handle_search(json!({"query": "tea"}), &ws_str, true)
+            .await
+            .unwrap();
+        let results = result["results"].as_array().unwrap();
+        let paths: Vec<&str> = results
+            .iter()
+            .map(|entry| entry["path"].as_str().unwrap())
+            .collect();
+        assert_eq!(paths, vec!["newer.md", "older.md"]);
+
+        let files = result["files"].as_array().expect("files summary present");
+        assert_eq!(files[0]["path"], "newer.md");
+        assert_eq!(files[1]["path"], "older.md");
+        assert!(result["note"].is_string());
+    }
+
+    #[tokio::test]
+    async fn search_omits_note_when_no_matches() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("workspace");
+        let ws_str = ws.to_string_lossy().to_string();
+
+        handle_write(
+            json!({"path": "notes.md", "content": "nothing relevant"}),
+            &ws_str,
+        )
+        .await
+        .unwrap();
+
+        let result = handle_search(json!({"query": "absent"}), &ws_str, true)
+            .await
+            .unwrap();
+        assert_eq!(result["count"], 0);
+        assert!(result.get("note").is_none());
+        assert!(result.get("files").is_none());
     }
 
     #[tokio::test]

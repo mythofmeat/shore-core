@@ -1,5 +1,4 @@
-i notice that the model has a tendency to just do a search for something without also delving into the files to read their full contents. i would like the model to be more encouraged to search -> read -> read (a different related file) until  it has the info it actually wants.
+deferred to a follow-up commit:
 
-additionally:
-- i think it would be good to use embeddings or something to provide a vector search instead of/in addition to the lexical search.
-- i think that reranking the results by similarity/most-recent would be useful as well
+- use embeddings for semantic/vector search alongside the lexical workspace search
+- rerank results by semantic similarity (depends on the embedding work above)
