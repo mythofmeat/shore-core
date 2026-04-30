@@ -103,11 +103,11 @@ pub(super) async fn persist_and_notify(
                 "role": "assistant",
                 "content": assistant_api_content,
             }));
-            if !preserve_prior_turn_thinking {
-                crate::content_util::strip_thinking_from_assistant_history(
-                    &mut full_request.messages,
-                );
-            }
+            crate::content_util::maybe_strip_prior_thinking(
+                &mut full_request.messages,
+                preserve_prior_turn_thinking,
+                &resolved.provider_key,
+            );
             ctx.autonomy.notify_last_request(char_name, full_request);
         }
         let notify_content = content.clone();

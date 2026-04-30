@@ -372,10 +372,10 @@ The hybrid index is rebuildable and non-authoritative.
 
 ```toml
 [memory.thinking]
-preserve_prior_turns = false
+preserve_prior_turns = true
 ```
 
-Default `false` strips prior-turn thinking/redacted-thinking blocks from future outgoing requests while preserving in-progress tool-loop thinking where providers require it.
+Default `true` keeps prior-turn thinking/redacted-thinking blocks in outgoing requests. Set `false` to strip them and save the tokens they consume on each subsequent turn — only safe with providers that don't depend on prior-turn thinking (e.g. Anthropic Claude 4.x). DeepSeek V3.1+ and Moonshot Kimi-thinking reject requests that omit prior `reasoning_content` while in thinking mode and ignore the user setting. In-progress tool-loop thinking is always preserved.
 
 ## `[notifications]`
 

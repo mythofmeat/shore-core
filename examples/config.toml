@@ -115,9 +115,11 @@ model = "claude-sonnet"            # Chat default; also fallback for background 
 # Thinking — controls how extended-thinking blocks from prior turns are
 # handled when building outgoing API requests.
 # [memory.thinking]
-# preserve_prior_turns = false  # default: strip thinking / redacted_thinking
-#                               # blocks from history assistant messages.
-#                               # Set true to restore pre-2026-04-18 behavior.
+# preserve_prior_turns = true   # default: keep prior-turn thinking blocks.
+#                               # Set false to strip and save tokens — safe
+#                               # for Anthropic Claude 4.x. DeepSeek V3.1+
+#                               # and Moonshot Kimi-thinking ignore the
+#                               # strip and always replay reasoning_content.
 
 # ── Notifications ────────────────────────────────────────────────────────
 

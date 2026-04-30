@@ -20,9 +20,9 @@ Clients should buffer one assistant turn across intermediate tool phases.
 
 ## Provider Thinking Blocks
 
-Extended-thinking blocks may be required inside an in-progress tool loop but are stripped from prior completed turns by default. This saves tokens and protects cache economics.
+Extended-thinking blocks are required inside an in-progress tool loop and are preserved across prior completed turns by default. Some providers (DeepSeek V3.1+, Moonshot Kimi-thinking) reject requests that omit prior `reasoning_content` while in thinking mode; quality on most reasoning models is also better when prior thinking is replayed.
 
-Set `[memory.thinking].preserve_prior_turns = true` only when testing a provider that genuinely needs old thinking blocks resent.
+Set `[memory.thinking].preserve_prior_turns = false` to strip prior-turn thinking and save tokens — safe for Anthropic Claude 4.x but not for DeepSeek/Moonshot thinking-mode (the daemon overrides the strip for those providers).
 
 ## Active Prompt Is Not Workspace Prompt
 

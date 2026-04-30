@@ -395,6 +395,19 @@ pub fn default_base_url(provider_key: &str) -> Option<&'static str> {
     }
 }
 
+/// Return true when the provider's thinking-mode API rejects requests that
+/// omit `reasoning_content` from prior assistant turns. DeepSeek V3.1+ and
+/// Moonshot's Kimi-thinking enforce this — stripping thinking from history
+/// for these providers produces a 400 like
+/// `"reasoning_content in the thinking mode must be passed back to the API."`.
+///
+/// Derived from the provider's reasoning-field name so the two stay in
+/// sync: providers whose response carries `reasoning_content` are exactly
+/// the ones that demand it back on input.
+pub fn requires_reasoning_replay(provider_key: &str) -> bool {
+    providers::context::reasoning_field_for(provider_key) == "reasoning_content"
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -649,6 +662,22 @@ sdk = "openai"
         // Custom or unknown providers must still set base_url explicitly.
         assert_eq!(default_base_url("opencode"), None);
         assert_eq!(default_base_url("unknown"), None);
+    }
+
+    #[test]
+    fn requires_reasoning_replay_for_thinking_mode_providers() {
+        assert!(requires_reasoning_replay("deepseek"));
+        assert!(requires_reasoning_replay("moonshot"));
+        // Anthropic Claude 4.x doesn't replay prior-turn thinking.
+        assert!(!requires_reasoning_replay("anthropic"));
+        // OpenAI reasoning models surface a summary, not raw reasoning.
+        assert!(!requires_reasoning_replay("openai"));
+        // OpenRouter normalizes reasoning per upstream; our helper is
+        // about local stripping, so default to false there.
+        assert!(!requires_reasoning_replay("openrouter"));
+        assert!(!requires_reasoning_replay("zai"));
+        assert!(!requires_reasoning_replay("xai"));
+        assert!(!requires_reasoning_replay("unknown"));
     }
 
     #[test]

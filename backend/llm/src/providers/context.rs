@@ -34,16 +34,24 @@ pub(crate) struct ProviderContext {
 /// Build a `ProviderContext` from the request's `provider_key` and
 /// `provider_options`.  This is the **single place** where provider-specific
 /// decisions are made — SDK modules never branch on provider identity.
+/// JSON field name OpenAI-compatible providers use for reasoning/thinking
+/// content. Providers returning `"reasoning_content"` are also the ones
+/// whose thinking-mode API requires that field on the way back in — keep
+/// the two views in sync via this single source of truth.
+pub(crate) fn reasoning_field_for(provider_key: &str) -> &'static str {
+    match provider_key {
+        "deepseek" | "moonshot" => "reasoning_content",
+        _ => "reasoning",
+    }
+}
+
 pub(crate) fn build_provider_context(request: &LlmRequest) -> ProviderContext {
     let pk = request
         .provider_key
         .as_deref()
         .unwrap_or(request.sdk.as_str());
 
-    let reasoning_field = match pk {
-        "deepseek" | "moonshot" => "reasoning_content",
-        _ => "reasoning",
-    };
+    let reasoning_field = reasoning_field_for(pk);
 
     let mut extra_headers = Vec::new();
     if pk == "openrouter" {

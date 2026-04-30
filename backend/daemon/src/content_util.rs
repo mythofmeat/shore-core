@@ -131,6 +131,20 @@ pub fn dispatch_result_to_output(result: Result<Value, crate::tools::ToolError>)
     }
 }
 
+/// Apply [`strip_thinking_from_assistant_history`] when the user has opted
+/// out of preserving prior-turn thinking AND the provider does not require
+/// `reasoning_content` to be replayed (DeepSeek V3.1+, Moonshot
+/// Kimi-thinking — see [`shore_llm::requires_reasoning_replay`]).
+pub fn maybe_strip_prior_thinking(
+    messages: &mut [Value],
+    preserve_prior_turns: bool,
+    provider_key: &str,
+) {
+    if !preserve_prior_turns && !shore_llm::requires_reasoning_replay(provider_key) {
+        strip_thinking_from_assistant_history(messages);
+    }
+}
+
 /// Remove `thinking` and `redacted_thinking` blocks from every assistant
 /// message in an already-serialized request body. Used when
 /// `[memory.thinking] preserve_prior_turns` is false to avoid re-sending

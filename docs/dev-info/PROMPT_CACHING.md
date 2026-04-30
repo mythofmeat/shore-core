@@ -51,7 +51,7 @@ Heartbeat prompt inputs:
 
 ## Thinking Blocks
 
-Prior completed-turn thinking is stripped by default through `[memory.thinking].preserve_prior_turns = false`. In-progress tool loops preserve provider-required thinking blocks.
+Prior completed-turn thinking is preserved by default through `[memory.thinking].preserve_prior_turns = true` (set to `false` to strip and save tokens — safe for Anthropic Claude 4.x but ignored for DeepSeek/Moonshot thinking-mode, which require prior `reasoning_content`). In-progress tool loops always preserve thinking blocks.
 
 ## Things That Should Not Bust Cache
 

@@ -261,12 +261,15 @@ pub(super) async fn handle_generation(
         cache_dir,
     );
     // Strip thinking / redacted_thinking blocks from prior-turn assistant
-    // messages unless the user has opted to preserve them. The in-progress
+    // messages unless the user has opted to preserve them, or the provider
+    // requires prior `reasoning_content` to be replayed. The in-progress
     // tool-use loop (messages appended by `run_tool_phase`) is built via a
     // different path and is not affected by this call.
-    if !effective_config.app.memory.thinking.preserve_prior_turns {
-        crate::content_util::strip_thinking_from_assistant_history(&mut llm_messages);
-    }
+    crate::content_util::maybe_strip_prior_thinking(
+        &mut llm_messages,
+        effective_config.app.memory.thinking.preserve_prior_turns,
+        &resolved.provider_key,
+    );
 
     let tool_defs = if effective_config.app.behavior.tool_use.enabled {
         let toggles = &effective_config.app.behavior.tool_use.tools;

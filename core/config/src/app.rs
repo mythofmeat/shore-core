@@ -534,18 +534,29 @@ impl Default for DreamingConfig {
     }
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
+serde_default!(default_preserve_prior_turns -> bool { true });
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ThinkingConfig {
     /// Preserve extended-thinking blocks from prior turns in outgoing
-    /// requests. Default `false`: thinking / redacted_thinking blocks are
-    /// stripped from history assistant messages, saving the tokens they
-    /// would otherwise consume on every subsequent turn. Set `true` to
-    /// restore pre-2026-04-18 behavior (only useful if a provider/model
-    /// starts depending on prior-turn thinking, which Anthropic's Claude
-    /// 4.x family does not).
-    #[serde(default)]
+    /// requests. Default `true`: thinking / redacted_thinking blocks are
+    /// kept in history. Set `false` to strip them and save the tokens
+    /// they consume on each subsequent turn — only safe with providers
+    /// that don't depend on prior-turn thinking (e.g. Anthropic Claude
+    /// 4.x). DeepSeek V3.1+ and Moonshot Kimi-thinking reject requests
+    /// that omit prior `reasoning_content` while in thinking mode, and
+    /// model performance is generally better when thinking is preserved.
+    #[serde(default = "default_preserve_prior_turns")]
     pub preserve_prior_turns: bool,
+}
+
+impl Default for ThinkingConfig {
+    fn default() -> Self {
+        Self {
+            preserve_prior_turns: default_preserve_prior_turns(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
