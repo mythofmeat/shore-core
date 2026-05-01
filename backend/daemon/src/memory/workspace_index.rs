@@ -112,6 +112,7 @@ pub async fn hybrid_search(
 
     let mut candidates = enumerate_files(workspace_dir, include_memory).await;
     let mut skipped_binary_or_large = 0usize;
+    let mut index_dirty = false;
 
     // Drop entries whose files vanished or now live outside the walk.
     let current: BTreeSet<String> = candidates.iter().map(|f| f.display_path.clone()).collect();
@@ -121,10 +122,30 @@ pub async fn hybrid_search(
     let mut stale_paths: Vec<String> = Vec::new();
     let mut stale_docs: Vec<String> = Vec::new();
     for file in &mut candidates {
+        if file.skip_reason.as_deref() == Some("oversize") {
+            skipped_binary_or_large += 1;
+            index.entries.insert(
+                file.display_path.clone(),
+                IndexedEntry {
+                    hash: format!("size:{}", file.size),
+                    size: file.size,
+                    modified_at_secs: file.modified_at_secs,
+                    model_id: model_id.clone(),
+                    embedded: false,
+                    reason: Some("oversize".into()),
+                    embedding: Vec::new(),
+                },
+            );
+            continue;
+        }
+
         let bytes = match tokio::fs::read(&file.fs_path).await {
             Ok(b) => b,
             Err(_) => {
                 file.skip_reason = Some("read failed".into());
+                if index.entries.remove(&file.display_path).is_some() {
+                    index_dirty = true;
+                }
                 continue;
             }
         };
@@ -188,6 +209,10 @@ pub async fn hybrid_search(
                 }
             }
         }
+        index_dirty = true;
+    }
+
+    if index_dirty {
         save_index(index_path, &index);
     }
 
@@ -444,6 +469,9 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+
     use async_trait::async_trait;
     use shore_llm::LlmError;
     use tempfile::TempDir;
@@ -657,6 +685,37 @@ mod tests {
         // The symlink target should not appear in results.
         for f in &result.files {
             assert_ne!(f.display_path, "link_to_secret.md");
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unreadable_file_drops_stale_embedding() {
+        let (_g, ws, idx) = setup();
+        let ws_str = ws.to_string_lossy().into_owned();
+
+        write_file(&ws, "secret.md", "secret_token_xyzzy").await;
+
+        let embedder = TopicEmbedder::new(&["xyzzy"]);
+        let result = hybrid_search(&ws_str, true, "xyzzy", HybridMode::Hybrid, &embedder, &idx)
+            .await
+            .unwrap();
+        // First search indexes the file and finds it.
+        assert_eq!(result.files.len(), 1);
+        assert_eq!(result.files[0].display_path, "secret.md");
+
+        // Make the file unreadable.
+        let perms = std::fs::Permissions::from_mode(0o000);
+        tokio::fs::set_permissions(ws.join("secret.md"), perms)
+            .await
+            .unwrap();
+
+        // Run again; the stale embedding must be dropped so the file doesn't appear.
+        let result = hybrid_search(&ws_str, true, "xyzzy", HybridMode::Hybrid, &embedder, &idx)
+            .await
+            .unwrap();
+        for f in &result.files {
+            assert_ne!(f.display_path, "secret.md");
         }
     }
 }

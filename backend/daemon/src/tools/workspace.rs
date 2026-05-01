@@ -684,8 +684,10 @@ pub async fn handle_search(
 
     let requested_hybrid = matches!(mode_str, "hybrid" | "vector");
     let can_hybrid = embedder.is_some() && workspace_index_path.is_some();
+    let path_str = input.get("path").and_then(|v| v.as_str());
+    let path_scoped = !matches!(path_str, None | Some("") | Some("."));
 
-    if requested_hybrid && can_hybrid {
+    if requested_hybrid && can_hybrid && !path_scoped {
         let mode = if mode_str == "vector" {
             HybridMode::Vector
         } else {
@@ -705,7 +707,7 @@ pub async fn handle_search(
     let mut response = handle_search_lexical(input, workspace_dir, include_memory).await?;
     if let Some(obj) = response.as_object_mut() {
         obj.insert("mode".into(), json!("lexical"));
-        if requested_hybrid {
+        if requested_hybrid && !can_hybrid {
             obj.insert(
                 "semantic_unavailable".into(),
                 json!("embedder not configured"),
@@ -1243,6 +1245,7 @@ pub async fn handle_exec(input: Value, workspace_dir: &str) -> Result<Value, Too
 
 #[cfg(test)]
 mod tests {
+    use async_trait::async_trait;
     use super::*;
 
     #[test]
@@ -1735,6 +1738,60 @@ mod tests {
 
         assert_eq!(result["mode"], "lexical");
         assert!(result.get("semantic_unavailable").is_none());
+    }
+
+    struct DummyEmbedder;
+
+    #[async_trait]
+    impl Embedder for DummyEmbedder {
+        async fn embed(
+            &self,
+            inputs: &[&str],
+        ) -> Result<Vec<Vec<f32>>, shore_llm::LlmError> {
+            let dim = self.dimensions();
+            Ok(inputs.iter().map(|_| vec![0.0; dim]).collect())
+        }
+
+        fn model_id(&self) -> &str {
+            "dummy"
+        }
+
+        fn dimensions(&self) -> usize {
+            4
+        }
+    }
+
+    #[tokio::test]
+    async fn search_with_path_scopes_to_lexical_even_with_embedder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("workspace");
+        let ws_str = ws.to_string_lossy().to_string();
+
+        handle_write(json!({"path": "notes/a.md", "content": "tea time"}), &ws_str)
+            .await
+            .unwrap();
+        handle_write(json!({"path": "other/b.md", "content": "coffee break"}), &ws_str)
+            .await
+            .unwrap();
+
+        let embedder = DummyEmbedder;
+        let idx = tmp.path().join("index.json");
+
+        let result = handle_search(
+            json!({"query": "tea", "path": "notes/"}),
+            &ws_str,
+            true,
+            Some(&embedder),
+            Some(&idx),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result["mode"], "lexical");
+        assert!(result.get("semantic_unavailable").is_none());
+        let results = result["results"].as_array().unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["path"], "notes/a.md");
     }
 
     #[test]

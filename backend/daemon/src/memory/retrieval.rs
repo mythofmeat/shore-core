@@ -78,9 +78,11 @@ pub fn resolve_embedder(
         .and_then(|v| v.as_str())
         .ok_or_else(|| format!("embedding profile '{profile_name}' is missing model_id"))?;
 
-    let cache_key = format!("{provider}::{model_id}");
     match provider {
-        "local" => shore_llm::embed::cache_or_build(&cache_key, || build_local(model_id)),
+        "local" => {
+            let cache_key = format!("local::{model_id}");
+            shore_llm::embed::cache_or_build(&cache_key, || build_local(model_id))
+        }
         _ => {
             let api_key_env = entry
                 .get("api_key_env")
@@ -96,6 +98,10 @@ pub fn resolve_embedder(
                 .get("dimensions")
                 .and_then(|v| v.as_integer())
                 .unwrap_or(1536) as usize;
+            let cache_key = format!(
+                "{provider}::{model_id}::{api_key_env}::{}::{dimensions}",
+                base_url.as_deref().unwrap_or("default")
+            );
             let http_client = http_client.clone();
             shore_llm::embed::cache_or_build(&cache_key, move || {
                 Ok::<Arc<dyn Embedder>, String>(Arc::new(OpenAIEmbedder::new(
