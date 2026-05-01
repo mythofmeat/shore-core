@@ -181,6 +181,14 @@ Main tool groups:
 - activity heatmap
 - time and dice
 
+`search` ranks workspace files using a hybrid of semantic similarity (vector
+embeddings) and case-insensitive substring matching. Pass `mode: "lexical"`
+for substring-only ordered by file recency, or `mode: "vector"` for pure
+semantic similarity. Default is `hybrid`. When no embedder is configured or
+the embedding model is unavailable, hybrid/vector requests fall back to
+lexical and the response surfaces `semantic_unavailable` so the model knows
+it didn't get the broader retrieval.
+
 `exec` runs only allowlisted commands, does not invoke a shell, and now rejects path arguments outside the character workspace.
 
 `delete` removes a workspace file by moving it into a timestamped folder under the character data directory's `trash/` subdirectory rather than erasing it. Prompt-visible files (SOUL.md, USER.md, AGENTS.md, TOOLS.md, HEARTBEAT.md, MEMORY.md) and directories cannot be deleted.

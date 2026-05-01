@@ -86,8 +86,8 @@ impl ToolContext for HandlerToolContext {
     fn memory_retrieval_config(&self) -> &shore_config::app::RetrievalConfig {
         self.inner.memory_retrieval_config()
     }
-    fn embedding_config(&self) -> Option<&crate::memory::retrieval::EmbeddingConfig> {
-        self.inner.embedding_config()
+    fn embedder(&self) -> Option<&dyn shore_llm::embed::Embedder> {
+        self.inner.embedder()
     }
     fn memory_index_path(&self) -> Option<&std::path::Path> {
         self.inner.memory_index_path()

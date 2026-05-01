@@ -171,11 +171,43 @@ Components:
 
 - `markdown_store.rs` — filesystem store
 - `markdown_query.rs` — direct and LLM-assisted markdown Q&A
-- `retrieval.rs` — lexical and optional hybrid ranking
+- `retrieval.rs` — lexical and optional hybrid ranking over markdown memory
+- `workspace_index.rs` — whole-workspace embedding index that backs the
+  `search` tool's hybrid mode
 - `compaction/` — conversation summarization and memory writes
 - `deferred_edits.rs` — prompt snapshot activation boundary
 
-The optional embedding index is a rebuildable cache at `memory_index.json`. It is not a memory database.
+Embedding indexes are rebuildable caches:
+- `memory_index.json` (markdown memory only, used by older retrieval path)
+- `workspace_index.json` (whole workspace + memory namespace, used by the
+  `search` tool's hybrid/vector modes)
+
+Both are derivative — markdown files remain authoritative and either index
+can be deleted and rebuilt on next search.
+
+### Search Data Flow
+
+```
+search tool call
+  → tools/workspace.rs handle_search
+      → mode == "lexical" or no embedder: substring walk + line excerpts
+      → mode == "hybrid"|"vector":
+          memory/workspace_index.rs hybrid_search
+            → enumerate workspace + memory files (same security rules as
+              the lexical walker: skip symlinks, size cap, non-UTF8 skip)
+            → load + prune workspace_index.json
+            → embed stale text files via shore-llm Embedder trait
+            → embed query
+            → cosine + lexical fusion (default 0.45 / 0.55)
+          → file-level rank
+      → produce path + line excerpt for each top file
+```
+
+The `Embedder` trait (`backend/llm/src/embed/`) is dyn-compatible so the
+process holds an `Arc<dyn Embedder>` chosen at startup. Implementations:
+`OpenAIEmbedder` (any OpenAI-compatible `/v1/embeddings`), `LocalEmbedder`
+(fastembed-rs / ONNX, default BGE-small). A process-wide cache avoids
+reloading the local model across requests.
 
 ## Tools
 

@@ -2,6 +2,7 @@ pub mod cache_forensics;
 pub mod credentials;
 pub mod debug_log;
 pub mod discovery;
+pub mod embed;
 pub(crate) mod providers;
 pub mod retry;
 pub mod sanitize;
@@ -309,18 +310,6 @@ impl LlmClient {
             }
         }
         result
-    }
-
-    /// Send an embedding request to the provider.
-    pub async fn embed(
-        &self,
-        provider: &str,
-        model: &str,
-        api_key: &str,
-        base_url: Option<&str>,
-        input: &[&str],
-    ) -> Result<Vec<Vec<f32>>, LlmError> {
-        providers::embed(&self.http_client, provider, model, api_key, base_url, input).await
     }
 
     /// Send an image generation request to the provider.

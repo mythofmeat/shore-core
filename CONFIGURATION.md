@@ -119,14 +119,30 @@ api_key_env = "OPENROUTER_API_KEY"
 base_url = "https://openrouter.ai/api/v1"
 ```
 
-Embedding profile:
+Embedding profiles:
 
 ```toml
+# Local ONNX-runtime embedder (no API key, runs offline). The model
+# downloads once into $XDG_CACHE_HOME/shore/models/ and is shared across
+# characters. Supported model_ids: bge-small-en-v1.5 (default, 384 dims,
+# ~33MB), bge-base-en-v1.5 (768 dims), bge-large-en-v1.5 (1024 dims),
+# all-minilm-l6-v2 (384 dims), nomic-embed-text-v1.5 (768 dims).
+[embedding.local-bge-small]
+provider = "local"
+model_id = "bge-small-en-v1.5"
+
+# Hosted OpenAI-compatible embedder.
 [embedding.text-large]
 provider = "openai"
 model_id = "text-embedding-3-large"
 api_key_env = "OPENAI_API_KEY"
 ```
+
+When no `[embedding.*]` profile is configured at all, the daemon defaults
+to local `bge-small-en-v1.5` so the workspace `search` tool's hybrid mode
+works out of the box without API keys. Local embedding support is
+controlled by the `local-embeddings` Cargo feature on `shore-daemon`
+(default-on).
 
 ## Providers
 
