@@ -1,6 +1,8 @@
 use std::future::Future;
 use std::pin::Pin;
 
+use shore_llm::types::LlmRequest;
+
 // ---------------------------------------------------------------------------
 // Configuration — re-exported from shore-config (single source of truth)
 // ---------------------------------------------------------------------------
@@ -94,11 +96,18 @@ pub enum CompactionError {
 /// Takes a system prompt and structured messages (conversation history with the
 /// compaction instruction appended), returns raw LLM text. Splitting system from
 /// messages enables prompt-prefix caching of the stable system instructions.
+///
+/// When `cached_request` is `Some`, the implementation should reuse it as the
+/// cached prefix base — clone it, push the compaction prompts as inline
+/// `role:"system"` messages (the Anthropic provider transforms these into
+/// `<system_instruction>` user wrappers), and avoid touching the top-level
+/// `system` parameter so the conversation's prompt cache prefix stays valid.
 pub trait CompactionLlm: Send + Sync {
     fn summarize(
         &self,
         system: &str,
         messages: Vec<serde_json::Value>,
+        cached_request: Option<LlmRequest>,
     ) -> Pin<Box<dyn Future<Output = Result<String, CompactionError>> + Send + '_>>;
 }
 

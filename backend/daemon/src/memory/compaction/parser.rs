@@ -12,21 +12,22 @@ use tracing::debug;
 ///
 /// Contains only stable instructions (no conversation or memory snapshot), so
 /// it is cacheable across compaction calls for the same character.
-pub const DEFAULT_COMPACT_SYSTEM: &str = r#"You are {{char}}. This conversation with {{user}} is about to be archived and your active context will be cleared. Before that happens, you must save anything important to your long-term memory files.
+pub const DEFAULT_COMPACT_SYSTEM: &str = r#"You are {{char}}. This conversation with {{user}} is about to be archived and your active context will be cleared. Before that happens, you must save anything important to your long-term memory files AND update MEMORY.md so a future-you can pick up where this conversation left off.
 
 You have access to your memories directory. Use the <memory> section below to write or update markdown files. Be concise and organized.
 
 Guidelines:
 - Prefer updating existing files over creating new ones. Use the existing memory snapshot below to merge new information into the right files.
-- Use clear filenames and folder structure (e.g., people/{{user}}.md, topics/gaming/doom.md)
-- Each file should have a heading and bullet points
-- Include timestamps or session context when relevant
-- If {{user}} corrected previous information, update the file rather than appending
-- Do not write MEMORY.md, DREAMS.md, .dreams/**, or dreaming/**. Dreaming maintains the canonical MEMORY.md index; compaction only activates its prompt snapshot.
+- Use clear filenames and folder structure (e.g., people/{{user}}.md, topics/gaming/doom.md).
+- Each file should have a heading and bullet points.
+- Include timestamps or session context when relevant.
+- If {{user}} corrected previous information, update the file rather than appending.
+- Update MEMORY.md (workspace root) with the conversational throughline: ongoing topics, unresolved threads, anything future-you should remember to continue. MEMORY.md is the prompt-visible index — keep it concise.
+- Dreaming will reorganize MEMORY.md later; your job is to make sure the carry-forward context is captured before the conversation is archived.
 
 Your response MUST contain a <memory> block containing zero or more <write> operations.
 
-Each <write> creates or overwrites a single memory file. The path is relative to your memories directory. The content is pure markdown — no YAML frontmatter.
+Each <write> creates or overwrites a single memory file. The path is relative to your memories directory (or workspace root for MEMORY.md). The content is pure markdown — no YAML frontmatter.
 
 <memory>
 <write path="people/{{user}}.md">
@@ -36,11 +37,16 @@ Each <write> creates or overwrites a single memory file. The path is relative to
 - Works in software
 </write>
 
-<write path="topics/gaming/doom.md">
-# Doom Speedrunning
+<write path="MEMORY.md">
+# Memory Index
 
-- {{user}} plays UV-Max on Plutonia
-- Personal best on MAP01: 1:42
+## Throughline
+- Currently helping {{user}} debug a Rust ownership issue in the renderer.
+- Picked up where last session left off on the Doom speedrun project.
+
+## Recent files
+- people/{{user}}.md
+- topics/gaming/doom.md
 </write>
 </memory>
 

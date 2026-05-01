@@ -272,9 +272,12 @@ dormant_after_heartbeat_turns = 3
 dormant_after_idle_time = "48h"
 minimum_heartbeat_latency = "1h"
 max_tool_rounds = 12
+wrap_up_grace_rounds = 3
 ```
 
 Autonomy requires the master switch. Heartbeat controls private autonomous ticks. All duration fields accept strings like `"30s"`, `"15m"`, `"2h"`, and `"48h"`.
+
+`max_tool_rounds` is the normal tool-use budget per heartbeat tick. When that budget (or the wall-clock loop deadline) is reached without natural termination, the daemon appends a wrap-up nudge that asks the character to record any unfinished work into `HEARTBEAT.md` and respond `HEARTBEAT_OK` (or send a final `<sendMessage>`). `wrap_up_grace_rounds` is the additional tool-use budget granted after that nudge so the model can finish the wrap-up turn. Total worst-case rounds per tick = `max_tool_rounds + wrap_up_grace_rounds`. Notes the model leaves in `HEARTBEAT.md` are read into the prompt at the start of every subsequent heartbeat.
 
 ## `[behavior.tool_use]`
 
@@ -340,7 +343,7 @@ max_context_tokens = 200000
 keep_recent_turns = 2
 ```
 
-Compaction writes markdown memory notes, archives old turns, and activates staged prompt-visible edits. It does not write `MEMORY.md`; dreaming maintains the canonical index, and compaction activates its prompt snapshot.
+Compaction writes markdown memory notes, archives old turns, and activates staged prompt-visible edits. It also updates `MEMORY.md` with the conversational throughline so the next conversation can pick up where this one left off; dreaming reorganizes the index later. When the autonomy manager has a cached chat request, compaction reuses that prefix and appends only the carry-forward instruction (the trailing `role:"system"` message is wrapped to a `<system_instruction>` user turn by the Anthropic provider), preserving the live conversation's prompt cache.
 
 ## `[memory.dreaming]`
 
@@ -351,9 +354,11 @@ frequency = "0 3 * * *"
 max_tool_rounds = 12
 ```
 
-Dreaming is opt-in and requires `[behavior.autonomy].enabled = true`. It runs independently of heartbeat as a private AI librarian pass. The character uses memory tools to inspect the existing flexible markdown layout, consolidate and dedupe durable notes, mark stale/superseded material, update the canonical `MEMORY.md`, and write an audit entry to `DREAMS.md`. When a cached chat request is available, the private librarian instruction is appended after that request prefix so the existing provider-side prompt cache can be reused.
+Dreaming is opt-in and requires `[behavior.autonomy].enabled = true`. It runs independently of heartbeat as a private AI librarian pass. The character uses memory tools to inspect the existing flexible markdown layout, consolidate and dedupe durable notes, mark stale/superseded material, and update the canonical `MEMORY.md`. The daemon writes a timestamped audit entry to the dreams log automatically once the pass finishes — the model itself does not write `DREAMS.md`. Dreaming may also edit the protected prompt files (`SOUL.md`, `USER.md`, `AGENTS.md`, `TOOLS.md`, `HEARTBEAT.md`); those edits are staged through the active-prompt snapshot and take effect at the next compaction/reload boundary. When a cached chat request is available, the private librarian instruction is appended after that request prefix so the existing provider-side prompt cache can be reused.
 
-`MEMORY.md` is the index/map and replaces the old recap/digest concept. Normal chat reads `active_prompt/MEMORY.md`; edits to `workspace/MEMORY.md` only become prompt-active after compaction/reload. It should not duplicate `USER.md` or `AGENTS.md`, which remain pinned prompt files. `DREAMS.md` is review output, not long-term memory. Machine-readable staging/debug state is written under `$XDG_DATA_HOME/shore/<Character>/dreams/`. Dreaming excludes generated artifacts from ordinary memory-source ingestion, including legacy `.dreams/**`, `DREAMS.md`, `dreams.md`, `MEMORY.md`, and `dreaming/**`.
+`MEMORY.md` is the index/map and replaces the old recap/digest concept. Normal chat reads `active_prompt/MEMORY.md`; edits to `workspace/MEMORY.md` only become prompt-active after compaction/reload. It should not duplicate `USER.md` or `AGENTS.md`, which remain pinned prompt files.
+
+The dreams audit log lives at `$XDG_DATA_HOME/shore/<Character>/DREAMS.md` (data dir, not workspace) so it never bleeds into prompts or memory snapshots. Use `shore memory dreams [--limit N]` to inspect recent entries. Machine-readable dreaming staging/debug state is written under `$XDG_DATA_HOME/shore/<Character>/dreams/`.
 
 ## `[memory.retrieval]`
 

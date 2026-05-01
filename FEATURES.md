@@ -155,17 +155,21 @@ The character becomes dormant after configured idle/tick limits and wakes when t
 
 Heartbeat does not force a recap or write memory by itself. Durable notes are created only when the character uses a write-capable tool.
 
+When a heartbeat tick exhausts its tool-use budget without naturally finishing, the daemon appends a wrap-up nudge as a final user message, asking the character to record any unfinished work into `HEARTBEAT.md` and respond `HEARTBEAT_OK` (or send a final `<sendMessage>`). The model gets `wrap_up_grace_rounds` additional tool rounds to do that wrap-up before the loop hard-stops. The next heartbeat reads the updated `HEARTBEAT.md` from the start of its prompt, so notes left for future-self are always visible to the next session.
+
 The heartbeat event log is persisted at `$XDG_DATA_HOME/shore/<Character>/heartbeat.jsonl` and is reloaded on daemon start, so tick decisions, autonomous messages, and dormancy transitions remain inspectable across restarts. Disk writes batch on the autonomy tick cadence (every ~30s) and on graceful shutdown.
 
 `shore status` surfaces the autonomy block — heartbeat schedule (next wake, time since user, idle ticks, dormancy thresholds) and the most recent heartbeat events. `shore log --heartbeat` shows the full ring buffer.
 
 ## Dreaming
 
-Dreaming is an opt-in scheduled AI librarian pass. When due, the character privately uses memory tools to list, read, search, write, and edit markdown memory files. Its job is to organize, dedupe, consolidate, and mark stale memory so future recall is easier.
+Dreaming is an opt-in scheduled AI librarian pass. When due, the character privately uses memory tools to list, read, search, write, and edit markdown memory files. Its job is to organize, dedupe, consolidate, and mark stale memory so future recall is easier. Dreaming may also edit the protected prompt files (`SOUL.md`, `USER.md`, `AGENTS.md`, `TOOLS.md`, `HEARTBEAT.md`); those edits stage through the active-prompt snapshot and take effect at the next compaction/reload boundary.
 
-`workspace/MEMORY.md` is the canonical memory index and replaces the old recap/digest concept. Its active prompt snapshot refreshes at compaction, so dreaming can reorganize memory without changing the hot chat prefix immediately. It should point to useful files and throughlines without duplicating `USER.md` or `AGENTS.md`. `workspace/memory/DREAMS.md` is the human-readable audit/review diary for each dreaming pass. Machine-readable state lives under `$XDG_DATA_HOME/shore/<Character>/dreams/`.
+`workspace/MEMORY.md` is the canonical memory index and replaces the old recap/digest concept. Its active prompt snapshot refreshes at compaction, so dreaming can reorganize memory without changing the hot chat prefix immediately. It should point to useful files and throughlines without duplicating `USER.md` or `AGENTS.md`. Compaction is now responsible for adding the conversational throughline to `MEMORY.md` so the next conversation can pick up where the previous one left off; dreaming reorganizes the index later.
 
-Generated dreaming output is excluded from ordinary memory-source ingestion, including legacy `.dreams/**`, `DREAMS.md`, `dreams.md`, `MEMORY.md`, and `memory/dreaming/**`.
+The dreams audit log lives at `$XDG_DATA_HOME/shore/<Character>/DREAMS.md` (data dir, not workspace) so it does not bleed into prompts or memory snapshots. The daemon writes the audit entry automatically after every dreaming and compaction pass; the model itself does not write `DREAMS.md`. Use `shore memory dreams [--limit N]` to inspect recent entries. Machine-readable dreaming state lives under `$XDG_DATA_HOME/shore/<Character>/dreams/`.
+
+Generated dreaming output is excluded from ordinary memory-source ingestion, including legacy `.dreams/**`, `dreams.md`, `MEMORY.md`, and `memory/dreaming/**`.
 
 ## Tools
 

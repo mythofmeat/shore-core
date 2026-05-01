@@ -1,5 +1,3 @@
-use std::cmp::Reverse;
-
 use crate::memory::markdown_store::{MarkdownEntry, MarkdownMemoryStore, MarkdownStoreError};
 
 const MAX_DIRECT_HITS: usize = 10;
@@ -23,10 +21,6 @@ pub async fn memory_status(
     };
 
     for entry in files {
-        if entry.path == "DREAMS.md" {
-            continue;
-        }
-
         status.total_files += 1;
         if entry.path.starts_with("daily/") {
             status.daily_files += 1;
@@ -51,59 +45,6 @@ pub fn format_direct_response(query: &str, hits: &[MarkdownEntry]) -> String {
         lines.push(format!("- {}\n  {}", entry.path, excerpt));
     }
     lines.join("\n")
-}
-
-pub async fn append_dream_entry(
-    store: &MarkdownMemoryStore,
-    timestamp: chrono::DateTime<chrono::FixedOffset>,
-    title: &str,
-    body: &str,
-) -> Result<(), MarkdownStoreError> {
-    let path = "DREAMS.md";
-    let existing = match store.read(path).await {
-        Ok(entry) => entry.content,
-        Err(MarkdownStoreError::NotFound(_)) => "# Dreams\n".to_string(),
-        Err(e) => return Err(e),
-    };
-
-    let mut updated = existing.trim_end().to_string();
-    if !updated.is_empty() {
-        updated.push_str("\n\n");
-    }
-    updated.push_str(&format!(
-        "## {} - {}\n\n{}\n",
-        timestamp.format("%Y-%m-%d %H:%M"),
-        title,
-        body.trim()
-    ));
-
-    store.write(path, &updated).await
-}
-
-pub async fn recent_dream_entries(
-    store: &MarkdownMemoryStore,
-    limit: usize,
-) -> Result<Vec<String>, MarkdownStoreError> {
-    let content = match store.read("DREAMS.md").await {
-        Ok(entry) => entry.content,
-        Err(MarkdownStoreError::NotFound(_)) => return Ok(Vec::new()),
-        Err(e) => return Err(e),
-    };
-
-    let mut sections = content
-        .split("\n## ")
-        .filter_map(|section| {
-            let trimmed = section.trim();
-            if trimmed.is_empty() || trimmed.starts_with("# Dreams") {
-                None
-            } else {
-                Some(format!("## {trimmed}"))
-            }
-        })
-        .collect::<Vec<_>>();
-    sections.sort_by_key(|entry| Reverse(entry.clone()));
-    sections.truncate(limit);
-    Ok(sections)
 }
 
 pub fn truncate_chars(text: &str, limit: usize) -> String {

@@ -279,6 +279,11 @@ pub struct HeartbeatConfig {
     /// Maximum tool-use rounds per heartbeat tick.
     #[serde(default = "default_max_tool_rounds")]
     pub max_tool_rounds: u32,
+
+    /// Extra tool-use rounds granted after the wrap-up nudge fires, so the
+    /// model can summarize unfinished work into HEARTBEAT.md and respond.
+    #[serde(default = "default_wrap_up_grace_rounds")]
+    pub wrap_up_grace_rounds: u32,
 }
 
 serde_default!(default_fallback_heartbeat_interval -> ConfigDuration { ConfigDuration::from_secs(3600) });
@@ -286,6 +291,7 @@ serde_default!(default_dormant_after_heartbeat_turns -> u32 { 3 });
 serde_default!(default_dormant_after_idle_time -> ConfigDuration { ConfigDuration::from_secs(172800) }); // 48 hours
 serde_default!(default_minimum_heartbeat_latency -> ConfigDuration { ConfigDuration::from_secs(3600) }); // 1 hour
 serde_default!(default_max_tool_rounds -> u32 { 12 });
+serde_default!(default_wrap_up_grace_rounds -> u32 { 3 });
 
 impl Default for HeartbeatConfig {
     fn default() -> Self {
@@ -296,6 +302,7 @@ impl Default for HeartbeatConfig {
             dormant_after_idle_time: default_dormant_after_idle_time(),
             minimum_heartbeat_latency: default_minimum_heartbeat_latency(),
             max_tool_rounds: default_max_tool_rounds(),
+            wrap_up_grace_rounds: default_wrap_up_grace_rounds(),
         }
     }
 }

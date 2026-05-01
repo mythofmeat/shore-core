@@ -443,12 +443,15 @@ pub(super) async fn handle_generation(
                 )
                 .await;
 
+            let cached_request = ctx.autonomy.cached_last_request(&char_name);
+
             match crate::memory::compaction::run_compaction(
                 &char_name,
                 &effective_config,
                 &ctx.llm_client,
                 &data_dir,
                 &ctx.notifier,
+                cached_request,
             )
             .await
             {

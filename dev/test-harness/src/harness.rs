@@ -237,6 +237,7 @@ impl TestHarness {
             &self.llm_client,
             &self.data_dir,
             &self.notifier,
+            None,
         )
         .await
         {
