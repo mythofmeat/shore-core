@@ -677,21 +677,16 @@ pub async fn handle_search(
     embedder: Option<&dyn Embedder>,
     workspace_index_path: Option<&Path>,
 ) -> Result<Value, ToolError> {
-    let mode_str = input
-        .get("mode")
-        .and_then(|v| v.as_str())
-        .unwrap_or("hybrid");
-
-    let requested_hybrid = matches!(mode_str, "hybrid" | "vector");
+    let requested_mode = parse_search_mode(input.get("mode"))?;
+    let requested_hybrid = !matches!(requested_mode, RequestedMode::Lexical);
     let can_hybrid = embedder.is_some() && workspace_index_path.is_some();
     let path_str = input.get("path").and_then(|v| v.as_str());
     let path_scoped = !matches!(path_str, None | Some("") | Some("."));
 
     if requested_hybrid && can_hybrid && !path_scoped {
-        let mode = if mode_str == "vector" {
-            HybridMode::Vector
-        } else {
-            HybridMode::Hybrid
+        let mode = match requested_mode {
+            RequestedMode::Vector => HybridMode::Vector,
+            _ => HybridMode::Hybrid,
         };
         return handle_search_hybrid(
             input,
@@ -707,14 +702,43 @@ pub async fn handle_search(
     let mut response = handle_search_lexical(input, workspace_dir, include_memory).await?;
     if let Some(obj) = response.as_object_mut() {
         obj.insert("mode".into(), json!("lexical"));
-        if requested_hybrid && !can_hybrid {
-            obj.insert(
-                "semantic_unavailable".into(),
-                json!("embedder not configured"),
-            );
+        if requested_hybrid {
+            // The embedding index covers the whole workspace, so a path-
+            // scoped query falls back to lexical even when the embedder is
+            // available. Tell the caller which case applied.
+            let reason = if !can_hybrid {
+                "embedder not configured"
+            } else {
+                "path-scoped search runs lexical only"
+            };
+            obj.insert("semantic_unavailable".into(), json!(reason));
         }
     }
     Ok(response)
+}
+
+#[derive(Debug, Clone, Copy)]
+enum RequestedMode {
+    Hybrid,
+    Lexical,
+    Vector,
+}
+
+fn parse_search_mode(raw: Option<&Value>) -> Result<RequestedMode, ToolError> {
+    let Some(v) = raw else {
+        return Ok(RequestedMode::Hybrid);
+    };
+    match v.as_str() {
+        None => Err(ToolError::InvalidArgs(
+            "search `mode` must be a string".into(),
+        )),
+        Some("hybrid") => Ok(RequestedMode::Hybrid),
+        Some("lexical") => Ok(RequestedMode::Lexical),
+        Some("vector") => Ok(RequestedMode::Vector),
+        Some(other) => Err(ToolError::InvalidArgs(format!(
+            "unknown search mode '{other}'; expected hybrid, lexical, or vector"
+        ))),
+    }
 }
 
 async fn handle_search_lexical(
@@ -886,7 +910,7 @@ async fn handle_search_hybrid(
             let mut lex = handle_search_lexical(input, workspace_dir, include_memory).await?;
             if let Some(obj) = lex.as_object_mut() {
                 obj.insert("mode".into(), json!("lexical"));
-                obj.insert("semantic_unavailable".into(), json!(e));
+                obj.insert("semantic_unavailable".into(), json!(e.to_string()));
             }
             return Ok(lex);
         }
@@ -1245,8 +1269,8 @@ pub async fn handle_exec(input: Value, workspace_dir: &str) -> Result<Value, Too
 
 #[cfg(test)]
 mod tests {
-    use async_trait::async_trait;
     use super::*;
+    use async_trait::async_trait;
 
     #[test]
     fn tool_defs_count() {
@@ -1744,10 +1768,7 @@ mod tests {
 
     #[async_trait]
     impl Embedder for DummyEmbedder {
-        async fn embed(
-            &self,
-            inputs: &[&str],
-        ) -> Result<Vec<Vec<f32>>, shore_llm::LlmError> {
+        async fn embed(&self, inputs: &[&str]) -> Result<Vec<Vec<f32>>, shore_llm::LlmError> {
             let dim = self.dimensions();
             Ok(inputs.iter().map(|_| vec![0.0; dim]).collect())
         }
@@ -1767,12 +1788,18 @@ mod tests {
         let ws = tmp.path().join("workspace");
         let ws_str = ws.to_string_lossy().to_string();
 
-        handle_write(json!({"path": "notes/a.md", "content": "tea time"}), &ws_str)
-            .await
-            .unwrap();
-        handle_write(json!({"path": "other/b.md", "content": "coffee break"}), &ws_str)
-            .await
-            .unwrap();
+        handle_write(
+            json!({"path": "notes/a.md", "content": "tea time"}),
+            &ws_str,
+        )
+        .await
+        .unwrap();
+        handle_write(
+            json!({"path": "other/b.md", "content": "coffee break"}),
+            &ws_str,
+        )
+        .await
+        .unwrap();
 
         let embedder = DummyEmbedder;
         let idx = tmp.path().join("index.json");
@@ -1788,10 +1815,41 @@ mod tests {
         .unwrap();
 
         assert_eq!(result["mode"], "lexical");
-        assert!(result.get("semantic_unavailable").is_none());
+        assert_eq!(
+            result["semantic_unavailable"],
+            "path-scoped search runs lexical only"
+        );
         let results = result["results"].as_array().unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0]["path"], "notes/a.md");
+    }
+
+    #[tokio::test]
+    async fn search_rejects_unknown_mode() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("workspace");
+        let ws_str = ws.to_string_lossy().to_string();
+
+        handle_write(json!({"path": "notes.md", "content": "tea time"}), &ws_str)
+            .await
+            .unwrap();
+
+        let result = handle_search(
+            json!({"query": "tea", "mode": "magic"}),
+            &ws_str,
+            true,
+            None,
+            None,
+        )
+        .await;
+
+        match result {
+            Err(ToolError::InvalidArgs(msg)) => assert!(
+                msg.contains("magic"),
+                "expected error to mention the bad mode, got: {msg}"
+            ),
+            other => panic!("expected InvalidArgs, got {other:?}"),
+        }
     }
 
     #[test]

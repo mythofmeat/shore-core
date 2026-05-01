@@ -13,16 +13,42 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 use std::time::SystemTime;
 
+use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use shore_llm::embed::Embedder;
+use tokio::sync::Mutex;
+use tracing::warn;
 
 const MAX_EMBED_CHARS_PER_FILE: usize = 4_000;
 const SEARCH_MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
 
+/// Hard upper bound on files we will walk + track. Workspaces this large
+/// already smell like an indexing target the assistant shouldn't be scanning
+/// per query; emitting a warn at the cap keeps the symptom visible.
+const MAX_INDEXED_FILES: usize = 50_000;
+/// Hard upper bound on cumulative file bytes pulled into the walk before
+/// stopping. Keeps memory bounded regardless of workspace shape.
+const MAX_TOTAL_INDEXED_BYTES: u64 = 1024 * 1024 * 1024;
+
+#[derive(Debug, thiserror::Error)]
+pub enum WorkspaceIndexError {
+    #[error("workspace not configured")]
+    NotConfigured,
+    #[error("embedder failed: {0}")]
+    Embedder(String),
+    #[error("embedding count mismatch: got {got}, expected {expected}")]
+    EmbeddingCountMismatch { got: usize, expected: usize },
+}
+
 /// One file's place in the persisted index.
+///
+/// Freshness is decided by `(size, modified_at_secs, model_id)`. The `hash`
+/// field is informational — older index files used a SHA256 here; new
+/// entries store a `mtime:{secs}:{size}` tag so the format stays
+/// backwards-compatible without paying the per-call hash cost.
 ///
 /// `embedded: false` entries record *why* the file was skipped so future
 /// walks can short-circuit without re-reading the file.
@@ -86,6 +112,11 @@ impl HybridMode {
 
 /// Walk the workspace, refresh the embedding index, and return files
 /// ranked by `combined_score`. Files with no signal at all are filtered.
+///
+/// Two concurrent calls on the same `index_path` (e.g. heartbeat tick + user
+/// message) serialize through a per-path async mutex so the load → mutate →
+/// save sequence is exclusive. Different characters (different paths) do
+/// not block each other.
 pub async fn hybrid_search(
     workspace_dir: &str,
     include_memory: bool,
@@ -93,9 +124,9 @@ pub async fn hybrid_search(
     mode: HybridMode,
     embedder: &dyn Embedder,
     index_path: &Path,
-) -> Result<HybridSearchResult, String> {
+) -> Result<HybridSearchResult, WorkspaceIndexError> {
     if workspace_dir.is_empty() {
-        return Err("workspace not configured".into());
+        return Err(WorkspaceIndexError::NotConfigured);
     }
     let root = PathBuf::from(workspace_dir);
     if !root.exists() {
@@ -107,6 +138,9 @@ pub async fn hybrid_search(
         });
     }
 
+    let lock = index_lock_for(index_path);
+    let _guard = lock.lock().await;
+
     let mut index = load_index(index_path);
     let model_id = embedder.model_id().to_string();
 
@@ -115,10 +149,21 @@ pub async fn hybrid_search(
     let mut index_dirty = false;
 
     // Drop entries whose files vanished or now live outside the walk.
+    // Persist this even when no embed work runs, so deletions don't linger
+    // on disk indefinitely.
     let current: BTreeSet<String> = candidates.iter().map(|f| f.display_path.clone()).collect();
+    let pre_prune = index.entries.len();
     index.entries.retain(|p, _| current.contains(p));
+    if index.entries.len() != pre_prune {
+        index_dirty = true;
+    }
 
     // Refresh per-file content + identify stale entries.
+    //
+    // Freshness is `(size, mtime, model_id)` only — no SHA256. The narrow
+    // miss case is editors that preserve mtime on a content change; agent
+    // edits via `write` / `edit` always bump mtime so this is acceptable
+    // and self-corrects on any later real edit.
     let mut stale_paths: Vec<String> = Vec::new();
     let mut stale_docs: Vec<String> = Vec::new();
     for file in &mut candidates {
@@ -127,7 +172,7 @@ pub async fn hybrid_search(
             index.entries.insert(
                 file.display_path.clone(),
                 IndexedEntry {
-                    hash: format!("size:{}", file.size),
+                    hash: skip_tag(file.size, file.modified_at_secs),
                     size: file.size,
                     modified_at_secs: file.modified_at_secs,
                     model_id: model_id.clone(),
@@ -136,8 +181,16 @@ pub async fn hybrid_search(
                     embedding: Vec::new(),
                 },
             );
+            index_dirty = true;
             continue;
         }
+
+        let fresh = index.entries.get(&file.display_path).is_some_and(|e| {
+            e.embedded
+                && e.size == file.size
+                && e.modified_at_secs == file.modified_at_secs
+                && e.model_id == model_id
+        });
 
         let bytes = match tokio::fs::read(&file.fs_path).await {
             Ok(b) => b,
@@ -151,11 +204,6 @@ pub async fn hybrid_search(
         };
         match String::from_utf8(bytes) {
             Ok(text) => {
-                let hash = content_hash(&file.display_path, &text);
-                file.hash = Some(hash.clone());
-                let fresh = index.entries.get(&file.display_path).is_some_and(|e| {
-                    e.embedded && e.hash == hash && e.size == file.size && e.model_id == model_id
-                });
                 if !fresh {
                     stale_paths.push(file.display_path.clone());
                     stale_docs.push(document_for_embedding(&file.display_path, &text));
@@ -168,7 +216,7 @@ pub async fn hybrid_search(
                 index.entries.insert(
                     file.display_path.clone(),
                     IndexedEntry {
-                        hash: format!("size:{}", file.size),
+                        hash: skip_tag(file.size, file.modified_at_secs),
                         size: file.size,
                         modified_at_secs: file.modified_at_secs,
                         model_id: model_id.clone(),
@@ -177,36 +225,37 @@ pub async fn hybrid_search(
                         embedding: Vec::new(),
                     },
                 );
+                index_dirty = true;
             }
         }
     }
 
     if !stale_docs.is_empty() {
         let inputs: Vec<&str> = stale_docs.iter().map(String::as_str).collect();
-        let vectors = embedder.embed(&inputs).await.map_err(|e| e.to_string())?;
+        let vectors = embedder
+            .embed(&inputs)
+            .await
+            .map_err(|e| WorkspaceIndexError::Embedder(e.to_string()))?;
         if vectors.len() != stale_paths.len() {
-            return Err(format!(
-                "embedding count mismatch: got {}, expected {}",
-                vectors.len(),
-                stale_paths.len()
-            ));
+            return Err(WorkspaceIndexError::EmbeddingCountMismatch {
+                got: vectors.len(),
+                expected: stale_paths.len(),
+            });
         }
         for (path, embedding) in stale_paths.into_iter().zip(vectors) {
             if let Some(file) = candidates.iter().find(|f| f.display_path == path) {
-                if let Some(hash) = &file.hash {
-                    index.entries.insert(
-                        path,
-                        IndexedEntry {
-                            hash: hash.clone(),
-                            size: file.size,
-                            modified_at_secs: file.modified_at_secs,
-                            model_id: model_id.clone(),
-                            embedded: true,
-                            reason: None,
-                            embedding,
-                        },
-                    );
-                }
+                index.entries.insert(
+                    path,
+                    IndexedEntry {
+                        hash: skip_tag(file.size, file.modified_at_secs),
+                        size: file.size,
+                        modified_at_secs: file.modified_at_secs,
+                        model_id: model_id.clone(),
+                        embedded: true,
+                        reason: None,
+                        embedding,
+                    },
+                );
             }
         }
         index_dirty = true;
@@ -219,10 +268,12 @@ pub async fn hybrid_search(
     let query_vector = embedder
         .embed(&[query])
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(|e| WorkspaceIndexError::Embedder(e.to_string()))?
         .into_iter()
         .next()
-        .ok_or_else(|| "embedding response did not include query vector".to_string())?;
+        .ok_or_else(|| {
+            WorkspaceIndexError::Embedder("embedding response did not include query vector".into())
+        })?;
 
     let q_lower = query.to_lowercase();
     let terms = tokenize_query(&q_lower);
@@ -292,15 +343,25 @@ struct FileCandidate {
     size: u64,
     modified_at_secs: i64,
     content: Option<String>,
-    hash: Option<String>,
     skip_reason: Option<String>,
 }
 
 async fn enumerate_files(workspace_dir: &str, include_memory: bool) -> Vec<FileCandidate> {
     let mut pending = vec![PathBuf::from(workspace_dir)];
     let mut out: Vec<FileCandidate> = Vec::new();
+    let mut total_bytes: u64 = 0;
+    let mut cap_hit: Option<&'static str> = None;
 
     while let Some(path) = pending.pop() {
+        if out.len() >= MAX_INDEXED_FILES {
+            cap_hit.get_or_insert("file count");
+            break;
+        }
+        if total_bytes >= MAX_TOTAL_INDEXED_BYTES {
+            cap_hit.get_or_insert("byte total");
+            break;
+        }
+
         let meta = match tokio::fs::symlink_metadata(&path).await {
             Ok(m) => m,
             Err(_) => continue,
@@ -343,15 +404,25 @@ async fn enumerate_files(workspace_dir: &str, include_memory: bool) -> Vec<FileC
             None
         };
 
+        total_bytes = total_bytes.saturating_add(size);
         out.push(FileCandidate {
             display_path,
             fs_path: path,
             size,
             modified_at_secs,
             content: None,
-            hash: None,
             skip_reason,
         });
+    }
+
+    if let Some(cap) = cap_hit {
+        warn!(
+            workspace_dir,
+            cap,
+            files = out.len(),
+            total_bytes,
+            "workspace index walk hit cap; remaining files were not indexed"
+        );
     }
 
     out
@@ -422,12 +493,22 @@ fn document_for_embedding(path: &str, content: &str) -> String {
     format!("path: {path}\n\n{trimmed}")
 }
 
-fn content_hash(path: &str, content: &str) -> String {
-    let mut h = Sha256::new();
-    h.update(path.as_bytes());
-    h.update(b"\0");
-    h.update(content.as_bytes());
-    format!("{:x}", h.finalize())
+/// Tag stored in the persisted `hash` field. We no longer use it for
+/// freshness — that's `(size, mtime, model_id)` — but the field stays so
+/// older index files round-trip cleanly on read.
+fn skip_tag(size: u64, mtime_secs: i64) -> String {
+    format!("mtime:{mtime_secs}:{size}")
+}
+
+/// Per-`index_path` mutex registry. Two concurrent searches against the
+/// same character's index serialize through this; different characters
+/// hold different mutexes.
+fn index_lock_for(index_path: &Path) -> Arc<Mutex<()>> {
+    static LOCKS: OnceLock<DashMap<PathBuf, Arc<Mutex<()>>>> = OnceLock::new();
+    let map = LOCKS.get_or_init(DashMap::new);
+    map.entry(index_path.to_path_buf())
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone()
 }
 
 fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
@@ -456,11 +537,15 @@ fn load_index(path: &Path) -> WorkspaceIndex {
 }
 
 fn save_index(path: &Path, index: &WorkspaceIndex) {
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    if let Ok(json) = serde_json::to_vec_pretty(index) {
-        let _ = std::fs::write(path, json);
+    let bytes = match serde_json::to_vec_pretty(index) {
+        Ok(b) => b,
+        Err(e) => {
+            warn!(error = %e, path = ?path, "failed to serialize workspace index");
+            return;
+        }
+    };
+    if let Err(e) = crate::engine::atomic::atomic_write(path, &bytes) {
+        warn!(error = %e, path = ?path, "failed to persist workspace index");
     }
 }
 
@@ -717,5 +802,125 @@ mod tests {
         for f in &result.files {
             assert_ne!(f.display_path, "secret.md");
         }
+    }
+
+    #[tokio::test]
+    async fn oversize_file_recorded_as_skipped_no_churn() {
+        let (_g, ws, idx) = setup();
+        let ws_str = ws.to_string_lossy().into_owned();
+
+        write_file(&ws, "small.md", "tea time").await;
+        // Just over the 2 MiB cap.
+        fs::create_dir_all(&ws).await.unwrap();
+        let big = vec![b'a'; (SEARCH_MAX_FILE_BYTES + 1) as usize];
+        fs::write(ws.join("huge.md"), &big).await.unwrap();
+
+        let embedder = TopicEmbedder::new(&["tea"]);
+        let _ = hybrid_search(&ws_str, true, "tea", HybridMode::Hybrid, &embedder, &idx)
+            .await
+            .unwrap();
+        let inputs_first = embedder.input_count.load(Ordering::SeqCst);
+        // 1 text doc + 1 query embedding; the oversize file is skipped.
+        assert_eq!(inputs_first, 2);
+
+        // The on-disk index should record huge.md as skipped with an
+        // "oversize" reason so the next call doesn't re-read it.
+        let raw = std::fs::read_to_string(&idx).expect("index persisted");
+        let parsed: WorkspaceIndex = serde_json::from_str(&raw).expect("valid json");
+        let entry = parsed
+            .entries
+            .get("huge.md")
+            .expect("huge.md tracked in index");
+        assert!(!entry.embedded);
+        assert_eq!(entry.reason.as_deref(), Some("oversize"));
+
+        // Second call: only the query should embed.
+        let _ = hybrid_search(&ws_str, true, "tea", HybridMode::Hybrid, &embedder, &idx)
+            .await
+            .unwrap();
+        let inputs_total = embedder.input_count.load(Ordering::SeqCst);
+        assert_eq!(inputs_total - inputs_first, 1);
+    }
+
+    #[tokio::test]
+    async fn corrupt_index_recovers() {
+        let (_g, ws, idx) = setup();
+        let ws_str = ws.to_string_lossy().into_owned();
+
+        write_file(&ws, "a.md", "tea time").await;
+
+        // Pre-write garbage at the index path. load_index should fall back
+        // to a fresh empty index without panicking.
+        if let Some(parent) = idx.parent() {
+            fs::create_dir_all(parent).await.unwrap();
+        }
+        fs::write(&idx, b"not json at all { [ }").await.unwrap();
+
+        let embedder = TopicEmbedder::new(&["tea"]);
+        let result = hybrid_search(&ws_str, true, "tea", HybridMode::Hybrid, &embedder, &idx)
+            .await
+            .expect("hybrid search recovers from corrupt index");
+        assert_eq!(result.files.len(), 1);
+        assert_eq!(result.files[0].display_path, "a.md");
+
+        // The index file should now be valid JSON again.
+        let raw = std::fs::read_to_string(&idx).expect("index rewritten");
+        let parsed: WorkspaceIndex =
+            serde_json::from_str(&raw).expect("rewritten index is valid json");
+        assert!(parsed.entries.contains_key("a.md"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unwritable_index_path_does_not_panic() {
+        let (g, ws, _idx) = setup();
+        let ws_str = ws.to_string_lossy().into_owned();
+
+        write_file(&ws, "a.md", "tea time").await;
+
+        // Create a parent directory and lock it so the atomic write can't
+        // create its temp file. The search itself must still return.
+        let locked = g.path().join("locked");
+        std::fs::create_dir_all(&locked).unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let idx = locked.join("workspace_index.json");
+
+        let embedder = TopicEmbedder::new(&["tea"]);
+        let result = hybrid_search(&ws_str, true, "tea", HybridMode::Hybrid, &embedder, &idx).await;
+
+        // Restore perms so TempDir can clean up regardless of outcome.
+        let _ = std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700));
+
+        let result = result.expect("hybrid search returns despite unwritable index path");
+        assert_eq!(result.files.len(), 1);
+        assert_eq!(result.files[0].display_path, "a.md");
+    }
+
+    #[tokio::test]
+    async fn pruning_a_deleted_file_persists() {
+        let (_g, ws, idx) = setup();
+        let ws_str = ws.to_string_lossy().into_owned();
+
+        write_file(&ws, "a.md", "tea time").await;
+        write_file(&ws, "b.md", "rust is fun").await;
+
+        let embedder = TopicEmbedder::new(&["tea", "rust"]);
+        let _ = hybrid_search(&ws_str, true, "tea", HybridMode::Hybrid, &embedder, &idx)
+            .await
+            .unwrap();
+
+        // Delete b.md and re-run; the on-disk index must lose b.md.
+        fs::remove_file(ws.join("b.md")).await.unwrap();
+        let _ = hybrid_search(&ws_str, true, "tea", HybridMode::Hybrid, &embedder, &idx)
+            .await
+            .unwrap();
+
+        let raw = std::fs::read_to_string(&idx).expect("index persisted");
+        let parsed: WorkspaceIndex = serde_json::from_str(&raw).expect("valid json");
+        assert!(parsed.entries.contains_key("a.md"));
+        assert!(
+            !parsed.entries.contains_key("b.md"),
+            "deleted file must be pruned from on-disk index"
+        );
     }
 }

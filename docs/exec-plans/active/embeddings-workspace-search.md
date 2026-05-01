@@ -192,11 +192,11 @@ Implementation:
   embeds text files, persists to
   `<character_data_dir>/workspace_index.json`. Non-UTF8 / oversize entries
   are stored with `embedded: false` so reindex is idempotent.
-- `backend/daemon/src/memory/retrieval.rs` was refactored to take
-  `&dyn Embedder` (via `resolve_embedder` returning `Arc<dyn Embedder>`).
-  Its `search_memory` function still exists but remains unwired — the new
-  workspace path supersedes it. Retire `memory_index.json` and the
-  memory-only retrieval path when coverage is proven equivalent.
+- `backend/daemon/src/memory/retrieval.rs` is now embedder-resolution only.
+  The previous memory-only `search_memory` function (and its
+  `MemoryIndex` / `IndexedEntry` types) was deleted because the
+  workspace-wide hybrid path supersedes it; `dreaming.rs` continues to
+  own its own use of `memory_index.json` for an unrelated purpose.
 - Tool dispatch passes `ctx.embedder()` and a `workspace_index.json` path
   computed from `ctx.character_data_dir()`. Tests pass `None` to fall
   through to lexical behavior.
