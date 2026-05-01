@@ -127,7 +127,7 @@ pub fn tool_defs() -> Vec<ToolDef> {
                     },
                     "path": {
                         "type": "string",
-                        "description": "Optional relative path to limit lexical search. Bare paths resolve under workspace/. Use `workspace/...` or `memory/...` for an explicit root. Ignored in hybrid/vector mode (the embedding index covers the whole workspace)."
+                        "description": "Optional relative path to limit lexical search. Bare paths resolve under workspace/. Use `workspace/...` or `memory/...` for an explicit root. In hybrid/vector mode, providing this field forces a lexical-only fallback (the embedding index is workspace-wide and not path-scoped); the response will include `semantic_unavailable` so callers can see the fallback happened."
                     },
                     "max_results": {
                         "type": "number",

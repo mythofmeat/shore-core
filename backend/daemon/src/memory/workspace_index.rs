@@ -164,7 +164,11 @@ pub async fn hybrid_search(
     // miss case is editors that preserve mtime on a content change; agent
     // edits via `write` / `edit` always bump mtime so this is acceptable
     // and self-corrects on any later real edit.
-    let mut stale_paths: Vec<String> = Vec::new();
+    //
+    // `stale` captures `(path, size, mtime)` per file that needs a fresh
+    // embedding so the writeback after `embedder.embed(...)` doesn't have
+    // to re-find each candidate by path.
+    let mut stale: Vec<(String, u64, i64)> = Vec::new();
     let mut stale_docs: Vec<String> = Vec::new();
     for file in &mut candidates {
         if file.skip_reason.as_deref() == Some("oversize") {
@@ -205,7 +209,7 @@ pub async fn hybrid_search(
         match String::from_utf8(bytes) {
             Ok(text) => {
                 if !fresh {
-                    stale_paths.push(file.display_path.clone());
+                    stale.push((file.display_path.clone(), file.size, file.modified_at_secs));
                     stale_docs.push(document_for_embedding(&file.display_path, &text));
                 }
                 file.content = Some(text);
@@ -230,33 +234,39 @@ pub async fn hybrid_search(
         }
     }
 
+    // Persist prune + skip-record progress before the embed call so a
+    // transient embedder failure doesn't drop the work — the next call
+    // would otherwise repeat the same prune and re-mark the same skips.
+    if index_dirty {
+        save_index(index_path, &index);
+        index_dirty = false;
+    }
+
     if !stale_docs.is_empty() {
         let inputs: Vec<&str> = stale_docs.iter().map(String::as_str).collect();
         let vectors = embedder
             .embed(&inputs)
             .await
             .map_err(|e| WorkspaceIndexError::Embedder(e.to_string()))?;
-        if vectors.len() != stale_paths.len() {
+        if vectors.len() != stale.len() {
             return Err(WorkspaceIndexError::EmbeddingCountMismatch {
                 got: vectors.len(),
-                expected: stale_paths.len(),
+                expected: stale.len(),
             });
         }
-        for (path, embedding) in stale_paths.into_iter().zip(vectors) {
-            if let Some(file) = candidates.iter().find(|f| f.display_path == path) {
-                index.entries.insert(
-                    path,
-                    IndexedEntry {
-                        hash: skip_tag(file.size, file.modified_at_secs),
-                        size: file.size,
-                        modified_at_secs: file.modified_at_secs,
-                        model_id: model_id.clone(),
-                        embedded: true,
-                        reason: None,
-                        embedding,
-                    },
-                );
-            }
+        for ((path, size, mtime), embedding) in stale.into_iter().zip(vectors) {
+            index.entries.insert(
+                path,
+                IndexedEntry {
+                    hash: skip_tag(size, mtime),
+                    size,
+                    modified_at_secs: mtime,
+                    model_id: model_id.clone(),
+                    embedded: true,
+                    reason: None,
+                    embedding,
+                },
+            );
         }
         index_dirty = true;
     }
@@ -404,7 +414,12 @@ async fn enumerate_files(workspace_dir: &str, include_memory: bool) -> Vec<FileC
             None
         };
 
-        total_bytes = total_bytes.saturating_add(size);
+        // Only count files we'll actually try to ingest toward the byte cap;
+        // an oversize binary is recorded but not read or embedded, so its
+        // size shouldn't short-circuit the rest of the walk.
+        if skip_reason.is_none() {
+            total_bytes = total_bytes.saturating_add(size);
+        }
         out.push(FileCandidate {
             display_path,
             fs_path: path,
