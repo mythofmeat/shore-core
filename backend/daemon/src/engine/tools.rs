@@ -279,9 +279,9 @@ pub async fn run_tool_loop(
             timestamp: chrono::Local::now().to_rfc3339(),
         });
 
-        // Call LLM again with the extended conversation.
-        // Cache markers placed on the first call of the turn are preserved —
-        // the provider detects existing markers and skips re-placement.
+        // Call LLM again with the extended conversation. The Anthropic
+        // provider re-resolves cache breakpoints on stable tool-result
+        // boundaries so completed tool work can be reused by later iterations.
         let mut ledger_stream = client
             .stream_raw(request, CallType::ToolLoop, character, thinking_enabled)
             .await?;

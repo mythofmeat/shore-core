@@ -11,10 +11,11 @@
 use std::process::Stdio;
 use std::time::Duration;
 
+use serde_json::json;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
-use shore_test_harness::TestHarness;
+use shore_test_harness::{AnthropicStreamBuilder, TestConfigBuilder, TestHarness};
 
 async fn send_jsonrpc(
     stdin: &mut tokio::process::ChildStdin,
@@ -58,6 +59,32 @@ async fn recv_jsonrpc_response(
             return Ok(value);
         }
     }
+}
+
+fn cached_tool_result_ids(request: &serde_json::Value) -> Vec<String> {
+    request
+        .get("messages")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .flat_map(|message| {
+            message
+                .get("content")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+        })
+        .filter(|block| {
+            block.get("type").and_then(serde_json::Value::as_str) == Some("tool_result")
+        })
+        .filter(|block| block.get("cache_control").is_some())
+        .filter_map(|block| {
+            block
+                .get("tool_use_id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        })
+        .collect()
 }
 
 #[tokio::test]
@@ -187,6 +214,129 @@ async fn shore_mcp_initializes_and_calls_tools_against_real_daemon() {
     );
 
     // Clean shutdown.
+    drop(stdin);
+    let _ = child.kill().await;
+    harness.shutdown().await;
+}
+
+#[tokio::test]
+#[ignore] // Requires the shore-mcp binary; run with `cargo test -p shore-mcp --test suite -- --ignored --nocapture`.
+async fn shore_mcp_tool_loop_advances_cache_breakpoints_through_tool_results() {
+    let harness = TestHarness::boot_with(TestConfigBuilder::new().cache_ttl("1h")).await;
+    let daemon_addr = harness.addr.clone();
+
+    harness
+        .mock_llm
+        .enqueue_raw_sse(
+            AnthropicStreamBuilder::new()
+                .tool_use("toolu_mcp_01", "check_time", json!({}))
+                .build(),
+        )
+        .await;
+    harness
+        .mock_llm
+        .enqueue_raw_sse(
+            AnthropicStreamBuilder::new()
+                .tool_use("toolu_mcp_02", "check_time", json!({}))
+                .build(),
+        )
+        .await;
+    harness.mock_llm.enqueue_text("mcp tool loop final").await;
+
+    let bin = std::env::var("CARGO_BIN_EXE_shore-mcp").expect(
+        "CARGO_BIN_EXE_shore-mcp — run via `cargo test -p shore-mcp --test suite -- --ignored`",
+    );
+
+    let mut child = Command::new(bin)
+        .args([
+            "--attach-main",
+            "--allow-main-writes",
+            "--daemon-addr",
+            &daemon_addr,
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("failed to spawn shore-mcp");
+
+    let mut stdin = child.stdin.take().unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let mut reader = BufReader::new(stdout);
+
+    send_jsonrpc(
+        &mut stdin,
+        "initialize",
+        1,
+        json!({
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": { "name": "tool-loop-cache-test", "version": "0" }
+        }),
+    )
+    .await
+    .unwrap();
+    let init_resp =
+        tokio::time::timeout(Duration::from_secs(5), recv_jsonrpc_response(&mut reader))
+            .await
+            .expect("initialize timed out")
+            .expect("initialize read failed");
+    assert_eq!(init_resp["id"], 1);
+    assert!(
+        init_resp.get("result").is_some(),
+        "no result in initialize response"
+    );
+
+    send_jsonrpc(
+        &mut stdin,
+        "tools/call",
+        2,
+        json!({
+            "name": "send",
+            "arguments": { "text": "drive a two-step tool loop" }
+        }),
+    )
+    .await
+    .unwrap();
+    let send_resp =
+        tokio::time::timeout(Duration::from_secs(30), recv_jsonrpc_response(&mut reader))
+            .await
+            .expect("send timed out")
+            .expect("send read failed");
+    assert_eq!(send_resp["id"], 2);
+    assert!(
+        send_resp.get("error").is_none(),
+        "send errored: {send_resp}"
+    );
+    let content_text = send_resp["result"]["content"][0]["text"]
+        .as_str()
+        .expect("text content");
+    assert!(
+        content_text.contains("mcp tool loop final"),
+        "send output did not contain final mock text: {content_text}"
+    );
+
+    let requests = harness.mock_llm.received_requests().await;
+    assert!(
+        requests.len() >= 3,
+        "expected initial request plus two tool-loop continuations, got {}",
+        requests.len()
+    );
+
+    let first_continuation = &requests[1];
+    assert_eq!(
+        cached_tool_result_ids(first_continuation),
+        vec!["toolu_mcp_01".to_string()],
+        "first tool-loop continuation should cache the completed first tool_result"
+    );
+
+    let second_continuation = &requests[2];
+    assert_eq!(
+        cached_tool_result_ids(second_continuation),
+        vec!["toolu_mcp_01".to_string(), "toolu_mcp_02".to_string()],
+        "second tool-loop continuation should cache both completed tool_results"
+    );
+
     drop(stdin);
     let _ = child.kill().await;
     harness.shutdown().await;

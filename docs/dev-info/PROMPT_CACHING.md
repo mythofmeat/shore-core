@@ -49,9 +49,22 @@ Heartbeat prompt inputs:
 - active `HEARTBEAT.md`
 - heartbeat runtime affordances (`HEARTBEAT_OK`, `set_next_wake`, `<sendMessage>`)
 
+## Cache Breakpoints
+
+Anthropic/OpenRouter-Anthropic requests use a pinned system cache anchor plus
+sliding message breakpoints. The first request for a normal user turn must not
+place a message breakpoint on that active user message.
+
+During an active tool loop, Shore appends completed assistant `tool_use` and
+user `tool_result` messages before making the next provider request. Those
+completed tool-result messages are stable transcript, so sliding breakpoints
+should advance through recent `tool_result` messages. If they stay behind the
+tool loop, OpenRouter can report partial cache hits while repeatedly charging
+the growing tool transcript as fresh input.
+
 ## Thinking Blocks
 
-Prior completed-turn thinking is preserved by default through `[memory.thinking].preserve_prior_turns = true` (set to `false` to strip and save tokens — safe for Anthropic Claude 4.x but ignored for DeepSeek/Moonshot thinking-mode, which require prior `reasoning_content`). In-progress tool loops always preserve thinking blocks.
+Prior completed-turn thinking is preserved by default through `[memory.thinking].preserve_prior_turns = true` (set to `false` to strip and save tokens — safe for Anthropic Claude 4.x but ignored for DeepSeek/Moonshot thinking-mode, which require prior `reasoning_content`). Normal chat request assembly and heartbeat rebuilds both apply this setting. In-progress tool loops always preserve thinking blocks.
 
 ## Things That Should Not Bust Cache
 

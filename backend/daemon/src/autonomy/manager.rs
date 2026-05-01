@@ -1238,11 +1238,16 @@ fn rebuild_request_from_disk(
     });
 
     let cache_dir = &config.dirs.cache;
-    let (llm_messages, system) = crate::handler::build_llm_messages(
+    let (mut llm_messages, system) = crate::handler::build_llm_messages(
         &prompt_result,
         false,
         config.app.advanced.max_image_size,
         cache_dir,
+    );
+    crate::content_util::maybe_strip_prior_thinking(
+        &mut llm_messages,
+        config.app.memory.thinking.preserve_prior_turns,
+        &resolved.provider_key,
     );
 
     let tool_defs = if config.app.behavior.tool_use.enabled {
@@ -2485,6 +2490,95 @@ mod tests {
              the ENTIRE Anthropic cache (tools → system → messages). \
              Use an XML tag like <sendMessage> instead."
         );
+    }
+
+    #[test]
+    fn rebuild_request_from_disk_strips_prior_thinking_when_disabled() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path().join("data");
+        let config_dir = tmp.path().join("config");
+        let cache_dir = tmp.path().join("cache");
+        let runtime_dir = tmp.path().join("runtime");
+        let character_dir = data_dir.join("alice");
+        std::fs::create_dir_all(&character_dir).unwrap();
+
+        let mut store =
+            crate::engine::messages::MessageStore::new(character_dir.join("active.jsonl"));
+        store.append(test_message(Role::User)).unwrap();
+        store
+            .append(Message {
+                msg_id: "assistant-with-thinking".into(),
+                role: Role::Assistant,
+                content: "answer".into(),
+                images: vec![],
+                content_blocks: vec![
+                    ContentBlock::Thinking {
+                        thinking: "private chain".into(),
+                        signature: Some("sig".into()),
+                    },
+                    ContentBlock::Text {
+                        text: "answer".into(),
+                    },
+                ],
+                alt_index: None,
+                alt_count: None,
+                timestamp: chrono::Local::now().to_rfc3339(),
+            })
+            .unwrap();
+
+        let api_key_env = "REBUILD_REQUEST_STRIP_THINKING_ANTHROPIC";
+        std::env::set_var(api_key_env, "test-secret");
+        let chat_toml = format!(
+            r#"
+[anthropic.sonnet]
+model_id = "claude-sonnet-test"
+api_key_env = "{api_key_env}"
+"#
+        );
+        let chat: toml::Table = chat_toml.parse().unwrap();
+        let catalog =
+            shore_config::models::ModelCatalog::from_sections(Some(&chat), None, None, None)
+                .unwrap();
+
+        let mut app = shore_config::app::AppConfig::default();
+        app.behavior.tool_use.enabled = false;
+        app.memory.thinking.preserve_prior_turns = false;
+        let config = shore_config::LoadedConfig::new_for_test(
+            app,
+            catalog,
+            shore_config::ShoreDirs {
+                config: config_dir,
+                data: data_dir.clone(),
+                runtime: runtime_dir,
+                cache: cache_dir,
+            },
+        );
+
+        let request = rebuild_request_from_disk("alice", &data_dir, &config).unwrap();
+        let assistant = request
+            .messages
+            .iter()
+            .find(|msg| msg.get("role").and_then(serde_json::Value::as_str) == Some("assistant"))
+            .expect("rebuilt request should include assistant history");
+        let blocks = assistant
+            .get("content")
+            .and_then(serde_json::Value::as_array)
+            .expect("assistant content should be structured");
+
+        assert!(
+            blocks.iter().all(
+                |block| block.get("type").and_then(serde_json::Value::as_str) != Some("thinking")
+            ),
+            "heartbeat rebuild must honor preserve_prior_turns=false"
+        );
+        assert!(
+            blocks
+                .iter()
+                .any(|block| block.get("type").and_then(serde_json::Value::as_str) == Some("text")),
+            "non-thinking assistant content must remain"
+        );
+
+        std::env::remove_var(api_key_env);
     }
 
     // -- heartbeat model override ------------------------------------------

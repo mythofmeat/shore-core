@@ -15,6 +15,7 @@ pub struct TestConfigBuilder {
     pub model_alias: String,
     pub model_id: String,
     pub max_tokens: u32,
+    pub cache_ttl: Option<String>,
     pub tool_use_enabled: bool,
     pub tool_use_max_iterations: u32,
     pub compaction_enabled: bool,
@@ -54,6 +55,7 @@ impl TestConfigBuilder {
             model_alias: "haiku".into(),
             model_id: "anthropic/claude-haiku-4.5".into(),
             max_tokens: 1024,
+            cache_ttl: None,
             tool_use_enabled: true,
             tool_use_max_iterations: 5,
             compaction_enabled: false,
@@ -106,6 +108,11 @@ impl TestConfigBuilder {
 
     pub fn tool_use(mut self, enabled: bool) -> Self {
         self.tool_use_enabled = enabled;
+        self
+    }
+
+    pub fn cache_ttl(mut self, ttl: &str) -> Self {
+        self.cache_ttl = Some(ttl.into());
         self
     }
 
@@ -225,6 +232,9 @@ temperature = 0.0
             model_id = self.model_id,
             max_tokens = self.max_tokens,
         );
+        if let Some(cache_ttl) = &self.cache_ttl {
+            models_toml.push_str(&format!("cache_ttl = \"{cache_ttl}\"\n"));
+        }
         for (extra_alias, extra_model_id) in &self.extra_chat_aliases {
             models_toml.push_str(&format!(
                 "\n[openrouter.{alias}]\nmodel_id = \"{model_id}\"\nmax_tokens = {max_tokens}\ntemperature = 0.0\n",
@@ -232,6 +242,9 @@ temperature = 0.0
                 model_id = extra_model_id,
                 max_tokens = self.max_tokens,
             ));
+            if let Some(cache_ttl) = &self.cache_ttl {
+                models_toml.push_str(&format!("cache_ttl = \"{cache_ttl}\"\n"));
+            }
         }
         let chat_table: toml::Table = models_toml.parse().expect("failed to parse model TOML");
 
