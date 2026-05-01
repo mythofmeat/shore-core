@@ -41,6 +41,7 @@ which = "6"
 reqwest = { version = "0.12", features = ["json", "stream"] }
 dashmap = "6"
 futures-util = "0.3"
+async-trait = "0.1"
 shore-protocol = { path = "core/protocol" }
 shore-config = { path = "core/config" }
 shore-swp-client = { path = "core/swp-client" }

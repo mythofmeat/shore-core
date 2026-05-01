@@ -808,9 +808,10 @@ async fn build_librarian_tool_context(
         &loaded_config.models.image_generation,
     )
     .ok();
-    let embedding_config = crate::memory::retrieval::resolve_embedding_config(
+    let embedder = crate::memory::retrieval::resolve_embedder(
         loaded_config.app.defaults.embedding.as_deref(),
         &loaded_config.models.embedding,
+        llm_client.inner().http_client(),
     )
     .ok();
 
@@ -832,7 +833,7 @@ async fn build_librarian_tool_context(
         ))
         .ok(),
         memory_retrieval_config_val: loaded_config.app.memory.retrieval.clone(),
-        embedding_config_val: embedding_config,
+        embedder_val: embedder,
         memory_index_path_val: character_data_dir.join("memory_index.json"),
         memory_access_allowed_val: true,
         memory_read_allowed_val: true,

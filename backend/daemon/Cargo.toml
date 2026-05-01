@@ -3,6 +3,10 @@ name = "shore-daemon"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = ["local-embeddings"]
+local-embeddings = ["shore-llm/local-embeddings"]
+
 [dependencies]
 shore-protocol = { workspace = true }
 shore-swp-server = { workspace = true }
@@ -42,3 +46,4 @@ shore-diagnostics = { workspace = true }
 shore-llm = { workspace = true }
 shore-test-harness = { workspace = true }
 wiremock = "0.6"
+async-trait = { workspace = true }

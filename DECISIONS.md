@@ -2,6 +2,43 @@
 
 This file records current architectural decisions first. Older V1/V2 notes were stale and have been superseded by the OpenClawify branch; use git history for the full archaeology.
 
+## 2026-05-01: Workspace `search` Is Hybrid (Semantic + Lexical) With Local-First Embeddings
+
+The workspace `search` tool ranks files by combining semantic similarity (cosine
+over embeddings) with case-insensitive substring matching. Default fusion is
+0.45 lexical + 0.55 cosine; callers can request `mode: "lexical"` (existing
+recency-ordered substring search) or `mode: "vector"` (pure cosine).
+
+Embeddings come from a pluggable `Embedder` trait. The default implementation
+runs locally via fastembed-rs (BGE-small, 384 dims, ~33MB) so the daemon stays
+key-free and offline-capable. Hosted embedders (OpenAI-compatible) live behind
+the same trait and are selected by an `[embedding.<profile>]` TOML entry with
+`provider = "openai"` (or other compat shape).
+
+Why:
+- The lexical-only `search` missed paraphrased queries and forced the assistant
+  to keep guessing literal substrings.
+- A hosted-only design adds an API-key requirement to a path that should work
+  out of the box; the MTEB gap between local BGE-* and hosted frontier models
+  is small enough at workspace scale that top-K results match in practice.
+- Augmenting (rather than replacing) lexical preserves the recency-ordered
+  behavior that already worked, and keeps rollout reversible via the `mode`
+  parameter without prompt churn.
+
+Implementation:
+- File-level embeddings with character-cap truncation (no chunking in v1) —
+  matches the existing memory-retrieval pattern; revisit if dogfooding shows
+  the cap losing the right paragraph.
+- Persistent JSON index at `<character_data_dir>/workspace_index.json`,
+  brute-force cosine over all entries (no ANN — workspace size is hundreds to
+  thousands of files).
+- Non-UTF8 / oversize files are recorded in the index with `embedded: false`
+  and a skip reason, so reindex doesn't churn binaries.
+- Model weights cache under `$XDG_CACHE_HOME/shore/models/`, shared across
+  characters (they aren't character state).
+- Process-wide embedder cache so a single LocalEmbedder is shared across
+  requests, characters, and heartbeat ticks rather than reloaded per call.
+
 ## 2026-04-24: Markdown Memory Is Authoritative
 
 Runtime long-term memory is ordinary markdown under:

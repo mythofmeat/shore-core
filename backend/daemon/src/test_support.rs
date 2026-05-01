@@ -4,13 +4,15 @@
 //! (test_model, TestToolContext) so each test file can import from a
 //! single source.
 
+use std::sync::Arc;
+
 use crate::autonomy::manager::AutonomyManager;
 use crate::memory::compaction_impls::ImageGenConfig;
 use crate::memory::markdown_store::MarkdownMemoryStore;
-use crate::memory::retrieval::EmbeddingConfig;
 use crate::tools::ToolContext;
 use shore_config::app::{RetrievalConfig, SearchConfig};
 use shore_config::models::{ResolvedModel, Sdk};
+use shore_llm::embed::Embedder;
 use shore_llm::LlmClient;
 
 // ── test_model ──────────────────────────────────────────────────────────
@@ -57,7 +59,7 @@ pub struct TestToolContext {
     pub character_name_val: String,
     pub markdown_store_val: Option<MarkdownMemoryStore>,
     pub retrieval_config_val: RetrievalConfig,
-    pub embedding_config_val: Option<EmbeddingConfig>,
+    pub embedder_val: Option<Arc<dyn Embedder>>,
     pub memory_index_path_val: Option<std::path::PathBuf>,
     pub memory_access_allowed_val: bool,
     pub memory_read_allowed_val: bool,
@@ -77,7 +79,7 @@ impl TestToolContext {
             character_name_val: String::new(),
             markdown_store_val: None,
             retrieval_config_val: RetrievalConfig::default(),
-            embedding_config_val: None,
+            embedder_val: None,
             memory_index_path_val: None,
             memory_access_allowed_val: true,
             memory_read_allowed_val: true,
@@ -175,8 +177,8 @@ impl ToolContext for TestToolContext {
     fn memory_retrieval_config(&self) -> &RetrievalConfig {
         &self.retrieval_config_val
     }
-    fn embedding_config(&self) -> Option<&EmbeddingConfig> {
-        self.embedding_config_val.as_ref()
+    fn embedder(&self) -> Option<&dyn Embedder> {
+        self.embedder_val.as_deref()
     }
     fn memory_index_path(&self) -> Option<&std::path::Path> {
         self.memory_index_path_val.as_deref()

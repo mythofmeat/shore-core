@@ -12,3 +12,4 @@ pub mod dreaming;
 pub mod markdown_query;
 pub mod markdown_store;
 pub mod retrieval;
+pub mod workspace_index;

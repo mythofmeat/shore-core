@@ -8,9 +8,9 @@ pub mod workspace;
 
 use crate::autonomy::manager::AutonomyManager;
 use crate::memory::compaction_impls::ImageGenConfig;
-use crate::memory::retrieval::EmbeddingConfig;
 use serde_json::Value;
 use shore_config::app::RetrievalConfig;
+use shore_llm::embed::Embedder;
 use shore_llm::LlmClient;
 use std::future::Future;
 use std::pin::Pin;
@@ -117,7 +117,7 @@ pub trait ToolContext: Sync {
         static DEFAULT: std::sync::OnceLock<RetrievalConfig> = std::sync::OnceLock::new();
         DEFAULT.get_or_init(RetrievalConfig::default)
     }
-    fn embedding_config(&self) -> Option<&EmbeddingConfig> {
+    fn embedder(&self) -> Option<&dyn Embedder> {
         None
     }
     fn memory_index_path(&self) -> Option<&std::path::Path> {
@@ -390,8 +390,20 @@ pub fn dispatch_tool<'a>(
             }
             "search" => {
                 ensure_workspace_memory_access(name, &input, ctx)?;
-                workspace::handle_search(input, ctx.workspace_dir(), ctx.memory_read_allowed())
-                    .await
+                let cdd = ctx.character_data_dir();
+                let index_path = if cdd.is_empty() {
+                    None
+                } else {
+                    Some(std::path::PathBuf::from(cdd).join("workspace_index.json"))
+                };
+                workspace::handle_search(
+                    input,
+                    ctx.workspace_dir(),
+                    ctx.memory_read_allowed(),
+                    ctx.embedder(),
+                    index_path.as_deref(),
+                )
+                .await
             }
             "delete" => {
                 ensure_workspace_memory_access(name, &input, ctx)?;

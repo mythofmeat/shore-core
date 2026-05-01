@@ -9,6 +9,7 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 See `README.md`, `FEATURES.md`, and `CONFIGURATION.md` for current branch guidance.
 
 ### Added
+- Workspace `search` tool now uses hybrid (semantic + lexical) ranking by default so paraphrased queries find the right files; pass `mode: "lexical"` for the previous substring-only behavior or `mode: "vector"` for pure semantic similarity. Embeddings default to a local fastembed-rs model (BGE-small, no API key needed); a hosted OpenAI-compatible embedder can be configured via `[embedding.<profile>]` in TOML. Vectors are cached per character at `<data>/<Character>/workspace_index.json` and re-embedded incrementally on file change.
 - Persistent heartbeat event log: events are written to `<data>/<Character>/heartbeat.jsonl` (batch-flushed on the autonomy tick cadence and on graceful shutdown) and reloaded on daemon start, so autonomy history survives restarts
 - `shore status` autonomy block now shows the heartbeat schedule (next wake, time since last user message, idle ticks, dormancy thresholds) and the most recent heartbeat events
 - Effective model catalog (Phase 7): `shore model <name>` accepts manual aliases, upstream `<provider>/<id>` strings, and explicit `provider:model_id` selectors against a catalog merged from static config, provider discovery, and saved preferences

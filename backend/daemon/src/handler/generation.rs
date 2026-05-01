@@ -81,7 +81,7 @@ mod tests {
 use crate::engine::tools;
 use crate::memory::compaction_impls::resolve_image_gen_config;
 use crate::memory::markdown_store::MarkdownMemoryStore;
-use crate::memory::retrieval::resolve_embedding_config;
+use crate::memory::retrieval::resolve_embedder;
 use crate::tools::context::SharedToolContext;
 use shore_config::LoadedConfig;
 use shore_config::{character_memory_dir, character_workspace_dir};
@@ -213,10 +213,14 @@ pub(super) async fn run_tool_phase(
     let config_dir = &effective_config.dirs.config;
     let workspace_dir = character_workspace_dir(config_dir, char_name);
     let memory_dir = character_memory_dir(config_dir, char_name);
-    let embedding_config = resolve_embedding_config(
+    let embedder = resolve_embedder(
         effective_config.app.defaults.embedding.as_deref(),
         &effective_config.models.embedding,
+        ctx.llm_client.inner().http_client(),
     )
+    .map_err(|e| {
+        warn!(character = %char_name, error = %e, "embedder unavailable; semantic memory retrieval disabled");
+    })
     .ok();
 
     if let Err(e) = crate::memory::deferred_edits::ensure_active_prompt_snapshot(
@@ -240,7 +244,7 @@ pub(super) async fn run_tool_phase(
             workspace_dir_val: workspace_dir.to_string_lossy().into_owned(),
             markdown_store_val: MarkdownMemoryStore::open_sync(memory_dir).ok(),
             memory_retrieval_config_val: effective_config.app.memory.retrieval.clone(),
-            embedding_config_val: embedding_config,
+            embedder_val: embedder,
             memory_index_path_val: character_data_dir.join("memory_index.json"),
             memory_access_allowed_val: effective_config.app.behavior.tool_use.tools.memory(),
             memory_read_allowed_val: effective_config.app.behavior.tool_use.tools.memory_read(),

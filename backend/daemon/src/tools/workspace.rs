@@ -8,6 +8,9 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use serde_json::{json, Value};
+use shore_llm::embed::Embedder;
+
+use crate::memory::workspace_index::{self, HybridMode};
 
 use super::{ToolCategory, ToolDef, ToolError};
 
@@ -109,17 +112,22 @@ pub fn tool_defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "search",
-            description: "Find files in your workspace and memory directory that mention a phrase. Bare paths resolve under workspace/. Use `memory/...` to search durable memory files. Returns matching paths, line numbers, and short excerpts, with the most-recently-updated files first. Treat results as discovery only: excerpts are line-level snippets, so almost always follow up with `read` on the top files for full context, then chase any cross-references from there.",
+            description: "Find files in your workspace and memory directory that match a query. Bare paths resolve under workspace/. Use `memory/...` to search durable memory files. By default uses hybrid ranking (semantic + lexical) so paraphrased queries still find the right file; pass `mode: \"lexical\"` for an exact substring match. Returns paths, line numbers, and short excerpts. Treat results as discovery only: excerpts are line-level snippets, so almost always follow up with `read` on the top files for full context, then chase any cross-references from there.",
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "Keyword or phrase to search for (case-insensitive)."
+                        "description": "Keyword, phrase, or natural-language description to search for."
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["hybrid", "lexical", "vector"],
+                        "description": "Ranking mode. `hybrid` (default) blends semantic similarity with substring matching. `lexical` is case-insensitive substring only, ordered by file recency. `vector` is pure semantic similarity."
                     },
                     "path": {
                         "type": "string",
-                        "description": "Optional relative path to limit the search. Bare paths resolve under workspace/. Use `workspace/...` or `memory/...` for an explicit root."
+                        "description": "Optional relative path to limit lexical search. Bare paths resolve under workspace/. Use `workspace/...` or `memory/...` for an explicit root. Ignored in hybrid/vector mode (the embedding index covers the whole workspace)."
                     },
                     "max_results": {
                         "type": "number",
@@ -180,7 +188,7 @@ pub(super) fn description_for_memory_access(
         "write" => Some("Write or overwrite a file in your workspace. Bare paths resolve under workspace/. Parent directories are created automatically. Overwrites without confirmation."),
         "edit" => Some("Edit an existing workspace file by replacing specific text. Bare paths resolve under workspace/. Each replacement must match the old_string exactly, including whitespace and newlines."),
         "list_files" => Some("List files and directories under a path in your workspace. Bare paths resolve under workspace/. Returns each entry's name, type, and size."),
-        "search" => Some("Find files in your workspace that mention a phrase. Bare paths resolve under workspace/. Returns matching paths, line numbers, and short excerpts, with the most-recently-updated files first. Treat results as discovery only: almost always follow up with `read` on the top files for full context."),
+        "search" => Some("Find files in your workspace that match a query. Bare paths resolve under workspace/. By default uses hybrid ranking (semantic + lexical) so paraphrased queries still find the right file; pass `mode: \"lexical\"` for an exact substring match. Returns paths, line numbers, and short excerpts. Treat results as discovery only: almost always follow up with `read` on the top files for full context."),
         "delete" => Some("Move a file in your workspace to a trash folder. Bare paths resolve under workspace/. The file is moved out of your workspace into a timestamped trash folder, not permanently erased. Refuses prompt-visible files (SOUL.md, USER.md, AGENTS.md, TOOLS.md, HEARTBEAT.md, MEMORY.md) and directories."),
         _ => None,
     }
@@ -656,7 +664,58 @@ pub async fn handle_list_files(input: Value, workspace_dir: &str) -> Result<Valu
     Ok(json!({ "entries": entries }))
 }
 
+/// Top-level entry point: dispatches to lexical or hybrid based on the
+/// caller-supplied `mode` and whether an embedder is wired up.
+///
+/// `embedder` and `workspace_index_path` are optional so tests (and
+/// embedder-less production setups) can call this without a configured
+/// embedding profile — they fall through to the lexical path.
 pub async fn handle_search(
+    input: Value,
+    workspace_dir: &str,
+    include_memory: bool,
+    embedder: Option<&dyn Embedder>,
+    workspace_index_path: Option<&Path>,
+) -> Result<Value, ToolError> {
+    let mode_str = input
+        .get("mode")
+        .and_then(|v| v.as_str())
+        .unwrap_or("hybrid");
+
+    let requested_hybrid = matches!(mode_str, "hybrid" | "vector");
+    let can_hybrid = embedder.is_some() && workspace_index_path.is_some();
+
+    if requested_hybrid && can_hybrid {
+        let mode = if mode_str == "vector" {
+            HybridMode::Vector
+        } else {
+            HybridMode::Hybrid
+        };
+        return handle_search_hybrid(
+            input,
+            workspace_dir,
+            include_memory,
+            mode,
+            embedder.unwrap(),
+            workspace_index_path.unwrap(),
+        )
+        .await;
+    }
+
+    let mut response = handle_search_lexical(input, workspace_dir, include_memory).await?;
+    if let Some(obj) = response.as_object_mut() {
+        obj.insert("mode".into(), json!("lexical"));
+        if requested_hybrid {
+            obj.insert(
+                "semantic_unavailable".into(),
+                json!("embedder not configured"),
+            );
+        }
+    }
+    Ok(response)
+}
+
+async fn handle_search_lexical(
     input: Value,
     workspace_dir: &str,
     include_memory: bool,
@@ -796,6 +855,105 @@ pub async fn handle_search(
     }
 
     Ok(response)
+}
+
+async fn handle_search_hybrid(
+    input: Value,
+    workspace_dir: &str,
+    include_memory: bool,
+    mode: HybridMode,
+    embedder: &dyn Embedder,
+    index_path: &Path,
+) -> Result<Value, ToolError> {
+    let query = normalize_search_query(&input)?;
+    let max_results = search_result_limit(&input);
+
+    let result = match workspace_index::hybrid_search(
+        workspace_dir,
+        include_memory,
+        &query,
+        mode,
+        embedder,
+        index_path,
+    )
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(error = %e, "hybrid search failed; falling back to lexical");
+            let mut lex = handle_search_lexical(input, workspace_dir, include_memory).await?;
+            if let Some(obj) = lex.as_object_mut() {
+                obj.insert("mode".into(), json!("lexical"));
+                obj.insert("semantic_unavailable".into(), json!(e));
+            }
+            return Ok(lex);
+        }
+    };
+
+    let q_lower = query.to_lowercase();
+    let mut results: Vec<Value> = Vec::new();
+
+    for f in result.files.iter().take(max_results) {
+        let content = f.content.as_deref().unwrap_or("");
+        let (line_no, excerpt) = best_line_excerpt(content, &q_lower);
+        results.push(json!({
+            "path": f.display_path,
+            "line": line_no,
+            "excerpt": excerpt,
+            "lexical_score": f.lexical_score,
+            "semantic_score": f.semantic_score,
+            "combined_score": f.combined_score,
+        }));
+    }
+
+    let count = results.len();
+    let mode_label = match mode {
+        HybridMode::Hybrid => "hybrid",
+        HybridMode::Vector => "vector",
+    };
+    let mut response = json!({
+        "query": query,
+        "mode": mode_label,
+        "results": results,
+        "count": count,
+        "searched_files": result.searched_files,
+        "embedded_files": result.embedded_files,
+        "skipped_binary_or_large": result.skipped_binary_or_large,
+    });
+
+    if count > 0 {
+        response["note"] = json!(
+            "Files ranked by combined semantic + lexical score. Excerpts are \
+             best-effort line-level snippets; call `read` on the top paths for \
+             full context — one file often references others worth reading too."
+        );
+    }
+
+    Ok(response)
+}
+
+fn best_line_excerpt(content: &str, q_lower: &str) -> (usize, String) {
+    for (i, line) in content.lines().enumerate() {
+        if let Some((s, e)) = find_case_insensitive_match(line, q_lower) {
+            return (i + 1, excerpt_line(line, s, e));
+        }
+    }
+    for (i, line) in content.lines().enumerate() {
+        let trimmed = line.trim();
+        if !trimmed.is_empty() {
+            return (i + 1, truncate_excerpt_line(trimmed));
+        }
+    }
+    (1, String::new())
+}
+
+fn truncate_excerpt_line(line: &str) -> String {
+    let count = line.chars().count();
+    if count <= SEARCH_EXCERPT_CHARS {
+        return line.to_string();
+    }
+    let truncated: String = line.chars().take(SEARCH_EXCERPT_CHARS).collect();
+    format!("{truncated}...")
 }
 
 pub async fn handle_delete(
@@ -1363,7 +1521,7 @@ mod tests {
         .await
         .unwrap();
 
-        let result = handle_search(json!({"query": "tea"}), &ws_str, true)
+        let result = handle_search(json!({"query": "tea"}), &ws_str, true, None, None)
             .await
             .unwrap();
         let results = result["results"].as_array().unwrap();
@@ -1406,7 +1564,7 @@ mod tests {
         .await
         .unwrap();
 
-        let result = handle_search(json!({"query": "tea"}), &ws_str, true)
+        let result = handle_search(json!({"query": "tea"}), &ws_str, true, None, None)
             .await
             .unwrap();
         let results = result["results"].as_array().unwrap();
@@ -1435,7 +1593,7 @@ mod tests {
         .await
         .unwrap();
 
-        let result = handle_search(json!({"query": "absent"}), &ws_str, true)
+        let result = handle_search(json!({"query": "absent"}), &ws_str, true, None, None)
             .await
             .unwrap();
         assert_eq!(result["count"], 0);
@@ -1461,9 +1619,15 @@ mod tests {
         .await
         .unwrap();
 
-        let result = handle_search(json!({"query": "german shepherd"}), &ws_str, true)
-            .await
-            .unwrap();
+        let result = handle_search(
+            json!({"query": "german shepherd"}),
+            &ws_str,
+            true,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
         let results = result["results"].as_array().unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0]["path"], "archive/chat.jsonl");
@@ -1496,7 +1660,7 @@ mod tests {
         std::os::unix::fs::symlink(&secret, ws.join("link_to_secret.md")).unwrap();
         std::os::unix::fs::symlink(&outside_dir, ws.join("outside_dir")).unwrap();
 
-        let result = handle_search(json!({"query": "xyzzy"}), &ws_str, true)
+        let result = handle_search(json!({"query": "xyzzy"}), &ws_str, true, None, None)
             .await
             .unwrap();
         assert_eq!(result["count"], 0, "symlinked file content must not leak");
@@ -1517,10 +1681,60 @@ mod tests {
         .await
         .unwrap();
 
-        let result = handle_search(json!({"query": "tea"}), &ws_str, false)
+        let result = handle_search(json!({"query": "tea"}), &ws_str, false, None, None)
             .await
             .unwrap();
         assert_eq!(result["count"], 0);
+    }
+
+    #[tokio::test]
+    async fn search_hybrid_mode_falls_back_to_lexical_without_embedder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("workspace");
+        let ws_str = ws.to_string_lossy().to_string();
+
+        handle_write(json!({"path": "notes.md", "content": "tea time"}), &ws_str)
+            .await
+            .unwrap();
+
+        let result = handle_search(
+            json!({"query": "tea", "mode": "hybrid"}),
+            &ws_str,
+            true,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result["mode"], "lexical");
+        assert_eq!(result["semantic_unavailable"], "embedder not configured");
+        let results = result["results"].as_array().unwrap();
+        assert!(!results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn search_lexical_mode_does_not_set_semantic_unavailable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp.path().join("workspace");
+        let ws_str = ws.to_string_lossy().to_string();
+
+        handle_write(json!({"path": "notes.md", "content": "tea time"}), &ws_str)
+            .await
+            .unwrap();
+
+        let result = handle_search(
+            json!({"query": "tea", "mode": "lexical"}),
+            &ws_str,
+            true,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result["mode"], "lexical");
+        assert!(result.get("semantic_unavailable").is_none());
     }
 
     #[test]

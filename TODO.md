@@ -1,1 +1,0 @@
-i think it would be good to use embeddings or something to provide a vector search instead of/in addition to the lexical search. i also think that reranking the results of the search tool by similarity/most-recent would be useful as well

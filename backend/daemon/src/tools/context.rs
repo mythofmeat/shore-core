@@ -5,13 +5,14 @@
 //! updating this struct + impl (one place) instead of two separate copies.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use shore_config::app::{RetrievalConfig, SearchConfig};
+use shore_llm::embed::Embedder;
 use shore_llm::LlmClient;
 
 use crate::memory::compaction_impls::ImageGenConfig;
 use crate::memory::markdown_store::MarkdownMemoryStore;
-use crate::memory::retrieval::EmbeddingConfig;
 
 use super::ToolContext;
 
@@ -32,7 +33,7 @@ pub(crate) struct SharedToolContext {
     pub(crate) workspace_dir_val: String,
     pub(crate) markdown_store_val: Option<MarkdownMemoryStore>,
     pub(crate) memory_retrieval_config_val: RetrievalConfig,
-    pub(crate) embedding_config_val: Option<EmbeddingConfig>,
+    pub(crate) embedder_val: Option<Arc<dyn Embedder>>,
     pub(crate) memory_index_path_val: std::path::PathBuf,
     pub(crate) memory_access_allowed_val: bool,
     pub(crate) memory_read_allowed_val: bool,
@@ -69,8 +70,8 @@ impl ToolContext for SharedToolContext {
     fn memory_retrieval_config(&self) -> &RetrievalConfig {
         &self.memory_retrieval_config_val
     }
-    fn embedding_config(&self) -> Option<&EmbeddingConfig> {
-        self.embedding_config_val.as_ref()
+    fn embedder(&self) -> Option<&dyn Embedder> {
+        self.embedder_val.as_deref()
     }
     fn memory_index_path(&self) -> Option<&std::path::Path> {
         Some(&self.memory_index_path_val)
